@@ -1021,7 +1021,10 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // (dimmed, audience=private) gives every item a single entry point to the
       // AudiencePicker. This is one unified "My items" view; everything is
       // private by default.
-      const allPortfolios = portfolioList.portfolios;
+      // A locked stub remains visible in the portfolio roster so its vault can
+      // be managed, but it is deliberately absent from every sharing discovery
+      // surface. Plain siblings stay byte-for-byte on the existing path.
+      const allPortfolios = portfolioList.portfolios.filter((p) => p.vaultId == null);
       const allConglomerates = conglomerateList.conglomerates;
       const allWatchlists = watchlists;
       const allIdeas = ideaList.ideas;

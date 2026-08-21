@@ -34,7 +34,7 @@ import {
   requireCookieSessionOrVaultSync,
 } from '../http/routes/vaultRoutes';
 import {
-  isParanoidKilledScope,
+  isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../services/account/paranoidEnforcement';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
@@ -936,12 +936,12 @@ describe('#1043 bearer vault synchronization', () => {
     expect(denied.body.error.message).toContain('account:security');
   });
 
-  it('exempts vault:sync while paranoid portfolio scopes still fail closed', async () => {
+  it('keeps vault:sync open while the legacy-v1 bridge refuses old portfolio scopes', async () => {
     const { user, token } = await mintPersonalToken(['vault:sync', 'portfolio:read'], 'interplay');
     await setParanoidServer(user.id);
 
-    expect(isParanoidKilledScope('vault:sync')).toBe(false);
-    expect(isParanoidKilledScope('portfolio:read')).toBe(true);
+    expect(isLegacyParanoidRefusedScope('vault:sync')).toBe(false);
+    expect(isLegacyParanoidRefusedScope('portfolio:read')).toBe(true);
 
     const stored = await request(harness.app)
       .put('/api/v1/vault')

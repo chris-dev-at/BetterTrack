@@ -1377,6 +1377,7 @@
     }
   },
   "portfolio": {
+    "vaultedPortfolioUnavailable": "This feature is unavailable for a locked vault portfolio. Choose a plain portfolio instead.",
     "sourceTag": {
       "importFrom": "Imported · {{source}}",
       "syncFrom": "Synced · {{source}}",

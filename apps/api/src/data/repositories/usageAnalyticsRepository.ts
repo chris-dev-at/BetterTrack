@@ -1,9 +1,10 @@
-import { and, count, desc, eq, gte, ne, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
   usageDaily,
   usageEvents,
+  portfolios,
   users,
   type NewUsageDailyRow,
   type NewUsageEventRow,
@@ -26,6 +27,10 @@ export interface UsageEventUpsert {
   userId: string;
   feature: string;
   assetId: string;
+  /** Ephemeral enforcement metadata; never written to usage_events. */
+  targetPortfolioId?: string | null;
+  /** Ephemeral marker for portfolio-unattributed asset quote reads. */
+  suppressIfAnyVault?: boolean;
   day: string;
   hits: number;
   lastSeenAt: Date;
@@ -130,11 +135,77 @@ export function createUsageAnalyticsRepository(
           // Fail closed: only a confirmed-`normal` account is written. A `null`
           // mode means the row no longer resolves (deleted mid-flush), which
           // would otherwise fail the FK and lose the whole batch.
-          const admitted = chunk
+          const normalRows = chunk
             .filter((userId) => modes.get(userId) === 'normal')
             .flatMap((userId) => byUser.get(userId) ?? []);
+          if (normalRows.length === 0) return;
+
+          // E2 re-keys the second admission check per portfolio. These reads
+          // happen while the account KEY SHARE lock above is held. E4's move-in
+          // commit takes the conflicting account FOR UPDATE lock, so either:
+          //   flush wins -> its rows land before E4's purge, or
+          //   move-in wins -> this re-read sees vault_id and drops the buffer.
+          // That closes #1344's post-purge resurrection window without killing
+          // telemetry for a same-account plain sibling.
+          const targetIds = [
+            ...new Set(
+              normalRows.flatMap((row) => (row.targetPortfolioId ? [row.targetPortfolioId] : [])),
+            ),
+          ];
+          const plainTargets =
+            targetIds.length === 0
+              ? []
+              : await db
+                  .select({ id: portfolios.id, userId: portfolios.userId })
+                  .from(portfolios)
+                  .where(
+                    and(
+                      inArray(portfolios.id, targetIds),
+                      inArray(portfolios.userId, chunk),
+                      isNull(portfolios.vaultId),
+                    ),
+                  );
+          const plainTargetKeys = new Set(plainTargets.map((row) => `${row.userId}|${row.id}`));
+          const vaultSensitiveUsers = [
+            ...new Set(
+              normalRows.filter((row) => row.suppressIfAnyVault === true).map((row) => row.userId),
+            ),
+          ];
+          const usersWithVault =
+            vaultSensitiveUsers.length === 0
+              ? []
+              : await db
+                  .selectDistinct({ userId: portfolios.userId })
+                  .from(portfolios)
+                  .where(
+                    and(
+                      inArray(portfolios.userId, vaultSensitiveUsers),
+                      isNotNull(portfolios.vaultId),
+                    ),
+                  );
+          const vaultedUsers = new Set(usersWithVault.map((row) => row.userId));
+          const admitted = normalRows.filter((row) => {
+            if (row.suppressIfAnyVault === true && vaultedUsers.has(row.userId)) return false;
+            if (!row.targetPortfolioId) return true;
+            return plainTargetKeys.has(`${row.userId}|${row.targetPortfolioId}`);
+          });
           if (admitted.length === 0) return;
-          const values: NewUsageEventRow[] = admitted.map((r) => ({
+
+          // Different in-memory privacy keys can map to the same persisted
+          // uniqueness key after admission. Fold them again so one INSERT never
+          // attempts to update the same ON CONFLICT row twice.
+          const folded = new Map<string, UsageEventUpsert>();
+          for (const row of admitted) {
+            const key = `${row.userId}|${row.feature}|${row.assetId}|${row.day}`;
+            const previous = folded.get(key);
+            if (previous) {
+              previous.hits += row.hits;
+              if (row.lastSeenAt > previous.lastSeenAt) previous.lastSeenAt = row.lastSeenAt;
+            } else {
+              folded.set(key, { ...row });
+            }
+          }
+          const values: NewUsageEventRow[] = [...folded.values()].map((r) => ({
             userId: r.userId,
             feature: r.feature,
             assetId: r.assetId,

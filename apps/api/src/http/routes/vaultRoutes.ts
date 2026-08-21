@@ -76,7 +76,7 @@ import {
 
 import { ApiError, EnvelopeApiError, forbidden, notFound } from '../../errors';
 import {
-  isParanoidKilledScope,
+  isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
 
@@ -667,7 +667,7 @@ function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
       );
       return;
     }
-    if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(requiredScope)) {
+    if (req.authUser?.privacyMode === 'paranoid' && isLegacyParanoidRefusedScope(requiredScope)) {
       next(
         forbidden(
           'This API scope is unavailable while paranoid mode is active.',

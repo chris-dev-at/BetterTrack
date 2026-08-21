@@ -382,7 +382,10 @@ describe('paranoid account administration (#730)', () => {
     for (const forbiddenMutation of [
       { privacyMode: 'normal' },
       { passphrase: 'admin-cannot-reset-this' },
+      { devicePassword: true },
       { wipeVault: true },
+      { restoreVault: true },
+      { restoreWipedData: true },
     ]) {
       const mutation = await adminAgent
         .patch(`/api/v1/admin/users/${target.id}`)

@@ -3,7 +3,7 @@ import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import type { ChatChipKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { chatConversations, chatMessages, users } from '../schema';
+import { chatConversations, chatMessages, portfolios, users } from '../schema';
 
 /**
  * Friend-chat persistence (PROJECTPLAN.md §13.3 V3-P8). Owns the
@@ -159,11 +159,25 @@ export function createChatRepository(db: Database) {
           conversationId: chatMessages.conversationId,
           senderId: chatMessages.senderId,
           body: chatMessages.body,
-          chipKind: chatMessages.chipKind,
+          // A locked portfolio reference is absent even from the compact
+          // conversation preview. Missing/deleted references retain the legacy
+          // unavailable-chip marker in the full thread.
+          chipKind: sql<ChatChipKind | null>`case
+            when ${chatMessages.chipKind} = 'portfolio' and ${portfolios.vaultId} is not null
+              then null
+            else ${chatMessages.chipKind}
+          end`,
           createdAt: chatMessages.createdAt,
           id: chatMessages.id,
         })
         .from(chatMessages)
+        .leftJoin(
+          portfolios,
+          and(
+            eq(chatMessages.chipKind, 'portfolio'),
+            eq(chatMessages.chipSubjectId, portfolios.id),
+          ),
+        )
         .where(
           inArray(
             chatMessages.conversationId,

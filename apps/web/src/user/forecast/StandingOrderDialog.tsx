@@ -17,6 +17,7 @@ import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { vaultedPortfolioErrorMessage } from '../portfolio/vaultedPortfolioError';
 
 const inputClass = cx('bt-input w-full', '', '');
 
@@ -158,7 +159,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
   const errorMessage =
     formError ??
     (mutation.error instanceof ApiError
-      ? mutation.error.message
+      ? (vaultedPortfolioErrorMessage(mutation.error, t) ?? mutation.error.message)
       : mutation.error
         ? t('forecast.standingOrders.dialog.saveError')
         : null);

@@ -17,6 +17,7 @@ id = "generic-api-key"
     # test vectors — a fixed 16-char key fingerprint and a canonical-prefix DER
     # proof key, public by design, never real key material.
     '''^apps/api/src/__tests__/accountDeletion\.test\.ts$''',
+    '''^apps/api/src/__tests__/auth\.test\.ts$''',
     '''^apps/api/src/__tests__/driveConnections\.test\.ts$''',
     '''^apps/api/src/__tests__/vaultsSchema\.test\.ts$''',
     '''^apps/api/src/__tests__/vaultBearerSync\.test\.ts$''',

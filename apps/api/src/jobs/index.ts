@@ -39,6 +39,7 @@ export {
   assertParanoidJobBindings,
   bindParanoidJob,
   createParanoidUserJobFilter,
+  VAULTED_PORTFOLIO_JOB_IDEMPOTENCY_KEYS,
   type ParanoidJobBinding,
   type ParanoidUserJobFilter,
 } from './paranoidJobs';

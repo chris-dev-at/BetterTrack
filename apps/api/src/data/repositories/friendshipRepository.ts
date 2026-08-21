@@ -183,7 +183,13 @@ export function createFriendshipRepository(db: Database) {
         // Archiving a shared portfolio must stop sharing it: an archived
         // portfolio is invisible to its own owner's list, so it must not linger
         // in any friend's Shared With Me (§6.9).
-        .where(and(eq(portfolios.visibility, 'friends'), isNull(portfolios.archivedAt)))
+        .where(
+          and(
+            eq(portfolios.visibility, 'friends'),
+            isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .orderBy(asc(users.username), asc(portfolios.name));
       return rows;
     },
@@ -225,6 +231,7 @@ export function createFriendshipRepository(db: Database) {
             eq(portfolios.id, portfolioId),
             eq(portfolios.visibility, 'friends'),
             isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
           ),
         )
         .limit(1);

@@ -14,6 +14,8 @@ import type {
   IdempotencyRecord,
 } from '../../data/repositories/idempotencyKeyRepository';
 import type { Logger } from '../../logger';
+import { stripPortfolioRequestAttribution } from '../../data/repositories/portfolioRequestAttribution';
+import { vaultedPortfolioTargetForRequest } from '../../services/account/vaultedPortfolioEnforcement';
 import type { AppContext } from '../context';
 
 /**
@@ -289,14 +291,24 @@ export function createIdempotency(
       return;
     }
 
+    const path = req.baseUrl + req.path;
+    const requestUrl = req.originalUrl ?? path;
     const input = {
       userId,
       key: parsed.data,
       method: req.method,
       // The concrete path (with ids) is the endpoint fingerprint, so the same key
       // on a different endpoint/resource is a mismatch, not a replay.
-      path: req.baseUrl + req.path,
+      path,
       requestHash: hashBody(req.body),
+      targetPortfolioId: vaultedPortfolioTargetForRequest({
+        method: req.method,
+        path: requestUrl,
+        params: req.params,
+        query: req.query,
+        body: req.body,
+        valid: req.valid,
+      })?.portfolioId,
     };
 
     // A request can disappear while its database claim is pending. We can release
@@ -330,11 +342,18 @@ export function createIdempotency(
             next();
             return;
           }
+          if ('suppressed' in outcome) {
+            // Vaulted/stale targets proceed without a persisted replay record;
+            // the authoritative route/service guard supplies the ordinary
+            // VAULTED_PORTFOLIO or opaque not-found response.
+            next();
+            return;
+          }
           const { record } = outcome;
           if (!record) continue; // vanished between conflict + read → re-claim
           if (
             record.method !== input.method ||
-            record.path !== input.path ||
+            stripPortfolioRequestAttribution(record.path) !== input.path ||
             record.requestHash !== input.requestHash
           ) {
             next(

@@ -28,6 +28,7 @@ import { Badge, Button, Field, PageHead, Select, type BadgeTone } from '../../ui
 import { Alert } from '../components/ui';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
+import { vaultedPortfolioErrorMessage } from './vaultedPortfolioError';
 
 /**
  * Broker CSV import (PROJECTPLAN.md §13.4 V4-P8): upload a broker export →
@@ -61,6 +62,8 @@ const RESULT_TONES: Record<ImportRowResult, BadgeTone> = {
  */
 function uploadErrorMessage(err: unknown, t: TranslateFn): string {
   if (!(err instanceof ApiError)) return t('portfolio.import.uploadFailed');
+  const vaulted = vaultedPortfolioErrorMessage(err, t);
+  if (vaulted) return vaulted;
   if (err.code === 'IMPORT_TOO_MANY_INSTRUMENTS') {
     return t('portfolio.import.tooManyInstruments', { max: IMPORT_MAX_DISTINCT_INSTRUMENTS });
   }
@@ -201,7 +204,10 @@ export function ImportPage() {
       setError(null);
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.message : t('portfolio.import.applyFailed'));
+      setError(
+        vaultedPortfolioErrorMessage(err, t) ??
+          (err instanceof ApiError ? err.message : t('portfolio.import.applyFailed')),
+      );
     },
   });
 

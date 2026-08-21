@@ -233,6 +233,10 @@ import {
   runIfParanoidOwnedSubjectAllowed,
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
+import {
+  createVaultedPortfolioGuard,
+  type VaultedPortfolioGuard,
+} from '../services/account/vaultedPortfolioEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
@@ -414,6 +418,8 @@ export interface AppContext {
   paranoidTransitions: ParanoidTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
   paranoidGuard: ParanoidModeGuard;
+  /** Stable owner-scoped guard for a portfolio whose server row is a locked stub. */
+  vaultedPortfolioGuard: VaultedPortfolioGuard;
   /** Outbound webhook subscriptions — CRUD + one-time signing secret + delivery log (§13.5 V5-P10). */
   webhooks: WebhookService;
   /**
@@ -688,6 +694,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(privacyLockDb, userIds, run),
   });
   const paranoidSubjects = createParanoidEnforcementRepository(db);
+  const vaultedPortfolioGuard = createVaultedPortfolioGuard({
+    portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+    withLockedPortfolioSubject: async (portfolioId, action) => {
+      const candidate = await paranoidSubjects.portfolioOwner(portfolioId);
+      if (!candidate.exists || candidate.userId === null) return action(candidate);
+      return withLockedPrivacyModes(privacyLockDb, [candidate.userId], async () => {
+        const fresh = await paranoidSubjects.portfolioOwner(portfolioId);
+        return action(
+          fresh.exists && fresh.userId === candidate.userId
+            ? fresh
+            : { exists: false, userId: null, vaultId: null },
+        );
+      });
+    },
+    userOwnsVaultedPortfolio: (userId) => paranoidSubjects.userOwnsVaultedPortfolio(userId),
+  });
   const inviteRepo = createInviteRepository(db);
   const registrationTokenRepo = createRegistrationTokenRepository(db);
   const registrationRequestRepo = createRegistrationRequestRepository(db);
@@ -1018,6 +1040,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     enqueue: webhookDeliveryEnqueue,
     logger,
     paranoid: paranoidGuard,
+    vaultedPortfolio: {
+      portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+      standingOrderPortfolio: (userId, standingOrderId) =>
+        paranoidSubjects.standingOrderPortfolio(userId, standingOrderId),
+      cashBudgetPortfolio: (userId, budgetId) =>
+        paranoidSubjects.cashBudgetPortfolio(userId, budgetId),
+      legacyExpenseBudgetExists: (userId, budgetId) =>
+        paranoidSubjects.legacyExpenseBudgetExists(userId, budgetId),
+      userHasPlainHolding: (userId, assetId) =>
+        paranoidSubjects.userHasPlainHolding(userId, assetId),
+      mirrorMemberPortfolios: (chainId, principalUserIds) =>
+        paranoidSubjects.mirrorMemberPortfolios(chainId, principalUserIds),
+    },
   });
 
   // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
@@ -1291,7 +1326,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       ),
     runIfAllowedPortfolio: async (portfolioId, action) =>
       runIfParanoidOwnedSubjectAllowed(
-        await paranoidSubjects.portfolioOwner(portfolioId),
+        () => paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
         'portfolioJobs',
         action,
@@ -1374,6 +1409,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: customAssetRepo,
     portfolio,
     snapshots,
+    vaultedPortfolio: vaultedPortfolioGuard,
   });
 
   // MIRRORCHAIN replication core (§13.5 V5-P7 M2): built on top of the plain
@@ -1591,6 +1627,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
     userRepo,
     paranoid: paranoidGuard,
+    vaultedPortfolio: vaultedPortfolioGuard,
   });
 
   // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
@@ -1608,6 +1645,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     events,
     notify,
     logger,
+    paranoid: paranoidGuard,
+    vaultedPortfolio: {
+      portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+      runOwnedPortfolioAllowed: (userId, portfolioId, action) =>
+        vaultedPortfolioGuard.runOwnedPortfolioAllowed(userId, portfolioId, action),
+    },
   });
 
   // Notification read/mark-read, archive/delete + push registrations (§6.10,
@@ -1754,7 +1797,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
   // store for the reusable idempotency middleware on the portfolio mutation routes.
-  const idempotency = createIdempotencyKeyRepository(db);
+  const idempotency = createIdempotencyKeyRepository(db, privacyLockDb);
 
   // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
@@ -1871,7 +1914,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       };
     },
     canViewPortfolio: async (userId, portfolioId) => {
-      if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
+      const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
+      if (owned) return owned.vaultId === null;
       // Friend-share access goes through the SAME single enforcement layer the
       // HTTP shared-view uses (§13.3 V3-P5), recomputed at join time (§6.9).
       return Boolean(await audience.authorizePortfolioRead(userId, portfolioId));
@@ -1891,7 +1935,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
         ownerId: string | null;
       } | null = null;
       const allowed = await runIfParanoidOwnedSubjectAllowed(
-        { exists: true, userId: row.ownerId },
+        () => paranoidSubjects.assetOwner(assetId),
         paranoidGuard,
         'portfolioServer',
         async () => {
@@ -2014,6 +2058,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     },
     paranoidGuard,
     paranoidSubjects,
+    vaultedPortfolioGuard,
   );
 
   return {
@@ -2056,6 +2101,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     reauth,
     paranoidTransitions,
     paranoidGuard,
+    vaultedPortfolioGuard,
     webhooks,
     webhookBridge: guarded.webhookBridge,
     analytics: guarded.analytics,

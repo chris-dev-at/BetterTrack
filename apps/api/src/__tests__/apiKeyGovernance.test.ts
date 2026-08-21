@@ -9,7 +9,7 @@ import {
   apiKeyTierSchema,
 } from '@bettertrack/contracts';
 
-import { apiKeyRequestLog, apiKeyTiers, users } from '../data/schema';
+import { apiKeyRequestLog, apiKeyTiers, portfolios, users, vaults } from '../data/schema';
 import { createApiKeyRequestLogRepository } from '../data/repositories/apiKeyRequestLogRepository';
 import { createApiKeyService } from '../services/apiKeys/apiKeyService';
 import { API_KEY_REQUEST_LOG_RETENTION_DAYS, createApiKeyRequestLogCleanupJob } from '../jobs';
@@ -242,6 +242,74 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
     const rows = await repo.listForKey(keyId, 10);
     expect(rows).toEqual([]);
+    expect(JSON.stringify(rows)).not.toContain(RESOURCE_ASSET_ID);
+  });
+
+  it('suppresses vaulted targets and unattributed market-read ids but records a plain sibling', async () => {
+    const { userId, token, keyId } = await mintKey(['portfolio:read', 'market:read']);
+    const lockedId = await harness.ctx.portfolio.getDefaultPortfolioId(userId);
+    const sibling = await harness.ctx.portfolio.createPortfolio(userId, { name: 'Audit sibling' });
+
+    // TEST VECTOR: identity/config-only vault metadata. The request log must
+    // retain neither the stub UUID nor quote-driven holdings identifiers.
+    const vaultId = '018f0000-0000-7000-8000-000000001346';
+    await harness.db.insert(vaults).values({
+      id: vaultId,
+      userId,
+      name: 'Audit boundary',
+      headerDocId: '018f0000-0000-7000-8000-000000001347',
+      commonDocId: '018f0000-0000-7000-8000-000000001348',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'deterministic-audit-public-proof',
+      keyFingerprint: 'deterministic-audit-fingerprint',
+    });
+    await harness.db.update(portfolios).set({ vaultId }).where(eq(portfolios.id, lockedId));
+
+    await harness.ctx.apiKeys.recordRequest({
+      keyId,
+      userId,
+      method: 'GET',
+      path: `/portfolios/${lockedId}`,
+      status: 403,
+      targetPortfolioId: lockedId,
+    });
+    await harness.ctx.apiKeys.recordRequest({
+      keyId,
+      userId,
+      method: 'GET',
+      path: `/portfolios/${sibling.id}`,
+      status: 200,
+      targetPortfolioId: sibling.id,
+    });
+    await harness.ctx.apiKeys.recordRequest({
+      keyId,
+      userId,
+      method: 'GET',
+      path: `/assets/${RESOURCE_ASSET_ID}/quote`,
+      status: 200,
+      suppressIfAnyVault: true,
+    });
+
+    // Exercise the HTTP classifier shared with usage capture: quote, history,
+    // and the vault client engine's daily-close lookup are all roster-bearing.
+    await request(harness.app)
+      .get(`/api/v1/assets/${RESOURCE_ASSET_ID}/quote`)
+      .set('Authorization', `Bearer ${token}`);
+    await request(harness.app)
+      .get(`/api/v1/assets/${RESOURCE_ASSET_ID}/daily-closes`)
+      .set('Authorization', `Bearer ${token}`);
+    await request(harness.app)
+      .get(`/api/v1/assets/${RESOURCE_ASSET_ID}/history?range=1M`)
+      .set('Authorization', `Bearer ${token}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const rows = await createApiKeyRequestLogRepository(harness.db, harness.db).listForKey(
+      keyId,
+      10,
+    );
+    expect(rows.map((row) => row.path)).toEqual([`/portfolios/${sibling.id}`]);
+    expect(JSON.stringify(rows)).not.toContain(lockedId);
     expect(JSON.stringify(rows)).not.toContain(RESOURCE_ASSET_ID);
   });
 
