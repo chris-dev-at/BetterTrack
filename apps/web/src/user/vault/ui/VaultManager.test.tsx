@@ -117,6 +117,39 @@ describe('VaultManager', () => {
     expect(explainer.closest('[role="alert"]')).toBeNull();
   });
 
+  it('opens the creation ceremony without asking for the unmounted Drive-connection route', async () => {
+    const user = userEvent.setup();
+    // No `operations` override: exactly what PrivacyPanel ships, where Drive
+    // provisioning is off. The E5 route does not exist yet, so a request here
+    // could only 404 into a permanent error banner above step 1.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/control/privacy']}>
+          <VaultManager />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Long-term vault');
+
+    await user.click(screen.getByRole('button', { name: 'Create vault' }));
+
+    expect(await screen.findByLabelText('Vault name')).toBeInTheDocument();
+    expect(mocks.listConnections).not.toHaveBeenCalled();
+    expect(screen.queryByText('Drive connections could not be loaded')).not.toBeInTheDocument();
+  });
+
+  it('explains an unknown deep-linked action instead of rendering its raw key', async () => {
+    renderManager(`/control/privacy?vault=${VAULT_ID}&action=whatever`);
+
+    expect(
+      await screen.findByText(/asks for a vault step that does not exist/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('vault.manager.access.whatever')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    expect(await screen.findAllByRole('link', { name: 'Enter words' })).not.toHaveLength(0);
+  });
+
   it('names the Drive connection bound to a vault', async () => {
     const connectionId = '018f0000-0000-7000-8000-000000000008';
     mocks.listVaults.mockResolvedValue([

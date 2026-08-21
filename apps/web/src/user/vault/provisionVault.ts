@@ -28,6 +28,9 @@ import {
 } from './keys';
 import { encryptVaultDoc } from './keys/documents';
 import { createVaultRetirementProofManager } from './media/retirementProof';
+import { VaultProvisionIncompleteError } from './provisionErrors';
+
+export { VaultProvisionIncompleteError };
 
 export interface ProvisionVaultInput {
   accountId: string;
@@ -83,126 +86,133 @@ export async function provisionVault(input: ProvisionVaultInput): Promise<VaultC
       retirementProofPublicKey: clientSecurity.retirementProof.publicKey,
     });
 
-    wrapKey = await deriveVaultWrapKey(input.mnemonic, vault.id);
-    const keySlot = await wrapContentKey({
-      contentKey,
-      wrapKey,
-      vaultId: vault.id,
-      keyId,
-    });
-    const writtenAt = new Date().toISOString();
-    const headerDocument: VaultHeaderDoc = {
-      schemaVersion: VAULT_DOC_SCHEMA_VERSION,
-      name: input.name,
-      portfolios: [],
-      keySlots: [keySlot],
-      driveConnection: null,
-      created: { at: writtenAt, deviceId },
-    };
-    const commonDocument: VaultCommonDoc = {
-      schemaVersion: VAULT_DOC_SCHEMA_VERSION,
-      entities: {},
-      mergeLog: [],
-      mirrorProvenance: [],
-      clientSecurity,
-    };
-    const base = {
-      keyId,
-      keySlots: [keySlot],
-      vaultId: vault.id,
-      accountBinding,
-      docVersion: 1,
-      schemaVersion: VAULT_DOC_SCHEMA_VERSION,
-      deviceId,
-      writtenAt,
-    };
-    const headerPlaintext = utf8(JSON.stringify(headerDocument));
-    const commonPlaintext = utf8(JSON.stringify(commonDocument));
-    let header: Awaited<ReturnType<typeof encryptVaultDoc>>;
-    let common: Awaited<ReturnType<typeof encryptVaultDoc>>;
+    // Past this point the vault row exists. Every failure below leaves it
+    // behind, so it is reported as such — a plain "try again" here would mint a
+    // second vault instead of finishing this one.
     try {
-      [header, common] = await Promise.all([
-        encryptVaultDoc({
-          plaintext: headerPlaintext,
-          contentKey,
-          header: {
-            ...base,
-            docId: headerDocId,
-            docKind: 'header',
-            writeId: uuidv7(),
-          },
-        }),
-        encryptVaultDoc({
-          plaintext: commonPlaintext,
-          contentKey,
-          header: {
-            ...base,
-            docId: commonDocId,
-            docKind: 'common',
-            writeId: uuidv7(),
-          },
-        }),
-      ]);
-    } finally {
-      zeroBytes(headerPlaintext);
-      zeroBytes(commonPlaintext);
-    }
-    let attestedVault: VaultConfig;
-    try {
-      await Promise.all([
-        createVaultDocument(vault.id, headerDocId, header.envelope),
-        createVaultDocument(vault.id, commonDocId, common.envelope),
-      ]);
-      const attested = await transitionVaultMedia(vault.id, {
-        transitionId: uuidv7(),
-        expected: {
-          media: vault.media,
-          driveConnectionId: vault.driveConnectionId,
-          mediaAttestedAt: vault.mediaAttestedAt,
-        },
-        next: {
-          media: vault.media,
-          driveConnectionId: vault.driveConnectionId,
-        },
-        verification: {
-          kind: 'server',
-          docs: [header, common].map((document) => ({
-            docId: document.header.docId,
-            docVersion: document.header.docVersion,
-            writeId: document.header.writeId,
-          })),
-        },
+      wrapKey = await deriveVaultWrapKey(input.mnemonic, vault.id);
+      const keySlot = await wrapContentKey({
+        contentKey,
+        wrapKey,
+        vaultId: vault.id,
+        keyId,
       });
-      attestedVault = {
-        ...vault,
-        mediaAttestedAt: attested.mediaAttestedAt,
-        mediaAttestedDriveConnectionId: attested.mediaAttestedDriveConnectionId,
+      const writtenAt = new Date().toISOString();
+      const headerDocument: VaultHeaderDoc = {
+        schemaVersion: VAULT_DOC_SCHEMA_VERSION,
+        name: input.name,
+        portfolios: [],
+        keySlots: [keySlot],
+        driveConnection: null,
+        created: { at: writtenAt, deviceId },
       };
-    } finally {
-      zeroBytes(header.envelope);
-      zeroBytes(common.envelope);
-    }
+      const commonDocument: VaultCommonDoc = {
+        schemaVersion: VAULT_DOC_SCHEMA_VERSION,
+        entities: {},
+        mergeLog: [],
+        mirrorProvenance: [],
+        clientSecurity,
+      };
+      const base = {
+        keyId,
+        keySlots: [keySlot],
+        vaultId: vault.id,
+        accountBinding,
+        docVersion: 1,
+        schemaVersion: VAULT_DOC_SCHEMA_VERSION,
+        deviceId,
+        writtenAt,
+      };
+      const headerPlaintext = utf8(JSON.stringify(headerDocument));
+      const commonPlaintext = utf8(JSON.stringify(commonDocument));
+      let header: Awaited<ReturnType<typeof encryptVaultDoc>>;
+      let common: Awaited<ReturnType<typeof encryptVaultDoc>>;
+      try {
+        [header, common] = await Promise.all([
+          encryptVaultDoc({
+            plaintext: headerPlaintext,
+            contentKey,
+            header: {
+              ...base,
+              docId: headerDocId,
+              docKind: 'header',
+              writeId: uuidv7(),
+            },
+          }),
+          encryptVaultDoc({
+            plaintext: commonPlaintext,
+            contentKey,
+            header: {
+              ...base,
+              docId: commonDocId,
+              docKind: 'common',
+              writeId: uuidv7(),
+            },
+          }),
+        ]);
+      } finally {
+        zeroBytes(headerPlaintext);
+        zeroBytes(commonPlaintext);
+      }
+      let attestedVault: VaultConfig;
+      try {
+        await Promise.all([
+          createVaultDocument(vault.id, headerDocId, header.envelope),
+          createVaultDocument(vault.id, commonDocId, common.envelope),
+        ]);
+        const attested = await transitionVaultMedia(vault.id, {
+          transitionId: uuidv7(),
+          expected: {
+            media: vault.media,
+            driveConnectionId: vault.driveConnectionId,
+            mediaAttestedAt: vault.mediaAttestedAt,
+          },
+          next: {
+            media: vault.media,
+            driveConnectionId: vault.driveConnectionId,
+          },
+          verification: {
+            kind: 'server',
+            docs: [header, common].map((document) => ({
+              docId: document.header.docId,
+              docVersion: document.header.docVersion,
+              writeId: document.header.writeId,
+            })),
+          },
+        });
+        attestedVault = {
+          ...vault,
+          mediaAttestedAt: attested.mediaAttestedAt,
+          mediaAttestedDriveConnectionId: attested.mediaAttestedDriveConnectionId,
+        };
+      } finally {
+        zeroBytes(header.envelope);
+        zeroBytes(common.envelope);
+      }
 
-    const fetchHeaderEnvelope = () => readVaultHeaderDocument(vault.id, headerDocId);
-    if (input.custody === 'plain') {
-      if (!input.plainRiskAcknowledged) throw new Error('plain-custody-acknowledgment-required');
-      await endpointVaultKeystore.storePlainAfterVerifiedOpen({
-        vaultId: vault.id,
-        mnemonic: input.mnemonic,
-        acknowledgment: acknowledgePlainCustodyRisk(vault.id),
-        expectedFingerprint: vault.keyFingerprint,
-        fetchHeaderEnvelope,
-      });
-    } else {
-      await endpointVaultKeystore.storeAfterVerifiedOpen({
-        vaultId: vault.id,
-        mnemonic: input.mnemonic,
-        devicePassword: input.devicePassword,
-        expectedFingerprint: vault.keyFingerprint,
-        fetchHeaderEnvelope,
-      });
+      const fetchHeaderEnvelope = () => readVaultHeaderDocument(vault.id, headerDocId);
+      if (input.custody === 'plain') {
+        if (!input.plainRiskAcknowledged) throw new Error('plain-custody-acknowledgment-required');
+        await endpointVaultKeystore.storePlainAfterVerifiedOpen({
+          vaultId: vault.id,
+          mnemonic: input.mnemonic,
+          acknowledgment: acknowledgePlainCustodyRisk(vault.id),
+          expectedFingerprint: vault.keyFingerprint,
+          fetchHeaderEnvelope,
+        });
+      } else {
+        await endpointVaultKeystore.storeAfterVerifiedOpen({
+          vaultId: vault.id,
+          mnemonic: input.mnemonic,
+          devicePassword: input.devicePassword,
+          expectedFingerprint: vault.keyFingerprint,
+          fetchHeaderEnvelope,
+        });
+      }
+      return attestedVault;
+    } catch (cause) {
+      throw new VaultProvisionIncompleteError(vault.name, { cause });
     }
-    return attestedVault;
   } finally {
     retirementProof.clear();
     if (wrapKey != null) zeroBytes(wrapKey);

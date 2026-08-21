@@ -41,7 +41,7 @@ vi.mock('./media/retirementProof', () => ({
   }),
 }));
 
-import { provisionVault } from './provisionVault';
+import { provisionVault, VaultProvisionIncompleteError } from './provisionVault';
 
 const PHRASE =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -146,5 +146,29 @@ describe('provisionVault', () => {
       }),
     ).rejects.toThrow('per-vault-drive-provisioning-unavailable');
     expect(mocks.createVault).not.toHaveBeenCalled();
+  });
+
+  it('reports a failure past createVault as an unfinished vault, naming the leftover', async () => {
+    const cause = new Error('document-write-failed');
+    mocks.createVaultDocument.mockRejectedValue(cause);
+
+    const failure = await provisionVault({
+      accountId: '018f0000-0000-7000-8000-000000000099',
+      name: 'Long-term',
+      media: ['server'],
+      driveConnectionId: null,
+      mnemonic: PHRASE,
+      custody: 'wrapped',
+      devicePassword: 'device-secret',
+      plainRiskAcknowledged: false,
+    }).catch((error: unknown) => error);
+
+    // The row exists, so "try again" is the wrong instruction: the caller needs
+    // to know WHICH empty vault was left behind.
+    expect(failure).toBeInstanceOf(VaultProvisionIncompleteError);
+    expect((failure as VaultProvisionIncompleteError).vaultName).toBe('Long-term');
+    expect((failure as VaultProvisionIncompleteError).cause).toBe(cause);
+    expect(mocks.storeAfterVerifiedOpen).not.toHaveBeenCalled();
+    expect(mocks.clearProof).toHaveBeenCalledOnce();
   });
 });

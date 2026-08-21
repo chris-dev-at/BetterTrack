@@ -246,6 +246,42 @@ describe('VaultSyncChip', () => {
     expect(screen.getAllByText('BetterTrack')).toHaveLength(2);
     expect(screen.getByText('Google Drive')).toBeInTheDocument();
   });
+
+  it('keeps the endpoint affordance on an attention row beside its storage recovery link', async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <VaultSyncChip
+          vaults={[
+            {
+              // Both problems at once: Drive wants a sign-in AND the words are
+              // not on this device. §12 says every state carries its next
+              // action, so the storage link must not displace the endpoint one.
+              vault: vault('018f0000-0000-7000-8000-000000000041', 'Drive vault', [
+                'server',
+                'drive',
+              ]),
+              endpointState: {
+                status: 'not-on-this-endpoint',
+                requiredAction: {
+                  kind: 'provide-phrase',
+                  methods: ['enter-words', 'scan-qr'],
+                },
+              },
+              driveAuthorization: 'consent-required',
+            },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Attention: Drive vault' }));
+    expect(screen.getByRole('link', { name: 'Sign in to Google' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Enter words' })).toHaveAttribute(
+      'href',
+      '/control/privacy?vault=018f0000-0000-7000-8000-000000000041&action=provide-phrase',
+    );
+  });
 });
 
 function vault(id: string, name: string, media: VaultConfig['media'] = ['server']): VaultConfig {
