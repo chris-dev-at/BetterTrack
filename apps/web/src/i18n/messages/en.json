@@ -3583,11 +3583,163 @@
     "lock": {
       "action": "Lock vault"
     },
+    "manager": {
+      "title": "Vaults",
+      "subtitle": "Keep separate encrypted vaults and choose which portfolios belong to each one.",
+      "create": "Create vault",
+      "empty": "No vaults yet. Create one when you want a client-encrypted home for a portfolio.",
+      "loadError": "Vaults could not be loaded.",
+      "connectionsError": "Drive connections could not be loaded. Server storage remains available.",
+      "portfoliosError": "Vault membership could not be loaded. No portfolio action is available until retry succeeds.",
+      "listLabel": "Your vaults",
+      "nameLabel": "Vault name",
+      "boundDrive": "Drive: {{connection}}",
+      "boundDriveUnavailable": "connection details unavailable",
+      "renameError": "The vault could not be renamed.",
+      "portfolios": "Portfolios in this vault",
+      "noPortfolios": "No portfolios in this vault yet.",
+      "deleteWarning": "Move every portfolio out first. Deleting an empty vault permanently removes its encrypted copies.",
+      "deleteAction": "Delete empty vault",
+      "deleteReferenced": "This vault still contains a portfolio. Move every portfolio out before deleting it.",
+      "deleteError": "The vault could not be deleted. Nothing changed.",
+      "explainer": {
+        "names": "Vault names and storage settings stay readable so BetterTrack can show and route them while locked.",
+        "storage": "Portfolio contents are encrypted in your browser before they reach the selected storage.",
+        "privacy": "Each portfolio belongs to at most one vault; unlocking one does not unlock the others."
+      },
+      "media": {
+        "server": "Encrypted on BetterTrack",
+        "drive": "Google Drive only",
+        "both": "BetterTrack + Google Drive"
+      },
+      "state": {
+        "locked": "Locked on this device",
+        "ready": "Ready on this device",
+        "notOnEndpoint": "Words needed on this device",
+        "invalidEndpoint": "Device storage needs a reset"
+      },
+      "action": {
+        "unlock": "Unlock",
+        "open": "Open",
+        "providePhrase": "Enter words",
+        "scanQr": "Scan QR",
+        "resetEndpoint": "Reset this device",
+        "rename": "Rename",
+        "changeMedia": "Change storage",
+        "rotate": "Rotate recovery words",
+        "startFresh": "Start fresh"
+      },
+      "access": {
+        "title": "{{name}} access",
+        "unlock": "Enter this device password. Forgetting it loses nothing if you still have your 12 words.",
+        "open": "Open the stored words on this device without another prompt.",
+        "opening": "Opening this vault on this device…",
+        "provide-phrase": "Enter the 12 words or scan them from another device. A lost phone loses nothing when another phrase copy exists.",
+        "scan-qr": "Scan the transfer QR from an already unlocked device.",
+        "restore": "Choose among the authenticated current and bounded history copies. Damaged copies stay visible for diagnosis.",
+        "restoreLoadError": "Restore copies could not be loaded.",
+        "unavailable": "This action is not available on this device yet.",
+        "reset-endpoint": "Reset only this device’s stored custody. Server and Drive ciphertext stay untouched.",
+        "rotate": "Rotation replaces the recovery words after every selected copy passes a verified round trip.",
+        "start-fresh": "Starting fresh permanently discards this vault’s encrypted contents. Other vaults and account data stay unchanged.",
+        "devicePassword": "Device password",
+        "newDevicePassword": "New device password",
+        "words": "12 recovery words",
+        "resetConfirm": "Remove stored vault words from this device. My remote encrypted copies stay unchanged.",
+        "startFreshConfirm": "I understand this is destruction, not recovery, and permanently deletes this vault’s encrypted data.",
+        "error": "That action could not be completed. The vault remains unchanged.",
+        "action": "Continue"
+      }
+    },
+    "creation": {
+      "title": "Create a vault",
+      "step": "Step {{current}} of {{total}}",
+      "steps": {
+        "1": "Name",
+        "2": "Storage",
+        "3": "Recovery words",
+        "4": "Verify one word",
+        "5": "Keep the words safe",
+        "6": "This device"
+      },
+      "nameLabel": "Vault name",
+      "media": {
+        "server": "Encrypted documents stay on BetterTrack.",
+        "drive": "Encrypted documents stay only in the selected Drive.",
+        "both": "Keep verified encrypted copies in both places."
+      },
+      "driveConnectionLabel": "Google Drive connection",
+      "driveConnectionPlaceholder": "Choose a Drive account",
+      "wordsHint": "Write these 12 words down in order. BetterTrack cannot recover or reset them.",
+      "wordsStored": "I stored the words",
+      "verifyLabel": "Word {{word}}",
+      "verifyWrong": "That word does not match. Check your copy and try again; your phrase is still here.",
+      "verifyAction": "Verify word",
+      "lossContrast": "Forgetting this device password loses nothing: enter the 12 words again. Losing this phone loses nothing when you still have a phrase copy.",
+      "lossAcknowledgment": "I understand that losing every copy of the 12 words permanently loses this vault’s data.",
+      "custody": {
+        "wrapped": "Protect the words with a device password",
+        "wrappedHint": "Recommended. The password wraps the phrase stored on this browser; it does not replace the 12 words.",
+        "plainOption": "Advanced device custody",
+        "plain": "Store the words unwrapped on this device",
+        "plainWarning": "Anyone who can read this browser’s local storage could open the vault.",
+        "plainAcknowledgment": "I accept the extra risk of storing the phrase unwrapped on this device."
+      },
+      "devicePassword": "Device password",
+      "error": "The vault could not be created. No recovery step was skipped; try again.",
+      "creating": "Creating vault…",
+      "create": "Create vault"
+    },
+    "lockedStub": {
+      "fallbackAlias": "Locked portfolio",
+      "subtitle": "This portfolio belongs to an encrypted vault.",
+      "badge": "Locked",
+      "body": "Unlock only its vault to view balances, activity, and tools.",
+      "countOne": "1 locked portfolio",
+      "count": "{{count}} locked portfolios"
+    },
+    "restorePicker": {
+      "hint": "Choose any authenticated current or history copy. Corrupt candidates remain visible for diagnosis but cannot replace the active vault.",
+      "empty": "No restore candidates were found.",
+      "source": {
+        "server-history": "BetterTrack history",
+        "current-server": "Current BetterTrack copy",
+        "quarantined-local": "Quarantined local copy",
+        "unknown": "Vault copy"
+      },
+      "status": {
+        "available": "Available",
+        "corrupt": "Corrupt — cannot restore",
+        "unreadable": "Unreadable — cannot restore",
+        "unsupported": "Needs a newer app"
+      },
+      "error": "That copy could not be restored. The current vault stays unchanged.",
+      "action": "Restore selected copy",
+      "restoring": "Restoring…"
+    },
     "portfolioMove": {
+      "subject": "{{portfolio}} · {{vault}}",
+      "targetLabel": "Target vault",
+      "targetPlaceholder": "Choose a vault",
+      "credentialKind": "Confirmation method",
+      "credentialValue": "Account confirmation",
+      "credential": {
+        "password": "Account password",
+        "code": "Authenticator code",
+        "recoveryCode": "Recovery code"
+      },
+      "precondition": {
+        "mirrorchain": "Leave or dissolve this portfolio’s active group before moving it.",
+        "mirrorchainFix": "Open group settings",
+        "import": "Finish or cancel the pending import before moving this portfolio.",
+        "importFix": "Open imports",
+        "export": "Wait for the account export to finish before moving this portfolio.",
+        "exportFix": "Open account export"
+      },
       "stepUpHint": "Confirm with your BetterTrack account password, a current authenticator code, or a recovery code.",
       "moveIn": {
         "title": "Move portfolio into a vault",
-        "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares.",
+        "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares. Those shares are not restored if you move it out later.",
         "action": "Move into vault",
         "working": "Moving portfolio into the vault…",
         "done": "The portfolio is encrypted in the vault and locked on the server.",
@@ -3754,6 +3906,27 @@
       "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"
+      },
+      "aggregate": {
+        "synced": "All synced ✓",
+        "syncing": "Syncing",
+        "lockedOne": "Locked (1)",
+        "locked": "Locked ({{count}})",
+        "attention": "Attention: {{name}}",
+        "signInGoogle": "Sign in to Google",
+        "openRestore": "Choose a restore copy",
+        "row": {
+          "synced": "Encrypted copies are current",
+          "syncing": "Encrypted changes are syncing",
+          "locked": "Unlock or provide the recovery words on this device",
+          "attention": "Storage needs attention"
+        },
+        "rowState": {
+          "synced": "Synced",
+          "syncing": "Syncing",
+          "locked": "Locked",
+          "attention": "Needs attention"
+        }
       }
     },
     "settings": {

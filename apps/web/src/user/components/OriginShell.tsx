@@ -5,17 +5,21 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router-dom';
 
+import { useQueries, useQuery } from '@tanstack/react-query';
+
 import { useI18n } from '../../i18n';
 import { Brandmark, Wordmark } from '../../components/Wordmark';
 import { Disclaimer, ErrorBoundary, Skeleton, TAGLINE } from '../../ui';
 import { Button, Icon, type IconName } from '../../ui/origin';
 import { cx } from '../../lib/cx';
+import { listVaults, VAULTS_QUERY_KEY } from '../../lib/vaultApi';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
@@ -23,6 +27,8 @@ import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/Portfoli
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
+import { endpointVaultKeystore } from '../vault/keystore/runtime';
+import { vaultEndpointStateQueryKey } from '../vault/ui/useVaultEndpointState';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -606,8 +612,40 @@ function sectionKey(pathname: string): string {
 
 export function OriginShell() {
   const { t, locale } = useI18n();
+  const { user } = useAuth();
   useDiscardUnknownCreateIntent();
   const privacy = useResolvedPrivacyModeState();
+  const vaultsQuery = useQuery({
+    queryKey: VAULTS_QUERY_KEY,
+    queryFn: ({ signal }) => listVaults(signal),
+    enabled: user != null,
+    staleTime: 15_000,
+  });
+  const vaultStates = useQueries({
+    queries: (vaultsQuery.data ?? []).map((vault) => ({
+      queryKey: vaultEndpointStateQueryKey(vault.id),
+      queryFn: () => endpointVaultKeystore.stateFor(vault.id),
+      staleTime: 5_000,
+    })),
+  });
+  const vaultSyncRows = useMemo(
+    () =>
+      (vaultsQuery.data ?? []).flatMap((vault, index) => {
+        const endpointState = vaultStates[index]?.data;
+        return endpointState
+          ? [
+              {
+                vault,
+                endpointState,
+                syncState:
+                  vault.mediaAttestedAt == null ? ('syncing' as const) : ('synced' as const),
+                lastWriteAt: vault.mediaAttestedAt,
+              },
+            ]
+          : [];
+      }),
+    [vaultStates, vaultsQuery.data],
+  );
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -815,7 +853,11 @@ export function OriginShell() {
               variant="quiet"
             />
             <div className="bt-topbar__actions">
-              {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
+              {vaultSyncRows.length > 0 && vaultSyncRows.length === vaultsQuery.data?.length ? (
+                <Suspense fallback={null}>
+                  <VaultSyncChip vaults={vaultSyncRows} />
+                </Suspense>
+              ) : privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
                 <Suspense fallback={null}>
                   <VaultSyncChip media={privacy.mediaState} />
                 </Suspense>

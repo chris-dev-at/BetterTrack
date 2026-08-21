@@ -496,7 +496,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p7-mirrorchain',
-    phases: ['P7'],
+    phases: ['P7', 'P13'],
     routes: ['/portfolio/settings', '/people/shared'],
     components: [
       'user/portfolio/MirrorchainPanel.tsx',
@@ -523,7 +523,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p8-social-comments-and-groups',
-    phases: ['P8'],
+    phases: ['P8', 'P13'],
     routes: [
       '/people',
       '/people/chat',
@@ -729,11 +729,19 @@ export const V5_SURFACE_INVENTORY = [
       'user/control/panels/ParanoidAccountExport.tsx',
       'user/control/panels/PrivacyPanel.tsx',
       'user/control/panels/PrivacyVaultSection.tsx',
+      'user/home/WidgetFrame.tsx',
+      'user/home/widgets/PortfolioCardsWidget.tsx',
+      'user/portfolio/LockedPortfolioStub.tsx',
       'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
       'user/vault/ui/ParanoidEnableWizard.tsx',
       'user/vault/ui/ParanoidSurfaceGate.tsx',
+      'user/vault/ui/PortfolioVaultMoveWizard.tsx',
+      'user/vault/ui/VaultCreationCeremony.tsx',
+      'user/vault/ui/VaultManager.tsx',
+      'user/vault/ui/VaultRestorePicker.tsx',
+      'user/vault/ui/VaultStateAction.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
       'ui/MoneyText.tsx',
@@ -756,7 +764,14 @@ export const V5_SURFACE_INVENTORY = [
     },
     tests: [
       'user/AccountModeRoot.test.tsx',
+      'user/portfolio/LockedPortfolioStub.test.tsx',
+      'user/portfolio/PortfolioWorkspace.test.tsx',
+      'user/home/widgets/PortfolioCardsWidget.test.tsx',
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
+      'user/vault/ui/PortfolioVaultMoveWizard.test.tsx',
+      'user/vault/ui/VaultCreationCeremony.test.tsx',
+      'user/vault/ui/VaultManager.test.tsx',
+      'user/vault/ui/VaultRestorePicker.test.tsx',
       'user/vault/ui/VaultUnlockGate.test.tsx',
       'user/vault/ui/VaultSyncChip.test.tsx',
       'ui/MoneyText.test.tsx',
@@ -1153,11 +1168,6 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign R2 widget picker.',
   },
   {
-    path: 'user/home/WidgetFrame.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 widget frame.',
-  },
-  {
     path: 'user/home/widgets/AlertsWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (alerts).',
@@ -1226,11 +1236,6 @@ export const NON_V5_SURFACES = [
     path: 'user/home/widgets/PerformanceChartWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (performance chart).',
-  },
-  {
-    path: 'user/home/widgets/PortfolioCardsWidget.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 home-board widget (portfolio cards).',
   },
   {
     path: 'user/home/widgets/RecentTransactionsWidget.tsx',
@@ -1632,6 +1637,22 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The navigation helper deliberately defaults runtime feature flags to enabled while they load or fail; server route guards remain the authoritative kill-switch boundary.',
   },
   {
+    component: 'user/components/OriginShell.tsx',
+    read: 'OriginShell.vaultsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The global chip is absent until the cleartext vault directory is known; the Privacy manager owns its retryable loading/error states, so shell chrome never paints a false sync result.',
+    delegatedTo: 'VaultManager',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
+    read: 'OriginShell.vaultStates',
+    states: ['loading', 'error'],
+    reason:
+      'The chip waits for a complete endpoint-state set instead of omitting a vault or guessing its action; each vault state has loading/retry UI in the Privacy manager.',
+    delegatedTo: 'VaultManagerRow',
+  },
+  {
     component: 'user/portfolio/PortfolioWorkspace.tsx',
     read: 'PortfolioWorkspace.items',
     states: ['loading', 'error'],
@@ -1645,6 +1666,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'AccountModeRoot resolves the same account-scoped privacy query before the authenticated Control Center can mount.',
     delegatedTo: 'AccountModeRoot',
+  },
+  {
+    component: 'user/vault/ui/VaultManager.tsx',
+    read: 'VaultManager.endpointQueries',
+    states: ['loading', 'error'],
+    reason:
+      'Every dynamic endpoint query is passed to its matching VaultManagerRow, which renders a disabled loading action or a retry action in the exact vault row.',
+    delegatedTo: 'VaultManagerRow',
   },
   {
     component: 'user/home/HomePage.tsx',
@@ -1795,8 +1824,13 @@ export type V5AsyncStateDebtLedger = Readonly<
  * 181 → 182 with the W1 review: HealthPage gained the read-only backup/restore
  * drill panel the Overview's attention row links to. It observes both its
  * loading and its error state, so the zero-debt ceiling below is unaffected.
+ *
+ * 182 → 196 with paranoid E8: the shell directory/chip (2), fail-closed
+ * portfolio workspace (1), locked stubs/switcher/cards (6), and Vault manager
+ * (5) join the reviewed surface. Every read handles both states directly or
+ * delegates them to the exact row that owns the retry action.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 182;
+export const V5_ASYNC_READ_SITE_BASELINE = 196;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -1820,11 +1854,12 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // listing the queue (W1 review M5), which is why it holds eight reads and not
 // nine. Every one of the thirteen observes both its loading and its error state,
 // which is why the debt ceiling below is unchanged.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 69;
+// E8 moves PortfolioCardsWidget's two reads into the P13 reviewed inventory.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 67;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
-  readSites: 42,
-  stateGaps: 63,
+  readSites: 40,
+  stateGaps: 59,
 } as const;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
@@ -1890,10 +1925,6 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
   'user/home/widgets/PerformanceChartWidget.tsx': {
     'PerformanceChartWidget.combined': ['error'],
     'PerformanceChartWidget.historyQuery': ['error'],
-  },
-  'user/home/widgets/PortfolioCardsWidget.tsx': {
-    'PortfolioCardsWidget.histories': ['loading', 'error'],
-    'PortfolioCardsWidget.summaries': ['loading', 'error'],
   },
   'user/home/widgets/QuickCashWidget.tsx': {
     'QuickCashWidget.sourcesQuery': ['error'],

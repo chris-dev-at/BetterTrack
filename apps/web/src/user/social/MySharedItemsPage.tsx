@@ -234,6 +234,20 @@ export function MySharedItemsPage() {
     }
     return set;
   }, [portfolioMetadataReady, portfoliosQuery.data]);
+  const vaultedPortfolioIds = useMemo(() => {
+    const set = new Set<string>();
+    if (!portfolioMetadataReady) return set;
+    for (const portfolio of portfoliosQuery.data?.portfolios ?? []) {
+      if (portfolio.vaultId != null) set.add(portfolio.id);
+    }
+    return set;
+  }, [portfolioMetadataReady, portfoliosQuery.data]);
+  // A vaulted portfolio is not a disabled sharing row. It is absent from every
+  // audience/public-profile affordance while its plain sibling stays present.
+  const shareablePortfolios = portfolioMetadataReady
+    ? (data?.portfolios.filter((portfolio) => !vaultedPortfolioIds.has(portfolio.portfolioId)) ??
+      [])
+    : (data?.portfolios ?? []);
 
   // A background rejection invalidates the metadata that justified an open
   // portfolio picker. Close it instead of letting a stale false flag remove the
@@ -265,7 +279,7 @@ export function MySharedItemsPage() {
   }
 
   const nothing =
-    data.portfolios.length === 0 &&
+    shareablePortfolios.length === 0 &&
     data.conglomerates.length === 0 &&
     data.watchlists.length === 0 &&
     data.ideas.length === 0;
@@ -293,21 +307,21 @@ export function MySharedItemsPage() {
           description={t('social.myShared.emptyBody')}
         />
       ) : null}
-      {data.portfolios.length > 0 ? (
+      {shareablePortfolios.length > 0 ? (
         <section className="bt-section">
           <SectionHead title={t('social.kind.portfolios')} />
           <ul className="bt-band flex flex-col">
-            {data.portfolios.map((p) => (
+            {shareablePortfolios.map((p) => (
               <SharedRow
                 key={p.portfolioId}
-                name={p.name}
+                name={portfolioMetadataReady ? p.name : t('vault.lockedStub.fallbackAlias')}
                 audience={p.audience}
                 friendCount={p.friendCount}
                 onShare={() =>
                   setPicker({
                     kind: 'portfolio',
                     subjectId: p.portfolioId,
-                    label: p.name,
+                    label: portfolioMetadataReady ? p.name : t('vault.lockedStub.fallbackAlias'),
                   })
                 }
                 shareLabel={shareLabel}

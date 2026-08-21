@@ -1,16 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { VAULT_MEDIA, type ParanoidVaultMediaState } from '@bettertrack/contracts';
+import {
+  VAULT_MEDIA,
+  VAULT_SERVER_ACCEPTED_MEDIA,
+  type ParanoidVaultMediaState,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { formatDateTime } from '../../../lib/format';
 import { Icon } from '../../../ui/origin';
 import { cx } from '../../components/ui';
-import { projectVaultMediaSyncStatus } from '../media/status';
+import { projectVaultMediaSyncStatus, type VaultDirectorySyncInput } from '../media/status';
 import { useVaultRuntime } from '../VaultRuntimeContext';
+import { VaultStateAction } from './VaultStateAction';
 
-export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
+type VaultSyncChipProps =
+  | { media: ParanoidVaultMediaState; vaults?: never }
+  | { media?: never; vaults: readonly VaultDirectorySyncInput[] };
+
+export function VaultSyncChip(props: VaultSyncChipProps) {
+  return props.vaults !== undefined ? (
+    <DirectoryVaultSyncChip vaults={props.vaults} />
+  ) : (
+    <LegacyVaultSyncChip media={props.media} />
+  );
+}
+
+/** The owner-kept single-vault visual layer. Keep this markup/classes stable. */
+function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   const t = useT();
   const runtime = useVaultRuntime();
   const [open, setOpen] = useState(false);
@@ -133,6 +151,135 @@ export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
               onClick={() => setOpen(false)}
               to="/control/privacy?restore=1"
             >
+              {t('vault.sync.restore')}
+            </Link>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyncInput[] }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const projection = useMemo(() => projectVaultMediaSyncStatus({ vaults }), [vaults]);
+  const label =
+    projection.overall === 'attention'
+      ? t('vault.sync.aggregate.attention', {
+          name: projection.attentionVaultName ?? t('vault.lockedStub.fallbackAlias'),
+        })
+      : projection.overall === 'locked'
+        ? t(
+            projection.lockedCount === 1
+              ? 'vault.sync.aggregate.lockedOne'
+              : 'vault.sync.aggregate.locked',
+            { count: projection.lockedCount },
+          )
+        : t(`vault.sync.aggregate.${projection.overall}`);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={label}
+        className={cx(
+          'bt-btn bt-btn--quiet bt-btn--sm',
+          projection.overall === 'attention' && 'bt-neg',
+        )}
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <Icon name="shield" size={15} />
+        <span className="bt-hide-below-sm">{label}</span>
+      </button>
+
+      {open ? (
+        <div
+          aria-label={t('vault.sync.popoverTitle')}
+          className="bt-popover"
+          role="dialog"
+          style={{ minWidth: 280, right: 0, top: 'calc(100% + 6px)' }}
+        >
+          <div className="flex flex-col gap-3 p-3">
+            <div>
+              <p className="bt-row-title">{t('vault.sync.popoverTitle')}</p>
+              <p className="bt-row-sub">{t(projection.messageKey)}</p>
+            </div>
+            <ul className="flex max-h-80 flex-col gap-3 overflow-y-auto">
+              {projection.rows.map((row) => (
+                <li className="bt-b-rule flex flex-col gap-1 pb-3" key={row.vault.id}>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="bt-row-title truncate">{row.vault.name}</span>
+                    <span className="bt-muted text-xs">
+                      {t(`vault.sync.aggregate.rowState.${row.state}`)}
+                    </span>
+                  </div>
+                  <span className="bt-row-sub">
+                    {t(
+                      row.vault.media.length > 1
+                        ? 'vault.manager.media.both'
+                        : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
+                    )}
+                  </span>
+                  <dl className="flex flex-col gap-1">
+                    {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
+                      row.vault.media.includes(medium),
+                    ).map((medium) => (
+                      <div className="flex items-center justify-between gap-4" key={medium}>
+                        <dt className="bt-muted text-xs">{t(`vault.sync.medium.${medium}`)}</dt>
+                        <dd className="bt-muted text-xs">
+                          {t(`vault.sync.status.${row.perMedium[medium] ?? 'disconnected'}`)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <span className="bt-muted text-xs">{t(row.messageKey)}</span>
+                  <span className="bt-muted text-xs">
+                    {t('vault.sync.lastWrite')}:{' '}
+                    {row.lastWriteAt == null
+                      ? t('vault.sync.never')
+                      : formatDateTime(row.lastWriteAt)}
+                  </span>
+                  {row.recoveryAction === 'drive-sign-in' ? (
+                    <Link
+                      className="bt-link text-sm"
+                      to={`/control/connections?vault=${encodeURIComponent(row.vault.id)}`}
+                    >
+                      {t('vault.sync.aggregate.signInGoogle')}
+                    </Link>
+                  ) : row.recoveryAction === 'restore' ? (
+                    <Link
+                      className="bt-link text-sm"
+                      to={`/control/privacy?vault=${encodeURIComponent(row.vault.id)}&action=restore`}
+                    >
+                      {t('vault.sync.aggregate.openRestore')}
+                    </Link>
+                  ) : (
+                    <VaultStateAction state={row.endpointState} vaultId={row.vault.id} />
+                  )}
+                </li>
+              ))}
+            </ul>
+            <Link className="bt-link text-sm" onClick={() => setOpen(false)} to="/control/privacy">
               {t('vault.sync.restore')}
             </Link>
           </div>
