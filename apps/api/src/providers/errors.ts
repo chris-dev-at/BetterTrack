@@ -37,6 +37,7 @@ const YAHOO_ENVELOPE_ERROR_MESSAGES: Record<YahooEnvelopeStatus, ReadonlySet<str
   429: new Set(['Too Many Requests']),
 };
 
+// Every entry must remain ^…$-anchored.
 const YAHOO_ENVELOPE_ERROR_PATTERNS: Partial<Record<YahooEnvelopeStatus, readonly RegExp[]>> = {
   404: [/^Quote not found for ticker symbol: .+$/],
 };
