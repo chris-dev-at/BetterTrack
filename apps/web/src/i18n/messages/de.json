@@ -478,6 +478,7 @@
         "needsSignIn": "Anmeldung nötig",
         "revoked": "Zugriff widerrufen",
         "signIn": "Bei Google ({{email}}) anmelden, um zu synchronisieren",
+        "signInNew": "Melde dich bei Google an und erlaube den Zugriff, um ein Konto zu verbinden.",
         "disconnect": "Trennen",
         "unbound": "Kein Tresor verwendet diese Verbindung.",
         "boundVaults": "Verwendet von: {{vaults}}",

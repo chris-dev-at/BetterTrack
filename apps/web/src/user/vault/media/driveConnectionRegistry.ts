@@ -14,6 +14,11 @@ export type DriveRegistryAuthorizationResult =
   | {
       status: 'authorization-required' | 'identity-mismatch' | 'failed';
       connection?: DriveConnection;
+      /**
+       * Diagnostic only — never rendered. The UI maps `status` to an i18n key
+       * (EN + DE), so this English text must not reach a surface; keep it that
+       * way rather than translating it here, outside the catalog.
+       */
       message: string;
     };
 

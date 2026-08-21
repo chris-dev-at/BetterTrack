@@ -22,7 +22,7 @@ import type { DriveAccessTokenResult, GoogleDriveTokenClient } from './gisTokenC
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
-const FILE_FIELDS = 'id,name,size,modifiedTime,headRevisionId,appProperties';
+const FILE_FIELDS = 'id,name,size,modifiedTime,headRevisionId,trashed,appProperties';
 const DUPLICATE_SCAN_LIMIT = '100';
 const DRIVE_VAULT_FILE_CONTEXT = 'bettertrack-drive-vault-account-v1:';
 const DRIVE_VAULT_DOC_FILE_CONTEXT = 'bettertrack-drive-vault-v2:';
@@ -40,6 +40,7 @@ interface DriveFile {
   size?: string;
   modifiedTime?: string;
   headRevisionId?: string;
+  trashed?: boolean;
   appProperties?: Record<string, string>;
 }
 
@@ -254,11 +255,11 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     if (!cachedFileId) return null;
     const address = await addressPromise;
     const found = await getFile(cachedFileId);
-    if (found.status === 'absent') {
-      cachedFileId = null;
-      return null;
-    }
-    if (found.status === 'failure') return transport(found.failure);
+    if (found.status === 'absent') return null;
+    // The shortcut must never be worse than the path it replaces: a blipped
+    // metadata request falls through to the list query, which reports its own
+    // failure if the medium is really unreachable.
+    if (found.status === 'failure') return null;
     if (found.status === 'corrupt') return found.result;
     if (address.mode === 'legacy') return download(found.file);
     const match = await fileMatchesAddress(found.file, address);
@@ -470,12 +471,29 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         ),
       };
     }
+    // `docId` is not an appProperty, so every document sharing (vaultDigest,
+    // docKind) lands in this one page. Truncating it silently would let a real
+    // object read `absent` and be re-created as a second live branch, so a
+    // second page is refused loudly instead.
+    const nextPageToken = (payload as { nextPageToken?: unknown }).nextPageToken;
+    if (typeof nextPageToken === 'string' && nextPageToken.length > 0) {
+      return {
+        status: 'failure',
+        failure: {
+          code: 'api-failure',
+          message: `Drive returned more than ${DUPLICATE_SCAN_LIMIT} vault objects for one address.`,
+        },
+      };
+    }
     if (files.length === 0) return { status: 'absent' };
 
     const validated: ValidDriveFile[] = [];
     const bodies = new Map<string, Uint8Array>();
     for (const file of files) {
       const result = validateFile(file, address);
+      // Trashed between the query and this response: not a live object, and
+      // not a reason to hide the objects listed beside it.
+      if (result.status === 'absent') continue;
       if (result.status !== 'ok') return result;
       if (address.mode === 'legacy') {
         validated.push(result.file);
@@ -500,7 +518,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       `${DRIVE_API}/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(FILE_FIELDS)}`,
     );
     if (response.status === 'failure') return response;
-    if (response.response.status === 404) return { status: 'absent' };
+    if (response.response.status === 404) return forgetIfCached(id, { status: 'absent' });
     if (!response.response.ok) {
       return {
         status: 'failure',
@@ -508,7 +526,9 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       };
     }
     try {
-      return validateFile(await response.response.json(), address);
+      // A deleted *or* trashed file is absent; either way this id must stop
+      // being the shortcut every later read takes.
+      return forgetIfCached(id, validateFile(await response.response.json(), address));
     } catch (cause) {
       return {
         status: 'failure',
@@ -521,11 +541,22 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     }
   }
 
+  function forgetIfCached(id: string, result: DriveFileResult): DriveFileResult {
+    if (result.status === 'absent' && cachedFileId === id) cachedFileId = null;
+    return result;
+  }
+
   /**
    * `docId` is deliberately absent from `appProperties` (§8: nothing but
    * digests on the object), so two documents that share (vaultDigest, docKind)
    * can be told apart only by their authenticated header. The bytes read here
    * are handed back so the caller does not fetch the same body twice.
+   *
+   * The cost is that a cold lookup pulls the body of every candidate sharing
+   * (vaultDigest, docKind): warming a vault of N same-kind documents is O(N²)
+   * downloads. A `docDigest` appProperty would keep the object digest-only and
+   * make the list query exact; it changes the §8 object format, so it belongs
+   * in the design note and with the per-document composition in E6 (#1416).
    */
   async function fileMatchesAddress(
     file: ValidDriveFile,
@@ -725,17 +756,18 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       headers: { 'Content-Type': `multipart/related; boundary=${marker}` },
       body,
     });
-    if (uploaded.status === 'failure') {
-      return {
-        status: 'failure',
-        failure: { ...uploaded.failure, indeterminate: true },
-      };
-    }
-    if (!uploaded.response.ok) {
-      return {
-        status: 'failure',
-        failure: httpFailure(uploaded.response, 'Drive vault upload failed.', true),
-      };
+    if (uploaded.status === 'failure' || !uploaded.response.ok) {
+      // A create posts into the remembered visible folder. If that folder was
+      // trashed or removed, every retry would keep addressing a dead parent
+      // until the page reloads, so the cache is dropped and the next attempt
+      // re-resolves (or re-creates) it.
+      if (fileId === null) cachedFolderId = null;
+      return uploaded.status === 'failure'
+        ? { status: 'failure', failure: { ...uploaded.failure, indeterminate: true } }
+        : {
+            status: 'failure',
+            failure: httpFailure(uploaded.response, 'Drive vault upload failed.', true),
+          };
     }
 
     let acknowledged: DriveFileResult;
@@ -1198,6 +1230,12 @@ function validateFile(value: unknown, address: DriveAddress): DriveFileResult {
     return malformedMetadata('Drive returned a non-object vault file.');
   }
   const file = value as Partial<DriveFile>;
+  // The list query filters `trashed = false`, but `files.get` and `?alt=media`
+  // keep answering for a file the owner moved to the Drive trash. A trashed
+  // object is therefore not a live vault object anywhere: reporting it absent
+  // keeps both resolution paths on the same answer, so a trashed copy surfaces
+  // as "missing" instead of being read — or patched inside the trash — as live.
+  if (file.trashed === true) return { status: 'absent' };
   const version = Number(
     address.mode === 'doc' ? file.appProperties?.docVersion : file.appProperties?.vaultVersion,
   );

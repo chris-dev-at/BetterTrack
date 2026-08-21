@@ -401,6 +401,26 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('answers a closed consent popup with the sign-in instruction, not a generic failure', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([]);
+    const cancelled = registry();
+    vi.mocked(cancelled.connect).mockResolvedValue({
+      status: 'authorization-required',
+      message: 'popup closed',
+    });
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: cancelled }, 'paranoid');
+
+    await user.click(await screen.findByRole('button', { name: 'Connect a Drive account' }));
+
+    expect(
+      await screen.findByText('Sign in to Google and allow access to connect an account.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('The Drive connection could not be changed.'),
+    ).not.toBeInTheDocument();
+  });
+
   test('a normal-mode account gets no group, no button and no requests for it', async () => {
     // A Drive connection can only bind to a paranoid vault, so for everyone
     // else the whole group — and both of its reads — must not exist, however

@@ -847,6 +847,109 @@ describe('Drive file DataHome', () => {
     expect(fetch.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
   });
 
+  it('treats a trashed Drive copy as missing on the cached path, not as a live read', async () => {
+    const live = metadata();
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      // A first read warms the cached file id from the list query.
+      .mockResolvedValueOnce(json({ files: [live] }))
+      .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }))
+      // The owner drags the visible file into the Drive trash; files.get and
+      // ?alt=media both keep answering for it, the list query does not.
+      .mockResolvedValueOnce(json({ ...live, trashed: true }))
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ files: [] }));
+    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
+
+    await expect(home.read()).resolves.toMatchObject({ status: 'ok', info: { version: 1 } });
+    await expect(home.read()).resolves.toEqual({ status: 'absent', medium: 'drive' });
+    await expect(home.write(envelopeV2, { ifVersion: 1 })).resolves.toEqual({
+      status: 'conflict',
+      medium: 'drive',
+      currentVersion: null,
+    });
+    expect(String(fetch.mock.calls[2]![0])).toContain('trashed');
+    expect(fetch.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+  });
+
+  it('refuses to patch a file that reached the trash between the list and the CAS refresh', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(json({ ...metadata(), trashed: true }));
+    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
+
+    await expect(home.write(envelopeV2, { ifVersion: 1 })).resolves.toEqual({
+      status: 'conflict',
+      medium: 'drive',
+      currentVersion: null,
+    });
+    expect(fetch.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+  });
+
+  it('falls through to the list query when the cached metadata request blips', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }));
+    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
+
+    await expect(home.read()).resolves.toMatchObject({ status: 'ok' });
+    await expect(home.read()).resolves.toMatchObject({ status: 'ok', info: { version: 1 } });
+    expect(String(fetch.mock.calls[3]![0])).toContain('/drive/v3/files?');
+  });
+
+  it('refuses a truncated lookup page instead of reading it as the whole address', async () => {
+    const home = createTestDriveDataHome({
+      tokens: tokenSource(),
+      fetch: vi.fn().mockResolvedValue(json({ files: [metadata()], nextPageToken: 'page-2' })),
+    });
+
+    await expect(home.read()).resolves.toMatchObject({
+      status: 'transport-failure',
+      failure: { code: 'api-failure', message: expect.stringMatching(/more than 100/) },
+    });
+  });
+
+  it('re-resolves the visible folder after a create fails against the cached one', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      // First create: lookup, concurrent-create recheck, then a dead parent.
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      // Retry: lookup, recheck, folder re-resolution, upload, confirm, readback.
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ files: [{ id: 'fresh-folder-id' }] }))
+      .mockResolvedValueOnce(json(metadata()))
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }));
+    const home = createTestDriveDataHome({
+      tokens: tokenSource(),
+      fetch,
+      boundary: () => 'retry-boundary',
+    });
+
+    await expect(home.write(envelope, { ifVersion: null })).resolves.toMatchObject({
+      status: 'transport-failure',
+    });
+    await expect(home.write(envelope, { ifVersion: null })).resolves.toMatchObject({
+      status: 'ok',
+    });
+
+    const uploads = fetch.mock.calls.filter(([url]) =>
+      String(url).includes('/upload/drive/v3/files'),
+    );
+    expect(await blobText(uploads[0]![1]?.body as Blob)).toContain(
+      '"parents":["visible-bettertrack-folder"]',
+    );
+    expect(await blobText(uploads[1]![1]?.body as Blob)).toContain('"parents":["fresh-folder-id"]');
+  });
+
   it('keeps consent, expiry, offline, missing, malformed, corrupt, and API states distinct', async () => {
     const consent = createTestDriveDataHome({
       tokens: {

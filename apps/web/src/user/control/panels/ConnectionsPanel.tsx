@@ -389,7 +389,16 @@ function DriveAccountsSection({
       setMessage({ tone: 'success', text: t('settings.connections.driveAccounts.added') });
       await refresh();
     } else {
-      setMessage({ tone: 'error', text: t('settings.connections.driveAccounts.error') });
+      // Closing the Google consent popup is the common outcome here, and it is
+      // actionable: say what to do instead of "could not be changed".
+      setMessage({
+        tone: 'error',
+        text: t(
+          result.status === 'authorization-required'
+            ? 'settings.connections.driveAccounts.signInNew'
+            : 'settings.connections.driveAccounts.error',
+        ),
+      });
     }
     setWorking(null);
   }

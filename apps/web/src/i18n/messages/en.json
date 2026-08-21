@@ -478,6 +478,7 @@
         "needsSignIn": "Sign-in needed",
         "revoked": "Access revoked",
         "signIn": "Sign in to Google ({{email}}) to sync",
+        "signInNew": "Sign in to Google and allow access to connect an account.",
         "disconnect": "Disconnect",
         "unbound": "No vault uses this connection.",
         "boundVaults": "Used by: {{vaults}}",
