@@ -1,4 +1,9 @@
-import type { AuditRepository, RecordAuditInput } from '../../data/repositories/auditRepository';
+import type { Database } from '../../data/db';
+import {
+  createAuditRepository,
+  type AuditRepository,
+  type RecordAuditInput,
+} from '../../data/repositories/auditRepository';
 
 type LockedPrivacyMode = 'normal' | 'paranoid' | null;
 type WithAuditPrivacyMode = <T>(
@@ -75,6 +80,10 @@ export const AuditAction = {
   VaultMediaChanged: 'vault.media_changed',
   VaultRetiredPurged: 'vault.retired_purged',
   VaultDeleteReauthFail: 'vault.delete_reauth_fail',
+  PortfolioVaultMovedIn: 'portfolio.vault_moved_in',
+  PortfolioVaultMovedOut: 'portfolio.vault_moved_out',
+  PortfolioVaultMoveInReauthFail: 'portfolio.vault_move_in_reauth_fail',
+  PortfolioVaultMoveOutReauthFail: 'portfolio.vault_move_out_reauth_fail',
   /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
@@ -160,6 +169,12 @@ export const AuditAction = {
 
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;
+  /**
+   * Persist an audit row through the caller's transaction executor. This is
+   * reserved for security transitions whose state change and success audit
+   * must either commit or roll back together.
+   */
+  recordInTransaction(executor: Database, input: RecordAuditInput): Promise<void>;
   list(params: { limit: number; cursor?: string }): ReturnType<AuditRepository['list']>;
   listForTarget(params: {
     targetId: string;
@@ -197,6 +212,7 @@ export function createAuditService(
         }),
       );
     },
+    recordInTransaction: (executor, input) => createAuditRepository(executor).record(input),
     list: (params) => auditRepo.list(params),
     listForTarget: (params) => auditRepo.listForTarget(params),
   };

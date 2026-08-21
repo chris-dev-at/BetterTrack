@@ -510,7 +510,7 @@ describe('vaulted portfolio HTTP target defense', () => {
     ).toBeNull();
   });
 
-  it('allows only the ruled revision and move-out exit routes for a vaulted id', () => {
+  it('allows only the ruled transitions and committed move-in replay for a vaulted id', () => {
     expect(
       VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY.map(({ method, operation }) => ({
         method,
@@ -518,6 +518,8 @@ describe('vaulted portfolio HTTP target defense', () => {
       })),
     ).toEqual([
       { method: 'GET', operation: 'revision' },
+      { method: 'POST', operation: 'move-in' },
+      { method: 'POST', operation: 'move-out/challenge' },
       { method: 'POST', operation: 'move-out' },
     ]);
     expect(
@@ -546,10 +548,16 @@ describe('vaulted portfolio HTTP target defense', () => {
     ).toBe(true);
     expect(
       isVaultedPortfolioTransitionCarveout('POST', `/portfolios/${VAULTED_ID}/vault/move-in`),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isVaultedPortfolioTransitionCarveout('GET', `/portfolios/${VAULTED_ID}/vault/move-out`),
     ).toBe(false);
+    expect(
+      vaultedPortfolioTargetForRequest({
+        method: 'POST',
+        path: `/portfolios/${VAULTED_ID}/vault/move-in`,
+      }),
+    ).toBeNull();
     expect(
       vaultedPortfolioTargetForRequest({
         method: 'POST',

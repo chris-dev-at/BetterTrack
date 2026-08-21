@@ -329,6 +329,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   drive_connections: skipped(
     'Separately authenticated Google Drive connection registry (V5-P13 arc b §8) — identity config only (sub/email/display name), never tokens or file ids; config export lands with a later export sweep.',
   ),
+  portfolio_vault_transition_states: skipped(
+    'Per-portfolio vault capture state and idempotency receipts (E4) — content-free internal transition metadata, never portfolio data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -643,6 +646,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   vault_retirements: 'server',
   vault_retired: 'server',
   drive_connections: 'server',
+  portfolio_vault_transition_states: 'server',
 };
 
 /**

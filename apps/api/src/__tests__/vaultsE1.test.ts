@@ -1,6 +1,6 @@
 import { createHash, createHmac, generateKeyPairSync, sign } from 'node:crypto';
 
-import { count, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import type { Application } from 'express';
 import postgres from 'postgres';
 import request from 'supertest';
@@ -28,6 +28,7 @@ import type { Database } from '../data/db';
 import {
   auditLog,
   driveConnections,
+  portfolioVaultTransitionStates,
   portfolios,
   vaultBlobs,
   vaultBlobHistory,
@@ -59,6 +60,10 @@ const WRITE_IDS = [
 ] as const;
 const ACCOUNT_BINDING = 'A'.repeat(43);
 const FINGERPRINT = 'Abcdef0123456789';
+const CAPTURE_REVISION = 'prospective-capture-revision-test-vector';
+const CAPTURE_ATTESTED_AT = new Date('2026-08-20T12:00:00.000Z');
+const CAPTURE_EXPIRES_AT = new Date('2099-08-20T12:00:00.000Z');
+const CAPTURE_EXPIRED_AT = new Date('2000-08-20T12:00:00.000Z');
 
 type Agent = ReturnType<typeof request.agent>;
 
@@ -432,7 +437,7 @@ describe('E1 per-vault blind document CAS', () => {
     expect(Number(historyCount?.value ?? 0)).toBe(1);
   });
 
-  it('keeps a retained writeId replay idempotent after the ETag cycles', async () => {
+  it('keeps a retained writeId replay idempotent after the document advances', async () => {
     const user = await h.seedUser({
       email: 'e1-replay-cycle@bt.test',
       username: 'e1_replay_cycle',
@@ -462,27 +467,27 @@ describe('E1 per-vault blind document CAS', () => {
       (await putDoc(agent, vault.id, vault.headerDocId, replayedWrite, { version: 1 })).status,
     ).toBe(204);
 
-    const cycled = envelope({
+    const advanced = envelope({
       vaultId: vault.id,
       docId: vault.headerDocId,
       docKind: 'header',
-      docVersion: 1,
+      docVersion: 3,
       writeId: newId(),
     });
-    expect((await putDoc(agent, vault.id, vault.headerDocId, cycled, { version: 2 })).status).toBe(
-      204,
-    );
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, advanced, { version: 2 })).status,
+    ).toBe(204);
     const [beforeReplay] = await h.db.select({ value: count() }).from(vaultBlobHistory);
 
-    // The request's old If-Match value is current again, but its retained
+    // Even with a currently-satisfied If-Match, the retained
     // (vaultId, docId, writeId) receipt makes this a no-op, not a second write.
-    const replay = await putDoc(agent, vault.id, vault.headerDocId, replayedWrite, { version: 1 });
+    const replay = await putDoc(agent, vault.id, vault.headerDocId, replayedWrite, { version: 3 });
     expect(replay.status).toBe(204);
-    expect(replay.headers.etag).toBe('"1"');
+    expect(replay.headers.etag).toBe('"3"');
     const current = await agent
       .get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}`)
       .responseType('blob');
-    expect(Buffer.from(current.body as Buffer)).toEqual(cycled);
+    expect(Buffer.from(current.body as Buffer)).toEqual(advanced);
     const [afterReplay] = await h.db.select({ value: count() }).from(vaultBlobHistory);
     expect(Number(afterReplay?.value ?? 0)).toBe(Number(beforeReplay?.value ?? 0));
   });
@@ -547,6 +552,368 @@ describe('E1 per-vault blind document CAS', () => {
 
     const [stored] = await h.db.select({ value: count() }).from(vaultBlobs);
     expect(Number(stored?.value ?? 0)).toBe(0);
+  });
+
+  it('binds a live captured normal portfolio on successful CAS and gates all blob reads by the capture window', async () => {
+    const user = await h.seedUser({
+      email: 'e1-prospective-cas@bt.test',
+      username: 'e1_prospective_cas',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: null,
+      })
+      .where(eq(vaults.id, vault.id));
+    const [portfolio] = await h.db
+      .insert(portfolios)
+      .values({ userId: user.id, name: 'Prospective CAS portfolio' })
+      .returning();
+    if (!portfolio) throw new Error('portfolio insert failed');
+    await h.db.insert(portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId: user.id,
+      captureRevision: CAPTURE_REVISION,
+      captureExpiresAt: CAPTURE_EXPIRES_AT,
+    });
+
+    const repository = createVaultBlobRepository(h.db);
+    const firstBlob = envelope({
+      vaultId: vault.id,
+      docId: portfolio.id,
+      docKind: 'portfolio',
+      docVersion: 1,
+      writeId: WRITE_IDS[0],
+    });
+    const first = await repository.compareAndSwap({
+      userId: user.id,
+      vaultId: vault.id,
+      docId: portfolio.id,
+      header: readVaultDocServerHeader(firstBlob),
+      expectedVersion: null,
+      blob: firstBlob,
+      retention: { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1_000 },
+      now: CAPTURE_ATTESTED_AT,
+    });
+    expect(first.status).toBe('ok');
+
+    const [boundCapture] = await h.db
+      .select()
+      .from(portfolioVaultTransitionStates)
+      .where(eq(portfolioVaultTransitionStates.portfolioId, portfolio.id));
+    expect(boundCapture).toMatchObject({
+      captureVaultId: vault.id,
+      captureMediaAttestedAt: CAPTURE_ATTESTED_AT,
+      captureMediaAttestedDriveConnectionId: null,
+    });
+    const [writtenVault] = await h.db.select().from(vaults).where(eq(vaults.id, vault.id));
+    expect(writtenVault?.mediaAttestedAt).toBeNull();
+    const [stored] = await h.db.select().from(vaultBlobs).where(eq(vaultBlobs.docId, portfolio.id));
+    expect(stored).toMatchObject({
+      vaultId: vault.id,
+      docKind: 'portfolio',
+      portfolioId: portfolio.id,
+    });
+
+    const secondBlob = envelope({
+      vaultId: vault.id,
+      docId: portfolio.id,
+      docKind: 'portfolio',
+      docVersion: 2,
+      writeId: WRITE_IDS[1],
+    });
+    const second = await repository.compareAndSwap({
+      userId: user.id,
+      vaultId: vault.id,
+      docId: portfolio.id,
+      header: readVaultDocServerHeader(secondBlob),
+      expectedVersion: 1,
+      blob: secondBlob,
+      retention: { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1_000 },
+      now: new Date(CAPTURE_ATTESTED_AT.getTime() + 1_000),
+    });
+    expect(second.status).toBe('ok');
+    expect((await repository.readCurrent(user.id, vault.id, portfolio.id)).status).toBe('ok');
+    const liveHistory = await repository.listHistory({
+      userId: user.id,
+      vaultId: vault.id,
+      docId: portfolio.id,
+    });
+    expect(liveHistory).toMatchObject({
+      status: 'ok',
+      value: { items: [{ version: 1 }] },
+    });
+    expect((await repository.getHistory(user.id, vault.id, portfolio.id, 1)).status).toBe('ok');
+
+    await h.db
+      .update(portfolioVaultTransitionStates)
+      .set({ captureExpiresAt: CAPTURE_EXPIRED_AT })
+      .where(eq(portfolioVaultTransitionStates.portfolioId, portfolio.id));
+    expect(await repository.readCurrent(user.id, vault.id, portfolio.id)).toEqual({
+      status: 'not_found',
+    });
+    expect(
+      await repository.listHistory({ userId: user.id, vaultId: vault.id, docId: portfolio.id }),
+    ).toEqual({ status: 'not_found' });
+    expect(await repository.getHistory(user.id, vault.id, portfolio.id, 1)).toEqual({
+      status: 'not_found',
+    });
+  });
+
+  it('keeps capture binding and vault freshness untouched on every prospective refusal', async () => {
+    const user = await h.seedUser({
+      email: 'e1-prospective-refusals@bt.test',
+      username: 'e1_prospective_refusals',
+    });
+    const agent = await login(h.app, user);
+    const verifiedVault = await createVault({ user, agent, name: 'Verified target' });
+    const unverifiedVault = await createVault({
+      user,
+      agent,
+      name: 'Unverified target',
+      headerDocId: newId(),
+      commonDocId: newId(),
+    });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: null,
+      })
+      .where(eq(vaults.id, verifiedVault.id));
+    const inserted = await h.db
+      .insert(portfolios)
+      .values([
+        { userId: user.id, name: 'Missing capture' },
+        { userId: user.id, name: 'Expired capture' },
+        { userId: user.id, name: 'Unverified capture' },
+        { userId: user.id, name: 'Other-vault capture' },
+        { userId: user.id, name: 'Failed-precondition capture' },
+      ])
+      .returning();
+    const [missing, expired, unverified, otherVault, failedPrecondition] = inserted;
+    if (!missing || !expired || !unverified || !otherVault || !failedPrecondition) {
+      throw new Error('portfolio insert failed');
+    }
+    await h.db.insert(portfolioVaultTransitionStates).values([
+      {
+        portfolioId: expired.id,
+        userId: user.id,
+        captureRevision: `${CAPTURE_REVISION}-expired`,
+        captureExpiresAt: CAPTURE_EXPIRED_AT,
+      },
+      {
+        portfolioId: unverified.id,
+        userId: user.id,
+        captureRevision: `${CAPTURE_REVISION}-unverified`,
+        captureExpiresAt: CAPTURE_EXPIRES_AT,
+      },
+      {
+        portfolioId: otherVault.id,
+        userId: user.id,
+        captureRevision: `${CAPTURE_REVISION}-other-vault`,
+        captureExpiresAt: CAPTURE_EXPIRES_AT,
+        captureVaultId: verifiedVault.id,
+        captureMediaAttestedAt: CAPTURE_ATTESTED_AT,
+      },
+      {
+        portfolioId: failedPrecondition.id,
+        userId: user.id,
+        captureRevision: `${CAPTURE_REVISION}-failed-precondition`,
+        captureExpiresAt: CAPTURE_EXPIRES_AT,
+      },
+    ]);
+    const repository = createVaultBlobRepository(h.db);
+    const write = async (
+      portfolioId: string,
+      vaultId: string,
+      expectedVersion: number | null = null,
+    ) => {
+      const blob = envelope({
+        vaultId,
+        docId: portfolioId,
+        docKind: 'portfolio',
+        docVersion: 1,
+        writeId: newId(),
+      });
+      return repository.compareAndSwap({
+        userId: user.id,
+        vaultId,
+        docId: portfolioId,
+        header: readVaultDocServerHeader(blob),
+        expectedVersion,
+        blob,
+        retention: { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1_000 },
+        now: CAPTURE_ATTESTED_AT,
+      });
+    };
+
+    expect(await write(missing.id, verifiedVault.id)).toEqual({
+      status: 'portfolio_binding_mismatch',
+    });
+    expect(await write(expired.id, verifiedVault.id)).toEqual({
+      status: 'portfolio_binding_mismatch',
+    });
+    expect(await write(unverified.id, unverifiedVault.id)).toEqual({
+      status: 'portfolio_binding_mismatch',
+    });
+    expect(await write(otherVault.id, unverifiedVault.id)).toEqual({
+      status: 'portfolio_binding_mismatch',
+    });
+    expect(await write(failedPrecondition.id, verifiedVault.id, 7)).toEqual({
+      status: 'precondition_failed',
+      currentVersion: null,
+    });
+
+    const captures = await h.db.select().from(portfolioVaultTransitionStates);
+    expect(
+      captures.find(({ portfolioId }) => portfolioId === expired.id)?.captureVaultId,
+    ).toBeNull();
+    expect(
+      captures.find(({ portfolioId }) => portfolioId === unverified.id)?.captureVaultId,
+    ).toBeNull();
+    expect(
+      captures.find(({ portfolioId }) => portfolioId === failedPrecondition.id)?.captureVaultId,
+    ).toBeNull();
+    expect(captures.find(({ portfolioId }) => portfolioId === otherVault.id)).toMatchObject({
+      captureVaultId: verifiedVault.id,
+      captureMediaAttestedAt: CAPTURE_ATTESTED_AT,
+    });
+    const [stillFresh] = await h.db.select().from(vaults).where(eq(vaults.id, verifiedVault.id));
+    expect(stillFresh?.mediaAttestedAt).toEqual(CAPTURE_ATTESTED_AT);
+    expect(Number((await h.db.select({ value: count() }).from(vaultBlobs))[0]?.value)).toBe(0);
+  });
+
+  it('binds a Drive-only candidate capture, gates its readback, and includes it in the exact promotion roster', async () => {
+    const user = await h.seedUser({
+      email: 'e1-prospective-candidate@bt.test',
+      username: 'e1_prospective_candidate',
+    });
+    const agent = await login(h.app, user);
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-prospective-candidate-sub',
+        email: 'prospective-candidate@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['drive'],
+      driveConnectionId: connection.id,
+    });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: connection.id,
+      })
+      .where(eq(vaults.id, vault.id));
+    const [portfolio] = await h.db
+      .insert(portfolios)
+      .values({ userId: user.id, name: 'Prospective candidate portfolio' })
+      .returning();
+    if (!portfolio) throw new Error('portfolio insert failed');
+    await h.db.insert(portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId: user.id,
+      captureRevision: `${CAPTURE_REVISION}-candidate`,
+      captureExpiresAt: CAPTURE_EXPIRES_AT,
+    });
+    const transitionId = newId();
+    const docs = [
+      { docId: portfolio.id, docKind: 'portfolio' as const, writeId: WRITE_IDS[2] },
+      { docId: vault.headerDocId, docKind: 'header' as const, writeId: WRITE_IDS[0] },
+      { docId: vault.commonDocId, docKind: 'common' as const, writeId: WRITE_IDS[1] },
+    ].map((doc) => ({
+      ...doc,
+      blob: envelope({
+        vaultId: vault.id,
+        docId: doc.docId,
+        docKind: doc.docKind,
+        docVersion: 1,
+        writeId: doc.writeId,
+      }),
+    }));
+    const staged = [] as Array<{ candidateId: string; docId: string }>;
+    for (const doc of docs) {
+      const response = await agent
+        .put(`/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${doc.docId}`)
+        .set(...XRW)
+        .set(...OCTET)
+        .send(doc.blob);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      staged.push({ candidateId: response.body.candidateId as string, docId: doc.docId });
+    }
+    const [boundCapture] = await h.db
+      .select()
+      .from(portfolioVaultTransitionStates)
+      .where(eq(portfolioVaultTransitionStates.portfolioId, portfolio.id));
+    expect(boundCapture).toMatchObject({
+      captureVaultId: vault.id,
+      captureMediaAttestedAt: CAPTURE_ATTESTED_AT,
+      captureMediaAttestedDriveConnectionId: connection.id,
+    });
+    const [invalidatedVault] = await h.db.select().from(vaults).where(eq(vaults.id, vault.id));
+    expect(invalidatedVault).toMatchObject({
+      mediaAttestedAt: null,
+      mediaAttestedDriveConnectionId: null,
+    });
+
+    await h.db
+      .update(portfolioVaultTransitionStates)
+      .set({ captureExpiresAt: CAPTURE_EXPIRED_AT })
+      .where(eq(portfolioVaultTransitionStates.portfolioId, portfolio.id));
+    const expiredReadback = await agent.get(
+      `/api/v1/vaults/${vault.id}/media/server-candidate/${staged[0]!.candidateId}`,
+    );
+    expect(expiredReadback.status).toBe(404);
+    await h.db
+      .update(portfolioVaultTransitionStates)
+      .set({ captureExpiresAt: CAPTURE_EXPIRES_AT })
+      .where(eq(portfolioVaultTransitionStates.portfolioId, portfolio.id));
+
+    const readbacks: PerVaultServerCandidateReadback[] = [];
+    for (const candidate of staged) {
+      const read = await agent
+        .get(`/api/v1/vaults/${vault.id}/media/server-candidate/${candidate.candidateId}`)
+        .responseType('blob');
+      expect(read.status).toBe(200);
+      readbacks.push({
+        candidateId: candidate.candidateId,
+        docId: candidate.docId,
+        readback: read.headers['x-bettertrack-vault-candidate-readback'] as string,
+      });
+    }
+    const promoted = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({
+        transitionId,
+        expected: {
+          media: ['drive'],
+          driveConnectionId: connection.id,
+          mediaAttestedAt: null,
+        },
+        next: { media: ['drive', 'server'], driveConnectionId: connection.id },
+        verification: { kind: 'server-candidates', readbacks },
+      });
+    expect(promoted.status, JSON.stringify(promoted.body)).toBe(200);
+    const promotedRows = await h.db
+      .select()
+      .from(vaultBlobs)
+      .where(eq(vaultBlobs.vaultId, vault.id));
+    expect(promotedRows).toHaveLength(3);
+    expect(promotedRows.find(({ docId }) => docId === portfolio.id)).toMatchObject({
+      docKind: 'portfolio',
+      portfolioId: portfolio.id,
+    });
   });
 
   it('uses the registered doc-kind guard so a header address cannot borrow the 8MiB portfolio cap', async () => {
@@ -620,6 +987,101 @@ describe('E1 per-vault blind document CAS', () => {
     expect(Buffer.from(current.body as Buffer)).toEqual(committed);
   });
 
+  it('never stores two byte strings for one docVersion while preserving non-linear distinct versions', async () => {
+    const user = await h.seedUser({
+      email: 'e1-doc-version-bytes@bt.test',
+      username: 'e1_doc_version_bytes',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    const versionOne = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x01, 0xa1]),
+    });
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, versionOne, { create: true })).status,
+    ).toBe(204);
+
+    // TEST VECTOR: a fresh writeId does not authorize different bytes under
+    // the current pair's already-used client docVersion.
+    const currentCollision = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x01, 0xb2]),
+    });
+    const refusedCurrent = await putDoc(agent, vault.id, vault.headerDocId, currentCollision, {
+      version: 1,
+    });
+    expect(refusedCurrent.status).toBe(412);
+    expect(refusedCurrent.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+    expect(Number((await h.db.select({ value: count() }).from(vaultBlobHistory))[0]?.value)).toBe(
+      0,
+    );
+
+    const versionTwo = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 2,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x02, 0xa1]),
+    });
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, versionTwo, { version: 1 })).status,
+    ).toBe(204);
+
+    // The same invariant applies after the original pair enters history.
+    const historyCollision = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x01, 0xc3]),
+    });
+    const refusedHistory = await putDoc(agent, vault.id, vault.headerDocId, historyCollision, {
+      version: 2,
+    });
+    expect(refusedHistory.status).toBe(412);
+    expect(refusedHistory.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+    const historical = await agent
+      .get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}/history/1`)
+      .responseType('blob');
+    expect(Buffer.from(historical.body as Buffer)).toEqual(versionOne);
+
+    // Non-linear ordering is still valid when each distinct token names only
+    // one byte string: 2 -> 7 -> 3 is accepted through ordinary CAS.
+    const versionSeven = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 7,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x07]),
+    });
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, versionSeven, { version: 2 })).status,
+    ).toBe(204);
+    const versionThree = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 3,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x03]),
+    });
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, versionThree, { version: 7 })).status,
+    ).toBe(204);
+  });
+
   it('requires a document precondition before entering CAS', async () => {
     const user = await h.seedUser({
       email: 'e1-precondition-required@bt.test',
@@ -671,7 +1133,7 @@ describe('E1 per-vault blind document CAS', () => {
     expect(Buffer.from(read.body as Buffer)).toEqual(future);
   });
 
-  it('uses only the HTTP precondition and never version-gates client docVersion', async () => {
+  it('accepts non-linear client docVersions and defends retirement from legacy byte ambiguity', async () => {
     const user = await h.seedUser({ email: 'e1-doc-version@bt.test', username: 'e1_doc_version' });
     const agent = await login(h.app, user);
     const vault = await createVault({ user, agent });
@@ -707,8 +1169,8 @@ describe('E1 per-vault blind document CAS', () => {
       .responseType('blob');
     expect(Buffer.from(read.body as Buffer)).toEqual(clientVersionThree);
 
-    // Bounce through an already-retained token, then supersede it again. The
-    // first history row wins and the v1 on-conflict discipline prevents a 500.
+    // A numeric bounce remains legal only for a token that has not already
+    // named different bytes in this document.
     const writeSevenAgain = newId();
     const clientVersionSevenAgain = envelope({
       vaultId: vault.id,
@@ -717,13 +1179,11 @@ describe('E1 per-vault blind document CAS', () => {
       docVersion: 7,
       writeId: writeSevenAgain,
     });
-    expect(
-      (
-        await putDoc(agent, vault.id, vault.headerDocId, clientVersionSevenAgain, {
-          version: 3,
-        })
-      ).status,
-    ).toBe(204);
+    const refusedReuse = await putDoc(agent, vault.id, vault.headerDocId, clientVersionSevenAgain, {
+      version: 3,
+    });
+    expect(refusedReuse.status).toBe(412);
+    expect(refusedReuse.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
 
     const commonWrite = newId();
     const common = envelope({
@@ -749,6 +1209,19 @@ describe('E1 per-vault blind document CAS', () => {
       .update(vaults)
       .set({ media: ['server', 'drive'], driveConnectionId: connection.id })
       .where(eq(vaults.id, vault.id));
+
+    // TEST VECTOR: model a legacy pre-invariant current row that collides with
+    // retained v7 bytes. Retirement keeps its deepest defensive refusal even
+    // though live CAS can no longer manufacture this state.
+    await h.db
+      .update(vaultBlobs)
+      .set({
+        version: 7,
+        formatVersion: 2,
+        sizeBytes: clientVersionSevenAgain.length,
+        blob: clientVersionSevenAgain,
+      })
+      .where(and(eq(vaultBlobs.vaultId, vault.id), eq(vaultBlobs.docId, vault.headerDocId)));
     const ambiguousRetirement = await agent
       .patch(`/api/v1/vaults/${vault.id}/media`)
       .set(...XRW)
@@ -775,6 +1248,16 @@ describe('E1 per-vault blind document CAS', () => {
       0,
     );
 
+    await h.db
+      .update(vaultBlobs)
+      .set({
+        version: 3,
+        formatVersion: 2,
+        sizeBytes: clientVersionThree.length,
+        blob: clientVersionThree,
+      })
+      .where(and(eq(vaultBlobs.vaultId, vault.id), eq(vaultBlobs.docId, vault.headerDocId)));
+
     const clientVersionEight = envelope({
       vaultId: vault.id,
       docId: vault.headerDocId,
@@ -785,7 +1268,7 @@ describe('E1 per-vault blind document CAS', () => {
     expect(
       (
         await putDoc(agent, vault.id, vault.headerDocId, clientVersionEight, {
-          version: 7,
+          version: 3,
         })
       ).status,
     ).toBe(204);
@@ -1047,6 +1530,350 @@ describe('E1 per-vault blind document CAS', () => {
 });
 
 describe('E1 R3/R4 media transitions and purge', () => {
+  it('refreshes unchanged server-backed selections from the exact active roster', async () => {
+    const user = await h.seedUser({
+      email: 'e1-server-attestation-refresh@bt.test',
+      username: 'e1_server_attestation_refresh',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    const docs = [
+      {
+        docId: vault.headerDocId,
+        docKind: 'header' as const,
+        docVersion: 1,
+        writeId: WRITE_IDS[0],
+      },
+      {
+        docId: vault.commonDocId,
+        docKind: 'common' as const,
+        docVersion: 1,
+        writeId: WRITE_IDS[1],
+      },
+    ].map((doc) => ({ ...doc, blob: envelope({ vaultId: vault.id, ...doc }) }));
+    for (const doc of docs) {
+      expect((await putDoc(agent, vault.id, doc.docId, doc.blob, { create: true })).status).toBe(
+        204,
+      );
+    }
+
+    const refresh = {
+      transitionId: newId(),
+      expected: { media: ['server'], driveConnectionId: null, mediaAttestedAt: null },
+      next: { media: ['server'], driveConnectionId: null },
+      verification: {
+        kind: 'server',
+        docs: docs.map(({ docId, docVersion, writeId }) => ({
+          docId,
+          docVersion,
+          writeId,
+        })),
+      },
+    } as const;
+    const first = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send(refresh);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({
+      media: ['server'],
+      driveConnectionId: null,
+      mediaAttestedAt: expect.any(String),
+      mediaAttestedDriveConnectionId: null,
+    });
+
+    const replay = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send(refresh);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body).toEqual(first.body);
+
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-server-drive-attestation-refresh-sub',
+        email: 'server-drive-attestation-refresh@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    await h.db
+      .update(vaults)
+      .set({
+        media: ['server', 'drive'],
+        driveConnectionId: connection.id,
+        mediaAttestedAt: null,
+        mediaAttestedDriveConnectionId: null,
+      })
+      .where(eq(vaults.id, vault.id));
+    const serverDrive = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({
+        transitionId: newId(),
+        expected: {
+          media: ['server', 'drive'],
+          driveConnectionId: connection.id,
+          mediaAttestedAt: null,
+        },
+        next: { media: ['server', 'drive'], driveConnectionId: connection.id },
+        verification: {
+          kind: 'drive',
+          driveConnectionId: connection.id,
+          docs: refresh.verification.docs,
+        },
+      });
+    expect(serverDrive.status, JSON.stringify(serverDrive.body)).toBe(200);
+    expect(serverDrive.body).toMatchObject({
+      media: ['server', 'drive'],
+      driveConnectionId: connection.id,
+      mediaAttestedAt: expect.any(String),
+      mediaAttestedDriveConnectionId: connection.id,
+    });
+  });
+
+  it('refreshes Drive-only move-in candidates without promoting or deleting them', async () => {
+    const user = await h.seedUser({
+      email: 'e1-drive-attestation-refresh@bt.test',
+      username: 'e1_drive_attestation_refresh',
+    });
+    const agent = await login(h.app, user);
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-drive-attestation-refresh-sub',
+        email: 'drive-attestation-refresh@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['drive'],
+      driveConnectionId: connection.id,
+    });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: connection.id,
+      })
+      .where(eq(vaults.id, vault.id));
+    const [portfolio] = await h.db
+      .insert(portfolios)
+      .values({ userId: user.id, name: 'Drive refresh prospective portfolio' })
+      .returning();
+    if (!portfolio) throw new Error('portfolio insert failed');
+    await h.db.insert(portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId: user.id,
+      captureRevision: `${CAPTURE_REVISION}-drive-refresh`,
+      captureExpiresAt: CAPTURE_EXPIRES_AT,
+    });
+
+    const transitionId = newId();
+    // The prospective portfolio goes first: that write binds the capture, after
+    // which the exact candidate roster includes all three required documents.
+    const docs = [
+      {
+        docId: portfolio.id,
+        docKind: 'portfolio' as const,
+        docVersion: 3,
+        writeId: WRITE_IDS[2],
+      },
+      {
+        docId: vault.headerDocId,
+        docKind: 'header' as const,
+        docVersion: 2,
+        writeId: WRITE_IDS[0],
+      },
+      {
+        docId: vault.commonDocId,
+        docKind: 'common' as const,
+        docVersion: 2,
+        writeId: WRITE_IDS[1],
+      },
+    ].map((doc) => ({ ...doc, blob: envelope({ vaultId: vault.id, ...doc }) }));
+    for (const [index, doc] of docs.entries()) {
+      const staged = await agent
+        .put(`/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${doc.docId}`)
+        .set(...XRW)
+        .set(...OCTET)
+        .send(doc.blob);
+      expect(staged.status, JSON.stringify(staged.body)).toBe(200);
+      if (index === 0) {
+        const [boundCapture] = await h.db
+          .select({
+            captureVaultId: portfolioVaultTransitionStates.captureVaultId,
+            captureMediaAttestedAt: portfolioVaultTransitionStates.captureMediaAttestedAt,
+            captureMediaAttestedDriveConnectionId:
+              portfolioVaultTransitionStates.captureMediaAttestedDriveConnectionId,
+          })
+          .from(portfolioVaultTransitionStates)
+          .where(eq(portfolioVaultTransitionStates.portfolioId, portfolio.id));
+        expect(boundCapture).toEqual({
+          captureVaultId: vault.id,
+          captureMediaAttestedAt: CAPTURE_ATTESTED_AT,
+          captureMediaAttestedDriveConnectionId: connection.id,
+        });
+        const [invalidatedVault] = await h.db
+          .select({
+            mediaAttestedAt: vaults.mediaAttestedAt,
+            mediaAttestedDriveConnectionId: vaults.mediaAttestedDriveConnectionId,
+          })
+          .from(vaults)
+          .where(eq(vaults.id, vault.id));
+        expect(invalidatedVault).toEqual({
+          mediaAttestedAt: null,
+          mediaAttestedDriveConnectionId: null,
+        });
+      }
+    }
+    const attestations = docs.map(({ docId, docVersion, writeId }) => ({
+      docId,
+      docVersion,
+      writeId,
+    }));
+    const refresh = {
+      transitionId,
+      expected: {
+        media: ['drive'],
+        driveConnectionId: connection.id,
+        mediaAttestedAt: null,
+      },
+      next: { media: ['drive'], driveConnectionId: connection.id },
+      verification: {
+        kind: 'drive',
+        driveConnectionId: connection.id,
+        docs: attestations,
+      },
+    } as const;
+
+    const crossedBatch = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({ ...refresh, transitionId: newId() });
+    expect(crossedBatch.status).toBe(412);
+    expect(crossedBatch.body.error.code).toBe('VAULT_MEDIA_PARTIAL_SET');
+
+    const staleDocs = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({
+        ...refresh,
+        verification: {
+          ...refresh.verification,
+          docs: attestations.map((doc) =>
+            doc.docId === portfolio.id ? { ...doc, writeId: newId() } : doc,
+          ),
+        },
+      });
+    expect(staleDocs.status).toBe(412);
+    expect(staleDocs.body.error.code).toBe('VAULT_MEDIA_VERIFICATION_FAILED');
+
+    const first = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send(refresh);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({
+      media: ['drive'],
+      driveConnectionId: connection.id,
+      mediaAttestedAt: expect.any(String),
+      mediaAttestedDriveConnectionId: connection.id,
+      server: { disposition: 'inactive-candidates' },
+    });
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultServerCandidates)
+            .where(eq(vaultServerCandidates.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(3);
+
+    const replay = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send(refresh);
+    expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+    expect(replay.body).toEqual(first.body);
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultServerCandidates)
+            .where(eq(vaultServerCandidates.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(3);
+
+    const changedHeader = docs.find(({ docKind }) => docKind === 'header')!;
+    const [attestationBeforeCandidateReplay] = await h.db
+      .select({
+        mediaAttestedAt: vaults.mediaAttestedAt,
+        mediaAttestedDriveConnectionId: vaults.mediaAttestedDriveConnectionId,
+      })
+      .from(vaults)
+      .where(eq(vaults.id, vault.id));
+    const candidateReplay = await agent
+      .put(
+        `/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${changedHeader.docId}`,
+      )
+      .set(...XRW)
+      .set(...OCTET)
+      .send(changedHeader.blob);
+    expect(candidateReplay.status, JSON.stringify(candidateReplay.body)).toBe(200);
+    const [attestationAfterCandidateReplay] = await h.db
+      .select({
+        mediaAttestedAt: vaults.mediaAttestedAt,
+        mediaAttestedDriveConnectionId: vaults.mediaAttestedDriveConnectionId,
+      })
+      .from(vaults)
+      .where(eq(vaults.id, vault.id));
+    expect(attestationAfterCandidateReplay).toEqual(attestationBeforeCandidateReplay);
+
+    const changedWriteId = newId();
+    const changedCandidate = await agent
+      .put(
+        `/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${changedHeader.docId}`,
+      )
+      .set(...XRW)
+      .set(...OCTET)
+      .send(
+        envelope({
+          vaultId: vault.id,
+          docId: changedHeader.docId,
+          docKind: 'header',
+          docVersion: changedHeader.docVersion + 1,
+          writeId: changedWriteId,
+        }),
+      );
+    expect(changedCandidate.status, JSON.stringify(changedCandidate.body)).toBe(200);
+    const [staleVault] = await h.db
+      .select({
+        mediaAttestedAt: vaults.mediaAttestedAt,
+        mediaAttestedDriveConnectionId: vaults.mediaAttestedDriveConnectionId,
+      })
+      .from(vaults)
+      .where(eq(vaults.id, vault.id));
+    expect(staleVault).toEqual({
+      mediaAttestedAt: null,
+      mediaAttestedDriveConnectionId: null,
+    });
+    const staleReplay = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send(refresh);
+    expect(staleReplay.status).toBe(412);
+    expect(staleReplay.body.error.code).toBe('VAULT_MEDIA_VERIFICATION_FAILED');
+  });
+
   it('refuses a partial transition, stamps a complete batch, retires, and preserves forged/stale purges', async () => {
     const user = await h.seedUser({ email: 'e1-media@bt.test', username: 'e1_media' });
     const agent = await login(h.app, user);
@@ -1067,6 +1894,13 @@ describe('E1 R3/R4 media transitions and purge', () => {
       driveConnectionId: connection.id,
       publicKey: keys.publicKey,
     });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: connection.id,
+      })
+      .where(eq(vaults.id, vault.id));
     const headerBlob = envelope({
       vaultId: vault.id,
       docId: vault.headerDocId,
@@ -1090,6 +1924,17 @@ describe('E1 R3/R4 media transitions and purge', () => {
       .set(...OCTET)
       .send(headerBlob);
     expect(stagedHeader.status).toBe(200);
+    const [stillAttested] = await h.db
+      .select({
+        mediaAttestedAt: vaults.mediaAttestedAt,
+        mediaAttestedDriveConnectionId: vaults.mediaAttestedDriveConnectionId,
+      })
+      .from(vaults)
+      .where(eq(vaults.id, vault.id));
+    expect(stillAttested).toEqual({
+      mediaAttestedAt: CAPTURE_ATTESTED_AT,
+      mediaAttestedDriveConnectionId: connection.id,
+    });
     const readHeader = await agent
       .get(`/api/v1/vaults/${vault.id}/media/server-candidate/${stagedHeader.body.candidateId}`)
       .responseType('blob');
@@ -1100,7 +1945,7 @@ describe('E1 R3/R4 media transitions and purge', () => {
       expected: {
         media: ['drive'],
         driveConnectionId: connection.id,
-        mediaAttestedAt: null,
+        mediaAttestedAt: CAPTURE_ATTESTED_AT.toISOString(),
       },
       next: { media: ['drive', 'server'], driveConnectionId: connection.id },
     };
