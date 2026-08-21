@@ -438,6 +438,16 @@ describe('NotificationBell', () => {
       payload: { conversationId: 'c1', messageId: 'm1' },
       href: '/people/chat/c/c1',
     },
+    {
+      type: 'feedback.status_changed',
+      payload: { feedbackId: 'feedback-1', status: 'saved_as_future_idea' },
+      href: '/control/feedback',
+    },
+    {
+      type: 'feedback.reply_created',
+      payload: { feedbackId: 'feedback-1', messageId: 'message-1' },
+      href: '/control/feedback',
+    },
     { type: 'account.temp_password', payload: {}, href: '/settings/security' },
     { type: 'account.invite', payload: {}, href: '/settings/account' },
     {

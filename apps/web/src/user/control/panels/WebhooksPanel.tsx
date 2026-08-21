@@ -70,6 +70,8 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
   'mirror.ownership_transferred': 'mirrorOwnershipTransferred',
   'mirror.chain_dissolved': 'mirrorChainDissolved',
   'mirror.sync_stalled': 'mirrorSyncStalled',
+  'feedback.status_changed': 'feedbackStatusChanged',
+  'feedback.reply_created': 'feedbackReplyCreated',
 };
 
 /**
@@ -137,7 +139,7 @@ function SecretModal({
 }
 
 /**
- * Create-webhook form: a URL, an optional label, and ≥1 of the 24 event types.
+ * Create-webhook form: a URL, an optional label, and ≥1 catalog event type.
  * The two text fields sit in the popup's narrow form column; the event catalog
  * needs the whole pane, so its grid is a full-width sibling INSIDE the form
  * (a fieldset outside the form would lose its form association).

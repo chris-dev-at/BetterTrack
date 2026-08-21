@@ -177,7 +177,10 @@ describe('feedback repository ownership boundary', () => {
       });
       expect(owned).not.toBeNull();
       const reply = await repo.createMessageForAdmin(staff.id, owned!.id, 'We can reproduce it.');
-      expect(reply).toMatchObject({ authorSide: 'admin', authorUserId: staff.id });
+      expect(reply).toMatchObject({
+        submitterUserId: submitter.id,
+        row: { authorSide: 'admin', authorUserId: staff.id },
+      });
 
       // The exact statement both deletion paths rely on (userRepository.remove →
       // accountDeletionService / adminService). An admin's replies live on OTHER
@@ -192,7 +195,14 @@ describe('feedback repository ownership boundary', () => {
       expect(after).toMatchObject({
         status: 'ok',
         page: {
-          rows: [{ id: reply!.id, authorSide: 'admin', authorUserId: null, body: reply!.body }],
+          rows: [
+            {
+              id: reply!.row.id,
+              authorSide: 'admin',
+              authorUserId: null,
+              body: reply!.row.body,
+            },
+          ],
         },
       });
     } finally {
