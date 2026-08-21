@@ -1,5 +1,7 @@
-/** The only Google Drive permission BetterTrack may ever request. */
+/** Legacy envelope-v1 appdata scope; retained until its retirement train. */
 export const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+/** Per-vault visible-folder access used by envelope-v2 Drive connections. */
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 const GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
 const TOKEN_EXPIRY_SKEW_MS = 30_000;
@@ -37,6 +39,9 @@ export interface GoogleOauth2 {
     client_id: string;
     scope: string;
     include_granted_scopes: boolean;
+    /** GIS names the OAuth login_hint field `hint` in its web API. */
+    hint?: string;
+    login_hint?: string;
     callback: (response: GoogleTokenResponse) => void;
     error_callback?: (error: { type?: string; message?: string }) => void;
   }): GoogleTokenClient;
@@ -44,6 +49,11 @@ export interface GoogleOauth2 {
 
 export interface GoogleDriveTokenClientOptions {
   clientId: string;
+  /** Defaults to the legacy appdata scope; per-vault readers pass drive.file. */
+  scope?: string;
+  /** Stable Google principal and local-only label for one bound connection. */
+  loginHint?: string;
+  identityLabel?: string;
   loadOauth2?: () => Promise<GoogleOauth2>;
   now?: () => number;
 }
@@ -69,6 +79,7 @@ export interface GoogleDriveTokenClient {
 export function createGoogleDriveTokenClient(
   options: GoogleDriveTokenClientOptions,
 ): GoogleDriveTokenClient {
+  const scope = options.scope ?? DRIVE_APPDATA_SCOPE;
   const now = options.now ?? Date.now;
   const loadOauth2 = options.loadOauth2 ?? loadGoogleOauth2;
   let state: DriveAuthorizationState = 'consent-required';
@@ -123,12 +134,15 @@ export function createGoogleDriveTokenClient(
       return { status: 'ok', ...token };
     }
     if (token) expireToken();
+    const identity = options.identityLabel?.trim();
     return {
       status: state === 'connected' ? 'token-expired' : state,
       message:
         state === 'consent-required'
           ? 'Google Drive consent is required.'
-          : 'Sign in to Google to continue Drive synchronization.',
+          : identity
+            ? `Sign in to Google (${identity}) to continue Drive synchronization.`
+            : 'Sign in to Google to continue Drive synchronization.',
     };
   }
 
@@ -237,14 +251,15 @@ export function createGoogleDriveTokenClient(
       try {
         const client: GoogleTokenClient = oauth2.initTokenClient({
           client_id: options.clientId,
-          scope: DRIVE_APPDATA_SCOPE,
+          scope,
           include_granted_scopes: false,
+          ...(options.loginHint ? { hint: options.loginHint, login_hint: options.loginHint } : {}),
           callback: (response) => handleResponse(generation, response),
           error_callback: (error) => handlePopupError(generation, error),
         });
         client.requestAccessToken({
           prompt: state === 'consent-required' ? 'consent' : '',
-          scope: DRIVE_APPDATA_SCOPE,
+          scope,
           include_granted_scopes: false,
         });
       } catch (cause) {

@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { VAULT_DOC_SCHEMA_VERSION } from '@bettertrack/contracts';
@@ -77,6 +78,7 @@ describe('VaultReceivePhrase receiver', () => {
       devicePassword: 'new endpoint password',
       expectedFingerprint: VAULT_TRANSFER_VECTOR_FINGERPRINT,
       fetchHeaderEnvelope,
+      signal: expect.any(AbortSignal),
     });
     expect(keystore.storePlainAfterVerifiedOpen).not.toHaveBeenCalled();
     expect(onOpened).toHaveBeenCalledWith({
@@ -141,6 +143,71 @@ describe('VaultReceivePhrase receiver', () => {
     await expect(keystore.readMnemonic(INCOMING_VAULT_ID)).resolves.toBe(
       VAULT_TRANSFER_VECTOR_MNEMONIC,
     );
+  });
+
+  it('cancels a deferred verified-open before persistence and cannot close a reopened receiver', async () => {
+    const user = userEvent.setup();
+    const keystore = realKeystore();
+    const pendingHeader = deferred<Uint8Array>();
+    const header = await createHeaderEnvelope(VAULT_TRANSFER_VECTOR_VAULT_ID, 0x41);
+    const fetchHeaderEnvelope = vi.fn(({ vaultId }: { vaultId: string; signal?: AbortSignal }) => {
+      expect(vaultId).toBe(VAULT_TRANSFER_VECTOR_VAULT_ID);
+      return pendingHeader.promise;
+    });
+    const storeOriginal = keystore.storeAfterVerifiedOpen.bind(keystore);
+    let storeOperation: Promise<OpenedVault> | undefined;
+    vi.spyOn(keystore, 'storeAfterVerifiedOpen').mockImplementation((input) => {
+      storeOperation = storeOriginal(input);
+      return storeOperation;
+    });
+    const onOpened = vi.fn();
+    const secondPayload = serializeVaultTransferPayload({
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: INCOMING_VAULT_ID,
+    });
+
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      const [payload, setPayload] = useState(VAULT_TRANSFER_GOLDEN_PAYLOAD);
+      return open ? (
+        <VaultReceivePhrase
+          fetchHeaderEnvelope={fetchHeaderEnvelope}
+          initialPayload={payload}
+          keystore={keystore}
+          onCancel={() => setOpen(false)}
+          onOpened={onOpened}
+        />
+      ) : (
+        <button
+          onClick={() => {
+            setPayload(secondPayload);
+            setOpen(true);
+          }}
+          type="button"
+        >
+          Open second transfer
+        </button>
+      );
+    }
+
+    render(<Harness />);
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), DEVICE_PASSWORD);
+    await user.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+    await waitFor(() => expect(fetchHeaderEnvelope).toHaveBeenCalledOnce());
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await user.click(screen.getByRole('button', { name: 'Open second transfer' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByText(INCOMING_VAULT_ID)).toBeInTheDocument();
+
+    pendingHeader.resolve(header);
+    await expect(storeOperation).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(keystore.stateFor(VAULT_TRANSFER_VECTOR_VAULT_ID)).resolves.toMatchObject({
+      status: 'not-on-this-endpoint',
+    });
+    expect(screen.getByText(INCOMING_VAULT_ID)).toBeInTheDocument();
+    expect(onOpened).not.toHaveBeenCalled();
   });
 
   it('issues the E3 one-use acknowledgment only after the plain-custody warning is accepted', async () => {
@@ -393,4 +460,18 @@ async function createHeaderEnvelope(vaultId: string, contentByte: number): Promi
     zeroBytes(contentKey);
     zeroBytes(wrapKey);
   }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason?: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
 }

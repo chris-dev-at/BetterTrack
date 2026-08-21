@@ -33,7 +33,11 @@ import {
 import { createServerBlobDataHome } from './serverBlobDataHome';
 import type { DataHome } from './dataHome';
 import type { VaultSyncState } from './sync';
-import { VAULT_LOCK_REQUEST_EVENT } from './lockSignal';
+import {
+  broadcastVaultLock,
+  VAULT_LOCK_REQUEST_EVENT,
+  vaultLockSignalStorageKey,
+} from './lockSignal';
 import { vaultTransferRuntime, type VaultTransferRuntime } from './qr/runtime';
 import { equalBytes } from './bytes';
 import { zeroBytes } from './bytes';
@@ -57,7 +61,6 @@ export {
 
 const KEY_ID_STORAGE_PREFIX = 'bettertrack:vault-key:';
 const CUSTODY_DEVICE_STORAGE_PREFIX = 'bettertrack:vault-custody-device:';
-const LOCK_SIGNAL_STORAGE_PREFIX = 'bettertrack:vault-lock:';
 const DEVICE_LOCKED_STORAGE_PREFIX = 'bettertrack:vault-device-locked:';
 
 export interface VaultRuntimeProviderDependencies {
@@ -155,7 +158,7 @@ export function VaultRuntimeProvider({
       setDriveAuthorization('consent-required');
       if (options.broadcast !== false && userId != null) {
         rememberDeviceLocked(userId);
-        broadcastLock(userId);
+        broadcastVaultLock(userId);
       }
       // Plaintext access is already synchronously revoked. A browser storage
       // failure must not become an unhandled rejection; the persistent lock
@@ -176,19 +179,22 @@ export function VaultRuntimeProvider({
   // other tab for the same account. The signal contains no secret or money.
   useEffect(() => {
     if (!authenticated || userId == null) return;
-    const key = `${LOCK_SIGNAL_STORAGE_PREFIX}${userId}`;
+    const key = vaultLockSignalStorageKey(userId);
     const onStorage = (event: StorageEvent) => {
-      if (event.key === key) void lock({ broadcast: false });
+      if (event.key === key) {
+        void lock({ broadcast: false, transferAlreadyRevoked: transfer.lockSignalBound });
+      }
     };
     globalThis.addEventListener('storage', onStorage);
     return () => globalThis.removeEventListener('storage', onStorage);
-  }, [authenticated, lock, userId]);
+  }, [authenticated, lock, transfer.lockSignalBound, userId]);
 
   useEffect(() => {
     const onRequest = () => {
       // The endpoint-wide normal-branch runtime listens to this same signal.
-      // An injected/unbound runtime relies on the provider to revoke it here.
-      void lock({ transferAlreadyRevoked: transfer.lockSignalBound });
+      // AuthContext already emitted the account-scoped storage lock; this
+      // handler owns only the provider-local teardown to avoid echoing it.
+      void lock({ broadcast: false, transferAlreadyRevoked: transfer.lockSignalBound });
     };
     globalThis.addEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);
     return () => globalThis.removeEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);
@@ -611,17 +617,6 @@ function custodyDeviceId(userId: string): string {
     return created;
   } catch {
     return globalThis.crypto.randomUUID();
-  }
-}
-
-function broadcastLock(userId: string): void {
-  try {
-    globalThis.localStorage?.setItem(
-      `${LOCK_SIGNAL_STORAGE_PREFIX}${userId}`,
-      `${Date.now()}:${globalThis.crypto.randomUUID()}`,
-    );
-  } catch {
-    // Cross-tab propagation is best-effort; this tab is already locked.
   }
 }
 

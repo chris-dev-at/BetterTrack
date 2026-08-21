@@ -86,7 +86,11 @@ export function PrivacyPanel() {
           legacy v1 mode split makes receive reachable on a fresh endpoint;
           when the old runtime exists, its endpoint-wide session owns it. */}
       <Suspense fallback={<SkeletonBlock height={72} />}>
-        <VaultTransferActions onNotice={setNotice} runtime={runtime?.transfer} />
+        <VaultTransferActions
+          accountId={user?.id ?? null}
+          onNotice={setNotice}
+          runtime={runtime?.transfer}
+        />
       </Suspense>
 
       {privacy.privacyMode === 'normal' ? (
