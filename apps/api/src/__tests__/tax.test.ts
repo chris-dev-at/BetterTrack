@@ -30,6 +30,17 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
+// Deterministic TEST VECTOR ids and verifier-shaped strings are public fixtures,
+// not credentials or production retirement material.
+const VAULTED_TAX_YEARS_TEST_VECTOR = {
+  vaultId: '019c8620-0000-7000-8000-000000000001',
+  headerDocId: '019c8620-0000-7000-8000-000000000002',
+  commonDocId: '019c8620-0000-7000-8000-000000000003',
+  portfolioId: '019c8620-0000-7000-8000-000000000004',
+  retirementProofPublicKey: 'TEST VECTOR tax years public verifier',
+  keyFingerprint: 'TEST-VECTOR-TAX-YEARS-0001',
+} as const;
+
 let harness: TestHarness;
 
 beforeEach(async () => {
@@ -188,6 +199,77 @@ describe('Settings → Taxes (V3-P4b)', () => {
       .set(...XRW)
       .send({ mode: 'country_specific', country: 'FR' });
     expect(unknownCountry.status).toBe(400);
+  });
+
+  it('omits transaction, dividend, and movement years belonging only to a vaulted portfolio', async () => {
+    const { user, agent, pid, asset } = await setup();
+    await harness.db.insert(schema.vaults).values({
+      id: VAULTED_TAX_YEARS_TEST_VECTOR.vaultId,
+      userId: user.id,
+      name: 'TEST VECTOR tax vault',
+      headerDocId: VAULTED_TAX_YEARS_TEST_VECTOR.headerDocId,
+      commonDocId: VAULTED_TAX_YEARS_TEST_VECTOR.commonDocId,
+      media: ['server'],
+      retirementProofPublicKey: VAULTED_TAX_YEARS_TEST_VECTOR.retirementProofPublicKey,
+      keyFingerprint: VAULTED_TAX_YEARS_TEST_VECTOR.keyFingerprint,
+    });
+    await harness.db.insert(schema.portfolios).values({
+      id: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+      userId: user.id,
+      name: 'TEST VECTOR locked tax stub',
+      vaultId: VAULTED_TAX_YEARS_TEST_VECTOR.vaultId,
+      vaultAlias: 'TEST VECTOR locked tax stub',
+    });
+    const [vaultedSource] = await harness.db
+      .insert(schema.portfolioCashSources)
+      .values({
+        portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+        name: 'TEST VECTOR vault cash',
+        type: 'cash',
+        isMain: true,
+      })
+      .returning();
+    if (!vaultedSource) throw new Error('Failed to seed TEST VECTOR vault cash source');
+
+    await harness.db.insert(schema.transactions).values([
+      {
+        portfolioId: pid,
+        assetId: asset.id,
+        side: 'buy',
+        quantity: '1',
+        price: '10',
+        executedAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      {
+        portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+        assetId: asset.id,
+        side: 'buy',
+        quantity: '1',
+        price: '10',
+        executedAt: new Date('1991-01-01T00:00:00.000Z'),
+      },
+    ]);
+    await harness.db.insert(schema.dividends).values({
+      portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+      assetId: asset.id,
+      cashSourceId: vaultedSource.id,
+      grossAmountEur: '10',
+      executedAt: new Date('1992-01-01T00:00:00.000Z'),
+      taxMode: 'none',
+    });
+    await harness.db.insert(schema.portfolioCashMovements).values({
+      portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+      sourceId: vaultedSource.id,
+      kind: 'tax_refund',
+      amountEur: '1',
+      taxYear: 1993,
+      executedAt: new Date('1994-01-01T00:00:00.000Z'),
+    });
+
+    const response = await agent.get('/api/v1/settings/taxes/years');
+    expect(response.status).toBe(200);
+    const parsed = taxYearChangesResponseSchema.parse(response.body);
+    expect(parsed.years.map(({ year }) => year)).toEqual([2024]);
   });
 });
 

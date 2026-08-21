@@ -54,6 +54,7 @@ import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
 import { createParanoidRouteGuard } from './services/account/paranoidEnforcement';
+import { createVaultedPortfolioRouteGuard } from './services/account/vaultedPortfolioEnforcement';
 
 // Side-effect import: augments Express's Request type (req.authUser, etc.).
 import './http/types';
@@ -126,10 +127,12 @@ export function createApp(ctx: AppContext) {
 
   // Order: bearer (API-key) auth → cookie session → general rate limit (per
   // user) → per-key rate limit (bearer only) → CSRF guard (skipped for bearer)
-  // → forced-password-change guard → API-key scope enforcement. Bearer runs
-  // first so a `Authorization: Bearer btk_…` request resolves its principal and
-  // the cookie path stands down; the scope guard runs last so it sees the
-  // resolved principal and covers every /api/v1 router by default (§6.13).
+  // → forced-password-change guard → legacy paranoid guard → API-key scope
+  // enforcement → resource-sensitive vaulted-portfolio guard. Bearer runs first
+  // so a `Authorization: Bearer btk_…` request resolves its principal and the
+  // cookie path stands down. Scope authorization precedes vault lookup so an
+  // under-scoped bearer gets its audited refusal without learning target state;
+  // cookie sessions pass the scope no-op and still reach the portfolio guard.
   app.use('/api/v1', loadBearerAuth(ctx));
   // Per-key request-log audit capture (§13.5 V5-P10, issue 2/2): registers a
   // `finish` hook for personal-API-key requests HERE — right after the principal
@@ -165,11 +168,12 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', enforcePasswordChange);
   app.use('/api/v1', createParanoidRouteGuard());
   app.use('/api/v1', enforceApiKeyScope(ctx));
+  app.use('/api/v1', createVaultedPortfolioRouteGuard(ctx.vaultedPortfolioGuard));
 
   // First-party usage capture (§13.5 V5-P2 arc (b)): folds one in-memory signal
   // per authenticated request on `finish` (no route, no third-party tracker).
   // Mounted after the auth chain so `req.authUser` is resolved for the capture.
-  app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics));
+  app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics, ctx.vaultedPortfolioGuard));
 
   // SPA-bootstrap advertisement of the effective runtime feature flags (§13.5
   // V5-P2 arc (c)): the client reads this to hide any killed surface. Read-only

@@ -4,7 +4,7 @@ import { scopeSatisfies } from '@bettertrack/contracts';
 
 import { forbidden, notFound, unauthorized } from '../../errors';
 import {
-  isParanoidKilledScope,
+  isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
 import { normalizeRoutePath } from '../../services/security/routePath';
@@ -815,7 +815,11 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     const required = SAFE_METHODS.has(req.method) ? policy.read : policy.write;
-    if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(required)) {
+    // E2 un-kills bearer scopes for the per-portfolio model: owning a vault is
+    // never an account-wide scope decision. This one narrow bridge is ONLY for
+    // live v1 accounts whose durable users.privacy_mode is still `paranoid`;
+    // E9 removes it together with that column after the verified wipe.
+    if (req.authUser?.privacyMode === 'paranoid' && isLegacyParanoidRefusedScope(required)) {
       next(
         forbidden(
           'This API scope is unavailable while paranoid mode is active.',

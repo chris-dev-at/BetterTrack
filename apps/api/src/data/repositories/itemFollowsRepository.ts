@@ -1,9 +1,9 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, or } from 'drizzle-orm';
 
 import type { ShareKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { itemFollows } from '../schema';
+import { itemFollows, portfolios } from '../schema';
 
 /**
  * Item-follow SQL (#439) — bookmarks of other people's shareable items. All
@@ -51,7 +51,13 @@ export function createItemFollowsRepository(db: Database) {
       return rows.length > 0;
     },
 
-    /** The caller's followed items, newest bookmark first. Raw triples — no join. */
+    /**
+     * The caller's followed items, newest bookmark first. A stale bookmark for a
+     * locked portfolio is absent rather than rendered as an unavailable shell:
+     * vault membership permanently removes the portfolio from every sharing /
+     * discovery surface. Missing and merely unshared subjects retain the legacy
+     * shell behavior so callers can still clean those bookmarks up.
+     */
     async list(userId: string): Promise<ItemFollowListRow[]> {
       return db
         .select({
@@ -60,7 +66,16 @@ export function createItemFollowsRepository(db: Database) {
           createdAt: itemFollows.createdAt,
         })
         .from(itemFollows)
-        .where(eq(itemFollows.userId, userId))
+        .leftJoin(
+          portfolios,
+          and(eq(itemFollows.kind, 'portfolio'), eq(itemFollows.subjectId, portfolios.id)),
+        )
+        .where(
+          and(
+            eq(itemFollows.userId, userId),
+            or(ne(itemFollows.kind, 'portfolio'), isNull(portfolios.vaultId)),
+          ),
+        )
         .orderBy(desc(itemFollows.createdAt));
     },
 
