@@ -7,7 +7,12 @@ import type { Redis } from 'ioredis';
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
 import type { AppContext } from '../http/context';
-import { MODULE_POLICIES, pathAcceptsBearer } from '../http/middleware/bearerAuth';
+import {
+  MODULE_POLICIES,
+  resolveBearerPolicyClassification,
+  type BearerModulePolicy,
+  type ResolvedBearerPolicyClassification,
+} from '../http/middleware/bearerAuth';
 import { getOpenApiDocument } from '../http/openapi';
 import { createLogger } from '../logger';
 
@@ -451,6 +456,8 @@ export function buildRouteTable(
  * kind contributes its top-level module. Direct application mounts below that
  * module also retain their exact `app.use` path, so a new
  * `/api/v1/<module>/<submodule>` mount cannot disappear into its parent row.
+ * Router-level sub-mounts such as `settingsRouter.use('/foo', ...)` stay inside
+ * the parent's policy by design; only application-level mounts are classified.
  */
 export function mountedApiModulePaths(surfaces: readonly MountedSurface[]): string[] {
   const modulePrefix = `${API_PREFIX}/`;
@@ -496,21 +503,37 @@ function nestedMountIsBearerClassified(path: string): boolean {
   if (!parentSegment) return false;
   const parentPath = `/${parentSegment}`;
   const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
-  const parentAcceptsBearer = methods.some((method) => pathAcceptsBearer(parentPath, method));
+  const policies = methods.map((method) => ({
+    parent: resolveBearerPolicyClassification(parentPath, method),
+    nested: resolveBearerPolicyClassification(relativePath, method),
+  }));
+  const parentAcceptsBearer = policies.some(({ parent }) => policyAcceptsBearer(parent));
 
   if (!parentAcceptsBearer) return true;
 
-  return methods.some(
-    (method) => pathAcceptsBearer(relativePath, method) !== pathAcceptsBearer(parentPath, method),
-  );
+  return policies.some(({ parent, nested }) => !samePolicyClassification(parent, nested));
+}
+
+function policyAcceptsBearer(policy: ResolvedBearerPolicyClassification): boolean {
+  return policy.kind === 'allow' || policy.kind === 'scope';
+}
+
+function samePolicyClassification(
+  left: ResolvedBearerPolicyClassification,
+  right: ResolvedBearerPolicyClassification,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind !== 'scope' || right.kind !== 'scope') return true;
+  return left.read === right.read && left.write === right.write;
 }
 
 /** Compare actual API module wiring with the sole runtime bearer policy table. */
 export function findBearerModulePolicyCoverage(
   surfaces: readonly MountedSurface[],
+  policies: readonly BearerModulePolicy[] = MODULE_POLICIES,
 ): BearerModulePolicyCoverage {
   const mounted = mountedApiModulePaths(surfaces);
-  const policyPaths = MODULE_POLICIES.map((policy) => `${API_PREFIX}${policy.prefix}`);
+  const policyPaths = policies.map((policy) => `${API_PREFIX}${policy.prefix}`);
   const invalidPolicyPrefixes = sortedUnique(
     policyPaths.filter((path) => !isTopLevelApiModulePath(path)),
   );
@@ -572,8 +595,11 @@ function bearerModulePolicyCoverageMessage(coverage: BearerModulePolicyCoverage)
 }
 
 /** Fail closed with mount-path diagnostics suitable for CI output. */
-export function assertBearerModulePolicyCoverage(surfaces: readonly MountedSurface[]): void {
-  const coverage = findBearerModulePolicyCoverage(surfaces);
+export function assertBearerModulePolicyCoverage(
+  surfaces: readonly MountedSurface[],
+  policies: readonly BearerModulePolicy[] = MODULE_POLICIES,
+): void {
+  const coverage = findBearerModulePolicyCoverage(surfaces, policies);
   if (!coverage.ok) throw new Error(bearerModulePolicyCoverageMessage(coverage));
 }
 

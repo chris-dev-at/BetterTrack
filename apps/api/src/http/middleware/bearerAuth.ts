@@ -398,6 +398,11 @@ type PathPolicy =
   | { kind: 'session-only'; bearerMessage?: string }
   | { kind: 'scope'; read: string; write: string; firstPartyOnly?: true };
 
+/** The policy identity exposed to static route-surface checks. */
+export type ResolvedBearerPolicyClassification =
+  | { readonly kind: 'allow' | 'admin' | 'session-only' }
+  | { readonly kind: 'scope'; readonly read: string; readonly write: string };
+
 export type BearerModulePolicy =
   | {
       readonly prefix: `/${string}`;
@@ -796,6 +801,20 @@ function resolvePolicy(
     }
   }
   return { kind: 'session-only' };
+}
+
+/**
+ * Resolve the policy identity needed by the application-mount census. Runtime-
+ * only details remain private to this middleware.
+ */
+export function resolveBearerPolicyClassification(
+  path: string,
+  method = 'GET',
+): ResolvedBearerPolicyClassification {
+  const policy = resolvePolicy(path, method);
+  return policy.kind === 'scope'
+    ? { kind: policy.kind, read: policy.read, write: policy.write }
+    : { kind: policy.kind };
 }
 
 /**
