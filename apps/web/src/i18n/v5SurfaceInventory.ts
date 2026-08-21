@@ -732,6 +732,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/home/WidgetFrame.tsx',
       'user/home/widgets/PortfolioCardsWidget.tsx',
       'user/portfolio/LockedPortfolioStub.tsx',
+      'user/control/panels/VaultTransferActions.tsx',
       'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
@@ -770,6 +771,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/portfolio/LockedPortfolioStub.test.tsx',
       'user/portfolio/PortfolioWorkspace.test.tsx',
       'user/home/widgets/PortfolioCardsWidget.test.tsx',
+      'user/control/panels/VaultTransferActions.test.tsx',
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
       'user/vault/ui/PortfolioVaultMoveWizard.test.tsx',
       'user/vault/ui/PortfolioVaultSection.test.tsx',
@@ -1780,6 +1782,11 @@ export const V5_NON_HOOK_ASYNC_BOUNDARY = [
     component: 'user/control/panels/NotificationsPanel.tsx',
     site: 'WebPushRow.useEffect',
     note: 'Reads the browser web-push permission/subscription state on mount.',
+  },
+  {
+    component: 'user/control/panels/VaultTransferActions.tsx',
+    site: 'VaultTransferActions.useEffect',
+    note: 'Loads registered vault configs and renders explicit loading, error, and empty branches.',
   },
   {
     component: 'user/forecast/StandingOrdersSection.tsx',

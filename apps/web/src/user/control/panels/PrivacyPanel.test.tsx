@@ -229,6 +229,7 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
   });
 
   test('keeps paranoid management compact while exposing storage, security, and destructive flows', async () => {
+    const user = userEvent.setup();
     privacyMode = 'paranoid';
     mediaState = {
       mediaSet: ['server', 'drive'],
@@ -246,6 +247,8 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     );
     expect(screen.getByText('What’s off in Paranoid mode')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+    await user.click(screen.getByText('Transfer between devices'));
+    expect(screen.getByRole('button', { name: 'Receive transferred vault' })).toBeInTheDocument();
     expect(screen.getByText('Change vault passphrase')).toBeInTheDocument();
     expect(screen.getByText('Rotate vault key')).toBeInTheDocument();
     expect(screen.getByText('Start fresh')).toBeInTheDocument();

@@ -3974,6 +3974,15 @@
     "transfer": {
       "manualWords": "Show 12 words instead",
       "manualEntry": "Enter 12 words instead",
+      "settings": {
+        "title": "Transfer between devices",
+        "hint": "Show a 60-second transfer code for a live vault, or verify one from another device.",
+        "receive": "Receive transferred vault",
+        "loading": "Loading transferable vaults…",
+        "empty": "No transferable vault is registered for this account yet.",
+        "unavailable": "Vault details could not be loaded. You can still receive with a transfer code.",
+        "received": "The transferred vault was verified and saved on this device."
+      },
       "sender": {
         "showQr": "Show transfer QR",
         "title": "Transfer this vault",

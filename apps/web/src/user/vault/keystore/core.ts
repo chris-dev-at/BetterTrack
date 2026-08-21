@@ -314,7 +314,23 @@ export class EndpointVaultKeystore {
         input.expectedFingerprint,
       );
       this.requireCurrentGeneration(initialGeneration);
-      const session = await this.ensureDeviceKey(input.devicePassword, snapshot, initialGeneration);
+      let custodySnapshot = snapshot;
+      // The receiver deliberately asks for a password even when this endpoint
+      // already has a live wrapped session. Never let ensureDeviceKey's normal
+      // session-reuse path turn that user-supplied value into an unchecked
+      // decoration: a wrong value must fail before the new phrase is wrapped.
+      if (input.devicePassword !== undefined && this.deviceKey != null) {
+        await this.verifyDevicePassword(input.devicePassword);
+        this.requireCurrentGeneration(initialGeneration);
+        custodySnapshot = await this.storage.readEndpointSnapshot();
+        this.reconcileSessionRevision(custodySnapshot.revision);
+        this.requireCurrentGeneration(initialGeneration);
+      }
+      const session = await this.ensureDeviceKey(
+        input.devicePassword,
+        custodySnapshot,
+        initialGeneration,
+      );
       const payload = await wrapMnemonicEntropy(
         input.vaultId,
         entropy,
