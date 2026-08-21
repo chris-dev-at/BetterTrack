@@ -216,7 +216,7 @@ export interface VaultedPortfolioMatrixPolicy {
 
 export interface VaultedPortfolioTransitionCarveout {
   readonly method: 'GET' | 'POST';
-  readonly operation: 'revision' | 'move-out';
+  readonly operation: 'revision' | 'move-in' | 'move-out/challenge' | 'move-out';
   readonly reason: string;
 }
 
@@ -477,6 +477,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'summary',
     'trends',
     'evaluate',
+    'evaluateRequired',
   ]),
   serviceBinding('portfolioServer', 'cashBudgets', 'portfolioIdFieldSecond', ['createBudget']),
   serviceBinding('portfolioServer', 'cashBudgets', 'cashBudgetIdSecond', [
@@ -834,6 +835,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The transition orchestrator owns the exclusive account lock and is the only path that changes privacy mode; enable, disable, and safe metadata reads must remain reachable for idempotent retries.',
   ),
   serviceExemption(
+    'portfolioVaultTransitions',
+    ['*'],
+    'kept',
+    'The per-portfolio transition orchestrator owns the account/vault/portfolio lock chain and is the only exit door that may atomically flip vault membership; capture, move-in, move-out, and outcome-ambiguous retries must bypass the state they change.',
+  ),
+  serviceExemption(
     'paranoidGuard',
     ['*'],
     'kept',
@@ -1084,6 +1091,12 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     capability: 'portfolioJobs',
     mode: 'serviceFiltered',
   }),
+  jobPolicy('portfolioVaultJobs.ts', 'createPortfolioVaultFinalizeJob', 'portfolioVault.finalize', {
+    capability: null,
+    mode: 'kept',
+    reason:
+      'This recovery sweep is transition infrastructure: its service processes only durable pending move-out receipts under the exclusive owner privacy lock.',
+  }),
   jobPolicy('usageAnalyticsJobs.ts', 'createUsageRollupJob', 'usage.rollup', {
     capability: null,
     mode: 'kept',
@@ -1173,7 +1186,17 @@ export const VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY = [
   {
     method: 'GET',
     operation: 'revision',
-    reason: 'Read the revision token required to serialize a ruled move-out.',
+    reason: 'Read the revision token required to serialize a portfolio transition.',
+  },
+  {
+    method: 'POST',
+    operation: 'move-in',
+    reason: 'Replay a committed move-in through its durable idempotency receipt.',
+  },
+  {
+    method: 'POST',
+    operation: 'move-out/challenge',
+    reason: 'Issue a graph-bound phrase-possession challenge for the designed exit.',
   },
   {
     method: 'POST',

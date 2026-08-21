@@ -194,6 +194,8 @@ export interface CreateTestAppOptions {
   marketData?: MarketDataService;
   /** Controlled portfolio-service clock (UTC-window boundaries, archive/restore transitions). */
   portfolioNow?: () => number;
+  /** Controlled destructive portfolio-vault transition clock. */
+  portfolioVaultTransitionNow?: () => Date;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
   /**
@@ -291,6 +293,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     emailTransport: options.emailTransport,
     marketData: options.marketData,
     portfolioNow: options.portfolioNow,
+    portfolioVaultTransitionNow: options.portfolioVaultTransitionNow,
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
     passwordHasher: options.passwordHasher ?? testPasswordHasher,

@@ -134,6 +134,8 @@ export interface CashBudgetService {
   trends(userId: string, portfolioId: string, months?: number): Promise<CashTrendResponse>;
   /** Evaluate one portfolio's budgets for the current month and alert once each. */
   evaluate(userId: string, portfolioId: string): Promise<void>;
+  /** Transition finalizers need a failure to remain durable instead of being logged and swallowed. */
+  evaluateRequired(userId: string, portfolioId: string): Promise<void>;
 }
 
 export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudgetService {
@@ -180,6 +182,62 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
       remaining: Math.round((amount - spent) * 100) / 100,
       exceeded: isOverBudget(spent, amount),
     };
+  }
+
+  async function evaluateBudgets(
+    userId: string,
+    portfolioId: string,
+    required: boolean,
+  ): Promise<void> {
+    const period = periodKeyFor(now());
+    const [targets, outflow] = await Promise.all([
+      budgets.effectiveTargets(portfolioId, period),
+      budgets.outflowByTag(portfolioId, period),
+    ]);
+    for (const target of targets) {
+      const row = progressRow(target, outflow.get(target.tagId) ?? 0, period);
+      if (!row.exceeded) continue;
+
+      // IDEMPOTENCY KEY: (budget_id, period_key). The claim lands BEFORE the
+      // emit, so a concurrent evaluator loses the race and emits nothing.
+      let claimed = false;
+      try {
+        claimed = await budgets.claimFire(target.id, period);
+      } catch (err) {
+        deps.logger?.warn({ err, budgetId: target.id }, 'cash budget fire-claim failed');
+        if (required) throw err;
+        continue;
+      }
+      if (!claimed) continue;
+
+      const durable = await notify.emit({
+        type: 'budget.exceeded',
+        userId,
+        budgetId: target.id,
+        // The fused model's tag stands where the category did — the user-facing
+        // question ("a budget was blown") is unchanged, so the notification
+        // type is too. `portfolioId` is new: budgets are per portfolio now, so
+        // a deep link needs to know which ledger.
+        categoryId: target.tagId,
+        categoryName: target.tagName,
+        portfolioId,
+        period,
+        amount: row.amount,
+        spent: row.spent,
+        currency: target.currency,
+        occurredAt: now().toISOString(),
+      });
+      if (durable) continue;
+
+      // Nothing accepted it, so the month has not really been alerted.
+      try {
+        await budgets.releaseFire(target.id, period);
+      } catch (err) {
+        deps.logger?.warn({ err, budgetId: target.id }, 'cash budget fire-release failed');
+        if (required) throw err;
+      }
+      if (required) throw new Error('cash budget notification was not durably accepted');
+    }
   }
 
   return {
@@ -320,58 +378,15 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
 
     async evaluate(userId, portfolioId): Promise<void> {
       try {
-        const period = periodKeyFor(now());
-        const [targets, outflow] = await Promise.all([
-          budgets.effectiveTargets(portfolioId, period),
-          budgets.outflowByTag(portfolioId, period),
-        ]);
-        if (targets.length === 0) return;
-
-        for (const target of targets) {
-          const row = progressRow(target, outflow.get(target.tagId) ?? 0, period);
-          if (!row.exceeded) continue;
-
-          // IDEMPOTENCY KEY: (budget_id, period_key). The claim lands BEFORE the
-          // emit, so a concurrent evaluator loses the race and emits nothing.
-          let claimed = false;
-          try {
-            claimed = await budgets.claimFire(target.id, period);
-          } catch (err) {
-            deps.logger?.warn({ err, budgetId: target.id }, 'cash budget fire-claim failed');
-            continue;
-          }
-          if (!claimed) continue;
-
-          const durable = await notify.emit({
-            type: 'budget.exceeded',
-            userId,
-            budgetId: target.id,
-            // The fused model's tag stands where the category did — the user-facing
-            // question ("a budget was blown") is unchanged, so the notification
-            // type is too. `portfolioId` is new: budgets are per portfolio now, so
-            // a deep link needs to know which ledger.
-            categoryId: target.tagId,
-            categoryName: target.tagName,
-            portfolioId,
-            period,
-            amount: row.amount,
-            spent: row.spent,
-            currency: target.currency,
-            occurredAt: now().toISOString(),
-          });
-          if (!durable) {
-            // Nothing accepted it, so the month has not really been alerted.
-            try {
-              await budgets.releaseFire(target.id, period);
-            } catch (err) {
-              deps.logger?.warn({ err, budgetId: target.id }, 'cash budget fire-release failed');
-            }
-          }
-        }
+        await evaluateBudgets(userId, portfolioId, false);
       } catch (err) {
         // Evaluation hangs off a money write; it must never fail that write.
         deps.logger?.warn({ err, userId, portfolioId }, 'cash budget evaluation failed');
       }
+    },
+
+    evaluateRequired(userId, portfolioId) {
+      return evaluateBudgets(userId, portfolioId, true);
     },
   };
 }

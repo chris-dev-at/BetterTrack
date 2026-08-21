@@ -8,6 +8,7 @@ import {
   VAULT_ENTITY_DOC_BUCKETS,
   VAULT_ENTITY_KINDS,
   VAULT_PORTFOLIO_DOC_ENTITY_KINDS,
+  PORTFOLIO_VAULT_TRANSITION_ERROR_CODES,
   VaultEnvelopeError,
   createVaultRequestSchema,
   encodeVaultDocEnvelope,
@@ -19,11 +20,17 @@ import {
   perVaultRetiredServerPurgeResponseSchema,
   perVaultServerCandidateReadParamsSchema,
   perVaultServerCandidateStageParamsSchema,
+  portfolioVaultMoveOutChallengeRequestSchema,
+  portfolioVaultMoveOutChallengeResponseSchema,
   portfolioVaultMoveInRequestSchema,
+  portfolioVaultMoveInResponseSchema,
   portfolioVaultMoveOutRequestSchema,
+  portfolioVaultMoveOutResponseSchema,
   readVaultDocServerHeader,
   serializeVaultDocHeader,
   serializePerVaultRetiredServerPurgeTranscript,
+  serializePortfolioVaultMoveOutProofTranscript,
+  serializePortfolioVaultRestoreDocument,
   serializeVaultRetirementVersionSet,
   vaultCommonDocSchema,
   vaultDocEnvelopeHeaderSchema,
@@ -645,6 +652,63 @@ describe('per-vault media transition batches (R3)', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('allows an unchanged selection only as a medium-specific full-set attestation refresh', () => {
+    const serverRefresh = {
+      transitionId: TRANSITION_ID,
+      expected: {
+        media: ['server'],
+        driveConnectionId: null,
+        mediaAttestedAt: null,
+      },
+      next: { media: ['server'], driveConnectionId: null },
+      verification: {
+        kind: 'server',
+        docs: [{ docId: DOC_ID, docVersion: 1, writeId: WRITE_ID }],
+      },
+    } as const;
+    expect(perVaultMediaTransitionRequestSchema.safeParse(serverRefresh).success).toBe(true);
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        ...serverRefresh,
+        verification: {
+          kind: 'drive',
+          driveConnectionId: VAULT_ID,
+          docs: serverRefresh.verification.docs,
+        },
+      }).success,
+    ).toBe(false);
+
+    const driveRefresh = {
+      transitionId: TRANSITION_ID,
+      expected: expectedDrive,
+      next: { media: ['drive'], driveConnectionId: VAULT_ID },
+      verification: {
+        kind: 'drive',
+        driveConnectionId: VAULT_ID,
+        docs: [{ docId: DOC_ID, docVersion: 1, writeId: WRITE_ID }],
+      },
+    } as const;
+    expect(perVaultMediaTransitionRequestSchema.safeParse(driveRefresh).success).toBe(true);
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        ...driveRefresh,
+        verification: { kind: 'server', docs: driveRefresh.verification.docs },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        ...driveRefresh,
+        expected: {
+          media: ['server', 'drive'],
+          driveConnectionId: VAULT_ID,
+          mediaAttestedAt: null,
+        },
+        next: { media: ['server', 'drive'], driveConnectionId: VAULT_ID },
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('per-vault retirement generation + version-set purge transcript (R4)', () => {
@@ -732,6 +796,39 @@ describe('per-vault retirement generation + version-set purge transcript (R4)', 
 
 describe('move-in / move-out / step-up bodies (§9, §10, §15)', () => {
   const stepUp = { password: 'hunter2hunter2' };
+  // Deterministic TEST VECTOR, not a secret: unpadded base64url SHA-256 shape
+  // plus the wire length of one Ed25519 signature.
+  const documentDigest = 'A'.repeat(43);
+  const documentSetHash = 'B'.repeat(43);
+  const vaultProof = { challenge: 'challenge-'.padEnd(32, 'c'), signature: 's'.repeat(86) };
+  /** Deterministic TEST VECTOR: one same-UUID strict portfolio restore graph. */
+  const strictRestoreDocument = {
+    schemaVersion: 1,
+    entities: [
+      {
+        id: DOC_ID,
+        kind: 'portfolio',
+        rev: 3,
+        editedAt: '2026-08-20T12:00:00.000Z',
+        editedBy: DEVICE_ID,
+        deletedAt: null,
+        data: {
+          userId: ACCOUNT_ID,
+          name: 'TEST VECTOR restored portfolio',
+          visibility: 'private',
+          sortOrder: 2,
+          defaultPayFromCash: true,
+          archivedAt: null,
+          kind: null,
+          vaultId: null,
+          alias: null,
+          vaultAlias: null,
+        },
+      },
+    ],
+    mergeLog: [],
+    mirrorProvenance: [],
+  };
 
   it('step-up requires at least one credential', () => {
     expect(vaultStepUpCredentialSchema.safeParse({}).success).toBe(false);
@@ -757,22 +854,179 @@ describe('move-in / move-out / step-up bodies (§9, §10, §15)', () => {
     ).toBe(false);
   });
 
-  it('move-out carries the idempotency key, the restore document and step-up', () => {
+  it('move-out accepts the strict restore TEST VECTOR and requires step-up', () => {
+    const request = {
+      vaultId: VAULT_ID,
+      moveOutId: DOC_ID,
+      lifecycleGeneration: 1,
+      documentSetHash,
+      document: strictRestoreDocument,
+      vaultProof,
+      stepUp,
+    };
+
+    expect(portfolioVaultMoveOutRequestSchema.parse(request)).toEqual(request);
     expect(
       portfolioVaultMoveOutRequestSchema.safeParse({
-        vaultId: VAULT_ID,
-        moveOutId: DOC_ID,
-        document: { schemaVersion: 1, entities: [] },
-        stepUp,
+        ...request,
+        lifecycleGeneration: 0,
       }).success,
-    ).toBe(true);
+    ).toBe(false);
+    const { lifecycleGeneration: _lifecycleGeneration, ...withoutLifecycle } = request;
+    expect(portfolioVaultMoveOutRequestSchema.safeParse(withoutLifecycle).success).toBe(false);
     expect(
       portfolioVaultMoveOutRequestSchema.safeParse({
         vaultId: VAULT_ID,
         moveOutId: DOC_ID,
+        lifecycleGeneration: 1,
+        documentSetHash,
+        document: strictRestoreDocument,
+        vaultProof,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('pins canonical restore bytes and the phrase-proof transcript', () => {
+    const reordered = {
+      mirrorProvenance: [],
+      mergeLog: [],
+      entities: strictRestoreDocument.entities.map((entity) => ({
+        data: entity.data,
+        deletedAt: entity.deletedAt,
+        editedBy: entity.editedBy,
+        editedAt: entity.editedAt,
+        rev: entity.rev,
+        kind: entity.kind,
+        id: entity.id,
+      })),
+      schemaVersion: 1,
+    };
+    expect(Array.from(serializePortfolioVaultRestoreDocument(reordered))).toEqual(
+      Array.from(serializePortfolioVaultRestoreDocument(strictRestoreDocument)),
+    );
+    expect(
+      JSON.parse(
+        new TextDecoder().decode(
+          serializePortfolioVaultMoveOutProofTranscript({
+            portfolioId: DOC_ID,
+            vaultId: VAULT_ID,
+            lifecycleGeneration: 7,
+            documentDigest,
+            documentSetHash,
+            challenge: vaultProof.challenge,
+          }),
+        ),
+      ),
+    ).toEqual([
+      'bettertrack.portfolio-vault-move-out.v1',
+      VAULT_ID,
+      DOC_ID,
+      7,
+      documentDigest,
+      documentSetHash,
+      vaultProof.challenge,
+    ]);
+  });
+
+  it('pins the graph-bound move-out challenge exchange', () => {
+    const identity = {
+      vaultId: VAULT_ID,
+      lifecycleGeneration: 7,
+      documentDigest,
+      documentSetHash,
+    };
+    expect(portfolioVaultMoveOutChallengeRequestSchema.parse(identity)).toEqual(identity);
+    expect(
+      portfolioVaultMoveOutChallengeResponseSchema.parse({
+        ...identity,
+        portfolioId: DOC_ID,
+        challenge: vaultProof.challenge,
+        expiresAt: '2026-08-20T12:05:00.000Z',
+      }),
+    ).toEqual({
+      ...identity,
+      portfolioId: DOC_ID,
+      challenge: vaultProof.challenge,
+      expiresAt: '2026-08-20T12:05:00.000Z',
+    });
+  });
+
+  it('move-out rejects generic JSON and unknown strict-row fields', () => {
+    expect(
+      portfolioVaultMoveOutRequestSchema.safeParse({
+        vaultId: VAULT_ID,
+        moveOutId: DOC_ID,
+        lifecycleGeneration: 1,
+        documentSetHash,
+        document: { schemaVersion: 1, entities: [{ arbitrary: 'transport JSON' }] },
+        vaultProof,
         stepUp,
       }).success,
     ).toBe(false);
+
+    const portfolio = strictRestoreDocument.entities[0]!;
+    expect(
+      portfolioVaultMoveOutRequestSchema.safeParse({
+        vaultId: VAULT_ID,
+        moveOutId: DOC_ID,
+        lifecycleGeneration: 1,
+        documentSetHash,
+        document: {
+          ...strictRestoreDocument,
+          entities: [{ ...portfolio, data: { ...portfolio.data, plaintextHash: 'forbidden' } }],
+        },
+        vaultProof,
+        stepUp,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('pins strict idempotent success receipts', () => {
+    const moveIn = {
+      portfolioId: DOC_ID,
+      vaultId: VAULT_ID,
+      docVersion: 7,
+      lifecycleGeneration: 1,
+      idempotent: false,
+    };
+    const moveOut = {
+      portfolioId: DOC_ID,
+      vaultId: VAULT_ID,
+      moveOutId: TRANSITION_ID,
+      lifecycleGeneration: 1,
+      idempotent: true,
+    };
+
+    expect(portfolioVaultMoveInResponseSchema.parse(moveIn)).toEqual(moveIn);
+    expect(portfolioVaultMoveOutResponseSchema.parse(moveOut)).toEqual(moveOut);
+    expect(
+      portfolioVaultMoveInResponseSchema.safeParse({ ...moveIn, cleartextRowsPurged: 42 }).success,
+    ).toBe(false);
+    expect(
+      portfolioVaultMoveOutResponseSchema.safeParse({ ...moveOut, restoredRows: 42 }).success,
+    ).toBe(false);
+  });
+
+  it('pins the stable transition refusal codes', () => {
+    expect(PORTFOLIO_VAULT_TRANSITION_ERROR_CODES).toEqual({
+      notFound: 'PORTFOLIO_VAULT_NOT_FOUND',
+      alreadyVaulted: 'PORTFOLIO_ALREADY_VAULTED',
+      notVaulted: 'PORTFOLIO_NOT_VAULTED',
+      mediaNotVerified: 'VAULT_MEDIA_NOT_VERIFIED',
+      activeMirrorchain: 'PORTFOLIO_VAULT_ACTIVE_MIRRORCHAIN',
+      pendingImport: 'PORTFOLIO_VAULT_PENDING_IMPORT',
+      pendingExport: 'PORTFOLIO_VAULT_PENDING_EXPORT',
+      captureExpired: 'PORTFOLIO_VAULT_CAPTURE_EXPIRED',
+      revisionStale: 'PORTFOLIO_VAULT_REVISION_STALE',
+      documentMissing: 'PORTFOLIO_VAULT_DOCUMENT_MISSING',
+      documentVersionMismatch: 'PORTFOLIO_VAULT_DOCUMENT_VERSION_MISMATCH',
+      documentSetStale: 'PORTFOLIO_VAULT_DOCUMENT_SET_STALE',
+      transitionConflict: 'PORTFOLIO_VAULT_TRANSITION_CONFLICT',
+      restoreInvalid: 'PORTFOLIO_VAULT_RESTORE_INVALID',
+      restoreSolvency: 'PORTFOLIO_VAULT_RESTORE_INSOLVENT',
+      restoreProvenance: 'PORTFOLIO_VAULT_RESTORE_PROVENANCE_INVALID',
+      possessionProofInvalid: 'PORTFOLIO_VAULT_POSSESSION_PROOF_INVALID',
+    });
   });
 });
 
