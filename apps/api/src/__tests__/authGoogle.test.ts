@@ -1293,6 +1293,7 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatchObject({
       actorId: null,
+      targetId: null,
       targetType: 'google_link',
       meta: { reason: 'malformed_query', via: 'mobile_ticket' },
     });
@@ -1365,6 +1366,20 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
     });
     const token = await mintAccountSecurityKey(g.harness.app, user);
     g.setClaims(claims({ sub: 'mobile-reset-sub', email: user.email }));
+
+    const control = await g.harness.seedUser({
+      email: 'mobile-reset-control@example.com',
+      username: 'mobile_reset_control',
+      password: 'mobile-reset-control-password',
+    });
+    const controlToken = await mintAccountSecurityKey(g.harness.app, control);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await startMobileGoogleLink(g.harness.app, controlToken);
+    }
+    await request(g.harness.app)
+      .post('/api/v1/auth/google/link/start')
+      .set(bearer(controlToken))
+      .expect(429);
 
     for (let attempt = 0; attempt < 11; attempt += 1) {
       const started = await startMobileGoogleLink(g.harness.app, token);
