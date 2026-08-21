@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
 import type { VaultKeyFingerprint } from '@bettertrack/contracts';
 
@@ -64,16 +64,37 @@ export function VaultReceivePhrase({
   const [plainAcknowledged, setPlainAcknowledged] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const operationGeneration = useRef(0);
+  const activeSave = useRef<AbortController | null>(null);
+  const mounted = useRef(false);
+
+  const invalidateActiveSave = useCallback(() => {
+    operationGeneration.current += 1;
+    activeSave.current?.abort();
+    activeSave.current = null;
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      invalidateActiveSave();
+    };
+  }, [invalidateActiveSave]);
 
   useEffect(() => {
     if (initialPayload === undefined) return;
+    invalidateActiveSave();
+    setWorking(false);
     setPayloadInput(initialPayload);
     setSource('qr');
     setCandidate(null);
     setErrorKey(null);
-  }, [initialPayload]);
+  }, [initialPayload, invalidateActiveSave]);
 
   function chooseSource(next: ReceiveSource) {
+    invalidateActiveSave();
+    setWorking(false);
     setSource(next);
     setCandidate(null);
     setCustody('wrapped');
@@ -83,6 +104,8 @@ export function VaultReceivePhrase({
   }
 
   function acceptCandidate(next: VaultTransferPayload, nextSource: ReceiveSource) {
+    invalidateActiveSave();
+    setWorking(false);
     setCandidate({ ...next, source: nextSource });
     setVaultName(next.name ?? '');
     setCustody('wrapped');
@@ -119,6 +142,14 @@ export function VaultReceivePhrase({
     if (custody === 'wrapped' && devicePassword.length === 0) return;
     if (custody === 'plain' && !plainAcknowledged) return;
 
+    invalidateActiveSave();
+    const generation = operationGeneration.current + 1;
+    operationGeneration.current = generation;
+    const controller = new AbortController();
+    activeSave.current = controller;
+    const isCurrent = () =>
+      mounted.current && operationGeneration.current === generation && !controller.signal.aborted;
+
     setWorking(true);
     setErrorKey(null);
     try {
@@ -131,6 +162,7 @@ export function VaultReceivePhrase({
               devicePassword,
               expectedFingerprint,
               fetchHeaderEnvelope,
+              signal: controller.signal,
             })
           : await keystore.storePlainAfterVerifiedOpen({
               vaultId: candidate.vaultId,
@@ -138,7 +170,9 @@ export function VaultReceivePhrase({
               acknowledgment: acknowledgePlainCustodyRisk(candidate.vaultId),
               expectedFingerprint,
               fetchHeaderEnvelope,
+              signal: controller.signal,
             });
+      if (!isCurrent()) return;
       const receipt: VaultReceivePhraseReceipt = {
         opened,
         ...(vaultName === '' ? {} : { vaultName }),
@@ -149,10 +183,19 @@ export function VaultReceivePhrase({
       setPlainAcknowledged(false);
       onOpened(receipt);
     } catch (error) {
+      if (!isCurrent()) return;
       setErrorKey(receiveErrorKey(error));
     } finally {
-      setWorking(false);
+      if (isCurrent()) {
+        activeSave.current = null;
+        setWorking(false);
+      }
     }
+  }
+
+  function cancel() {
+    invalidateActiveSave();
+    onCancel?.();
   }
 
   return (
@@ -167,7 +210,7 @@ export function VaultReceivePhrase({
             aria-label={t('common.close')}
             icon="x"
             iconOnly
-            onClick={onCancel}
+            onClick={cancel}
             variant="quiet"
           />
         ) : null}

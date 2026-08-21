@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 
 import type { VaultConfig } from '@bettertrack/contracts';
 
@@ -12,9 +21,11 @@ import type { Notice } from './PrivacyPanel';
 import { PanelFold, PanelList, PanelListItem, PanelNote } from './panelKit';
 
 export function VaultTransferActions({
+  accountId = null,
   onNotice,
   runtime = vaultTransferRuntime,
 }: {
+  accountId?: string | null;
   onNotice(notice: Notice): void;
   runtime?: VaultTransferRuntime;
 }) {
@@ -23,6 +34,10 @@ export function VaultTransferActions({
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [expanded, setExpanded] = useState(false);
   const [receiverOpen, setReceiverOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    runtime.setAccountId(accountId);
+  }, [accountId, runtime]);
 
   useEffect(() => {
     if (!expanded) return;

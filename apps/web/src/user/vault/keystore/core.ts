@@ -300,8 +300,10 @@ export class EndpointVaultKeystore {
   /** Default save path: verified open first, then wrapped custody. */
   async storeAfterVerifiedOpen(input: StoreWrappedPhraseInput): Promise<OpenedVault> {
     requireVaultId(input.vaultId);
+    assertNotAborted(input.signal);
     const initialGeneration = this.sessionGeneration;
     const snapshot = await this.storage.readEndpointSnapshot();
+    assertNotAborted(input.signal);
     this.reconcileSessionRevision(snapshot.revision);
     this.requireCurrentGeneration(initialGeneration);
     const entropy = mnemonicToEntropy(input.mnemonic);
@@ -312,7 +314,9 @@ export class EndpointVaultKeystore {
         input.mnemonic,
         input.fetchHeaderEnvelope,
         input.expectedFingerprint,
+        input.signal,
       );
+      assertNotAborted(input.signal);
       this.requireCurrentGeneration(initialGeneration);
       let custodySnapshot = snapshot;
       // The receiver deliberately asks for a password even when this endpoint
@@ -321,8 +325,10 @@ export class EndpointVaultKeystore {
       // decoration: a wrong value must fail before the new phrase is wrapped.
       if (input.devicePassword !== undefined && this.deviceKey != null) {
         await this.verifyDevicePassword(input.devicePassword);
+        assertNotAborted(input.signal);
         this.requireCurrentGeneration(initialGeneration);
         custodySnapshot = await this.storage.readEndpointSnapshot();
+        assertNotAborted(input.signal);
         this.reconcileSessionRevision(custodySnapshot.revision);
         this.requireCurrentGeneration(initialGeneration);
       }
@@ -331,14 +337,17 @@ export class EndpointVaultKeystore {
         custodySnapshot,
         initialGeneration,
       );
+      assertNotAborted(input.signal);
       const payload = await wrapMnemonicEntropy(
         input.vaultId,
         entropy,
         session.deviceKey,
         this.randomBytes,
       );
+      assertNotAborted(input.signal);
       const entry: StoredPhraseEntry = { vaultId: input.vaultId, custody: 'wrapped', payload };
       this.requireCurrentGeneration(session.generation);
+      assertNotAborted(input.signal);
       const written = await this.storage.writeEntry(session.revision, input.vaultId, entry);
       if (written.status === 'stale') {
         throw new EndpointKeystoreError(
@@ -364,8 +373,10 @@ export class EndpointVaultKeystore {
   /** Exceptional save path: impossible without a fresh runtime acknowledgment. */
   async storePlainAfterVerifiedOpen(input: StorePlainPhraseInput): Promise<OpenedVault> {
     requireVaultId(input.vaultId);
+    assertNotAborted(input.signal);
     const generation = this.sessionGeneration;
     const snapshot = await this.storage.readEndpointSnapshot();
+    assertNotAborted(input.signal);
     this.reconcileSessionRevision(snapshot.revision);
     this.requireCurrentGeneration(generation);
     const entropy = mnemonicToEntropy(input.mnemonic);
@@ -376,9 +387,12 @@ export class EndpointVaultKeystore {
         input.mnemonic,
         input.fetchHeaderEnvelope,
         input.expectedFingerprint,
+        input.signal,
       );
+      assertNotAborted(input.signal);
       this.requireCurrentGeneration(generation);
       consumePlainCustodyAcknowledgment(input.vaultId, input.acknowledgment);
+      assertNotAborted(input.signal);
       const entry: StoredPhraseEntry = {
         vaultId: input.vaultId,
         custody: 'plain',
@@ -388,6 +402,7 @@ export class EndpointVaultKeystore {
           entropy: encodeBase64Url(entropy),
         },
       };
+      assertNotAborted(input.signal);
       const written = await this.storage.writeEntry(snapshot.revision, input.vaultId, entry);
       if (written.status === 'stale') {
         throw new EndpointKeystoreError(
@@ -685,11 +700,15 @@ export class EndpointVaultKeystore {
     mnemonic: string,
     fetchHeaderEnvelope: FetchVaultHeaderEnvelope,
     expectedFingerprint: OpenedVault['keyFingerprint'] | undefined,
+    signal?: AbortSignal,
   ): Promise<VerifiedVaultHeaderOpen> {
     let envelope: Uint8Array;
     try {
-      envelope = await fetchHeaderEnvelope({ vaultId });
+      assertNotAborted(signal);
+      envelope = await fetchHeaderEnvelope({ vaultId, ...(signal ? { signal } : {}) });
+      assertNotAborted(signal);
     } catch (cause) {
+      if (isAbortError(cause)) throw cause;
       if (cause instanceof EndpointKeystoreError) throw cause;
       throw new EndpointKeystoreError(
         'vault-header-unavailable',
@@ -707,13 +726,16 @@ export class EndpointVaultKeystore {
 
     let verified: VerifiedVaultHeaderOpen;
     try {
+      assertNotAborted(signal);
       verified = await openVaultHeaderWithMnemonic({
         envelope,
         mnemonic,
         expectedVaultId: vaultId,
         expectedFingerprint,
       });
+      assertNotAborted(signal);
     } catch (cause) {
+      if (isAbortError(cause)) throw cause;
       throw new EndpointKeystoreError(
         'verification-failed',
         'The words did not open the authenticated vault header.',
@@ -984,6 +1006,17 @@ export class EndpointVaultKeystore {
     if (existing != null) zeroBytes(existing);
     this.wrappedEntropy.delete(vaultId);
   }
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The vault receive operation was canceled.', 'AbortError');
+}
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === 'AbortError';
 }
 
 export function lockoutDelayMs(failures: number): number {
