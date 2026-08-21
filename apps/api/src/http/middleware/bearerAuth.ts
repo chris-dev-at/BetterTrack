@@ -135,12 +135,26 @@ export const VAULT_SESSION_ONLY_ROUTES = [
 ] as const satisfies readonly BearerRoute[];
 
 /**
- * Destructive per-vault state shared by web and native clients under §15.
- * The exact allowlist keeps every future `/vaults/*` route default-closed;
- * the DELETE body carries the same in-request step-up credential on both paths.
+ * Per-portfolio vault transitions shared by web and native clients under §15.
+ * Each POST carries the same in-request step-up credential on both paths. The
+ * revision read shares the control-plane scope because it is the CAS input to
+ * the destructive move-in commit, not an ordinary portfolio-data read.
+ */
+export const PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/portfolios/{portfolioId}/vault/revision' },
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * Destructive vault state shared by web and native clients under §15. This is
+ * the single account-security allowlist consumed by the global bearer policy;
+ * every unlisted sibling under either control-plane namespace stays closed.
  */
 export const VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
   { method: 'DELETE', path: '/vaults/{vaultId}' },
+  ...PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
 ] as const satisfies readonly BearerRoute[];
 
 /**
@@ -228,6 +242,23 @@ function matchesRoute(path: string, route: BearerRoute, allowPathTemplate = fals
   );
 }
 
+/**
+ * Whether a path is inside one portfolio's vault control-plane namespace. The
+ * prefix check is intentionally separate from the exact allowlist: it is the
+ * default-deny fence that prevents a future transition route from inheriting
+ * the coarse `/portfolios` read/write scopes.
+ */
+function isPortfolioVaultControlPath(path: string, allowPathTemplate = false): boolean {
+  const segments = normalizedRouteSegments(path);
+  if (segments.length < 3 || segments[0] !== 'portfolios' || segments[2] !== 'vault') {
+    return false;
+  }
+  const portfolioId = segments[1]!;
+  return (
+    UUID_ROUTE_SEGMENT.test(portfolioId) || (allowPathTemplate && portfolioId === '{portfolioid}')
+  );
+}
+
 function routeAllowlistAccepts(
   allowlist: readonly BearerRoute[],
   method: string,
@@ -248,9 +279,21 @@ export function vaultSyncRouteAcceptsBearer(method: string, path: string): boole
   return routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
-/** Whether one exact destructive per-vault route admits `account:security`. */
+/** Whether one exact destructive vault-control route admits `account:security`. */
 export function vaultAccountSecurityRouteAcceptsBearer(method: string, path: string): boolean {
   return routeAllowlistAccepts(VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST, method, path);
+}
+
+/** Whether one exact per-portfolio vault transition admits `account:security`. */
+export function portfolioVaultAccountSecurityRouteAcceptsBearer(
+  method: string,
+  path: string,
+): boolean {
+  return routeAllowlistAccepts(
+    PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
+    method,
+    path,
+  );
 }
 
 /** Whether one exact method + path is in the MIRRORCHAIN bearer allowlist. */
@@ -704,9 +747,10 @@ function resolvePolicy(
       ? { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE }
       : { kind: 'session-only' };
   }
-  // R5 (#1411): vault deletion is a §15 destructive operation shared by the
-  // browser and native control layers. Admit only this exact method/path under
-  // account:security; its in-body step-up is identical for both credential kinds.
+  // §15 destructive vault operations are shared by the browser and native
+  // control layers. Admit only the exact method/path pairs under
+  // account:security; each mutation carries the same in-body step-up for both
+  // credential kinds.
   if (
     routeAllowlistAccepts(
       VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
@@ -716,6 +760,12 @@ function resolvePolicy(
     )
   ) {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
+  // The ordinary `/portfolios` module is bearer-capable, but the nested vault
+  // namespace is a security control plane. Keep every unlisted method, sibling,
+  // and future route session-only instead of letting it inherit portfolio:*.
+  if (isPortfolioVaultControlPath(path, allowPathTemplate)) {
+    return { kind: 'session-only' };
   }
   // #1043 / E1 #1411: native clients may synchronize already-encrypted vault
   // bytes with the single inherently read-write vault:sync scope. The exact

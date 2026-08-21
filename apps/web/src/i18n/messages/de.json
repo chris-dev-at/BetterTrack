@@ -3612,6 +3612,27 @@
     "lock": {
       "action": "Tresor sperren"
     },
+    "portfolioMove": {
+      "stepUpHint": "Bestätige den Vorgang mit deinem BetterTrack-Kontopasswort, einem aktuellen Authenticator-Code oder einem Wiederherstellungscode.",
+      "moveIn": {
+        "title": "Portfolio in einen Tresor verschieben",
+        "warning": "Nachdem jede verschlüsselte Kopie geprüft wurde, löscht BetterTrack die serverlesbaren Finanzdaten dieses Portfolios dauerhaft und widerruft seine bestehenden Freigaben.",
+        "action": "In den Tresor verschieben",
+        "working": "Portfolio wird in den Tresor verschoben…",
+        "done": "Das Portfolio ist im Tresor verschlüsselt und auf dem Server gesperrt.",
+        "error": "Das Portfolio wurde nicht verschoben. Seine Serverdaten sind unverändert."
+      },
+      "moveOut": {
+        "title": "Portfolio aus dem Tresor verschieben",
+        "unlockRequired": "Entsperre diesen Tresor auf diesem Gerät, bevor du das Portfolio herausverschiebst.",
+        "warning": "Wenn du dieses Portfolio aus dem Tresor verschiebst, wird es für den BetterTrack-Server wieder lesbar. BetterTrack stellt seine entschlüsselten Finanzdaten unter derselben Portfolio-ID wieder her; frühere Freigaben bleiben widerrufen.",
+        "confirm": "Mir ist bewusst, dass dieses Portfolio für den Server wieder lesbar wird.",
+        "action": "Als normales Portfolio wiederherstellen",
+        "working": "Portfolio wird wiederhergestellt…",
+        "done": "Das Portfolio wurde unter derselben ID wiederhergestellt und ist für den Server wieder lesbar.",
+        "error": "Das Portfolio konnte nicht vollständig wiederhergestellt werden. Es bleibt im Tresor gesperrt; ein erneuter Versuch setzt denselben Vorgang fort."
+      }
+    },
     "enable": {
       "title": "Paranoiden Modus aktivieren",
       "step": "Schritt {{current}} von {{total}}",

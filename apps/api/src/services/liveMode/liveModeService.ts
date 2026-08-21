@@ -12,6 +12,7 @@ import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 
 import { createLiveRingBuffer, liveRingKey, type LiveRingBuffer } from './ringBuffer';
+import { liveAssetRetirementStateKey, readLiveAssetRetirementGeneration } from './retirementFence';
 
 /**
  * Live Mode core (PROJECTPLAN.md §6.3, §5.3, V3-P7b; overhauled per #372): the
@@ -86,15 +87,21 @@ export interface LiveModeService {
    * saw another process holding this asset; the follower still registers for
    * rate reconciliation and crash failover.
    */
-  /** False only after service shutdown, when no loop can be registered. */
-  watch(assetId: string, ref: AssetRef, intervalMs?: number, sharedGlobalAsset?: boolean): boolean;
+  /** Null when shutdown/fenced; otherwise the exact retirement generation held. */
+  watch(
+    assetId: string,
+    ref: AssetRef,
+    intervalMs?: number,
+    sharedGlobalAsset?: boolean,
+    previous?: { intervalMs?: number; retirementEpoch: number },
+  ): Promise<{ retirementEpoch: number } | null>;
   /**
    * Deregister one watcher previously registered at `intervalMs` (same default
    * as {@link watch}); at zero watchers the loop stops and the asset goes cold.
    * A rate with no registered watcher is a no-op — never steals another
    * watcher's registration.
    */
-  unwatch(assetId: string, intervalMs?: number): void;
+  unwatch(assetId: string, intervalMs?: number, retirementEpoch?: number): void;
   /**
    * The requested window's frames, oldest first: the ring buffer's real
    * observations, preceded — when the ring does not reach back to the window's
@@ -102,7 +109,12 @@ export interface LiveModeService {
    * 1-minute bars (#372). Stitching is best-effort: on any history/quote
    * failure the ring frames alone are returned.
    */
-  backfill(assetId: string, ref: AssetRef, window: LiveWindow): Promise<RealtimeLiveFrame[]>;
+  backfill(
+    assetId: string,
+    ref: AssetRef,
+    window: LiveWindow,
+    retirementEpoch?: number,
+  ): Promise<RealtimeLiveFrame[]>;
   /** Subscribe to every frame the loops produce. Returns the unsubscribe. */
   onFrame(handler: (frame: RealtimeLiveFrame) => void): () => void;
   /** Current watcher count for an asset (0 = cold). */
@@ -145,6 +157,12 @@ export interface LiveModeServiceDeps {
   marketData: MarketDataService;
   redis: Redis;
   logger: Logger;
+  /**
+   * Resolve a closed E4 generation against account-locked Postgres state.
+   * This repairs a fence left by SIGKILL before the move-in transaction could
+   * commit or execute its process-local rollback hook.
+   */
+  reconcileRetirement?: (assetId: string) => Promise<void>;
   options?: LiveModeServiceOptions;
 }
 
@@ -152,6 +170,8 @@ interface AssetLoop {
   ref: AssetRef;
   /** Per-hot-generation token; prevents a late release deleting a restarted loop. */
   coordinationId: string;
+  /** Exact durable generation pinned when this local registration was admitted. */
+  retirementEpoch: number;
   /** Requested interval → number of watchers holding it (a multiset, #372). */
   rates: Map<number, number>;
   /** Consecutive failed ticks; each one doubles the cadence up to the ceiling. */
@@ -192,6 +212,21 @@ local rateMs = tonumber(ARGV[4])
 local leaseTtlMs = tonumber(ARGV[5])
 local keyTtlMs = tonumber(ARGV[6])
 local allowAcquire = tonumber(ARGV[7])
+local expectedEpoch = tonumber(ARGV[8])
+
+-- E4's durable fence wins over every stale local watcher and lease. Remove this
+-- process's demand atomically so deleting/recreating an API process cannot
+-- resurrect polling while the custom asset exists only in ciphertext.
+local retirementEpoch = tonumber(redis.call('HGET', KEYS[4], 'epoch') or '0')
+local retirementState = redis.call('HGET', KEYS[4], 'state') or 'open'
+if retirementState ~= 'open' or retirementEpoch ~= expectedEpoch then
+  redis.call('ZREM', KEYS[2], instanceId)
+  redis.call('HDEL', KEYS[3], instanceId)
+  if redis.call('GET', KEYS[1]) == instanceId then
+    redis.call('DEL', KEYS[1])
+  end
+  return { -1, rateMs }
+end
 
 local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now)
 for _, expiredId in ipairs(expired) do
@@ -251,7 +286,10 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
   const instanceId = options.instanceId ?? randomUUID();
   const now = options.now ?? Date.now;
 
-  const ring: LiveRingBuffer = createLiveRingBuffer(deps.redis, { capacity, retentionMs });
+  const ring: LiveRingBuffer = createLiveRingBuffer(deps.redis, {
+    capacity,
+    retentionMs,
+  });
   const loops = new Map<string, AssetLoop>();
   const inFlightTicks = new Map<string, Set<Promise<void>>>();
   const handlers = new Set<(frame: RealtimeLiveFrame) => void>();
@@ -310,6 +348,13 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     loop.timer = null;
   }
 
+  function retireLocalLoop(assetId: string, loop: AssetLoop): void {
+    if (loops.get(assetId) !== loop) return;
+    stopPolling(loop);
+    loops.delete(assetId);
+    stopCoordinationTimerWhenIdle();
+  }
+
   function applyGlobalRate(assetId: string, loop: AssetLoop, intervalMs: number): void {
     const before = loop.intervalMs;
     loop.baseIntervalMs = intervalMs;
@@ -356,10 +401,11 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         const leaseExpiresAt = coordinatedAt + leaderLeaseTtlMs;
         const result = (await deps.redis.eval(
           COORDINATE_LOOP_SCRIPT,
-          3,
+          4,
           liveLoopLeaderKey(assetId),
           liveLoopProcessesKey(assetId),
           liveLoopRatesKey(assetId),
+          liveAssetRetirementStateKey(assetId),
           coordinatedAt,
           leaseExpiresAt,
           loop.coordinationId,
@@ -367,6 +413,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
           leaderLeaseTtlMs,
           coordinationKeyTtlMs,
           allowAcquire ? 1 : 0,
+          loop.retirementEpoch,
         )) as [number | string, number | string];
 
         if (closed || loops.get(assetId) !== loop || watcherTotal(loop) === 0) {
@@ -376,7 +423,12 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
 
         // A delayed Redis response never grants local work beyond the deadline
         // encoded in that exact atomic election.
-        const ownsLoop = Number(result[0]) === 1 && now() < leaseExpiresAt;
+        const ownership = Number(result[0]);
+        if (ownership < 0) {
+          retireLocalLoop(assetId, loop);
+          return;
+        }
+        const ownsLoop = ownership === 1 && now() < leaseExpiresAt;
         applyGlobalRate(assetId, loop, Number(result[1]));
         if (ownsLoop) {
           loop.leaderLeaseExpiresAt = leaseExpiresAt;
@@ -438,6 +490,30 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     coordinationTimer = null;
   }
 
+  async function resolvedRetirementGeneration(assetId: string) {
+    let generation = await readLiveAssetRetirementGeneration(deps.redis, assetId);
+    if (!generation.open && deps.reconcileRetirement) {
+      await deps.reconcileRetirement(assetId);
+      generation = await readLiveAssetRetirementGeneration(deps.redis, assetId);
+    }
+    return generation;
+  }
+
+  async function proveOpenGeneration(
+    assetId: string,
+    loop: AssetLoop,
+    stage: string,
+  ): Promise<boolean> {
+    try {
+      const generation = await resolvedRetirementGeneration(assetId);
+      if (generation.open && generation.epoch === loop.retirementEpoch) return true;
+    } catch (err) {
+      logger.warn({ err, assetId, stage }, 'live retirement-generation proof failed');
+    }
+    retireLocalLoop(assetId, loop);
+    return false;
+  }
+
   async function tick(assetId: string, loop: AssetLoop): Promise<void> {
     // A superseded loop (last watcher left, or close()) never polls again.
     if (closed || loops.get(assetId) !== loop || !loop.leader) return;
@@ -450,9 +526,11 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       requestCoordination(assetId, loop, true);
       return;
     }
+    if (!(await proveOpenGeneration(assetId, loop, 'before-poll'))) return;
     loop.lastTickAt = now();
     try {
       const cached = await marketData.pollQuote(loop.ref);
+      if (!(await proveOpenGeneration(assetId, loop, 'after-poll'))) return;
       // Do not publish or reschedule a call whose owner proof expired in flight.
       if (
         closed ||
@@ -489,13 +567,24 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       // verified coalescing/cadence loop (#372). §16-logged (V5-P1).
       if (frame.marketState !== 'closed') {
         try {
-          await ring.append(frame);
+          const appended = await ring.append(frame, loop.retirementEpoch);
+          if (!appended) {
+            retireLocalLoop(assetId, loop);
+            return;
+          }
         } catch (err) {
-          // A Redis hiccup only costs backfill history — the quote succeeded, so
-          // the frame still reaches live viewers and the cadence stays at base;
-          // stretching is reserved for UPSTREAM distress (§5.3).
-          logger.warn({ err, assetId }, 'live ring append failed; frame emitted without backfill');
+          // The append is also the final atomic retirement-generation proof.
+          // Losing Redis means the proof is unavailable, so fail closed: no
+          // private frame may escape merely because backfill storage failed.
+          retireLocalLoop(assetId, loop);
+          logger.warn({ err, assetId }, 'live ring append/fence proof failed; loop retired');
+          return;
         }
+      }
+      // Closed-session frames bypass the ring, so they need their own last
+      // durable-fence read before crossing into gateway fan-out.
+      if (frame.marketState === 'closed') {
+        if (!(await proveOpenGeneration(assetId, loop, 'before-closed-frame'))) return;
       }
       emit(frame);
     } catch (err) {
@@ -541,11 +630,28 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
   }
 
   return {
-    watch(assetId, ref, intervalMs = defaultIntervalMs, sharedGlobalAsset = false) {
-      if (closed) return false;
-      const existing = loops.get(assetId);
+    async watch(assetId, ref, intervalMs = defaultIntervalMs, sharedGlobalAsset = false, previous) {
+      if (closed) return null;
+      const generation = await resolvedRetirementGeneration(assetId);
+      if (!generation.open || closed) return null;
+      let existing = loops.get(assetId);
+      if (existing && existing.retirementEpoch !== generation.epoch) {
+        retireLocalLoop(assetId, existing);
+        existing = undefined;
+      }
       if (existing) {
-        existing.rates.set(intervalMs, (existing.rates.get(intervalMs) ?? 0) + 1);
+        const previousRate = previous?.intervalMs ?? defaultIntervalMs;
+        const previousIsCurrent = previous?.retirementEpoch === generation.epoch;
+        if (!previousIsCurrent || previousRate !== intervalMs) {
+          existing.rates.set(intervalMs, (existing.rates.get(intervalMs) ?? 0) + 1);
+        }
+        if (previousIsCurrent && previousRate !== intervalMs) {
+          const held = existing.rates.get(previousRate);
+          if (held !== undefined) {
+            if (held > 1) existing.rates.set(previousRate, held - 1);
+            else existing.rates.delete(previousRate);
+          }
+        }
         const before = existing.intervalMs;
         existing.baseIntervalMs = finestLocalRateMs(existing);
         applyCadence(existing);
@@ -553,11 +659,12 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         // never fire an extra upstream call, so coarsening waits its turn.
         if (existing.intervalMs < before) reschedule(assetId, existing);
         requestCoordination(assetId, existing, true, true);
-        return true;
+        return { retirementEpoch: generation.epoch };
       }
       const loop: AssetLoop = {
         ref,
         coordinationId: `${instanceId}:${randomUUID()}`,
+        retirementEpoch: generation.epoch,
         rates: new Map([[intervalMs, 1]]),
         failures: 0,
         baseIntervalMs: intervalMs,
@@ -578,12 +685,13 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       // but cannot opportunistically create a second provider loop. Periodic or
       // release-triggered reconciliation may elect it after the owner vanishes.
       requestCoordination(assetId, loop, !sharedGlobalAsset, true);
-      return true;
+      return { retirementEpoch: generation.epoch };
     },
 
-    unwatch(assetId, intervalMs = defaultIntervalMs) {
+    unwatch(assetId, intervalMs = defaultIntervalMs, retirementEpoch) {
       const loop = loops.get(assetId);
       if (!loop) return;
+      if (retirementEpoch !== undefined && loop.retirementEpoch !== retirementEpoch) return;
       const held = loop.rates.get(intervalMs);
       // Unknown rate ⇒ no watcher registered it — never steal another's count.
       if (held === undefined) return;
@@ -610,7 +718,14 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       });
     },
 
-    async backfill(assetId, ref, window) {
+    async backfill(assetId, ref, window, retirementEpoch) {
+      const generation = await resolvedRetirementGeneration(assetId);
+      if (
+        !generation.open ||
+        (retirementEpoch !== undefined && generation.epoch !== retirementEpoch)
+      ) {
+        throw new Error('live asset retirement generation changed');
+      }
       const windowStart = now() - LIVE_WINDOW_MS[window];
       const frames = await ring.readSince(assetId, windowStart);
       // Where real observations start; an empty ring covers nothing (gap = full window).

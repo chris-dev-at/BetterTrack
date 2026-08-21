@@ -47,7 +47,11 @@ const YAHOO_ENVELOPE_ERROR_PATTERNS: Partial<Record<YahooEnvelopeStatus, readonl
  * falls back to a plain `Error` for names it does not export and never copies
  * the numeric HTTP status onto the error. Keep these fallbacks deliberately
  * narrow: the derived Yahoo name (or plain fallback) must be paired with one
- * of Yahoo's known status descriptions.
+ * of Yahoo's known status descriptions. `yahoo-finance2` throws the envelope's
+ * `description` as the message, never its `code`, so bare `'Not Found'` is
+ * deliberately absent as unattested. Every `YAHOO_ENVELOPE_ERROR_PATTERNS`
+ * entry must remain start- and end-anchored (`^…$`) because a match feeds the
+ * negative cache.
  */
 function isYahooEnvelopeStatusError(err: unknown, status: YahooEnvelopeStatus): boolean {
   if (!(err instanceof Error)) return false;

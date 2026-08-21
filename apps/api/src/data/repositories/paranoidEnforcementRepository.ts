@@ -201,6 +201,39 @@ export function withFreshLockedPrivacyModes<T>(
   return heldPrivacyModes.run(new Map(), () => withLockedPrivacyModes(db, userIds, run));
 }
 
+/**
+ * Hold the account's exclusive transition lock across recovery work executed on
+ * another database/Redis/provider stack. The held-mode context makes nested
+ * ordinary service guards re-entrant; callers still need an explicit
+ * transition-authorized seam for per-portfolio guards while `vault_id` is set.
+ */
+export function withExclusiveLockedPrivacyMode<T>(
+  db: Database,
+  userId: string,
+  run: (privacyMode: LockedPrivacyMode) => Promise<T>,
+): Promise<T> {
+  const runWithMode = (privacyMode: LockedPrivacyMode) =>
+    heldPrivacyModes.run(new Map([[userId, privacyMode]]), () => run(privacyMode));
+  if (process.env.NODE_ENV === 'test') {
+    return testLocksFor(db).exclusive(userId, async () => {
+      const [row] = await db
+        .select({ privacyMode: users.privacyMode })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      return runWithMode(row?.privacyMode ?? null);
+    });
+  }
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ privacyMode: users.privacyMode })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for('update');
+    return runWithMode(row?.privacyMode ?? null);
+  });
+}
+
 export interface ParanoidOwnedSubject {
   /** False means the id no longer resolves; privacy guards treat that fail-closed. */
   exists: boolean;

@@ -3612,6 +3612,27 @@
     "lock": {
       "action": "Lock vault"
     },
+    "portfolioMove": {
+      "stepUpHint": "Confirm with your BetterTrack account password, a current authenticator code, or a recovery code.",
+      "moveIn": {
+        "title": "Move portfolio into a vault",
+        "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares.",
+        "action": "Move into vault",
+        "working": "Moving portfolio into the vault…",
+        "done": "The portfolio is encrypted in the vault and locked on the server.",
+        "error": "The portfolio was not moved. Its server data is unchanged."
+      },
+      "moveOut": {
+        "title": "Move portfolio out of the vault",
+        "unlockRequired": "Unlock this vault on this device before moving the portfolio out.",
+        "warning": "Moving this portfolio out makes it server-readable again. BetterTrack restores its decrypted money data under the same portfolio ID; previous shares stay revoked.",
+        "confirm": "I understand that this portfolio becomes server-readable again.",
+        "action": "Restore as a normal portfolio",
+        "working": "Restoring the portfolio…",
+        "done": "The portfolio is restored under the same ID and is server-readable again.",
+        "error": "The portfolio could not be restored completely. It remains locked in the vault; retry resumes the same move."
+      }
+    },
     "enable": {
       "title": "Enable Paranoid mode",
       "step": "Step {{current}} of {{total}}",

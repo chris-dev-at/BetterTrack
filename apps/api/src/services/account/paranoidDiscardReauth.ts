@@ -11,6 +11,8 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   ACCOUNT_PARANOID_DISCARD_NAMESPACE,
   ACCOUNT_VAULT_DELETE_NAMESPACE,
+  PORTFOLIO_VAULT_MOVE_IN_NAMESPACE,
+  PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE,
 } from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
 import type { PasswordHasher } from '../password/passwordHasher';
@@ -61,6 +63,18 @@ export interface VaultDeleteReauth {
   }): Promise<void>;
   /** Persist a wrong-credential audit only after the caller's transaction rolls back. */
   recordVaultDeleteFailure(error: unknown): Promise<boolean>;
+  verifyPortfolioVaultTransition(input: {
+    userId: string;
+    portfolioId: string;
+    vaultId: string;
+    kind: 'move-in' | 'move-out';
+    body: VaultDeleteCredential;
+    ip?: string | null;
+    auth: LockedVaultDeleteAuth;
+    db: Database;
+  }): Promise<void>;
+  /** Persist a wrong transition credential only after its transaction rolls back. */
+  recordPortfolioVaultTransitionFailure(error: unknown): Promise<boolean>;
 }
 
 export interface VaultDeleteCredential {
@@ -103,6 +117,16 @@ export function createParanoidDiscardReauth(
     ACCOUNT_VAULT_DELETE_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+  const portfolioMoveInThrottle = createProgressiveLimiter(
+    redis,
+    PORTFOLIO_VAULT_MOVE_IN_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
+  const portfolioMoveOutThrottle = createProgressiveLimiter(
+    redis,
+    PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
 
   class VaultDeleteReauthFailure extends ApiError {
     constructor(
@@ -117,6 +141,24 @@ export function createParanoidDiscardReauth(
     ) {
       super(response.statusCode, response.code, response.message, response.details);
       this.name = 'VaultDeleteReauthFailure';
+    }
+  }
+
+  class PortfolioVaultTransitionReauthFailure extends ApiError {
+    constructor(
+      response: ApiError,
+      readonly auditMeta: {
+        userId: string;
+        portfolioId: string;
+        vaultId: string;
+        kind: 'move-in' | 'move-out';
+        factor: string;
+        ip?: string | null;
+        locked: boolean;
+      },
+    ) {
+      super(response.statusCode, response.code, response.message, response.details);
+      this.name = 'PortfolioVaultTransitionReauthFailure';
     }
   }
 
@@ -232,6 +274,82 @@ export function createParanoidDiscardReauth(
         targetId: error.auditMeta.vaultId,
         ip: error.auditMeta.ip,
         meta: { kind: error.auditMeta.kind, locked: error.auditMeta.locked },
+      });
+      return true;
+    },
+    async verifyPortfolioVaultTransition({
+      userId,
+      portfolioId,
+      vaultId,
+      kind,
+      body,
+      ip,
+      auth,
+      db,
+    }) {
+      const transitionThrottle =
+        kind === 'move-in' ? portfolioMoveInThrottle : portfolioMoveOutThrottle;
+      const cooling = await transitionThrottle.peek(userId);
+      if (cooling > 0) {
+        throw tooManyRequests(cooling, 'Too many attempts. Please wait and retry.');
+      }
+
+      const fail = async (factor: string): Promise<never> => {
+        const decision = await transitionThrottle.consume(userId);
+        const response = !decision.allowed
+          ? tooManyRequests(decision.retryAfterSec, 'Too many attempts. Please wait and retry.')
+          : unauthorized('Re-authentication failed.', 'INVALID_CREDENTIALS');
+        throw new PortfolioVaultTransitionReauthFailure(response, {
+          userId,
+          portfolioId,
+          vaultId,
+          kind,
+          factor,
+          ip,
+          locked: !decision.allowed,
+        });
+      };
+
+      const factorState = {
+        secret: auth.twoFactorSecret,
+        enabled: auth.twoFactorEnabled,
+        emailEnabled: auth.twoFactorEmailEnabled,
+      };
+      if (body.password !== undefined) {
+        if (!(await passwordHasher.verify(auth.passwordHash, body.password)))
+          await fail('password');
+      } else if (body.recoveryCode !== undefined) {
+        const ok = await twoFactor.consumeRecoveryCode(
+          userId,
+          body.recoveryCode,
+          factorState,
+          createTwoFactorRepository(db),
+        );
+        if (!ok) await fail('recovery_code');
+      } else if (body.code !== undefined) {
+        if (!(await twoFactor.verifyTotpCode(userId, body.code, factorState))) await fail('totp');
+      } else {
+        throw unauthorized('Re-authentication is required.', 'INVALID_CREDENTIALS');
+      }
+      await transitionThrottle.reset(userId);
+    },
+    async recordPortfolioVaultTransitionFailure(error) {
+      if (!(error instanceof PortfolioVaultTransitionReauthFailure)) return false;
+      await audit.record({
+        actorId: error.auditMeta.userId,
+        action:
+          error.auditMeta.kind === 'move-in'
+            ? AuditAction.PortfolioVaultMoveInReauthFail
+            : AuditAction.PortfolioVaultMoveOutReauthFail,
+        targetType: 'portfolio',
+        targetId: error.auditMeta.portfolioId,
+        ip: error.auditMeta.ip,
+        meta: {
+          kind: error.auditMeta.kind,
+          factor: error.auditMeta.factor,
+          locked: error.auditMeta.locked,
+          vaultId: error.auditMeta.vaultId,
+        },
       });
       return true;
     },

@@ -736,7 +736,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     });
     const unwatch = vi.fn();
     const liveMode: LiveModeService = {
-      watch: vi.fn(() => true),
+      watch: vi.fn(async () => ({ retirementEpoch: 0 })),
       unwatch,
       backfill: vi.fn(() => new Promise<never>(() => undefined)),
       onFrame: vi.fn(() => () => undefined),
@@ -809,7 +809,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       }
     });
     const liveMode: LiveModeService = {
-      watch: vi.fn(() => true),
+      watch: vi.fn(async () => ({ retirementEpoch: 0 })),
       unwatch: vi.fn(),
       backfill,
       onFrame: vi.fn(() => () => undefined),
@@ -901,7 +901,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     });
     const unwatch = vi.fn();
     const liveMode: LiveModeService = {
-      watch: vi.fn(() => true),
+      watch: vi.fn(async () => ({ retirementEpoch: 0 })),
       unwatch,
       backfill: vi.fn(async () => {
         await backfillGate;

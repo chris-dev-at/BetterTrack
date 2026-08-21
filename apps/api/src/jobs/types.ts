@@ -33,6 +33,9 @@ export const QUEUE_NAMES = {
   // portfolio, and the nightly roll/backfill sweep over every portfolio.
   snapshotsRecompute: 'snapshots.recompute',
   snapshotsBackfill: 'snapshots.backfill',
+  // E4: durable recovery for move-outs whose cleartext restore committed but
+  // whose derived-state rebuild/final membership flip has not yet converged.
+  portfolioVaultFinalize: 'portfolioVault.finalize',
   // V5-P2 usage analytics (#567): the nightly rollup that materializes the
   // per-day usage aggregates the admin usage-analytics page serves.
   usageRollup: 'usage.rollup',
@@ -92,6 +95,7 @@ export interface JobPayloads {
   'data.exportCleanup': Record<string, never>;
   'snapshots.recompute': { portfolioId: string };
   'snapshots.backfill': Record<string, never>;
+  'portfolioVault.finalize': Record<string, never>;
   'usage.rollup': Record<string, never>;
   'notifications.earningsRemind': Record<string, never>;
   'marketIntel.dividendScan': Record<string, never>;

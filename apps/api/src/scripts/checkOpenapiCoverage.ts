@@ -194,6 +194,7 @@ function buildInertContext(): AppContext {
     driveConnections: inertService('driveConnections'),
     reauth: inertService('reauth'),
     paranoidTransitions: inertService('paranoidTransitions'),
+    portfolioVaultTransitions: inertService('portfolioVaultTransitions'),
     webhooks: inertService('webhooks'),
     webhookBridge: inertService('webhookBridge'),
     analytics: inertService('analytics'),

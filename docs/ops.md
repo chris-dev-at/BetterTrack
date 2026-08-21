@@ -110,8 +110,8 @@ and topology Compose files used by the deployment (for example, append
 This regenerates `/config.js` at container start without rebuilding the image.
 Fetch the user origin's `/config.js` and confirm its `googleDriveClientId`; set
 the variable blank and recreate `web` again to remove the value and hide the
-card, unless the image was built with the legacy `VITE_GOOGLE_DRIVE_CLIENT_ID`
-fallback.
+card, unless Drive is already a selected vault medium or the image was built
+with the legacy `VITE_GOOGLE_DRIVE_CLIENT_ID` fallback.
 
 ## Deployment-host log and image retention
 

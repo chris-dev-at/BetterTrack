@@ -113,7 +113,8 @@ describe('yahoo-finance2 v4 HTTPError classification', () => {
     }
   });
 
-  it('rejects exact-message impostors that only claim the Error name', () => {
+  it('rejects Error-shaped objects that are not Error instances', () => {
+    // `unattestedBareNotFound` above carries the genuine-`Error`-name half of this invariant.
     const notFoundImpostor = {
       name: 'Error',
       message: 'No data found, symbol may be delisted',
