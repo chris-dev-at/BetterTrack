@@ -121,7 +121,7 @@ describe('VaultReceivePhrase receiver', () => {
 
     expect(
       await screen.findByText(
-        'The vault could not be opened or saved right now. Nothing was saved on this device; check the connection and try again.',
+        'That device password is incorrect. Nothing was saved on this device.',
       ),
     ).toBeInTheDocument();
     expect(onOpened).not.toHaveBeenCalled();
@@ -249,6 +249,35 @@ describe('VaultReceivePhrase receiver', () => {
     ).toBeInTheDocument();
     expect(onOpened).not.toHaveBeenCalled();
     expect(keystore.storePlainAfterVerifiedOpen).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a temporary device-password lockout from an operational failure', async () => {
+    const user = userEvent.setup();
+    const keystore = receiver();
+    keystore.storeAfterVerifiedOpen = vi.fn(async () => {
+      throw new EndpointKeystoreError(
+        'locked-out',
+        'Device-password verification is temporarily locked.',
+      );
+    });
+    render(
+      <VaultReceivePhrase
+        fetchHeaderEnvelope={vi.fn(async () => new Uint8Array([1]))}
+        initialPayload={VAULT_TRANSFER_GOLDEN_PAYLOAD}
+        keystore={keystore}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), DEVICE_PASSWORD);
+    await user.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+
+    expect(
+      await screen.findByText(
+        'Device-password verification is temporarily locked. Wait before trying again; nothing was saved on this device.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('does not blame the phrase when the authenticated header is unavailable', async () => {
