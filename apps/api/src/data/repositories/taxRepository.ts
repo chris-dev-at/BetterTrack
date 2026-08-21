@@ -161,31 +161,62 @@ export function createTaxRepository(db: Database) {
      * Account-wide documentation list. Source rows that predate the marker
      * feature remain visible with `lastChangedAt: null`; explicit tax-year
      * corrections use their attributed year instead of their posting date.
+     * Locked-stub source rows are excluded from the server aggregate.
      */
     async listTaxYearDocumentation(userId: string): Promise<TaxYearChangeRecord[]> {
       const result = (await db.execute(sql`
-        WITH years AS (
-          SELECT EXTRACT(YEAR FROM t.executed_at AT TIME ZONE 'Europe/Vienna')::integer AS year
+        WITH source_years AS (
+          SELECT
+            EXTRACT(YEAR FROM t.executed_at AT TIME ZONE 'Europe/Vienna')::integer AS year,
+            p.vault_id
           FROM transactions t
           JOIN portfolios p ON p.id = t.portfolio_id
           WHERE p.user_id = ${userId}
-          UNION
-          SELECT EXTRACT(YEAR FROM d.executed_at AT TIME ZONE 'Europe/Vienna')::integer AS year
+          UNION ALL
+          SELECT
+            EXTRACT(YEAR FROM d.executed_at AT TIME ZONE 'Europe/Vienna')::integer AS year,
+            p.vault_id
           FROM dividends d
           JOIN portfolios p ON p.id = d.portfolio_id
           WHERE p.user_id = ${userId}
-          UNION
-          SELECT COALESCE(
-            m.tax_year,
-            EXTRACT(YEAR FROM m.executed_at AT TIME ZONE 'Europe/Vienna')::integer
-          ) AS year
+          UNION ALL
+          SELECT
+            COALESCE(
+              m.tax_year,
+              EXTRACT(YEAR FROM m.executed_at AT TIME ZONE 'Europe/Vienna')::integer
+            ) AS year,
+            p.vault_id
           FROM portfolio_cash_movements m
           JOIN portfolios p ON p.id = m.portfolio_id
           WHERE p.user_id = ${userId}
+        ),
+        years AS (
+          SELECT source.year
+          FROM source_years source
+          WHERE source.vault_id IS NULL
           UNION
           SELECT c.year
           FROM tax_year_changes c
           WHERE c.user_id = ${userId}
+            -- The marker is account-wide and has no portfolio FK. Suppress it
+            -- only when current source evidence makes it vaulted-only; marker-
+            -- only years (for deleted plain rows) retain their living-history
+            -- contract. Move-in must retire vault-only markers as it purges the
+            -- final source evidence.
+            AND NOT (
+              EXISTS (
+                SELECT 1
+                FROM source_years vaulted
+                WHERE vaulted.year = c.year
+                  AND vaulted.vault_id IS NOT NULL
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM source_years plain
+                WHERE plain.year = c.year
+                  AND plain.vault_id IS NULL
+              )
+            )
         )
         SELECT years.year, changes.last_changed_at AS "lastChangedAt"
         FROM years

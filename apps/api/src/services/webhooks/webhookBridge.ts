@@ -11,6 +11,10 @@ import {
   ParanoidModeError,
   type ParanoidModeGuard,
 } from '../account/paranoidEnforcement';
+import {
+  isVaultedPortfolioContentEventAllowed,
+  type VaultedPortfolioWebhookSubjects,
+} from '../account/vaultedPortfolioEnforcement';
 
 import type { WebhookDeliveryJob } from './webhookDispatcher';
 
@@ -106,6 +110,8 @@ export interface WebhookBridgeDeps {
    * `isParanoid` only classifies an already-decided drop for the log line.
    */
   paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'isParanoid'>;
+  /** Drop portfolio-content fan-out when a queued event names a locked stub. */
+  vaultedPortfolio?: VaultedPortfolioWebhookSubjects;
 }
 
 export interface WebhookBridge {
@@ -121,6 +127,19 @@ export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
       const userId = eventUserId(event);
       if (!userId) return;
       const enqueueDeliveries = async () => {
+        // This callback runs inside the relevant account transition locks when
+        // paranoid guarding is wired. Keep the vault re-read here—not before
+        // the lock—so E4 move-in cannot commit between admission and enqueue.
+        if (
+          deps.vaultedPortfolio &&
+          !(await isVaultedPortfolioContentEventAllowed(event, deps.vaultedPortfolio))
+        ) {
+          logger.warn(
+            { type: event.type },
+            'webhook bridge: portfolio-content fan-out skipped for unavailable portfolio',
+          );
+          return;
+        }
         const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
         let failedEnqueues = 0;
 

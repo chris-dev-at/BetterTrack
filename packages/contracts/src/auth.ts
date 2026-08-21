@@ -334,9 +334,11 @@ export const meResponseSchema = z.object({
    */
   discreetMode: z.boolean().optional(),
   /**
-   * Account privacy mode (§13.5 V5-P13): `paranoid` means the account uses the
-   * client-encrypted vault. Optional so older server responses remain readable;
-   * the current server always emits it (see `toMeResponse`).
+   * @deprecated Legacy-v1 account privacy state only. This field does NOT say
+   * whether the account owns a per-portfolio vault: new-model accounts keep
+   * `normal` here while `Portfolio.vaultId` plus `GET /vaults` identify their
+   * locked portfolios. It stays wire-compatible until E9 retires the v1 column;
+   * the current server still emits it from `toMeResponse` during that window.
    */
   privacyMode: z.enum(['normal', 'paranoid']).optional(),
   lastLoginAt: z.string().datetime().nullable(),

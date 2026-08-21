@@ -1492,6 +1492,41 @@ describe('realtime gateway — rooms (§4.5)', () => {
     });
   });
 
+  it('refuses a realtime portfolio-room join for an owned vaulted stub (paranoid E2)', async () => {
+    await listenWithGateway();
+    const owner = await harness.seedUser({
+      email: 'vaulted-realtime@bettertrack.test',
+      username: 'vaulted_realtime',
+    });
+    const ownerLogin = await login(owner.email, owner.password);
+    const portfolioId = await defaultPortfolioId(ownerLogin.agent);
+
+    // Deterministic TEST VECTOR: public identity/config fixtures only, never
+    // credentials or portfolio-content bytes.
+    const vaultId = '019c8190-0000-7000-8000-000000000401';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: owner.id,
+      name: 'Realtime test vault',
+      headerDocId: '019c8190-0000-7000-8000-000000000402',
+      commonDocId: '019c8190-0000-7000-8000-000000000403',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'realtime-test-vector-public-proof',
+      keyFingerprint: 'realtime-test-vector-fingerprint',
+    });
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId, vaultAlias: 'Locked realtime stub' })
+      .where(eq(schema.portfolios.id, portfolioId));
+
+    const ownerSocket = await connect(ownerLogin.cookie);
+    expect(await joinRoom(ownerSocket, 'portfolio', portfolioId)).toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+  });
+
   it('rejects malformed room frames without crashing the socket', async () => {
     await listenWithGateway();
     const user = await harness.seedUser();

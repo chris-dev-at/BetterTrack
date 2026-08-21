@@ -567,6 +567,66 @@ describe('#361 route × scope matrix', () => {
   });
 });
 
+describe('[PARANOID-E2] bearer scope authorization precedes vault membership', () => {
+  it('audits INSUFFICIENT_SCOPE without disclosing the owned locked stub', async () => {
+    const unscoped = await mintKey(['market:read']);
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(unscoped.userId);
+
+    // Deterministic TEST VECTOR: public identity/config fixtures only; none of
+    // these values is a credential or portfolio-content payload.
+    const vaultId = '019c8190-0000-7000-8000-000000000301';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: unscoped.userId,
+      name: 'Scope-order test vault',
+      headerDocId: '019c8190-0000-7000-8000-000000000302',
+      commonDocId: '019c8190-0000-7000-8000-000000000303',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'scope-order-test-vector-public-proof',
+      keyFingerprint: 'scope-order-test-vector-fingerprint',
+    });
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId, vaultAlias: 'Locked scope-order stub' })
+      .where(eq(schema.portfolios.id, portfolioId));
+
+    const denied = await request(harness.app)
+      .get(`/api/v1/portfolios/${portfolioId}`)
+      .set(bearer(unscoped.token));
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(JSON.stringify(denied.body)).not.toContain('VAULTED_PORTFOLIO');
+
+    const denials = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, unscoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.meta).toMatchObject({
+      requiredScope: 'portfolio:read',
+      method: 'GET',
+      path: `/portfolios/${portfolioId}`,
+    });
+
+    const scoped = await harness.ctx.apiKeys.create({
+      userId: unscoped.userId,
+      name: 'scoped vault probe',
+      scopes: ['portfolio:read'],
+    });
+    const boundary = await request(harness.app)
+      .get(`/api/v1/portfolios/${portfolioId}`)
+      .set(bearer(scoped.token));
+    expect(boundary.status).toBe(403);
+    expect(boundary.body.error.code).toBe('VAULTED_PORTFOLIO');
+  });
+});
+
 describe('#1324 account:security parity for native account state', () => {
   it.each(['personal', 'oauth'] as const)(
     'serves all seven widened routes to a scoped %s bearer',
