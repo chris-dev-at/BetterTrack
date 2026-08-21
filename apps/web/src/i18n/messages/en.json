@@ -4037,6 +4037,8 @@
           "invalidName": "The vault-name hint is longer than 64 characters.",
           "invalidFingerprint": "The transfer code contains an invalid key fingerprint.",
           "verification": "The phrase did not open the authenticated vault header. Nothing was saved on this device.",
+          "password": "That device password is incorrect. Nothing was saved on this device.",
+          "passwordLocked": "Device-password verification is temporarily locked. Wait before trying again; nothing was saved on this device.",
           "operation": "The vault could not be opened or saved right now. Nothing was saved on this device; check the connection and try again."
         }
       }

@@ -423,7 +423,17 @@ export function payloadErrorKey(error: unknown): string {
 }
 
 function receiveErrorKey(error: unknown): string {
-  return error instanceof EndpointKeystoreError && error.code === 'verification-failed'
-    ? 'vault.transfer.receiver.errors.verification'
-    : 'vault.transfer.receiver.errors.operation';
+  if (!(error instanceof EndpointKeystoreError)) {
+    return 'vault.transfer.receiver.errors.operation';
+  }
+  switch (error.code) {
+    case 'verification-failed':
+      return 'vault.transfer.receiver.errors.verification';
+    case 'wrong-password':
+      return 'vault.transfer.receiver.errors.password';
+    case 'locked-out':
+      return 'vault.transfer.receiver.errors.passwordLocked';
+    default:
+      return 'vault.transfer.receiver.errors.operation';
+  }
 }

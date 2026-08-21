@@ -4037,6 +4037,8 @@
           "invalidName": "Der Hinweis zum Tresornamen ist länger als 64 Zeichen.",
           "invalidFingerprint": "Der Transfer-Code enthält einen ungültigen Schlüsselfingerabdruck.",
           "verification": "Die Phrase konnte den authentifizierten Tresorkopf nicht öffnen. Auf diesem Gerät wurde nichts gespeichert.",
+          "password": "Dieses Gerätepasswort ist falsch. Auf diesem Gerät wurde nichts gespeichert.",
+          "passwordLocked": "Die Gerätepasswortprüfung ist vorübergehend gesperrt. Warte, bevor du es erneut versuchst; auf diesem Gerät wurde nichts gespeichert.",
           "operation": "Der Tresor konnte gerade nicht geöffnet oder gespeichert werden. Auf diesem Gerät wurde nichts gespeichert; prüfe die Verbindung und versuche es erneut."
         }
       }
