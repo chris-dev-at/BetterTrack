@@ -3728,6 +3728,15 @@
     "transfer": {
       "manualWords": "Stattdessen 12 Wörter anzeigen",
       "manualEntry": "Stattdessen 12 Wörter eingeben",
+      "settings": {
+        "title": "Zwischen Geräten übertragen",
+        "hint": "Zeige einen 60 Sekunden gültigen Transfer-Code für einen aktiven Tresor an oder prüfe einen Code von einem anderen Gerät.",
+        "receive": "Übertragenen Tresor empfangen",
+        "loading": "Übertragbare Tresore werden geladen…",
+        "empty": "Für dieses Konto ist noch kein übertragbarer Tresor registriert.",
+        "unavailable": "Tresordetails konnten nicht geladen werden. Du kannst weiterhin einen Transfer-Code empfangen.",
+        "received": "Der übertragene Tresor wurde geprüft und auf diesem Gerät gespeichert."
+      },
       "sender": {
         "showQr": "Transfer-QR anzeigen",
         "title": "Diesen Tresor übertragen",

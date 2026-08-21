@@ -118,6 +118,7 @@ user/control/panels/PrivacyPanel.tsx
 user/control/panels/PrivacyVaultSection.tsx
 user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
+user/control/panels/VaultTransferActions.tsx
 user/control/panels/WebhooksPanel.tsx
 user/control/panels/taxModeList.tsx
 user/forecast/ForecastPage.tsx

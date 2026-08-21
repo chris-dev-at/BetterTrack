@@ -1156,7 +1156,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
     sources: ['apps/web/src/user/vault/ui/VaultTransferQr.tsx'],
     routes: ['/control/privacy'],
     justification:
-      'E7 intentionally ships this sender primitive without a production mount; E8 supplies its per-vault adapter and the reachable vault-manager trigger.',
+      'Opening it requires a locally stored live seed-phrase session and deliberately reveals the master secret; the E10 mocked-camera transfer flow owns that secret lifecycle.',
   },
   {
     surface: 'VaultSyncChip status dialog',

@@ -729,6 +729,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/control/panels/ParanoidAccountExport.tsx',
       'user/control/panels/PrivacyPanel.tsx',
       'user/control/panels/PrivacyVaultSection.tsx',
+      'user/control/panels/VaultTransferActions.tsx',
       'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
@@ -758,6 +759,7 @@ export const V5_SURFACE_INVENTORY = [
     },
     tests: [
       'user/AccountModeRoot.test.tsx',
+      'user/control/panels/VaultTransferActions.test.tsx',
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
       'user/vault/ui/VaultReceivePhrase.test.tsx',
       'user/vault/ui/VaultUnlockGate.test.tsx',
@@ -1728,6 +1730,11 @@ export const V5_NON_HOOK_ASYNC_BOUNDARY = [
     component: 'user/control/panels/NotificationsPanel.tsx',
     site: 'WebPushRow.useEffect',
     note: 'Reads the browser web-push permission/subscription state on mount.',
+  },
+  {
+    component: 'user/control/panels/VaultTransferActions.tsx',
+    site: 'VaultTransferActions.useEffect',
+    note: 'Loads registered vault configs and renders explicit loading, error, and empty branches.',
   },
   {
     component: 'user/forecast/StandingOrdersSection.tsx',
