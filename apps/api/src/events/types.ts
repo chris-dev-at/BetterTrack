@@ -13,6 +13,8 @@
  * ISO timestamp stamped by the producer for ordering/debugging.
  */
 
+import type { FeedbackStatus } from '@bettertrack/contracts';
+
 /** `alert.triggered` → pushed to the owning user's room. */
 export interface AlertTriggeredEvent {
   type: 'alert.triggered';
@@ -387,6 +389,34 @@ export interface StandingOrderSkippedEvent {
 }
 
 /**
+ * `feedback.status_changed` → staff moved one of the recipient's feedback
+ * submissions to a different lifecycle state. `lastStatusChangeAt` is the
+ * persisted transition identity used by the notification dedupe key.
+ */
+export interface FeedbackStatusChangedEvent {
+  type: 'feedback.status_changed';
+  /** Recipient — the submitter whose feedback changed state. */
+  userId: string;
+  feedbackId: string;
+  status: FeedbackStatus;
+  lastStatusChangeAt: string;
+  occurredAt: string;
+}
+
+/**
+ * `feedback.reply_created` → staff added a reply to the recipient's submission.
+ * The durable message id is both the deep-link context and logical occurrence.
+ */
+export interface FeedbackReplyCreatedEvent {
+  type: 'feedback.reply_created';
+  /** Recipient — the submitter receiving the staff reply. */
+  userId: string;
+  feedbackId: string;
+  messageId: string;
+  occurredAt: string;
+}
+
+/**
  * Ephemeral realtime-credential invalidation. Credential services publish this
  * after a session, personal key, OAuth grant, or whole account is invalidated;
  * every API process then disconnects its matching local sockets. It deliberately
@@ -471,6 +501,8 @@ export type DomainEvent =
   | DividendEventNotice
   | BudgetExceededEvent
   | StandingOrderSkippedEvent
+  | FeedbackStatusChangedEvent
+  | FeedbackReplyCreatedEvent
   | RealtimePrincipalInvalidatedEvent
   | MirrorNotificationEvent;
 
@@ -512,4 +544,6 @@ export const DOMAIN_EVENT_TYPES = [
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
   'standing_order.skipped',
+  'feedback.status_changed',
+  'feedback.reply_created',
 ] as const satisfies readonly DomainEventType[];

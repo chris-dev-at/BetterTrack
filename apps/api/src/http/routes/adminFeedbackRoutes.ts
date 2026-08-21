@@ -96,7 +96,11 @@ export function registerAdminFeedbackRoutes(
               id: req.authUser!.id,
               ip: req.ip,
             })
-          : await ctx.feedback.updateStatus(id, body as UpdateFeedbackStatusRequest);
+          : await ctx.feedback.updateStatus(
+              req.authUser!.id,
+              id,
+              body as UpdateFeedbackStatusRequest,
+            );
       if (!result) throw notFound('Feedback not found.');
       res.json(result);
     },

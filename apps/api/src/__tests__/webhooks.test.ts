@@ -977,6 +977,12 @@ describe('subscribable catalog', () => {
     );
     expect(killedByRegistry).toHaveLength(18);
     expect([...PARANOID_KILLED_WEBHOOK_EVENT_TYPES].sort()).toEqual([...killedByRegistry].sort());
+    expect(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS['feedback.status_changed'].disposition).toBe(
+      'allowed',
+    );
+    expect(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS['feedback.reply_created'].disposition).toBe(
+      'allowed',
+    );
     // `portfolio.changed` is killed by the registry but is not subscribable, so
     // the contracts list is a strict subset of the registry union by design.
     expect(isParanoidKilledWebhookEvent({ type: 'portfolio.changed' } as DomainEvent)).toBe(true);

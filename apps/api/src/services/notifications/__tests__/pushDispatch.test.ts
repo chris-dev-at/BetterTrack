@@ -133,6 +133,43 @@ describe('push channels through the matrix (#368)', () => {
     expect(webSent[0]!.message).toMatchObject(expected);
   });
 
+  it('carries feedback submission route keys in both push channels', async () => {
+    const user = await harness.seedUser({ email: 'feedback-push@bt.test', username: 'fbpush' });
+    const transitionAt = '2026-08-20T10:00:00.000Z';
+    await dispatcher.dispatch({
+      type: 'feedback.status_changed',
+      userId: user.id,
+      feedbackId: 'feedback-1',
+      status: 'working_on_it',
+      lastStatusChangeAt: transitionAt,
+      occurredAt: transitionAt,
+    });
+    await dispatcher.dispatch({
+      type: 'feedback.reply_created',
+      userId: user.id,
+      feedbackId: 'feedback-1',
+      messageId: 'message-1',
+      occurredAt: '2026-08-20T10:01:00.000Z',
+    });
+
+    const expected = [
+      {
+        type: 'feedback.status_changed',
+        data: {
+          feedbackId: 'feedback-1',
+          status: 'working_on_it',
+          lastStatusChangeAt: transitionAt,
+        },
+      },
+      {
+        type: 'feedback.reply_created',
+        data: { feedbackId: 'feedback-1', messageId: 'message-1' },
+      },
+    ];
+    expect(fcmSent.map(({ message }) => message)).toMatchObject(expected);
+    expect(webSent.map(({ message }) => message)).toMatchObject(expected);
+  });
+
   it('routes push and webpush independently via the matrix', async () => {
     const user = await harness.seedUser({ email: 'p@bt.test', username: 'pushee' });
     await db.insert(notificationSettings).values([
