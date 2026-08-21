@@ -16,6 +16,8 @@ export * from './migration';
 export * from './keys';
 export * from './mirrorProvenance';
 export * from './paranoidDisable';
+export * from './portfolioRestoreDocument';
+export * from './portfolioStoreResolver';
 export * from './quarantine';
 export * from './recovery';
 export * from './rekey';
