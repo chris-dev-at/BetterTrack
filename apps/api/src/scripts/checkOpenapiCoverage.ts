@@ -198,6 +198,7 @@ function buildInertContext(): AppContext {
     vaults: inertService('vaults'),
     reauth: inertService('reauth'),
     paranoidTransitions: inertService('paranoidTransitions'),
+    portfolioVaultTransitions: inertService('portfolioVaultTransitions'),
     webhooks: inertService('webhooks'),
     webhookBridge: inertService('webhookBridge'),
     analytics: inertService('analytics'),
