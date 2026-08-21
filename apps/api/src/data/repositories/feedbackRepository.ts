@@ -293,6 +293,7 @@ export function createFeedbackRepository(
         .where(
           and(
             eq(feedback.userId, userId),
+            isNull(feedback.deletedByUserAt),
             eq(feedbackMessages.authorSide, 'admin'),
             or(
               isNull(feedback.submitterLastReadAt),

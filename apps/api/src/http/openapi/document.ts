@@ -112,6 +112,15 @@ const componentSchemas = {
   PerVaultRetiredServerPurgeRequest: contracts.perVaultRetiredServerPurgeRequestSchema,
   PerVaultRetiredServerPurgeResponse: contracts.perVaultRetiredServerPurgeResponseSchema,
 
+  // Per-portfolio move pipeline (paranoid E4 #1414)
+  PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
+  PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
+  PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
+  PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
+  PortfolioVaultMoveOutChallengeResponse: contracts.portfolioVaultMoveOutChallengeResponseSchema,
+  PortfolioVaultMoveOutRequest: contracts.portfolioVaultMoveOutRequestSchema,
+  PortfolioVaultMoveOutResponse: contracts.portfolioVaultMoveOutResponseSchema,
+
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
   RegisterRequest: contracts.registerRequestSchema,
@@ -652,6 +661,12 @@ const perVaultCandidateReadbackResponseHeaders = perVaultEtagResponseHeaders.ext
       'Opaque short-lived receipt supplied in the matching full-set media-transition attestation.',
   }),
 });
+const noStoreResponseHeaders = z.object({
+  'Cache-Control': z.literal('no-store').openapi({
+    description:
+      'Sensitive transition/capture responses are never stored by browsers or intermediary caches.',
+  }),
+});
 
 // ── Endpoint table ──────────────────────────────────────────────────────────
 type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
@@ -681,6 +696,10 @@ interface EndpointDef {
   response?: z.ZodTypeAny;
   /** Headers present on the success response, including empty 204 responses. */
   responseHeaders?: z.AnyZodObject;
+  /** Apply Cache-Control: no-store to every documented response for this operation. */
+  noStore?: boolean;
+  /** Stable non-validation error statuses emitted by this operation. */
+  errorResponses?: Readonly<Record<number, string>>;
   /** Contract body returned with HTTP 503 by readiness-style public probes. */
   unavailableResponse?: z.ZodTypeAny;
   /**
@@ -4704,6 +4723,84 @@ const endpoints: EndpointDef[] = [
     response: R.PerVaultRetiredServerPurgeResponse,
   },
 
+  // Per-portfolio capture + destructive move pipeline (E4 #1414).
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/revision',
+    tag: 'Vault',
+    summary: 'Read the opaque portfolio capture-to-commit CAS revision.',
+    description:
+      'Available to an owning session or a bearer holding account:security. Read this no-store token before and after capture; the client accepts the capture only when both values match. The digest covers the target portfolio’s restorable cleartext rows and contains no portfolio content.',
+    params: contracts.portfolioIdParamSchema,
+    status: 200,
+    response: R.PortfolioVaultRevisionResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is already vaulted or cannot currently be captured.',
+      429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault/move-in',
+    tag: 'Vault',
+    summary: 'Commit a verified encrypted capture and hard-delete its server cleartext.',
+    description:
+      'DESTRUCTIVE: available to an owning session or a bearer holding account:security, with the same password/TOTP/recovery-code step-up in the request body. The in-body credential replaces CSRF + same-origin on the bearer path. The commit rechecks media, document-set and portfolio-revision CAS facts before one atomic purge; every refusal leaves cleartext untouched. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    body: R.PortfolioVaultMoveInRequest,
+    status: 200,
+    response: R.PortfolioVaultMoveInResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio or target vault is absent or not owned.',
+      409: 'The portfolio is already vaulted, a transition/precondition conflicts, media are not verified, or the encrypted document set is stale.',
+      412: 'The capture revision or encrypted portfolio document version is stale; nothing was purged.',
+      429: 'Step-up verification or the dedicated move-in transition throttle was exceeded.',
+    },
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault/move-out/challenge',
+    tag: 'Vault',
+    summary: 'Issue a graph-bound challenge for the unlocked-client move-out proof.',
+    description:
+      'Available to an owning session or a bearer holding account:security. The unlocked client hashes its canonical strict restore graph and exact opened document-version set. The server CAS-checks that set against the locked current ciphertext roster before returning a challenge; the client signs the transcript with the Ed25519 private key carried only inside the encrypted common document. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    body: R.PortfolioVaultMoveOutChallengeRequest,
+    status: 200,
+    response: R.PortfolioVaultMoveOutChallengeResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The vaulted portfolio or vault is absent or not owned.',
+      409: 'The portfolio is not in the requested vault lifecycle.',
+      412: 'The encrypted document set changed after the client opened it.',
+      429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault/move-out',
+    tag: 'Vault',
+    summary: 'Restore one unlocked vault portfolio under the same UUID.',
+    description:
+      'WARNING: the portfolio becomes server-readable again. This operation is available only from an unlocked phrase-holding client, which supplies the strict restore document and a signed current encrypted-document-set CAS, and to an owning session or bearer holding account:security with the same in-body password/TOTP/recovery-code step-up. The in-body credential replaces CSRF + same-origin on the bearer path. Validation, fork-provenance proof and option-B solvency run before any restore write; responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    body: R.PortfolioVaultMoveOutRequest,
+    status: 200,
+    response: R.PortfolioVaultMoveOutResponse,
+    noStore: true,
+    errorResponses: {
+      400: 'The request or strict restore graph is invalid, insolvent, or fails retained fork-provenance validation.',
+      404: 'The vaulted portfolio or vault is absent or not owned.',
+      409: 'The portfolio is not vaulted, media are not verified, or another transition/history write conflicts.',
+      412: 'The encrypted document set changed or the graph-bound phrase-possession proof is invalid.',
+      413: 'The decrypted restore document exceeds the bounded portfolio restore payload ceiling.',
+      429: 'Step-up verification or the dedicated move-out transition throttle was exceeded.',
+    },
+  },
+
   // Legacy account-singleton paranoid vault — kept unchanged through E9.
   {
     method: 'get',
@@ -4840,8 +4937,9 @@ const endpoints: EndpointDef[] = [
 ];
 
 const jsonContent = (schema: z.ZodTypeAny) => ({ 'application/json': { schema } });
-const errorResponse = (description: string) => ({
+const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
   description,
+  ...(headers ? { headers } : {}),
   content: jsonContent(R.ApiError),
 });
 
@@ -4885,7 +4983,13 @@ function addErrorCodeExtensions<T extends { paths: Record<string, unknown> }>(do
 
 for (const ep of endpoints) {
   const responses: Record<string, ResponseConfig> = {};
-  const successHeaders = ep.responseHeaders ? { headers: ep.responseHeaders } : {};
+  const responseHeaders = ep.noStore
+    ? ep.responseHeaders
+      ? noStoreResponseHeaders.merge(ep.responseHeaders)
+      : noStoreResponseHeaders
+    : ep.responseHeaders;
+  const successHeaders = responseHeaders ? { headers: responseHeaders } : {};
+  const errorHeaders = ep.noStore ? noStoreResponseHeaders : undefined;
   responses[ep.status] = ep.response
     ? {
         description: 'Success.',
@@ -4896,10 +5000,10 @@ for (const ep of endpoints) {
       }
     : { description: 'No content.', ...successHeaders };
   if (ep.body || ep.query || ep.params) {
-    responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).');
+    responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).', errorHeaders);
   }
   if (!ep.public) {
-    responses['401'] = errorResponse('Authentication required.');
+    responses['401'] = errorResponse('Authentication required.', errorHeaders);
   }
   if (ep.unavailableResponse) {
     responses['503'] = {
@@ -4912,10 +5016,14 @@ for (const ep of endpoints) {
   if (ep.idempotent) {
     responses['409'] = errorResponse(
       'Idempotency-Key conflict (IDEMPOTENCY_KEY_MISMATCH / IDEMPOTENCY_IN_PROGRESS).',
+      errorHeaders,
     );
   }
+  for (const [status, description] of Object.entries(ep.errorResponses ?? {})) {
+    responses[status] = errorResponse(description, errorHeaders);
+  }
   // Shared error envelope `{ error: { code, message, details? } }` (§8).
-  responses['default'] = errorResponse('Error envelope.');
+  responses['default'] = errorResponse('Error envelope.', errorHeaders);
 
   // Auth requirement per route (#361): public routes need none; every guarded
   // route accepts the session cookie, and those the bearer middleware admits

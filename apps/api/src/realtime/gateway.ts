@@ -290,8 +290,12 @@ export interface RealtimeGateway {
    * connected Engine.IO clients, or 0 when the gateway is disabled/unattached.
    */
   connectionCount(): number;
-  /** Drop this user's retained refs to account-owned assets before mode enable. */
-  invalidateOwnedLiveMode(userId: string): Promise<void>;
+  /**
+   * Drop this user's retained refs to account-owned assets. An exact list keeps
+   * unrelated portfolio watches alive; omitted preserves v1's account-wide
+   * paranoid-enable behavior.
+   */
+  invalidateOwnedLiveMode(userId: string, assetIds?: readonly string[]): Promise<void>;
   /** Disconnect all clients, drop bus subscriptions, close the socket server. */
   close(): Promise<void>;
 }
@@ -669,6 +673,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    */
   type LiveWatchEntry = {
     rateMs: number | undefined;
+    /** Durable E4 generation held by this exact loop registration. */
+    retirementEpoch: number;
     /** Null for global market assets; set for account-owned custom assets. */
     ownerId: string | null;
     /** Keyed/opaque Redis admission identity; never a catalog asset id. */
@@ -771,7 +777,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     // release, and duplicate cleanup paths become exact no-ops.
     watched.delete(assetId);
     try {
-      deps.liveMode?.unwatch(assetId, entry.rateMs);
+      deps.liveMode?.unwatch(assetId, entry.rateMs, entry.retirementEpoch);
     } finally {
       try {
         await admission.releaseWatch({
@@ -1182,7 +1188,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           return;
         }
         try {
-          if (!liveMode.watch(assetId, resolved.ref, rateMs, admitted.sharedGlobalAsset)) {
+          const registration = await liveMode.watch(
+            assetId,
+            resolved.ref,
+            rateMs,
+            admitted.sharedGlobalAsset,
+          );
+          if (!registration) {
             await admission
               .releaseWatch({
                 leaseId,
@@ -1193,6 +1205,15 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             respond({ ok: false, error: 'LIVE_START_FAILED' });
             return;
           }
+          entry = {
+            rateMs,
+            retirementEpoch: registration.retirementEpoch,
+            ownerId: resolved.ownerId,
+            admissionAssetId: redisAssetId,
+            leaseId,
+            userId: principal.userId,
+            expiresAtMs: leaseExpiresAtMs,
+          };
         } catch (err) {
           await admission
             .releaseWatch({
@@ -1205,14 +1226,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           respond({ ok: false, error: 'LIVE_START_FAILED' });
           return;
         }
-        entry = {
-          rateMs,
-          ownerId: resolved.ownerId,
-          admissionAssetId: redisAssetId,
-          leaseId,
-          userId: principal.userId,
-          expiresAtMs: leaseExpiresAtMs,
-        };
+        if (!entry) throw new Error('live loop registration disappeared');
         watched.set(assetId, entry);
         startedHere = true;
         try {
@@ -1224,21 +1238,24 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           return;
         }
       } else {
-        if (entry.rateMs !== rateMs) {
-          if (!liveMode.watch(assetId, resolved.ref, rateMs)) {
-            respond({ ok: false, error: 'LIVE_START_FAILED' });
-            return;
-          }
-          liveMode.unwatch(assetId, entry.rateMs);
-          entry.rateMs = rateMs;
+        const registration = await liveMode.watch(assetId, resolved.ref, rateMs, false, {
+          intervalMs: entry.rateMs,
+          retirementEpoch: entry.retirementEpoch,
+        });
+        if (!registration) {
+          await releaseLiveWatch(socket, assetId, entry, true);
+          respond({ ok: false, error: 'LIVE_START_FAILED' });
+          return;
         }
+        entry.rateMs = rateMs;
+        entry.retirementEpoch = registration.retirementEpoch;
         // Provenance can only have narrowed under this lock; record what the
         // fresh resolve says so the per-frame recheck compares like for like.
         entry.ownerId = resolved.ownerId;
       }
       let frames: Awaited<ReturnType<LiveModeService['backfill']>>;
       try {
-        frames = await liveMode.backfill(assetId, resolved.ref, window);
+        frames = await liveMode.backfill(assetId, resolved.ref, window, entry.retirementEpoch);
       } catch (err) {
         // A first watch is transactional through backfill: it cannot leave a
         // provider loop or Redis capacity behind when startup fails.
@@ -1696,7 +1713,22 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
       if (channel === LIVE_LOOP_COORDINATION_CHANNEL) {
         const message = realtimeLiveUnwatchRequestSchema.safeParse(parsed);
-        if (message.success) deps.liveMode?.reconcile(message.data.assetId);
+        if (message.success) {
+          deps.liveMode?.reconcile(message.data.assetId);
+          if ((parsed as { retired?: unknown }).retired === true) {
+            const retirements = [...server.sockets.sockets.values()]
+              .filter((socket) => liveAssetsOf(socket).has(message.data.assetId))
+              .map((socket) =>
+                enqueueLiveOp(socket, async () => {
+                  const entry = liveAssetsOf(socket).get(message.data.assetId);
+                  if (entry) {
+                    await releaseLiveWatch(socket, message.data.assetId, entry, true);
+                  }
+                }),
+              );
+            void Promise.allSettled(retirements);
+          }
+        }
       }
     };
     subscriber.on('message', onMessage);
@@ -1997,14 +2029,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return io?.engine?.clientsCount ?? 0;
     },
 
-    async invalidateOwnedLiveMode(userId): Promise<void> {
+    async invalidateOwnedLiveMode(userId, assetIds): Promise<void> {
       if (!io) return;
+      const exactAssetIds = assetIds === undefined ? null : new Set(assetIds);
+      if (exactAssetIds?.size === 0) return;
       const sockets = [...io.sockets.sockets.values()].filter(
         (socket) => principalOf(socket)?.userId === userId,
       );
       for (const socket of sockets) {
         const ownedEntries = [...liveAssetsOf(socket)].filter(
-          ([, entry]) => entry.ownerId === userId,
+          ([assetId, entry]) =>
+            entry.ownerId === userId && (exactAssetIds === null || exactAssetIds.has(assetId)),
         );
         for (const [assetId, entry] of ownedEntries) {
           await releaseLiveWatch(socket, assetId, entry, true);

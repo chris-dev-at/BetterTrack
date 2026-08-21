@@ -109,6 +109,10 @@ describe('OpenAPI document', () => {
       '/search',
       '/assets/{id}',
       '/portfolios',
+      '/portfolios/{portfolioId}/vault/revision',
+      '/portfolios/{portfolioId}/vault/move-in',
+      '/portfolios/{portfolioId}/vault/move-out/challenge',
+      '/portfolios/{portfolioId}/vault/move-out',
       '/vaults',
       '/vaults/{vaultId}/docs/{docId}',
       '/custom-assets',
@@ -406,6 +410,73 @@ describe('OpenAPI document', () => {
     expect(deleteVault.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
     expect(deleteVault.description).toContain('account:security');
     expect(deleteVault.description).toContain('step-up');
+
+    // E4 #1414: all four per-portfolio transition operations share the exact
+    // account:security bearer allowlist. Capture/transition receipts and every
+    // refusal are no-store; both commits publish their CAS/conflict/throttle
+    // statuses, and move-out carries the mandatory server-readable warning.
+    const portfolioVaultOperations = [
+      ['get', '/portfolios/{portfolioId}/vault/revision'],
+      ['post', '/portfolios/{portfolioId}/vault/move-in'],
+      ['post', '/portfolios/{portfolioId}/vault/move-out/challenge'],
+      ['post', '/portfolios/{portfolioId}/vault/move-out'],
+    ] as const;
+    for (const [method, path] of portfolioVaultOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+      expect(operation.description).toContain('account:security');
+      const responses = operation.responses as JsonObject;
+      expect(Object.keys(responses)).toEqual(expect.arrayContaining(['404', '409', '429']));
+      for (const response of Object.values(responses) as JsonObject[]) {
+        expect(response.headers as JsonObject).toHaveProperty('Cache-Control');
+      }
+    }
+
+    const revision = (paths['/portfolios/{portfolioId}/vault/revision'] as JsonObject)
+      .get as JsonObject;
+    const moveIn = (paths['/portfolios/{portfolioId}/vault/move-in'] as JsonObject)
+      .post as JsonObject;
+    const moveOutChallenge = (
+      paths['/portfolios/{portfolioId}/vault/move-out/challenge'] as JsonObject
+    ).post as JsonObject;
+    const moveOut = (paths['/portfolios/{portfolioId}/vault/move-out'] as JsonObject)
+      .post as JsonObject;
+    for (const operation of [moveIn, moveOut]) {
+      expect(operation.description).toContain('step-up');
+      expect(operation.description).toContain('CSRF + same-origin');
+      expect(operation.responses as JsonObject).toHaveProperty('412');
+    }
+    expect(moveOut.description).toContain('becomes server-readable again');
+    expect(moveOutChallenge.description).toContain('Ed25519');
+    expect(
+      (((revision.responses as JsonObject)['200'] as JsonObject).content as JsonObject)[
+        'application/json'
+      ],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultRevisionResponse' } });
+    expect(
+      ((moveIn.requestBody as JsonObject).content as JsonObject)['application/json'],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveInRequest' } });
+    expect(
+      ((moveOut.requestBody as JsonObject).content as JsonObject)['application/json'],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutRequest' } });
+    expect(
+      ((moveOutChallenge.requestBody as JsonObject).content as JsonObject)['application/json'],
+    ).toMatchObject({
+      schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutChallengeRequest' },
+    });
+    expect(
+      (((moveIn.responses as JsonObject)['200'] as JsonObject).content as JsonObject)[
+        'application/json'
+      ],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveInResponse' } });
+    expect(
+      (((moveOut.responses as JsonObject)['200'] as JsonObject).content as JsonObject)[
+        'application/json'
+      ],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutResponse' } });
 
     const perVaultSessionOperations = [
       ['get', '/vaults'],
