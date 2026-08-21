@@ -1,4 +1,5 @@
 import { VaultCryptoError } from '../errors';
+import { EndpointKeystoreError } from '../keystore';
 import { VaultPortfolioStoreError } from '../vaultPortfolioStore';
 
 export const VAULT_MONEY_ERROR_CODES = [
@@ -64,6 +65,7 @@ export function moneyFailure(
 
 export function asMoneyFailure(cause: unknown): VaultMoneyFailure {
   if (cause instanceof VaultMoneyEngineError) return cause.failure;
+  if (cause instanceof EndpointKeystoreError) return keystoreFailure(cause);
   if (cause instanceof VaultPortfolioStoreError) return storeFailure(cause);
   if (cause instanceof VaultCryptoError) return cryptoFailure(cause);
   if (cause instanceof DOMException && cause.name === 'AbortError') {
@@ -78,6 +80,26 @@ export function asMoneyFailure(cause: unknown): VaultMoneyFailure {
     message: 'The decrypted vault could not be processed safely.',
     retryable: false,
   };
+}
+
+function keystoreFailure(cause: EndpointKeystoreError): VaultMoneyFailure {
+  switch (cause.code) {
+    case 'phrase-locked':
+    case 'session-ended':
+    case 'locked-out':
+      return typedFailure('VAULT_LOCKED', cause.message, true);
+    case 'verification-failed':
+    case 'crypto-failed':
+    case 'storage-invalid':
+      return typedFailure('VAULT_CORRUPT', cause.message, false);
+    case 'vault-not-stored':
+    case 'device-password-required':
+    case 'device-password-not-configured':
+    case 'device-password-invalid':
+    case 'wrong-password':
+    case 'acknowledgment-required':
+      return typedFailure('VAULT_DATA_UNAVAILABLE', cause.message, true);
+  }
 }
 
 function storeFailure(cause: VaultPortfolioStoreError): VaultMoneyFailure {
