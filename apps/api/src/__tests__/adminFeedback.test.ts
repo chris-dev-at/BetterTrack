@@ -527,6 +527,32 @@ describe('admin feedback inbox', () => {
     expect(await notificationRows(admin.id, 'feedback.status_changed')).toHaveLength(0);
   });
 
+  it('does not notify an admin-submitter about their own status transition', async () => {
+    const repo = createFeedbackRepository(harness.db);
+    const submission = await repo.create(admin.id, {
+      category: 'help',
+      message: 'Admin-owned status request.',
+    });
+    expect(submission).not.toBeNull();
+
+    const response = await adminAgent
+      .patch(`/api/v1/admin/feedback/${submission!.id}`)
+      .set(...XRW)
+      .send({ status: 'triaged' });
+    expect(response.status).toBe(200);
+    expect(updateFeedbackStatusResponseSchema.parse(response.body)).toMatchObject({
+      id: submission!.id,
+      status: 'triaged',
+    });
+
+    const [persisted] = await harness.db
+      .select({ status: schema.feedback.status })
+      .from(schema.feedback)
+      .where(eq(schema.feedback.id, submission!.id));
+    expect(persisted?.status).toBe('triaged');
+    expect(await notificationRows(admin.id, 'feedback.status_changed')).toHaveLength(0);
+  });
+
   it('keeps distinct same-clock status transitions as distinct notification events', async () => {
     const { rows, webUser } = await seedQueue();
     const target = rows[0]!;
@@ -648,6 +674,38 @@ describe('admin feedback inbox', () => {
       (await adminAgent.get(`/api/v1/admin/feedback/${submission.id}/messages`)).body,
     );
     expect(adminReread.messages.map((message) => message.senderId)).toEqual([admin.id, webUser.id]);
+  });
+
+  it('does not notify an admin-submitter about their own persisted reply', async () => {
+    const repo = createFeedbackRepository(harness.db);
+    const submission = await repo.create(admin.id, {
+      category: 'help',
+      message: 'Admin-owned reply request.',
+    });
+    expect(submission).not.toBeNull();
+
+    const response = await adminAgent
+      .post(`/api/v1/admin/feedback/${submission!.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'Handle this without notifying me.' });
+    expect(response.status).toBe(201);
+    const message = sendFeedbackMessageResponseSchema.parse(response.body).message;
+
+    const threadResponse = await adminAgent.get(
+      `/api/v1/admin/feedback/${submission!.id}/messages`,
+    );
+    expect(threadResponse.status).toBe(200);
+    const thread = feedbackThreadResponseSchema.parse(threadResponse.body);
+    expect(thread.messages).toContainEqual(
+      expect.objectContaining({
+        id: message.id,
+        feedbackId: submission!.id,
+        senderId: admin.id,
+        authorSide: 'admin',
+        body: 'Handle this without notifying me.',
+      }),
+    );
+    expect(await notificationRows(admin.id, 'feedback.reply_created')).toHaveLength(0);
   });
 
   it('derives unread messages after each side marker and marks only that side read', async () => {
