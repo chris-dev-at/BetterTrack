@@ -202,6 +202,15 @@ export interface GoogleAuthService {
    */
   startMobileLink(userId: string, ip?: string | null): Promise<MobileLinkStartResult>;
   /**
+   * Resolve the guarded native target and audit a callback query that failed
+   * contract validation before ticket handling could begin.
+   */
+  handleMalformedMobileLinkCallback(ip?: string | null): Promise<{
+    status: 'error';
+    code: string;
+    redirectUri: string;
+  }>;
+  /**
    * Consume a native LINK ticket, verify Google's code and link only the user id
    * carried by that server record. This path never creates a BetterTrack session.
    */
@@ -503,6 +512,12 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       authorizationUrl: `${authorizeEndpoint}?${params.toString()}`,
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  async function handleMalformedMobileLinkCallback(ip?: string | null) {
+    const redirectUri = registeredMobileLinkRedirectUri();
+    await auditMobileLinkFailure({ ip, reason: 'malformed_query' });
+    return { status: 'error' as const, code: 'GOOGLE_STATE_INVALID', redirectUri };
   }
 
   /**
@@ -905,6 +920,8 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     buildAuthorizeUrl,
 
     startMobileLink,
+
+    handleMalformedMobileLinkCallback,
 
     handleMobileLinkCallback,
 

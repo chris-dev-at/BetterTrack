@@ -65,7 +65,7 @@ const DISCORD_KEY = ['settings', 'discord'] as const;
 /**
  * Human label for each routable notification type (§6.10, #368). The popup rows
  * carry the label alone — the per-type prose the page printed under every row
- * doubled the height of a 25-row table without telling the user anything the
+ * doubled the height of an already long table without telling the user anything the
  * label and the group heading do not.
  */
 function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string> {
@@ -85,6 +85,8 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
     'alert.triggered': t('settings.notifications.types.alertTriggered.label'),
     'earnings.reminder': t('settings.notifications.types.earningsReminder.label'),
     'chat.message': t('settings.notifications.types.chatMessage.label'),
+    'feedback.status_changed': t('settings.notifications.types.feedbackStatusChanged.label'),
+    'feedback.reply_created': t('settings.notifications.types.feedbackReplyCreated.label'),
     'dividend.event': t('settings.notifications.types.dividendEvent.label'),
     'budget.exceeded': t('settings.notifications.types.budgetExceeded.label'),
     'standing_order.skipped': t('settings.notifications.types.standingOrderSkipped.label'),
@@ -121,6 +123,7 @@ function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string>
     budgets: t('settings.notifications.categories.budgets'),
     markets: t('settings.notifications.categories.markets'),
     mirrorchain: t('settings.notifications.categories.mirrorchain'),
+    feedback: t('settings.notifications.categories.feedback'),
     account: t('settings.notifications.categories.account'),
   };
 }

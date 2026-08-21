@@ -24,6 +24,11 @@ import { badRequest, forbidden, notFound } from '../../errors';
 import { coerceProfileIcon } from '../../http/serializers';
 import type { Logger } from '../../logger';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
+import {
+  VaultedPortfolioError,
+  type VaultedPortfolioGuard,
+  type VaultedPortfolioSubject,
+} from '../account/vaultedPortfolioEnforcement';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 
@@ -66,6 +71,10 @@ export interface ChatServiceDeps {
   logger?: Logger;
   /** Mixed kept chat: only private/share chip branches take privacy locks. */
   paranoid?: Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedMany'>;
+  /** Portfolio-chip policy: refuse new owned-vault references and omit stale stored ones. */
+  vaultedPortfolio?: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'> & {
+    portfolioSubject(portfolioId: string): Promise<VaultedPortfolioSubject>;
+  };
 }
 
 export interface ChatService {
@@ -139,7 +148,7 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
     viewerId: string,
     kind: ChatChipKind,
     subjectId: string,
-  ): Promise<ChatChip> {
+  ): Promise<ChatChip | null> {
     const notViewable: ChatChip = { kind, subjectId, viewable: false, title: null, subtitle: null };
 
     if (kind === 'asset') {
@@ -250,11 +259,29 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
           .catch(() => undefined)) ?? notViewable
       );
     };
-    if (!deps.paranoid) return resolveShareable();
+    const resolveAllowedShareable = async (): Promise<ChatChip> => {
+      if (!deps.paranoid) return resolveShareable();
+      try {
+        return await deps.paranoid.runAllowed(viewerId, 'sharing', resolveShareable);
+      } catch (error) {
+        if (error instanceof ParanoidModeError) return notViewable;
+        throw error;
+      }
+    };
+
+    if (kind !== 'portfolio' || !deps.vaultedPortfolio) return resolveAllowedShareable();
+    const subject = await deps.vaultedPortfolio.portfolioSubject(subjectId);
+    if (!subject.exists || subject.userId === null) return resolveAllowedShareable();
     try {
-      return await deps.paranoid.runAllowed(viewerId, 'sharing', resolveShareable);
+      return await deps.vaultedPortfolio.runOwnedPortfolioAllowed(
+        subject.userId,
+        subjectId,
+        resolveAllowedShareable,
+      );
     } catch (error) {
-      if (error instanceof ParanoidModeError) return notViewable;
+      // A stored bare reference is not a license to reveal even the locked
+      // portfolio id. Omit the chip entirely for sender and recipient alike.
+      if (error instanceof VaultedPortfolioError) return null;
       throw error;
     }
   }
@@ -360,49 +387,60 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
       const chipKind = input.chip?.kind ?? null;
       const chipSubjectId = input.chip?.subjectId ?? null;
 
-      // A chip must reference the sender's OWN shareable (or a visible asset) —
-      // this only checks the sender's ownership; it grants the recipient nothing.
-      if (
-        input.chip &&
-        !(await senderMayReference(userId, input.chip.kind, input.chip.subjectId))
-      ) {
-        throw badRequest('You can only share an item you own.', 'CHAT_CHIP_NOT_OWNED');
-      }
+      const persistAndDeliver = async (): Promise<ChatMessageRow> => {
+        // A chip must reference the sender's OWN shareable (or a visible asset) —
+        // this only checks the sender's ownership; it grants the recipient nothing.
+        if (
+          input.chip &&
+          !(await senderMayReference(userId, input.chip.kind, input.chip.subjectId))
+        ) {
+          throw badRequest('You can only share an item you own.', 'CHAT_CHIP_NOT_OWNED');
+        }
 
-      const row = await repo.insertMessage({
-        conversationId,
-        senderId: userId,
-        body,
-        chipKind,
-        chipSubjectId,
-      });
+        const row = await repo.insertMessage({
+          conversationId,
+          senderId: userId,
+          body,
+          chipKind,
+          chipSubjectId,
+        });
 
-      // Two independent delivery legs (#368), both best-effort for the caller —
-      // the message is already persisted and the recipient's poll fallback
-      // catches up regardless:
-      //  1. the EPHEMERAL bus publish the gateway maps to the in-thread realtime
-      //     push (always delivered to the open thread, matrix-independent);
-      //  2. the DURABLE notification-center emit, matrix-routed to bell/email/
-      //     push and presence-suppressed when the recipient has this very
-      //     conversation open.
-      const chatEvent = {
-        type: 'chat.message' as const,
-        userId: recipientId,
-        senderId: userId,
-        senderUsername: (await friendship.getUsername(userId).catch(() => '')) ?? '',
-        conversationId,
-        messageId: row.id,
-        bodyPreview: body ? body.slice(0, PREVIEW_MAX) : null,
-        hasChip: chipKind !== null,
-        occurredAt: row.createdAt.toISOString(),
+        // Two independent delivery legs (#368), both best-effort for the caller —
+        // the message is already persisted and the recipient's poll fallback
+        // catches up regardless:
+        //  1. the EPHEMERAL bus publish the gateway maps to the in-thread realtime
+        //     push (always delivered to the open thread, matrix-independent);
+        //  2. the DURABLE notification-center emit, matrix-routed to bell/email/
+        //     push and presence-suppressed when the recipient has this very
+        //     conversation open.
+        const chatEvent = {
+          type: 'chat.message' as const,
+          userId: recipientId,
+          senderId: userId,
+          senderUsername: (await friendship.getUsername(userId).catch(() => '')) ?? '',
+          conversationId,
+          messageId: row.id,
+          bodyPreview: body ? body.slice(0, PREVIEW_MAX) : null,
+          hasChip: chipKind !== null,
+          occurredAt: row.createdAt.toISOString(),
+        };
+        try {
+          await events.publish(chatEvent);
+        } catch (err) {
+          logger?.warn({ err, messageId: row.id }, 'chat.message publish failed');
+        }
+        await notify.emit(chatEvent);
+        return row;
       };
-      try {
-        await events.publish(chatEvent);
-      } catch (err) {
-        logger?.warn({ err, messageId: row.id }, 'chat.message publish failed');
-      }
-      await notify.emit(chatEvent);
 
+      const row =
+        input.chip?.kind === 'portfolio' && deps.vaultedPortfolio
+          ? await deps.vaultedPortfolio.runOwnedPortfolioAllowed(
+              userId,
+              input.chip.subjectId,
+              persistAndDeliver,
+            )
+          : await persistAndDeliver();
       return toMessage(userId, row);
     },
 

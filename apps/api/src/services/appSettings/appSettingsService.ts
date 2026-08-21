@@ -3,7 +3,7 @@ import {
   ADMIN_SESSION_LIFETIME_MIN_HOURS,
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
-  notificationMatrixSchema,
+  notificationTypeRoutingSchema,
   portfolioVisibilitySchema,
   registrationModeSchema,
   type AccountDefaults,
@@ -83,6 +83,24 @@ export function leanDefaultNotificationMatrix(): NotificationMatrix {
       },
     ]),
   ) as NotificationMatrix;
+}
+
+/**
+ * Fold any recognized, valid stored rows over the current catalog defaults.
+ * Notification types are additive, so a matrix persisted by an older release
+ * is a valid partial override rather than corruption: new rows receive today's
+ * defaults while every existing owner choice survives the catalog expansion.
+ */
+function resolveStoredNotificationMatrix(value: unknown): NotificationMatrix {
+  const resolved = leanDefaultNotificationMatrix();
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return resolved;
+
+  const stored = value as Record<string, unknown>;
+  for (const type of NOTIFICATION_TYPES) {
+    const row = notificationTypeRoutingSchema.safeParse(stored[type]);
+    if (row.success) resolved[type] = row.data;
+  }
+  return resolved;
 }
 
 /**
@@ -214,8 +232,8 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
 
   /**
    * Resolve the account defaults, filling every unset key with its lean fallback
-   * (§13.4 V4-P0d). A stored notification matrix that no longer parses (schema
-   * drift) falls back to the lean matrix rather than throwing.
+   * (§13.4 V4-P0d). Stored notification rows are merged over today's catalog
+   * defaults so additive type releases preserve every valid existing choice.
    */
   async function getAccountDefaults(): Promise<AccountDefaults> {
     const rows = await repo.getAll();
@@ -226,7 +244,7 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
       byKey.get(ACCOUNT_DEFAULT_PORTFOLIO_VISIBILITY_KEY)?.value,
     );
     const developerRow = byKey.get(ACCOUNT_DEFAULT_DEVELOPER_STATUS_KEY);
-    const matrixParsed = notificationMatrixSchema.safeParse(
+    const notificationMatrix = resolveStoredNotificationMatrix(
       byKey.get(ACCOUNT_DEFAULT_NOTIFICATION_MATRIX_KEY)?.value,
     );
 
@@ -240,9 +258,7 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
         typeof developerRow?.value === 'boolean'
           ? developerRow.value
           : DEFAULT_ACCOUNT_DEVELOPER_STATUS,
-      notificationMatrix: matrixParsed.success
-        ? matrixParsed.data
-        : leanDefaultNotificationMatrix(),
+      notificationMatrix,
     };
   }
 

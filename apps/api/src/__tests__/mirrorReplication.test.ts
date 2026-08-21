@@ -33,6 +33,16 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const FORCE_DELETE_PAUSE_LOCK = [1128, 1] as const;
 
+// Deterministic TEST VECTOR ids and verifier-shaped strings are public fixtures,
+// not credentials or production retirement material.
+const VAULTED_REPLAY_TEST_VECTOR = {
+  vaultId: '019c8600-0000-7000-8000-000000000001',
+  headerDocId: '019c8600-0000-7000-8000-000000000002',
+  commonDocId: '019c8600-0000-7000-8000-000000000003',
+  retirementProofPublicKey: 'TEST VECTOR mirror replay public verifier',
+  keyFingerprint: 'TEST-VECTOR-MIRROR-REPLAY-0001',
+} as const;
+
 interface DatabaseLockWait {
   pid: number;
   query: string;
@@ -1081,5 +1091,52 @@ describe('mirrorchain M2 — replication core', () => {
       0,
     );
     expect((await mirrorAuditRows(bPid)).length).toBe(bobAuditBefore);
+  });
+
+  it('quarantines a chain with a stale vaulted member before replay and remains an idempotent no-op', async () => {
+    const { alice, bob, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 125 });
+    const membershipBefore = await mirrorRepo.findActiveMembership(chain.id, bob.id);
+    const rowsBefore = await harness.db
+      .select()
+      .from(schema.portfolioCashMovements)
+      .where(eq(schema.portfolioCashMovements.portfolioId, bPid));
+
+    // This state bypasses the normal move-in precondition deliberately: it is
+    // the stale active membership that a delayed replicate job must fail closed.
+    await harness.db.insert(schema.vaults).values({
+      id: VAULTED_REPLAY_TEST_VECTOR.vaultId,
+      userId: bob.id,
+      name: 'TEST VECTOR replay vault',
+      headerDocId: VAULTED_REPLAY_TEST_VECTOR.headerDocId,
+      commonDocId: VAULTED_REPLAY_TEST_VECTOR.commonDocId,
+      media: ['server'],
+      retirementProofPublicKey: VAULTED_REPLAY_TEST_VECTOR.retirementProofPublicKey,
+      keyFingerprint: VAULTED_REPLAY_TEST_VECTOR.keyFingerprint,
+    });
+    await harness.db
+      .update(schema.portfolios)
+      .set({
+        vaultId: VAULTED_REPLAY_TEST_VECTOR.vaultId,
+        vaultAlias: 'TEST VECTOR locked replay stub',
+      })
+      .where(eq(schema.portfolios.id, bPid));
+
+    await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
+      applied: 0,
+      lagging: 0,
+    });
+    await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
+      applied: 0,
+      lagging: 0,
+    });
+
+    const membershipAfter = await mirrorRepo.findActiveMembership(chain.id, bob.id);
+    const rowsAfter = await harness.db
+      .select()
+      .from(schema.portfolioCashMovements)
+      .where(eq(schema.portfolioCashMovements.portfolioId, bPid));
+    expect(membershipAfter?.appliedSeq).toBe(membershipBefore?.appliedSeq);
+    expect(rowsAfter).toEqual(rowsBefore);
   });
 });

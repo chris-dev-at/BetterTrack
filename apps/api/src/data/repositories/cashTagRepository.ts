@@ -266,6 +266,7 @@ export function createCashTagRepository(db: Database) {
             eq(cashMovementTags.movementId, movementId),
             // BOTH sides of the invariant, in one predicate.
             eq(portfolios.userId, userId),
+            sql`${portfolios.vaultId} IS NULL`,
             eq(cashTags.userId, userId),
           ),
         )
@@ -294,7 +295,13 @@ export function createCashTagRepository(db: Database) {
         .select({ id: portfolioCashMovements.id })
         .from(portfolioCashMovements)
         .innerJoin(portfolios, eq(portfolios.id, portfolioCashMovements.portfolioId))
-        .where(and(eq(portfolioCashMovements.id, movementId), eq(portfolios.userId, userId)))
+        .where(
+          and(
+            eq(portfolioCashMovements.id, movementId),
+            eq(portfolios.userId, userId),
+            sql`${portfolios.vaultId} IS NULL`,
+          ),
+        )
         .limit(1);
       if (owned.length === 0) return { movementFound: false, unknownTagIds: [], tags: [] };
 
@@ -353,7 +360,9 @@ export function createCashTagRepository(db: Database) {
         FROM ${portfolioCashMovements} pm
         JOIN ${portfolios} p ON p."id" = pm."portfolio_id"
         JOIN ${cashTags} t ON t."id" = ${tagId} AND t."user_id" = p."user_id"
-        WHERE pm."id" = ${movementId} AND pm."portfolio_id" = ${portfolioId}
+        WHERE pm."id" = ${movementId}
+          AND pm."portfolio_id" = ${portfolioId}
+          AND p."vault_id" IS NULL
         ON CONFLICT ("movement_id", "tag_id") DO NOTHING
         RETURNING "id"
       `);
