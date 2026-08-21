@@ -190,6 +190,38 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
     });
   });
 
+  it('sends localized feedback updates only after the user opts into email', async () => {
+    const recipient = await harness.seedUser({
+      email: 'feedback-mail@bt.test',
+      username: 'fbmail',
+    });
+    await db.update(users).set({ locale: 'de' }).where(eq(users.id, recipient.id));
+    await enableEmailFor(recipient.id, 'feedback.status_changed', 'feedback.reply_created');
+
+    await dispatcher.dispatch({
+      type: 'feedback.status_changed',
+      userId: recipient.id,
+      feedbackId: 'feedback-1',
+      status: 'saved_as_future_idea',
+      lastStatusChangeAt: OCCURRED_AT,
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'feedback.reply_created',
+      userId: recipient.id,
+      feedbackId: 'feedback-1',
+      messageId: 'message-1',
+      occurredAt: OCCURRED_AT,
+    });
+
+    const rows = await logFor(recipient.email);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.template === 'feedback_notification')).toBe(true);
+    expect(transport.sent.map((mail) => mail.text).join('\n')).toContain(
+      'Dein Feedback wurde als zukünftige Idee gespeichert.',
+    );
+  });
+
   it('renders every formerly leaked dispatcher body in the DE recipient locale', async () => {
     const recipient = await harness.seedUser({ email: 'email-de@bt.test', username: 'email-de' });
     await db.update(users).set({ locale: 'de' }).where(eq(users.id, recipient.id));

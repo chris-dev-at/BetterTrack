@@ -222,6 +222,14 @@ export interface EmailService {
     actorUsername: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Opt-in email copy for a feedback status change or staff reply (#1340). */
+  sendFeedbackNotification(params: {
+    to: string;
+    userId: string;
+    title: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /**
    * Notification email: a MIRRORCHAIN group-portfolio lifecycle notice (§13.5
    * V5-P7, design §11). Fully localized — the body is built from the `mirror`
@@ -295,6 +303,7 @@ type EmailTemplateKind =
   | 'alert_triggered'
   | 'earnings_reminder'
   | 'chat_message'
+  | 'feedback_notification'
   | 'mirror_notification'
   | 'digest';
 
@@ -576,6 +585,19 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'chat_message',
         to,
         chatMessageEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendFeedbackNotification: ({ to, userId, title, body, locale }) =>
+      deliver(
+        'feedback_notification',
+        to,
+        deferredNotificationEmail({
+          title,
+          body,
+          appUrl: `${config.appOrigin.replace(/\/$/, '')}/control/feedback`,
+          locale,
+        }),
         { userId },
       ),
 

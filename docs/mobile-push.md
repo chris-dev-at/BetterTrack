@@ -162,7 +162,7 @@ channels (`apps/api/src/services/notifications/notificationDispatcher.ts:584–5
 
 ### 3.1. Canonical notification types and FCM `data` keys
 
-`packages/contracts/src/notifications.ts` defines the 26-member
+`packages/contracts/src/notifications.ts` defines the 28-member
 `NOTIFICATION_TYPES` taxonomy. The dispatcher’s `render(...)` function is the
 sole author of the per-type keys; `fcm.ts` then adds `type` to every sent
 payload. The table is therefore the complete **pre-merge** data contract
@@ -196,6 +196,8 @@ payload. The table is therefore the complete **pre-merge** data contract
 | `mirror.chain_dissolved`       | A MIRRORCHAIN group portfolio was dissolved              | `chainId`                                                  |
 | `mirror.sync_stalled`          | A MIRRORCHAIN copy needs a manual retry                  | `chainId`                                                  |
 | `standing_order.skipped`       | Standing-order periods were deferred, dropped, or failed | `standingOrderId`, `periodKey`, `outcome`, `droppedCount`  |
+| `feedback.status_changed`      | Staff changed one of the user's feedback submissions     | `feedbackId`, `status`, `lastStatusChangeAt`               |
+| `feedback.reply_created`       | Staff replied to one of the user's feedback submissions  | `feedbackId`, `messageId`                                  |
 
 ### 3.2. `data` encoding
 
@@ -285,6 +287,8 @@ a portfolio id.
 | `mirror.chain_dissolved`       | Notification inbox                                                      | `chainId`                                                 | Notification inbox                                      |
 | `mirror.sync_stalled`          | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
 | `standing_order.skipped`       | Standing order: `/workbench/forecasts#standing-order-{standingOrderId}` | `standingOrderId`, `periodKey`, `outcome`, `droppedCount` | `/workbench/forecasts#forecast-standing-orders-heading` |
+| `feedback.status_changed`      | Feedback submissions: `/control/feedback`                               | `feedbackId` (`status`, `lastStatusChangeAt`)             | Notification inbox                                      |
+| `feedback.reply_created`       | Feedback submissions: `/control/feedback`                               | `feedbackId`, `messageId`                                 | Notification inbox                                      |
 | `notifications.digest`         | Notification inbox; it has no individual-item route                     | `cadence`                                                 | Notification inbox                                      |
 
 Mobile clients SHOULD preserve the listed no-dead-tap fallbacks. The inbox-first

@@ -65,6 +65,14 @@ describe('feedback delete-per-status matrix', () => {
     expect(Object.keys(transitions).sort()).toEqual([...FEEDBACK_STATUSES].sort());
   });
 
+  async function ownerNotificationCount(): Promise<number> {
+    const [result] = await harness.db
+      .select({ value: count() })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, owner.id));
+    return result?.value ?? 0;
+  }
+
   for (const status of FEEDBACK_STATUSES) {
     it(`soft-deletes a ${status} submission idempotently`, async () => {
       // The reported row's exact shape: category `other`, with a subject set.
@@ -84,6 +92,11 @@ describe('feedback delete-per-status matrix', () => {
         expect(patched.status, JSON.stringify(patched.body)).toBe(200);
         expect(updateFeedbackStatusResponseSchema.parse(patched.body).status).toBe(status);
       }
+
+      // A real staff transition now produces a submitter notification. Pin the
+      // count before leaving so this suite still proves that neither the first
+      // DELETE nor its idempotent retry emits a separate notification.
+      const notificationsBeforeDelete = await ownerNotificationCount();
 
       const first = await ownerAgent.delete(`/api/v1/feedback/${id}`).set(...XRW);
       expect(first.status, JSON.stringify(first.body)).toBe(204);
@@ -112,10 +125,11 @@ describe('feedback delete-per-status matrix', () => {
         .where(eq(schema.feedback.id, id));
       expect(repeated?.deletedByUserAt?.getTime()).toBe(tombstoned?.deletedByUserAt?.getTime());
       expect(repeated?.updatedAt.getTime()).toBe(tombstoned?.updatedAt.getTime());
+      expect(await ownerNotificationCount()).toBe(notificationsBeforeDelete);
     });
   }
 
-  it('leaves the submitter rail empty, the owner trail whole and nobody notified', async () => {
+  it('leaves the submitter rail empty, the owner trail whole and emits no delete notices', async () => {
     // Runs after the per-status cases above, on the rows they tombstoned.
     expect(
       myFeedbackResponseSchema.parse((await ownerAgent.get('/api/v1/feedback/mine')).body)
@@ -130,11 +144,16 @@ describe('feedback delete-per-status matrix', () => {
     expect(mine.every((row) => row.deletedByUser)).toBe(true);
     expect(mine.map((row) => row.status).sort()).toEqual([...FEEDBACK_STATUSES].sort());
 
-    // Leaving a conversation is not an event anybody is told about.
-    const [notified] = await harness.db
-      .select({ value: count() })
+    // The five non-new cases legitimately notified the submitter about their
+    // staff-authored status transitions. The per-case before/after assertions
+    // above prove that leaving the conversation added nothing to that set.
+    const notices = await harness.db
+      .select({ type: schema.notifications.type })
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, owner.id));
-    expect(notified?.value).toBe(0);
+    expect(notices).toHaveLength(
+      Object.values(transitions).filter((transition) => transition !== null).length,
+    );
+    expect(notices.every((notice) => notice.type === 'feedback.status_changed')).toBe(true);
   });
 });

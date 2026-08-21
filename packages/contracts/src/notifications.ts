@@ -60,6 +60,11 @@ export const NOTIFICATION_TYPES = [
   // booking tombstone. A normal (non-opt-in) type with the standard matrix
   // defaults; the event payload identifies the order + affected period.
   'standing_order.skipped',
+  // Feedback loop (#1340): submitters hear when staff changes a submission's
+  // lifecycle or adds a reply. Normal (non-opt-in) types: in-app / push ON,
+  // email OFF through the lean defaults, and both honour quiet hours.
+  'feedback.status_changed',
+  'feedback.reply_created',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
@@ -130,6 +135,13 @@ export const NOTIFICATION_MESSAGE_KEYS = [
   'mirrorOwnershipTransferred',
   'mirrorChainDissolved',
   'mirrorSyncStalled',
+  'feedbackStatusNew',
+  'feedbackStatusTriaged',
+  'feedbackStatusWorkingOnIt',
+  'feedbackStatusSavedAsFutureIdea',
+  'feedbackStatusDeclined',
+  'feedbackStatusShipped',
+  'feedbackReplyCreated',
 ] as const;
 export type NotificationMessageKey = (typeof NOTIFICATION_MESSAGE_KEYS)[number];
 export const notificationMessageKeySchema = z.enum(NOTIFICATION_MESSAGE_KEYS);
@@ -265,6 +277,10 @@ export const NOTIFICATION_CATEGORIES = [
       'mirror.sync_stalled',
     ],
   },
+  // Feedback is its own compact group: these are lifecycle/conversation updates,
+  // not social chat or account-security notices, and keeping the two together
+  // makes their shared submission deep link clear in the routing matrix.
+  { key: 'feedback', types: ['feedback.status_changed', 'feedback.reply_created'] },
   { key: 'account', types: ['account.invite', 'account.temp_password', 'account.data_export'] },
 ] as const satisfies readonly { key: string; types: readonly NotificationType[] }[];
 export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['key'];

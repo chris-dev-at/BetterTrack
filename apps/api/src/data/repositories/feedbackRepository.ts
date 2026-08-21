@@ -27,6 +27,19 @@ export interface MyFeedbackRow extends FeedbackRow {
   unreadReplyCount: number;
 }
 
+/** Parent context returned with an admin-authored message for recipient routing. */
+export interface AdminFeedbackMessageWrite {
+  row: FeedbackMessageRow;
+  submitterUserId: string;
+  deletedByUserAt: Date | null;
+}
+
+/** A status write distinguishes a real transition from an idempotent retry. */
+export interface FeedbackStatusWrite {
+  row: FeedbackRow;
+  changed: boolean;
+}
+
 export interface FeedbackThreadPage {
   thread: { id: string; unreadCount: number };
   rows: FeedbackMessageRow[];
@@ -77,18 +90,21 @@ export interface FeedbackRepository {
     adminUserId: string,
     id: string,
     body: string,
-  ): Promise<FeedbackMessageRow | null>;
+  ): Promise<AdminFeedbackMessageWrite | null>;
   markReadForSubmitter(userId: string, id: string): Promise<boolean>;
   markReadForAdmin(id: string): Promise<boolean>;
   listForAdmin(
     params: AdminFeedbackListQuery,
   ): Promise<{ rows: AdminFeedbackRow[]; total: number }>;
-  setStatus(id: string, input: UpdateFeedbackStatusRequest, at: Date): Promise<FeedbackRow | null>;
+  setStatus(id: string, input: UpdateFeedbackStatusRequest): Promise<FeedbackStatusWrite | null>;
   /** Idempotently set the admin-only workspace archive state for any submission. */
   setArchived(id: string, archived: boolean, at: Date): Promise<FeedbackArchiveMutation | null>;
 }
 
-export function createFeedbackRepository(db: Database): FeedbackRepository {
+export function createFeedbackRepository(
+  db: Database,
+  now: () => Date = () => new Date(),
+): FeedbackRepository {
   /**
    * Submitter-rail parent scoping. Ownership is only half of it: a submission the
    * owner has tombstoned (#1400) has left their rail entirely, so it must read as
@@ -198,10 +214,14 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
     authorSide: FeedbackMessageAuthorSide,
     body: string,
     submitterUserId?: string,
-  ): Promise<FeedbackMessageRow | null> {
+  ): Promise<AdminFeedbackMessageWrite | null> {
     return db.transaction(async (tx) => {
       const [thread] = await tx
-        .select({ id: feedback.id })
+        .select({
+          id: feedback.id,
+          submitterUserId: feedback.userId,
+          deletedByUserAt: feedback.deletedByUserAt,
+        })
         .from(feedback)
         .where(and(eq(feedback.id, id), submitterScope(submitterUserId)))
         .limit(1);
@@ -212,7 +232,11 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
         .values({ feedbackId: id, authorSide, authorUserId, body })
         .returning();
       if (!row) throw new Error('Feedback message vanished after insert');
-      return row;
+      return {
+        row,
+        submitterUserId: thread.submitterUserId,
+        deletedByUserAt: thread.deletedByUserAt,
+      };
     });
   }
 
@@ -295,7 +319,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
     },
 
     async createMessageForSubmitter(userId, id, body) {
-      return createMessage(userId, id, 'submitter', body, userId);
+      return (await createMessage(userId, id, 'submitter', body, userId))?.row ?? null;
     },
 
     async createMessageForAdmin(adminUserId, id, body) {
@@ -406,19 +430,45 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       };
     },
 
-    async setStatus(id, input, at) {
-      const [row] = await db
-        .update(feedback)
-        .set({
-          status: input.status,
-          lastStatusChangeAt: at,
-          declinedReason: input.status === 'declined' ? (input.declinedReason ?? null) : null,
-          shippedVersion: input.status === 'shipped' ? (input.shippedVersion ?? null) : null,
-          updatedAt: at,
-        })
-        .where(eq(feedback.id, id))
-        .returning();
-      return row ?? null;
+    async setStatus(id, input) {
+      return db.transaction(async (tx) => {
+        const [current] = await tx.select().from(feedback).where(eq(feedback.id, id)).for('update');
+        if (!current) return null;
+
+        const declinedReason = input.status === 'declined' ? (input.declinedReason ?? null) : null;
+        const shippedVersion = input.status === 'shipped' ? (input.shippedVersion ?? null) : null;
+        if (
+          current.status === input.status &&
+          current.declinedReason === declinedReason &&
+          current.shippedVersion === shippedVersion
+        ) {
+          // HTTP retries are not new transitions: preserve the natural
+          // (submission id + lastStatusChangeAt) notification identity.
+          return { row: current, changed: false };
+        }
+
+        // This timestamp is both lifecycle state and the durable notification
+        // identity, so allocate it only after the row lock serializes competing
+        // transitions. A coarse or backwards-moving wall clock must not make two
+        // genuine transitions share an event key.
+        const observedAt = now();
+        const transitionAt = new Date(
+          Math.max(observedAt.getTime(), current.lastStatusChangeAt.getTime() + 1),
+        );
+        const [row] = await tx
+          .update(feedback)
+          .set({
+            status: input.status,
+            lastStatusChangeAt: transitionAt,
+            declinedReason,
+            shippedVersion,
+            updatedAt: transitionAt,
+          })
+          .where(eq(feedback.id, id))
+          .returning();
+        if (!row) throw new Error('Feedback vanished during its locked status transition');
+        return { row, changed: true };
+      });
     },
 
     async setArchived(id, archived, at) {
