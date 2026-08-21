@@ -5,8 +5,14 @@ import type { CreateDriveConnectionRequest, DriveConnection } from '@bettertrack
 import type { Database } from '../db';
 import { driveConnections, vaults } from '../schema';
 
+export interface DetachedVault {
+  id: string;
+  /** Media set left on the vault once `drive` was removed; audited by the caller. */
+  media: string[];
+}
+
 export type DriveConnectionDeleteResult =
-  | { status: 'ok'; detachedVaultIds: string[] }
+  | { status: 'ok'; detachedVaults: DetachedVault[] }
   | { status: 'not_found' }
   | { status: 'bound'; vaults: { id: string; name: string }[] }
   | { status: 'last_medium'; vaults: { id: string; name: string }[] };
@@ -103,11 +109,11 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
           .where(and(eq(vaults.userId, userId), eq(vaults.driveConnectionId, connectionId)))
           .orderBy(asc(vaults.name), asc(vaults.id))
           .for('update');
-        const summaries = bound.map(({ id, name }) => ({ id, name }));
-        if (bound.length > 0 && !acknowledgeBound) {
-          return { status: 'bound' as const, vaults: summaries };
-        }
-
+        // Order matters for honesty, not for safety: `last_medium` does not
+        // depend on the acknowledgement, so deciding it first spares a
+        // Drive-only owner the detour of accepting a loss of reach that was
+        // never on offer (they would otherwise see BOUND, acknowledge it, and
+        // only then meet the refusal that held all along).
         const lastMedium = bound.filter(({ media }) => !media.includes('server'));
         if (lastMedium.length > 0) {
           return {
@@ -116,20 +122,27 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
           };
         }
 
+        if (bound.length > 0 && !acknowledgeBound) {
+          return { status: 'bound' as const, vaults: bound.map(({ id, name }) => ({ id, name })) };
+        }
+
         // Explicit loss-of-reach acknowledgement is meaningful only for a
         // replicated vault: keep its verified server copy active, detach Drive
         // config, and leave the user's Drive files untouched.
+        const detachedVaults: DetachedVault[] = [];
         for (const vault of bound) {
+          const media = vault.media.filter((medium) => medium !== 'drive');
           await tx
             .update(vaults)
             .set({
-              media: vault.media.filter((medium) => medium !== 'drive'),
+              media,
               driveConnectionId: null,
               mediaAttestedAt: null,
               mediaAttestedDriveConnectionId: null,
               updatedAt: now,
             })
             .where(and(eq(vaults.userId, userId), eq(vaults.id, vault.id)));
+          detachedVaults.push({ id: vault.id, media });
         }
 
         const [deleted] = await tx
@@ -137,7 +150,7 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
           .where(and(eq(driveConnections.userId, userId), eq(driveConnections.id, connectionId)))
           .returning({ id: driveConnections.id });
         return deleted
-          ? { status: 'ok' as const, detachedVaultIds: bound.map(({ id }) => id) }
+          ? { status: 'ok' as const, detachedVaults }
           : { status: 'not_found' as const };
       });
     },

@@ -8,6 +8,7 @@ import type {
   DriveConnection,
   ParanoidMediaStateResponse,
   ParanoidVaultMediaState,
+  PrivacyMode,
   VaultConfig,
 } from '@bettertrack/contracts';
 
@@ -33,6 +34,7 @@ import {
 } from '../../../lib/userApi';
 import type { DriveConnectionController } from '../../vault/media';
 import type { DriveConnectionRegistry } from '../../vault/media/driveConnectionRegistry';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { ConnectionsPanel } from './ConnectionsPanel';
 
 const GOOGLE_OFF = {
@@ -152,15 +154,23 @@ function expiringController(delayMs: number): DriveConnectionController {
   };
 }
 
+/**
+ * The account gate resolves the mode above this panel, so the harness supplies
+ * it the same way `AccountModeRoot` does; 'normal' is the default because that
+ * is what the overwhelming majority of accounts render.
+ */
 function renderPanel(
   initialEntry = '/settings/connections',
   props: React.ComponentProps<typeof ConnectionsPanel> = {},
+  mode: PrivacyMode = 'normal',
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
-        <ConnectionsPanel {...props} />
+        <ResolvedPrivacyModeProvider mode={mode}>
+          <ConnectionsPanel {...props} />
+        </ResolvedPrivacyModeProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -339,10 +349,11 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
     const moveVault = vi.fn(async () => ({ cleanupFailures: [] }));
     const user = userEvent.setup();
-    renderPanel('/settings/connections', {
-      driveRegistry: registry(),
-      driveMoveVault: moveVault,
-    });
+    renderPanel(
+      '/settings/connections',
+      { driveRegistry: registry(), driveMoveVault: moveVault },
+      'paranoid',
+    );
 
     expect(await screen.findByText('Drive Y · y@example.test')).toBeInTheDocument();
     expect(screen.getByText('Drive Z · z@example.test')).toBeInTheDocument();
@@ -365,7 +376,7 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
       .mockRejectedValueOnce(new ApiError(409, 'DRIVE_CONNECTION_BOUND', 'bound'))
       .mockResolvedValueOnce(undefined);
     const user = userEvent.setup();
-    renderPanel('/settings/connections', { driveRegistry: registry(disconnect) });
+    renderPanel('/settings/connections', { driveRegistry: registry(disconnect) }, 'paranoid');
 
     await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
     expect(
@@ -377,6 +388,37 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     expect(
       await screen.findByText('Drive account disconnected. Its files remain in Google Drive.'),
     ).toBeInTheDocument();
+  });
+
+  test('offers the first connection with its own copy, not "another"', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([]);
+    renderPanel('/settings/connections', { driveRegistry: registry() }, 'paranoid');
+
+    expect(await screen.findByText('No Drive account is connected yet.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect a Drive account' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Connect another Drive account' }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('a normal-mode account gets no group, no button and no requests for it', async () => {
+    // A Drive connection can only bind to a paranoid vault, so for everyone
+    // else the whole group — and both of its reads — must not exist, however
+    // the deployment sets BT_GOOGLE_DRIVE_CLIENT_ID (anti-bloat rule).
+    vi.mocked(listDriveConnections).mockResolvedValue([y, z]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel('/settings/connections', { driveMoveVault: vi.fn() });
+
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('Google Drive connections')).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('button', { name: /Connect a(nother)? Drive account/ }),
+    ).not.toBeInTheDocument();
+    expect(listDriveConnections).not.toHaveBeenCalled();
+    expect(listVaultConfigs).not.toHaveBeenCalled();
   });
 });
 

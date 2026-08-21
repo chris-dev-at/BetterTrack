@@ -123,6 +123,38 @@ describe('per-connection Drive registry', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
+  it('releases the client it replaces when re-consenting an already-registered account', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000406', 'sub-y', 'y@example.test');
+    const first = tokenClient('first-y-token');
+    const second = tokenClient('second-y-token');
+    const clients = [first, second];
+    const registry = createDriveConnectionRegistry({
+      clientId: 'browser-client-id',
+      // The upsert is keyed on (user, googleSub), so a second consent to the
+      // same Google account returns the SAME connection id.
+      api: { create: vi.fn(async () => y), verify: vi.fn(async () => y), delete: vi.fn() },
+      tokenClient: () => clients.shift()!,
+      identify: vi.fn(async () => ({
+        googleSub: y.googleSub,
+        email: y.email,
+        displayName: y.displayName,
+      })),
+    });
+
+    await expect(registry.connect()).resolves.toMatchObject({ status: 'ok', connection: y });
+    await expect(registry.connect()).resolves.toMatchObject({ status: 'ok', connection: y });
+
+    // The superseded client is cleared, so its token and expiry timer die with
+    // the last reference to it; the live one keeps the fresh capability.
+    expect(first.clear).toHaveBeenCalledTimes(1);
+    expect(second.clear).not.toHaveBeenCalled();
+    expect(registry.tokens(y.id)).toBe(second);
+    expect(registry.tokens(y.id)?.getAccessToken()).toMatchObject({
+      status: 'ok',
+      accessToken: 'second-y-token',
+    });
+  });
+
   it('re-mints Y and Z independently with each registered subject as login hint', async () => {
     const y = connection('018f0000-0000-7000-8000-000000000404', 'sub-y', 'y@example.test');
     const z = connection('018f0000-0000-7000-8000-000000000405', 'sub-z', 'z@example.test');

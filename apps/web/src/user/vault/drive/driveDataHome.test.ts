@@ -403,10 +403,9 @@ class SharedPhysicalDrive {
         size: String(outgoingEnvelope.byteLength),
         headRevisionId: `shared-revision-${id}`,
         appProperties: {
-          ownerDigest:
-            ACCOUNT_A === (name.includes(await driveVaultFileName(ACCOUNT_A)) ? ACCOUNT_A : '')
-              ? await driveOwnerDigest(ACCOUNT_A)
-              : await driveOwnerDigest(ACCOUNT_B),
+          ownerDigest: await driveOwnerDigest(
+            name === (await driveVaultFileName(ACCOUNT_A)) ? ACCOUNT_A : ACCOUNT_B,
+          ),
           vaultVersion: String(header.vaultVersion),
           formatVersion: String(header.formatVersion),
         },
@@ -594,14 +593,18 @@ describe('Drive file DataHome', () => {
     expect(multipart).not.toMatch(/email|vaultName|portfolio/i);
     expect(String(fetch.mock.calls[0]![0])).not.toContain(fileName);
 
+    // A cached document read is metadata + exactly ONE body: the bytes the
+    // address check downloads are the bytes the read returns.
     const renamed = { ...driveFile, name: 'owner-renamed-file.btenc' };
+    const before = fetch.mock.calls.length;
     fetch
       .mockResolvedValueOnce(json(renamed))
-      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }))
       .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }));
     await expect(home.read()).resolves.toMatchObject({ status: 'ok', info: { version: 1 } });
-    expect(String(fetch.mock.calls.at(-3)?.[0])).toContain('/files/doc-file-id?fields=');
-    expect(String(fetch.mock.calls.at(-3)?.[0])).not.toContain(fileName);
+    expect(fetch.mock.calls.length - before).toBe(2);
+    expect(String(fetch.mock.calls.at(-2)?.[0])).toContain('/files/doc-file-id?fields=');
+    expect(String(fetch.mock.calls.at(-2)?.[0])).not.toContain(fileName);
+    expect(String(fetch.mock.calls.at(-1)?.[0])).toContain('/files/doc-file-id?alt=media');
   });
 
   it('reuses a renamed visible folder by appProperties instead of creating another', async () => {

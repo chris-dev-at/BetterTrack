@@ -730,6 +730,7 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
     const connection = await ctx.driveConnections.create(
       req.authUser!.id,
       req.valid?.body as CreateDriveConnectionRequest,
+      req.ip,
     );
     res.setHeader('Cache-Control', 'private, no-store');
     res.status(201).json(createDriveConnectionResponseSchema.parse({ connection }));
@@ -764,6 +765,7 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
         req.authUser!.id,
         connectionId,
         rawAcknowledgement === 'true',
+        req.ip,
       );
       switch (result.status) {
         case 'ok':

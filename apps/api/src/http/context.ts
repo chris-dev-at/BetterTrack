@@ -1927,7 +1927,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     deleteReauth: discardReauth,
   });
-  const driveConnectionsService = createDriveConnectionService(createDriveConnectionRepository(db));
+  const driveConnectionsService = createDriveConnectionService(
+    createDriveConnectionRepository(db),
+    audit,
+  );
 
   const paranoidTransitions = createParanoidTransitionService({
     db,

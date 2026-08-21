@@ -492,7 +492,11 @@ function DriveAccountsSection({
           )}
           <Row stack>
             <Button disabled={working !== null} onClick={() => void connect()} size="sm">
-              {t('settings.connections.driveAccounts.add')}
+              {t(
+                connections.data.length === 0
+                  ? 'settings.connections.driveAccounts.addFirst'
+                  : 'settings.connections.driveAccounts.add',
+              )}
             </Button>
           </Row>
 
@@ -1030,6 +1034,11 @@ export function ConnectionsPanel({
   const runtime = useOptionalVaultRuntime();
   const privacy = useResolvedPrivacyModeState();
   const driveClientId = getGoogleDriveClientId();
+  // A Drive connection can only ever bind to a paranoid vault, so a normal-mode
+  // account must not see the group at all — not an empty one, and not the two
+  // requests that would fill it. The runtime client id is deployment config,
+  // never the audience gate (anti-bloat rule, §13.5).
+  const paranoid = privacy.privacyMode === 'paranoid';
   const resolvedDriveRegistry = useMemo(
     () =>
       driveRegistry === undefined
@@ -1056,7 +1065,7 @@ export function ConnectionsPanel({
 
       <GoogleSection />
 
-      {resolvedDriveRegistry ? (
+      {paranoid && resolvedDriveRegistry ? (
         <DriveAccountsSection registry={resolvedDriveRegistry} moveVault={driveMoveVault} />
       ) : null}
 

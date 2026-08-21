@@ -57,6 +57,13 @@ interface PreparedDocument {
  * authenticate Y → write Z → byte-exact readback Z → commit binding → attempt
  * deletion Y. A cleanup failure is returned after the committed state and can
  * never be collapsed into a failed migration or silently swallowed.
+ *
+ * Composition seam, deliberately unwired here: the caller must supply one
+ * source/target `DriveDataHome` PAIR PER DOCUMENT, and the production runtime
+ * still composes the single account-scoped Drive home (`media/runtime.ts`).
+ * E6 (#1416) re-homes the client engine per vault/document and is where
+ * Settings → Connections gets its `driveMoveVault` — until then this module is
+ * reached only from `driveMigration.test.ts`.
  */
 export async function migrateDriveConnection(
   options: DriveConnectionMigrationOptions,

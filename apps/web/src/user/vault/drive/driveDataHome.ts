@@ -68,7 +68,17 @@ interface DriveAddress {
 }
 
 type DriveFileResult =
-  | { status: 'ok'; file: ValidDriveFile; files: readonly ValidDriveFile[] }
+  | {
+      status: 'ok';
+      file: ValidDriveFile;
+      files: readonly ValidDriveFile[];
+      /**
+       * Bodies already fetched while resolving the document address, keyed by
+       * file id. Reusing them keeps a document read at one body download
+       * instead of two; a caller that finds no entry simply downloads.
+       */
+      bodies?: ReadonlyMap<string, Uint8Array>;
+    }
   | { status: 'absent' }
   | { status: 'corrupt'; result: DataHomeCorruptCandidate }
   | { status: 'failure'; failure: DataHomeTransportFailure };
@@ -232,6 +242,14 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     },
   };
 
+  /**
+   * Read the file this home last resolved, by id, skipping the list query.
+   * A duplicate branch that outranks it therefore stays invisible to `read()`
+   * until something lists again — which every path that can act on a duplicate
+   * already does: `write()` lists for its CAS, and `observeReplicas()` (the
+   * merge coordinator's entry point) is the one that resolves branches. Any
+   * answer here is still a file that validated against this exact address.
+   */
   async function readCachedFile(): Promise<DataHomeReadResult | null> {
     if (!cachedFileId) return null;
     const address = await addressPromise;
@@ -242,16 +260,15 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     }
     if (found.status === 'failure') return transport(found.failure);
     if (found.status === 'corrupt') return found.result;
-    if (address.mode === 'doc') {
-      const match = await fileMatchesAddress(found.file, address);
-      if (match.status === 'failure') return transport(match.failure);
-      if (match.status === 'corrupt') return match.result;
-      if (match.status === 'skip') {
-        cachedFileId = null;
-        return null;
-      }
+    if (address.mode === 'legacy') return download(found.file);
+    const match = await fileMatchesAddress(found.file, address);
+    if (match.status === 'failure') return transport(match.failure);
+    if (match.status === 'corrupt') return match.result;
+    if (match.status === 'skip') {
+      cachedFileId = null;
+      return null;
     }
-    return download(found.file);
+    return download(found.file, match.envelope);
   }
 
   async function observeReplicas(): Promise<DriveReplicaCycle> {
@@ -274,7 +291,9 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       return fixedReplicaCycle([found.result], async () => deletePending(found.result.message));
     }
 
-    const observations = await Promise.all(found.files.map(download));
+    const observations = await Promise.all(
+      found.files.map((file) => download(file, found.bodies?.get(file.id))),
+    );
     return {
       observations: observations.map(cloneReadResult),
       converge: (envelope) => convergeDuplicateFiles(found.files, observations, envelope),
@@ -320,7 +339,13 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       return blockedDelete(beforeAuthentication, 'Drive changed before cleanup authentication.');
     }
 
-    const refreshedObservations = await Promise.all(beforeAuthentication.files.map(download));
+    // The bodies the re-list already pulled for its address check are as fresh
+    // as a second download of the same objects would be.
+    const refreshedObservations = await Promise.all(
+      beforeAuthentication.files.map((file) =>
+        download(file, beforeAuthentication.bodies?.get(file.id)),
+      ),
+    );
     if (!sameReadableObservationSet(refreshedObservations, frozenObservations)) {
       return deletePending('Drive bytes changed before cleanup authentication.');
     }
@@ -448,6 +473,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     if (files.length === 0) return { status: 'absent' };
 
     const validated: ValidDriveFile[] = [];
+    const bodies = new Map<string, Uint8Array>();
     for (const file of files) {
       const result = validateFile(file, address);
       if (result.status !== 'ok') return result;
@@ -457,13 +483,15 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       }
       const match = await fileMatchesAddress(result.file, address);
       if (match.status === 'failure' || match.status === 'corrupt') return match;
-      if (match.status === 'match') validated.push(result.file);
+      if (match.status === 'match') {
+        validated.push(result.file);
+        bodies.set(result.file.id, match.envelope);
+      }
     }
     if (validated.length === 0) return { status: 'absent' };
     const ordered = [...validated].sort(compareDriveFiles);
-    if (cachedFileId && !ordered.some(({ id }) => id === cachedFileId)) cachedFileId = null;
     cachedFileId = ordered[0]!.id;
-    return { status: 'ok', file: ordered[0]!, files: ordered };
+    return { status: 'ok', file: ordered[0]!, files: ordered, bodies };
   }
 
   async function getFile(id: string): Promise<DriveFileResult> {
@@ -493,11 +521,19 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     }
   }
 
+  /**
+   * `docId` is deliberately absent from `appProperties` (§8: nothing but
+   * digests on the object), so two documents that share (vaultDigest, docKind)
+   * can be told apart only by their authenticated header. The bytes read here
+   * are handed back so the caller does not fetch the same body twice.
+   */
   async function fileMatchesAddress(
     file: ValidDriveFile,
     address: DriveAddress,
   ): Promise<
-    { status: 'match' | 'skip' } | Extract<DriveFileResult, { status: 'failure' | 'corrupt' }>
+    | { status: 'match'; envelope: Uint8Array }
+    | { status: 'skip' }
+    | Extract<DriveFileResult, { status: 'failure' | 'corrupt' }>
   > {
     const downloaded = await driveFetch(
       `${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`,
@@ -510,19 +546,15 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       };
     }
     try {
-      const inspected = inspectVaultDocEnvelope(
-        new Uint8Array(await downloaded.response.arrayBuffer()),
-      );
-      return {
-        status:
-          inspected.status === 'supported' &&
-          inspected.header.vaultId === address.vaultId &&
-          inspected.header.docId === address.docId &&
-          inspected.header.docKind === address.docKind &&
-          inspected.header.accountBinding === address.accountBinding
-            ? 'match'
-            : 'skip',
-      };
+      const envelope = new Uint8Array(await downloaded.response.arrayBuffer());
+      const inspected = inspectVaultDocEnvelope(envelope);
+      return inspected.status === 'supported' &&
+        inspected.header.vaultId === address.vaultId &&
+        inspected.header.docId === address.docId &&
+        inspected.header.docKind === address.docKind &&
+        inspected.header.accountBinding === address.accountBinding
+        ? { status: 'match', envelope }
+        : { status: 'skip' };
     } catch (cause) {
       return {
         status: 'corrupt',
@@ -536,25 +568,31 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     }
   }
 
-  async function download(file: ValidDriveFile): Promise<DataHomeReadResult> {
-    const downloaded = await driveFetch(
-      `${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`,
-    );
-    if (downloaded.status === 'failure') return transport(downloaded.failure);
-    if (downloaded.response.status === 404) return { status: 'absent', medium: 'drive' };
-    if (!downloaded.response.ok) {
-      return transport(httpFailure(downloaded.response, 'Drive vault download failed.'));
-    }
-
+  async function download(
+    file: ValidDriveFile,
+    prefetched?: Uint8Array,
+  ): Promise<DataHomeReadResult> {
     let envelope: Uint8Array;
-    try {
-      envelope = new Uint8Array(await downloaded.response.arrayBuffer());
-    } catch (cause) {
-      return transport({
-        code: 'api-failure',
-        message: 'Drive vault bytes could not be read.',
-        cause,
-      });
+    if (prefetched) {
+      envelope = prefetched;
+    } else {
+      const downloaded = await driveFetch(
+        `${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`,
+      );
+      if (downloaded.status === 'failure') return transport(downloaded.failure);
+      if (downloaded.response.status === 404) return { status: 'absent', medium: 'drive' };
+      if (!downloaded.response.ok) {
+        return transport(httpFailure(downloaded.response, 'Drive vault download failed.'));
+      }
+      try {
+        envelope = new Uint8Array(await downloaded.response.arrayBuffer());
+      } catch (cause) {
+        return transport({
+          code: 'api-failure',
+          message: 'Drive vault bytes could not be read.',
+          cause,
+        });
+      }
     }
     const inspected = inspectEnvelope(envelope, file, await addressPromise);
     if ('status' in inspected) return inspected;
@@ -1063,6 +1101,16 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
   }
 }
 
+/**
+ * Only an explicit `invalid_grant`/`invalid_token` envelope counts as proof of
+ * revocation. Drive v3 answers BOTH an expired and a revoked token with a plain
+ * 401 `UNAUTHENTICATED` / "Invalid Credentials", which cannot tell the two
+ * apart, so that shape deliberately falls through to `markExpired()`: the
+ * client silently re-mints, and GIS — the only party that actually knows —
+ * reports `invalid_grant` on the token response and flips the connection to
+ * `revoked` there (`gisTokenClient.ts`). Reading the ambiguous 401 as revocation
+ * would strand a recoverable session behind a manual sign-in prompt.
+ */
 async function hasRevokedGrant(response: Response): Promise<boolean> {
   try {
     const payload = (await response.clone().json()) as {

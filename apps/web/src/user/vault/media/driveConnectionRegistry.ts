@@ -105,6 +105,11 @@ export function createDriveConnectionRegistry(
         const connection = await options.api.create(identity);
         // Keep the fresh capability under exactly one registry id. A later page
         // load creates the normal googleSub-pinned client for this connection.
+        // Re-consenting an already-registered account upserts onto the same id,
+        // so the client it replaces is released here — otherwise its token and
+        // expiry timer would outlive every reference to it.
+        const replaced = clients.get(connection.id);
+        if (replaced && replaced !== bootstrap) replaced.clear();
         clients.set(connection.id, bootstrap);
         return { status: 'ok', connection };
       } catch (cause) {

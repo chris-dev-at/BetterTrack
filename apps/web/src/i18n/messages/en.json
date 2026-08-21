@@ -472,6 +472,7 @@
       "driveAccounts": {
         "title": "Google Drive connections",
         "empty": "No Drive account is connected yet.",
+        "addFirst": "Connect a Drive account",
         "add": "Connect another Drive account",
         "connected": "Ready",
         "needsSignIn": "Sign-in needed",
@@ -484,7 +485,7 @@
         "added": "Drive account connected.",
         "verified": "Drive access verified.",
         "disconnected": "Drive account disconnected. Its files remain in Google Drive.",
-        "acknowledge": "Vaults still use this connection. Disconnecting now removes their Drive binding; the encrypted files remain your property in Google Drive.",
+        "acknowledge": "Vaults still use this connection. Disconnecting now removes their Drive binding and keeps each server copy exactly as it is — any change that reached Drive but not the server stays behind. The encrypted files remain your property in Google Drive.",
         "acknowledgeAction": "Disconnect and leave files in Drive",
         "lastMedium": "This connection is the only medium for a vault. Add a verified server copy or move that vault first.",
         "error": "The Drive connection could not be changed.",

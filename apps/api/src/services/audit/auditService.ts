@@ -76,6 +76,12 @@ export const AuditAction = {
   VaultRetiredPurged: 'vault.retired_purged',
   VaultDeleteReauthFail: 'vault.delete_reauth_fail',
   /**
+   * Google Drive identity registry (§13.5 V5-P13 / E5). Identity metadata only —
+   * the Google subject id, never a token, a file id or a byte of ciphertext.
+   */
+  DriveConnectionCreated: 'drive_connection.created',
+  DriveConnectionDeleted: 'drive_connection.deleted',
+  /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
    */

@@ -370,9 +370,11 @@ X, back up to Drive Y, put another vault on Drive Z: supported natively.
 
 **Ground truth first, because the owner asked "does the Drive stuff work":**
 the shipped transport (`apps/web/src/user/vault/drive/gisTokenClient.ts`,
-`driveDataHome.ts`) is real, tested, browser-only code requesting exactly
-`https://www.googleapis.com/auth/drive.appdata`
-(`gisTokenClient.ts:2`) — but it has NEVER run on production: prod's web
+`driveDataHome.ts`) is real, tested, browser-only code requesting exactly one
+Drive scope (`DRIVE_FILE_SCOPE`, `gisTokenClient.ts:2`) — up to E5 that scope
+was `https://www.googleapis.com/auth/drive.appdata`; E5 moved it to
+`https://www.googleapis.com/auth/drive.file` per the §21 Q5 ruling recorded
+below, and no other scope is ever requested — but it has NEVER run on production: prod's web
 runtime config serves `googleDriveClientId: ""` because
 `BT_GOOGLE_DRIVE_CLIENT_ID` was never set on the host (docs/ops.md, "Browser
 Google Drive runtime configuration"). So no live user has ever written a Drive

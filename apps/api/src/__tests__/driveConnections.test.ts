@@ -7,7 +7,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { newId } from '../data/ids';
-import { driveConnections, vaults } from '../data/schema';
+import { auditLog, driveConnections, vaults } from '../data/schema';
 import {
   DRIVE_CONNECTIONS_SESSION_ONLY_ROUTES,
   openApiPathTemplateAcceptsBearer,
@@ -242,7 +242,7 @@ describe('Drive connection registry', () => {
     );
   });
 
-  it('refuses a bound disconnect, detaches replicated vaults only after acknowledgement, and leaves Drive-only protected', async () => {
+  it('refuses a bound disconnect, detaches replicated vaults only after acknowledgement, audits both, and leaves Drive-only protected', async () => {
     const user = await h.seedUser({ email: 'drive-bound@bt.test', username: 'drive_bound' });
     const agent = await login(user);
     const replicatedConnection = await connect(agent, {
@@ -278,15 +278,42 @@ describe('Drive connection registry', () => {
         .where(eq(driveConnections.id, replicatedConnection.id)),
     ).toHaveLength(0);
 
+    const detachAudit = await h.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, replicatedVault.body.vault.id));
+    expect(detachAudit.filter(({ action }) => action === 'vault.media_changed')).toEqual([
+      expect.objectContaining({
+        action: 'vault.media_changed',
+        meta: { media: ['server'], via: 'drive_connection_disconnect' },
+      }),
+    ]);
+    const connectionAudit = await h.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.targetId, replicatedConnection.id));
+    expect(connectionAudit.map(({ action }) => action).sort()).toEqual([
+      'drive_connection.created',
+      'drive_connection.deleted',
+    ]);
+    expect(JSON.stringify(connectionAudit)).not.toMatch(/token|file.?id/i);
+
+    // A Drive-only vault owner meets the accurate refusal on the FIRST attempt:
+    // the loss-of-reach acknowledgement was never on offer for it.
     const driveOnlyConnection = await connect(agent, {
       googleSub: 'drive-only',
       email: 'drive-only@example.test',
     });
     await createVault(agent, driveOnlyConnection.id, ['drive'], 'Drive-only vault');
     const lastMedium = await agent
-      .delete(`/api/v1/drive-connections/${driveOnlyConnection.id}?acknowledgeBound=true`)
+      .delete(`/api/v1/drive-connections/${driveOnlyConnection.id}`)
       .set(...XRW)
       .expect(409);
     expect(lastMedium.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+    const acknowledged = await agent
+      .delete(`/api/v1/drive-connections/${driveOnlyConnection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .expect(409);
+    expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
   });
 });
