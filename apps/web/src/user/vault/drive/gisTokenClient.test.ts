@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createGoogleDriveTokenClient,
   DRIVE_APPDATA_SCOPE,
+  DRIVE_FILE_SCOPE,
   type GoogleOauth2,
   type GoogleTokenResponse,
 } from './gisTokenClient';
@@ -49,6 +50,38 @@ describe('Google Drive GIS token client', () => {
     expect(requestAccessToken).toHaveBeenCalledTimes(1);
     client.clear();
     expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
+  });
+
+  it('supports a connection-pinned drive.file client without changing the legacy default', async () => {
+    let callback!: (response: GoogleTokenResponse) => void;
+    const requestAccessToken = vi.fn(() =>
+      callback({ access_token: 'connection-token', expires_in: 3600 }),
+    );
+    const initTokenClient = vi.fn((config: Parameters<GoogleOauth2['initTokenClient']>[0]) => {
+      callback = config.callback;
+      return { requestAccessToken };
+    });
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      scope: DRIVE_FILE_SCOPE,
+      loginHint: 'bound-google-principal',
+      identityLabel: 'owner@example.test',
+      loadOauth2: async () => ({ initTokenClient }),
+    });
+
+    await expect(client.authorize()).resolves.toMatchObject({ status: 'ok' });
+    expect(initTokenClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: DRIVE_FILE_SCOPE,
+        hint: 'bound-google-principal',
+        login_hint: 'bound-google-principal',
+      }),
+    );
+    expect(requestAccessToken).toHaveBeenCalledWith({
+      prompt: 'consent',
+      scope: DRIVE_FILE_SCOPE,
+      include_granted_scopes: false,
+    });
   });
 
   it('keeps expiry, absent consent and gesture reauthorization distinct', async () => {

@@ -33,7 +33,12 @@ import {
 import { createServerBlobDataHome } from './serverBlobDataHome';
 import type { DataHome } from './dataHome';
 import type { VaultSyncState } from './sync';
-import { VAULT_LOCK_REQUEST_EVENT } from './lockSignal';
+import {
+  broadcastVaultLock,
+  VAULT_LOCK_REQUEST_EVENT,
+  vaultLockSignalStorageKey,
+} from './lockSignal';
+import { vaultTransferRuntime, type VaultTransferRuntime } from './qr/runtime';
 import { equalBytes } from './bytes';
 import { zeroBytes } from './bytes';
 import {
@@ -56,7 +61,6 @@ export {
 
 const KEY_ID_STORAGE_PREFIX = 'bettertrack:vault-key:';
 const CUSTODY_DEVICE_STORAGE_PREFIX = 'bettertrack:vault-custody-device:';
-const LOCK_SIGNAL_STORAGE_PREFIX = 'bettertrack:vault-lock:';
 const DEVICE_LOCKED_STORAGE_PREFIX = 'bettertrack:vault-device-locked:';
 
 export interface VaultRuntimeProviderDependencies {
@@ -71,6 +75,8 @@ export interface VaultRuntimeProviderDependencies {
     keyId: string,
     options: UnlockedVaultDriveRuntimeOptions,
   ) => UnlockedVaultDriveRuntime;
+  /** Exact per-vault transfer session instance; focused tests inject it. */
+  transferRuntime?: VaultTransferRuntime;
 }
 
 /**
@@ -92,6 +98,7 @@ export function VaultRuntimeProvider({
   const [core] = useState(
     () => new VaultLockCore({ custody: dependencies?.custody ?? createIndexedDbVaultCustody() }),
   );
+  const [transfer] = useState(() => dependencies?.transferRuntime ?? vaultTransferRuntime);
   const [connection, setConnection] = useState<DriveConnectionController | null>(null);
   const [sync, setSync] = useState<VaultDriveSyncCoordinator | null>(null);
   const [phase, setPhase] = useState<'locked' | 'unlocking' | 'unlocked'>('locked');
@@ -135,10 +142,11 @@ export function VaultRuntimeProvider({
   );
 
   const lock = useCallback(
-    async (options: { broadcast?: boolean } = {}) => {
+    async (options: { broadcast?: boolean; transferAlreadyRevoked?: boolean } = {}) => {
       operationGenerationRef.current += 1;
       // Revoke every plaintext seam before the first await. The gate can paint
       // in the same React turn while IndexedDB custody cleanup finishes.
+      if (options.transferAlreadyRevoked !== true) transfer.endSession();
       setPhase('locked');
       setConnection(null);
       setSync(null);
@@ -150,14 +158,14 @@ export function VaultRuntimeProvider({
       setDriveAuthorization('consent-required');
       if (options.broadcast !== false && userId != null) {
         rememberDeviceLocked(userId);
-        broadcastLock(userId);
+        broadcastVaultLock(userId);
       }
       // Plaintext access is already synchronously revoked. A browser storage
       // failure must not become an unhandled rejection; the persistent lock
       // marker above also prevents a stale custody key from reopening the vault.
       await core.lock(userId == null ? undefined : custodyDeviceId(userId)).catch(() => undefined);
     },
-    [core, userId],
+    [core, transfer, userId],
   );
 
   useLayoutEffect(() => {
@@ -171,21 +179,26 @@ export function VaultRuntimeProvider({
   // other tab for the same account. The signal contains no secret or money.
   useEffect(() => {
     if (!authenticated || userId == null) return;
-    const key = `${LOCK_SIGNAL_STORAGE_PREFIX}${userId}`;
+    const key = vaultLockSignalStorageKey(userId);
     const onStorage = (event: StorageEvent) => {
-      if (event.key === key) void lock({ broadcast: false });
+      if (event.key === key) {
+        void lock({ broadcast: false, transferAlreadyRevoked: transfer.lockSignalBound });
+      }
     };
     globalThis.addEventListener('storage', onStorage);
     return () => globalThis.removeEventListener('storage', onStorage);
-  }, [authenticated, lock, userId]);
+  }, [authenticated, lock, transfer.lockSignalBound, userId]);
 
   useEffect(() => {
     const onRequest = () => {
-      void lock();
+      // The endpoint-wide normal-branch runtime listens to this same signal.
+      // AuthContext already emitted the account-scoped storage lock; this
+      // handler owns only the provider-local teardown to avoid echoing it.
+      void lock({ broadcast: false, transferAlreadyRevoked: transfer.lockSignalBound });
     };
     globalThis.addEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);
     return () => globalThis.removeEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);
-  }, [lock]);
+  }, [lock, transfer.lockSignalBound]);
 
   useEffect(() => {
     if (connection == null || sync == null) return;
@@ -293,6 +306,7 @@ export function VaultRuntimeProvider({
         if (runtimeRef.current === installed) runtimeRef.current = null;
         if (operationGenerationRef.current === operationGeneration) {
           operationGenerationRef.current += 1;
+          transfer.endSession();
           setConnection(null);
           setSync(null);
           setSyncState(null);
@@ -314,6 +328,7 @@ export function VaultRuntimeProvider({
       dependencies?.readEnvelope,
       dependencies?.server,
       drive,
+      transfer,
       tokens,
       userId,
     ],
@@ -497,6 +512,7 @@ export function VaultRuntimeProvider({
   const value = useMemo<VaultRuntime>(
     () => ({
       core,
+      transfer,
       connection,
       sync,
       lockState: core.state,
@@ -517,6 +533,7 @@ export function VaultRuntimeProvider({
     [
       connection,
       core,
+      transfer,
       authorizeDriveStorage,
       changePassphrase,
       cleanupAfterDisable,
@@ -600,17 +617,6 @@ function custodyDeviceId(userId: string): string {
     return created;
   } catch {
     return globalThis.crypto.randomUUID();
-  }
-}
-
-function broadcastLock(userId: string): void {
-  try {
-    globalThis.localStorage?.setItem(
-      `${LOCK_SIGNAL_STORAGE_PREFIX}${userId}`,
-      `${Date.now()}:${globalThis.crypto.randomUUID()}`,
-    );
-  } catch {
-    // Cross-tab propagation is best-effort; this tab is already locked.
   }
 }
 

@@ -13,6 +13,8 @@ import type {
   UnlockedVaultDriveRuntime,
   VaultDriveSyncCoordinator,
 } from './media';
+import { EndpointVaultKeystore } from './keystore/core';
+import { createVaultTransferRuntime } from './qr/runtime';
 import type { VaultSyncState } from './sync';
 import {
   useVaultRuntime,
@@ -55,6 +57,35 @@ beforeEach(() => {
 });
 
 describe('VaultRuntimeProvider Drive bootstrap', () => {
+  it('synchronously revokes the endpoint transfer session on manual and cross-tab locks', async () => {
+    const userId = '018f0000-0000-7000-8000-000000000099';
+    const keystore = new EndpointVaultKeystore();
+    const sessionEnded = vi.fn();
+    keystore.subscribeToSessionEnd(sessionEnded);
+    const transferRuntime = createVaultTransferRuntime({
+      keystore,
+      bindLockSignal: false,
+      requestJson: vi.fn(),
+    });
+
+    render(
+      <VaultRuntimeProvider authenticated userId={userId} dependencies={{ transferRuntime }}>
+        <ManualLockHarness />
+      </VaultRuntimeProvider>,
+    );
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'manual lock' }));
+    expect(sessionEnded).toHaveBeenCalledTimes(1);
+
+    globalThis.dispatchEvent(
+      new StorageEvent('storage', {
+        key: `bettertrack:vault-lock:${userId}`,
+        newValue: 'remote-lock',
+      }),
+    );
+    await waitFor(() => expect(sessionEnded).toHaveBeenCalledTimes(2));
+  });
+
   it('authorizes Drive-only before unlock and obeys a same-account second-tab lock', async () => {
     const events: string[] = [];
     let authorization: GoogleDriveTokenClient['state'] = 'consent-required';
@@ -419,6 +450,15 @@ function RuntimeConsumer({ onRender }: { onRender(): void }) {
   useVaultRuntime();
   onRender();
   return null;
+}
+
+function ManualLockHarness() {
+  const runtime = useVaultRuntime();
+  return (
+    <button onClick={() => void runtime.lock()} type="button">
+      manual lock
+    </button>
+  );
 }
 
 /** Wait until the provider's poll has read the coordinator `count` more times. */
