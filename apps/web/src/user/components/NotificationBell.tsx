@@ -74,6 +74,11 @@ function notificationLink(notification: Notification): string | null {
       const conversationId = payloadString(p, 'conversationId');
       return conversationId ? `/people/chat/c/${enc(conversationId)}` : '/people/chat';
     }
+    // Feedback updates share the compact Control Center surface. The payload's
+    // feedbackId/messageId remain available for clients with a detail route.
+    case 'feedback.status_changed':
+    case 'feedback.reply_created':
+      return '/control/feedback';
     // Account/security → the matching settings page.
     case 'account.temp_password':
       return '/settings/security';

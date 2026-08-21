@@ -334,7 +334,7 @@ describe('POST /api/v1/feedback', () => {
       .send({ category: 'improvement', message: 'The deleted row made room.' })
       .expect(201);
 
-    await harness.ctx.feedback.updateStatus(rows[1]!.id, {
+    await harness.ctx.feedback.updateStatus(user.id, rows[1]!.id, {
       status: 'shipped',
       shippedVersion: '5.5.0',
     });
@@ -344,7 +344,7 @@ describe('POST /api/v1/feedback', () => {
       .send({ category: 'feature', message: 'The shipped row made room.' })
       .expect(201);
 
-    await harness.ctx.feedback.updateStatus(rows[2]!.id, {
+    await harness.ctx.feedback.updateStatus(user.id, rows[2]!.id, {
       status: 'declined',
       declinedReason: 'This request is outside the product scope.',
     });

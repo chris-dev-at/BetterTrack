@@ -601,6 +601,12 @@
         "chatMessage": {
           "label": "Chat messages"
         },
+        "feedbackStatusChanged": {
+          "label": "Feedback status changes"
+        },
+        "feedbackReplyCreated": {
+          "label": "Feedback replies"
+        },
         "watchlistShared": {
           "label": "Shared watchlists"
         },
@@ -714,6 +720,7 @@
         "budgets": "Budgets",
         "markets": "Markets",
         "mirrorchain": "Group portfolios",
+        "feedback": "Feedback",
         "account": "Account"
       },
       "grid": {
@@ -1046,7 +1053,9 @@
           "mirrorRemoved": "Removed from a group portfolio",
           "mirrorOwnershipTransferred": "Group portfolio ownership transferred",
           "mirrorChainDissolved": "Group portfolio dissolved",
-          "mirrorSyncStalled": "Group portfolio sync stalled"
+          "mirrorSyncStalled": "Group portfolio sync stalled",
+          "feedbackStatusChanged": "Feedback status changed",
+          "feedbackReplyCreated": "New feedback reply"
         }
       },
       "scope": {
@@ -4136,6 +4145,8 @@
         "alertTriggered": "alert.triggered",
         "earningsReminder": "earnings.reminder",
         "chatMessage": "chat.message",
+        "feedbackStatusChanged": "feedback.status_changed",
+        "feedbackReplyCreated": "feedback.reply_created",
         "watchlistShared": "watchlist.shared",
         "conglomerateShared": "conglomerate.shared",
         "friendActivity": "friend.activity",
@@ -5505,6 +5516,34 @@
     "mirrorSyncStalled": {
       "title": "Syncing {{chain}} is stuck",
       "body": "The group portfolio {{chain}} could not finish syncing. Open it and choose Retry sync."
+    },
+    "feedbackStatusNew": {
+      "title": "Feedback reopened",
+      "body": "Your feedback submission is back in the inbox."
+    },
+    "feedbackStatusTriaged": {
+      "title": "Feedback update",
+      "body": "Your feedback submission is being reviewed."
+    },
+    "feedbackStatusWorkingOnIt": {
+      "title": "Feedback in progress",
+      "body": "Work has started on your feedback submission."
+    },
+    "feedbackStatusSavedAsFutureIdea": {
+      "title": "Feedback saved for later",
+      "body": "Your feedback submission has been saved as a future idea."
+    },
+    "feedbackStatusDeclined": {
+      "title": "Feedback update",
+      "body": "Your feedback submission was declined. Open it for details."
+    },
+    "feedbackStatusShipped": {
+      "title": "Feedback shipped",
+      "body": "Your feedback submission was shipped."
+    },
+    "feedbackReplyCreated": {
+      "title": "New feedback reply",
+      "body": "There is a new reply to your feedback submission."
     }
   },
   "control": {
