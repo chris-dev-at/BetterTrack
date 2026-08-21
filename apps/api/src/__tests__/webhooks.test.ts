@@ -991,5 +991,8 @@ describe('subscribable catalog', () => {
 
   it('returns false for a webhook event type outside the current catalog', () => {
     expect(isParanoidKilledWebhookEventType('future.unknown')).toBe(false);
+    expect(isParanoidKilledWebhookEventType('constructor')).toBe(false);
+    expect(isParanoidKilledWebhookEventType('toString')).toBe(false);
+    expect(isParanoidKilledWebhookEventType('__proto__')).toBe(false);
   });
 });
