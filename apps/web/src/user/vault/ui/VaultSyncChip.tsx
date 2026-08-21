@@ -8,6 +8,7 @@ import { formatDateTime } from '../../../lib/format';
 import { Icon } from '../../../ui/origin';
 import { cx } from '../../components/ui';
 import { projectVaultMediaSyncStatus } from '../media/status';
+import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 import { useVaultRuntime } from '../VaultRuntimeContext';
 
 export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
@@ -17,6 +18,10 @@ export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   const [resumePending, setResumePending] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const sync = runtime.syncState;
+  const drivePreparation = useDriveGisPreparation(
+    media.mediaSet.includes('drive'),
+    runtime.prepareDriveStorage,
+  );
   const online = typeof navigator === 'undefined' || navigator.onLine !== false;
   const projection = useMemo(
     () =>
@@ -48,7 +53,7 @@ export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   }, [open]);
 
   async function resumeDrive() {
-    if (runtime.connection == null) return;
+    if (runtime.connection == null || drivePreparation.state !== 'ready') return;
     setResumePending(true);
     try {
       await runtime.connection.resume();
@@ -119,14 +124,34 @@ export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
             ) : null}
 
             {media.mediaSet.includes('drive') && runtime.driveAuthorization !== 'connected' ? (
-              <button
-                className="bt-link text-left text-sm"
-                disabled={resumePending}
-                onClick={() => void resumeDrive()}
-                type="button"
-              >
-                {resumePending ? t('vault.sync.reauthorizing') : t('vault.sync.reauthorize')}
-              </button>
+              <div className="flex flex-col items-start gap-1">
+                {drivePreparation.state === 'failed' ? (
+                  <p className="bt-neg text-xs" role="alert">
+                    {t('vault.sync.drivePreparationFailed')}
+                  </p>
+                ) : null}
+                <button
+                  className="bt-link text-left text-sm"
+                  disabled={
+                    resumePending ||
+                    drivePreparation.state === 'preparing' ||
+                    drivePreparation.state === 'idle'
+                  }
+                  onClick={() => {
+                    if (drivePreparation.state === 'failed') drivePreparation.retry();
+                    else void resumeDrive();
+                  }}
+                  type="button"
+                >
+                  {resumePending
+                    ? t('vault.sync.reauthorizing')
+                    : drivePreparation.state === 'preparing' || drivePreparation.state === 'idle'
+                      ? t('vault.sync.preparingDrive')
+                      : drivePreparation.state === 'failed'
+                        ? t('vault.sync.retryDrivePreparation')
+                        : t('vault.sync.reauthorize')}
+                </button>
+              </div>
             ) : null}
             <Link
               className="bt-link text-sm"

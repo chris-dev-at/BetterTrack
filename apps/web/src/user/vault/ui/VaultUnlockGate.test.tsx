@@ -10,6 +10,7 @@ const runtime = vi.hoisted(() => ({
   unlockFromDevice: vi.fn(async () => false),
   unlockWithPassphrase: vi.fn(async () => ({})),
   unlockWithRecoveryKit: vi.fn(async () => ({})),
+  prepareDriveStorage: vi.fn(async () => undefined),
 }));
 
 const auth = vi.hoisted(() => ({
@@ -44,6 +45,7 @@ beforeEach(() => {
   runtime.phase = 'locked';
   runtime.unlockFromDevice.mockResolvedValue(false);
   runtime.unlockWithPassphrase.mockResolvedValue({});
+  runtime.prepareDriveStorage.mockResolvedValue(undefined);
   auth.user = { username: 'ada' };
   vi.mocked(getTwoFactorStatus).mockResolvedValue({
     totpEnabled: false,
@@ -75,12 +77,40 @@ describe('VaultUnlockGate', () => {
 
     await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple');
     await user.click(screen.getByRole('checkbox', { name: /Keep unlocked on this device/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Unlock vault' }));
 
     expect(runtime.unlockWithPassphrase).toHaveBeenCalledWith('correct horse battery staple', {
       authorizeDrive: true,
       driveOnly: true,
       keepUnlocked: true,
+    });
+  });
+
+  it('preloads GIS before enabling a fresh Drive-only unlock gesture', async () => {
+    let finishPreparation!: () => void;
+    runtime.prepareDriveStorage.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishPreparation = () => resolve(undefined);
+        }),
+    );
+    const user = userEvent.setup();
+    renderGate({ mediaSet: ['drive'] });
+
+    await waitFor(() => expect(runtime.prepareDriveStorage).toHaveBeenCalledOnce());
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple');
+    expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeDisabled();
+
+    finishPreparation();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Unlock vault' }));
+
+    expect(runtime.unlockWithPassphrase).toHaveBeenCalledWith('correct horse battery staple', {
+      authorizeDrive: true,
+      driveOnly: true,
+      keepUnlocked: false,
     });
   });
 
