@@ -10,9 +10,10 @@ export const apiErrorSchema = z.object({
 });
 export type ApiErrorBody = z.infer<typeof apiErrorSchema>;
 
-/** Stable error codes emitted by the shared authentication guard. */
+/** Stable error codes emitted by shared authentication-state guards. */
 export const AUTH_ERROR_CODES = {
   unauthenticated: 'UNAUTHENTICATED',
+  passwordChangeRequired: 'PASSWORD_CHANGE_REQUIRED',
 } as const;
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[keyof typeof AUTH_ERROR_CODES];
 

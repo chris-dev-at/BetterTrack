@@ -530,13 +530,13 @@ describe('OpenAPI document', () => {
 
     expect(submittedCodes).toEqual(
       expect.arrayContaining([
-        contracts.AUTH_ERROR_CODES.unauthenticated,
+        ...Object.values(contracts.AUTH_ERROR_CODES),
         ...contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
       ]),
     );
     expect(updatedCodes).toEqual(
       expect.arrayContaining([
-        contracts.AUTH_ERROR_CODES.unauthenticated,
+        ...Object.values(contracts.AUTH_ERROR_CODES),
         contracts.ADMIN_2FA_SETUP_REQUIRED,
         ...contracts.FEEDBACK_STATUS_ERROR_CODES,
       ]),
@@ -553,6 +553,39 @@ describe('OpenAPI document', () => {
     expect([...submittedCodes, ...updatedCodes]).toEqual(
       expect.arrayContaining(exportedFeedbackCodes),
     );
+  });
+
+  it('publishes mandatory-admin-2FA codes for every non-bootstrap admin operation', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const bootstrapOperations = new Set([
+      'GET /admin/security/2fa/status',
+      'POST /admin/security/2fa/totp/enroll',
+      'POST /admin/security/2fa/totp/confirm',
+      'POST /admin/security/2fa/email/start',
+      'POST /admin/security/2fa/email/confirm',
+    ]);
+    const methods = ['get', 'post', 'put', 'patch', 'delete'] as const;
+
+    for (const [path, pathItem] of Object.entries(paths)) {
+      if (!path.startsWith('/admin/')) continue;
+      for (const method of methods) {
+        const operation = (pathItem as JsonObject)[method] as JsonObject | undefined;
+        if (!operation) continue;
+        const errorCodes = operation['x-error-codes'] as string[];
+        const operationName = `${method.toUpperCase()} ${path}`;
+
+        if (bootstrapOperations.has(operationName)) {
+          expect(errorCodes, operationName).not.toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+        } else {
+          expect(errorCodes, operationName).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+        }
+      }
+    }
+
+    expect(
+      ((paths['/admin/problems/{id}/resolve'] as JsonObject).post as JsonObject)['x-error-codes'],
+    ).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
   });
 
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {

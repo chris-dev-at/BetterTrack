@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
 import { openApiPathTemplateAcceptsBearer } from '../middleware/bearerAuth';
+import { pathRequiresAdminTwoFactorSetup, pathRequiresPasswordChange } from '../middleware/session';
 
 // zod-to-openapi augments the shared zod prototype with `.openapi()`, which the
 // registry uses to attach `$ref` ids. There is a single zod instance in the
@@ -684,14 +685,9 @@ interface EndpointDef {
   unavailableResponse?: z.ZodTypeAny;
   /**
    * Stable `ApiError.error.code` values emitted by this operation beyond the
-   * shared authentication and optional admin step-up guards.
+   * shared authentication-state and admin-step-up guards.
    */
   errorCodes?: readonly string[];
-  /**
-   * This operation runs behind the mandatory admin 2FA gate and can therefore
-   * return the shared `ADMIN_2FA_SETUP_REQUIRED` refusal.
-   */
-  adminStepUp?: boolean;
   /**
    * Success response media type; defaults to JSON. Paranoid-vault ciphertext
    * reads use `application/octet-stream` and describe their opaque bodies with a
@@ -1863,7 +1859,6 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback',
     tag: 'Admin',
     summary: 'Category-priority inbox for authenticated web and native feedback.',
-    adminStepUp: true,
     query: contracts.adminFeedbackListQuerySchema,
     status: 200,
     response: R.AdminFeedbackListResponse,
@@ -1873,7 +1868,6 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}',
     tag: 'Admin',
     summary: 'Update one feedback submission lifecycle status or workspace archive state.',
-    adminStepUp: true,
     errorCodes: contracts.FEEDBACK_STATUS_ERROR_CODES,
     params: contracts.idParamSchema,
     body: R.UpdateFeedbackRequest,
@@ -1885,7 +1879,6 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}/messages',
     tag: 'Admin',
     summary: 'Read one submission’s admin ↔ submitter support thread.',
-    adminStepUp: true,
     params: contracts.idParamSchema,
     query: contracts.feedbackThreadQuerySchema,
     status: 200,
@@ -1896,7 +1889,6 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}/messages',
     tag: 'Admin',
     summary: 'Reply to a feedback submission as the authenticated admin.',
-    adminStepUp: true,
     params: contracts.idParamSchema,
     body: R.SendFeedbackMessageRequest,
     status: 201,
@@ -1907,7 +1899,6 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}/read',
     tag: 'Admin',
     summary: 'Mark one feedback support thread read for the admin side.',
-    adminStepUp: true,
     params: contracts.idParamSchema,
     status: 200,
     response: R.OkResponse,
@@ -4857,7 +4848,12 @@ const errorResponse = (description: string) => ({
 function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
   return [
     ...(endpoint.public ? [] : [contracts.AUTH_ERROR_CODES.unauthenticated]),
-    ...(endpoint.adminStepUp ? [contracts.ADMIN_2FA_SETUP_REQUIRED] : []),
+    ...(!endpoint.public && pathRequiresPasswordChange(endpoint.path)
+      ? [contracts.AUTH_ERROR_CODES.passwordChangeRequired]
+      : []),
+    ...(pathRequiresAdminTwoFactorSetup(endpoint.path, endpoint.method)
+      ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
+      : []),
     ...(endpoint.errorCodes ?? []),
   ].filter((code, index, all) => all.indexOf(code) === index);
 }
@@ -4875,6 +4871,9 @@ function addErrorCodeExtensions<T extends { paths: Record<string, unknown> }>(do
     const pathItem = document.paths[endpoint.path] as Record<string, unknown> | undefined;
     const operation = pathItem?.[endpoint.method] as Record<string, unknown> | undefined;
     if (!operation) {
+      // The same endpoint table registers the operation above. A mismatch would
+      // make this published vocabulary incomplete, so fail fast during document
+      // generation instead of serving misleading API metadata.
       throw new Error(
         `OpenAPI operation missing while adding error-code metadata: ${endpoint.method.toUpperCase()} ${endpoint.path}`,
       );
@@ -4972,6 +4971,8 @@ export const OPENAPI_ENDPOINT_COUNT = endpoints.length;
  */
 export const INTEGRATION_GUIDE = [
   '## Integrate with BetterTrack',
+  '',
+  '`x-error-codes` is an additive list of stable, module-owned `ApiError.error.code` values, not an exhaustive refusal vocabulary.',
   '',
   'Third-party apps get delegated, scoped, **revocable** access to a user’s',
   'BetterTrack workspace via OAuth 2.0 (authorization code + PKCE) — the user',
