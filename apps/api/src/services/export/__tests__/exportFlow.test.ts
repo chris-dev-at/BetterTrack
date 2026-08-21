@@ -20,6 +20,17 @@ import { createTestApp, type TestHarness } from '../../../testing/createTestApp'
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const EXPORT_DIR = joinPath(tmpdir(), 'bettertrack-test-exports');
 
+// TEST VECTOR: one complete durable E4 move-out receipt, reused only across
+// isolated test databases. The pending bit is the account-export fence.
+const PENDING_MOVE_OUT_VECTOR = {
+  vaultId: '00000000-0000-7000-8000-000000000901',
+  moveOutId: '00000000-0000-7000-8000-000000000902',
+  documentDigest: 'TEST_VECTOR_pending_export_document_digest',
+  documentSetHash: 'TEST_VECTOR_pending_export_document_set_hash',
+  proofPublicKey: 'TEST VECTOR pending export proof public key',
+  completedAt: new Date('2026-08-21T12:34:56.000Z'),
+} as const;
+
 let harness: TestHarness;
 
 beforeEach(async () => {
@@ -45,6 +56,33 @@ async function seedPortfolio(userId: string, name: string): Promise<string> {
     .values({ userId, name })
     .returning({ id: schema.portfolios.id });
   return row!.id;
+}
+
+async function seedPendingPortfolioMoveOut(userId: string, portfolioId: string): Promise<void> {
+  await harness.db.insert(schema.portfolioVaultTransitionStates).values({
+    portfolioId,
+    userId,
+    lifecycleGeneration: 1,
+    moveOutVaultId: PENDING_MOVE_OUT_VECTOR.vaultId,
+    moveOutId: PENDING_MOVE_OUT_VECTOR.moveOutId,
+    moveOutDocumentDigest: PENDING_MOVE_OUT_VECTOR.documentDigest,
+    moveOutDocumentSetHash: PENDING_MOVE_OUT_VECTOR.documentSetHash,
+    moveOutProofPublicKey: PENDING_MOVE_OUT_VECTOR.proofPublicKey,
+    moveOutCompletedAt: PENDING_MOVE_OUT_VECTOR.completedAt,
+    moveOutPostCommitPending: true,
+    moveOutPostCommitCustomAssetIds: [],
+  });
+}
+
+async function clearPendingPortfolioMoveOut(portfolioId: string): Promise<void> {
+  await harness.db
+    .update(schema.portfolioVaultTransitionStates)
+    .set({
+      moveOutPostCommitPending: false,
+      moveOutPostCommitCustomAssetIds: [],
+      moveOutPostCommitLastAttemptAt: null,
+    })
+    .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolioId));
 }
 
 /** Unzip a downloaded archive into { path -> text }. */
@@ -415,6 +453,98 @@ describe('account data export', () => {
       .send({ token: downloadToken });
     expect(gone.status, JSON.stringify(gone.body)).toBe(404);
     expect(gone.body.error.code).toBe('EXPORT_NOT_FOUND');
+  });
+
+  it('defers a pending build without poisoning the job, then builds that same job after E4 clears', async () => {
+    const enqueueBuild = vi.fn(async (_jobId: string) => undefined);
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: enqueueBuild,
+    });
+    const user = await harness.seedUser({
+      email: 'pending-export-build@bettertrack.test',
+      username: 'pending_export_build',
+    });
+    const portfolioId = await seedPortfolio(user.id, 'TEST VECTOR pending build portfolio');
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status).toBe(200);
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    await seedPendingPortfolioMoveOut(user.id, portfolioId);
+
+    await expect(harness.ctx.dataExport.buildExport(jobId)).rejects.toThrow(
+      'account export deferred by portfolio vault finalization',
+    );
+    const [deferred] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(deferred).toMatchObject({
+      status: 'pending',
+      error: null,
+      filePath: null,
+      fileSize: null,
+    });
+    expect(enqueueBuild).toHaveBeenCalledOnce();
+    expect(enqueueBuild).toHaveBeenCalledWith(jobId);
+
+    await clearPendingPortfolioMoveOut(portfolioId);
+    await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
+    const [ready] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(ready).toMatchObject({ status: 'ready', error: null });
+    expect(ready!.filePath).toBeTruthy();
+    expect(existsSync(ready!.filePath!)).toBe(true);
+  });
+
+  it('does not consume a ready download token while E4 is pending, then accepts the same token', async () => {
+    const user = await harness.seedUser({
+      email: 'pending-export-download@bettertrack.test',
+      username: 'pending_export_download',
+    });
+    const portfolioId = await seedPortfolio(user.id, 'TEST VECTOR pending download portfolio');
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status).toBe(200);
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    await seedPendingPortfolioMoveOut(user.id, portfolioId);
+
+    const blocked = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(blocked.status).toBe(404);
+    expect(blocked.body.error.code).toBe('EXPORT_NOT_FOUND');
+    const [preserved] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(preserved).toMatchObject({
+      status: 'ready',
+      downloadTokenHash: hashToken(downloadToken),
+    });
+
+    await clearPendingPortfolioMoveOut(portfolioId);
+    const downloaded = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .responseType('blob');
+    expect(downloaded.status).toBe(200);
+    expect(unzipText(downloaded.body as Buffer)['manifest.json']).toBeTruthy();
+    const [consumed] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(consumed!.downloadTokenHash).toBeNull();
   });
 
   it('cleanup deletes expired export files and rows', async () => {

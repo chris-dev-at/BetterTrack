@@ -20,11 +20,14 @@ import {
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { auditLog, paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
+  PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
   VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
   VAULT_SESSION_ONLY_ROUTES,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+  enforceApiKeyScope,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
+  portfolioVaultAccountSecurityRouteAcceptsBearer,
   vaultAccountSecurityRouteAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
@@ -249,7 +252,17 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/vaults/{vaultId}/media' },
   ] as const;
 
-  const ACCOUNT_SECURITY_ALLOWLIST = [{ method: 'DELETE', path: '/vaults/{vaultId}' }] as const;
+  const PORTFOLIO_ACCOUNT_SECURITY_ALLOWLIST = [
+    { method: 'GET', path: '/portfolios/{portfolioId}/vault/revision' },
+    { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
+    { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
+    { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },
+  ] as const;
+
+  const ACCOUNT_SECURITY_ALLOWLIST = [
+    { method: 'DELETE', path: '/vaults/{vaultId}' },
+    ...PORTFOLIO_ACCOUNT_SECURITY_ALLOWLIST,
+  ] as const;
 
   const EXPECTED_SESSION_ONLY = [
     { method: 'PATCH', path: '/vault/media' },
@@ -312,6 +325,7 @@ describe('#1043 vault bearer policy', () => {
   const livePath = (path: string): string =>
     path
       .replaceAll('{vaultId}', UUID_A)
+      .replaceAll('{portfolioId}', UUID_A)
       .replaceAll('{docId}', UUID_B)
       .replaceAll('{transitionId}', UUID_C)
       .replaceAll('{candidateId}', MISSING_ID)
@@ -329,11 +343,18 @@ describe('#1043 vault bearer policy', () => {
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
     expect(VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST).toEqual(ACCOUNT_SECURITY_ALLOWLIST);
+    expect(PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST).toEqual(
+      PORTFOLIO_ACCOUNT_SECURITY_ALLOWLIST,
+    );
     for (const route of ACCOUNT_SECURITY_ALLOWLIST) {
       const path = livePath(route.path);
       expect(vaultAccountSecurityRouteAcceptsBearer(route.method, path)).toBe(true);
       expect(pathAcceptsBearer(path, route.method)).toBe(true);
       expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
+    }
+    for (const route of PORTFOLIO_ACCOUNT_SECURITY_ALLOWLIST) {
+      const path = livePath(route.path);
+      expect(portfolioVaultAccountSecurityRouteAcceptsBearer(route.method, path)).toBe(true);
     }
 
     for (const route of SESSION_ONLY) {
@@ -345,6 +366,16 @@ describe('#1043 vault bearer policy', () => {
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vaults/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'POST')).toBe(false);
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/future-transition`, 'POST')).toBe(false);
+    expect(
+      openApiPathTemplateAcceptsBearer('/portfolios/{portfolioId}/vault/future-transition', 'POST'),
+    ).toBe(false);
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/revision`, 'POST')).toBe(false);
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/move-in`, 'GET')).toBe(false);
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/move-out`, 'GET')).toBe(false);
+    // The fence is only for the nested vault control plane; ordinary portfolio
+    // reads retain the module's portfolio:read bearer policy.
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}`, 'GET')).toBe(true);
   });
 
   it('matches each placeholder by its own declared kind on per-doc history routes', () => {
@@ -446,6 +477,54 @@ describe('#1043 vault bearer policy', () => {
     expect(pathAcceptsBearer('/vault/media/server-candidate/12', 'HEAD')).toBe(false);
     expect(pathAcceptsBearer(`/vaults/${UUID_A}/docs/${UUID_B}`, 'HEAD')).toBe(true);
     expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'HEAD')).toBe(false);
+    expect(
+      portfolioVaultAccountSecurityRouteAcceptsBearer(
+        'HEAD',
+        `/portfolios/${UUID_A}/vault/revision`,
+      ),
+    ).toBe(true);
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/revision`, 'HEAD')).toBe(true);
+  });
+
+  it('requires account:security for every portfolio transition and closes future siblings', async () => {
+    const { user, id } = await mintPersonalToken(['portfolio:write'], 'portfolio-vault-policy');
+    const guard = enforceApiKeyScope(harness.ctx);
+    const invoke = (method: string, path: string, scopes: string[]) =>
+      new Promise<unknown>((resolve) => {
+        guard(
+          {
+            apiKey: {
+              id,
+              scopes,
+              kind: 'personal',
+              firstParty: false,
+              securityGeneration: 0,
+            },
+            authUser: { id: user.id, role: 'user', privacyMode: 'normal' },
+            method,
+            path,
+            ip: '127.0.0.1',
+          } as unknown as Request,
+          {} as Response,
+          (error?: unknown) => resolve(error),
+        );
+      });
+
+    for (const route of PORTFOLIO_ACCOUNT_SECURITY_ALLOWLIST) {
+      const denied = await invoke(route.method, livePath(route.path), ['portfolio:write']);
+      expect(denied).toMatchObject({
+        statusCode: 403,
+        code: 'INSUFFICIENT_SCOPE',
+        message: expect.stringContaining('account:security'),
+      });
+      await expect(
+        invoke(route.method, livePath(route.path), ['account:security']),
+      ).resolves.toBeUndefined();
+    }
+
+    await expect(
+      invoke('POST', `/portfolios/${UUID_A}/vault/future-transition`, ['account:security']),
+    ).resolves.toMatchObject({ statusCode: 403, code: 'API_KEY_FORBIDDEN' });
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {

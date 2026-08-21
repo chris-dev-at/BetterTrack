@@ -84,13 +84,14 @@ function directPortfolioId(value: unknown): string | null {
 export function isVaultedPortfolioTransitionCarveout(method: string, path: string): boolean {
   const segments = policySegments(path);
   if (
-    segments.length !== 4 ||
+    (segments.length !== 4 && segments.length !== 5) ||
     segments[0]?.toLowerCase() !== 'portfolios' ||
-    segments[2]?.toLowerCase() !== 'vault'
+    segments[2]?.toLowerCase() !== 'vault' ||
+    (segments.length === 5 && segments[3]?.toLowerCase() !== 'move-out')
   ) {
     return false;
   }
-  const operation = segments[3]?.toLowerCase();
+  const operation = segments.slice(3).join('/').toLowerCase();
   const normalizedMethod = method.toUpperCase();
   return VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY.some(
     (entry) => entry.method === normalizedMethod && entry.operation === operation,

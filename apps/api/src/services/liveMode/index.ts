@@ -18,3 +18,10 @@ export {
   type CreateLiveRingBufferOptions,
   type LiveRingBuffer,
 } from './ringBuffer';
+export {
+  fenceRetiredLiveAssets,
+  liveAssetRetirementStateKey,
+  readLiveAssetRetirementGeneration,
+  reconcilePortfolioVaultLiveAssetRetirements,
+  releaseRetiredLiveAssets,
+} from './retirementFence';

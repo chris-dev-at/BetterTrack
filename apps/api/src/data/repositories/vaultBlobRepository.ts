@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
 
 import {
   readVaultDocServerHeader,
@@ -20,6 +20,7 @@ import {
 import type { Database } from '../db';
 import {
   driveConnections,
+  portfolioVaultTransitionStates,
   portfolios,
   vaultBlobHistory,
   vaultBlobs,
@@ -158,6 +159,29 @@ interface ExpectedDoc {
   docId: string;
   docKind: VaultDocKind;
   portfolioId: string | null;
+  /**
+   * Present only while the caller holds this prospective portfolio's
+   * transition row lock. The binding is persisted immediately before the
+   * admitted write, so a refused CAS never consumes a capture target.
+   */
+  bindProspectiveCapture?: true;
+}
+
+type ExpectedDocVault = Pick<
+  VaultRow,
+  | 'id'
+  | 'userId'
+  | 'headerDocId'
+  | 'commonDocId'
+  | 'media'
+  | 'driveConnectionId'
+  | 'mediaAttestedAt'
+  | 'mediaAttestedDriveConnectionId'
+>;
+
+interface ExpectedDocOptions {
+  now: Date;
+  lockAndPrepareProspective?: boolean;
 }
 
 /**
@@ -280,17 +304,66 @@ function historyPageSize(requested: number | undefined): number {
 
 async function expectedDocs(
   executor: Database,
-  vault: Pick<VaultRow, 'id' | 'userId' | 'headerDocId' | 'commonDocId'>,
+  vault: ExpectedDocVault,
+  now: Date,
 ): Promise<ExpectedDoc[]> {
-  const members = await executor
-    .select({ id: portfolios.id })
-    .from(portfolios)
-    .where(and(eq(portfolios.userId, vault.userId), eq(portfolios.vaultId, vault.id)))
-    .orderBy(asc(portfolios.id));
+  const [members, prospectiveCaptures] = await Promise.all([
+    executor
+      .select({ id: portfolios.id })
+      .from(portfolios)
+      .leftJoin(
+        portfolioVaultTransitionStates,
+        eq(portfolioVaultTransitionStates.portfolioId, portfolios.id),
+      )
+      .where(
+        and(
+          eq(portfolios.userId, vault.userId),
+          eq(portfolios.vaultId, vault.id),
+          or(
+            isNull(portfolioVaultTransitionStates.moveOutPostCommitPending),
+            eq(portfolioVaultTransitionStates.moveOutPostCommitPending, false),
+          ),
+        ),
+      )
+      .orderBy(asc(portfolios.id)),
+    executor
+      .select({
+        id: portfolios.id,
+        captureRevision: portfolioVaultTransitionStates.captureRevision,
+        captureExpiresAt: portfolioVaultTransitionStates.captureExpiresAt,
+        captureMediaAttestedAt: portfolioVaultTransitionStates.captureMediaAttestedAt,
+      })
+      .from(portfolios)
+      .innerJoin(
+        portfolioVaultTransitionStates,
+        eq(portfolioVaultTransitionStates.portfolioId, portfolios.id),
+      )
+      .where(
+        and(
+          eq(portfolios.userId, vault.userId),
+          isNull(portfolios.vaultId),
+          eq(portfolioVaultTransitionStates.userId, vault.userId),
+          eq(portfolioVaultTransitionStates.captureVaultId, vault.id),
+        ),
+      )
+      .orderBy(asc(portfolios.id)),
+  ]);
+  const portfolioIds = [
+    ...members.map(({ id }) => id),
+    ...prospectiveCaptures
+      .filter(
+        ({ captureRevision, captureExpiresAt, captureMediaAttestedAt }) =>
+          captureRevision !== null &&
+          captureExpiresAt !== null &&
+          captureExpiresAt.getTime() > now.getTime() &&
+          captureMediaAttestedAt !== null,
+      )
+      .map(({ id }) => id),
+  ].sort();
   return [
     { docId: vault.headerDocId, docKind: 'header', portfolioId: null },
     { docId: vault.commonDocId, docKind: 'common', portfolioId: null },
-    ...members.map(({ id }) => ({
+    ...portfolioIds.map((id) => ({
       // R1: the portfolio document address is the locked stub id itself.
       docId: id,
       docKind: 'portfolio' as const,
@@ -301,23 +374,132 @@ async function expectedDocs(
 
 async function expectedDoc(
   executor: Database,
-  vault: Pick<VaultRow, 'id' | 'userId' | 'headerDocId' | 'commonDocId'>,
+  vault: ExpectedDocVault,
   docId: string,
+  options: ExpectedDocOptions,
 ): Promise<ExpectedDoc | null> {
   if (docId === vault.headerDocId) return { docId, docKind: 'header', portfolioId: null };
   if (docId === vault.commonDocId) return { docId, docKind: 'common', portfolioId: null };
   const [portfolio] = await executor
-    .select({ id: portfolios.id })
+    .select({
+      id: portfolios.id,
+      vaultId: portfolios.vaultId,
+      moveOutPostCommitPending: portfolioVaultTransitionStates.moveOutPostCommitPending,
+    })
     .from(portfolios)
+    .leftJoin(
+      portfolioVaultTransitionStates,
+      eq(portfolioVaultTransitionStates.portfolioId, portfolios.id),
+    )
+    .where(and(eq(portfolios.id, docId), eq(portfolios.userId, vault.userId)))
+    .limit(1);
+  if (!portfolio) return null;
+  // The restore graph has committed, E2 admission is open, and the encrypted
+  // portfolio document was archived. Keep that document excluded from direct
+  // CAS/read admission and media rosters while the durable retry marker exists,
+  // so a sync cannot resurrect ciphertext during derived-state convergence.
+  if (portfolio.moveOutPostCommitPending) return null;
+  if (portfolio.vaultId === vault.id) {
+    return { docId, docKind: 'portfolio', portfolioId: docId };
+  }
+  // A portfolio assigned to another vault is never prospective. A normal
+  // portfolio gets this narrow E4 staging exception only through its own live
+  // capture row.
+  if (portfolio.vaultId !== null) return null;
+
+  const transitionQuery = executor
+    .select({
+      captureRevision: portfolioVaultTransitionStates.captureRevision,
+      captureExpiresAt: portfolioVaultTransitionStates.captureExpiresAt,
+      captureVaultId: portfolioVaultTransitionStates.captureVaultId,
+      captureMediaAttestedAt: portfolioVaultTransitionStates.captureMediaAttestedAt,
+    })
+    .from(portfolioVaultTransitionStates)
     .where(
       and(
-        eq(portfolios.id, docId),
-        eq(portfolios.userId, vault.userId),
-        eq(portfolios.vaultId, vault.id),
+        eq(portfolioVaultTransitionStates.portfolioId, docId),
+        eq(portfolioVaultTransitionStates.userId, vault.userId),
       ),
     )
     .limit(1);
-  return portfolio ? { docId, docKind: 'portfolio', portfolioId: docId } : null;
+  const [capture] = options.lockAndPrepareProspective
+    ? await transitionQuery.for('update')
+    : await transitionQuery;
+  if (
+    !capture ||
+    capture.captureRevision === null ||
+    capture.captureExpiresAt === null ||
+    capture.captureExpiresAt.getTime() <= options.now.getTime()
+  ) {
+    return null;
+  }
+  if (capture.captureVaultId === vault.id) {
+    return capture.captureMediaAttestedAt !== null
+      ? { docId, docKind: 'portfolio', portfolioId: docId }
+      : null;
+  }
+  if (capture.captureVaultId !== null || !options.lockAndPrepareProspective) return null;
+
+  const expectedDriveConnectionId = vault.media.includes('drive') ? vault.driveConnectionId : null;
+  const vaultHasCurrentAttestation =
+    vault.mediaAttestedAt !== null &&
+    (!vault.media.includes('drive') || vault.driveConnectionId !== null) &&
+    vault.mediaAttestedDriveConnectionId === expectedDriveConnectionId;
+  return vaultHasCurrentAttestation
+    ? {
+        docId,
+        docKind: 'portfolio',
+        portfolioId: docId,
+        bindProspectiveCapture: true,
+      }
+    : null;
+}
+
+async function bindProspectiveCapture(
+  executor: Database,
+  vault: ExpectedDocVault,
+  doc: ExpectedDoc,
+  now: Date,
+): Promise<void> {
+  if (!doc.bindProspectiveCapture) return;
+  if (!doc.portfolioId || !vault.mediaAttestedAt) {
+    throw new Error('prospective portfolio capture lost its verified admission facts');
+  }
+  const [bound] = await executor
+    .update(portfolioVaultTransitionStates)
+    .set({
+      captureVaultId: vault.id,
+      captureMediaAttestedAt: vault.mediaAttestedAt,
+      captureMediaAttestedDriveConnectionId: vault.mediaAttestedDriveConnectionId,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(portfolioVaultTransitionStates.portfolioId, doc.portfolioId),
+        eq(portfolioVaultTransitionStates.userId, vault.userId),
+        isNull(portfolioVaultTransitionStates.captureVaultId),
+      ),
+    )
+    .returning({ portfolioId: portfolioVaultTransitionStates.portfolioId });
+  // The row is locked from admission until this update. Missing it means an
+  // invariant was broken inside this transaction, so abort all candidate/blob
+  // mutations instead of committing a write without its capture binding.
+  if (!bound) throw new Error('prospective portfolio capture binding disappeared');
+
+  // The capture row now owns the old full-set proof. Invalidate the live vault
+  // proof in the same transaction as the first prospective document admission,
+  // regardless of whether its bytes are going to the active server store or a
+  // Drive-only candidate set. Subsequent documents remain admissible through
+  // the locked capture binding and the client must attest the completed roster
+  // before the destructive move-in commit can proceed.
+  await executor
+    .update(vaults)
+    .set({
+      mediaAttestedAt: null,
+      mediaAttestedDriveConnectionId: null,
+      updatedAt: now,
+    })
+    .where(eq(vaults.id, vault.id));
 }
 
 async function ownerHasPortfolio(
@@ -333,12 +515,54 @@ async function ownerHasPortfolio(
   return portfolio !== undefined;
 }
 
+async function hasLiveBoundProspectiveCapture(
+  executor: Database,
+  vault: ExpectedDocVault,
+  now: Date,
+): Promise<boolean> {
+  const [capture] = await executor
+    .select({ portfolioId: portfolioVaultTransitionStates.portfolioId })
+    .from(portfolioVaultTransitionStates)
+    .where(
+      and(
+        eq(portfolioVaultTransitionStates.userId, vault.userId),
+        eq(portfolioVaultTransitionStates.captureVaultId, vault.id),
+        isNotNull(portfolioVaultTransitionStates.captureRevision),
+        gt(portfolioVaultTransitionStates.captureExpiresAt, now),
+        isNotNull(portfolioVaultTransitionStates.captureMediaAttestedAt),
+      ),
+    )
+    .limit(1);
+  return capture !== undefined;
+}
+
 function exactRoster(expected: readonly ExpectedDoc[], rows: readonly VaultBlobRow[]): boolean {
   if (expected.length !== rows.length) return false;
   const roster = new Map(expected.map((doc) => [doc.docId, doc]));
   return rows.every((row) => {
     const doc = roster.get(row.docId);
     return doc?.docKind === row.docKind && doc.portfolioId === row.portfolioId;
+  });
+}
+
+function exactCandidateRoster(
+  expected: readonly ExpectedDoc[],
+  rows: readonly VaultServerCandidateRow[],
+  input: { vaultId: string; transitionId: string; now: Date },
+): boolean {
+  if (expected.length !== rows.length) return false;
+  const roster = new Map(expected.map((doc) => [doc.docId, doc]));
+  return rows.every((row) => {
+    const doc = roster.get(row.docId);
+    const header = headerOf(row);
+    return (
+      row.transitionId === input.transitionId &&
+      row.expiresAt.getTime() > input.now.getTime() &&
+      doc?.docKind === header.docKind &&
+      header.vaultId === input.vaultId &&
+      header.docId === row.docId &&
+      header.docVersion === row.version
+    );
   });
 }
 
@@ -417,7 +641,9 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
     async readCurrent(userId, vaultId, docId) {
       const vault = await findOwnedVault(userId, vaultId);
       if (!vault) return { status: 'not_found' };
-      if (!(await expectedDoc(db, vault, docId))) return { status: 'not_found' };
+      if (!(await expectedDoc(db, vault, docId, { now: new Date() }))) {
+        return { status: 'not_found' };
+      }
       if (!vault.media.includes('server')) return { status: 'medium_inactive' };
       const [row] = await db
         .select()
@@ -437,7 +663,11 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             .where(and(eq(vaults.id, input.vaultId), eq(vaults.userId, input.userId)))
             .for('update');
           if (!vault) return { status: 'not_found' as const };
-          const doc = await expectedDoc(tx, vault, input.docId);
+          const doc = await expectedDoc(tx, vault, input.docId, {
+            now: input.now,
+            lockAndPrepareProspective:
+              input.header.docKind === 'portfolio' && vault.media.includes('server'),
+          });
           if (!doc) {
             // Do not turn a foreign portfolio UUID into an ownership oracle.
             // R1's explicit binding refusal is reserved for a portfolio the
@@ -461,13 +691,17 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           if (current) {
             const currentHeader = headerOf(current);
             if (currentHeader.writeId === input.header.writeId) {
-              return current.version === input.header.docVersion &&
+              if (
+                current.version === input.header.docVersion &&
                 sameBytes(current.blob, input.blob)
-                ? ({ status: 'ok', row: current, idempotent: true } as const)
-                : ({
-                    status: 'precondition_failed',
-                    currentVersion: current.version,
-                  } as const);
+              ) {
+                await bindProspectiveCapture(tx, vault, doc, input.now);
+                return { status: 'ok', row: current, idempotent: true } as const;
+              }
+              return {
+                status: 'precondition_failed',
+                currentVersion: current.version,
+              } as const;
             }
           }
 
@@ -502,14 +736,34 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             (row) => headerOf(row).writeId === input.header.writeId,
           );
           if (retainedReplay) {
-            return current &&
+            if (
+              current &&
               retainedReplay.version === input.header.docVersion &&
               sameBytes(retainedReplay.blob, input.blob)
-              ? ({ status: 'ok', row: current, idempotent: true } as const)
-              : ({
-                  status: 'precondition_failed',
-                  currentVersion: current?.version ?? null,
-                } as const);
+            ) {
+              await bindProspectiveCapture(tx, vault, doc, input.now);
+              return { status: 'ok', row: current, idempotent: true } as const;
+            }
+            return {
+              status: 'precondition_failed',
+              currentVersion: current?.version ?? null,
+            } as const;
+          }
+
+          // docVersion is non-monotonic client merge state, but it is still an
+          // immutable byte-string identity within one document. Reusing a
+          // token for different envelope bytes would make current/history (or
+          // a later retired set) attest two incompatible facts for the same
+          // (docId, docVersion) pair. Distinct lower/higher tokens remain fully
+          // legal; only an exact token collision is refused.
+          const versionReceipt = [current, ...historyReceipts, ...retiredReceipts].find(
+            (row) => row?.version === input.header.docVersion,
+          );
+          if (versionReceipt && !sameBytes(versionReceipt.blob, input.blob)) {
+            return {
+              status: 'precondition_failed',
+              currentVersion: current?.version ?? null,
+            } as const;
           }
 
           const currentVersion = current?.version ?? null;
@@ -519,6 +773,8 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           if (currentVersion !== input.expectedVersion) {
             return { status: 'precondition_failed', currentVersion } as const;
           }
+
+          await bindProspectiveCapture(tx, vault, doc, input.now);
 
           if (current) {
             await tx
@@ -622,7 +878,9 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
 
     async listHistory(input) {
       const vault = await findOwnedVault(input.userId, input.vaultId);
-      if (!vault || !(await expectedDoc(db, vault, input.docId))) return { status: 'not_found' };
+      if (!vault || !(await expectedDoc(db, vault, input.docId, { now: new Date() }))) {
+        return { status: 'not_found' };
+      }
       const [history, retired] = await Promise.all([
         db
           .select({
@@ -663,7 +921,9 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
 
     async getHistory(userId, vaultId, docId, version) {
       const vault = await findOwnedVault(userId, vaultId);
-      if (!vault || !(await expectedDoc(db, vault, docId))) return { status: 'not_found' };
+      if (!vault || !(await expectedDoc(db, vault, docId, { now: new Date() }))) {
+        return { status: 'not_found' };
+      }
       const [history] = await db
         .select()
         .from(vaultBlobHistory)
@@ -712,7 +972,10 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           .for('update');
         if (!vault) return { status: 'not_found' as const };
         if (!mediaEqual(vault.media, ['drive'])) return { status: 'state_conflict' as const };
-        const doc = await expectedDoc(tx, vault, input.docId);
+        const doc = await expectedDoc(tx, vault, input.docId, {
+          now: input.now,
+          lockAndPrepareProspective: input.header.docKind === 'portfolio',
+        });
         if (!doc) {
           return input.header.docKind === 'portfolio' &&
             (await ownerHasPortfolio(tx, input.userId, input.docId))
@@ -720,6 +983,8 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             : ({ status: 'not_found' } as const);
         }
         if (doc.docKind !== input.header.docKind) return { status: 'doc_kind_mismatch' } as const;
+
+        await bindProspectiveCapture(tx, vault, doc, input.now);
 
         let existing = await tx
           .select()
@@ -768,6 +1033,25 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           })
           .returning();
         if (!row) throw new Error('candidate insert returned no row');
+
+        // In a Drive-only E4 capture these inactive rows are the server's
+        // exact-roster proof for the destructive commit. A changed candidate
+        // after a successful refresh makes that proof stale. Preserve a
+        // byte-identical retry above, and leave ordinary E1 promotion staging
+        // alone when no prospective capture is bound to this vault.
+        if (
+          vault.mediaAttestedAt !== null &&
+          (await hasLiveBoundProspectiveCapture(tx, vault, input.now))
+        ) {
+          await tx
+            .update(vaults)
+            .set({
+              mediaAttestedAt: null,
+              mediaAttestedDriveConnectionId: null,
+              updatedAt: input.now,
+            })
+            .where(eq(vaults.id, input.vaultId));
+        }
         return { status: 'ok', row, idempotent: false } as const;
       });
     },
@@ -776,7 +1060,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
       return db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Database;
         const [candidate] = await tx
-          .select({ candidate: vaultServerCandidates })
+          .select({ candidate: vaultServerCandidates, vault: vaults })
           .from(vaultServerCandidates)
           .innerJoin(vaults, eq(vaults.id, vaultServerCandidates.vaultId))
           .where(
@@ -790,6 +1074,9 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
         if (!candidate) return null;
         if (candidate.candidate.expiresAt.getTime() <= now.getTime()) {
           await tx.delete(vaultServerCandidates).where(eq(vaultServerCandidates.id, candidateId));
+          return null;
+        }
+        if (!(await expectedDoc(tx, candidate.vault, candidate.candidate.docId, { now }))) {
           return null;
         }
         return candidate.candidate;
@@ -821,6 +1108,8 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           const connectionChanged =
             input.request.expected.driveConnectionId !== input.request.next.driveConnectionId;
           const replacingDrive = added.length === 0 && removed.length === 0 && connectionChanged;
+          const refreshingAttestation =
+            added.length === 0 && removed.length === 0 && !connectionChanged;
           if (
             connectionChanged &&
             !replacingDrive &&
@@ -829,13 +1118,31 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           ) {
             return { status: 'state_conflict', current } as const;
           }
-          const roster = await expectedDocs(tx, vault);
+          const roster = await expectedDocs(tx, vault, input.now);
           const activeRows = await tx
             .select()
             .from(vaultBlobs)
             .where(eq(vaultBlobs.vaultId, input.vaultId))
             .orderBy(asc(vaultBlobs.docId))
             .for('update');
+          const refreshCandidates =
+            refreshingAttestation &&
+            vault.media.includes('drive') &&
+            !vault.media.includes('server')
+              ? await tx
+                  .select()
+                  .from(vaultServerCandidates)
+                  .where(eq(vaultServerCandidates.vaultId, input.vaultId))
+                  .orderBy(asc(vaultServerCandidates.docId))
+                  .for('update')
+              : [];
+          const exactDriveOnlyRefreshCandidates =
+            refreshCandidates.length > 0 &&
+            exactCandidateRoster(roster, refreshCandidates, {
+              vaultId: input.vaultId,
+              transitionId: input.request.transitionId,
+              now: input.now,
+            });
 
           // Preserve v1's retry semantics for every transition whose durable
           // post-state can still be tied to the submitted full-set attestation.
@@ -850,11 +1157,31 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               (input.request.next.media.includes('drive')
                 ? input.request.next.driveConnectionId
                 : null) &&
-            current.server.candidates.length === 0;
+            (current.server.candidates.length === 0 ||
+              (refreshingAttestation &&
+                vault.media.includes('drive') &&
+                !vault.media.includes('server'))) &&
+            // Before a same-selection refresh the target necessarily already
+            // equals `next`; the changed attestation CAS stamp distinguishes a
+            // retry from the first application.
+            (!refreshingAttestation ||
+              vault.mediaAttestedAt.toISOString() !== input.request.expected.mediaAttestedAt);
           const replayVerification = input.request.verification;
           if (targetAlreadyApplied && replayVerification.kind !== 'server-candidates') {
             let verified = false;
-            if (activeRows.length > 0) {
+            if (refreshingAttestation && vault.media.includes('server')) {
+              const requiredKind = vault.media.includes('drive') ? 'drive' : 'server';
+              verified =
+                replayVerification.kind === requiredKind &&
+                exactRoster(roster, activeRows) &&
+                attestationsEqual(replayVerification.docs, activeRows);
+            } else if (refreshingAttestation && vault.media.includes('drive')) {
+              verified =
+                replayVerification.kind === 'drive' &&
+                replayVerification.driveConnectionId === vault.driveConnectionId &&
+                exactDriveOnlyRefreshCandidates &&
+                attestationsEqual(replayVerification.docs, refreshCandidates);
+            } else if (activeRows.length > 0) {
               verified =
                 exactRoster(roster, activeRows) &&
                 attestationsEqual(replayVerification.docs, activeRows);
@@ -889,6 +1216,52 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               .limit(1);
             if (!connection) return { status: 'drive_not_found', current } as const;
           }
+          if (refreshingAttestation) {
+            const verification = input.request.verification;
+            if (vault.media.includes('server')) {
+              if (!exactRoster(roster, activeRows)) {
+                return { status: 'partial_set', current } as const;
+              }
+              const requiredKind = vault.media.includes('drive') ? 'drive' : 'server';
+              if (
+                verification.kind !== requiredKind ||
+                (verification.kind === 'drive' &&
+                  verification.driveConnectionId !== vault.driveConnectionId) ||
+                !attestationsEqual(verification.docs, activeRows)
+              ) {
+                return { status: 'verification_failed', current } as const;
+              }
+            } else {
+              if (!exactDriveOnlyRefreshCandidates) {
+                return { status: 'partial_set', current } as const;
+              }
+              if (
+                verification.kind !== 'drive' ||
+                verification.driveConnectionId !== vault.driveConnectionId ||
+                !attestationsEqual(verification.docs, refreshCandidates)
+              ) {
+                return { status: 'verification_failed', current } as const;
+              }
+            }
+
+            const [updated] = await tx
+              .update(vaults)
+              .set({
+                mediaAttestedAt: input.now,
+                mediaAttestedDriveConnectionId: vault.media.includes('drive')
+                  ? vault.driveConnectionId
+                  : null,
+                updatedAt: input.now,
+              })
+              .where(eq(vaults.id, input.vaultId))
+              .returning();
+            if (!updated) throw new Error('vault attestation refresh returned no row');
+            return {
+              status: 'ok',
+              state: await mediaState(tx, updated, input.now, false),
+              idempotent: false,
+            } as const;
+          }
           if (added[0] === 'server') {
             const [pendingRetirement] = await tx
               .select({ vaultId: vaultRetirements.vaultId })
@@ -919,25 +1292,18 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             const verification = input.request.verification;
             const exactCandidates =
               activeRows.length === 0 &&
-              candidates.length === roster.length &&
+              exactCandidateRoster(roster, candidates, {
+                vaultId: input.vaultId,
+                transitionId: input.request.transitionId,
+                now: input.now,
+              }) &&
               verification.kind === 'server-candidates' &&
               verification.readbacks.length === candidates.length &&
               candidates.every((candidate) => {
-                const expected = roster.find((doc) => doc.docId === candidate.docId);
-                const header = headerOf(candidate);
                 const receipt = verification.readbacks.find(
                   (entry) => entry.candidateId === candidate.id && entry.docId === candidate.docId,
                 );
-                return (
-                  candidate.transitionId === input.request.transitionId &&
-                  candidate.expiresAt.getTime() > input.now.getTime() &&
-                  expected?.docKind === header.docKind &&
-                  header.vaultId === input.vaultId &&
-                  header.docId === candidate.docId &&
-                  candidate.version === header.docVersion &&
-                  receipt !== undefined &&
-                  input.verifiedCandidateIds.has(candidate.id)
-                );
+                return receipt !== undefined && input.verifiedCandidateIds.has(candidate.id);
               });
             if (!exactCandidates) return { status: 'partial_set', current } as const;
             for (const candidate of candidates) {
@@ -1175,7 +1541,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
         // surviving medium. With non-linear client versions, the blind server
         // can validate exact roster coverage but must never manufacture a
         // numeric "latest" version from the retired history set (R2).
-        const roster = await expectedDocs(tx, vault);
+        const roster = await expectedDocs(tx, vault, input.now);
         if (!attestationRosterEqual(input.observedDocs, roster)) {
           return { status: 'partial_set' as const };
         }

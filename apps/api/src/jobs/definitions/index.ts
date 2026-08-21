@@ -128,6 +128,16 @@ export {
 } from './snapshotJobs';
 
 export {
+  createPortfolioVaultFinalizeJob,
+  PORTFOLIO_VAULT_FINALIZE_SCHEDULER_ID,
+  PORTFOLIO_VAULT_FINALIZE_INTERVAL_MS,
+  PORTFOLIO_VAULT_FINALIZE_BATCH_SIZE,
+  PORTFOLIO_VAULT_FINALIZE_MAX_BATCH_SIZE,
+  type PortfolioVaultFinalizeSweepResult,
+  type PortfolioVaultFinalizeJobDeps,
+} from './portfolioVaultJobs';
+
+export {
   createUsageRollupJob,
   USAGE_ROLLUP_SCHEDULER_ID,
   USAGE_ROLLUP_CRON,

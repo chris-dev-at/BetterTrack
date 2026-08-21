@@ -66,6 +66,10 @@ export default defineConfig({
       // misordered `when` makes drizzle skip a migration on any database that
       // already applied a later-stamped one).
       'src/__tests__/migrationJournal.test.ts',
+      'src/services/account/__tests__/portfolioVaultTransitionService.test.ts',
+      'src/data/repositories/__tests__/portfolioVaultTransitionRepository.test.ts',
+      'src/data/repositories/__tests__/portfolioVaultRestoreRepository.test.ts',
+      'src/__tests__/vaultsE1.test.ts',
     ],
     pool: 'forks',
     poolOptions: {

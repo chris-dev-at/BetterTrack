@@ -17,6 +17,7 @@ import type { Database } from '../../data/db';
 import type { ExportRepository } from '../../data/repositories/exportRepository';
 import {
   paranoidVaults,
+  portfolioVaultTransitionStates,
   users,
   vaultBlobs,
   vaults as vaultConfigs,
@@ -138,6 +139,20 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
 
   const filePathFor = (jobId: string) => joinPath(dir, `${jobId}.zip`);
 
+  const hasPendingPortfolioMoveOut = async (userId: string): Promise<boolean> => {
+    const [pending] = await db
+      .select({ portfolioId: portfolioVaultTransitionStates.portfolioId })
+      .from(portfolioVaultTransitionStates)
+      .where(
+        and(
+          eq(portfolioVaultTransitionStates.userId, userId),
+          eq(portfolioVaultTransitionStates.moveOutPostCommitPending, true),
+        ),
+      )
+      .limit(1);
+    return Boolean(pending);
+  };
+
   const fileExists = async (path: string): Promise<boolean> => {
     try {
       await access(path);
@@ -151,6 +166,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     userId: string;
     token: string;
   }): Promise<ExportDownload> {
+    // E4 restores the cleartext graph atomically, then converges derived rows
+    // from a durable retry plan. Do not consume a one-shot download token or
+    // stream an archive while those derived rows may still be incomplete.
+    if (await hasPendingPortfolioMoveOut(input.userId)) {
+      throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
+    }
     if (!input.token) throw badRequest('A download token is required.', 'EXPORT_TOKEN_REQUIRED');
     const row = await exportRepo.consumeDownloadable({
       userId: input.userId,
@@ -314,6 +335,13 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       await withAccountTransitionLock(job.userId, async () => {
         const lockedJob = await exportRepo.findById(jobId);
         if (!lockedJob || (lockedJob.status === 'ready' && lockedJob.filePath)) return;
+        // Deliberately outside the BUILD_FAILED catch: BullMQ must retry this
+        // same queued job after E4 clears its durable pending marker. Building
+        // now could capture restored cleartext before all derived rows converge,
+        // depending on which finalizer phase won the lock.
+        if (await hasPendingPortfolioMoveOut(job.userId)) {
+          throw new Error('account export deferred by portfolio vault finalization');
+        }
         const filePath = filePathFor(jobId);
         const buildingPath = `${filePath}.building`;
         try {
