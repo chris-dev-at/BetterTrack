@@ -4316,6 +4316,141 @@ export const vaultRetired = pgTable(
   (t) => [uniqueIndex('vault_retired_doc_version_unique').on(t.vaultId, t.docId, t.version)],
 );
 
+/**
+ * Durable, content-free E4 transition state for one portfolio. Capture state is
+ * short-lived; the completed move receipts remain so an uncertain client retry
+ * can return the committed result without replaying destructive/restorative
+ * writes. Vault ids intentionally have no FK: deleting a later-empty vault must
+ * not erase the idempotency receipt for an already-completed transition.
+ */
+export const portfolioVaultTransitionStates = pgTable(
+  'portfolio_vault_transition_states',
+  {
+    portfolioId: uuid('portfolio_id')
+      .primaryKey()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    captureRevision: text('capture_revision'),
+    captureExpiresAt: timestamp('capture_expires_at', { withTimezone: true }),
+    captureVaultId: uuid('capture_vault_id'),
+    captureMediaAttestedAt: timestamp('capture_media_attested_at', { withTimezone: true }),
+    captureMediaAttestedDriveConnectionId: uuid('capture_media_attested_drive_connection_id'),
+    /** Monotonic identity of the current/latest committed move-in lifecycle. */
+    lifecycleGeneration: integer('lifecycle_generation').notNull().default(0),
+    moveInVaultId: uuid('move_in_vault_id'),
+    moveInDocVersion: integer('move_in_doc_version'),
+    moveInCompletedAt: timestamp('move_in_completed_at', { withTimezone: true }),
+    /** Opaque owner-manual ids held behind the cross-process Live Mode fence. */
+    moveInRetiredCustomAssetIds: uuid('move_in_retired_custom_asset_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    moveOutVaultId: uuid('move_out_vault_id'),
+    moveOutId: uuid('move_out_id'),
+    moveOutDocumentDigest: text('move_out_document_digest'),
+    /** Exact encrypted roster CAS captured under the move-out row locks. */
+    moveOutDocumentSetHash: text('move_out_document_set_hash'),
+    /** Pinned receipt verifier keeps phrase-held replay valid after vault deletion. */
+    moveOutProofPublicKey: text('move_out_proof_public_key'),
+    moveOutCompletedAt: timestamp('move_out_completed_at', { withTimezone: true }),
+    /** Durable retry marker for idempotent post-commit derived-state convergence. */
+    moveOutPostCommitPending: boolean('move_out_post_commit_pending').notNull().default(false),
+    moveOutPostCommitCustomAssetIds: uuid('move_out_post_commit_custom_asset_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    /** Fair retry cursor: new/null plans run before the oldest prior attempt. */
+    moveOutPostCommitLastAttemptAt: timestamp('move_out_post_commit_last_attempt_at', {
+      withTimezone: true,
+    }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'portfolio_vault_transition_states_capture_pair',
+      sql`(${t.captureRevision} is null) = (${t.captureExpiresAt} is null)`,
+    ),
+    check(
+      'portfolio_vault_transition_states_capture_target_attestation',
+      sql`(
+          ${t.captureVaultId} is null
+          and ${t.captureMediaAttestedAt} is null
+          and ${t.captureMediaAttestedDriveConnectionId} is null
+        ) or (
+          ${t.captureVaultId} is not null
+          and ${t.captureMediaAttestedAt} is not null
+        )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_move_in_receipt',
+      sql`(
+          ${t.moveInVaultId} is null
+          and ${t.moveInDocVersion} is null
+          and ${t.moveInCompletedAt} is null
+        ) or (
+          ${t.moveInVaultId} is not null
+          and ${t.moveInDocVersion} is not null
+          and ${t.moveInCompletedAt} is not null
+        )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_move_out_receipt',
+      sql`(
+          ${t.moveOutVaultId} is null
+          and ${t.moveOutId} is null
+          and ${t.moveOutDocumentDigest} is null
+          and ${t.moveOutDocumentSetHash} is null
+          and ${t.moveOutProofPublicKey} is null
+          and ${t.moveOutCompletedAt} is null
+        ) or (
+          ${t.moveOutVaultId} is not null
+          and ${t.moveOutId} is not null
+          and ${t.moveOutDocumentDigest} is not null
+          and ${t.moveOutDocumentSetHash} is not null
+          and ${t.moveOutProofPublicKey} is not null
+          and ${t.moveOutCompletedAt} is not null
+        )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_doc_version_nonnegative',
+      sql`${t.moveInDocVersion} is null or ${t.moveInDocVersion} >= 0`,
+    ),
+    check(
+      'portfolio_vault_transition_states_lifecycle_generation_range',
+      sql`${t.lifecycleGeneration} >= 0`,
+    ),
+    check(
+      'portfolio_vault_transition_states_receipt_lifecycle',
+      sql`${t.lifecycleGeneration} > 0 or (
+        ${t.moveInCompletedAt} is null and ${t.moveOutCompletedAt} is null
+      )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_move_in_retirements',
+      sql`${t.moveInCompletedAt} is not null or cardinality(${t.moveInRetiredCustomAssetIds}) = 0`,
+    ),
+    check(
+      'portfolio_vault_transition_states_post_commit_plan',
+      sql`(
+        ${t.moveOutPostCommitPending} and ${t.moveOutCompletedAt} is not null
+      ) or (
+        not ${t.moveOutPostCommitPending}
+        and cardinality(${t.moveOutPostCommitCustomAssetIds}) = 0
+        and ${t.moveOutPostCommitLastAttemptAt} is null
+      )`,
+    ),
+    uniqueIndex('portfolio_vault_transition_states_move_out_id_unique')
+      .on(t.moveOutId)
+      .where(sql`${t.moveOutId} is not null`),
+    index('portfolio_vault_transition_states_user_portfolio_idx').on(t.userId, t.portfolioId),
+    index('portfolio_vault_transition_states_pending_finalize_idx')
+      .on(sql`${t.moveOutPostCommitLastAttemptAt} asc nulls first`, t.updatedAt, t.portfolioId)
+      .where(sql`${t.moveOutPostCommitPending}`),
+  ],
+);
+
 export type DriveConnectionRow = typeof driveConnections.$inferSelect;
 export type NewDriveConnectionRow = typeof driveConnections.$inferInsert;
 export type VaultRow = typeof vaults.$inferSelect;
@@ -4330,6 +4465,9 @@ export type VaultRetirementRow = typeof vaultRetirements.$inferSelect;
 export type NewVaultRetirementRow = typeof vaultRetirements.$inferInsert;
 export type VaultRetiredRow = typeof vaultRetired.$inferSelect;
 export type NewVaultRetiredRow = typeof vaultRetired.$inferInsert;
+export type PortfolioVaultTransitionStateRow = typeof portfolioVaultTransitionStates.$inferSelect;
+export type NewPortfolioVaultTransitionStateRow =
+  typeof portfolioVaultTransitionStates.$inferInsert;
 
 export const schema = {
   users,
@@ -4432,6 +4570,7 @@ export const schema = {
   vaultServerCandidates,
   vaultRetirements,
   vaultRetired,
+  portfolioVaultTransitionStates,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,

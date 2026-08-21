@@ -8,9 +8,9 @@ import {
   decodeVaultEnvelope,
   encodeVaultEnvelope,
   vaultClientSecuritySchema,
+  vaultStrictDocumentV1Schema,
   vaultEntityKindSchema,
   vaultEntitySchema,
-  vaultJsonSchema,
   vaultCandidateReadbackSchema,
   vaultMergeRecordSchema,
   vaultMirrorProvenanceSchema,
@@ -891,8 +891,10 @@ export type PerVaultMediaTransitionVerification = z.infer<
 
 /**
  * `PATCH /vaults/:vaultId/media` (R3). A client opens one transition id and
- * commits exactly one media edge (or one Drive-connection replacement). Every
- * live doc must appear exactly once in the required verification variant;
+ * commits exactly one media edge, one Drive-connection replacement, or a
+ * same-selection full-roster attestation refresh. The refresh is the E4 seam
+ * used after prospective portfolio ciphertext invalidates the prior proof.
+ * Every live doc must appear exactly once in the required verification variant;
  * repository-side set equality makes a partial batch fail closed.
  */
 export const perVaultMediaTransitionRequestSchema = z
@@ -913,13 +915,15 @@ export const perVaultMediaTransitionRequestSchema = z
       connectionChanged &&
       value.expected.media.includes('drive') &&
       value.next.media.includes('drive');
+    const attestationRefresh = added.length === 0 && removed.length === 0 && !connectionChanged;
     const driveMembershipChanged = added[0] === 'drive' || removed[0] === 'drive';
 
-    if (added.length + removed.length !== 1 && !driveReplacement) {
+    if (added.length + removed.length !== 1 && !driveReplacement && !attestationRefresh) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['next', 'media'],
-        message: 'a media transition must change exactly one medium or one Drive connection',
+        message:
+          'a media transition must change exactly one medium, one Drive connection, or refresh the current full-set attestation',
       });
       return;
     }
@@ -937,6 +941,14 @@ export const perVaultMediaTransitionRequestSchema = z
     else if (removed[0] === 'drive') requiredKind = 'server';
     else if (added[0] === 'drive' || removed[0] === 'server' || driveReplacement) {
       requiredKind = 'drive';
+    } else if (attestationRefresh) {
+      // A Drive-containing selection is attested from the client-held Drive
+      // copy. Server-only refreshes attest the active blind-store rows.
+      requiredKind = value.next.media.includes('drive')
+        ? 'drive'
+        : value.next.media.includes('server')
+          ? 'server'
+          : null;
     }
 
     // `local` is deliberately contract-visible but server-reserved. Leave its
@@ -1235,21 +1247,187 @@ export const portfolioVaultMoveInRequestSchema = z
 export type PortfolioVaultMoveInRequest = z.infer<typeof portfolioVaultMoveInRequestSchema>;
 
 /**
+ * Monotonic identity of one portfolio's committed vault-membership lifecycle.
+ * Generation zero is the never-moved state and is intentionally not public.
+ */
+export const PORTFOLIO_VAULT_LIFECYCLE_GENERATION_MAX = 2_147_483_647;
+/** Short proof window; exact committed-receipt replay remains independently verifiable. */
+export const PORTFOLIO_VAULT_MOVE_OUT_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+export const portfolioVaultLifecycleGenerationSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(PORTFOLIO_VAULT_LIFECYCLE_GENERATION_MAX);
+export type PortfolioVaultLifecycleGeneration = z.infer<
+  typeof portfolioVaultLifecycleGenerationSchema
+>;
+
+/** SHA-256 over the canonical strict restore document, unpadded base64url. */
+export const portfolioVaultRestoreDocumentDigestSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{43}$/, 'must be an unpadded base64url SHA-256 digest');
+export type PortfolioVaultRestoreDocumentDigest = z.infer<
+  typeof portfolioVaultRestoreDocumentDigestSchema
+>;
+
+const portfolioVaultMoveOutProofIdentitySchema = z
+  .object({
+    vaultId: z.string().uuid(),
+    lifecycleGeneration: portfolioVaultLifecycleGenerationSchema,
+    documentDigest: portfolioVaultRestoreDocumentDigestSchema,
+    /** CAS over the exact encrypted header/common/portfolio roster opened by the client. */
+    documentSetHash: vaultVersionSetHashSchema,
+  })
+  .strict();
+
+/** Request a short-lived challenge bound to one exact restore graph. */
+export const portfolioVaultMoveOutChallengeRequestSchema = portfolioVaultMoveOutProofIdentitySchema;
+export type PortfolioVaultMoveOutChallengeRequest = z.infer<
+  typeof portfolioVaultMoveOutChallengeRequestSchema
+>;
+
+export const portfolioVaultMoveOutChallengeResponseSchema = portfolioVaultMoveOutProofIdentitySchema
+  .extend({
+    portfolioId: z.string().uuid(),
+    challenge: z.string().min(32).max(2048),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type PortfolioVaultMoveOutChallengeResponse = z.infer<
+  typeof portfolioVaultMoveOutChallengeResponseSchema
+>;
+
+/**
+ * Phrase-possession proof for move-out. The signature is produced by the
+ * retirement-proof PRIVATE key carried only inside the encrypted common doc;
+ * the server stores only its immutable Ed25519 public verifier.
+ */
+export const portfolioVaultMoveOutProofSchema = z
+  .object({
+    challenge: z.string().min(32).max(2048),
+    signature: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
+      .min(80)
+      .max(256),
+  })
+  .strict();
+export type PortfolioVaultMoveOutProof = z.infer<typeof portfolioVaultMoveOutProofSchema>;
+
+function canonicalPortfolioVaultJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalPortfolioVaultJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalPortfolioVaultJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Isomorphic canonical bytes E6 hashes with SHA-256 before signing move-out.
+ * Object-key order is irrelevant; array order remains part of the strict graph.
+ */
+export function serializePortfolioVaultRestoreDocument(document: unknown): Uint8Array {
+  return new TextEncoder().encode(canonicalPortfolioVaultJson(document));
+}
+
+/** Domain-separated canonical bytes signed by the encrypted common-doc key. */
+export function serializePortfolioVaultMoveOutProofTranscript(input: {
+  portfolioId: string;
+  vaultId: string;
+  lifecycleGeneration: number;
+  documentDigest: string;
+  documentSetHash: string;
+  challenge: string;
+}): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify([
+      'bettertrack.portfolio-vault-move-out.v1',
+      input.vaultId,
+      input.portfolioId,
+      input.lifecycleGeneration,
+      input.documentDigest,
+      input.documentSetHash,
+      input.challenge,
+    ]),
+  );
+}
+
+/** Non-sensitive, retry-stable receipt for a committed portfolio move-in. */
+export const portfolioVaultMoveInResponseSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    vaultId: z.string().uuid(),
+    docVersion: vaultDocVersionSchema,
+    lifecycleGeneration: portfolioVaultLifecycleGenerationSchema,
+    idempotent: z.boolean(),
+  })
+  .strict();
+export type PortfolioVaultMoveInResponse = z.infer<typeof portfolioVaultMoveInResponseSchema>;
+
+/**
  * `POST /portfolios/:id/vault/move-out` (route is E4) — the designed exit
- * (§10), from an unlocked device only. `moveOutId` is the client-supplied
- * idempotency key (the v1 `rehydrationId` pattern — retry-safe, never
- * double-restores). `document` is the STRICT per-portfolio restore graph;
- * its concrete schema (the per-portfolio `toStrictRestoreDocument` re-scope
- * with solvency + fork-provenance validation) is pinned by E4, which MUST
- * replace this JSON-transport placeholder with it — the field is transport
- * shape only and is never applied without E4's strict fail-closed parse.
+ * (§10), from an unlocked device only. `moveOutId` is a client correlation id;
+ * the durable idempotency identity is portfolio + lifecycle generation + the
+ * canonical restore-document digest, so an outcome-ambiguous retry returns the
+ * original id without double-restoring. `lifecycleGeneration` is the server-
+ * minted value returned by move-in; it prevents a delayed restore from an
+ * earlier stay in the same vault from applying to a newer encrypted document.
+ * `documentSetHash` is the client's exact encrypted-roster CAS; the challenge
+ * and commit both compare it with the locked current doc set so an older
+ * unlocked device cannot archive a newer portfolio graph.
+ * `document` is the STRICT
+ * per-portfolio restore graph; E4 applies the per-portfolio
+ * `toStrictRestoreDocument` discipline, including solvency and fork-provenance
+ * validation, before any restore row is written.
  */
 export const portfolioVaultMoveOutRequestSchema = z
   .object({
     vaultId: z.string().uuid(),
     moveOutId: z.string().uuid(),
-    document: vaultJsonSchema,
+    lifecycleGeneration: portfolioVaultLifecycleGenerationSchema,
+    documentSetHash: vaultVersionSetHashSchema,
+    document: vaultStrictDocumentV1Schema,
+    vaultProof: portfolioVaultMoveOutProofSchema,
     stepUp: vaultStepUpCredentialSchema,
   })
   .strict();
 export type PortfolioVaultMoveOutRequest = z.infer<typeof portfolioVaultMoveOutRequestSchema>;
+
+/** Non-sensitive, retry-stable receipt for a committed portfolio move-out. */
+export const portfolioVaultMoveOutResponseSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    vaultId: z.string().uuid(),
+    moveOutId: z.string().uuid(),
+    lifecycleGeneration: portfolioVaultLifecycleGenerationSchema,
+    idempotent: z.boolean(),
+  })
+  .strict();
+export type PortfolioVaultMoveOutResponse = z.infer<typeof portfolioVaultMoveOutResponseSchema>;
+
+/** Stable refusal codes for the per-portfolio move-in / move-out pipeline. */
+export const PORTFOLIO_VAULT_TRANSITION_ERROR_CODES = {
+  notFound: 'PORTFOLIO_VAULT_NOT_FOUND',
+  alreadyVaulted: 'PORTFOLIO_ALREADY_VAULTED',
+  notVaulted: 'PORTFOLIO_NOT_VAULTED',
+  mediaNotVerified: 'VAULT_MEDIA_NOT_VERIFIED',
+  activeMirrorchain: 'PORTFOLIO_VAULT_ACTIVE_MIRRORCHAIN',
+  pendingImport: 'PORTFOLIO_VAULT_PENDING_IMPORT',
+  pendingExport: 'PORTFOLIO_VAULT_PENDING_EXPORT',
+  captureExpired: 'PORTFOLIO_VAULT_CAPTURE_EXPIRED',
+  revisionStale: 'PORTFOLIO_VAULT_REVISION_STALE',
+  documentMissing: 'PORTFOLIO_VAULT_DOCUMENT_MISSING',
+  documentVersionMismatch: 'PORTFOLIO_VAULT_DOCUMENT_VERSION_MISMATCH',
+  documentSetStale: 'PORTFOLIO_VAULT_DOCUMENT_SET_STALE',
+  transitionConflict: 'PORTFOLIO_VAULT_TRANSITION_CONFLICT',
+  restoreInvalid: 'PORTFOLIO_VAULT_RESTORE_INVALID',
+  restoreSolvency: 'PORTFOLIO_VAULT_RESTORE_INSOLVENT',
+  restoreProvenance: 'PORTFOLIO_VAULT_RESTORE_PROVENANCE_INVALID',
+  possessionProofInvalid: 'PORTFOLIO_VAULT_POSSESSION_PROOF_INVALID',
+} as const;
+export type PortfolioVaultTransitionErrorCode =
+  (typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES)[keyof typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES];

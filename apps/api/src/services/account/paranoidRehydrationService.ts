@@ -4,6 +4,7 @@ import type {
   ParanoidDisableRehydrationRequest,
   ParanoidDisableRehydrationResult,
   ParanoidRehydrationPostCommitPlan,
+  VaultStrictDocumentV1,
   VaultMirrorProvenance,
 } from '@bettertrack/contracts';
 import {
@@ -15,6 +16,7 @@ import {
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
   VAULT_MIRROR_PROVENANCE_ENTITY_KINDS,
+  vaultStrictDocumentV1Schema,
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN, floorCents } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
@@ -76,6 +78,18 @@ export class ParanoidRehydrationError extends Error {
   }
 }
 
+/**
+ * Typed subcategory for the retained MIRRORCHAIN proof phase. It deliberately
+ * keeps v1's public `INVALID_REFERENCE` code while allowing E4 to expose its
+ * more specific move-out refusal without guessing from an error message.
+ */
+export class ParanoidForkProvenanceError extends ParanoidRehydrationError {
+  constructor(message: string) {
+    super('INVALID_REFERENCE', message);
+    this.name = 'ParanoidForkProvenanceError';
+  }
+}
+
 export interface ParanoidRehydrationServiceDeps {
   db: Database;
   now?: () => Date;
@@ -128,8 +142,28 @@ export interface ParanoidRehydrationService {
   ): Promise<ParanoidDisableRehydrationResult>;
 }
 
-type Entity = ParanoidDisableRehydrationRequest['document']['entities'][number];
+export type ParanoidRestoreEntity = VaultStrictDocumentV1['entities'][number];
+type Entity = ParanoidRestoreEntity;
 type EntityOf<K extends Entity['kind']> = Extract<Entity, { kind: K }>;
+
+export interface ValidateParanoidRestoreDocumentInput {
+  db: Database;
+  userId: string;
+  document: unknown;
+  /** E4 scope: validate a restore graph for exactly this one portfolio. */
+  portfolioId?: string;
+  /** Test-only per-row quantum override for the option-B position envelope. */
+  testOnlyTransactionQuantityRoundingTolerance?: bigint;
+  /** Test-only structural trace proving ledger replay remains linearly bounded. */
+  testOnlyObserveSolvencyReplay?: (trace: ParanoidSolvencyReplayTrace) => void;
+}
+
+export interface ValidatedParanoidRestoreDocument {
+  /** The strict document after schema defaults have been applied. */
+  document: VaultStrictDocumentV1;
+  /** Live, typed rows only; merge tombstones can never reach a restore writer. */
+  entities: readonly ParanoidRestoreEntity[];
+}
 
 interface ExactDecimal {
   coefficient: bigint;
@@ -817,14 +851,21 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * provenance proof, because which movements may legitimately overdraw is an
  * authenticated fact about the chain oplog, not something the document asserts.
  */
-function validateGraph(userId: string, entities: readonly Entity[]): void {
+function validateGraph(
+  userId: string,
+  entities: readonly Entity[],
+  requireActivePortfolio = true,
+): void {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedDates(entities);
   validatePersistedNumerics(entities);
 
   const portfolioRows = rows(entities, 'portfolio');
-  if (!portfolioRows.some((portfolio) => portfolio.data.archivedAt === null)) {
+  if (
+    requireActivePortfolio &&
+    !portfolioRows.some((portfolio) => portfolio.data.archivedAt === null)
+  ) {
     throw new ParanoidRehydrationError(
       'INVALID_REFERENCE',
       'at least one active portfolio must be restored',
@@ -1452,6 +1493,183 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       );
     }
     budgetCategoryIds.add(budget.data.categoryId);
+  }
+}
+
+const PORTFOLIO_RESTORE_DERIVED_KINDS = new Set<Entity['kind']>([
+  'portfolioDailySnapshot',
+  'portfolioSnapshotState',
+  'expenseBudgetFire',
+  'cashBudgetFire',
+]);
+
+const PORTFOLIO_RESTORE_ALLOWED_KINDS = new Set<Entity['kind']>([
+  'portfolio',
+  'transaction',
+  'dividend',
+  'cashSource',
+  'cashMovement',
+  'portfolioSetting',
+  'customAsset',
+  'customAssetValue',
+  'standingOrder',
+  'standingOrderRun',
+  'importBatch',
+  'importRow',
+  'cashTag',
+  'cashMovementTag',
+  'cashBudget',
+]);
+
+function portfolioScopeError(message: string): never {
+  throw new ParanoidRehydrationError('INVALID_REFERENCE', `portfolio restore scope ${message}`);
+}
+
+/**
+ * E4's per-portfolio fail-closed layer. The account-level v1 restore keeps its
+ * historical graph unchanged; this runs only when a caller supplies the
+ * expected portfolio UUID.
+ *
+ * Direct portfolio ids and transitive parents are both checked here. That is
+ * intentionally redundant with foreign-key validation in `validateGraph`:
+ * the E4 document is applied while sibling portfolios remain live, so a valid
+ * foreign key to a sibling would still be a cross-portfolio data injection.
+ */
+function validatePortfolioRestoreScope(
+  userId: string,
+  document: VaultStrictDocumentV1,
+  entities: readonly Entity[],
+  portfolioId: string,
+): void {
+  for (const entity of document.entities) {
+    if (PORTFOLIO_RESTORE_DERIVED_KINDS.has(entity.kind)) {
+      portfolioScopeError(`must not carry derived ${entity.kind} rows`);
+    }
+    // Tombstones participate in the authenticated document digest even though
+    // no row is restored for them. Apply the bucket boundary to every merge
+    // fact so an account-common tombstone cannot be smuggled in as inert digest
+    // filler and later gain meaning under a schema migration.
+    if (!PORTFOLIO_RESTORE_ALLOWED_KINDS.has(entity.kind)) {
+      portfolioScopeError(`must not carry account-common ${entity.kind} rows`);
+    }
+  }
+
+  const portfolioRows = rows(entities, 'portfolio');
+  if (portfolioRows.length !== 1 || portfolioRows[0]!.id !== portfolioId) {
+    portfolioScopeError(`requires exactly one live portfolio anchor for ${portfolioId}`);
+  }
+
+  for (const kind of [
+    'transaction',
+    'dividend',
+    'cashSource',
+    'cashMovement',
+    'portfolioSetting',
+    'standingOrder',
+    'importBatch',
+    'cashBudget',
+  ] as const) {
+    for (const entity of rows(entities, kind)) {
+      if (entity.data.portfolioId !== portfolioId) {
+        portfolioScopeError(`${kind}[${entity.id}] belongs to another portfolio`);
+      }
+    }
+  }
+
+  const ordersById = new Map(rows(entities, 'standingOrder').map((entity) => [entity.id, entity]));
+  for (const run of rows(entities, 'standingOrderRun')) {
+    if (ordersById.get(run.data.standingOrderId)?.data.portfolioId !== portfolioId) {
+      portfolioScopeError(`standingOrderRun[${run.id}] belongs to another portfolio`);
+    }
+  }
+
+  const movementsById = new Map(
+    rows(entities, 'cashMovement').map((entity) => [entity.id, entity]),
+  );
+  for (const link of rows(entities, 'cashMovementTag')) {
+    if (movementsById.get(link.data.movementId)?.data.portfolioId !== portfolioId) {
+      portfolioScopeError(`cashMovementTag[${link.id}] belongs to another portfolio`);
+    }
+  }
+
+  const sourceById = new Map(rows(entities, 'cashSource').map((entity) => [entity.id, entity]));
+  const batchesById = new Map<string, EntityOf<'importBatch'>>();
+  for (const batch of rows(entities, 'importBatch')) {
+    if (batchesById.has(batch.id)) {
+      portfolioScopeError(`importBatch[${batch.id}] has a duplicate persisted id`);
+    }
+    batchesById.set(batch.id, batch);
+    if (batch.data.ownerId !== userId) {
+      portfolioScopeError(`importBatch[${batch.id}] belongs to another account`);
+    }
+    if (
+      batch.data.cashSourceId !== null &&
+      sourceById.get(batch.data.cashSourceId)?.data.portfolioId !== portfolioId
+    ) {
+      portfolioScopeError(`importBatch[${batch.id}] references a foreign cash source`);
+    }
+  }
+
+  const importRowIds = new Set<string>();
+  for (const row of rows(entities, 'importRow')) {
+    if (importRowIds.has(row.id)) {
+      portfolioScopeError(`importRow[${row.id}] has a duplicate persisted id`);
+    }
+    importRowIds.add(row.id);
+    const batch = batchesById.get(row.data.batchId);
+    if (!batch || batch.data.portfolioId !== portfolioId || batch.data.ownerId !== userId) {
+      portfolioScopeError(`importRow[${row.id}] has no owning target-portfolio batch`);
+    }
+    requirePostgresInteger(row.data.rowIndex, `importRow[${row.id}] row index`);
+    if (row.data.rowIndex < 1) {
+      portfolioScopeError(`importRow[${row.id}] row index must be positive`);
+    }
+    if (row.data.quantity !== null) {
+      persistedNumeric(row.data.quantity, 20, 8, `importRow[${row.id}] quantity`);
+    }
+    if (row.data.price !== null) {
+      persistedNumeric(row.data.price, 20, 6, `importRow[${row.id}] price`);
+    }
+    if (row.data.fee !== null) {
+      persistedNumeric(row.data.fee, 20, 6, `importRow[${row.id}] fee`);
+    }
+    if (row.data.amountEur !== null) {
+      persistedNumeric(row.data.amountEur, 20, 6, `importRow[${row.id}] amount`);
+    }
+  }
+
+  const referencedAssetIds = new Set([
+    ...rows(entities, 'transaction').map((entity) => entity.data.assetId),
+    ...rows(entities, 'dividend').map((entity) => entity.data.assetId),
+    ...rows(entities, 'standingOrder').flatMap((entity) =>
+      entity.data.assetId === null ? [] : [entity.data.assetId],
+    ),
+    ...rows(entities, 'importRow').flatMap((entity) =>
+      entity.data.assetId === null ? [] : [entity.data.assetId],
+    ),
+  ]);
+  for (const asset of rows(entities, 'customAsset')) {
+    if (!referencedAssetIds.has(asset.id)) {
+      portfolioScopeError(`customAsset[${asset.id}] is unrelated to the target portfolio`);
+    }
+  }
+
+  const referencedTagIds = new Set([
+    ...rows(entities, 'cashMovementTag').map((entity) => entity.data.tagId),
+    ...rows(entities, 'cashBudget').map((entity) => entity.data.tagId),
+  ]);
+  for (const tag of rows(entities, 'cashTag')) {
+    if (!referencedTagIds.has(tag.id)) {
+      portfolioScopeError(`cashTag[${tag.id}] is unrelated to the target portfolio`);
+    }
+  }
+
+  for (const entry of document.mirrorProvenance) {
+    if (entry.portfolioId !== portfolioId) {
+      portfolioScopeError(
+        `mirrorProvenance[${entry.kind}:${entry.mirrorId}] belongs to another portfolio`,
+      );
+    }
   }
 }
 
@@ -2461,6 +2679,63 @@ async function ensureNoExistingRestorableRows(
   }
 }
 
+/**
+ * Strict, write-free restore validation shared by v1 account disable and E4
+ * portfolio move-out. Every client-authored fact is normalized and proved
+ * before a caller is allowed to open its restore transaction.
+ */
+export async function validateParanoidRestoreDocument(
+  input: ValidateParanoidRestoreDocumentInput,
+): Promise<ValidatedParanoidRestoreDocument> {
+  const parsed = vaultStrictDocumentV1Schema.safeParse(input.document);
+  if (!parsed.success) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', 'rehydration document is malformed');
+  }
+
+  const transactionQuantityRoundingTolerance =
+    input.testOnlyTransactionQuantityRoundingTolerance ?? PERSISTED_QUANTITY_ROUNDING_TOLERANCE;
+  if (transactionQuantityRoundingTolerance < 0n) {
+    throw new Error('transaction quantity rounding tolerance must not be negative');
+  }
+
+  const document = parsed.data;
+  validateCustomAssetFacts(input.userId, document.entities);
+  // Tombstones are merge facts, never rows to restore. From this point onward,
+  // every validation and every eventual writer sees the same live entity set.
+  const entities = liveEntities(document);
+  if (input.portfolioId !== undefined) {
+    validatePortfolioRestoreScope(input.userId, document, entities, input.portfolioId);
+  }
+  // Account disable must retain its historical "one active portfolio" guard.
+  // A per-portfolio move-out may legitimately restore an archived portfolio.
+  validateGraph(input.userId, entities, input.portfolioId === undefined);
+
+  // Authentication precedes option-B solvency: only a movement proved against
+  // the retained append-only chain may carry the replica-force waiver.
+  let authenticatedChainMovementIds: ReadonlySet<string>;
+  try {
+    authenticatedChainMovementIds = await proveForkProvenance(
+      createParanoidForkProvenanceRepository(input.db),
+      input.userId,
+      document,
+      entities,
+    );
+  } catch (error) {
+    if (error instanceof ParanoidRehydrationError) {
+      throw new ParanoidForkProvenanceError(error.message);
+    }
+    throw error;
+  }
+  validateLedgerSolvency(
+    entities,
+    transactionQuantityRoundingTolerance,
+    authenticatedChainMovementIds,
+    input.testOnlyObserveSolvencyReplay,
+  );
+
+  return { document, entities };
+}
+
 export function createParanoidRehydrationService(
   deps: ParanoidRehydrationServiceDeps,
 ): ParanoidRehydrationService {
@@ -2502,27 +2777,23 @@ export function createParanoidRehydrationService(
           'a discarding rehydration must not carry restore rows',
         );
       }
-      validateCustomAssetFacts(userId, normalizedRequest.document.entities);
-      // Tombstones exist for client-side merge convergence only. Construct and
-      // validate the restore graph from live facts before any database mutation.
-      const entities = liveEntities(normalizedRequest.document);
-      if (!discarding) {
-        validateGraph(userId, entities);
-        // Authenticated BEFORE the ledger replay and before any transaction:
-        // which movements may legitimately overdraw is a fact about the chain
-        // oplog, not a claim the decrypted document is allowed to make (§7.1).
-        const authenticatedChainMovementIds = await proveForkProvenance(
-          createParanoidForkProvenanceRepository(deps.db),
+      let normalizedDocument = normalizedRequest.document;
+      let entities: readonly Entity[];
+      if (discarding) {
+        // Preserve the v1 lost-key exit: it accepts only the explicitly empty
+        // graph and deliberately skips the ordinary active-portfolio invariant.
+        validateCustomAssetFacts(userId, normalizedDocument.entities);
+        entities = liveEntities(normalizedDocument);
+      } else {
+        const validated = await validateParanoidRestoreDocument({
+          db: deps.db,
           userId,
-          normalizedRequest.document,
-          entities,
-        );
-        validateLedgerSolvency(
-          entities,
-          transactionQuantityRoundingTolerance,
-          authenticatedChainMovementIds,
-          deps.testOnlyObserveSolvencyReplay,
-        );
+          document: normalizedDocument,
+          testOnlyTransactionQuantityRoundingTolerance: transactionQuantityRoundingTolerance,
+          testOnlyObserveSolvencyReplay: deps.testOnlyObserveSolvencyReplay,
+        });
+        normalizedDocument = validated.document;
+        entities = validated.entities;
       }
 
       return withParanoidRehydrationTransaction(deps.db, userId, async (tx) => {
@@ -2553,7 +2824,7 @@ export function createParanoidRehydrationService(
         const retainedIdentityIds = await sourceRows.listRetainedCustomAssetIdentityIds(userId);
         const retireIdentityIds = discarding
           ? retainedIdentityIds
-          : retainedCustomAssetRetireIds(retainedIdentityIds, normalizedRequest.document.entities);
+          : retainedCustomAssetRetireIds(retainedIdentityIds, normalizedDocument.entities);
         const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 

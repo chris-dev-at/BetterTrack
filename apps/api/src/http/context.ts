@@ -207,9 +207,11 @@ import { createVaultRepository } from '../data/repositories/vaultRepository';
 import { createReauthService, type ReauthService } from '../services/auth/reauthService';
 import {
   createParanoidEnforcementRepository,
+  withExclusiveLockedPrivacyMode,
   withFreshLockedPrivacyModes,
   withLockedPrivacyModes,
 } from '../data/repositories/paranoidEnforcementRepository';
+import { portfolioVaultLiveRetirementOwner } from '../data/repositories/portfolioVaultLiveRetirementRepository';
 import {
   createParanoidVaultService,
   type ParanoidVaultService,
@@ -221,6 +223,10 @@ import {
   createParanoidTransitionService,
   type ParanoidTransitionService,
 } from '../services/account/paranoidTransitionService';
+import {
+  createPortfolioVaultTransitionService,
+  type PortfolioVaultTransitionService,
+} from '../services/account/portfolioVaultTransitionService';
 import {
   createParanoidModeGuard,
   guardRegisteredServices,
@@ -293,8 +299,11 @@ import { createPortfolioSnapshotRepository } from '../data/repositories/portfoli
 import {
   createLiveModeService,
   createLiveRingBuffer,
+  fenceRetiredLiveAssets,
   LIVE_POLL_INTERVAL_MS,
   LIVE_RING_RETENTION_MS,
+  reconcilePortfolioVaultLiveAssetRetirements,
+  releaseRetiredLiveAssets,
   type LiveModeService,
   type LiveModeServiceOptions,
 } from '../services/liveMode';
@@ -409,6 +418,8 @@ export interface AppContext {
   reauth: ReauthService;
   /** Public account-locked paranoid enable/disable orchestrator (§7). */
   paranoidTransitions: ParanoidTransitionService;
+  /** Per-portfolio capture, destructive move-in, and strict same-UUID move-out (E4). */
+  portfolioVaultTransitions: PortfolioVaultTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
   paranoidGuard: ParanoidModeGuard;
   /** Stable owner-scoped guard for a portfolio whose server row is a locked stub. */
@@ -594,6 +605,8 @@ export interface BuildContextDeps {
   marketData?: MarketDataService;
   /** Test seam: controlled portfolio-service clock for UTC-window boundary tests. */
   portfolioNow?: () => number;
+  /** Test seam: controlled destructive portfolio-vault transition clock. */
+  portfolioVaultTransitionNow?: () => Date;
   /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
   backfill?: BackfillScheduler;
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
@@ -682,11 +695,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const userRepo = createUserRepository(db);
   const privacyLockDb = deps.lockDb ?? db;
+  const paranoidSubjects = createParanoidEnforcementRepository(db);
   const paranoidGuard = createParanoidModeGuard({
     privacyModeFor: async (userId) => (await userRepo.findById(userId))?.privacyMode ?? null,
     withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(privacyLockDb, userIds, run),
   });
-  const paranoidSubjects = createParanoidEnforcementRepository(db);
   const vaultedPortfolioGuard = createVaultedPortfolioGuard({
     portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
     withLockedPortfolioSubject: async (portfolioId, action) => {
@@ -1333,6 +1346,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       : {}),
     logger,
   });
+  // Transition-only snapshot seam. Move-out clears the E2 vault membership in
+  // its restore transaction, then rebuilds derived rows from a durable retry
+  // plan. This instance is private and is called only while the finalizer owns
+  // the account's exclusive privacy lock.
+  const portfolioVaultFinalizationSnapshots = createPortfolioSnapshotService({
+    snapshotRepo: createPortfolioSnapshotRepository(db),
+    portfolioRepo,
+    transactionRepo,
+    cashMovementRepo,
+    marketData,
+    currencyService: currency,
+    logger,
+  });
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
@@ -1803,6 +1829,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     redis,
     logger,
+    reconcileRetirement: async (assetId) => {
+      const ownerId = await portfolioVaultLiveRetirementOwner(db, assetId);
+      if (ownerId === null) {
+        await releaseRetiredLiveAssets(redis, [assetId]);
+        return;
+      }
+      await reconcilePortfolioVaultLiveAssetRetirements({
+        db,
+        lockDb: privacyLockDb,
+        redis,
+        userId: ownerId,
+        assetIds: [assetId],
+      });
+    },
     options: deps.liveModeOptions,
   });
 
@@ -1998,6 +2038,87 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       }
     },
   });
+  const portfolioVaultTransitions = createPortfolioVaultTransitionService({
+    db,
+    reauth: discardReauth,
+    audit,
+    proofSecret: config.sessionSecrets[0]!,
+    history: config.vault.history,
+    now: deps.portfolioVaultTransitionNow,
+    toCashEur: (amount, sourceCurrency, day) =>
+      currency.convert(amount, sourceCurrency, 'EUR', { date: day }),
+    beforeMoveInCommit: async (userId, _portfolioId, plan) => {
+      // The prospective ciphertext and all database preconditions have already
+      // been verified under the exclusive account lock. Retire process/Redis
+      // derivatives now, before the transaction executes its first cleartext
+      // delete. Every operation is safe to repeat after an ambiguous outcome.
+      await fenceRetiredLiveAssets(redis, plan.customAssetIds);
+      try {
+        await realtime.invalidateOwnedLiveMode(userId, plan.customAssetIds);
+        await liveMode.retireAssets(plan.customAssetIds);
+        await marketData.settled();
+        await Promise.all([
+          purgeManualAssetCaches(redis, plan.customAssetIds),
+          purgeBacktestCaches(redis, userId),
+        ]);
+      } catch (error) {
+        await releaseRetiredLiveAssets(redis, plan.customAssetIds).catch(() => undefined);
+        throw error;
+      }
+      return {
+        // The transaction may reject after an outcome-ambiguous COMMIT. A fresh
+        // account lock makes the durable re-read + Redis release indivisible
+        // with respect to a later transition: a committed stub remains fenced,
+        // while an ordinary rollback restores full live functionality.
+        rollback: async () => {
+          await reconcilePortfolioVaultLiveAssetRetirements({
+            db,
+            lockDb: privacyLockDb,
+            redis,
+            userId,
+            assetIds: plan.customAssetIds,
+          });
+        },
+      };
+    },
+    withFinalizationLock: (userId, run) =>
+      withExclusiveLockedPrivacyMode(privacyLockDb, userId, run),
+    // Membership has already cleared atomically. This phase therefore touches
+    // only repeatable derived state and is recoverable without re-killing E2.
+    runPostCommit: async (userId, portfolioId, plan) => {
+      await realtime.invalidateOwnedLiveMode(userId, plan.customAssetIds);
+      await liveMode.retireAssets(plan.customAssetIds);
+      await marketData.settled();
+      await Promise.all([
+        purgeManualAssetCaches(redis, plan.customAssetIds),
+        purgeBacktestCaches(redis, userId),
+      ]);
+      const affectedPortfolios = new Set([portfolioId]);
+      for (const assetId of plan.customAssetIds) {
+        const references =
+          await portfolioVaultFinalizationSnapshots.resolveAssetReferences(assetId);
+        await portfolioVaultFinalizationSnapshots.invalidateForAsset(assetId);
+        for (const reference of references) affectedPortfolios.add(reference.portfolioId);
+      }
+      for (const affectedPortfolioId of [...affectedPortfolios].sort()) {
+        await portfolioVaultFinalizationSnapshots.recompute(affectedPortfolioId);
+      }
+    },
+    // The durable marker remains only as a retry cursor while these externally
+    // visible, idempotent effects land; it is not an enforcement signal.
+    runAfterMoveOutUnlock: async (userId, portfolioId, plan) => {
+      await cashBudgets.evaluateRequired(userId, portfolioId);
+      await events.publish({
+        type: 'portfolio.changed',
+        userId,
+        portfolioId,
+        occurredAt: plan.completedAt,
+      });
+      // Re-enable polling before clearing the marker. A failed clear simply
+      // repeats this idempotent release on recovery.
+      await releaseRetiredLiveAssets(redis, plan.customAssetIds);
+    },
+  });
 
   // Admin health snapshot (§13.4 V4-P5a): live DB/Redis/provider/queue/gateway
   // probe. Uses the same queue registry the durable dispatch path enqueues onto.
@@ -2088,6 +2209,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     vaults: vaultsService,
     reauth,
     paranoidTransitions,
+    portfolioVaultTransitions,
     paranoidGuard,
     vaultedPortfolioGuard,
     webhooks,

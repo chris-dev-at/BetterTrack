@@ -40,7 +40,15 @@ import {
  * absent once a portfolio is a locked stub.
  */
 
-interface VaultedPortfolioProbeScope {
+/**
+ * Frozen ownership graph captured before E4 starts deleting rows.
+ *
+ * This is intentionally opaque to callers. A post-delete re-scan cannot recover
+ * a comment, import-row, or standing-order id whose parent has already gone, so
+ * the destructive transaction captures the graph once and proves absence against
+ * that same graph after the sweep.
+ */
+export interface VaultedPortfolioProbeScope {
   db: Database;
   portfolioId: string;
   cashMovementIds: readonly string[];
@@ -619,7 +627,7 @@ export function assertVaultedPortfolioProbeCompleteness(): void {
   }
 }
 
-async function collectProbeScope(
+export async function collectVaultedPortfolioProbeScope(
   db: Database,
   portfolioId: string,
 ): Promise<VaultedPortfolioProbeScope> {
@@ -669,7 +677,15 @@ export async function probeVaultedPortfolioCleartext(
   portfolioId: string,
 ): Promise<VaultedPortfolioCleartextCounts> {
   assertVaultedPortfolioProbeCompleteness();
-  const scope = await collectProbeScope(db, portfolioId);
+  const scope = await collectVaultedPortfolioProbeScope(db, portfolioId);
+  return probeVaultedPortfolioCleartextFromScope(scope);
+}
+
+/** Count residue using the pre-purge transitive-id graph. */
+export async function probeVaultedPortfolioCleartextFromScope(
+  scope: VaultedPortfolioProbeScope,
+): Promise<VaultedPortfolioCleartextCounts> {
+  assertVaultedPortfolioProbeCompleteness();
   const counts: Record<string, number> = {};
   for (const table of VAULTED_PORTFOLIO_PROBE_TABLE_NAMES) {
     const entry = VAULTED_PORTFOLIO_CLEARTEXT_REGISTRY[table];
@@ -709,4 +725,11 @@ export async function assertVaultedPortfolioHasNoCleartext(
   portfolioId: string,
 ): Promise<void> {
   assertVaultedPortfolioCleartextCounts(await probeVaultedPortfolioCleartext(db, portfolioId));
+}
+
+/** E4 commit oracle using the ownership graph captured before its first delete. */
+export async function assertVaultedPortfolioScopeHasNoCleartext(
+  scope: VaultedPortfolioProbeScope,
+): Promise<void> {
+  assertVaultedPortfolioCleartextCounts(await probeVaultedPortfolioCleartextFromScope(scope));
 }

@@ -123,6 +123,51 @@ export interface PreparedExportFileRetirement {
   commit(): Promise<void>;
 }
 
+/**
+ * Reversibly hide a cleartext export before a destructive database commit.
+ * The deterministic sidecar path makes a retry safe after an outcome-ambiguous
+ * unlink/COMMIT failure: missing source bytes are already retired, while a
+ * surviving sidecar can still be removed by the retry.
+ */
+export async function prepareCleartextExportFileRetirement(
+  artifact: CleartextExportArtifact,
+): Promise<PreparedExportFileRetirement> {
+  const stagedPath = `${artifact.filePath}.paranoid-retiring-${artifact.id}`;
+  const exists = async (path: string): Promise<boolean> => {
+    try {
+      await lstat(path);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  };
+  const [sourceExists, stagedExists] = await Promise.all([
+    exists(artifact.filePath),
+    exists(stagedPath),
+  ]);
+  if (sourceExists && stagedExists) {
+    throw new Error('Both the export archive and its retirement stage exist.');
+  }
+  if (sourceExists) await rename(artifact.filePath, stagedPath);
+  return {
+    rollback: async () => {
+      if (!(await exists(stagedPath))) return;
+      if (await exists(artifact.filePath)) {
+        throw new Error('The original export path was recreated during retirement.');
+      }
+      await rename(stagedPath, artifact.filePath);
+    },
+    commit: () => rm(stagedPath, { force: true }),
+  };
+}
+
 export interface ParanoidTransitionService {
   enable(userId: string, request: ParanoidEnableRequest): Promise<ParanoidEnableResponse>;
   /**
@@ -206,44 +251,7 @@ export function createParanoidTransitionService(
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
   const withTransitionTransaction =
     deps.withTransitionTransaction ?? withParanoidTransitionTransaction;
-  const prepareExportFile =
-    deps.prepareExportFile ??
-    (async (artifact: CleartextExportArtifact) => {
-      const stagedPath = `${artifact.filePath}.paranoid-retiring-${artifact.id}`;
-      const exists = async (path: string): Promise<boolean> => {
-        try {
-          await lstat(path);
-          return true;
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            'code' in error &&
-            (error as NodeJS.ErrnoException).code === 'ENOENT'
-          ) {
-            return false;
-          }
-          throw error;
-        }
-      };
-      const [sourceExists, stagedExists] = await Promise.all([
-        exists(artifact.filePath),
-        exists(stagedPath),
-      ]);
-      if (sourceExists && stagedExists) {
-        throw new Error('Both the export archive and its retirement stage exist.');
-      }
-      if (sourceExists) await rename(artifact.filePath, stagedPath);
-      return {
-        rollback: async () => {
-          if (!(await exists(stagedPath))) return;
-          if (await exists(artifact.filePath)) {
-            throw new Error('The original export path was recreated during retirement.');
-          }
-          await rename(stagedPath, artifact.filePath);
-        },
-        commit: () => rm(stagedPath, { force: true }),
-      };
-    });
+  const prepareExportFile = deps.prepareExportFile ?? prepareCleartextExportFileRetirement;
 
   return {
     adminMetadataMany: (userIds) => getParanoidAdminMetadata(deps.db, lockDb, userIds),

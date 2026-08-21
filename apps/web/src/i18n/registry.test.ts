@@ -146,6 +146,37 @@ test('registers progress + error copy for every paranoid enable stage in EN and 
   }
 });
 
+test('registers the portfolio move wizard and its server-readable warning in EN and DE', () => {
+  const keys = [
+    'vault.portfolioMove.stepUpHint',
+    'vault.portfolioMove.moveIn.title',
+    'vault.portfolioMove.moveIn.warning',
+    'vault.portfolioMove.moveIn.action',
+    'vault.portfolioMove.moveIn.working',
+    'vault.portfolioMove.moveIn.done',
+    'vault.portfolioMove.moveIn.error',
+    'vault.portfolioMove.moveOut.title',
+    'vault.portfolioMove.moveOut.unlockRequired',
+    'vault.portfolioMove.moveOut.warning',
+    'vault.portfolioMove.moveOut.confirm',
+    'vault.portfolioMove.moveOut.action',
+    'vault.portfolioMove.moveOut.working',
+    'vault.portfolioMove.moveOut.done',
+    'vault.portfolioMove.moveOut.error',
+  ];
+  for (const locale of Object.values(LOCALES)) {
+    for (const key of keys) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+  expect(localizedMessage('en', 'vault.portfolioMove.moveOut.warning')).toContain(
+    'server-readable again',
+  );
+  expect(localizedMessage('de', 'vault.portfolioMove.moveOut.warning')).toContain(
+    'für den BetterTrack-Server wieder lesbar',
+  );
+});
+
 test('registers status copy for every vault sync state and medium in EN and DE', () => {
   // Same blind spot as the enable stages: `VaultSyncChip` renders
   // `vault.sync.status.<state>` and `vault.sync.medium.<medium>` as template

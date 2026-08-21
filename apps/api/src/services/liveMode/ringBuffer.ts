@@ -1,6 +1,8 @@
 import type { RealtimeLiveFrame } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
+import { liveAssetRetirementStateKey } from './retirementFence';
+
 /**
  * Per-asset Redis ring buffer of live frames (PROJECTPLAN.md §6.3, V3-P7b).
  *
@@ -17,8 +19,8 @@ import type { Redis } from 'ioredis';
 export const liveRingKey = (assetId: string): string => `live:ring:${assetId}`;
 
 export interface LiveRingBuffer {
-  /** Append one frame, trim to capacity, refresh the retention TTL. */
-  append(frame: RealtimeLiveFrame): Promise<void>;
+  /** Append unless an E4 retirement fence is present. */
+  append(frame: RealtimeLiveFrame, expectedRetirementEpoch?: number): Promise<boolean>;
   /** All retained frames observed at or after `sinceMs`, oldest first. */
   readSince(assetId: string, sinceMs: number): Promise<RealtimeLiveFrame[]>;
 }
@@ -37,18 +39,29 @@ export function createLiveRingBuffer(
   const { capacity, retentionMs } = options;
 
   return {
-    async append(frame) {
+    async append(frame, expectedRetirementEpoch = 0) {
       const key = liveRingKey(frame.assetId);
-      // One round-trip per tick: hot assets append every poll interval. A
-      // pipeline reports per-command errors in its results, not by rejecting —
-      // surface them so callers still observe a failed append.
-      const results = await redis
-        .pipeline()
-        .rpush(key, JSON.stringify(frame))
-        .ltrim(key, -capacity, -1)
-        .pexpire(key, retentionMs)
-        .exec();
-      for (const [err] of results ?? []) if (err) throw err;
+      // One atomic round-trip closes the remote-process race between an E4
+      // fence deleting the ring and an already-running poll appending later.
+      const appended = await redis.eval(
+        `
+          local epoch = tonumber(redis.call('HGET', KEYS[2], 'epoch') or '0')
+          local state = redis.call('HGET', KEYS[2], 'state') or 'open'
+          if epoch ~= tonumber(ARGV[4]) or state ~= 'open' then return 0 end
+          redis.call('RPUSH', KEYS[1], ARGV[1])
+          redis.call('LTRIM', KEYS[1], -tonumber(ARGV[2]), -1)
+          redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]))
+          return 1
+        `,
+        2,
+        key,
+        liveAssetRetirementStateKey(frame.assetId),
+        JSON.stringify(frame),
+        capacity,
+        retentionMs,
+        expectedRetirementEpoch,
+      );
+      return Number(appended) === 1;
     },
 
     async readSince(assetId, sinceMs) {

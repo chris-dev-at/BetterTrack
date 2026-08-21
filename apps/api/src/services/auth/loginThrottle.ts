@@ -107,6 +107,10 @@ export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_acco
  */
 export const ACCOUNT_VAULT_DELETE_NAMESPACE = 'account_vault_delete_account';
 
+/** Independent §15 brute-force budgets for the two E4 data-home transitions. */
+export const PORTFOLIO_VAULT_MOVE_IN_NAMESPACE = 'portfolio_vault_move_in_account';
+export const PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE = 'portfolio_vault_move_out_account';
+
 /**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
