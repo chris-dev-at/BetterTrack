@@ -154,6 +154,18 @@ export const portfolioSummarySchema = z
      */
     kind: portfolioKindSchema.nullable().optional(),
     /**
+     * Per-portfolio vault membership (paranoid E2). A non-null value means this
+     * row is a locked, content-free stub; server-computed portfolio operations
+     * refuse it with `VAULTED_PORTFOLIO`. This is the authoritative new-model
+     * signal — account `privacyMode` is legacy-v1 compatibility only.
+     */
+    vaultId: z.string().uuid().nullable().optional(),
+    /**
+     * Optional cleartext label for a locked stub. It is configuration metadata,
+     * never portfolio content, and is null on every plain portfolio.
+     */
+    vaultAlias: z.string().nullable().optional(),
+    /**
      * MIRRORCHAIN synced-copy badge (V5-P7 M5, design §11): present exactly
      * when this portfolio is a synced copy of an active chain. Absent on every
      * normal portfolio, so pre-M5 clients are unaffected.

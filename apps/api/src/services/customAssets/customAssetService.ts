@@ -14,6 +14,7 @@ import type { AssetRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
+import type { VaultedPortfolioGuard } from '../account/vaultedPortfolioEnforcement';
 
 /**
  * Custom-investment service (PROJECTPLAN.md §6.9, §5.1).
@@ -37,6 +38,8 @@ export interface CustomAssetServiceDeps {
   repo: CustomAssetRepository;
   portfolio: PortfolioService;
   snapshots: PortfolioSnapshotService;
+  /** E2 portfolio boundary for the optional server-side initial purchase. */
+  vaultedPortfolio?: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>;
 }
 
 export interface CustomAssetService {
@@ -112,39 +115,60 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
     },
 
     async create(userId, input) {
-      const row = await repo.create({
-        ownerId: userId,
-        // Custom investments have no ticker; the name doubles as the symbol so
-        // search/holdings/workboard render something meaningful.
-        symbol: input.name,
-        name: input.name,
-        currency: input.currency,
-        category: input.category,
-        smoothing: input.smoothing,
-      });
+      const createForPortfolio = async (
+        initialPurchasePortfolioId: string | null,
+      ): Promise<CreateCustomAssetResponse> => {
+        // The asset row and its value metadata are account-common. When an
+        // initial purchase is requested, however, do not create even that row
+        // until the destination portfolio has passed the stable E2 boundary;
+        // otherwise a refused vault write leaves a half-created custom asset.
+        const row = await repo.create({
+          ownerId: userId,
+          // Custom investments have no ticker; the name doubles as the symbol so
+          // search/holdings/workboard render something meaningful.
+          symbol: input.name,
+          name: input.name,
+          currency: input.currency,
+          category: input.category,
+          smoothing: input.smoothing,
+        });
 
-      let transactionId: string | null = null;
-      if (input.initialPurchase) {
-        const p = input.initialPurchase;
-        // Recorded as a BUY through the portfolio service: it validates, inserts
-        // and invalidates the value-series cache in one place (§6.9). Custom
-        // investments live in the user's default portfolio.
-        const portfolioId = await portfolio.getDefaultPortfolioId(userId);
-        const [txn] = await portfolio.createTransactions(userId, portfolioId, [
-          {
-            assetId: row.id,
-            side: 'buy',
-            quantity: p.quantity,
-            price: p.price,
-            fee: p.fee,
-            executedAt: p.executedAt,
-            note: p.note ?? null,
-          },
-        ]);
-        transactionId = txn?.id ?? null;
-      }
+        let transactionId: string | null = null;
+        if (input.initialPurchase && initialPurchasePortfolioId) {
+          const p = input.initialPurchase;
+          // Recorded as a BUY through the portfolio service: it validates, inserts
+          // and invalidates the value-series cache in one place (§6.9).
+          const [txn] = await portfolio.createTransactions(userId, initialPurchasePortfolioId, [
+            {
+              assetId: row.id,
+              side: 'buy',
+              quantity: p.quantity,
+              price: p.price,
+              fee: p.fee,
+              executedAt: p.executedAt,
+              note: p.note ?? null,
+            },
+          ]);
+          transactionId = txn?.id ?? null;
+        }
 
-      return { asset: toDto(row), transactionId };
+        return { asset: toDto(row), transactionId };
+      };
+
+      if (!input.initialPurchase) return createForPortfolio(null);
+
+      // A locked stub can retain the account's historical default ordering.
+      // Prefer the default only while it is plain, then the first active plain
+      // sibling. This preserves custom-asset functionality for mixed accounts.
+      const { portfolios: summaries } = await portfolio.listPortfolios(userId);
+      const target =
+        summaries.find((candidate) => candidate.isDefault && candidate.vaultId == null) ??
+        summaries.find((candidate) => candidate.vaultId == null);
+      const portfolioId = target?.id ?? (await portfolio.getDefaultPortfolioId(userId));
+      if (!deps.vaultedPortfolio) return createForPortfolio(portfolioId);
+      return deps.vaultedPortfolio.runOwnedPortfolioAllowed(userId, portfolioId, () =>
+        createForPortfolio(portfolioId),
+      );
     },
 
     async update(userId, id, patch) {

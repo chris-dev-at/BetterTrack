@@ -336,6 +336,51 @@ describe('ImportPage', () => {
       `The file contains more than ${IMPORT_MAX_DISTINCT_INSTRUMENTS} distinct instruments — split it into files with at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments each.`,
     );
 
+  // Deterministic TEST VECTOR: localized surfaces must never echo this
+  // server-authored English sentinel.
+  const vaultedRejection = () =>
+    new ApiError(
+      403,
+      'VAULTED_PORTFOLIO',
+      'SERVER ENGLISH TEST VECTOR must never reach localized UI',
+    );
+
+  test.each([
+    {
+      locale: 'en' as const,
+      labels: { file: 'CSV export', cta: 'Create preview' },
+      expected:
+        'This feature is unavailable for a locked vault portfolio. Choose a plain portfolio instead.',
+    },
+    {
+      locale: 'de' as const,
+      labels: { file: 'CSV-Export', cta: 'Vorschau erstellen' },
+      expected:
+        'Diese Funktion ist für ein gesperrtes Tresor-Portfolio nicht verfügbar. Wähle stattdessen ein normales Portfolio.',
+    },
+  ])('localizes a vaulted upload refusal in $locale', async ({ locale, labels, expected }) => {
+    vi.mocked(importsApi.uploadImportBatch).mockRejectedValue(vaultedRejection());
+    renderPage(locale);
+    await screen.findByRole('option', { name: 'Trade Republic' });
+    await uploadFixtureFile(labels);
+    await screen.findByText(expected);
+    expect(screen.queryByText(/SERVER ENGLISH TEST VECTOR/)).not.toBeInTheDocument();
+  });
+
+  test('localizes a vaulted apply refusal instead of echoing server English', async () => {
+    vi.mocked(importsApi.applyImportBatch).mockRejectedValue(vaultedRejection());
+    renderPage('de');
+    await screen.findByRole('option', { name: 'Trade Republic' });
+    const user = await uploadFixtureFile({ file: 'CSV-Export', cta: 'Vorschau erstellen' });
+    await screen.findByText('Vorschau: export.csv');
+    await screen.findByLabelText('Geldquelle (Dividenden & Cash-Zeilen)');
+    await user.click(screen.getByRole('button', { name: '2 Zeilen importieren' }));
+    await screen.findByText(
+      'Diese Funktion ist für ein gesperrtes Tresor-Portfolio nicht verfügbar. Wähle stattdessen ein normales Portfolio.',
+    );
+    expect(screen.queryByText(/SERVER ENGLISH TEST VECTOR/)).not.toBeInTheDocument();
+  });
+
   test('localizes the distinct-instrument cap rejection in EN', async () => {
     vi.mocked(importsApi.uploadImportBatch).mockRejectedValue(capRejection());
     renderPage('en');

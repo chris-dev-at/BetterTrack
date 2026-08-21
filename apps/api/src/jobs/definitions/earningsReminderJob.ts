@@ -8,9 +8,9 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * `notifications.earningsRemind` — the §13.5 V5-P5 daily earnings-reminder scan.
  * Once a day it sweeps every user's held + watched assets and emits the opt-in
  * `earnings.reminder` for those with a known report inside the lead window,
- * through the durable notification center (#368). Idempotent per (user, asset,
- * report date): a per-key Redis lock + the dispatcher's eventKey mean a daily
- * re-scan across the multi-day window never re-notifies.
+ * through the durable notification center (#368). Idempotency key:
+ * `(user_id, asset_id, report_date)`; a per-key Redis lock + the dispatcher's
+ * eventKey mean a daily re-scan across the multi-day window never re-notifies.
  *
  * Gated by `MARKET_INTEL_ENABLED`: off ⇒ the scan is a no-op (no reminders when
  * the arc is unconfigured). Built from `{ db-repo, marketData, notify, enabled }`

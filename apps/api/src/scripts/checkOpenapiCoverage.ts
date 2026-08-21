@@ -163,6 +163,7 @@ function buildInertContext(): AppContext {
     logger: createLogger(config),
     events: inertService('events'),
     paranoidGuard: inertService('paranoidGuard'),
+    vaultedPortfolioGuard: inertService('vaultedPortfolioGuard'),
     auth: inertService('auth'),
     google: inertService('google'),
     twoFactor: inertService('twoFactor'),
