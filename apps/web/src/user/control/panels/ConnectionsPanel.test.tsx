@@ -366,6 +366,40 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     expect(
       await screen.findByText('The vault was verified in the new Drive account and moved.'),
     ).toBeInTheDocument();
+    // The chosen target is forgotten with the move: the <select> falls back to
+    // its placeholder and Move goes inert, so a second click cannot ask for a
+    // migration onto the connection the vault now sits on.
+    expect(screen.getByLabelText('Move Vault A to Drive account')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Move' })).toBeDisabled();
+  });
+
+  test('reports a Drive Y cleanup failure instead of swallowing it', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y, z]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const moveVault = vi.fn(async () => ({
+      cleanupFailures: [{ docId: vault.id, message: 'Drive Y delete failed.' }],
+    }));
+    const user = userEvent.setup();
+    renderPanel(
+      '/settings/connections',
+      { driveRegistry: registry(), driveMoveVault: moveVault },
+      'paranoid',
+    );
+
+    await user.click(await screen.findByText('Vault Drive bindings'));
+    await user.selectOptions(screen.getByLabelText('Move Vault A to Drive account'), z.id);
+    await user.click(screen.getByRole('button', { name: 'Move' }));
+
+    // The move committed, so this is not an error — but the leftover copy in
+    // the previous account is stated, never hidden behind the success copy.
+    expect(
+      await screen.findByText(
+        'The vault moved, but the old Drive copy could not be deleted. It remains in the previous account.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('The vault was verified in the new Drive account and moved.'),
+    ).not.toBeInTheDocument();
   });
 
   test('requires explicit acknowledgement and states that Drive files remain', async () => {

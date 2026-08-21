@@ -602,15 +602,6 @@ registry.registerComponent('securitySchemes', BEARER_SECURITY, {
 
 // `userId` param is defined inline in socialRoutes (not exported from contracts).
 const userIdParamSchema = z.object({ userId: z.string().uuid() }).strict();
-const driveConnectionDisconnectQuerySchema = z
-  .object({
-    acknowledgeBound: z.enum(['true', 'false']).optional().openapi({
-      description:
-        'Explicitly detach replicated vaults from Drive while leaving their encrypted Drive files untouched. Drive-only vaults still refuse.',
-    }),
-  })
-  .strict();
-
 // Idempotency-Key request header (§13.4 V4-P2a, #417), documented on the covered
 // portfolio mutation endpoints. Optional (opt-in) — a request without it behaves
 // exactly as before. Header name + semantics come from `@bettertrack/contracts`.
@@ -4554,7 +4545,7 @@ const endpoints: EndpointDef[] = [
     tag: 'Vault',
     summary: 'Register the Drive identity captured client-side after fresh Google consent.',
     description:
-      'The strict body accepts only googleSub, email, and displayName. Google tokens stay in browser memory and never cross this endpoint.',
+      'The strict body accepts only googleSub, email, and displayName. Google tokens stay in browser memory and never cross this endpoint. Create-or-refresh: re-consenting an already registered account upserts onto the same connection id and also answers 201; the audit trail distinguishes drive_connection.created from drive_connection.refreshed.',
     body: R.CreateDriveConnectionRequest,
     status: 201,
     response: R.CreateDriveConnectionResponse,
@@ -4564,6 +4555,8 @@ const endpoints: EndpointDef[] = [
     path: '/drive-connections/{connectionId}/verified',
     tag: 'Vault',
     summary: 'Touch lastVerifiedAt after a browser directly verifies Drive access.',
+    description:
+      'Takes no request body; a non-empty body is refused, so no method of this module can carry a Google token.',
     params: contracts.driveConnectionIdParamSchema,
     status: 200,
     response: R.CreateDriveConnectionResponse,
@@ -4574,9 +4567,9 @@ const endpoints: EndpointDef[] = [
     tag: 'Vault',
     summary: 'Disconnect one caller-owned Drive identity without deleting the user’s Drive files.',
     description:
-      'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that retain an active server medium; a Drive-only vault remains protected as the last medium.',
+      'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that retain an active server medium; a Drive-only vault remains protected as the last medium (PROJECTPLAN §16, 2026-08-21). Takes no request body; a non-empty body is refused.',
     params: contracts.driveConnectionIdParamSchema,
-    query: driveConnectionDisconnectQuerySchema,
+    query: contracts.driveConnectionDisconnectQuerySchema,
     status: 204,
   },
 

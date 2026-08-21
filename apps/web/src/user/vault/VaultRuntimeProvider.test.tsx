@@ -83,6 +83,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       markRevoked: vi.fn(() => {
         authorization = 'revoked';
       }),
+      identify: vi.fn(),
     };
     const drive: DriveDataHome = {
       medium: 'drive',
@@ -186,6 +187,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       clear: vi.fn(),
       markExpired: vi.fn(),
       markRevoked: vi.fn(),
+      identify: vi.fn(),
     };
     const driveHomes: DriveDataHome[] = [];
     const runtimeOwners: string[] = [];
@@ -253,6 +255,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       clear: vi.fn(),
       markExpired: vi.fn(),
       markRevoked: vi.fn(),
+      identify: vi.fn(),
     };
     let reads = 0;
     const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
@@ -331,6 +334,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
         clear: vi.fn(),
         markExpired: vi.fn(),
         markRevoked: vi.fn(),
+        identify: vi.fn(),
       };
       const readEnvelope = vi.fn(() =>
         stage === 'envelope read' ? envelopeRead.promise : Promise.resolve(envelope),

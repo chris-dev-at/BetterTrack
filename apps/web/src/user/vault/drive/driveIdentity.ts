@@ -25,9 +25,12 @@ export class DriveIdentityError extends Error {
 
 /**
  * Capture the consented Drive principal directly in the browser. Drive's
- * stable `permissionId` is recorded as the registry's opaque `googleSub`; the
- * fresh access token is used only for this Google request and is never part of
- * the returned server DTO.
+ * stable `permissionId` is recorded as the registry's opaque `googleSub` — the
+ * column name is E0's, the value is a Drive Permission-resource id, NOT an OIDC
+ * `sub`. It is used for equality only (the post-consent principal check in
+ * `driveConnectionRegistry.proveIdentity`); the GIS `login_hint` takes the
+ * captured email, which is the form Google documents. The fresh access token is
+ * used only for this Google request and is never part of the returned DTO.
  */
 export async function readGoogleDriveIdentity(
   tokens: Pick<GoogleDriveTokenClient, 'getAccessToken' | 'markExpired' | 'markRevoked'>,

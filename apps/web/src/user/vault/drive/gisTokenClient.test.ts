@@ -103,6 +103,42 @@ describe('Google Drive GIS token client', () => {
     });
   });
 
+  it('adopts a resolved identity without dropping the capability it already holds', async () => {
+    const hints: Array<string | undefined> = [];
+    let callback!: (response: GoogleTokenResponse) => void;
+    let clock = 1_000;
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      now: () => clock,
+      loadOauth2: async () => ({
+        initTokenClient(config) {
+          hints.push(config.login_hint);
+          callback = config.callback;
+          return {
+            requestAccessToken: () =>
+              callback({ access_token: `token-${hints.length}`, expires_in: 60 }),
+          };
+        },
+      }),
+    });
+
+    // A bootstrap mint: the connection row does not exist yet, so no hint.
+    await expect(client.authorize()).resolves.toMatchObject({ accessToken: 'token-1' });
+
+    client.identify({ loginHint: 'drive-z@example.test', identityLabel: 'drive-z@example.test' });
+    // The fresh capability survives the pin — re-creating the client instead
+    // would have thrown the consent the user just gave away.
+    expect(client.getAccessToken()).toMatchObject({ status: 'ok', accessToken: 'token-1' });
+
+    clock += 61_000;
+    expect(client.getAccessToken()).toEqual({
+      status: 'token-expired',
+      message: 'Sign in to Google (drive-z@example.test) to sync.',
+    });
+    await client.authorize();
+    expect(hints).toEqual([undefined, 'drive-z@example.test']);
+  });
+
   it('captures the stable Drive identity with about.get and returns no capability fields', async () => {
     const tokens = {
       getAccessToken: vi.fn(() => ({

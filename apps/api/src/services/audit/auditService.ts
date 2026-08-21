@@ -89,6 +89,9 @@ export const AuditAction = {
    * the Google subject id, never a token, a file id or a byte of ciphertext.
    */
   DriveConnectionCreated: 'drive_connection.created',
+  /** Re-consent of an already registered Google account — an upsert onto the
+   *  same row, never a second registration. */
+  DriveConnectionRefreshed: 'drive_connection.refreshed',
   DriveConnectionDeleted: 'drive_connection.deleted',
   /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the

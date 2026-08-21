@@ -454,6 +454,12 @@ function DriveAccountsSection({
     setMessage(null);
     try {
       const result = await moveVault(vault.id, target);
+      // The chosen target is now the vault's own connection, so it drops out of
+      // the option list and the <select> renders blank. Clearing the remembered
+      // choice disables **Move** with it — otherwise the button stays live on a
+      // value that would ask for a migration onto the connection the vault
+      // already sits on.
+      setMoveTargets(({ [vault.id]: _chosen, ...rest }) => rest);
       setMessage({
         tone: result.cleanupFailures.length > 0 ? 'info' : 'success',
         text: t(
@@ -1036,6 +1042,13 @@ export function ConnectionsPanel({
     | ((passphrase: string, options: VaultDriveUnlockOptions) => Promise<DriveConnectionController>)
     | null;
   driveRegistry?: DriveConnectionRegistry | null;
+  /**
+   * The Y → Z move. No production caller supplies it yet: `migrateDriveConnection`
+   * needs one source/target `DriveDataHome` PAIR PER DOCUMENT and a replicated
+   * write path for the §8 identity echo, and the live runtime still composes the
+   * single account-scoped envelope-v1 home. Both arrive with the client-engine
+   * re-home in E6 (#1416), which is where this prop gets its implementation.
+   */
   driveMoveVault?: (vaultId: string, connectionId: string) => Promise<DriveVaultMoveResult>;
   driveConfigured?: boolean;
 } = {}) {
@@ -1043,10 +1056,11 @@ export function ConnectionsPanel({
   const runtime = useOptionalVaultRuntime();
   const privacy = useResolvedPrivacyModeState();
   const driveClientId = getGoogleDriveClientId();
-  // A Drive connection can only ever bind to a paranoid vault, so a normal-mode
-  // account must not see the group at all — not an empty one, and not the two
-  // requests that would fill it. The runtime client id is deployment config,
-  // never the audience gate (anti-bloat rule, §13.5).
+  // Today only paranoid accounts reach any Drive-backed vault surface (the
+  // schema itself does not gate vault creation on privacy mode), so a
+  // normal-mode account must not see the group at all — not an empty one, and
+  // not the two requests that would fill it. The runtime client id is
+  // deployment config, never the audience gate (anti-bloat rule, §13.5).
   const paranoid = privacy.privacyMode === 'paranoid';
   const resolvedDriveRegistry = useMemo(
     () =>

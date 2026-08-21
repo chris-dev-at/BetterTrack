@@ -3,6 +3,7 @@ import type { CreateDriveConnectionRequest, DriveConnection } from '@bettertrack
 import type {
   DriveConnectionDeleteResult,
   DriveConnectionRepository,
+  DriveConnectionUpsert,
 } from '../../data/repositories/driveConnectionRepository';
 import { AuditAction, type AuditService } from '../audit/auditService';
 
@@ -12,7 +13,7 @@ export interface DriveConnectionService {
     userId: string,
     identity: CreateDriveConnectionRequest,
     ip?: string | null,
-  ): Promise<DriveConnection>;
+  ): Promise<DriveConnectionUpsert>;
   touch(userId: string, connectionId: string): Promise<DriveConnection | null>;
   delete(
     userId: string,
@@ -23,8 +24,8 @@ export interface DriveConnectionService {
 }
 
 /**
- * Registry lifecycle. Connect and disconnect are audited like every other
- * account-config change, and a disconnect that drops `drive` from a vault's
+ * Registry lifecycle. Connect (created vs refreshed) and disconnect are audited
+ * like every other account-config change, and a disconnect that drops `drive` from a vault's
  * media records the same `vault.media_changed` entry the explicit
  * `PATCH /vaults/:id/media` route writes — a medium never disappears silently.
  * A verification touch is not audited: it is a read-shaped liveness ping the
@@ -39,16 +40,20 @@ export function createDriveConnectionService(
     list: (userId) => repository.list(userId),
 
     async create(userId, identity, ip) {
-      const connection = await repository.create(userId, identity, now());
+      const upsert = await repository.create(userId, identity, now());
       await audit.record({
         actorId: userId,
-        action: AuditAction.DriveConnectionCreated,
+        // Re-consenting a known account upserts onto the same connection id; a
+        // second `created` entry would claim a registration that never happened.
+        action: upsert.created
+          ? AuditAction.DriveConnectionCreated
+          : AuditAction.DriveConnectionRefreshed,
         targetType: 'drive_connection',
-        targetId: connection.id,
+        targetId: upsert.connection.id,
         ip,
-        meta: { googleSub: connection.googleSub },
+        meta: { googleSub: upsert.connection.googleSub },
       });
-      return connection;
+      return upsert;
     },
 
     touch: (userId, connectionId) => repository.touch(userId, connectionId, now()),

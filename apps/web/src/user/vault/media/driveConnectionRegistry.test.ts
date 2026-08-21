@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DriveConnection } from '@bettertrack/contracts';
 
 import type { DriveAccessTokenResult, GoogleDriveTokenClient } from '../drive/gisTokenClient';
-import { createDriveConnectionRegistry } from './driveConnectionRegistry';
+import { createDriveConnectionRegistry, driveTokenClientIdentity } from './driveConnectionRegistry';
 
 function connection(id: string, sub: string, email: string): DriveConnection {
   return {
@@ -30,6 +30,7 @@ function tokenClient(token: string): GoogleDriveTokenClient {
       return current;
     }),
     subscribe: vi.fn(() => () => undefined),
+    identify: vi.fn(),
     clear: vi.fn(() => {
       state = 'consent-required';
       current = { status: 'consent-required', message: 'consent' };
@@ -73,6 +74,17 @@ describe('per-connection Drive registry', () => {
     await expect(registry.connect()).resolves.toMatchObject({ status: 'ok', connection: z });
 
     expect(hints).toEqual([undefined, undefined]);
+    // A bootstrap client is minted before the row exists, so it carries no
+    // hint. The registry pins it to the resolved identity instead of leaving
+    // every re-mint of this page session hint-less and generically worded.
+    expect(registry.tokens(y.id)?.identify).toHaveBeenCalledWith({
+      loginHint: y.email,
+      identityLabel: y.email,
+    });
+    expect(registry.tokens(z.id)?.identify).toHaveBeenCalledWith({
+      loginHint: z.email,
+      identityLabel: z.email,
+    });
     expect(registry.tokens(y.id)?.getAccessToken()).toMatchObject({
       status: 'ok',
       accessToken: 'token-y',
@@ -94,7 +106,7 @@ describe('per-connection Drive registry', () => {
     expect(JSON.stringify(create.mock.calls)).not.toMatch(/token-y|token-z/);
   });
 
-  it('re-mints a restored connection with its googleSub hint and rejects the wrong principal', async () => {
+  it('re-mints a restored connection with the documented email hint and rejects the wrong principal', async () => {
     const y = connection('018f0000-0000-7000-8000-000000000403', 'sub-y', 'y@example.test');
     const hinted = tokenClient('hinted-y-token');
     const hints: Array<string | undefined> = [];
@@ -103,7 +115,7 @@ describe('per-connection Drive registry', () => {
       clientId: 'browser-client-id',
       api: { create: vi.fn(), verify, delete: vi.fn() },
       tokenClient: (existing) => {
-        hints.push(existing?.googleSub);
+        hints.push(driveTokenClientIdentity(existing).loginHint);
         return hinted;
       },
       identify: vi.fn(async () => ({
@@ -118,7 +130,10 @@ describe('per-connection Drive registry', () => {
       connection: y,
       message: 'Sign in to Google (y@example.test) to sync.',
     });
-    expect(hints).toEqual(['sub-y']);
+    // The hint Google documents is the email; the stored permissionId is an
+    // equality token for `proveIdentity`, never a hint.
+    expect(hints).toEqual(['y@example.test']);
+    expect(hints).not.toContain(y.googleSub);
     expect(hinted.clear).toHaveBeenCalledTimes(1);
     expect(verify).not.toHaveBeenCalled();
   });
@@ -155,7 +170,7 @@ describe('per-connection Drive registry', () => {
     });
   });
 
-  it('re-mints Y and Z independently with each registered subject as login hint', async () => {
+  it('re-mints Y and Z independently with each registered email as login hint', async () => {
     const y = connection('018f0000-0000-7000-8000-000000000404', 'sub-y', 'y@example.test');
     const z = connection('018f0000-0000-7000-8000-000000000405', 'sub-z', 'z@example.test');
     const yClient = tokenClient('renewed-token-y');
@@ -169,7 +184,7 @@ describe('per-connection Drive registry', () => {
         delete: vi.fn(),
       },
       tokenClient: (existing) => {
-        hints.push(existing?.googleSub);
+        hints.push(driveTokenClientIdentity(existing).loginHint);
         return existing?.id === y.id ? yClient : zClient;
       },
       identify: vi.fn(async (client) =>
@@ -182,7 +197,7 @@ describe('per-connection Drive registry', () => {
     await expect(registry.authorize(y)).resolves.toMatchObject({ status: 'ok', connection: y });
     await expect(registry.authorize(z)).resolves.toMatchObject({ status: 'ok', connection: z });
 
-    expect(hints).toEqual(['sub-y', 'sub-z']);
+    expect(hints).toEqual(['y@example.test', 'z@example.test']);
     expect(registry.tokens(y.id)?.getAccessToken()).toMatchObject({
       status: 'ok',
       accessToken: 'renewed-token-y',

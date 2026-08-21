@@ -9,6 +9,7 @@ import {
   encodeVaultDocEnvelope,
   VAULT_CONTENT_CIPHER,
   VAULT_DOC_FORMAT_VERSION,
+  type VaultDocKind,
 } from '@bettertrack/contracts';
 import { deriveAccountBinding } from '../keys';
 import {
@@ -76,6 +77,7 @@ async function envelopeV2Doc(
   vaultId: string,
   docId: string,
   docVersion = 1,
+  docKind: VaultDocKind = 'header',
 ): Promise<Uint8Array> {
   return encodeVaultDocEnvelope(
     {
@@ -92,7 +94,7 @@ async function envelopeV2Doc(
       ],
       vaultId,
       docId,
-      docKind: 'header',
+      docKind,
       accountBinding: await deriveAccountBinding(accountId),
       docVersion,
       schemaVersion: 1,
@@ -359,6 +361,122 @@ class ConcurrentUpdateDrive {
   }
 }
 
+/**
+ * A Drive that lets two homes reach the visible-folder lookup at the same
+ * moment. Every folder-marker list is answered in pairs, so both parties
+ * observe "no folder" before either creates one, and both creates have landed
+ * before either reconciliation read returns — the collision the per-home cache
+ * cannot prevent, made deterministic instead of timing-dependent.
+ */
+class ConcurrentFolderDrive {
+  private readonly folders = new Set<string>();
+  private readonly files = new Map<
+    string,
+    { metadata: ReturnType<typeof metadata>; envelope: Uint8Array; parent: string }
+  >();
+  private waiting: Array<() => void> = [];
+  private nextFolder = 1;
+  private nextFile = 1;
+  readonly folderCreates: string[] = [];
+  readonly folderDeletes: string[] = [];
+
+  constructor(private readonly parties: number) {}
+
+  folderIds(): readonly string[] {
+    return [...this.folders].sort();
+  }
+
+  fileParents(): readonly string[] {
+    return [...this.files.values()].map((file) => file.parent).sort();
+  }
+
+  fetchFor(outgoingEnvelope: Uint8Array): typeof globalThis.fetch {
+    return vi.fn((input, init) => this.handle(outgoingEnvelope, String(input), init));
+  }
+
+  private pair(): Promise<void> {
+    return new Promise((resolve) => {
+      this.waiting.push(resolve);
+      if (this.waiting.length < this.parties) return;
+      const arrived = this.waiting;
+      this.waiting = [];
+      for (const release of arrived) release();
+    });
+  }
+
+  private async handle(
+    outgoingEnvelope: Uint8Array,
+    url: string,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const method = init?.method ?? 'GET';
+    if (method === 'GET' && url.includes('/drive/v3/files?')) {
+      const query = new URL(url).searchParams.get('q') ?? '';
+      if (query.includes('folderMarker')) {
+        await this.pair();
+        return json({ files: this.folderIds().map((id) => ({ id })) });
+      }
+      if (query.includes('in parents')) {
+        const parent = /'([^']+)' in parents/u.exec(query)?.[1];
+        return json({
+          files: [...this.files.values()]
+            .filter((file) => file.parent === parent)
+            .map((file) => ({ id: file.metadata.id })),
+        });
+      }
+      const docKind = /key='docKind' and value='([^']+)'/u.exec(query)?.[1];
+      return json({
+        files: [...this.files.values()]
+          .filter((file) => file.metadata.appProperties.docKind === docKind)
+          .map((file) => file.metadata),
+      });
+    }
+
+    if (method === 'POST' && url.includes('/upload/drive/v3/files?')) {
+      if (!(init?.body instanceof Blob)) throw new Error('Expected a multipart Drive upload.');
+      const body = await blobText(init.body);
+      const id = `concurrent-file-${this.nextFile++}`;
+      const file = metadata({
+        id,
+        name: /"name":"([^"]+)"/u.exec(body)?.[1] ?? '',
+        size: String(outgoingEnvelope.byteLength),
+        headRevisionId: `concurrent-revision-${id}`,
+        appProperties: {
+          ownerDigest: /"ownerDigest":"([^"]+)"/u.exec(body)?.[1] ?? '',
+          vaultDigest: /"vaultDigest":"([^"]+)"/u.exec(body)?.[1] ?? '',
+          docKind: /"docKind":"([^"]+)"/u.exec(body)?.[1] ?? '',
+          docVersion: /"docVersion":"([^"]+)"/u.exec(body)?.[1] ?? '',
+          formatVersion: /"formatVersion":"([^"]+)"/u.exec(body)?.[1] ?? '',
+        },
+      });
+      this.files.set(id, {
+        metadata: file,
+        envelope: outgoingEnvelope.slice(),
+        parent: /"parents":\["([^"]+)"\]/u.exec(body)?.[1] ?? '',
+      });
+      return json(file);
+    }
+
+    if (method === 'POST' && url.includes('/drive/v3/files?fields=id')) {
+      const id = `bettertrack-folder-${this.nextFolder++}`;
+      this.folders.add(id);
+      this.folderCreates.push(id);
+      return json({ id });
+    }
+
+    const id = decodeURIComponent(/\/drive\/v3\/files\/([^?]+)/u.exec(url)?.[1] ?? '');
+    if (method === 'DELETE') {
+      this.folders.delete(id);
+      this.folderDeletes.push(id);
+      return new Response(null, { status: 204 });
+    }
+    const file = this.files.get(id);
+    if (!file) return new Response(null, { status: 404 });
+    if (url.includes('alt=media')) return new Response(file.envelope.slice(), { status: 200 });
+    return json(file.metadata);
+  }
+}
+
 class SharedPhysicalDrive {
   private readonly files = new Map<
     string,
@@ -549,9 +667,11 @@ describe('Drive file DataHome', () => {
       // Initial lookup + the concurrent-create recheck.
       .mockResolvedValueOnce(json({ files: [] }))
       .mockResolvedValueOnce(json({ files: [] }))
-      // Visible folder lookup and creation.
+      // Visible folder lookup, creation, and the post-create reconciliation
+      // read that decides the winner of a concurrent create.
       .mockResolvedValueOnce(json({ files: [] }))
-      .mockResolvedValueOnce(json({ id: 'bettertrack-folder', appProperties: {} }))
+      .mockResolvedValueOnce(json({ id: 'bettertrack-folder' }))
+      .mockResolvedValueOnce(json({ files: [{ id: 'bettertrack-folder' }] }))
       // Upload acknowledgement, appProperties confirmation scan/readback.
       .mockResolvedValueOnce(json(driveFile))
       .mockResolvedValueOnce(json({ files: [driveFile] }))
@@ -573,9 +693,7 @@ describe('Drive file DataHome', () => {
     });
 
     const folderCreate = fetch.mock.calls.find(
-      ([url, init]) =>
-        init?.method === 'POST' &&
-        String(url).includes('/drive/v3/files?fields=id%2CappProperties'),
+      ([url, init]) => init?.method === 'POST' && String(url).includes('/drive/v3/files?fields=id'),
     );
     expect(JSON.parse(String(folderCreate?.[1]?.body))).toEqual({
       name: 'BetterTrack Vaults',
@@ -605,6 +723,40 @@ describe('Drive file DataHome', () => {
     expect(String(fetch.mock.calls.at(-2)?.[0])).toContain('/files/doc-file-id?fields=');
     expect(String(fetch.mock.calls.at(-2)?.[0])).not.toContain(fileName);
     expect(String(fetch.mock.calls.at(-1)?.[0])).toContain('/files/doc-file-id?alt=media');
+  });
+
+  it('converges two concurrent first writes on one visible folder', async () => {
+    const drive = new ConcurrentFolderDrive(2);
+    const headerBytes = await envelopeV2Doc(ACCOUNT_A, VAULT_A, DOC_A, 1, 'header');
+    const portfolioBytes = await envelopeV2Doc(ACCOUNT_A, VAULT_A, DOC_B, 1, 'portfolio');
+    const home = (docId: string, docKind: VaultDocKind, bytes: Uint8Array) =>
+      createDriveDataHome({
+        accountId: ACCOUNT_A,
+        vaultId: VAULT_A,
+        docId,
+        docKind,
+        tokens: tokenSource(),
+        fetch: drive.fetchFor(bytes),
+        boundary: () => `concurrent-${docKind}-boundary`,
+      });
+
+    const [first, second] = await Promise.all([
+      home(DOC_A, 'header', headerBytes).write(headerBytes, { ifVersion: null }),
+      home(DOC_B, 'portfolio', portfolioBytes).write(portfolioBytes, { ifVersion: null }),
+    ]);
+    expect(first).toMatchObject({ status: 'ok', info: { version: 1 } });
+    expect(second).toMatchObject({ status: 'ok', info: { version: 1 } });
+
+    // The race really happened — two folders were POSTed…
+    expect(drive.folderCreates).toEqual(['bettertrack-folder-1', 'bettertrack-folder-2']);
+    // …and the owner is left with exactly one: the deterministic winner, with
+    // the empty loser discarded by the home that created it.
+    expect(drive.folderIds()).toEqual(['bettertrack-folder-1']);
+    expect(drive.folderDeletes).toEqual(['bettertrack-folder-2']);
+
+    // Both documents landed in the surviving folder, so nothing is stranded in
+    // a folder that no later resolution will ever look at.
+    expect(drive.fileParents()).toEqual(['bettertrack-folder-1', 'bettertrack-folder-1']);
   });
 
   it('reuses a renamed visible folder by appProperties instead of creating another', async () => {
@@ -903,15 +1055,20 @@ describe('Drive file DataHome', () => {
   });
 
   it('refuses a truncated lookup page instead of reading it as the whole address', async () => {
-    const home = createTestDriveDataHome({
-      tokens: tokenSource(),
-      fetch: vi.fn().mockResolvedValue(json({ files: [metadata()], nextPageToken: 'page-2' })),
-    });
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(json({ files: [metadata()], nextPageToken: 'page-2' }));
+    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
 
     await expect(home.read()).resolves.toMatchObject({
       status: 'transport-failure',
       failure: { code: 'api-failure', message: expect.stringMatching(/more than 100/) },
     });
+    // The refusal is only reachable if the partial-response mask ASKS for the
+    // token: a `fields=files(...)` mask makes Drive omit `nextPageToken`, and
+    // this guard would then be dead code that can never fire in production.
+    const mask = new URL(String(fetch.mock.calls[0]![0])).searchParams.get('fields');
+    expect(mask?.startsWith('nextPageToken,files(')).toBe(true);
   });
 
   it('re-resolves the visible folder after a create fails against the cached one', async () => {

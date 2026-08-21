@@ -178,6 +178,64 @@ describe('Drive connection registry', () => {
       })
       .expect(400);
     expect(await h.db.select().from(driveConnections)).toHaveLength(1);
+
+    // The upsert landed on the same row, so the trail must not claim a second
+    // registration: re-consent is `refreshed`, not `created`.
+    const trail = await h.db.select().from(auditLog).where(eq(auditLog.targetId, first.id));
+    expect(trail.map(({ action }) => action).sort()).toEqual([
+      'drive_connection.created',
+      'drive_connection.refreshed',
+    ]);
+  });
+
+  it('refuses a token-shaped body on every method and an unknown disconnect query parameter', async () => {
+    const user = await h.seedUser({ email: 'drive-strict@bt.test', username: 'drive_strict' });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'strict-subject',
+      email: 'strict@example.test',
+    });
+
+    // The "no Drive route accepts a Google token" guarantee has to hold on the
+    // methods that document no body too — otherwise it is pinned only where a
+    // strict schema happened to be needed anyway.
+    for (const send of [
+      () =>
+        agent
+          .patch(`/api/v1/drive-connections/${connection.id}/verified`)
+          .set(...XRW)
+          .send({ accessToken: 'must-never-cross-the-api' }),
+      () =>
+        agent
+          .delete(`/api/v1/drive-connections/${connection.id}`)
+          .set(...XRW)
+          .send({ accessToken: 'must-never-cross-the-api' }),
+    ]) {
+      await send().expect(400);
+    }
+
+    // The published query schema is `.strict()`; the route must refuse what the
+    // contract refuses instead of quietly ignoring it.
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true&prompt=consent`)
+      .set(...XRW)
+      .expect(400);
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=yes`)
+      .set(...XRW)
+      .expect(400);
+
+    // Nothing above was acted on; the bodyless forms still work.
+    expect(await h.db.select().from(driveConnections)).toHaveLength(1);
+    await agent
+      .patch(`/api/v1/drive-connections/${connection.id}/verified`)
+      .set(...XRW)
+      .expect(200);
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .expect(204);
+    expect(await h.db.select().from(driveConnections)).toHaveLength(0);
   });
 
   it('scopes every id-addressed operation in the repository and allows two users on one Drive', async () => {

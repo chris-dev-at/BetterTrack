@@ -17,13 +17,24 @@ export type DriveConnectionDeleteResult =
   | { status: 'bound'; vaults: { id: string; name: string }[] }
   | { status: 'last_medium'; vaults: { id: string; name: string }[] };
 
+/**
+ * The registry upsert is create-or-refresh: re-consenting an already registered
+ * Google account lands on the same `(user_id, google_sub)` row. `created`
+ * separates the two so the audit trail does not claim a second registration
+ * that never happened.
+ */
+export interface DriveConnectionUpsert {
+  connection: DriveConnection;
+  created: boolean;
+}
+
 export interface DriveConnectionRepository {
   list(userId: string): Promise<DriveConnection[]>;
   create(
     userId: string,
     identity: CreateDriveConnectionRequest,
     verifiedAt: Date,
-  ): Promise<DriveConnection>;
+  ): Promise<DriveConnectionUpsert>;
   touch(userId: string, connectionId: string, verifiedAt: Date): Promise<DriveConnection | null>;
   delete(
     userId: string,
@@ -68,6 +79,10 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
           googleSub: identity.googleSub,
           email: identity.email,
           displayName: identity.displayName,
+          // Stamped explicitly (rather than left to the column default) so the
+          // returned row tells an insert from a conflict update: the update arm
+          // never touches `created_at`.
+          createdAt: verifiedAt,
           lastVerifiedAt: verifiedAt,
         })
         .onConflictDoUpdate({
@@ -80,7 +95,7 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
         })
         .returning();
       if (!row) throw new Error('Drive connection upsert returned no row.');
-      return dto(row);
+      return { connection: dto(row), created: row.createdAt.getTime() === verifiedAt.getTime() };
     },
 
     async touch(userId, connectionId, verifiedAt) {
@@ -109,6 +124,13 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
           .where(and(eq(vaults.userId, userId), eq(vaults.driveConnectionId, connectionId)))
           .orderBy(asc(vaults.name), asc(vaults.id))
           .for('update');
+        // A Drive-only vault is NOT detachable, acknowledgement or not: the
+        // media set would become empty, which `vaults_media_state` rejects
+        // outright, and the vault's only copy of every doc lives in the Drive
+        // this row addresses — "leave the files in Drive" would leave them
+        // unreachable, not preserved. Logged as a deliberate narrowing of the
+        // #1415 acceptance line in PROJECTPLAN §16 (2026-08-21).
+        //
         // Order matters for honesty, not for safety: `last_medium` does not
         // depend on the acknowledgement, so deciding it first spares a
         // Drive-only owner the detour of accepting a loss of reach that was
@@ -128,7 +150,11 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
 
         // Explicit loss-of-reach acknowledgement is meaningful only for a
         // replicated vault: keep its verified server copy active, detach Drive
-        // config, and leave the user's Drive files untouched.
+        // config, and leave the user's Drive files untouched. The attestation
+        // stamps go with it: `mediaAttestedAt` covered a media set that includes
+        // the Drive copy this row no longer reaches, so it is void — the next
+        // operation that needs a proof takes a fresh client attestation rather
+        // than inheriting one made about a medium that is gone.
         const detachedVaults: DetachedVault[] = [];
         for (const vault of bound) {
           const media = vault.media.filter((medium) => medium !== 'drive');

@@ -9,6 +9,8 @@ import {
   createDriveConnectionResponseSchema,
   deleteVaultRequestSchema,
   deleteVaultResponseSchema,
+  driveConnectionDisconnectQuerySchema,
+  driveConnectionEmptyBodySchema,
   driveConnectionIdParamSchema,
   driveConnectionListResponseSchema,
   patchVaultRequestSchema,
@@ -56,6 +58,7 @@ import {
   type ParanoidMediaTransitionRequest,
   type CreateVaultRequest,
   type CreateDriveConnectionRequest,
+  type DriveConnectionDisconnectQuery,
   type DriveConnectionIdParam,
   type DeleteVaultRequest,
   type PatchVaultRequest,
@@ -727,18 +730,26 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
   });
 
   router.post('/', validateBody(createDriveConnectionRequestSchema), async (req, res) => {
-    const connection = await ctx.driveConnections.create(
+    const { connection } = await ctx.driveConnections.create(
       req.authUser!.id,
       req.valid?.body as CreateDriveConnectionRequest,
       req.ip,
     );
     res.setHeader('Cache-Control', 'private, no-store');
+    // Create-or-refresh: re-consenting a known Google account upserts onto the
+    // same row and answers 201 as well (the documented status). The audit trail
+    // is where the two are told apart — `drive_connection.created` vs
+    // `drive_connection.refreshed`.
     res.status(201).json(createDriveConnectionResponseSchema.parse({ connection }));
   });
 
   router.patch(
     '/:connectionId/verified',
     validateParams(driveConnectionIdParamSchema),
+    // Bodyless by contract. Without this the method would accept — and act on —
+    // an arbitrary JSON body, including a Google-token-shaped one, which is
+    // exactly the shape this module must never take on ANY of its routes.
+    validateBody(driveConnectionEmptyBodySchema),
     async (req, res) => {
       const { connectionId } = req.valid?.params as DriveConnectionIdParam;
       const connection = await ctx.driveConnections.touch(req.authUser!.id, connectionId);
@@ -751,20 +762,18 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
   router.delete(
     '/:connectionId',
     validateParams(driveConnectionIdParamSchema),
+    // The published contract's query schema is `.strict()`; parsing it with the
+    // same schema (instead of reading one field by hand) keeps route and
+    // OpenAPI on one definition and refuses an unknown parameter.
+    validateQuery(driveConnectionDisconnectQuerySchema),
+    validateBody(driveConnectionEmptyBodySchema),
     async (req, res) => {
-      const rawAcknowledgement = req.query.acknowledgeBound;
-      if (
-        rawAcknowledgement !== undefined &&
-        rawAcknowledgement !== 'true' &&
-        rawAcknowledgement !== 'false'
-      ) {
-        throw malformed('acknowledgeBound must be true or false when supplied.');
-      }
+      const { acknowledgeBound } = req.valid?.query as DriveConnectionDisconnectQuery;
       const { connectionId } = req.valid?.params as DriveConnectionIdParam;
       const result = await ctx.driveConnections.delete(
         req.authUser!.id,
         connectionId,
-        rawAcknowledgement === 'true',
+        acknowledgeBound === 'true',
         req.ip,
       );
       switch (result.status) {

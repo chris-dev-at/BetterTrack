@@ -14,8 +14,6 @@ import {
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionResponseSchema,
   paranoidServerCandidateMetadataSchema,
-  perVaultMediaStateResponseSchema,
-  perVaultMediaTransitionResponseSchema,
   passkeyListResponseSchema,
   passkeyLoginOptionsResponseSchema,
   passkeyRegisterOptionsResponseSchema,
@@ -72,8 +70,6 @@ import {
   type ParanoidMediaTransitionRequest,
   type ParanoidMediaTransitionResponse,
   type ParanoidServerCandidateMetadata,
-  type PerVaultMediaState,
-  type PerVaultMediaTransitionRequest,
   type PublicRegistrationInfoResponse,
   type RegisterRequest,
   type RegisterResponse,
@@ -364,26 +360,9 @@ export async function listVaultConfigs(signal?: AbortSignal): Promise<VaultConfi
   return vaultListResponseSchema.parse(data).vaults;
 }
 
-export async function getVaultMediaState(
-  vaultId: string,
-  signal?: AbortSignal,
-): Promise<PerVaultMediaState> {
-  const data = await apiRequest<unknown>(`/vaults/${encodeURIComponent(vaultId)}/media`, {
-    signal,
-  });
-  return perVaultMediaStateResponseSchema.parse(data);
-}
-
-export async function transitionVaultMedia(
-  vaultId: string,
-  body: PerVaultMediaTransitionRequest,
-): Promise<PerVaultMediaState> {
-  const data = await apiRequest<unknown>(`/vaults/${encodeURIComponent(vaultId)}/media`, {
-    method: 'PATCH',
-    body,
-  });
-  return perVaultMediaTransitionResponseSchema.parse(data);
-}
+// `GET`/`PATCH /vaults/:vaultId/media` deliberately have no client wrapper yet:
+// their only caller is the per-vault move the client engine re-home owns
+// (E6, #1416). They land with that caller rather than as dead surface here.
 
 async function rawVaultRequest(path: string, init: RequestInit = {}): Promise<Response> {
   try {

@@ -14,15 +14,43 @@ export interface DriveMigrationDocument {
   target: DriveDataHome;
 }
 
+/** The §8 identity echo carried, under encryption, by the vault header doc. */
+export interface DriveMigrationIdentity {
+  googleSub: string;
+  email: string;
+}
+
 export interface DriveConnectionMigrationOptions {
   vaultId: string;
   transitionId: string;
   fromConnectionId: string;
   toConnectionId: string;
+  /** Which document carries the §8 `driveConnection` echo; must be listed in `documents`. */
+  headerDocId: string;
+  /** The target principal the header must name once the move commits. */
+  toIdentity: DriveMigrationIdentity;
+  /**
+   * CAS view of the media config, and it must still hold AFTER the identity
+   * echo is rewritten: a doc write does not touch `mediaAttestedAt`, but a
+   * caller that refreshes the attestation in the same step must re-read it.
+   */
   expected: PerVaultMediaExpectedState;
   documents: readonly DriveMigrationDocument[];
   /** Authenticate the exact source envelope with the unlocked vault key. */
   authenticate(docId: string, envelope: Uint8Array): Promise<boolean>;
+  /**
+   * Rewrite the header doc's §8 `driveConnection` echo to `identity` through
+   * the caller's NORMAL replicated write path — every active medium, server
+   * included — and resolve once it has landed.
+   *
+   * It cannot be a Drive-side re-encrypt: a byte-copy would leave the encrypted
+   * header naming the OLD principal, so words + the right Google login would no
+   * longer discover the vault after the move; and for a replicated vault the
+   * server's per-doc attestation rows would disagree with the new Drive bytes,
+   * which is exactly what `PATCH /vaults/:id/media` verifies. Running it here,
+   * before anything is written to the target, keeps both facts true at once.
+   */
+  rewriteDriveIdentityEcho(identity: DriveMigrationIdentity): Promise<void>;
   transition(request: PerVaultMediaTransitionRequest): Promise<PerVaultMediaState>;
 }
 
@@ -39,7 +67,12 @@ export type DriveConnectionMigrationResult =
     }
   | {
       status: 'failed';
-      stage: 'source-read' | 'source-authentication' | 'target-write' | 'target-readback';
+      stage:
+        | 'identity-echo'
+        | 'source-read'
+        | 'source-authentication'
+        | 'target-write'
+        | 'target-readback';
       docId: string;
       message: string;
     };
@@ -54,16 +87,20 @@ interface PreparedDocument {
 
 /**
  * Replace a vault's Drive principal with the §7 ordering barrier:
- * authenticate Y → write Z → byte-exact readback Z → commit binding → attempt
- * deletion Y. A cleanup failure is returned after the committed state and can
- * never be collapsed into a failed migration or silently swallowed.
+ * rewrite the §8 identity echo to Z → authenticate Y → write Z → byte-exact
+ * readback Z → commit binding → attempt deletion Y. A cleanup failure is
+ * returned after the committed state and can never be collapsed into a failed
+ * migration or silently swallowed.
  *
  * Composition seam, deliberately unwired here: the caller must supply one
- * source/target `DriveDataHome` PAIR PER DOCUMENT, and the production runtime
- * still composes the single account-scoped Drive home (`media/runtime.ts`).
- * E6 (#1416) re-homes the client engine per vault/document and is where
- * Settings → Connections gets its `driveMoveVault` — until then this module is
- * reached only from `driveMigration.test.ts`.
+ * source/target `DriveDataHome` PAIR PER DOCUMENT plus a replicated-write path
+ * for `rewriteDriveIdentityEcho`, and the production runtime still composes the
+ * single account-scoped envelope-v1 Drive home (`media/runtime.ts`), which has
+ * neither. E6 (#1416) re-homes the client engine per vault/document and is
+ * where Settings → Connections gets its `driveMoveVault` — until then this
+ * module is reached only from `driveMigration.test.ts`. Two acceptance lines of
+ * #1415 therefore complete with #1416, not here: "both vaults sync" and "a
+ * failure to delete from Y is reported to the user, not swallowed".
  */
 export async function migrateDriveConnection(
   options: DriveConnectionMigrationOptions,
@@ -74,7 +111,40 @@ export async function migrateDriveConnection(
   ) {
     throw new Error('Drive migration expected state does not name the source connection.');
   }
+  // Source and target must differ. With `from === to` both homes resolve to the
+  // SAME Drive object (same account/vault/doc ⇒ same name digest and
+  // appProperties): the target read would return the source bytes, the write
+  // would be skipped as already-equal, the binding flip would be a no-op, and
+  // the cleanup would then delete the file precisely BECAUSE nothing had
+  // changed — the only copy gone, reported as `status: 'ok'`. No guard further
+  // down can catch that; they all confirm the source is untouched, which is the
+  // state that makes deletion wrong here.
+  if (options.fromConnectionId === options.toConnectionId) {
+    throw new Error('Drive migration source and target connection must differ.');
+  }
+  if (!options.documents.some(({ docId }) => docId === options.headerDocId)) {
+    throw new Error('Drive migration must carry the vault header document.');
+  }
 
+  // Before ANY target write: the encrypted header must name Z. This is a normal
+  // replicated write, so the server's attestation rows and the Drive copy move
+  // together and the roster attested at the flip below is the post-rewrite one.
+  try {
+    await options.rewriteDriveIdentityEcho(options.toIdentity);
+  } catch (cause) {
+    return {
+      status: 'failed',
+      stage: 'identity-echo',
+      docId: options.headerDocId,
+      message:
+        cause instanceof Error
+          ? cause.message
+          : 'The vault header could not be rewritten for the target Drive connection.',
+    };
+  }
+
+  // Read the source AFTER the rewrite, so the bytes copied to Z (and the
+  // docVersion/writeId attested for the header) are the ones that name Z.
   const prepared: PreparedDocument[] = [];
   for (const input of options.documents) {
     const cycle = await input.source.observeReplicas();

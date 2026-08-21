@@ -60,6 +60,7 @@ function setup({
     markRevoked: vi.fn(() => {
       state = 'revoked';
     }),
+    identify: vi.fn(),
   };
   const switcher: VaultMediaSwitcher = {
     add: vi.fn(

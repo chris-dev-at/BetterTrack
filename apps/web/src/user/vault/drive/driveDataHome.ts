@@ -429,7 +429,11 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     ];
     const params = new URLSearchParams({
       q: filters.join(' and '),
-      fields: `files(${FILE_FIELDS})`,
+      // The partial-response mask decides what Drive sends back: asking for
+      // `files(...)` alone makes Google OMIT `nextPageToken`, which would turn
+      // the truncation refusal below into a no-op that can never fire. The
+      // token is requested explicitly so a second page is a fact, not a guess.
+      fields: `nextPageToken,files(${FILE_FIELDS})`,
       pageSize: DUPLICATE_SCAN_LIMIT,
     });
     const listed = await driveFetch(`${DRIVE_API}/files?${params.toString()}`);
@@ -552,11 +556,21 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
    * can be told apart only by their authenticated header. The bytes read here
    * are handed back so the caller does not fetch the same body twice.
    *
-   * The cost is that a cold lookup pulls the body of every candidate sharing
-   * (vaultDigest, docKind): warming a vault of N same-kind documents is O(N²)
-   * downloads. A `docDigest` appProperty would keep the object digest-only and
-   * make the list query exact; it changes the §8 object format, so it belongs
-   * in the design note and with the per-document composition in E6 (#1416).
+   * Three consequences, all of them the same missing filter, all handed to E6
+   * (#1416) with the per-document composition:
+   * 1. A cold lookup pulls the body of every candidate sharing
+   *    (vaultDigest, docKind): warming a vault of N same-kind documents is
+   *    O(N²) downloads.
+   * 2. Every `portfolio` doc of one vault shares that address, so the truncated-
+   *    page refusal in `findFile()` is a CLIFF, not a slowdown: past
+   *    `DUPLICATE_SCAN_LIMIT` objects every read and write of every portfolio
+   *    doc in that vault fails loudly (still preferable to one of them silently
+   *    reading `absent` and forking a second live branch).
+   * 3. One malformed sibling fails the whole address rather than itself — the
+   *    fail-closed direction, but with a vault-wide blast radius.
+   * A `docDigest: sha256(…accountId:vaultId:docId)` appProperty would keep the
+   * object digest-only per §8, make the list query exact and retire all three;
+   * it changes the §8 object format, so it belongs in the design note first.
    */
   async function fileMatchesAddress(
     file: ValidDriveFile,
@@ -800,8 +814,43 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     return acknowledged;
   }
 
+  /**
+   * Resolve the ONE visible "BetterTrack Vaults" folder of this owner, creating
+   * it on first use. Drive has no atomic lookup-or-create, so two devices — or
+   * two per-document homes of the same session starting together — can both
+   * observe nothing and both POST. The create is therefore followed by a
+   * reconciliation read: every party re-lists and adopts the same deterministic
+   * winner (lowest folder id), and a party that lost discards the folder it
+   * just created if it is still empty. The owner ends up with one visible
+   * folder, and because vault objects are always found by `appProperties` and
+   * never by parent, a file that did land in a loser stays readable either way.
+   */
   async function ensureFolder(ownerDigest: string): Promise<string | DriveFileResult> {
     if (cachedFolderId) return cachedFolderId;
+    const existing = await listFolders(ownerDigest);
+    if (existing.status !== 'ok') return existing;
+    if (existing.ids.length > 0) {
+      cachedFolderId = existing.ids[0]!;
+      return cachedFolderId;
+    }
+
+    const created = await createFolder(ownerDigest);
+    if (typeof created !== 'string') return created;
+
+    const reconciled = await listFolders(ownerDigest);
+    // A failed reconciliation read is not a failed create: keep the folder we
+    // own and let the next resolution reconcile instead of failing a write.
+    const winner = reconciled.status === 'ok' ? (reconciled.ids[0] ?? created) : created;
+    if (winner !== created) await discardEmptyFolder(created);
+    cachedFolderId = winner;
+    return winner;
+  }
+
+  async function listFolders(
+    ownerDigest: string,
+  ): Promise<
+    { status: 'ok'; ids: readonly string[] } | Extract<DriveFileResult, { status: 'failure' }>
+  > {
     const query = new URLSearchParams({
       q: [
         `mimeType = '${DRIVE_FOLDER_MIME}'`,
@@ -809,7 +858,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         appPropertyFilter('folderMarker', DRIVE_FOLDER_MARKER),
         'trashed = false',
       ].join(' and '),
-      fields: 'files(id,appProperties)',
+      fields: 'files(id)',
       pageSize: DUPLICATE_SCAN_LIMIT,
     });
     const listed = await driveFetch(`${DRIVE_API}/files?${query.toString()}`);
@@ -829,24 +878,23 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         failure: { code: 'api-failure', message: 'Drive folder lookup failed.', cause },
       };
     }
-    const existing = Array.isArray(payload.files)
+    const ids = Array.isArray(payload.files)
       ? payload.files
           .map((file) =>
             typeof file === 'object' &&
             file !== null &&
             typeof (file as { id?: unknown }).id === 'string'
-              ? ((file as { id: string }).id ?? null)
+              ? (file as { id: string }).id
               : null,
           )
           .filter((id): id is string => Boolean(id))
-          .sort()[0]
-      : undefined;
-    if (existing) {
-      cachedFolderId = existing;
-      return existing;
-    }
+          .sort()
+      : [];
+    return { status: 'ok', ids };
+  }
 
-    const created = await driveFetch(`${DRIVE_API}/files?fields=id%2CappProperties`, {
+  async function createFolder(ownerDigest: string): Promise<string | DriveFileResult> {
+    const created = await driveFetch(`${DRIVE_API}/files?fields=id`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -867,7 +915,6 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       if (typeof value.id !== 'string' || value.id.length === 0) {
         throw new Error('missing folder id');
       }
-      cachedFolderId = value.id;
       return value.id;
     } catch (cause) {
       return {
@@ -880,6 +927,30 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         },
       };
     }
+  }
+
+  /**
+   * Best effort, and deliberately conditional: only a folder this home created
+   * and that lost the reconciliation is a candidate, and only while it is still
+   * empty. Anything else — a failed probe, a child that appeared, a refused
+   * delete — leaves the folder alone; a stray empty folder is a cosmetic
+   * problem, deleting one that received a vault object is not.
+   */
+  async function discardEmptyFolder(folderId: string): Promise<void> {
+    const children = new URLSearchParams({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'files(id)',
+      pageSize: '1',
+    });
+    const listed = await driveFetch(`${DRIVE_API}/files?${children.toString()}`);
+    if (listed.status === 'failure' || !listed.response.ok) return;
+    try {
+      const payload = (await listed.response.json()) as { files?: unknown[] };
+      if (!Array.isArray(payload.files) || payload.files.length > 0) return;
+    } catch {
+      return;
+    }
+    await driveFetch(`${DRIVE_API}/files/${encodeURIComponent(folderId)}`, { method: 'DELETE' });
   }
 
   async function convergeDuplicateFiles(

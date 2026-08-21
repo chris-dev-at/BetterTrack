@@ -1,6 +1,10 @@
 import type { CreateDriveConnectionRequest, DriveConnection } from '@bettertrack/contracts';
 
-import { readGoogleDriveIdentity, type GoogleDriveTokenClient } from '../drive';
+import {
+  readGoogleDriveIdentity,
+  type DriveTokenClientIdentity,
+  type GoogleDriveTokenClient,
+} from '../drive';
 import { createGoogleDriveTokenClient } from '../drive';
 
 export interface DriveConnectionRegistryApi {
@@ -39,6 +43,21 @@ export interface DriveConnectionRegistryOptions {
 }
 
 /**
+ * What a registered connection contributes to its GIS client.
+ *
+ * GIS documents `hint`/`login_hint` as an EMAIL ADDRESS or an ID-token `sub`.
+ * Our `googleSub` holds Drive's `about.get` `user.permissionId` — a
+ * Permission-resource id Google documents nowhere as a hint value, so passing
+ * it can be ignored silently and drop the owner into the full account chooser.
+ * The email is the documented form and is already stored, so it is the hint;
+ * the permissionId keeps the job it is good for — the post-consent equality
+ * check in `proveIdentity` that refuses the wrong principal.
+ */
+export function driveTokenClientIdentity(connection?: DriveConnection): DriveTokenClientIdentity {
+  return { loginHint: connection?.email, identityLabel: connection?.email };
+}
+
+/**
  * Own one memory-only GIS client per registered Drive identity. Registry API
  * calls receive only the about.get projection; token objects never cross this
  * composition boundary.
@@ -53,8 +72,7 @@ export function createDriveConnectionRegistry(
     ((connection?: DriveConnection) =>
       createGoogleDriveTokenClient({
         clientId: options.clientId,
-        loginHint: connection?.googleSub,
-        identityLabel: connection?.email,
+        ...driveTokenClientIdentity(connection),
       }));
 
   function clientFor(connection: DriveConnection): GoogleDriveTokenClient {
@@ -108,8 +126,14 @@ export function createDriveConnectionRegistry(
       try {
         const identity = await identify(bootstrap);
         const connection = await options.api.create(identity);
-        // Keep the fresh capability under exactly one registry id. A later page
-        // load creates the normal googleSub-pinned client for this connection.
+        // Keep the fresh capability under exactly one registry id AND pin it to
+        // the identity the row just resolved. The bootstrap client was minted
+        // before any of this was known, so without the pin every re-mint for
+        // the rest of the page session would run hint-less (account chooser)
+        // and fall back to the generic sign-in copy — including for a consumer
+        // that reaches the client through `tokens(connectionId)` and calls
+        // `authorize()` without the registry's identity check.
+        bootstrap.identify(driveTokenClientIdentity(connection));
         // Re-consenting an already-registered account upserts onto the same id,
         // so the client it replaces is released here — otherwise its token and
         // expiry timer would outlive every reference to it.
