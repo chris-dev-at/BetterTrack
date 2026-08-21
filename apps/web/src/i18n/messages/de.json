@@ -2190,6 +2190,8 @@
         "editDefault": "Konto-Vorgabe bearbeiten →",
         "loadError": "Der Steuermodus dieses Portfolios konnte nicht geladen werden."
       },
+      "vaultHeading": "Privater Tresor",
+      "vaultHint": "Verschiebe dieses Portfolio in einen deiner verschlüsselten Tresore. Seine Finanzdaten sind danach für den Server nicht mehr lesbar, und bestehende Freigaben werden endgültig entzogen.",
       "groupHeading": "Gruppenportfolio",
       "groupHint": "Teile dieses Portfolio mit Freunden — ihr führt dasselbe Buch.",
       "groupActive": "{{name}} · {{count}} Mitglieder",
@@ -3631,6 +3633,12 @@
       "deleteAction": "Leeren Tresor löschen",
       "deleteReferenced": "Dieser Tresor enthält noch ein Portfolio. Verschiebe alle Portfolios heraus, bevor du ihn löschst.",
       "deleteError": "Der Tresor konnte nicht gelöscht werden. Es wurde nichts geändert.",
+      "deferred": {
+        "rotate": "Das Wechseln der Wiederherstellungswörter ist noch nicht verfügbar: Es braucht einen geprüften Durchlauf auf jedem Speicher dieses Tresors. Bis dahin bleiben dieser Tresor und seine Wörter genau so, wie sie sind.",
+        "startFresh": "Neu anfangen ist noch nicht verfügbar: Das Verwerfen der verschlüsselten Kopien braucht denselben geprüften Speicher-Durchlauf. Um einen Tresor heute zu entfernen, bewege seine Portfolios hinaus und lösche ihn.",
+        "scanQr": "Das Scannen eines Transfer-QR-Codes ist noch nicht verfügbar. Gib die 12 Wörter stattdessen auf diesem Gerät ein.",
+        "restore": "Das Auswählen einer älteren verschlüsselten Kopie ist noch nicht verfügbar. Jede Kopie bleibt erhalten — keine wird verworfen — und die aktuelle Kopie dieses Tresors bleibt nutzbar."
+      },
       "explainer": {
         "names": "Tresornamen und Speichereinstellungen bleiben lesbar, damit BetterTrack sie auch gesperrt anzeigen und zuordnen kann.",
         "storage": "Portfolioinhalte werden in deinem Browser verschlüsselt, bevor sie den gewählten Speicher erreichen.",
@@ -3667,7 +3675,6 @@
         "scan-qr": "Scanne den Übertragungs-QR-Code von einem bereits entsperrten Gerät.",
         "restore": "Wähle aus der authentifizierten aktuellen Kopie und der begrenzten Historie. Beschädigte Kopien bleiben zur Diagnose sichtbar.",
         "restoreLoadError": "Wiederherstellungskopien konnten nicht geladen werden.",
-        "unavailable": "Diese Aktion ist auf diesem Gerät noch nicht verfügbar.",
         "reset-endpoint": "Setze nur die auf diesem Gerät gespeicherte Verwahrung zurück. Geheimtext auf Server und Drive bleibt unverändert.",
         "rotate": "Beim Wechsel werden die Wiederherstellungswörter erst ersetzt, nachdem jede gewählte Kopie erfolgreich geprüft wurde.",
         "start-fresh": "Ein Neustart verwirft den verschlüsselten Inhalt dieses Tresors dauerhaft. Andere Tresore und Kontodaten bleiben unverändert.",
@@ -3695,7 +3702,8 @@
       "media": {
         "server": "Verschlüsselte Dokumente bleiben bei BetterTrack.",
         "drive": "Verschlüsselte Dokumente bleiben nur im gewählten Drive.",
-        "both": "Bewahre geprüfte verschlüsselte Kopien an beiden Orten auf."
+        "both": "Bewahre geprüfte verschlüsselte Kopien an beiden Orten auf.",
+        "driveSoon": "Drive-Speicher für einen neuen Tresor ist noch nicht verfügbar — wähle vorerst BetterTrack."
       },
       "driveConnectionLabel": "Google-Drive-Verbindung",
       "driveConnectionPlaceholder": "Drive-Konto wählen",
@@ -3750,6 +3758,7 @@
       "subject": "{{portfolio}} · {{vault}}",
       "targetLabel": "Zieltresor",
       "targetPlaceholder": "Tresor wählen",
+      "targetStateError": "Der Status des Ziel-Tresors auf diesem Gerät konnte nicht gelesen werden.",
       "credentialKind": "Bestätigungsmethode",
       "credentialValue": "Kontobestätigung",
       "credential": {
@@ -3763,7 +3772,9 @@
         "import": "Schließe den ausstehenden Import ab oder brich ihn ab, bevor du dieses Portfolio verschiebst.",
         "importFix": "Importe öffnen",
         "export": "Warte, bis der Kontoexport abgeschlossen ist, bevor du dieses Portfolio verschiebst.",
-        "exportFix": "Kontoexport öffnen"
+        "exportFix": "Kontoexport öffnen",
+        "vaultLocked": "Öffne den Ziel-Tresor auf diesem Gerät, bevor du ein Portfolio hineinbewegst.",
+        "captureUnavailable": "Diese Version kann die verschlüsselte Kopie des Portfolios auf diesem Gerät noch nicht vorbereiten, deshalb startet kein Umzug. An diesem Portfolio ändert sich nichts."
       },
       "stepUpHint": "Bestätige den Vorgang mit deinem BetterTrack-Kontopasswort, einem aktuellen Authenticator-Code oder einem Wiederherstellungscode.",
       "moveIn": {

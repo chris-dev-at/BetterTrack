@@ -66,6 +66,40 @@ describe('VaultCreationCeremony', () => {
     expect(onCreated).toHaveBeenCalledOnce();
   });
 
+  it('offers no Drive medium while per-vault Drive provisioning is absent', async () => {
+    const user = userEvent.setup();
+    render(
+      <VaultCreationCeremony
+        connections={[
+          {
+            id: '018f0000-0000-7000-8000-0000000000d1',
+            googleSub: '123456789',
+            email: 'owner@example.com',
+            displayName: 'Personal',
+            createdAt: '2026-08-20T09:00:00.000Z',
+            lastVerifiedAt: '2026-08-20T10:00:00.000Z',
+          },
+        ]}
+        onCancel={() => {}}
+        onCreate={vi.fn(async () => undefined)}
+        onCreated={() => {}}
+        phraseFactory={() => PHRASE}
+      />,
+    );
+
+    await user.type(screen.getByLabelText('Vault name'), 'Long-term');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // A choice `provisionVault` would refuse is never offered — and it says so
+    // rather than sitting there inert.
+    expect(screen.getByRole('radio', { name: /Google Drive only/i })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: /BetterTrack \+ Google Drive/i })).toBeDisabled();
+    expect(screen.getAllByText(/Drive storage for a new vault isn’t available yet/i)).toHaveLength(
+      2,
+    );
+    expect(screen.getByRole('radio', { name: /Encrypted on BetterTrack/i })).toBeEnabled();
+  });
+
   it('uses the supplied random single-word challenge without adding a delay gate', async () => {
     expect(VaultCreationCeremony.toString()).not.toMatch(/setTimeout|setInterval/);
     const user = userEvent.setup();

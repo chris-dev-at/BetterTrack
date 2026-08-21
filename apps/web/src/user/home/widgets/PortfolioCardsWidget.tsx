@@ -44,6 +44,9 @@ import type { WidgetProps } from './types';
 /** The sparkline window. Matches the portfolio page's default range. */
 const SPARK_RANGE = '1M' as const;
 
+/** Placeholder while one cell's own figure is still loading. */
+const ELLIPSIS = '…';
+
 /**
  * A trend shape, not a chart: no axes, no ticks, no hover. Drawn inline so a
  * board with a dozen portfolios does not spin up a charting instance per row.
@@ -120,49 +123,6 @@ export function PortfolioCardsWidget({
 
   if (portfolios.length === 0) return <Empty title={t('home.widgets.portfolioCards.empty')} />;
 
-  const normalIndexes = portfolios.flatMap((portfolio, index) =>
-    isVaultedPortfolio(portfolio) ? [] : [index],
-  );
-  const summariesPending = summaries.some(
-    (query, index) => normalIndexes.includes(index) && query.isPending,
-  );
-  const historiesPending = histories.some(
-    (query, index) => normalIndexes.includes(index) && query.isPending,
-  );
-  const summariesError = summaries.some(
-    (query, index) => normalIndexes.includes(index) && query.isError,
-  );
-  const historiesError = histories.some(
-    (query, index) => normalIndexes.includes(index) && query.isError,
-  );
-  if (summariesPending || historiesPending) {
-    return (
-      <div className="bt-home-pcards">
-        <SkeletonBlock height={92} />
-        <SkeletonBlock height={92} />
-      </div>
-    );
-  }
-  if (summariesError || historiesError) {
-    return (
-      <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-        <span>{t('common.unavailable')}</span>
-        <Button
-          onClick={() => {
-            for (const index of normalIndexes) {
-              void summaries[index]?.refetch();
-              void histories[index]?.refetch();
-            }
-          }}
-          size="sm"
-          type="button"
-        >
-          {t('common.retry')}
-        </Button>
-      </div>
-    );
-  }
-
   const lockedCount = lockedPortfolioCount(portfolios);
   const lockedFallback = t('vault.lockedStub.fallbackAlias');
 
@@ -216,9 +176,29 @@ export function PortfolioCardsWidget({
                     >
                       {portfolioDisplayName(portfolio, lockedFallback)}
                     </Link>
+                    {/* One failed row retries itself; the other nine keep their
+                        figures instead of being replaced by a single panel. */}
+                    {summaries[index]?.isError || histories[index]?.isError ? (
+                      <button
+                        className="bt-link ml-2 text-xs"
+                        onClick={() => {
+                          void summaries[index]?.refetch();
+                          void histories[index]?.refetch();
+                        }}
+                        type="button"
+                      >
+                        {t('common.retry')}
+                      </button>
+                    ) : null}
                   </td>
                   <td className="is-num">
-                    {totals === null ? EM_DASH : <MoneyText amount={totals.totalValueEur} />}
+                    {summaries[index]?.isPending ? (
+                      ELLIPSIS
+                    ) : totals === null ? (
+                      EM_DASH
+                    ) : (
+                      <MoneyText amount={totals.totalValueEur} />
+                    )}
                   </td>
                   <td className="is-num">
                     {totals === null ? EM_DASH : <MoneyText amount={totals.dayChangeEur} signed />}
@@ -258,7 +238,12 @@ export function PortfolioCardsWidget({
             );
           }
           const totals = summaries[index]?.data?.totals ?? null;
-          const values = (histories[index]?.data?.points ?? []).map((point) => point.valueEur);
+          // No trend shape while this portfolio's own series is loading or
+          // failed — the cell degrades, the board does not.
+          const values =
+            histories[index]?.isPending || histories[index]?.isError
+              ? []
+              : (histories[index]?.data?.points ?? []).map((point) => point.valueEur);
           return (
             <Link
               className="bt-panel bt-panel--soft bt-home-pcard"
@@ -274,10 +259,20 @@ export function PortfolioCardsWidget({
               <span className="bt-home-pcard__body">
                 <span className="bt-home-pcard__figures">
                   <span className="bt-num bt-home-pcard__value">
-                    {totals === null ? '…' : <MoneyText amount={totals.totalValueEur} />}
+                    {summaries[index]?.isPending ? (
+                      ELLIPSIS
+                    ) : totals === null ? (
+                      EM_DASH
+                    ) : (
+                      <MoneyText amount={totals.totalValueEur} />
+                    )}
                   </span>
                   <span className="bt-meta">
-                    {totals === null ? null : <MoneyText amount={totals.dayChangeEur} signed />}
+                    {summaries[index]?.isError ? (
+                      t('common.unavailable')
+                    ) : totals === null ? null : (
+                      <MoneyText amount={totals.dayChangeEur} signed />
+                    )}
                   </span>
                 </span>
                 <MiniSpark

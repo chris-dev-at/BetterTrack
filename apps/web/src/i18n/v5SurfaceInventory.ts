@@ -738,6 +738,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/ParanoidEnableWizard.tsx',
       'user/vault/ui/ParanoidSurfaceGate.tsx',
       'user/vault/ui/PortfolioVaultMoveWizard.tsx',
+      'user/vault/ui/PortfolioVaultSection.tsx',
       'user/vault/ui/VaultCreationCeremony.tsx',
       'user/vault/ui/VaultManager.tsx',
       'user/vault/ui/VaultRestorePicker.tsx',
@@ -769,6 +770,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/home/widgets/PortfolioCardsWidget.test.tsx',
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
       'user/vault/ui/PortfolioVaultMoveWizard.test.tsx',
+      'user/vault/ui/PortfolioVaultSection.test.tsx',
       'user/vault/ui/VaultCreationCeremony.test.tsx',
       'user/vault/ui/VaultManager.test.tsx',
       'user/vault/ui/VaultRestorePicker.test.tsx',
@@ -1668,6 +1670,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     delegatedTo: 'AccountModeRoot',
   },
   {
+    component: 'user/vault/ui/PortfolioVaultSection.tsx',
+    read: 'PortfolioVaultSection.vaultsQuery',
+    states: ['error'],
+    reason:
+      'Most accounts own no vault, so an unreachable vault directory must not sprout a vault error on every portfolio settings page; the move-in entry stays absent and the Privacy manager owns the retryable error state for the same read.',
+    delegatedTo: 'VaultManager',
+  },
+  {
     component: 'user/vault/ui/VaultManager.tsx',
     read: 'VaultManager.endpointQueries',
     states: ['loading', 'error'],
@@ -1844,13 +1854,15 @@ export type V5AsyncStateDebtLedger = Readonly<
  * same query key — and it is exempted above rather than added to the debt: an
  * absent group is the designed answer while it is unresolved or failing.
  *
- * 185 → 199 with paranoid E8: the shell directory/chip (2), fail-closed
- * portfolio workspace (1), locked stubs/switcher/cards (6), and Vault manager
- * (5) join the reviewed surface. Every read handles both states directly or
- * delegates them to the exact row that owns the retry action. The +14 is
- * disjoint from E5's ConnectionsPanel read above, which E8 does not touch.
+ * 185 → 203 with paranoid E8: the shell directory/chip (2), fail-closed
+ * portfolio workspace (1), locked stubs/switcher/cards (6), Vault manager (6,
+ * including the deferred-action notice that still shows the vault's live next
+ * step) and the move-in section on portfolio settings (2) join the reviewed
+ * surface. Every read handles both states directly or delegates them to the
+ * exact row that owns the retry action. The +18 is disjoint from E5's
+ * ConnectionsPanel read above, which E8 does not touch.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 199;
+export const V5_ASYNC_READ_SITE_BASELINE = 203;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

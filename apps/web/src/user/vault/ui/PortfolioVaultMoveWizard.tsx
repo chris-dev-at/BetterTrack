@@ -10,8 +10,13 @@ import { CHECKBOX_STYLE } from '../../components/ui';
 export interface VaultMovePrecondition {
   id: string;
   messageKey: string;
-  fixLabelKey: string;
-  fixHref: string;
+  /**
+   * The step that clears this precondition. Omitted only when there is nothing
+   * the user can do about it — then the reason is still stated, and the commit
+   * still stays blocked; it is never a link that leads nowhere.
+   */
+  fixLabelKey?: string;
+  fixHref?: string;
 }
 
 export interface VaultMoveTarget {
@@ -19,23 +24,29 @@ export interface VaultMoveTarget {
   name: string;
 }
 
-type MoveWizardProps =
+type MoveWizardProps = {
+  portfolioName: string;
+  /** Blocking steps, each stated on its own row; the commit stays closed. */
+  preconditions?: readonly VaultMovePrecondition[];
+  onCancel(): void;
+} & (
   | {
       mode: 'in';
-      portfolioName: string;
       vaults: readonly VaultMoveTarget[];
-      preconditions: readonly VaultMovePrecondition[];
-      onCancel(): void;
+      vaultName?: never;
+      unlocked?: never;
+      /** Lets the mount site re-derive preconditions for the chosen target. */
+      onTargetChange?(vaultId: string | null): void;
       onSubmit(input: { vaultId: string; stepUp: VaultStepUpCredential }): Promise<void>;
     }
   | {
       mode: 'out';
-      portfolioName: string;
+      vaults?: never;
       vaultName: string;
       unlocked: boolean;
-      onCancel(): void;
       onSubmit(input: { stepUp: VaultStepUpCredential }): Promise<void>;
-    };
+    }
+);
 
 export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
   const t = useT();
@@ -47,8 +58,9 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
   const [serverReadableAcknowledged, setServerReadableAcknowledged] = useState(false);
   const [working, setWorking] = useState(false);
   const [failed, setFailed] = useState(false);
+  const preconditions = props.preconditions ?? [];
   const blocked =
-    props.mode === 'in' ? props.preconditions.length > 0 || vaultId === '' : !props.unlocked;
+    preconditions.length > 0 || (props.mode === 'in' ? vaultId === '' : !props.unlocked);
   const confirmationMissing = props.mode === 'out' && !serverReadableAcknowledged;
 
   async function submit() {
@@ -92,7 +104,10 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
         <Field htmlFor="vault-move-target" label={t('vault.portfolioMove.targetLabel')}>
           <Select
             id="vault-move-target"
-            onChange={(event) => setVaultId(event.target.value)}
+            onChange={(event) => {
+              setVaultId(event.target.value);
+              props.onTargetChange?.(event.target.value === '' ? null : event.target.value);
+            }}
             value={vaultId}
           >
             <option value="">{t('vault.portfolioMove.targetPlaceholder')}</option>
@@ -105,17 +120,19 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
         </Field>
       ) : null}
 
-      {props.mode === 'in' && props.preconditions.length > 0 ? (
+      {preconditions.length > 0 ? (
         <ul className="flex flex-col gap-2">
-          {props.preconditions.map((precondition) => (
+          {preconditions.map((precondition) => (
             <li
               className="bt-panel flex flex-wrap items-center justify-between gap-3 p-3"
               key={precondition.id}
             >
               <span className="text-sm">{t(precondition.messageKey)}</span>
-              <Link className="bt-link text-sm" to={precondition.fixHref}>
-                {t(precondition.fixLabelKey)}
-              </Link>
+              {precondition.fixHref && precondition.fixLabelKey ? (
+                <Link className="bt-link text-sm" to={precondition.fixHref}>
+                  {t(precondition.fixLabelKey)}
+                </Link>
+              ) : null}
             </li>
           ))}
         </ul>

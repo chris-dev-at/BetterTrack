@@ -24,6 +24,7 @@ import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portf
 import { usePortfolioStore } from './PortfolioStoreProvider';
 import { isVaultedPortfolio } from './lockedPortfolio';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { PortfolioVaultSection } from '../vault/ui/PortfolioVaultSection';
 
 /**
  * Portfolio settings — the Settings tab of the portfolio workspace
@@ -294,6 +295,9 @@ export function PortfolioSettingsPage() {
           )}
         </section>
       </NormalModeOnly>
+
+      {/* ── Private vault (§9 move-in) ──────────────────────────────────── */}
+      <PortfolioVaultSection onMoved={refetchLists} portfolio={portfolio} />
 
       {/* ── Archived ────────────────────────────────────────────────────── */}
       <section aria-label={t('portfolio.switcher.archivedDialogTitle')} className="bt-section">

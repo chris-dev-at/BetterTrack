@@ -244,6 +244,10 @@ export function MySharedItemsPage() {
   }, [portfolioMetadataReady, portfoliosQuery.data]);
   // A vaulted portfolio is not a disabled sharing row. It is absent from every
   // audience/public-profile affordance while its plain sibling stays present.
+  // Names are never masked here: this list only ever holds the caller's own
+  // shareable portfolios, a plain one has no name to protect, and a vaulted
+  // one's shares are revoked at move-in. Masking every row while the metadata
+  // read settles would rename the whole list on each background refetch.
   const shareablePortfolios = portfolioMetadataReady
     ? (data?.portfolios.filter((portfolio) => !vaultedPortfolioIds.has(portfolio.portfolioId)) ??
       [])
@@ -314,14 +318,14 @@ export function MySharedItemsPage() {
             {shareablePortfolios.map((p) => (
               <SharedRow
                 key={p.portfolioId}
-                name={portfolioMetadataReady ? p.name : t('vault.lockedStub.fallbackAlias')}
+                name={p.name}
                 audience={p.audience}
                 friendCount={p.friendCount}
                 onShare={() =>
                   setPicker({
                     kind: 'portfolio',
                     subjectId: p.portfolioId,
-                    label: portfolioMetadataReady ? p.name : t('vault.lockedStub.fallbackAlias'),
+                    label: p.name,
                   })
                 }
                 shareLabel={shareLabel}

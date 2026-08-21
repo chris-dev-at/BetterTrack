@@ -11,6 +11,7 @@ import {
   verifyMnemonicWordChallenge,
   type MnemonicWordChallenge,
 } from '../bip39';
+import { PER_VAULT_DRIVE_PROVISIONING_AVAILABLE } from '../capabilities';
 
 export interface VaultCreationInput {
   name: string;
@@ -27,6 +28,7 @@ export function VaultCreationCeremony({
   onCancel,
   onCreate,
   onCreated,
+  driveProvisioningAvailable = PER_VAULT_DRIVE_PROVISIONING_AVAILABLE,
   phraseFactory = generateMnemonic,
   challengeFactory = createMnemonicWordChallenge,
 }: {
@@ -34,6 +36,7 @@ export function VaultCreationCeremony({
   onCancel(): void;
   onCreate(input: VaultCreationInput): Promise<void>;
   onCreated(): void;
+  driveProvisioningAvailable?: boolean;
   phraseFactory?: () => string;
   challengeFactory?: (mnemonic: string) => MnemonicWordChallenge;
 }) {
@@ -134,12 +137,16 @@ export function VaultCreationCeremony({
             <label className="bt-panel flex items-start gap-3 p-3" key={choice}>
               <input
                 checked={mediaChoice === choice}
+                disabled={choice !== 'server' && !driveProvisioningAvailable}
                 onChange={() => setMediaChoice(choice)}
                 type="radio"
               />
               <span>
                 <span className="bt-row-title">{t(`vault.manager.media.${choice}`)}</span>
                 <span className="bt-row-sub block">{t(`vault.creation.media.${choice}`)}</span>
+                {choice !== 'server' && !driveProvisioningAvailable ? (
+                  <span className="bt-row-sub block">{t('vault.creation.media.driveSoon')}</span>
+                ) : null}
               </span>
             </label>
           ))}

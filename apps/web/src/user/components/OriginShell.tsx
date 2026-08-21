@@ -615,11 +615,16 @@ export function OriginShell() {
   const { user } = useAuth();
   useDiscardUnknownCreateIntent();
   const privacy = useResolvedPrivacyModeState();
+  // The cleartext vault directory feeds the shield chip. It is small, changes
+  // only when the user creates/renames/deletes a vault (each of which
+  // invalidates this key from the Privacy manager), and most accounts own none
+  // — so it is read once per session-ish, not once per shell mount.
   const vaultsQuery = useQuery({
     queryKey: VAULTS_QUERY_KEY,
     queryFn: ({ signal }) => listVaults(signal),
     enabled: user != null,
-    staleTime: 15_000,
+    staleTime: 600_000,
+    refetchOnWindowFocus: false,
   });
   const vaultStates = useQueries({
     queries: (vaultsQuery.data ?? []).map((vault) => ({
@@ -628,6 +633,13 @@ export function OriginShell() {
       staleTime: 5_000,
     })),
   });
+  // `syncState` is derived from the vault's own attestation field, so today the
+  // chip resolves to `synced` or `locked` only. The live per-vault coordinator
+  // that can report `syncing`/`attention` — and with it the "Sign in to Google"
+  // and "Choose a restore copy" rows §14 describes — arrives with E5's
+  // per-connection Drive state; `projectVaultMediaSyncStatus` already accepts
+  // both inputs (`syncState`, `driveAuthorization`), so wiring it is an
+  // argument change here, not a projection change.
   const vaultSyncRows = useMemo(
     () =>
       (vaultsQuery.data ?? []).flatMap((vault, index) => {
