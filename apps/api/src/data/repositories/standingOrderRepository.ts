@@ -193,8 +193,9 @@ export function createStandingOrderRepository(db: Database) {
             ? and(
                 eq(standingOrders.userId, userId),
                 eq(standingOrders.portfolioId, opts.portfolioId),
+                isNull(portfolios.vaultId),
               )
-            : eq(standingOrders.userId, userId),
+            : and(eq(standingOrders.userId, userId), isNull(portfolios.vaultId)),
         )
         .orderBy(asc(standingOrders.createdAt));
       return rows.map(toWithAsset);
@@ -203,18 +204,30 @@ export function createStandingOrderRepository(db: Database) {
     /** One of the caller's own orders, or null (unknown/foreign id → null). */
     async findByIdForUser(userId: string, id: string): Promise<StandingOrderWithAsset | null> {
       const [row] = await joinedSelect().where(
-        and(eq(standingOrders.id, id), eq(standingOrders.userId, userId)),
+        and(
+          eq(standingOrders.id, id),
+          eq(standingOrders.userId, userId),
+          isNull(portfolios.vaultId),
+        ),
       );
       return row ? toWithAsset(row) : null;
     },
 
     /**
-     * Every active order across all users — the daily engine's scan input. Joins
-     * the asset so a buy has its provider ref + native currency for the quote.
+     * Every active order on a non-vaulted portfolio across all users — the
+     * daily engine's scan input. Joins the asset so a buy has its provider ref
+     * + native currency for the quote. `vault_id IS NULL` is deliberate policy
+     * defense for stale rows, not reliance on move-in having purged the order.
      */
     async listActive(): Promise<StandingOrderWithAsset[]> {
       const rows = await joinedSelect()
-        .where(and(eq(standingOrders.status, 'active'), isNull(portfolios.archivedAt)))
+        .where(
+          and(
+            eq(standingOrders.status, 'active'),
+            isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .orderBy(asc(standingOrders.createdAt));
       return rows.map(toWithAsset);
     },
@@ -241,10 +254,10 @@ export function createStandingOrderRepository(db: Database) {
     },
 
     /**
-     * Serialize a standing-order money write with this portfolio's archive
-     * transition. The active check belongs *inside* the shared xact lock: a
-     * worker may have read an active order before an archive request commits,
-     * but cannot claim or write money once that transition won the lock.
+     * Serialize a standing-order money write with this portfolio's archive or
+     * vault transition. The active/non-vaulted check belongs *inside* the
+     * shared xact lock: a worker may have read an eligible order before either
+     * transition commits, but cannot claim or write money once it won the lock.
      *
      * The order check is deliberately in this critical section too. Restore can
      * advance its watermark while an old worker is awaiting a quote; merely
@@ -262,7 +275,13 @@ export function createStandingOrderRepository(db: Database) {
         const active = await tx
           .select({ id: portfolios.id })
           .from(portfolios)
-          .where(and(eq(portfolios.id, portfolioId), isNull(portfolios.archivedAt)))
+          .where(
+            and(
+              eq(portfolios.id, portfolioId),
+              isNull(portfolios.archivedAt),
+              isNull(portfolios.vaultId),
+            ),
+          )
           .limit(1);
         if (active.length === 0) return null;
 
@@ -352,7 +371,8 @@ export function createStandingOrderRepository(db: Database) {
         })
         .from(standingOrderRuns)
         .innerJoin(standingOrders, eq(standingOrders.id, standingOrderRuns.standingOrderId))
-        .where(eq(standingOrders.userId, userId))
+        .innerJoin(portfolios, eq(standingOrders.portfolioId, portfolios.id))
+        .where(and(eq(standingOrders.userId, userId), isNull(portfolios.vaultId)))
         .orderBy(asc(standingOrderRuns.bookedAt), asc(standingOrderRuns.id));
       return rows;
     },

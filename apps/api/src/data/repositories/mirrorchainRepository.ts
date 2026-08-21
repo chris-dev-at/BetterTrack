@@ -3,6 +3,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gt,
   inArray,
   isNotNull,
@@ -984,7 +985,8 @@ export function createMirrorchainRepository(db: Database) {
      * (0) Active chains with **zero active owners** — an invariant the service
      * never produces (creation always seeds an owner, and every owner-departure
      * path runs §7 succession), so a hit means the chain was mutated behind the
-     * service (manual SQL). The M4 repair sweep re-applies §7 succession to each.
+     * service (manual SQL). The M4 repair sweep re-applies §7 succession to each;
+     * a stale active vaulted member quarantines the chain from repair.
      */
     async listOwnerlessActiveChains(): Promise<MirrorChainRow[]> {
       return db
@@ -1005,6 +1007,19 @@ export function createMirrorchainRepository(db: Database) {
                   ),
                 ),
             ),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(mirrorChainMembers)
+                .innerJoin(portfolios, eq(portfolios.id, mirrorChainMembers.portfolioId))
+                .where(
+                  and(
+                    eq(mirrorChainMembers.chainId, mirrorChains.id),
+                    eq(mirrorChainMembers.status, 'active'),
+                    isNotNull(portfolios.vaultId),
+                  ),
+                ),
+            ),
           ),
         );
     },
@@ -1014,22 +1029,31 @@ export function createMirrorchainRepository(db: Database) {
      * §2): the submit path's origin-commit-then-append crash window. Such a row
      * exists only on the origin copy and silently diverges (later full-state
      * updates no-op on copies that lack it) until surfaced. Bounded by `limit`.
+     * Vaulted portfolio rows are never surfaced to the server-side sweep.
      */
     async listDanglingOriginRows(limit: number): Promise<MirrorRowRow[]> {
       return db
         .select()
         .from(mirrorRows)
         .where(
-          notExists(
-            db
-              .select({ one: sql`1` })
-              .from(mirrorChainOps)
-              .where(
-                and(
-                  eq(mirrorChainOps.chainId, mirrorRows.chainId),
-                  eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
+          and(
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(portfolios)
+                .where(and(eq(portfolios.id, mirrorRows.portfolioId), isNull(portfolios.vaultId))),
+            ),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(mirrorChainOps)
+                .where(
+                  and(
+                    eq(mirrorChainOps.chainId, mirrorRows.chainId),
+                    eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
+                  ),
                 ),
-              ),
+            ),
           ),
         )
         .limit(limit);
@@ -1040,7 +1064,7 @@ export function createMirrorchainRepository(db: Database) {
      * `mirror_rows` link pointing at them (design §2): the tax-immutable
      * correction path's re-create-then-re-point crash residual — a safe-to-delete
      * local-only duplicate. Forks are excluded (only `status='active'` copies).
-     * Bounded by `limit`.
+     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`.
      */
     async listOrphanedSyncedTransactions(
       limit: number,
@@ -1055,18 +1079,22 @@ export function createMirrorchainRepository(db: Database) {
             eq(mirrorChainMembers.status, 'active'),
           ),
         )
+        .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
         .where(
-          notExists(
-            db
-              .select({ one: sql`1` })
-              .from(mirrorRows)
-              .where(
-                and(
-                  eq(mirrorRows.kind, 'transaction'),
-                  eq(mirrorRows.portfolioId, transactions.portfolioId),
-                  eq(mirrorRows.localId, transactions.id),
+          and(
+            isNull(portfolios.vaultId),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(mirrorRows)
+                .where(
+                  and(
+                    eq(mirrorRows.kind, 'transaction'),
+                    eq(mirrorRows.portfolioId, transactions.portfolioId),
+                    eq(mirrorRows.localId, transactions.id),
+                  ),
                 ),
-              ),
+            ),
           ),
         )
         .limit(limit);

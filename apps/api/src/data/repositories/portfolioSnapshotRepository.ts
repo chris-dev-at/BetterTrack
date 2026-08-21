@@ -1,10 +1,11 @@
-import { and, asc, eq, exists, inArray, min, notExists, sql } from 'drizzle-orm';
+import { and, asc, eq, exists, inArray, isNull, min, notExists, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
   portfolioCashMovements,
   portfolioDailySnapshots,
   portfolioSnapshotState,
+  portfolios,
   transactions,
 } from '../schema';
 import type { PortfolioDailySnapshotRow, PortfolioSnapshotStateRow } from '../schema';
@@ -276,14 +277,24 @@ export function createPortfolioSnapshotRepository(db: Database) {
     },
 
     /**
-     * Every portfolio with any history (a transaction or a cash movement) —
-     * the backfill/nightly-roll job's work list. Not user-scoped: the worker
-     * operates over the whole system.
+     * Every non-vaulted portfolio with any history (a transaction or a cash
+     * movement) — the backfill/nightly-roll job's work list. Not user-scoped:
+     * the worker operates over the whole system. The explicit vault predicate
+     * makes the job skip a locked stub even if a stale/impossible cleartext row
+     * survives; this is policy, not an empty-input assumption (E2 §11).
      */
     async listSnapshotTargets(): Promise<SnapshotTarget[]> {
       const [fromTxns, fromCash] = await Promise.all([
-        db.selectDistinct({ id: transactions.portfolioId }).from(transactions),
-        db.selectDistinct({ id: portfolioCashMovements.portfolioId }).from(portfolioCashMovements),
+        db
+          .selectDistinct({ id: transactions.portfolioId })
+          .from(transactions)
+          .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
+          .where(isNull(portfolios.vaultId)),
+        db
+          .selectDistinct({ id: portfolioCashMovements.portfolioId })
+          .from(portfolioCashMovements)
+          .innerJoin(portfolios, eq(portfolios.id, portfolioCashMovements.portfolioId))
+          .where(isNull(portfolios.vaultId)),
       ]);
       const ids = [...new Set([...fromTxns, ...fromCash].map((r) => r.id))].sort();
       return ids.map((portfolioId) => ({ portfolioId }));
@@ -302,7 +313,8 @@ export function createPortfolioSnapshotRepository(db: Database) {
           firstExecutedAt: min(transactions.executedAt),
         })
         .from(transactions)
-        .where(eq(transactions.assetId, assetId))
+        .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
+        .where(and(eq(transactions.assetId, assetId), isNull(portfolios.vaultId)))
         .groupBy(transactions.portfolioId);
       return rows
         .filter((r) => r.firstExecutedAt !== null)
@@ -332,8 +344,10 @@ export function createPortfolioSnapshotRepository(db: Database) {
       const affected = await db
         .selectDistinct({ portfolioId: transactions.portfolioId })
         .from(transactions)
+        .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
         .where(
           and(
+            isNull(portfolios.vaultId),
             eq(transactions.side, 'sell'),
             exists(
               db

@@ -163,7 +163,10 @@ export async function loadCashRulesForPortfolioOwner(
   executor: RuleTagStampExecutor,
   portfolioId: string,
 ): Promise<EvaluationRule[]> {
-  return loadRules(executor, sql`(SELECT "user_id" FROM "portfolios" WHERE "id" = ${portfolioId})`);
+  return loadRules(
+    executor,
+    sql`(SELECT "user_id" FROM "portfolios" WHERE "id" = ${portfolioId} AND "vault_id" IS NULL)`,
+  );
 }
 
 /**
@@ -195,7 +198,7 @@ async function linkRuleTags(
       FROM (VALUES ${sql.join(values, sql`, `)}) AS v("movement_id", "tag_id")
       JOIN "portfolio_cash_movements" pm
         ON pm."id" = v."movement_id" AND pm."portfolio_id" = ${portfolioId}
-      JOIN "portfolios" p ON p."id" = pm."portfolio_id"
+      JOIN "portfolios" p ON p."id" = pm."portfolio_id" AND p."vault_id" IS NULL
       JOIN "cash_tags" t ON t."id" = v."tag_id" AND t."user_id" = p."user_id"
       ON CONFLICT ("movement_id", "tag_id") DO NOTHING
       RETURNING "movement_id"
@@ -277,7 +280,9 @@ export async function applyCashRulesForOwner(
   if (rules.length === 0) return 0;
 
   const portfolioRows = resultRows(
-    await executor.execute(sql`SELECT "id" FROM "portfolios" WHERE "user_id" = ${userId}::uuid`),
+    await executor.execute(
+      sql`SELECT "id" FROM "portfolios" WHERE "user_id" = ${userId}::uuid AND "vault_id" IS NULL`,
+    ),
   );
 
   let movementsTagged = 0;

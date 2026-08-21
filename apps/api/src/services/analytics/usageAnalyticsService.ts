@@ -39,6 +39,15 @@ export interface UsageSignal {
   feature: string;
   /** Asset the request concerned, if any (empty string means none). */
   assetId?: string | null;
+  /**
+   * Portfolio attribution retained only in memory until the write boundary.
+   * It is never persisted; the repository re-checks that the target is still
+   * a plain portfolio while holding the account transition lock.
+   */
+  targetPortfolioId?: string | null;
+  /** Asset quotes have no portfolio attribution and must be dropped at flush
+   * if the account has acquired any vaulted portfolio in the meantime. */
+  suppressIfAnyVault?: boolean;
   /** When it happened; defaults to now at capture time. */
   occurredAt?: Date;
 }
@@ -79,6 +88,8 @@ interface BufferedRow {
   userId: string;
   feature: string;
   assetId: string;
+  targetPortfolioId: string | null;
+  suppressIfAnyVault: boolean;
   day: string;
   hits: number;
   lastSeenAt: Date;
@@ -163,7 +174,12 @@ export function createUsageAnalyticsService(
       const occurredAt = signal.occurredAt ?? new Date(now());
       const day = dayOf(occurredAt.getTime());
       const assetId = signal.assetId ?? '';
-      const key = `${signal.userId}|${signal.feature}|${assetId}|${day}`;
+      const targetPortfolioId = signal.targetPortfolioId ?? null;
+      const suppressIfAnyVault = signal.suppressIfAnyVault === true;
+      // The privacy attribution is part of the in-memory fold key even though
+      // it is not persisted. Otherwise a plain and a later-vaulted request can
+      // collapse before the repository has a chance to filter them separately.
+      const key = `${signal.userId}|${signal.feature}|${assetId}|${day}|${targetPortfolioId ?? ''}|${suppressIfAnyVault ? 'vault-sensitive' : ''}`;
       const existing = buffer.get(key);
       if (existing) {
         existing.hits += 1;
@@ -173,6 +189,8 @@ export function createUsageAnalyticsService(
           userId: signal.userId,
           feature: signal.feature,
           assetId,
+          targetPortfolioId,
+          suppressIfAnyVault,
           day,
           hits: 1,
           lastSeenAt: occurredAt,

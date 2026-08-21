@@ -17,6 +17,11 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  *    reaches it, converged rows re-upsert to identical values, and a re-run
  *    after a crash simply continues from durable state.
  *
+ * Idempotency keys: both jobs converge on `(portfolio_id, date)` snapshot rows;
+ * the one-portfolio job is additionally addressed by `portfolioId`, and the
+ * backfill's state-row compare-and-set prevents a stale attempt from clearing a
+ * newer invalidation.
+ *
  * Both close over the snapshot service (the ONE engine); failures per
  * portfolio are collected, never aborting the sweep, and a run with any
  * failure throws at the end so BullMQ retries and — on exhausted attempts —
@@ -64,7 +69,7 @@ export function createSnapshotsRecomputeJob(
     async handler(job, ctx) {
       const { portfolioId } = job.data;
       if (await deps.isParanoidPortfolio?.(portfolioId)) {
-        ctx.logger.info({ portfolioId }, 'snapshots.recompute skipped for paranoid account');
+        ctx.logger.info({ portfolioId }, 'snapshots.recompute skipped by portfolio policy');
         return;
       }
       await deps.snapshots.recompute(portfolioId);

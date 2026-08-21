@@ -10,9 +10,10 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * `mirror.replicate` — the MIRRORCHAIN replication job (§13.5 V5-P7, design §2,
  * issue #644). One run brings every active copy of a chain up to `last_seq`,
  * applying ops strictly in seq order through each member's own services (force
- * mode), idempotent per op with the per-copy watermark bump last — so BullMQ's
- * at-least-once delivery yields exactly-once effect and a retry resumes from
- * the watermark, never skipping and never reordering.
+ * mode). Idempotency key: `(mirror_chain_member_id, mirror_chain_op_seq)`, with
+ * the per-copy watermark bump last — so BullMQ's at-least-once delivery yields
+ * exactly-once effect and a retry resumes from the watermark, never skipping
+ * and never reordering.
  *
  * Producers enqueue plainly per write — deliberately NO job-id dedupe. BullMQ
  * silently ignores an `add` whose id still exists in ANY state, including the
@@ -127,6 +128,9 @@ export function createMirrorInviteCleanupJob(
  * Every finding is logged onto the admin Problems page (V5-P2) — the (0)
  * repairs as a healed anomaly, (a)/(b) as anomalies for an admin to act on. The
  * `webhookJobs`/`apiKeyJobs`/`mirrorInviteCleanup` daily-sweep pattern.
+ * Idempotency keys: repair convergence is `(chain_id, status,
+ * active_owner_count)`; surfaced findings fold on `(problem_kind,
+ * normalized_title, message)` in the Problems repository.
  */
 
 export const MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID = 'mirror.consistencySweep';

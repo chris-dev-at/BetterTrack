@@ -16,6 +16,10 @@ import type {
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { notFound } from '../../errors';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
+import {
+  VaultedPortfolioError,
+  type VaultedPortfolioGuard,
+} from '../account/vaultedPortfolioEnforcement';
 import type { AudienceService } from './audienceService';
 
 /**
@@ -43,6 +47,8 @@ export interface CommentServiceDeps {
   userRepo: Pick<UserRepository, 'findById'>;
   /** Locks viewer/owner plus optional thread actors across reads and writes. */
   paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'runAllowedWithOptional'>;
+  /** Holds the portfolio boundary across every thread read/write when the subject is a portfolio. */
+  vaultedPortfolio?: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>;
 }
 
 export interface CommentService {
@@ -87,6 +93,30 @@ function toReactionSummaries(aggs: ReactionAggregate[]): ReactionSummary[] {
 
 export function createCommentService(deps: CommentServiceDeps): CommentService {
   const { comments, reactions, audience, userRepo } = deps;
+
+  /**
+   * Portfolio comments are part of the sharing surface. Resolve the authoritative
+   * owner without reading content, then hold the portfolio guard across the whole
+   * operation. The owner gets the stable refusal they are entitled to; every
+   * other caller keeps the route's existing opaque not-found result.
+   */
+  async function withAllowedPortfolioSubject<T>(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    missing: () => Error,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    if (kind !== 'portfolio' || !deps.vaultedPortfolio) return action();
+    const ownerId = await audience.subjectOwner(kind, subjectId);
+    if (!ownerId) return action();
+    try {
+      return await deps.vaultedPortfolio.runOwnedPortfolioAllowed(ownerId, subjectId, action);
+    } catch (error) {
+      if (error instanceof VaultedPortfolioError && viewerId !== ownerId) throw missing();
+      throw error;
+    }
+  }
 
   /**
    * The heart of the fail-closed rule: resolve whether `viewerId` may currently
@@ -212,160 +242,186 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
 
   return {
     async getThread(viewerId, kind, subjectId) {
-      if (!deps.paranoid) {
-        return withLockedAccess(viewerId, kind, subjectId, (access) =>
-          buildThread(viewerId, kind, subjectId, access),
-        );
-      }
+      return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
+        if (!deps.paranoid) {
+          return withLockedAccess(viewerId, kind, subjectId, (access) =>
+            buildThread(viewerId, kind, subjectId, access),
+          );
+        }
 
-      const candidate = await resolveAccess(viewerId, kind, subjectId);
-      if (!candidate) throw THREAD_NOT_FOUND();
-      // Discover ids without selecting bodies, usernames, profile icons, emojis,
-      // or aggregates. Every candidate is optional: a paranoid third-party actor
-      // disappears from the thread instead of making unrelated rows fail or
-      // revealing their mode. Viewer + item owner remain required.
-      const [commentParticipants, reactionActorIds] = await Promise.all([
-        comments.listParticipantsForItem(kind, subjectId),
-        reactions.listActorIdsForThread(kind, subjectId),
-      ]);
-      const optionalActorIds = [
-        ...new Set([...commentParticipants.map((row) => row.authorId), ...reactionActorIds]),
-      ];
-      return deps.paranoid.runAllowedWithOptional(
-        [viewerId, candidate.ownerId],
-        optionalActorIds,
-        'sharing',
-        async (allowedOptionalActorIds) => {
-          const access = await resolveAccess(viewerId, kind, subjectId);
-          if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
-          // Required principals may themselves have authored/reacted; include
-          // them alongside the admitted optional set. SQL filters make a newly
-          // appearing, undiscovered actor invisible until the next locked read.
-          const allowedActorIds = [
-            ...new Set([viewerId, candidate.ownerId, ...allowedOptionalActorIds]),
-          ];
-          return buildThread(viewerId, kind, subjectId, access, allowedActorIds);
-        },
-      );
+        const candidate = await resolveAccess(viewerId, kind, subjectId);
+        if (!candidate) throw THREAD_NOT_FOUND();
+        // Discover ids without selecting bodies, usernames, profile icons, emojis,
+        // or aggregates. Every candidate is optional: a paranoid third-party actor
+        // disappears from the thread instead of making unrelated rows fail or
+        // revealing their mode. Viewer + item owner remain required.
+        const [commentParticipants, reactionActorIds] = await Promise.all([
+          comments.listParticipantsForItem(kind, subjectId),
+          reactions.listActorIdsForThread(kind, subjectId),
+        ]);
+        const optionalActorIds = [
+          ...new Set([...commentParticipants.map((row) => row.authorId), ...reactionActorIds]),
+        ];
+        return deps.paranoid.runAllowedWithOptional(
+          [viewerId, candidate.ownerId],
+          optionalActorIds,
+          'sharing',
+          async (allowedOptionalActorIds) => {
+            const access = await resolveAccess(viewerId, kind, subjectId);
+            if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+            // Required principals may themselves have authored/reacted; include
+            // them alongside the admitted optional set. SQL filters make a newly
+            // appearing, undiscovered actor invisible until the next locked read.
+            const allowedActorIds = [
+              ...new Set([viewerId, candidate.ownerId, ...allowedOptionalActorIds]),
+            ];
+            return buildThread(viewerId, kind, subjectId, access, allowedActorIds);
+          },
+        );
+      });
     },
 
     async addComment(viewerId, kind, subjectId, body) {
-      return withLockedAccess(viewerId, kind, subjectId, async () => {
-        const created = await comments.create(kind, subjectId, viewerId, body);
-        const author = await userRepo.findById(viewerId);
-        return {
-          id: created.id,
-          author: {
-            id: viewerId,
-            username: author?.username ?? '',
-            profileIcon: coerceProfileIcon(author?.profileIcon ?? null),
-          },
-          body,
-          createdAt: created.createdAt.toISOString(),
-          canDelete: true,
-          reactions: [],
-        };
-      });
+      return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, () =>
+        withLockedAccess(viewerId, kind, subjectId, async () => {
+          const created = await comments.create(kind, subjectId, viewerId, body);
+          const author = await userRepo.findById(viewerId);
+          return {
+            id: created.id,
+            author: {
+              id: viewerId,
+              username: author?.username ?? '',
+              profileIcon: coerceProfileIcon(author?.profileIcon ?? null),
+            },
+            body,
+            createdAt: created.createdAt.toISOString(),
+            canDelete: true,
+            reactions: [],
+          };
+        }),
+      );
     },
 
     async deleteComment(viewerId, commentId) {
       const candidate = await comments.getById(commentId);
       // A tombstoned or unknown comment is a uniform 404 (idempotent re-delete).
       if (!candidate || candidate.deletedAt) throw COMMENT_NOT_FOUND();
-      const ownerId = await audience.subjectOwner(candidate.kind, candidate.subjectId);
-      if (!ownerId) throw COMMENT_NOT_FOUND();
-      const remove = async () => {
-        const comment = await comments.getById(commentId);
-        if (
-          !comment ||
-          comment.deletedAt ||
-          comment.kind !== candidate.kind ||
-          comment.subjectId !== candidate.subjectId
-        ) {
-          throw COMMENT_NOT_FOUND();
-        }
-        const currentOwnerId = await audience.subjectOwner(comment.kind, comment.subjectId);
-        if (currentOwnerId !== ownerId) throw COMMENT_NOT_FOUND();
-        // Author deletes their own regardless of current visibility (cleanup);
-        // the item owner moderates any comment on their item. Anyone else → 404.
-        const isAuthor = comment.authorId === viewerId;
-        const isOwner = ownerId === viewerId;
-        if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
-        const removed = await comments.softDelete(commentId, viewerId);
-        if (!removed) throw COMMENT_NOT_FOUND();
-      };
-      return deps.paranoid
-        ? deps.paranoid.runAllowedMany([viewerId, ownerId], 'sharing', remove)
-        : remove();
+      return withAllowedPortfolioSubject(
+        viewerId,
+        candidate.kind,
+        candidate.subjectId,
+        COMMENT_NOT_FOUND,
+        async () => {
+          const ownerId = await audience.subjectOwner(candidate.kind, candidate.subjectId);
+          if (!ownerId) throw COMMENT_NOT_FOUND();
+          const remove = async () => {
+            const comment = await comments.getById(commentId);
+            if (
+              !comment ||
+              comment.deletedAt ||
+              comment.kind !== candidate.kind ||
+              comment.subjectId !== candidate.subjectId
+            ) {
+              throw COMMENT_NOT_FOUND();
+            }
+            const currentOwnerId = await audience.subjectOwner(comment.kind, comment.subjectId);
+            if (currentOwnerId !== ownerId) throw COMMENT_NOT_FOUND();
+            // Author deletes their own regardless of current visibility (cleanup);
+            // the item owner moderates any comment on their item. Anyone else → 404.
+            const isAuthor = comment.authorId === viewerId;
+            const isOwner = ownerId === viewerId;
+            if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
+            const removed = await comments.softDelete(commentId, viewerId);
+            if (!removed) throw COMMENT_NOT_FOUND();
+          };
+          return deps.paranoid
+            ? deps.paranoid.runAllowedMany([viewerId, ownerId], 'sharing', remove)
+            : remove();
+        },
+      );
     },
 
     async toggleItemReaction(viewerId, kind, subjectId, emoji) {
-      if (!deps.paranoid) {
-        return withLockedAccess(viewerId, kind, subjectId, async () => {
-          await reactions.toggleItem(viewerId, kind, subjectId, emoji);
-          const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
-          return { reactions: toReactionSummaries(summary) };
-        });
-      }
-      const reactionActorIds = await reactions.listActorIdsForItem(kind, subjectId);
-      return withLockedAccessAndOptionalActors(
-        viewerId,
-        kind,
-        subjectId,
-        reactionActorIds,
-        async (_access, allowedActorIds) => {
-          await reactions.toggleItem(viewerId, kind, subjectId, emoji);
-          const summary = await reactions.summaryForItem(
-            viewerId,
-            kind,
-            subjectId,
-            allowedActorIds,
-          );
-          return { reactions: toReactionSummaries(summary) };
-        },
-      );
+      return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
+        if (!deps.paranoid) {
+          return withLockedAccess(viewerId, kind, subjectId, async () => {
+            await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+            const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
+            return { reactions: toReactionSummaries(summary) };
+          });
+        }
+        const reactionActorIds = await reactions.listActorIdsForItem(kind, subjectId);
+        return withLockedAccessAndOptionalActors(
+          viewerId,
+          kind,
+          subjectId,
+          reactionActorIds,
+          async (_access, allowedActorIds) => {
+            await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+            const summary = await reactions.summaryForItem(
+              viewerId,
+              kind,
+              subjectId,
+              allowedActorIds,
+            );
+            return { reactions: toReactionSummaries(summary) };
+          },
+        );
+      });
     },
 
     async toggleCommentReaction(viewerId, commentId, emoji) {
       const candidate = await comments.getById(commentId);
       if (!candidate || candidate.deletedAt) throw COMMENT_NOT_FOUND();
-      if (!deps.paranoid) {
-        // Reacting needs the SAME access as reading the thread the comment lives in.
-        return withLockedAccess(
-          viewerId,
-          candidate.kind,
-          candidate.subjectId,
-          async () => {
-            await reactions.toggleComment(viewerId, commentId, emoji);
-            const summary = await reactions.summaryForComment(viewerId, commentId);
-            return { reactions: toReactionSummaries(summary) };
-          },
-          COMMENT_NOT_FOUND,
-        );
-      }
-      const reactionActorIds = await reactions.listActorIdsForComment(commentId);
-      return withLockedAccessAndOptionalActors(
+      return withAllowedPortfolioSubject(
         viewerId,
         candidate.kind,
         candidate.subjectId,
-        reactionActorIds,
-        async (_access, allowedActorIds) => {
-          const comment = await comments.getById(commentId);
-          if (
-            !comment ||
-            comment.deletedAt ||
-            comment.kind !== candidate.kind ||
-            comment.subjectId !== candidate.subjectId ||
-            comment.authorId !== candidate.authorId
-          ) {
-            throw COMMENT_NOT_FOUND();
-          }
-          await reactions.toggleComment(viewerId, commentId, emoji);
-          const summary = await reactions.summaryForComment(viewerId, commentId, allowedActorIds);
-          return { reactions: toReactionSummaries(summary) };
-        },
-        [candidate.authorId],
         COMMENT_NOT_FOUND,
+        async () => {
+          if (!deps.paranoid) {
+            // Reacting needs the SAME access as reading the thread the comment lives in.
+            return withLockedAccess(
+              viewerId,
+              candidate.kind,
+              candidate.subjectId,
+              async () => {
+                await reactions.toggleComment(viewerId, commentId, emoji);
+                const summary = await reactions.summaryForComment(viewerId, commentId);
+                return { reactions: toReactionSummaries(summary) };
+              },
+              COMMENT_NOT_FOUND,
+            );
+          }
+          const reactionActorIds = await reactions.listActorIdsForComment(commentId);
+          return withLockedAccessAndOptionalActors(
+            viewerId,
+            candidate.kind,
+            candidate.subjectId,
+            reactionActorIds,
+            async (_access, allowedActorIds) => {
+              const comment = await comments.getById(commentId);
+              if (
+                !comment ||
+                comment.deletedAt ||
+                comment.kind !== candidate.kind ||
+                comment.subjectId !== candidate.subjectId ||
+                comment.authorId !== candidate.authorId
+              ) {
+                throw COMMENT_NOT_FOUND();
+              }
+              await reactions.toggleComment(viewerId, commentId, emoji);
+              const summary = await reactions.summaryForComment(
+                viewerId,
+                commentId,
+                allowedActorIds,
+              );
+              return { reactions: toReactionSummaries(summary) };
+            },
+            [candidate.authorId],
+            COMMENT_NOT_FOUND,
+          );
+        },
       );
     },
   };
