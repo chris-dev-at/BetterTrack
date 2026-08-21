@@ -3745,7 +3745,15 @@
         "loading": "Übertragbare Tresore werden geladen…",
         "empty": "Für dieses Konto ist noch kein übertragbarer Tresor registriert.",
         "unavailable": "Tresordetails konnten nicht geladen werden. Du kannst weiterhin einen Transfer-Code empfangen.",
-        "received": "Der übertragene Tresor wurde geprüft und auf diesem Gerät gespeichert."
+        "received": "Der übertragene Tresor wurde geprüft und auf diesem Gerät gespeichert.",
+        "opening": "Die lokale Tresorsitzung wird geöffnet…",
+        "notOnEndpoint": "Die Phrase dieses Tresors ist auf diesem Gerät nicht gespeichert. Empfange sie zuerst von einem anderen Gerät.",
+        "openError": "Dieser Tresor konnte gerade nicht für die Übertragung geöffnet werden.",
+        "sessionEnded": "Die Tresorsitzung wurde gesperrt. Öffne sie vor der Übertragung erneut.",
+        "reopen": "Für Übertragung erneut öffnen",
+        "unlockHint": "Entsperrt die Endpunkt-Phrase vor der zusätzlichen Transfer-Bestätigung.",
+        "unlock": "Für Übertragung entsperren",
+        "unlockError": "Das Gerätepasswort konnte diesen Endpunkt nicht entsperren."
       },
       "sender": {
         "showQr": "Transfer-QR anzeigen",
@@ -3757,6 +3765,7 @@
         "verifyAndShowWords": "Prüfen und Wörter anzeigen",
         "banner": "Wer diesen Code aufnimmt, besitzt diesen Tresor — keine Screenshots, keine Bildschirmfreigabe, und achte darauf, wer deinen Bildschirm sehen kann.",
         "qrAria": "Transfer-QR-Code für die Tresor-Seed-Phrase",
+        "vaultId": "Tresor-ID",
         "expires": "Dieser Code wird nach 60 Sekunden automatisch ausgeblendet.",
         "expired": "Dieser Transfer-Code ist abgelaufen und jetzt ausgeblendet. Zeige ihn manuell erneut an.",
         "showAgain": "Erneut anzeigen",

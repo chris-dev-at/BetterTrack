@@ -8,12 +8,19 @@ import {
 import { apiRequest } from '../../../lib/apiClient';
 import { apiBaseUrl } from '../../../lib/runtimeConfig';
 import { EndpointVaultKeystore } from '../keystore/core';
-import type { FetchVaultHeaderEnvelope } from '../keystore/types';
+import type { FetchVaultHeaderEnvelope, OpenedVault } from '../keystore/types';
 
 export interface VaultTransferRuntime {
   keystore: EndpointVaultKeystore;
+  /** True when this runtime itself listens for the shared logout/PIN signal. */
+  readonly lockSignalBound: boolean;
   listVaults(): Promise<readonly VaultConfig[]>;
   fetchHeaderEnvelope: FetchVaultHeaderEnvelope;
+  /** Installs a receiver's verified-open receipt in this endpoint-wide app session. */
+  registerOpenedVault(opened: OpenedVault): void;
+  isVaultOpen(vaultId: string): boolean;
+  /** The shared synchronous revocation seam used by every app lock path. */
+  endSession(): void;
 }
 
 export interface CreateVaultTransferRuntimeOptions {
@@ -35,18 +42,38 @@ export function createVaultTransferRuntime(
   options: CreateVaultTransferRuntimeOptions = {},
 ): VaultTransferRuntime {
   const keystore = options.keystore ?? new EndpointVaultKeystore();
+  const openedVaults = new Map<string, OpenedVault>();
   const requestJson = options.requestJson ?? ((path: string) => apiRequest<unknown>(path));
   const requestRaw =
     options.fetch ??
     ((input: URL | RequestInfo, init?: RequestInit) => globalThis.fetch(input, init));
   const base = options.apiBase ?? apiBaseUrl();
+  const lockSignalBound =
+    options.bindLockSignal !== false && typeof globalThis.addEventListener === 'function';
 
-  if (options.bindLockSignal !== false && typeof globalThis.addEventListener === 'function') {
+  if (lockSignalBound) {
     keystore.bindToVaultLockSignal(globalThis);
   }
 
+  // Keystore revocation is authoritative even when a lower-level caller ends
+  // it directly (logout/PIN signal, reset, custody replacement).
+  keystore.subscribeToSessionEnd(() => openedVaults.clear());
+
   return {
     keystore,
+    lockSignalBound,
+
+    registerOpenedVault(opened) {
+      openedVaults.set(opened.vaultId, opened);
+    },
+
+    isVaultOpen(vaultId) {
+      return openedVaults.has(vaultId);
+    },
+
+    endSession() {
+      keystore.endSession();
+    },
 
     async listVaults() {
       const response = vaultListResponseSchema.parse(await requestJson('/vaults'));
@@ -72,5 +99,9 @@ export function createVaultTransferRuntime(
   };
 }
 
-/** One endpoint-wide session, synchronously revoked by the app's shared lock signal. */
+/**
+ * Endpoint-wide session for the normal (per-vault) app branch. The legacy
+ * vault provider references this same instance by default and routes its direct
+ * lock paths through the same runtime seam.
+ */
 export const vaultTransferRuntime = createVaultTransferRuntime();

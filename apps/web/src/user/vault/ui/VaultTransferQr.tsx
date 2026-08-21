@@ -381,6 +381,10 @@ export function VaultTransferQr({
                       <summary className="cursor-pointer font-medium">
                         {t('vault.transfer.manualWords')}
                       </summary>
+                      <dl className="mt-4 text-sm">
+                        <dt className="bt-muted">{t('vault.transfer.sender.vaultId')}</dt>
+                        <dd className="bt-num mt-1 break-all">{currentSecret.vaultId}</dd>
+                      </dl>
                       <ol className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
                         {currentSecret.mnemonic.split(' ').map((word, index) => (
                           <li className="bt-num text-sm" key={`${index}-${word}`}>

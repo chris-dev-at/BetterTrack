@@ -15,7 +15,6 @@ import { CHECKBOX_STYLE } from '../../components/ui';
 import { Button, Field, Input } from '../../../ui/origin';
 import type { Notice } from './PrivacyPanel';
 import { PanelFold, PanelForm, PanelGroup, PanelNote, Row } from './panelKit';
-import { VaultTransferActions } from './VaultTransferActions';
 
 const OFF_KEYS = ['sharing', 'publicProfile', 'serverAnalytics', 'imports', 'automation'] as const;
 
@@ -209,8 +208,6 @@ function VaultSecurityActions({
           {t('vault.settings.downloadKit')}
         </Button>
       </Row>
-
-      <VaultTransferActions onNotice={onNotice} />
 
       <PanelFold summary={t('vault.settings.changePassphrase')}>
         <PanelForm onSubmit={changePassphrase}>
