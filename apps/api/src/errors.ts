@@ -1,3 +1,5 @@
+import { AUTH_ERROR_CODES } from '@bettertrack/contracts';
+
 /**
  * Transport-agnostic application error. The HTTP error handler maps these to
  * the `{ error: { code, message, details? } }` envelope (PROJECTPLAN.md §8).
@@ -39,8 +41,10 @@ export class EnvelopeApiError extends ApiError {
 export const badRequest = (message: string, code = 'BAD_REQUEST', details?: unknown) =>
   new ApiError(400, code, message, details);
 
-export const unauthorized = (message = 'Authentication required.', code = 'UNAUTHENTICATED') =>
-  new ApiError(401, code, message);
+export const unauthorized = (
+  message = 'Authentication required.',
+  code: string = AUTH_ERROR_CODES.unauthenticated,
+) => new ApiError(401, code, message);
 
 export const forbidden = (message: string, code = 'FORBIDDEN') => new ApiError(403, code, message);
 
