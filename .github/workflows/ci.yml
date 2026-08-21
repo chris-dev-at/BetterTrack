@@ -35,7 +35,8 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/gitleaks-cache
-          key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}
+          # A corrected digest pin must never restore an archive cached under an older pin.
+          key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}-${{ env.GITLEAKS_ARCHIVE_SHA256 }}
 
       - name: Download Gitleaks release archive
         if: steps.gitleaks-cache.outputs.cache-hit != 'true'
