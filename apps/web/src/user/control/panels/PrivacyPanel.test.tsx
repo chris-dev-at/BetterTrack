@@ -77,6 +77,9 @@ vi.mock('../../vault/ui/ParanoidEnableWizard', async (importOriginal) => {
       enableStub ? enableStub(props) : <actual.ParanoidEnableWizard {...props} />,
   };
 });
+vi.mock('../../vault/ui/VaultManager', () => ({
+  VaultManager: () => <section aria-label="Vaults">Vault manager</section>,
+}));
 const RECEIPT: Parameters<ParanoidEnableWizardProps['onEnabled']>[0] = {
   mode: 'paranoid',
   mediaSet: ['server'],

@@ -3612,11 +3612,163 @@
     "lock": {
       "action": "Tresor sperren"
     },
+    "manager": {
+      "title": "Tresore",
+      "subtitle": "Verwalte getrennte verschlüsselte Tresore und ordne jedem die passenden Portfolios zu.",
+      "create": "Tresor erstellen",
+      "empty": "Noch keine Tresore. Erstelle einen, wenn ein Portfolio clientseitig verschlüsselt gespeichert werden soll.",
+      "loadError": "Die Tresore konnten nicht geladen werden.",
+      "connectionsError": "Drive-Verbindungen konnten nicht geladen werden. Der BetterTrack-Speicher bleibt verfügbar.",
+      "portfoliosError": "Die Tresorzuordnung konnte nicht geladen werden. Bis zum erfolgreichen erneuten Versuch ist keine Portfolioaktion verfügbar.",
+      "listLabel": "Deine Tresore",
+      "nameLabel": "Tresorname",
+      "boundDrive": "Drive: {{connection}}",
+      "boundDriveUnavailable": "Verbindungsdetails nicht verfügbar",
+      "renameError": "Der Tresor konnte nicht umbenannt werden.",
+      "portfolios": "Portfolios in diesem Tresor",
+      "noPortfolios": "In diesem Tresor liegt noch kein Portfolio.",
+      "deleteWarning": "Verschiebe zuerst alle Portfolios heraus. Beim Löschen eines leeren Tresors werden seine verschlüsselten Kopien dauerhaft entfernt.",
+      "deleteAction": "Leeren Tresor löschen",
+      "deleteReferenced": "Dieser Tresor enthält noch ein Portfolio. Verschiebe alle Portfolios heraus, bevor du ihn löschst.",
+      "deleteError": "Der Tresor konnte nicht gelöscht werden. Es wurde nichts geändert.",
+      "explainer": {
+        "names": "Tresornamen und Speichereinstellungen bleiben lesbar, damit BetterTrack sie auch gesperrt anzeigen und zuordnen kann.",
+        "storage": "Portfolioinhalte werden in deinem Browser verschlüsselt, bevor sie den gewählten Speicher erreichen.",
+        "privacy": "Jedes Portfolio gehört höchstens einem Tresor; das Entsperren eines Tresors entsperrt keine anderen."
+      },
+      "media": {
+        "server": "Bei BetterTrack verschlüsselt",
+        "drive": "Nur Google Drive",
+        "both": "BetterTrack + Google Drive"
+      },
+      "state": {
+        "locked": "Auf diesem Gerät gesperrt",
+        "ready": "Auf diesem Gerät bereit",
+        "notOnEndpoint": "Wörter auf diesem Gerät erforderlich",
+        "invalidEndpoint": "Gerätespeicher muss zurückgesetzt werden"
+      },
+      "action": {
+        "unlock": "Entsperren",
+        "open": "Öffnen",
+        "providePhrase": "Wörter eingeben",
+        "scanQr": "QR-Code scannen",
+        "resetEndpoint": "Dieses Gerät zurücksetzen",
+        "rename": "Umbenennen",
+        "changeMedia": "Speicher ändern",
+        "rotate": "Wiederherstellungswörter wechseln",
+        "startFresh": "Neu beginnen"
+      },
+      "access": {
+        "title": "Zugriff auf „{{name}}“",
+        "unlock": "Gib dieses Gerätepasswort ein. Wenn du es vergisst, geht nichts verloren, solange du deine 12 Wörter hast.",
+        "open": "Öffne die auf diesem Gerät gespeicherten Wörter ohne weitere Abfrage.",
+        "opening": "Dieser Tresor wird auf dem Gerät geöffnet…",
+        "provide-phrase": "Gib die 12 Wörter ein oder scanne sie von einem anderen Gerät. Ein verlorenes Smartphone kostet keine Daten, solange eine Kopie der Wörter existiert.",
+        "scan-qr": "Scanne den Übertragungs-QR-Code von einem bereits entsperrten Gerät.",
+        "restore": "Wähle aus der authentifizierten aktuellen Kopie und der begrenzten Historie. Beschädigte Kopien bleiben zur Diagnose sichtbar.",
+        "restoreLoadError": "Wiederherstellungskopien konnten nicht geladen werden.",
+        "unavailable": "Diese Aktion ist auf diesem Gerät noch nicht verfügbar.",
+        "reset-endpoint": "Setze nur die auf diesem Gerät gespeicherte Verwahrung zurück. Geheimtext auf Server und Drive bleibt unverändert.",
+        "rotate": "Beim Wechsel werden die Wiederherstellungswörter erst ersetzt, nachdem jede gewählte Kopie erfolgreich geprüft wurde.",
+        "start-fresh": "Ein Neustart verwirft den verschlüsselten Inhalt dieses Tresors dauerhaft. Andere Tresore und Kontodaten bleiben unverändert.",
+        "devicePassword": "Gerätepasswort",
+        "newDevicePassword": "Neues Gerätepasswort",
+        "words": "12 Wiederherstellungswörter",
+        "resetConfirm": "Gespeicherte Tresorwörter von diesem Gerät entfernen. Meine verschlüsselten Remote-Kopien bleiben unverändert.",
+        "startFreshConfirm": "Mir ist bewusst, dass dies eine Löschung und keine Wiederherstellung ist und die verschlüsselten Daten dieses Tresors dauerhaft entfernt.",
+        "error": "Diese Aktion konnte nicht abgeschlossen werden. Der Tresor bleibt unverändert.",
+        "action": "Weiter"
+      }
+    },
+    "creation": {
+      "title": "Tresor erstellen",
+      "step": "Schritt {{current}} von {{total}}",
+      "steps": {
+        "1": "Name",
+        "2": "Speicher",
+        "3": "Wiederherstellungswörter",
+        "4": "Ein Wort prüfen",
+        "5": "Wörter sicher aufbewahren",
+        "6": "Dieses Gerät"
+      },
+      "nameLabel": "Tresorname",
+      "media": {
+        "server": "Verschlüsselte Dokumente bleiben bei BetterTrack.",
+        "drive": "Verschlüsselte Dokumente bleiben nur im gewählten Drive.",
+        "both": "Bewahre geprüfte verschlüsselte Kopien an beiden Orten auf."
+      },
+      "driveConnectionLabel": "Google-Drive-Verbindung",
+      "driveConnectionPlaceholder": "Drive-Konto wählen",
+      "wordsHint": "Schreibe diese 12 Wörter in der richtigen Reihenfolge auf. BetterTrack kann sie weder wiederherstellen noch zurücksetzen.",
+      "wordsStored": "Ich habe die Wörter aufbewahrt",
+      "verifyLabel": "Wort {{word}}",
+      "verifyWrong": "Dieses Wort stimmt nicht. Prüfe deine Kopie und versuche es erneut; deine Wörter bleiben hier sichtbar.",
+      "verifyAction": "Wort prüfen",
+      "lossContrast": "Wenn du dieses Gerätepasswort vergisst, geht nichts verloren: Gib die 12 Wörter erneut ein. Ein verlorenes Smartphone kostet keine Daten, solange du eine Kopie der Wörter hast.",
+      "lossAcknowledgment": "Mir ist bewusst, dass beim Verlust aller Kopien der 12 Wörter die Daten dieses Tresors dauerhaft verloren sind.",
+      "custody": {
+        "wrapped": "Wörter mit einem Gerätepasswort schützen",
+        "wrappedHint": "Empfohlen. Das Passwort schützt die in diesem Browser gespeicherten Wörter; es ersetzt die 12 Wörter nicht.",
+        "plainOption": "Erweiterte Geräteverwahrung",
+        "plain": "Wörter ungeschützt auf diesem Gerät speichern",
+        "plainWarning": "Wer den lokalen Speicher dieses Browsers lesen kann, könnte den Tresor öffnen.",
+        "plainAcknowledgment": "Ich akzeptiere das zusätzliche Risiko, die Wörter auf diesem Gerät ungeschützt zu speichern."
+      },
+      "devicePassword": "Gerätepasswort",
+      "error": "Der Tresor konnte nicht erstellt werden. Kein Wiederherstellungsschritt wurde übersprungen; versuche es erneut.",
+      "creating": "Tresor wird erstellt…",
+      "create": "Tresor erstellen"
+    },
+    "lockedStub": {
+      "fallbackAlias": "Gesperrtes Portfolio",
+      "subtitle": "Dieses Portfolio gehört zu einem verschlüsselten Tresor.",
+      "badge": "Gesperrt",
+      "body": "Entsperre nur seinen Tresor, um Salden, Aktivität und Werkzeuge zu sehen.",
+      "countOne": "1 gesperrtes Portfolio",
+      "count": "{{count}} gesperrte Portfolios"
+    },
+    "restorePicker": {
+      "hint": "Wähle eine authentifizierte aktuelle oder frühere Kopie. Beschädigte Kandidaten bleiben zur Diagnose sichtbar, können den aktiven Tresor aber nicht ersetzen.",
+      "empty": "Keine Wiederherstellungskopien gefunden.",
+      "source": {
+        "server-history": "BetterTrack-Historie",
+        "current-server": "Aktuelle BetterTrack-Kopie",
+        "quarantined-local": "Lokale Quarantänekopie",
+        "unknown": "Tresorkopie"
+      },
+      "status": {
+        "available": "Verfügbar",
+        "corrupt": "Beschädigt — nicht wiederherstellbar",
+        "unreadable": "Nicht lesbar — nicht wiederherstellbar",
+        "unsupported": "Neuere App erforderlich"
+      },
+      "error": "Diese Kopie konnte nicht wiederhergestellt werden. Der aktuelle Tresor bleibt unverändert.",
+      "action": "Gewählte Kopie wiederherstellen",
+      "restoring": "Wird wiederhergestellt…"
+    },
     "portfolioMove": {
+      "subject": "{{portfolio}} · {{vault}}",
+      "targetLabel": "Zieltresor",
+      "targetPlaceholder": "Tresor wählen",
+      "credentialKind": "Bestätigungsmethode",
+      "credentialValue": "Kontobestätigung",
+      "credential": {
+        "password": "Kontopasswort",
+        "code": "Authenticator-Code",
+        "recoveryCode": "Wiederherstellungscode"
+      },
+      "precondition": {
+        "mirrorchain": "Verlasse oder löse die aktive Gruppe dieses Portfolios auf, bevor du es verschiebst.",
+        "mirrorchainFix": "Gruppeneinstellungen öffnen",
+        "import": "Schließe den ausstehenden Import ab oder brich ihn ab, bevor du dieses Portfolio verschiebst.",
+        "importFix": "Importe öffnen",
+        "export": "Warte, bis der Kontoexport abgeschlossen ist, bevor du dieses Portfolio verschiebst.",
+        "exportFix": "Kontoexport öffnen"
+      },
       "stepUpHint": "Bestätige den Vorgang mit deinem BetterTrack-Kontopasswort, einem aktuellen Authenticator-Code oder einem Wiederherstellungscode.",
       "moveIn": {
         "title": "Portfolio in einen Tresor verschieben",
-        "warning": "Nachdem jede verschlüsselte Kopie geprüft wurde, löscht BetterTrack die serverlesbaren Finanzdaten dieses Portfolios dauerhaft und widerruft seine bestehenden Freigaben.",
+        "warning": "Nachdem jede verschlüsselte Kopie geprüft wurde, löscht BetterTrack die serverlesbaren Finanzdaten dieses Portfolios dauerhaft und widerruft seine bestehenden Freigaben. Diese Freigaben werden beim späteren Herausverschieben nicht wiederhergestellt.",
         "action": "In den Tresor verschieben",
         "working": "Portfolio wird in den Tresor verschoben…",
         "done": "Das Portfolio ist im Tresor verschlüsselt und auf dem Server gesperrt.",
@@ -3783,6 +3935,27 @@
       "restore": "Speicher- und Wiederherstellungsoptionen",
       "drive": {
         "signIn": "Bei Google anmelden, um zu synchronisieren"
+      },
+      "aggregate": {
+        "synced": "Alle synchronisiert ✓",
+        "syncing": "Synchronisierung läuft",
+        "lockedOne": "Gesperrt (1)",
+        "locked": "Gesperrt ({{count}})",
+        "attention": "Aktion erforderlich: {{name}}",
+        "signInGoogle": "Bei Google anmelden",
+        "openRestore": "Wiederherstellungskopie wählen",
+        "row": {
+          "synced": "Verschlüsselte Kopien sind aktuell",
+          "syncing": "Verschlüsselte Änderungen werden synchronisiert",
+          "locked": "Auf diesem Gerät entsperren oder Wiederherstellungswörter eingeben",
+          "attention": "Speicher benötigt Aufmerksamkeit"
+        },
+        "rowState": {
+          "synced": "Synchronisiert",
+          "syncing": "Wird synchronisiert",
+          "locked": "Gesperrt",
+          "attention": "Aktion erforderlich"
+        }
       }
     },
     "settings": {

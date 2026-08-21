@@ -983,4 +983,49 @@ describe('ChatPage — idea chips (V4-P9)', () => {
       }),
     );
   });
+
+  test('never offers a vaulted portfolio in the chat share picker', async () => {
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: {
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      },
+      nextCursor: null,
+      messages: [],
+    });
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [
+        {
+          id: '018f0000-0000-7000-8000-000000000001',
+          name: 'Plain portfolio',
+          sortOrder: 0,
+          visibility: 'private',
+          isDefault: true,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        },
+        {
+          id: '018f0000-0000-7000-8000-000000000002',
+          name: 'Secret vaulted name',
+          vaultId: '018f0000-0000-7000-8000-000000000003',
+          vaultAlias: 'Vault portfolio 1',
+          sortOrder: 1,
+          visibility: 'private',
+          isDefault: false,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderAt('/social/chat/u2');
+
+    await user.click(await screen.findByRole('button', { name: 'Share an item' }));
+    expect(await screen.findByText('Plain portfolio')).toBeInTheDocument();
+    expect(screen.queryByText('Secret vaulted name')).not.toBeInTheDocument();
+    expect(screen.queryByText('Vault portfolio 1')).not.toBeInTheDocument();
+  });
 });
