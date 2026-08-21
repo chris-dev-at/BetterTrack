@@ -125,9 +125,9 @@ export interface ProcessDueResult {
   deferred: number;
   /**
    * Orders whose final in-lock recheck aborted the write: the portfolio was
-   * archived — or the order paused, removed, or its watermark advanced past the
-   * candidate period — between the scan's optimistic `listActive` read and the
-   * locked claim.
+   * archived or moved into a vault — or the order paused, removed, or its
+   * watermark advanced past the candidate period — between the scan's
+   * optimistic `listActive` read and the locked claim.
    */
   skippedArchived: number;
   /**
@@ -529,10 +529,11 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           }
 
           // The scan's `listActive` result is intentionally only an optimistic
-          // candidate list. Archive can commit while a quote is in flight, so
-          // the final active check, claim and money write share one portfolio
-          // mutation lock. An archive that wins that lock makes this a no-op;
-          // an execution that wins finishes while the portfolio is still active.
+          // candidate list. Archive or vault move-in can commit while a quote
+          // is in flight, so the final eligible check, claim and money write
+          // share one portfolio mutation lock. A transition that wins that lock
+          // makes this a no-op; an execution that wins finishes while the
+          // portfolio is still active and non-vaulted.
           const outcome = await repo.withActivePortfolioLock(
             order.portfolioId,
             order.id,
@@ -575,7 +576,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             result.skippedArchived += 1;
             logger?.info(
               { orderId: order.id, portfolioId: order.portfolioId, due },
-              'standing order: skipped — portfolio archived or order superseded during execution',
+              'standing order: skipped — portfolio unavailable or order superseded during execution',
             );
             return;
           }

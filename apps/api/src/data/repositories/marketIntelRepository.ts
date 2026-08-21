@@ -153,7 +153,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
-        .where(eq(portfolios.userId, userId))
+        .where(and(eq(portfolios.userId, userId), isNull(portfolios.vaultId)))
         .groupBy(assets.id, assets.symbol, assets.name, assets.providerId, assets.providerRef)
         .having(gt(signedQuantity, sql`0`));
 
@@ -202,6 +202,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
+        .where(isNull(portfolios.vaultId))
         .groupBy(
           portfolios.userId,
           assets.id,
@@ -287,7 +288,13 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
-        .where(and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt)))
+        .where(
+          and(
+            eq(portfolios.userId, userId),
+            isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .groupBy(
           transactions.assetId,
           assets.providerId,
@@ -329,7 +336,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
-        .where(isNull(portfolios.archivedAt))
+        .where(and(isNull(portfolios.archivedAt), isNull(portfolios.vaultId)))
         .groupBy(
           portfolios.userId,
           transactions.assetId,
@@ -357,7 +364,13 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
-        .where(and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt)))
+        .where(
+          and(
+            eq(portfolios.userId, userId),
+            isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .groupBy(
           portfolios.userId,
           transactions.assetId,

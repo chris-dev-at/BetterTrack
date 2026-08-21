@@ -12,6 +12,7 @@ import {
 
 import * as schema from '../data/schema';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import { VAULTED_PORTFOLIO_ERROR_CODE } from '../services/account/vaultedPortfolioEnforcement';
 import { MIRROR_INVITE_TTL_MS } from '../services/mirror/mirrorService';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -32,6 +33,16 @@ function uu(prefix: string): { email: string; username: string } {
 }
 
 const repoOf = (h: TestHarness) => createMirrorchainRepository(h.db);
+
+// Deterministic TEST VECTOR ids and verifier-shaped strings are public fixtures,
+// not credentials or production retirement material.
+const VAULTED_LIFECYCLE_TEST_VECTOR = {
+  vaultId: '019c8620-0000-7000-8000-000000000001',
+  headerDocId: '019c8620-0000-7000-8000-000000000002',
+  commonDocId: '019c8620-0000-7000-8000-000000000003',
+  retirementProofPublicKey: 'TEST VECTOR mirror lifecycle public verifier',
+  keyFingerprint: 'TEST-VECTOR-MIRROR-LIFECYCLE-0001',
+} as const;
 
 async function makeFriends(h: TestHarness, a: string, b: string): Promise<void> {
   const [lo, hi] = a < b ? [a, b] : [b, a];
@@ -315,6 +326,110 @@ describe('mirrorchain M3 — invite flow (design §4)', () => {
     await expect(h.ctx.mirror.acceptInvite(f2.id, i2)).rejects.toMatchObject({
       code: MIRROR_MEMBER_CAP_REACHED,
     });
+  });
+});
+
+describe('mirrorchain E2 — stale vaulted membership quarantine', () => {
+  it('omits aggregate reads and refuses every lifecycle write before touching a locked stub', async () => {
+    const h = await createTestApp();
+    const repo = repoOf(h);
+    const { ownerId, chainId, ownerPortfolioId } = await ownerChain(h);
+    const activeMember = await join(h, chainId, 'member');
+    const invited = await h.seedUser(uu('vaultinvite'));
+    const secondInvitee = await h.seedUser(uu('vaultinvite2'));
+    await makeFriends(h, ownerId, invited.id);
+    await makeFriends(h, ownerId, secondInvitee.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, invited.id);
+    const inviteId = (await h.ctx.mirror.listInvites(invited.id)).incoming[0]!.id;
+
+    // Deliberately bypass E4's move-in precondition: this is the stale active
+    // membership every E2 service boundary must quarantine on its own.
+    await h.db.insert(schema.vaults).values({
+      id: VAULTED_LIFECYCLE_TEST_VECTOR.vaultId,
+      userId: ownerId,
+      name: 'TEST VECTOR lifecycle vault',
+      headerDocId: VAULTED_LIFECYCLE_TEST_VECTOR.headerDocId,
+      commonDocId: VAULTED_LIFECYCLE_TEST_VECTOR.commonDocId,
+      media: ['server'],
+      retirementProofPublicKey: VAULTED_LIFECYCLE_TEST_VECTOR.retirementProofPublicKey,
+      keyFingerprint: VAULTED_LIFECYCLE_TEST_VECTOR.keyFingerprint,
+    });
+    await h.db
+      .update(schema.portfolios)
+      .set({
+        vaultId: VAULTED_LIFECYCLE_TEST_VECTOR.vaultId,
+        vaultAlias: 'TEST VECTOR locked lifecycle stub',
+      })
+      .where(eq(schema.portfolios.id, ownerPortfolioId));
+    // A real move-in removes this row. Without the E2 check, invite acceptance
+    // called getOrCreateMain on the locked anchor and recreated cleartext before
+    // discovering that its old mirror link no longer existed.
+    await h.db
+      .delete(schema.portfolioCashSources)
+      .where(eq(schema.portfolioCashSources.portfolioId, ownerPortfolioId));
+
+    expect(await h.ctx.mirror.listChainsForUser(ownerId)).toEqual([]);
+    expect(await h.ctx.mirror.listChainsForUser(activeMember.userId)).toEqual([]);
+    expect((await h.ctx.mirror.listInvites(invited.id)).incoming).toEqual([]);
+    expect((await h.ctx.mirror.listInvites(ownerId)).outgoing).toEqual([]);
+    const ownerPortfolioList = await h.ctx.portfolio.listPortfolios(ownerId);
+    const enrichedOwnerPortfolios = await h.ctx.mirror.enrichPortfolioSummaries(
+      ownerId,
+      ownerPortfolioList.portfolios,
+    );
+    expect(enrichedOwnerPortfolios.find((portfolio) => portfolio.id === ownerPortfolioId)).toEqual(
+      ownerPortfolioList.portfolios.find((portfolio) => portfolio.id === ownerPortfolioId),
+    );
+    const memberPortfolioList = await h.ctx.portfolio.listPortfolios(activeMember.userId);
+    const enrichedMemberPortfolios = await h.ctx.mirror.enrichPortfolioSummaries(
+      activeMember.userId,
+      memberPortfolioList.portfolios,
+    );
+    expect(
+      enrichedMemberPortfolios.find((portfolio) => portfolio.id === activeMember.portfolioId),
+    ).toEqual(
+      memberPortfolioList.portfolios.find((portfolio) => portfolio.id === activeMember.portfolioId),
+    );
+
+    for (const operation of [
+      () => h.ctx.mirror.attachMemberCopy(chainId, secondInvitee.id),
+      () => h.ctx.mirror.inviteMember(ownerId, chainId, secondInvitee.id),
+      () => h.ctx.mirror.acceptInvite(invited.id, inviteId),
+      () => h.ctx.mirror.setMemberRole(ownerId, chainId, activeMember.userId, 'manager'),
+      () => h.ctx.mirror.transferOwnership(ownerId, chainId, activeMember.userId),
+      () => h.ctx.mirror.removeMember(ownerId, chainId, activeMember.userId),
+      () => h.ctx.mirror.leaveChain(ownerId, chainId),
+      () => h.ctx.mirror.renameChain(ownerId, chainId, 'Must not land'),
+      () => h.ctx.mirror.dissolveChain(ownerId, chainId),
+      () => h.ctx.mirror.getMemberList(ownerId, chainId),
+      () => h.ctx.mirror.getActivity(ownerId, chainId, { limit: 30 }),
+      () => h.ctx.mirror.revokeInvite(ownerId, inviteId),
+      () => h.ctx.mirror.declineInvite(invited.id, inviteId),
+    ]) {
+      await expect(operation()).rejects.toMatchObject({
+        statusCode: 403,
+        code: VAULTED_PORTFOLIO_ERROR_CODE,
+      });
+    }
+
+    expect((await repo.getChain(chainId))!.name).not.toBe('Must not land');
+    expect(await inviteStatus(h, inviteId)).toBe('pending');
+    expect(await repo.findActiveMembership(chainId, invited.id)).toBeNull();
+    const lockedStubSources = await h.db
+      .select({ id: schema.portfolioCashSources.id })
+      .from(schema.portfolioCashSources)
+      .where(eq(schema.portfolioCashSources.portfolioId, ownerPortfolioId));
+    expect(lockedStubSources).toEqual([]);
+    const secondInvite = await h.db
+      .select({ id: schema.mirrorChainInvites.id })
+      .from(schema.mirrorChainInvites)
+      .where(
+        and(
+          eq(schema.mirrorChainInvites.chainId, chainId),
+          eq(schema.mirrorChainInvites.toUser, secondInvitee.id),
+        ),
+      );
+    expect(secondInvite).toEqual([]);
   });
 });
 

@@ -2,6 +2,11 @@ import { and, eq, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { idempotencyKeys } from '../schema';
+import { withFreshLockedPrivacyModes } from './paranoidEnforcementRepository';
+import {
+  attributePortfolioRequestPath,
+  resolvePortfolioRequestAttribution,
+} from './portfolioRequestAttribution';
 
 /**
  * Idempotency-key persistence (PROJECTPLAN.md §13.4 V4-P2a, #417) — the durable
@@ -35,6 +40,8 @@ export interface IdempotencyClaimInput {
   method: string;
   path: string;
   requestHash: string;
+  /** Direct route/body attribution; child-resource routes are resolved from path. */
+  targetPortfolioId?: string | null;
 }
 
 /** The response captured from the first request, memoized for byte-identical replay. */
@@ -54,7 +61,8 @@ export interface IdempotencyResponse {
  */
 export type IdempotencyClaimResult =
   | { won: true; id: string }
-  | { won: false; record: IdempotencyRecord | null };
+  | { won: false; record: IdempotencyRecord | null }
+  | { won: false; suppressed: true };
 
 function toRecord(row: typeof idempotencyKeys.$inferSelect): IdempotencyRecord {
   return {
@@ -68,7 +76,7 @@ function toRecord(row: typeof idempotencyKeys.$inferSelect): IdempotencyRecord {
   };
 }
 
-export function createIdempotencyKeyRepository(db: Database) {
+export function createIdempotencyKeyRepository(db: Database, lockDb: Database = db) {
   return {
     /**
      * Atomically claim `(userId, key)`. Purges this user's rows older than
@@ -78,31 +86,63 @@ export function createIdempotencyKeyRepository(db: Database) {
      * caller can compare its fingerprint and replay or wait.
      */
     async claim(input: IdempotencyClaimInput, cutoff: Date): Promise<IdempotencyClaimResult> {
-      // Lazy purge (write-time, no job): drop this user's expired rows so their
-      // keys are reusable. Scoped to the user to bound the delete's cost.
-      await db
-        .delete(idempotencyKeys)
-        .where(
-          and(eq(idempotencyKeys.userId, input.userId), lt(idempotencyKeys.createdAt, cutoff)),
+      const candidate = await resolvePortfolioRequestAttribution(
+        db,
+        input.path,
+        input.targetPortfolioId,
+      );
+      const lockedUserIds = [input.userId];
+      if (candidate.ownerId && candidate.ownerId !== input.userId) {
+        lockedUserIds.push(candidate.ownerId);
+      }
+      return withFreshLockedPrivacyModes(lockDb, lockedUserIds, async (modes) => {
+        if (lockedUserIds.some((userId) => modes.get(userId) !== 'normal')) {
+          return { won: false, suppressed: true };
+        }
+        const attribution = await resolvePortfolioRequestAttribution(
+          db,
+          input.path,
+          input.targetPortfolioId,
         );
-      const [won] = await db
-        .insert(idempotencyKeys)
-        .values({
-          userId: input.userId,
-          key: input.key,
-          method: input.method,
-          path: input.path,
-          requestHash: input.requestHash,
-        })
-        .onConflictDoNothing({ target: [idempotencyKeys.userId, idempotencyKeys.key] })
-        .returning({ id: idempotencyKeys.id });
-      if (won) return { won: true, id: won.id };
-      const [row] = await db
-        .select()
-        .from(idempotencyKeys)
-        .where(and(eq(idempotencyKeys.userId, input.userId), eq(idempotencyKeys.key, input.key)))
-        .limit(1);
-      return { won: false, record: row ? toRecord(row) : null };
+        if (
+          (attribution.recognized && !attribution.nonPortfolio && !attribution.portfolioId) ||
+          attribution.vaultId ||
+          (attribution.ownerId && !lockedUserIds.includes(attribution.ownerId)) ||
+          (candidate.ownerId !== null &&
+            (attribution.ownerId !== candidate.ownerId ||
+              attribution.portfolioId !== candidate.portfolioId))
+        ) {
+          return { won: false, suppressed: true };
+        }
+
+        // Lazy purge (write-time, no job): drop this user's expired rows so their
+        // keys are reusable. Scoped to the user to bound the delete's cost.
+        await db
+          .delete(idempotencyKeys)
+          .where(
+            and(eq(idempotencyKeys.userId, input.userId), lt(idempotencyKeys.createdAt, cutoff)),
+          );
+        const [won] = await db
+          .insert(idempotencyKeys)
+          .values({
+            userId: input.userId,
+            key: input.key,
+            method: input.method,
+            path: attribution.portfolioId
+              ? attributePortfolioRequestPath(input.path, attribution.portfolioId)
+              : input.path,
+            requestHash: input.requestHash,
+          })
+          .onConflictDoNothing({ target: [idempotencyKeys.userId, idempotencyKeys.key] })
+          .returning({ id: idempotencyKeys.id });
+        if (won) return { won: true, id: won.id };
+        const [row] = await db
+          .select()
+          .from(idempotencyKeys)
+          .where(and(eq(idempotencyKeys.userId, input.userId), eq(idempotencyKeys.key, input.key)))
+          .limit(1);
+        return { won: false, record: row ? toRecord(row) : null };
+      });
     },
 
     /** Read one record by `(userId, key)`, or null. */

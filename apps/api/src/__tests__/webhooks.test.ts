@@ -514,6 +514,53 @@ describe('signed delivery', () => {
     );
   });
 
+  it('drops a stale queued portfolio delivery after its target moves into a vault', async () => {
+    const delivered: string[] = [];
+    const checkedSubjects: string[][] = [];
+    const definition = {
+      name: 'webhooks.deliver',
+      async handler(job) {
+        delivered.push(job.data.event.type);
+      },
+    } as JobDefinition<'webhooks.deliver'>;
+    const guarded = bindParanoidJob(definition, {
+      mode: 'event',
+      isEventAllowed: async (event) => event.type !== 'standing_order.skipped',
+      runIfAllowed: async (userIds, action) => {
+        checkedSubjects.push([...userIds]);
+        await action();
+        return true;
+      },
+    });
+    const event: DomainEvent = {
+      // TEST VECTOR: this is an actually subscribable payload whose portfolio
+      // must be re-attributed from standingOrderId after the account lock.
+      type: 'standing_order.skipped',
+      userId: 'normal-owner',
+      standingOrderId: '018f1412-0000-7000-8000-000000000101',
+      periodKey: '2026-08-21',
+      outcome: 'deferred',
+      orderLabel: 'TEST VECTOR order',
+      occurredAt: '2026-08-21T10:00:00.000Z',
+    };
+
+    await guarded.handler(
+      {
+        data: {
+          subscriptionId: 'subscription-stale-vault',
+          deliveryId: 'delivery-stale-vault',
+          event,
+        },
+      } as never,
+      { logger: harness.ctx.logger } as never,
+    );
+
+    expect(delivered).toEqual([]);
+    // The vault re-check runs inside the subject-locked action; a pre-lock check
+    // would leave a move-in race between admission and external delivery.
+    expect(checkedSubjects).toEqual([['normal-owner']]);
+  });
+
   it('checks mirror recipient, actor, owner, and affected subjects before webhook enqueue', async () => {
     const recipient = await createSubscription([...MIRROR_WEBHOOK_TYPES]);
     const actor = await harness.seedUser({

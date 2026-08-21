@@ -130,6 +130,7 @@ import {
   ParanoidModeError,
   runIfParanoidOwnedSubjectAllowed,
 } from '../services/account/paranoidEnforcement';
+import { isVaultedPortfolioContentEventAllowed } from '../services/account/vaultedPortfolioEnforcement';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -170,7 +171,7 @@ const isBlockedPortfolio = async (portfolioId: string) =>
   isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
 const runPortfolioJobIfAllowed = async (portfolioId: string, action: () => Promise<void>) =>
   runIfParanoidOwnedSubjectAllowed(
-    await paranoidSubjects.portfolioOwner(portfolioId),
+    () => paranoidSubjects.portfolioOwner(portfolioId),
     paranoidGuard,
     'portfolioJobs',
     action,
@@ -471,6 +472,18 @@ const webhookBridge = createWebhookBridge({
   },
   logger,
   paranoid: paranoidGuard,
+  vaultedPortfolio: {
+    portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+    standingOrderPortfolio: (userId, standingOrderId) =>
+      paranoidSubjects.standingOrderPortfolio(userId, standingOrderId),
+    cashBudgetPortfolio: (userId, budgetId) =>
+      paranoidSubjects.cashBudgetPortfolio(userId, budgetId),
+    legacyExpenseBudgetExists: (userId, budgetId) =>
+      paranoidSubjects.legacyExpenseBudgetExists(userId, budgetId),
+    userHasPlainHolding: (userId, assetId) => paranoidSubjects.userHasPlainHolding(userId, assetId),
+    mirrorMemberPortfolios: (chainId, principalUserIds) =>
+      paranoidSubjects.mirrorMemberPortfolios(chainId, principalUserIds),
+  },
 });
 
 const coreJobDeps = {
@@ -564,6 +577,20 @@ const definitions = assembleRegisteredJobDefinitions({
     createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
     {
       mode: 'event',
+      isEventAllowed: (event) =>
+        isVaultedPortfolioContentEventAllowed(event, {
+          portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+          standingOrderPortfolio: (userId, standingOrderId) =>
+            paranoidSubjects.standingOrderPortfolio(userId, standingOrderId),
+          cashBudgetPortfolio: (userId, budgetId) =>
+            paranoidSubjects.cashBudgetPortfolio(userId, budgetId),
+          legacyExpenseBudgetExists: (userId, budgetId) =>
+            paranoidSubjects.legacyExpenseBudgetExists(userId, budgetId),
+          userHasPlainHolding: (userId, assetId) =>
+            paranoidSubjects.userHasPlainHolding(userId, assetId),
+          mirrorMemberPortfolios: (chainId, principalUserIds) =>
+            paranoidSubjects.mirrorMemberPortfolios(chainId, principalUserIds),
+        }),
       runIfAllowed: async (userIds, action) => {
         try {
           await paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);

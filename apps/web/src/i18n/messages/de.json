@@ -1348,6 +1348,7 @@
     }
   },
   "portfolio": {
+    "vaultedPortfolioUnavailable": "Diese Funktion ist für ein gesperrtes Tresor-Portfolio nicht verfügbar. Wähle stattdessen ein normales Portfolio.",
     "sourceTag": {
       "importFrom": "Importiert · {{source}}",
       "syncFrom": "Synchronisiert · {{source}}",
