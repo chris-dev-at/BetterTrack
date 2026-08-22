@@ -343,7 +343,13 @@ export type DeleteVaultResponse = z.infer<typeof deleteVaultResponseSchema>;
 
 // ── Drive connections (§8) ───────────────────────────────────────────────────
 
-/** OIDC `sub` is ASCII and ≤ 255 chars; Google's are opaque digit strings. */
+/**
+ * The opaque, stable Google principal id of one Drive connection (ASCII, ≤ 255).
+ * The browser captures it from Drive `about.get` as `user.permissionId`; the
+ * field keeps its `googleSub` name from E0. It is an equality token for
+ * post-consent verification — Google documents neither it nor an OIDC `sub`
+ * interchangeably as a `login_hint`, so the hint is the connection's email.
+ */
 export const googleSubSchema = z.string().trim().min(1).max(255);
 
 /**
@@ -390,6 +396,30 @@ export type DriveConnectionListResponse = z.infer<typeof driveConnectionListResp
 
 export const driveConnectionIdParamSchema = z.object({ connectionId: z.string().uuid() }).strict();
 export type DriveConnectionIdParam = z.infer<typeof driveConnectionIdParamSchema>;
+
+/** `DELETE /drive-connections/:connectionId` query — strict, so an unknown
+ *  parameter is refused instead of silently ignored by a hand-rolled read. */
+export const driveConnectionDisconnectQuerySchema = z
+  .object({
+    acknowledgeBound: z
+      .enum(['true', 'false'])
+      .optional()
+      .describe(
+        'Explicitly detach replicated vaults from Drive while leaving their encrypted Drive files untouched. Drive-only vaults still refuse.',
+      ),
+  })
+  .strict();
+export type DriveConnectionDisconnectQuery = z.infer<typeof driveConnectionDisconnectQuerySchema>;
+
+/**
+ * The bodyless Drive-registry mutations (`PATCH …/verified`, `DELETE …`).
+ * Express leaves `req.body` undefined when nothing was sent; every other shape
+ * — a Google access token above all — is refused here, so "no Drive route
+ * accepts a Google token" holds on EVERY method of the module, not only on the
+ * one that happens to take a body.
+ */
+export const driveConnectionEmptyBodySchema = z.union([z.undefined(), z.object({}).strict()]);
+export type DriveConnectionEmptyBody = z.infer<typeof driveConnectionEmptyBodySchema>;
 
 // ── Envelope v2 header (§5) ──────────────────────────────────────────────────
 

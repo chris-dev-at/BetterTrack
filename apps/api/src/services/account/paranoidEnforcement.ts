@@ -829,6 +829,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The `/vaults` surface is the deliberate encrypted-data home. Its `vault:sync` scope is the permanent §11 item-5 ciphertext carve-out, so this service is intentionally kept.',
   ),
   serviceExemption(
+    'driveConnections',
+    ['*'],
+    'kept',
+    'Drive identities and per-vault bindings are client-storage routing metadata; OAuth tokens and Drive file identifiers never enter the server.',
+  ),
+  serviceExemption(
     'paranoidTransitions',
     ['*'],
     'kept',
@@ -1799,6 +1805,10 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/vaults' },
     { prefix: '/vaults/' },
   ]),
+  ...keptRoutes(
+    'Drive connection rows contain identity and routing metadata only; Drive credentials and file identifiers remain client-side.',
+    [{ exact: '/drive-connections' }, { prefix: '/drive-connections/' }],
+  ),
   ...keptRoutes(
     'Local workboard organization remains available; sharing settings are classified separately.',
     [

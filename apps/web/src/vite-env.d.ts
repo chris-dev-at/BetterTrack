@@ -8,7 +8,7 @@ interface ImportMetaEnv {
    */
   readonly VITE_BUILD_SHA?: string;
   /**
-   * Public SPA OAuth client id for the browser-only Drive appdata token flow.
+   * Public SPA OAuth client id for the browser-only Drive file token flow.
    * No Drive secret or access token is configured on the API.
    */
   readonly VITE_GOOGLE_DRIVE_CLIENT_ID?: string;
