@@ -16,13 +16,17 @@ import {
 
 import { activeTaxRegime, taxRegimeForRow, type TaxRegime } from './taxEngine';
 
-export const LOCKED_PORTFOLIOS_QUALIFIER_MESSAGE_KEY =
-  'vaultComposition.lockedPortfoliosQualifier' as const;
+export const LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY =
+  'vaultComposition.lockedPortfoliosQualifierOne' as const;
+export const LOCKED_PORTFOLIOS_QUALIFIER_OTHER_MESSAGE_KEY =
+  'vaultComposition.lockedPortfoliosQualifierOther' as const;
 
 export interface LockedPortfoliosQualifier {
   kind: 'locked-portfolios';
   count: number;
-  messageKey: typeof LOCKED_PORTFOLIOS_QUALIFIER_MESSAGE_KEY;
+  messageKey:
+    | typeof LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY
+    | typeof LOCKED_PORTFOLIOS_QUALIFIER_OTHER_MESSAGE_KEY;
 }
 
 export type PortfolioFigureCoverage =
@@ -102,6 +106,10 @@ export type ComposedPortfolioFigures = {
   [K in keyof AdditivePortfolioFigures]: QualifiedPortfolioFigure;
 };
 
+export type SelectedComposedPortfolioFigures<K extends keyof AdditivePortfolioFigures> = {
+  [P in K]: QualifiedPortfolioFigure;
+};
+
 const ADDITIVE_FIGURE_KEYS = [
   'totalValueEur',
   'marketValueEur',
@@ -116,7 +124,16 @@ const ADDITIVE_FIGURE_KEYS = [
 /** Merge already-derived, additive portfolio figures at their domain boundary. */
 export function composePortfolioFigures(
   input: PortfolioCompositionInput<AdditivePortfolioFigures>,
-): ComposedPortfolioFigures {
+): ComposedPortfolioFigures;
+/** Merge an explicit projection when a consumer has only that audited figure subset. */
+export function composePortfolioFigures<const K extends keyof AdditivePortfolioFigures>(
+  input: PortfolioCompositionInput<Pick<AdditivePortfolioFigures, K>>,
+  keys: readonly K[],
+): SelectedComposedPortfolioFigures<K>;
+export function composePortfolioFigures(
+  input: PortfolioCompositionInput<Partial<AdditivePortfolioFigures>>,
+  keys: readonly (keyof AdditivePortfolioFigures)[] = ADDITIVE_FIGURE_KEYS,
+): Partial<ComposedPortfolioFigures> {
   const { authoritativeRoster, members } = input;
   assertCompleteAuthoritativeRoster(authoritativeRoster, members);
   const coverage = coverageFor(members);
@@ -125,20 +142,18 @@ export function composePortfolioFigures(
       member.state === 'visible',
   );
   return Object.fromEntries(
-    ADDITIVE_FIGURE_KEYS.map((key) => [
+    keys.map((key) => [
       key,
       qualifyMoney(
-        floorCents(
-          visible.reduce((total, member) => {
-            const value = member.value[key];
-            requireFinite(value, `${member.portfolioId}.${key}`);
-            return total + value;
-          }, 0),
-        ),
+        visible.reduce((total, member) => {
+          const value = member.value[key];
+          requireFinite(value, `${member.portfolioId}.${key}`);
+          return total + value;
+        }, 0),
         coverage,
       ),
     ]),
-  ) as ComposedPortfolioFigures;
+  ) as Partial<ComposedPortfolioFigures>;
 }
 
 export interface VisiblePortfolioTax {
@@ -257,8 +272,8 @@ export function composeCountryTaxYear(
     .sort(
       (left, right) =>
         left.year - right.year ||
-        left.at.localeCompare(right.at) ||
-        left.id.localeCompare(right.id),
+        (left.at < right.at ? -1 : left.at > right.at ? 1 : 0) ||
+        (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
     );
   const currentEvents = events.filter((event) => event.year === year);
   const realizedPnlEur = floorCents(
@@ -304,8 +319,8 @@ export function composeCountryTaxYear(
   const aktienPotInEur = floorCents(pots.aktienEur);
   const sonstigePotInEur = floorCents(pots.sonstigeEur);
   const settlement = settleDeYear({
-    aktienPotInEur,
-    sonstigePotInEur,
+    aktienPotInEur: pots.aktienEur,
+    sonstigePotInEur: pots.sonstigeEur,
     existingEvents: currentEvents.map(toDeTaxableEvent),
     heldEur: 0,
     newEvents: [],
@@ -402,7 +417,10 @@ function coverageFor<T>(
     qualifier: {
       kind: 'locked-portfolios',
       count: lockedPortfolioCount,
-      messageKey: LOCKED_PORTFOLIOS_QUALIFIER_MESSAGE_KEY,
+      messageKey:
+        lockedPortfolioCount === 1
+          ? LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY
+          : LOCKED_PORTFOLIOS_QUALIFIER_OTHER_MESSAGE_KEY,
     },
   };
 }
@@ -469,6 +487,6 @@ function assertCompleteAuthoritativeRoster<T>(
   }
 }
 
-function requireFinite(value: number, label: string): void {
+function requireFinite(value: unknown, label: string): asserts value is number {
   if (!Number.isFinite(value)) throw new TypeError(`${label} must be a finite money figure.`);
 }

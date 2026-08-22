@@ -5,6 +5,7 @@ import { formatPercent } from '../../../lib/format';
 import { Empty, SkeletonBlock } from '../../../ui/origin';
 import { usePortfolioSummaries } from '../homeData';
 import { mergeHoldings } from '../holdings';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -33,6 +34,9 @@ export function ConcentrationWidget({ scopedPortfolios, portfoliosLoading }: Wid
   const loading = portfoliosLoading || results.some((result) => result.isLoading);
 
   if (loading) return <SkeletonBlock height={92} />;
+  if (hasUnsafeAggregateMember(scopedPortfolios, results)) {
+    return <UnavailableHomeAggregate />;
+  }
 
   const totalValue = results.reduce(
     (sum, result) => sum + (result.data?.totals.totalValueEur ?? 0),

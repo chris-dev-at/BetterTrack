@@ -18,6 +18,7 @@ import { VaultStateAction } from '../../vault/ui/VaultStateAction';
 import { useVaultEndpointState } from '../../vault/ui/useVaultEndpointState';
 import { widgetVariant } from '../config';
 import { usePortfolioSummaries } from '../homeData';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -112,7 +113,12 @@ export function PortfolioCardsWidget({
     })),
   });
 
-  if (portfoliosLoading) {
+  const loading =
+    portfoliosLoading ||
+    summaries.some((summary) => summary.isLoading) ||
+    histories.some((history) => history.isLoading);
+
+  if (loading) {
     return (
       <div className="bt-home-pcards">
         <SkeletonBlock height={92} />
@@ -122,6 +128,12 @@ export function PortfolioCardsWidget({
   }
 
   if (portfolios.length === 0) return <Empty title={t('home.widgets.portfolioCards.empty')} />;
+  if (
+    hasUnsafeAggregateMember(portfolios, summaries) ||
+    hasUnsafeAggregateMember(portfolios, histories)
+  ) {
+    return <UnavailableHomeAggregate />;
+  }
 
   const lockedCount = lockedPortfolioCount(portfolios);
   const lockedFallback = t('vault.lockedStub.fallbackAlias');

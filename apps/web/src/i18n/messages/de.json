@@ -6269,7 +6269,8 @@
     }
   },
   "vaultComposition": {
-    "lockedPortfoliosQualifier": "+ {{count}} gesperrte Portfolios"
+    "lockedPortfoliosQualifierOne": "+ {{count}} gesperrtes Portfolio",
+    "lockedPortfoliosQualifierOther": "+ {{count}} gesperrte Portfolios"
   },
   "vaultMoney": {
     "error": {

@@ -8,7 +8,8 @@ import { settleAtYear, settleDeYear } from '@bettertrack/domain/tax';
 import { describe, expect, it } from 'vitest';
 
 import {
-  LOCKED_PORTFOLIOS_QUALIFIER_MESSAGE_KEY,
+  LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY,
+  LOCKED_PORTFOLIOS_QUALIFIER_OTHER_MESSAGE_KEY,
   composeCountryTaxYear,
   composePortfolioFigures,
   type AdditivePortfolioFigures,
@@ -34,6 +35,8 @@ const IDS = {
   priorLoss: '018f0000-0000-7000-8000-000000000412',
   priorGain: '018f0000-0000-7000-8000-000000000413',
   currentSell: '018f0000-0000-7000-8000-000000000414',
+  fractionalLoss: '018f0000-0000-7000-8000-000000000415',
+  fractionalGain: '018f0000-0000-7000-8000-000000000416',
 } as const;
 
 const ZERO_FIGURES: AdditivePortfolioFigures = {
@@ -49,8 +52,8 @@ const ZERO_FIGURES: AdditivePortfolioFigures = {
 
 describe('cross-portfolio composition', () => {
   it('merges mixed plain and unlocked-vault figures to exact decimal cents', () => {
-    // TEST VECTOR: deliberately uses binary-hostile decimal cents. The shared
-    // domain cent boundary must normalize 10.10 + 20.20 to exactly "30.30".
+    // TEST VECTOR: deliberately uses binary-hostile decimal cents and verifies
+    // the composed values at the UI's exact-decimal-string boundary.
     const members: PortfolioCompositionMember<AdditivePortfolioFigures>[] = [
       visible(IDS.plain, 'plain', null, {
         ...ZERO_FIGURES,
@@ -74,6 +77,71 @@ describe('cross-portfolio composition', () => {
     expect(result.cashEur.valueEur.toFixed(2)).toBe('5.10');
     expect(result.realizedPnlEur.valueEur.toFixed(2)).toBe('3.03');
     for (const figure of Object.values(result)) expectComplete(figure, 2);
+  });
+
+  it('matches the unquantized server-shaped additive total for plain portfolios', () => {
+    // TEST VECTOR: the server's portfolioService.computeTotals and homeData
+    // rollup add already-derived figures without introducing another cent
+    // floor. The third decimal proves composition preserves that boundary.
+    const plainFigures: AdditivePortfolioFigures[] = [
+      {
+        ...ZERO_FIGURES,
+        totalValueEur: 10.109,
+        marketValueEur: 8.055,
+        investedEur: 7.125,
+        cashEur: 2.054,
+      },
+      {
+        ...ZERO_FIGURES,
+        totalValueEur: 20.109,
+        marketValueEur: 17.155,
+        investedEur: 16.125,
+        cashEur: 3.054,
+      },
+    ];
+    const members = plainFigures.map((value, index) =>
+      visible(index === 0 ? IDS.plain : IDS.vaulted, 'plain', null, value),
+    );
+    const result = composePortfolioFigures(testCompositionInput(members));
+
+    expect(result.totalValueEur.valueEur.toFixed(3)).toBe('30.218');
+    expect(result.marketValueEur.valueEur.toFixed(3)).toBe('25.210');
+    expect(result.investedEur.valueEur.toFixed(3)).toBe('23.250');
+    expect(result.cashEur.valueEur.toFixed(3)).toBe('5.108');
+    expect(result.totalValueEur.valueEur).not.toBe(30.21);
+    for (const figure of Object.values(result)) expectComplete(figure, 2);
+  });
+
+  it('composes only an explicitly selected typed figure projection', () => {
+    const members: PortfolioCompositionMember<
+      Pick<AdditivePortfolioFigures, 'totalValueEur' | 'cashEur'>
+    >[] = [
+      {
+        state: 'visible',
+        portfolioId: IDS.plain,
+        source: 'plain',
+        vaultId: null,
+        value: { totalValueEur: 100.109, cashEur: 10.055 },
+      },
+      { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultOne },
+    ];
+
+    const result = composePortfolioFigures(testCompositionInput(members), [
+      'totalValueEur',
+      'cashEur',
+    ]);
+
+    expect(Object.keys(result)).toEqual(['totalValueEur', 'cashEur']);
+    expect(result.totalValueEur.valueEur).toBe(100.109);
+    expect(result.cashEur.valueEur).toBe(10.055);
+    expect(result.totalValueEur.coverage).toMatchObject({
+      kind: 'partial',
+      lockedPortfolioCount: 1,
+      qualifier: {
+        count: 1,
+        messageKey: LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY,
+      },
+    });
   });
 
   it.each([
@@ -103,7 +171,10 @@ describe('cross-portfolio composition', () => {
           qualifier: {
             kind: 'locked-portfolios',
             count: testCase.expected,
-            messageKey: LOCKED_PORTFOLIOS_QUALIFIER_MESSAGE_KEY,
+            messageKey:
+              testCase.expected === 1
+                ? LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY
+                : LOCKED_PORTFOLIOS_QUALIFIER_OTHER_MESSAGE_KEY,
           },
         });
       }
@@ -122,7 +193,7 @@ describe('cross-portfolio composition', () => {
     );
   });
 
-  it('composes AT loss offset identically for mixed and all-plain sources', () => {
+  it('composes AT loss offset through the authoritative domain settlement', () => {
     // TEST VECTOR: +€1,500 sell, −€500 sell and €100 dividend share one AT
     // pool. 27.5% × €1,100 = €302.50, computed only by packages/domain.
     const mixed = taxMembers('AT', [
@@ -132,12 +203,7 @@ describe('cross-portfolio composition', () => {
         { kind: 'dividend', id: IDS.dividend, amount: 100 },
       ]),
     ]);
-    const allPlain = mixed.map((member) =>
-      member.state === 'visible' ? { ...member, source: 'plain' as const, vaultId: null } : member,
-    );
-
     const mixedResult = composeCountryTaxYear('AT', 2026, testCompositionInput(mixed));
-    const plainResult = composeCountryTaxYear('AT', 2026, testCompositionInput(allPlain));
     const expected = settleAtYear({
       existingGainsEur: [1500, -500],
       existingDividendsEur: [100],
@@ -145,13 +211,12 @@ describe('cross-portfolio composition', () => {
       newEvents: [],
     });
 
-    expect(mixedResult).toEqual(plainResult);
     expect(mixedResult.taxTargetEur.valueEur.toFixed(2)).toBe(expected.heldAfterEur.toFixed(2));
     expect(mixedResult.taxTargetEur.valueEur.toFixed(2)).toBe('302.50');
     expectComplete(mixedResult.taxTargetEur, 2);
   });
 
-  it('composes DE loss pots and allowance identically for mixed and all-plain sources', () => {
+  it('composes DE loss pots and allowance through the authoritative domain settlement', () => {
     // TEST VECTOR: €2,000 Aktien gain, €500 Sonstige loss and €100 dividend.
     // Domain applies DE pot/cross-offset and the statutory allowance/tax split.
     const mixed = taxMembers('DE', [
@@ -161,12 +226,7 @@ describe('cross-portfolio composition', () => {
         { kind: 'dividend', id: IDS.dividend, amount: 100 },
       ]),
     ]);
-    const allPlain = mixed.map((member) =>
-      member.state === 'visible' ? { ...member, source: 'plain' as const, vaultId: null } : member,
-    );
-
     const mixedResult = composeCountryTaxYear('DE', 2026, testCompositionInput(mixed));
-    const plainResult = composeCountryTaxYear('DE', 2026, testCompositionInput(allPlain));
     const expected = settleDeYear({
       aktienPotInEur: 0,
       sonstigePotInEur: 0,
@@ -179,7 +239,6 @@ describe('cross-portfolio composition', () => {
       newEvents: [],
     });
 
-    expect(mixedResult).toEqual(plainResult);
     expect(mixedResult.taxTargetEur.valueEur.toFixed(2)).toBe(expected.heldAfterEur.toFixed(2));
     expect(mixedResult.de?.kapestEur.valueEur.toFixed(2)).toBe(
       expected.yearEnd.kapestEur.toFixed(2),
@@ -219,6 +278,50 @@ describe('cross-portfolio composition', () => {
     expect(result.de?.aktienPotInEur.valueEur.toFixed(2)).toBe('400.00');
     expect(result.de?.aktienPotOutEur.valueEur.toFixed(2)).toBe('0.00');
     expect(result.realizedPnlEur.valueEur.toFixed(2)).toBe('500.00');
+  });
+
+  it('passes a fractional carried DE Aktien loss raw into settlement', () => {
+    // REVIEW ROUND 1 TEST VECTOR: a 2025 Aktien loss of EUR 0.001 carried into
+    // a 2026 Aktien gain of EUR 1000.08. The loss-pot input must remain raw for
+    // domain settlement; only the reported pot-in figure is floored. Premature
+    // flooring over-taxes this vector by one cent (EUR 0.02 instead of 0.01).
+    const members: PortfolioTaxCompositionMember[] = [
+      {
+        state: 'visible',
+        portfolioId: IDS.plain,
+        source: 'plain',
+        vaultId: null,
+        value: taxValue('DE', [
+          report(
+            'DE',
+            stockAsset(),
+            [{ kind: 'sell', id: IDS.fractionalLoss, amount: -0.001 }],
+            2025,
+          ),
+          report(
+            'DE',
+            stockAsset(),
+            [{ kind: 'sell', id: IDS.fractionalGain, amount: 1000.08 }],
+            2026,
+          ),
+        ]),
+      },
+    ];
+    const authoritative = settleDeYear({
+      aktienPotInEur: 0.001,
+      sonstigePotInEur: 0,
+      existingEvents: [{ kind: 'sell_gain', category: 'aktien', amountEur: 1000.08 }],
+      heldEur: 0,
+      newEvents: [],
+    });
+
+    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+
+    expect(authoritative.yearEnd.kapestEur.toFixed(2)).toBe('0.01');
+    expect(result.de?.kapestEur.valueEur.toFixed(2)).toBe(
+      authoritative.yearEnd.kapestEur.toFixed(2),
+    );
+    expect(result.de?.aktienPotInEur.valueEur.toFixed(2)).toBe('0.00');
   });
 
   it('qualifies every AT/DE tax figure when any relevant portfolio is locked', () => {

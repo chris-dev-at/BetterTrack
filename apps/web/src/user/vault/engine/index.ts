@@ -10,11 +10,9 @@ import type { VaultMoneyEngine } from './types';
 
 export * from './cache';
 export * from './clientSeries';
-export * from './composition';
 export * from './errorCopy';
 export * from './errors';
 export * from './portfolioEngine';
-export * from './portfolioDocumentSet';
 export * from './session';
 export * from './taxEngine';
 export * from './types';
