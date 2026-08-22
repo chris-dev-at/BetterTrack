@@ -52,6 +52,8 @@ COMPOSER_REQUEST_LOADED=0
 COMPOSER_REQUEST_ID=
 COMPOSER_REQUEST_EXACT_COUNT=
 COMPOSER_REQUEST_BRIEF=
+COMPOSER_TICK_ACTIVE=0
+COMPOSER_TICK_MERGER_RAN=0
 
 MF_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$MF_SCRIPT_DIR/contracts.sh"
@@ -714,6 +716,24 @@ composer_manifest_validate_or_repair(){ # validate args + $6=exact-count-or-0 $7
   mf_manifest_validate "$1" "$2" "$3" "$4" "$5"
 }
 
+# The master creates an empty manifest before dispatch. If a healthy normal
+# composer returns without touching it and discovery proves that it created no
+# repository artifacts, that is an implicit empty compose rather than a broken
+# artifact contract. A deleted manifest, non-empty malformed manifest, owner
+# request, transport error, or any earlier quarantined artifact still fails.
+composer_manifest_validate_or_idle(){ # repair args + $8=transport $9=request-id $10=new issue ids
+  composer_manifest_validate_or_repair "$1" "$2" "$3" "$4" "$5" "$6" "$7" \
+    && return 0
+  [ -f "$1" ] && [ ! -s "$1" ] || return 1
+  [ "$8" -eq 0 ] || return 1
+  [ -z "$9" ] || return 1
+  [ "$7" -eq 0 ] || return 1
+  [ -z "${10}" ] || return 1
+  MF_MANIFEST_KIND=none
+  MF_MANIFEST_ISSUES=
+  MF_MANIFEST_MODES=
+}
+
 composer_discovery_fence_reconcile(){
   local fence="$CONTROL/composer-discovery-fence" before after newnums snapshot
   local manifest_count valid=0 outcome=protocol archive
@@ -736,9 +756,10 @@ composer_discovery_fence_reconcile(){
   newnums=$(xargs <<<"$newnums")
   log "composer fence discovery ($COMPOSER_FENCE_RUN_ID): new repository issues [${newnums:-none}]"
 
-  if composer_manifest_validate_or_repair "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
+  if composer_manifest_validate_or_idle "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
     "$COMPOSER_FENCE_RUN_ID" "" "$COMPOSER_FENCE_EXACT_COUNT" \
-    "$COMPOSER_FENCE_INVALID_NEW_SEEN"; then
+    "$COMPOSER_FENCE_INVALID_NEW_SEEN" "$COMPOSER_FENCE_TRANSPORT" \
+    "$COMPOSER_FENCE_REQUEST_ID" "$newnums"; then
     case "$MF_MANIFEST_KIND" in
       issues)
         outcome=created
@@ -791,6 +812,8 @@ composer_discovery_fence_reconcile(){
       return 2
     }
     [ "$outcome" = created ] && fetch_issues
+    [ "$outcome" = idle ] \
+      && log "composer outcome: idle (no new issues or quarantined artifacts)"
     notify "composer discovery reconciled and validated — scheduler safety fence cleared"
     return 0
   fi
@@ -878,6 +901,14 @@ composer_discovery_after(){ ( # $1=manifest; subshell contains cleanup traps
   cat "$accumulated"
 ) }
 
+composer_prepare_repo(){
+  ( cd "$REPO_DIR" \
+    && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
+  ) || return 1
+  ( cd "$REPO_DIR" && node factory/knowledge/build.mjs 2>>"$LOG" ) \
+    || log "composer knowledge refresh failed (non-fatal)"
+}
+
 composer_step(){ # $1=mode
   local mode=$1 allow_ready_claim=0
   if [ -e "$CONTROL/composer-discovery-fence" ]; then
@@ -950,9 +981,6 @@ composer_step(){ # $1=mode
   fi
   log "runnable=$count < $((WORKERS+1)) → running composer"
   mstatus composing
-  ( cd "$REPO_DIR" \
-    && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
-    && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "composer pre-sync failed (non-fatal)"
   local attempt before after manifest run_id transport outcome=protocol newnums prompt
   local prompt_batch=$COMPOSER_BATCH manifest_issue_count
   local outcome_recorded=0 protocol_recorded=0 owner_blocked=0
@@ -961,6 +989,16 @@ composer_step(){ # $1=mode
   local invalid_new_seen=0
   mkdir -p "$CONTROL/composer-manifests"
   for attempt in $(seq 1 "$MF_COMPOSER_PROTOCOL_ATTEMPTS"); do
+    # The retry work slice may dispatch a conflict/CI fixer in this shared
+    # checkout. Re-establish main and rebuild the pack before every paid attempt;
+    # if a fixer left an in-progress merge or dirty tree, fail closed instead of
+    # composing against that PR branch.
+    mstatus composing
+    if ! composer_prepare_repo; then
+      log "composer pre-sync failed — model was not run; retrying next tick"
+      [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
+      return 1
+    fi
     before=$(mf_recent_issues_json) || {
       log "composer protocol: cannot snapshot repository issues — retrying next tick"
       break
@@ -1016,8 +1054,9 @@ finish the manifest contract this time."
     local repair_expected_count=0
     [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
       && repair_expected_count=$COMPOSER_REQUEST_EXACT_COUNT
-    if composer_manifest_validate_or_repair "$manifest" "$before" "$after" "$run_id" "" \
-      "$repair_expected_count" "$invalid_new_seen"; then
+    if composer_manifest_validate_or_idle "$manifest" "$before" "$after" "$run_id" "" \
+      "$repair_expected_count" "$invalid_new_seen" "$transport" \
+      "$COMPOSER_REQUEST_ID" "$newnums"; then
       case "$MF_MANIFEST_KIND" in
         issues)
           if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
@@ -1084,6 +1123,7 @@ finish the manifest contract this time."
               return 2
             }
             outcome=idle
+            log "composer outcome: idle (no new issues or quarantined artifacts)"
             break
           fi
           ;;
@@ -1119,6 +1159,9 @@ finish the manifest contract this time."
       return 2
     }
     log "composer protocol failure (attempt $attempt/$MF_COMPOSER_PROTOCOL_ATTEMPTS, transport=$transport)"
+    if [ "$attempt" -lt "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
+      composer_retry_work_slice
+    fi
   done
 
   if [ "$outcome" = protocol ]; then
@@ -1145,7 +1188,11 @@ finish the manifest contract this time."
       return 1
     }
   fi
-  [ "$outcome" = created ] && fetch_issues
+  if [ "$outcome" = created ]; then
+    fetch_issues
+    return $?
+  fi
+  return 0
 }
 
 scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle workers
@@ -1696,6 +1743,29 @@ drained_check(){ # $1=mode
   fi
 }
 
+composer_retry_work_slice(){
+  [ "$COMPOSER_TICK_ACTIVE" -eq 1 ] || return 0
+  [ "$COMPOSER_TICK_MERGER_RAN" -eq 0 ] || return 0
+  local mode
+  mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
+  log "composer retry pending: giving scheduler and merge lanes their tick slice"
+  # TICK_ISSUES was snapshotted before composition, so an ordinary retry cannot
+  # schedule its quarantined artifacts. Owner-request failures retain the
+  # stronger historical rule: never schedule at all until the request validates.
+  if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+    log "scheduler paused: owner-request composer retry is fail-closed"
+  elif [ -e "$CONTROL/composer-discovery-fence" ]; then
+    log "scheduler paused: unresolved composer discovery fence"
+  else
+    mstatus scheduling
+    scheduler "$mode"
+  fi
+  mstatus merging
+  merger_step
+  COMPOSER_TICK_MERGER_RAN=1
+  mstatus composing
+}
+
 tick(){
   [ -f "$MFSTATE/STOP" ] && { notify "STOP file present — master exiting"; exit 0; }
   local mode; mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
@@ -1705,20 +1775,30 @@ tick(){
   process_acks
   stall_check
   local composer_rc=0
+  COMPOSER_TICK_ACTIVE=1
+  COMPOSER_TICK_MERGER_RAN=0
   composer_step "$mode" || composer_rc=$?
+  COMPOSER_TICK_ACTIVE=0
   # The composer (and merger LLM/regate paths) can block this tick for minutes;
   # re-read the mode so a close-down/run-out issued meanwhile is honored BEFORE
   # the scheduler hands out new work (caught live: stale 'run' assigned an issue
   # 6 minutes into close-down).
   mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
+  # Always retain the normal post-composer scheduler pass. In particular, this
+  # assigns issues accepted by attempt 2 in the same tick. The retry slice only
+  # consumes the merge lane, whose LLM paths can mutate the shared checkout.
   if [ -e "$CONTROL/composer-discovery-fence" ]; then
     log "scheduler paused: unresolved composer discovery fence"
   elif [ "$composer_rc" -eq 2 ]; then
     log "scheduler paused: composer returned a fail-closed safety signal"
   else
+    mstatus scheduling
     scheduler "$mode"
   fi
-  merger_step
+  if [ "$COMPOSER_TICK_MERGER_RAN" -eq 0 ]; then
+    mstatus merging
+    merger_step
+  fi
   drained_check "$mode"
   mstatus idle
 }
