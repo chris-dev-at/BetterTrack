@@ -1,4 +1,6 @@
 export * from './driveConnection';
+export * from './driveConnectionRegistry';
+export * from './driveMigration';
 export * from './mediaSwitcher';
 export * from './replicatedDataHome';
 export * from './retirementProof';
