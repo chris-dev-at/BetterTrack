@@ -78,6 +78,24 @@ async function createVault(
     .expect(201);
 }
 
+/**
+ * Stamp the R3 full-doc-set attestation a freshly created vault does NOT have:
+ * `media` is the owner's declared selection, `media_attested_at` is the server's
+ * record that the doc set was actually verified across it. Production writes
+ * this pair through `PATCH /vaults/:id/media` (covered end to end in
+ * `vaultsE1.test.ts`); stamping it directly keeps this suite on its own subject,
+ * and `vaults_media_attestation_state` still rejects an incoherent fixture.
+ */
+async function attestFullDocSet(vaultId: string, connectionId: string) {
+  await h.db
+    .update(vaults)
+    .set({
+      mediaAttestedAt: new Date('2026-08-22T09:00:00.000Z'),
+      mediaAttestedDriveConnectionId: connectionId,
+    })
+    .where(eq(vaults.id, vaultId));
+}
+
 describe('Drive connection registry', () => {
   it('pins every mounted route as cookie-session-only in the bearer census', () => {
     const expected = [
@@ -300,7 +318,7 @@ describe('Drive connection registry', () => {
     );
   });
 
-  it('refuses a bound disconnect, detaches replicated vaults only after acknowledgement, audits both, and leaves Drive-only protected', async () => {
+  it('refuses a bound disconnect, detaches a VERIFIED replicated vault only after acknowledgement, audits both, and leaves Drive-only protected', async () => {
     const user = await h.seedUser({ email: 'drive-bound@bt.test', username: 'drive_bound' });
     const agent = await login(user);
     const replicatedConnection = await connect(agent, {
@@ -313,6 +331,7 @@ describe('Drive connection registry', () => {
       ['server', 'drive'],
       'Replicated vault',
     );
+    await attestFullDocSet(replicatedVault.body.vault.id, replicatedConnection.id);
 
     const refused = await agent
       .delete(`/api/v1/drive-connections/${replicatedConnection.id}`)
@@ -328,7 +347,14 @@ describe('Drive connection registry', () => {
       .select()
       .from(vaults)
       .where(eq(vaults.id, replicatedVault.body.vault.id));
-    expect(detached).toMatchObject({ media: ['server'], driveConnectionId: null });
+    expect(detached).toMatchObject({
+      media: ['server'],
+      driveConnectionId: null,
+      // The attestation covered a media set including the Drive copy this row no
+      // longer reaches, so it is void with it (§16, 2026-08-21).
+      mediaAttestedAt: null,
+      mediaAttestedDriveConnectionId: null,
+    });
     expect(
       await h.db
         .select()
@@ -373,5 +399,73 @@ describe('Drive connection registry', () => {
       .set(...XRW)
       .expect(409);
     expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+  });
+
+  it('refuses to detach a server+drive vault whose server copy was never verified, acknowledged or not', async () => {
+    // The data-loss shape the media LABEL hides: a vault created
+    // `['server','drive']` carries no attestation and zero blobs until the first
+    // full-doc-set verification, so detaching it here would strand every doc in
+    // a Drive we just unbound — while the acknowledgement copy promises "keeps
+    // each verified server copy exactly as it is".
+    const user = await h.seedUser({
+      email: 'drive-unverified@bt.test',
+      username: 'drive_unverified',
+    });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'unverified-server-copy',
+      email: 'unverified@example.test',
+    });
+    const vault = await createVault(
+      agent,
+      connection.id,
+      ['server', 'drive'],
+      'Declared-but-unverified vault',
+    );
+    const [created] = await h.db.select().from(vaults).where(eq(vaults.id, vault.body.vault.id));
+    expect(created?.mediaAttestedAt).toBeNull();
+
+    // Both attempts meet the same refusal, and `last_medium` is decided before
+    // the acknowledgement: the owner is never invited to accept a loss of reach
+    // that would in fact be a loss of data.
+    const refused = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .expect(409);
+    expect(refused.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+    expect(refused.body.error.message).toMatch(/verified server copy/i);
+    const acknowledged = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .expect(409);
+    expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+
+    // Nothing moved: binding, media and the registry row are exactly as created.
+    const [untouched] = await h.db.select().from(vaults).where(eq(vaults.id, vault.body.vault.id));
+    expect(untouched).toMatchObject({
+      media: ['server', 'drive'],
+      driveConnectionId: connection.id,
+    });
+    expect(
+      await h.db.select().from(driveConnections).where(eq(driveConnections.id, connection.id)),
+    ).toHaveLength(1);
+
+    // The same vault detaches cleanly once the server copy is actually verified.
+    await attestFullDocSet(vault.body.vault.id, connection.id);
+    const bound = await agent
+      .delete(`/api/v1/drive-connections/${connection.id}`)
+      .set(...XRW)
+      .expect(409);
+    expect(bound.body.error.code).toBe('DRIVE_CONNECTION_BOUND');
+    await agent
+      .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+      .set(...XRW)
+      .expect(204);
+    const [detached] = await h.db.select().from(vaults).where(eq(vaults.id, vault.body.vault.id));
+    expect(detached).toMatchObject({
+      media: ['server'],
+      driveConnectionId: null,
+      mediaAttestedAt: null,
+    });
   });
 });

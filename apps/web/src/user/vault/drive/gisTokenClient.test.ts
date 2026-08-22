@@ -12,19 +12,28 @@ import {
 import { readGoogleDriveIdentity } from './driveIdentity';
 
 describe('Google Drive GIS token client', () => {
-  it('contains no retired hidden-folder scope anywhere in shipped web source', () => {
-    const root = resolve(process.cwd(), 'src');
-    const shipped: string[] = [];
+  it('contains no retired hidden-folder scope in shipped web source or operator files', () => {
+    // `infra` is in scope deliberately (E5 review F5): the source moved to
+    // drive.file while four operator files still told a deployer to create an
+    // app-data credential, and a pin that walked only `src` could not see it. A
+    // wrong Google credential is a real deployment failure, not a typo.
+    const roots = [resolve(process.cwd(), 'src'), resolve(process.cwd(), '..', '..', 'infra')];
+    const scanned: string[] = [];
     const visit = (directory: string) => {
       for (const name of readdirSync(directory)) {
+        if (name === 'node_modules') continue;
         const path = resolve(directory, name);
         if (statSync(path).isDirectory()) visit(path);
         else if (!/\.(test|spec)\.[cm]?[jt]sx?$/u.test(name))
-          shipped.push(readFileSync(path, 'utf8'));
+          scanned.push(readFileSync(path, 'utf8'));
       }
     };
-    visit(root);
-    expect(shipped.join('\n')).not.toContain('drive.appdata');
+    for (const root of roots) visit(root);
+    const corpus = scanned.join('\n');
+    // Proof the infra walk actually landed: without it this assertion would
+    // pass on an empty corpus if the relative path ever drifted.
+    expect(corpus).toContain('BT_GOOGLE_DRIVE_CLIENT_ID');
+    expect(corpus).not.toContain('drive.appdata');
     expect(DRIVE_FILE_SCOPE).toBe('https://www.googleapis.com/auth/drive.file');
   });
 

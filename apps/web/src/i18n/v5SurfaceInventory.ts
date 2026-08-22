@@ -1654,6 +1654,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'AccountModeRoot resolves the same account-scoped privacy query before the authenticated home board can mount.',
     delegatedTo: 'AccountModeRoot',
   },
+  {
+    component: 'user/control/panels/ConnectionsPanel.tsx',
+    read: 'ConnectionsPanel.vaultConfigs',
+    states: ['loading', 'error'],
+    reason:
+      'This read decides whether the Drive-connections group EXISTS (an account with no vault has nothing to bind one to), so the group is deliberately absent while it is unresolved or failing rather than flashing a titled skeleton — and an error card at accounts that should never see the group would be worse than its absence. Once it resolves with a vault, DriveAccountsSection observes the very same query key and renders that read’s skeleton and load-error itself.',
+    delegatedTo: 'DriveAccountsSection',
+  },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
 /**
@@ -1800,8 +1808,14 @@ export type V5AsyncStateDebtLedger = Readonly<
  * 181 → 182 with the W1 review: HealthPage gained the read-only backup/restore
  * drill panel the Overview's attention row links to. It observes both its
  * loading and its error state, so the zero-debt ceiling below is unaffected.
+ *
+ * 184 → 185 with the E5 review (PR #1460, F1): ConnectionsPanel hoists the vault
+ * config read that decides whether the Drive-connections group has an audience
+ * at all. It is one request, not a second — the group's own section observes the
+ * same query key — and it is exempted above rather than added to the debt: an
+ * absent group is the designed answer while it is unresolved or failing.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 184;
+export const V5_ASYNC_READ_SITE_BASELINE = 185;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

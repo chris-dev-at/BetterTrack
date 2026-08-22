@@ -793,7 +793,7 @@ export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimi
           throw new ApiError(
             409,
             'DRIVE_CONNECTION_LAST_MEDIUM',
-            'A Drive-only vault must gain another verified medium before this connection can be removed.',
+            'This Drive connection holds the only verified copy of a bound vault. Selecting the server medium is not enough: that vault must first hold a verified server copy (a completed full-doc-set attestation), or move to another Drive connection, before this connection can be removed.',
             { vaults: result.vaults },
           );
       }

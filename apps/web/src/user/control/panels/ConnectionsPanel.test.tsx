@@ -455,16 +455,47 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
     ).not.toBeInTheDocument();
   });
 
-  test('a normal-mode account gets no group, no button and no requests for it', async () => {
-    // A Drive connection can only bind to a paranoid vault, so for everyone
-    // else the whole group — and both of its reads — must not exist, however
-    // the deployment sets BT_GOOGLE_DRIVE_CLIENT_ID (anti-bloat rule).
+  test('a new-model vault owner sees the group although the retired privacy column says normal', async () => {
+    // The audience is "owns a vault", NOT `privacyMode`: per §16 (2026-08-21,
+    // E2) that column reports 'normal' for every new-model vault owner and E9
+    // deletes it, so gating on 'paranoid' hid the whole E5 surface from exactly
+    // the accounts E8 creates.
     vi.mocked(listDriveConnections).mockResolvedValue([y, z]);
     vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
     window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
-    renderPanel('/settings/connections', { driveMoveVault: vi.fn() });
+    renderPanel('/settings/connections', { driveRegistry: registry() });
+
+    expect(await screen.findByText('Google Drive connections')).toBeInTheDocument();
+    expect(await screen.findByText('Drive Y · y@example.test')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Connect another Drive account' }),
+    ).toBeInTheDocument();
+    // The audience test and the section share one query key, so deciding it
+    // costs no second request.
+    expect(listVaultConfigs).toHaveBeenCalledTimes(1);
+  });
+
+  test('a legacy paranoid account keeps the group with no new-model vault', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([]);
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel('/settings/connections', { driveRegistry: registry() }, 'paranoid');
+
+    expect(await screen.findByText('Google Drive connections')).toBeInTheDocument();
+    expect(await screen.findByText('Drive Y · y@example.test')).toBeInTheDocument();
+  });
+
+  test('an account with no vault at all gets no group, no button and no connections read', async () => {
+    // Nothing to bind a Drive account to, so the group — and the registry read
+    // that would fill it — must not exist, however the deployment sets
+    // BT_GOOGLE_DRIVE_CLIENT_ID (anti-bloat rule).
+    vi.mocked(listDriveConnections).mockResolvedValue([y, z]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([]);
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel('/settings/connections', { driveRegistry: registry(), driveMoveVault: vi.fn() });
 
     expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    await waitFor(() => expect(listVaultConfigs).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(screen.queryByText('Google Drive connections')).not.toBeInTheDocument(),
     );
@@ -472,7 +503,21 @@ describe('ConnectionsPanel — Drive connection registry (E5)', () => {
       screen.queryByRole('button', { name: /Connect a(nother)? Drive account/ }),
     ).not.toBeInTheDocument();
     expect(listDriveConnections).not.toHaveBeenCalled();
+  });
+
+  test('without a runtime Drive client id nothing renders and nothing is requested', async () => {
+    // Capability, not audience: no client id ⇒ no registry ⇒ not even the vault
+    // read that decides the audience.
+    vi.mocked(listDriveConnections).mockResolvedValue([y, z]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    renderPanel('/settings/connections', {}, 'paranoid');
+
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('Google Drive connections')).not.toBeInTheDocument(),
+    );
     expect(listVaultConfigs).not.toHaveBeenCalled();
+    expect(listDriveConnections).not.toHaveBeenCalled();
   });
 });
 

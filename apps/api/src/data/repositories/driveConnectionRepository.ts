@@ -119,7 +119,12 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
         if (!connection) return { status: 'not_found' as const };
 
         const bound = await tx
-          .select({ id: vaults.id, name: vaults.name, media: vaults.media })
+          .select({
+            id: vaults.id,
+            name: vaults.name,
+            media: vaults.media,
+            mediaAttestedAt: vaults.mediaAttestedAt,
+          })
           .from(vaults)
           .where(and(eq(vaults.userId, userId), eq(vaults.driveConnectionId, connectionId)))
           .orderBy(asc(vaults.name), asc(vaults.id))
@@ -131,12 +136,26 @@ export function createDriveConnectionRepository(db: Database): DriveConnectionRe
         // unreachable, not preserved. Logged as a deliberate narrowing of the
         // #1415 acceptance line in PROJECTPLAN §16 (2026-08-21).
         //
+        // `media` alone is NOT the test. It is the owner's DECLARED selection,
+        // written at creation before a single byte exists: a vault created
+        // `['server','drive']` carries `media_attested_at = null` and zero
+        // `vault_blobs` rows until the first R3 full-doc-set attestation, so
+        // trusting the label would detach it while the acknowledgement copy
+        // promises "keeps each verified server copy exactly as it is" — of a
+        // server copy that is not there. `media_attested_at` is the server's
+        // own record that the full doc set was verified across the media, and
+        // `vaults_media_attestation_state` ties that stamp to this very Drive
+        // binding, so a non-null stamp on a server-selected vault is exactly
+        // "a verified server copy exists". Anything else is last-medium.
+        //
         // Order matters for honesty, not for safety: `last_medium` does not
-        // depend on the acknowledgement, so deciding it first spares a
-        // Drive-only owner the detour of accepting a loss of reach that was
-        // never on offer (they would otherwise see BOUND, acknowledge it, and
-        // only then meet the refusal that held all along).
-        const lastMedium = bound.filter(({ media }) => !media.includes('server'));
+        // depend on the acknowledgement, so deciding it first spares such an
+        // owner the detour of accepting a loss of reach that was never on offer
+        // (they would otherwise see BOUND, acknowledge it, and only then meet
+        // the refusal that held all along).
+        const lastMedium = bound.filter(
+          ({ media, mediaAttestedAt }) => !media.includes('server') || mediaAttestedAt === null,
+        );
         if (lastMedium.length > 0) {
           return {
             status: 'last_medium' as const,

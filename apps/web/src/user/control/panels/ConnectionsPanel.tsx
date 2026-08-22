@@ -1047,7 +1047,9 @@ export function ConnectionsPanel({
    * needs one source/target `DriveDataHome` PAIR PER DOCUMENT and a replicated
    * write path for the §8 identity echo, and the live runtime still composes the
    * single account-scoped envelope-v1 home. Both arrive with the client-engine
-   * re-home in E6 (#1416), which is where this prop gets its implementation.
+   * re-home in E6 (#1416), which is where this prop gets its implementation,
+   * and the vault UI that surfaces it lands in E8 (#1418). Recorded as an
+   * unmet #1415 acceptance line in PROJECTPLAN §16 (2026-08-22).
    */
   driveMoveVault?: (vaultId: string, connectionId: string) => Promise<DriveVaultMoveResult>;
   driveConfigured?: boolean;
@@ -1056,12 +1058,18 @@ export function ConnectionsPanel({
   const runtime = useOptionalVaultRuntime();
   const privacy = useResolvedPrivacyModeState();
   const driveClientId = getGoogleDriveClientId();
-  // Today only paranoid accounts reach any Drive-backed vault surface (the
-  // schema itself does not gate vault creation on privacy mode), so a
-  // normal-mode account must not see the group at all — not an empty one, and
-  // not the two requests that would fill it. The runtime client id is
-  // deployment config, never the audience gate (anti-bloat rule, §13.5).
-  const paranoid = privacy.privacyMode === 'paranoid';
+  // The account-level `privacyMode` is NOT the audience gate. It is the retired
+  // v1 column: per §16 (2026-08-21, E2) it reports 'normal' for every new-model
+  // vault owner and E9 deletes it, and `createVault` never writes 'paranoid' —
+  // only the legacy enable ceremony did. Gating on it hid this whole group from
+  // exactly the owners E8 creates.
+  //
+  // What makes the group meaningful is owning a vault to bind a Drive account
+  // to, so the audience is "has at least one vault", with legacy paranoid
+  // accounts kept in the OR until E9 removes their account-level rail. The
+  // runtime client id stays capability, not audience: without it there is no
+  // registry, so nothing renders and nothing is requested.
+  const legacyParanoid = privacy.privacyMode === 'paranoid';
   const resolvedDriveRegistry = useMemo(
     () =>
       driveRegistry === undefined
@@ -1082,13 +1090,26 @@ export function ConnectionsPanel({
     driveConnection === undefined ? (runtime?.connection ?? null) : driveConnection;
   const resolvedDriveUnlock =
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
+  // The section's own vault read, hoisted so the answer decides whether the
+  // section exists at all. Same key and staleTime, so the two observers share
+  // ONE request — the audience test costs nothing extra once the group renders,
+  // and an account with no vault pays a single cheap config read instead of the
+  // pair (connections + vaults) the group would fire.
+  const vaultConfigs = useQuery({
+    queryKey: VAULT_CONFIGS_KEY,
+    queryFn: ({ signal }) => listVaultConfigs(signal),
+    staleTime: 15_000,
+    enabled: resolvedDriveRegistry != null,
+  });
+  const showDriveAccounts =
+    resolvedDriveRegistry != null && (legacyParanoid || (vaultConfigs.data?.length ?? 0) > 0);
   return (
     <div className="bt-cc-panel">
       <PanelHead title={t('control.connections')} />
 
       <GoogleSection />
 
-      {paranoid && resolvedDriveRegistry ? (
+      {showDriveAccounts && resolvedDriveRegistry ? (
         <DriveAccountsSection registry={resolvedDriveRegistry} moveVault={driveMoveVault} />
       ) : null}
 

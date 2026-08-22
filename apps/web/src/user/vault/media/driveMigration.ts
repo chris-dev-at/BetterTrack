@@ -97,10 +97,12 @@ interface PreparedDocument {
  * for `rewriteDriveIdentityEcho`, and the production runtime still composes the
  * single account-scoped envelope-v1 Drive home (`media/runtime.ts`), which has
  * neither. E6 (#1416) re-homes the client engine per vault/document and is
- * where Settings → Connections gets its `driveMoveVault` — until then this
- * module is reached only from `driveMigration.test.ts`. Two acceptance lines of
- * #1415 therefore complete with #1416, not here: "both vaults sync" and "a
- * failure to delete from Y is reported to the user, not swallowed".
+ * where Settings → Connections gets its `driveMoveVault`; E8 (#1418) brings the
+ * vault UI that surfaces it — until then this module is reached only from
+ * `driveMigration.test.ts`. Two acceptance lines of #1415 therefore complete
+ * with #1416/#1418, not here: "both vaults sync" and "a failure to delete from
+ * Y is reported to the user, not swallowed". Logged in PROJECTPLAN §16
+ * (2026-08-22) so the gap is recorded rather than claimed as shipped.
  */
 export async function migrateDriveConnection(
   options: DriveConnectionMigrationOptions,
