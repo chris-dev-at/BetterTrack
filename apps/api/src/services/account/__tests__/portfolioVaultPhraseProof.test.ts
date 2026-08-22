@@ -45,6 +45,13 @@ const CHALLENGE_NONCE = 'TEST_VECTOR_deterministic_nonce_32';
 const DOCUMENT_SET_HASH = 'S'.repeat(43);
 const document = { schemaVersion: 1, entities: [], mergeLog: [], mirrorProvenance: [] };
 
+function mutateBase64urlSignificantBit(value: string): string {
+  if (value.length === 0) throw new Error('TEST VECTOR requires non-empty base64url');
+  // The final unpadded character can carry unused bits. Mutating the first
+  // character guarantees the decoded payload changes as well as its spelling.
+  return `${value[0] === 'A' ? 'B' : 'A'}${value.slice(1)}`;
+}
+
 function proof(
   overrides: { documentDigest?: string; documentSetHash?: string; challenge?: string } = {},
 ) {
@@ -156,7 +163,10 @@ describe('portfolio vault move-out phrase proof', () => {
     ],
     [
       'MAC byte',
-      (challenge: string) => `${challenge.slice(0, -1)}${challenge.endsWith('A') ? 'B' : 'A'}`,
+      (challenge: string) => {
+        const [encoded, mac] = challenge.split('.');
+        return `${encoded}.${mutateBase64urlSignificantBit(mac!)}`;
+      },
     ],
     ['missing MAC', (challenge: string) => challenge.split('.')[0]!],
     ['extra segment', (challenge: string) => `${challenge}.extra`],
@@ -220,7 +230,7 @@ describe('portfolio vault move-out phrase proof', () => {
           const signed = proof();
           return {
             ...signed,
-            signature: `${signed.signature.slice(0, -1)}${signed.signature.endsWith('A') ? 'B' : 'A'}`,
+            signature: mutateBase64urlSignificantBit(signed.signature),
           };
         })(),
       },

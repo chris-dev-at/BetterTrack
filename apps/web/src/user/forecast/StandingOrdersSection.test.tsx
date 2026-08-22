@@ -38,7 +38,7 @@ import {
 import { createStandingOrderMaterializationLifecycle } from '../vault/standingOrders/lifecycle';
 import type { StandingOrderMaterializationResult } from '../vault/standingOrders/materialize';
 import { standingOrderOccurrenceId } from '../vault/standingOrders/occurrenceId';
-import { createVaultPortfolioStore, VaultPortfolioStoreError } from '../vault/vaultPortfolioStore';
+import { createVaultPortfolioStore } from '../vault/vaultPortfolioStore';
 
 const PORTFOLIOS: PortfolioSummary[] = [
   {
@@ -58,6 +58,7 @@ const VAULT_BOOKED_ID = '018f0000-0000-7000-8000-000000000303';
 const VAULT_PAUSED_ID = '018f0000-0000-7000-8000-000000000304';
 const VAULT_FUTURE_ID = '018f0000-0000-7000-8000-000000000305';
 const VAULT_INSUFFICIENT_ID = '018f0000-0000-7000-8000-000000000306';
+const VAULT_OVERSOLD_TRANSACTION_ID = '018f0000-0000-7000-8000-000000000307';
 const VAULT_SCAN_AT = '2026-07-26T22:30:00.000Z';
 
 function makeOrder(over: Partial<StandingOrder> = {}): StandingOrder {
@@ -213,8 +214,9 @@ describe('StandingOrdersSection', () => {
         label: 'Deferred quote',
       }),
       vaultStandingOrder(VAULT_FAILED_ID, {
-        kind: 'cash-add',
-        assetId: null,
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.usdAsset,
+        currency: 'USD',
         label: 'Commit failure',
       }),
       vaultStandingOrder(VAULT_BOOKED_ID, { label: 'Salary' }),
@@ -245,22 +247,14 @@ describe('StandingOrdersSection', () => {
       ...(document.entities.cashMovement ?? []),
       vaultStandingOrderWithdrawal(priorRunId, '-1', '2026-07-22T08:00:00.000Z'),
     ];
+    // The order's own store commit must reject this persisted oversell rather
+    // than relying on a test double to manufacture a failure.
+    document.entities.transaction = [
+      ...(document.entities.transaction ?? []),
+      vaultOversoldTransaction(VAULT_OVERSOLD_TRANSACTION_ID),
+    ];
     const sync = createMutableTestSync(document, fixture.header);
     const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
-    const materializeOccurrence = store.materializeStandingOrderOccurrence.bind(store);
-    const commitOccurrence = vi
-      .spyOn(store, 'materializeStandingOrderOccurrence')
-      .mockImplementation((input, signal) => {
-        if (input.orderId === VAULT_FAILED_ID) {
-          return Promise.reject(
-            new VaultPortfolioStoreError(
-              'VAULT_DATA_INVALID',
-              'The test commit is deliberately invalid.',
-            ),
-          );
-        }
-        return materializeOccurrence(input, signal);
-      });
     const baseMarket = createClientMoneyMarket();
     let quoteRecovered = false;
     const market: MarketDataSource = {
@@ -305,10 +299,6 @@ describe('StandingOrdersSection', () => {
         failed: [{ orderId: VAULT_FAILED_ID, dueDate: '2026-07-27', errorCode: 'VAULT_CORRUPT' }],
       },
     });
-    expect(commitOccurrence).toHaveBeenCalledWith(
-      expect.objectContaining({ orderId: VAULT_FAILED_ID }),
-      undefined,
-    );
     renderVaultSection({ engine, sync, store });
 
     await waitFor(() =>
@@ -775,6 +765,33 @@ function vaultStandingOrderWithdrawal(
       dedupHash: null,
       originalCurrency: null,
       createdAt: executedAt,
+    },
+  };
+}
+
+function vaultOversoldTransaction(id: string): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: '2026-07-27T00:00:00.000Z',
+    editedBy: CLIENT_MONEY_IDS.device,
+    deletedAt: null,
+    data: {
+      portfolioId: CLIENT_MONEY_IDS.portfolio,
+      assetId: CLIENT_MONEY_IDS.usdAsset,
+      side: 'sell',
+      quantity: '1000',
+      price: '50',
+      fee: '0',
+      executedAt: '2026-07-27T00:00:00.000Z',
+      note: null,
+      taxMode: null,
+      taxCountry: null,
+      taxAmountEur: null,
+      taxParams: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
+      source: 'manual',
     },
   };
 }
