@@ -16,19 +16,33 @@ export function TodayChangeWidget({ scopedPortfolios, portfoliosLoading }: Widge
   const loading = portfoliosLoading || rollup.loading;
 
   if (loading) return <SkeletonBlock height={58} />;
+  if (rollup.status === 'unavailable') {
+    return <p className="bt-soft text-sm">{t('common.unavailable')}</p>;
+  }
 
   return (
-    <StatStrip>
-      <Stat
-        delta={formatSignedPercent(rollup.dayChangePct)}
-        deltaTone={rollup.dayChange > 0 ? 'pos' : rollup.dayChange < 0 ? 'neg' : 'muted'}
-        label={t('home.widgets.todayChange.label')}
-        value={<MoneyText amount={rollup.dayChange} signed />}
-      />
-      <Stat
-        label={t('home.widgets.todayChange.totalLabel')}
-        value={<MoneyText amount={rollup.totalValue} />}
-      />
-    </StatStrip>
+    <div>
+      <StatStrip>
+        <Stat
+          delta={formatSignedPercent(rollup.dayChangePct.valuePct)}
+          deltaTone={
+            rollup.dayChange.valueEur > 0 ? 'pos' : rollup.dayChange.valueEur < 0 ? 'neg' : 'muted'
+          }
+          label={t('home.widgets.todayChange.label')}
+          value={<MoneyText amount={rollup.dayChange.valueEur} signed />}
+        />
+        <Stat
+          label={t('home.widgets.todayChange.totalLabel')}
+          value={<MoneyText amount={rollup.totalValue.valueEur} />}
+        />
+      </StatStrip>
+      {rollup.totalValue.coverage.kind === 'partial' ? (
+        <p className="bt-meta">
+          {t(rollup.totalValue.coverage.qualifier.messageKey, {
+            count: rollup.totalValue.coverage.qualifier.count,
+          })}
+        </p>
+      ) : null}
+    </div>
   );
 }

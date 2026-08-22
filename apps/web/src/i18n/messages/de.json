@@ -3920,7 +3920,8 @@
         "portfolioSnapshots": "Abgeleiteter Bewertungscache; wird aus Quelldaten und Marktdaten neu erstellt.",
         "snapshotState": "Abgeleitete Buchführung zur Snapshot-Invalidierung.",
         "standingOrderRuns": "Idempotenz-Buchführung; gebuchte Zeilen und Definitionen werden exportiert.",
-        "expenseBudgetFires": "Abgeleitete Buchführung für Alarmzustellungen."
+        "expenseBudgetFires": "Abgeleitete Buchführung für Alarmzustellungen.",
+        "cashBudgetFires": "Periodenbezogene Auslösemarkierung für Cashflow-Budgets; interne Buchführung für genau eine Warnung, keine Nutzerdaten."
       }
     }
   },
@@ -5989,6 +5990,10 @@
       "setCount": "{{count}} erledigt",
       "laterCount": "{{count}} für später"
     }
+  },
+  "vaultComposition": {
+    "lockedPortfoliosQualifierOne": "+ {{count}} gesperrtes Portfolio",
+    "lockedPortfoliosQualifierOther": "+ {{count}} gesperrte Portfolios"
   },
   "vaultMoney": {
     "error": {

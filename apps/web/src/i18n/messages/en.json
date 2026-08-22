@@ -3920,7 +3920,8 @@
         "portfolioSnapshots": "Derived valuation cache; rebuilt from source rows and market data.",
         "snapshotState": "Derived snapshot invalidation bookkeeping.",
         "standingOrderRuns": "Idempotency bookkeeping; materialized rows and definitions are exported.",
-        "expenseBudgetFires": "Derived alert-delivery bookkeeping."
+        "expenseBudgetFires": "Derived alert-delivery bookkeeping.",
+        "cashBudgetFires": "Cash-flow budget per-period fired marker; internal exactly-once alert bookkeeping, not user data."
       }
     }
   },
@@ -5989,6 +5990,10 @@
       "setCount": "{{count}} set",
       "laterCount": "{{count}} left for later"
     }
+  },
+  "vaultComposition": {
+    "lockedPortfoliosQualifierOne": "+ {{count}} locked portfolio",
+    "lockedPortfoliosQualifierOther": "+ {{count}} locked portfolios"
   },
   "vaultMoney": {
     "error": {

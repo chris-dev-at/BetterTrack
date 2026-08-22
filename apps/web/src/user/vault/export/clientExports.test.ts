@@ -3,6 +3,8 @@ import { webcrypto } from 'node:crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { VaultEntity } from '@bettertrack/contracts';
+
 import { createVaultMoneyEngine } from '../engine';
 import {
   CLIENT_MONEY_IDS,
@@ -123,7 +125,12 @@ describe('paranoid client exports', () => {
         'csv/holdings.csv',
         'csv/transactions.csv',
         'data/cashMovements.json',
+        'data/cashMovementTags.json',
         'data/cashSources.json',
+        'data/cashBudgets.json',
+        'data/cashRules.json',
+        'data/cashRuleTags.json',
+        'data/cashTags.json',
         'data/customAssetPriceHistory.json',
         'data/customAssets.json',
         'data/dividends.json',
@@ -154,6 +161,13 @@ describe('paranoid client exports', () => {
     expect(strFromU8(files['csv/transactions.csv']!)).toContain(
       `"'=HYPERLINK(""https://invalid"")"`,
     );
+    expect(strFromU8(files['csv/holdings.csv']!)).toBe(
+      `${[
+        'portfolioId,assetId,netQuantity',
+        `${CLIENT_MONEY_IDS.portfolio},${CLIENT_MONEY_IDS.eurAsset},8`,
+        `${CLIENT_MONEY_IDS.portfolio},${CLIENT_MONEY_IDS.usdAsset},5`,
+      ].join('\n')}\n`,
+    );
     expect(strFromU8(files['README.txt']!)).toContain(
       'lokal aus deinem entsperrten verschlüsselten Tresor',
     );
@@ -168,6 +182,128 @@ describe('paranoid client exports', () => {
     expect(allDecoded).not.toContain('"editedBy"');
     expect(storageWrite).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('exports every authoritative cash-fusion row and declares its derived fire ledger skipped', async () => {
+    // TEST VECTOR: one live row of every authoritative E0 cash-fusion kind,
+    // plus a derived fire and a tombstoned tag that must not leave the device.
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const movementId = document.entities.cashMovement?.[0]?.id;
+    if (movementId === undefined) throw new Error('TEST VECTOR cash movement is missing.');
+    const tagId = '018f0000-0000-7000-8000-000000000401';
+    const linkId = '018f0000-0000-7000-8000-000000000402';
+    const budgetId = '018f0000-0000-7000-8000-000000000403';
+    const fireId = '018f0000-0000-7000-8000-000000000404';
+    const ruleId = '018f0000-0000-7000-8000-000000000405';
+    const ruleTagId = '018f0000-0000-7000-8000-000000000406';
+    const deletedTagId = '018f0000-0000-7000-8000-000000000407';
+    document.entities.cashTag = [
+      exportEntity(tagId, {
+        userId: CLIENT_MONEY_IDS.user,
+        name: 'TEST VECTOR groceries',
+        color: '#123456',
+        system: false,
+        systemKey: null,
+        createdAt: '2026-07-01T10:00:00.000Z',
+        updatedAt: '2026-07-01T10:00:00.000Z',
+      }),
+      exportEntity(
+        deletedTagId,
+        {
+          userId: CLIENT_MONEY_IDS.user,
+          name: 'TEST VECTOR removed',
+          color: '#654321',
+          system: false,
+          systemKey: null,
+          createdAt: '2026-07-01T10:00:00.000Z',
+          updatedAt: '2026-07-02T10:00:00.000Z',
+        },
+        '2026-07-03T10:00:00.000Z',
+      ),
+    ];
+    document.entities.cashMovementTag = [
+      exportEntity(linkId, {
+        movementId,
+        tagId,
+        createdAt: '2026-07-01T10:00:00.000Z',
+      }),
+    ];
+    document.entities.cashBudget = [
+      exportEntity(budgetId, {
+        portfolioId: CLIENT_MONEY_IDS.portfolio,
+        tagId,
+        periodKey: null,
+        amount: '1234.56789012',
+        currency: 'EUR',
+        createdAt: '2026-07-01T10:00:00.000Z',
+        updatedAt: '2026-07-01T10:00:00.000Z',
+      }),
+    ];
+    document.entities.cashBudgetFire = [
+      exportEntity(fireId, {
+        budgetId,
+        periodKey: '2026-07',
+        firedAt: '2026-07-20T10:00:00.000Z',
+      }),
+    ];
+    document.entities.cashRule = [
+      exportEntity(ruleId, {
+        userId: CLIENT_MONEY_IDS.user,
+        matchType: 'contains',
+        pattern: 'market',
+        priority: 1,
+        enabled: true,
+        createdAt: '2026-07-01T10:00:00.000Z',
+        updatedAt: '2026-07-01T10:00:00.000Z',
+      }),
+    ];
+    document.entities.cashRuleTag = [
+      exportEntity(ruleTagId, {
+        ruleId,
+        tagId,
+        createdAt: '2026-07-01T10:00:00.000Z',
+      }),
+    ];
+
+    const exported = await createClientCleartextExport(
+      createMutableTestSync(document, fixture.header, fixture.envelope),
+      { generatedAt: new Date('2026-07-27T12:00:00.000Z'), locale: 'de' },
+    );
+
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) return;
+    expect(exported.value.manifest.entities).toMatchObject({
+      cashTags: 1,
+      cashMovementTags: 1,
+      cashBudgets: 1,
+      cashRules: 1,
+      cashRuleTags: 1,
+    });
+    expect(exported.value.manifest.skippedTables).toContainEqual({
+      table: 'cash_budget_fires',
+      reason:
+        'Periodenbezogene Auslösemarkierung für Cashflow-Budgets; interne Buchführung für genau eine Warnung, keine Nutzerdaten.',
+    });
+
+    const files = unzipSync(exported.value.bytes);
+    expect(files['data/cashBudgetFires.json']).toBeUndefined();
+    const budgets = JSON.parse(strFromU8(files['data/cashBudgets.json']!)) as Array<
+      Record<string, unknown>
+    >;
+    const links = JSON.parse(strFromU8(files['data/cashMovementTags.json']!)) as Array<
+      Record<string, unknown>
+    >;
+    const ruleTags = JSON.parse(strFromU8(files['data/cashRuleTags.json']!)) as Array<
+      Record<string, unknown>
+    >;
+    const tags = JSON.parse(strFromU8(files['data/cashTags.json']!)) as Array<
+      Record<string, unknown>
+    >;
+    expect(budgets).toEqual([expect.objectContaining({ id: budgetId, amount: '1234.56789012' })]);
+    expect(links).toEqual([expect.objectContaining({ id: linkId, movementId, tagId })]);
+    expect(ruleTags).toEqual([expect.objectContaining({ id: ruleTagId, ruleId, tagId })]);
+    expect(tags.map(({ id }) => id)).toEqual([tagId]);
   });
 
   it.each(MALFORMED_TAX_SETTING_CASES)(
@@ -387,6 +523,21 @@ describe('paranoid client exports', () => {
     });
   });
 });
+
+function exportEntity(
+  id: string,
+  data: Record<string, unknown>,
+  deletedAt: string | null = null,
+): VaultEntity {
+  return {
+    id,
+    rev: 1,
+    editedAt: '2026-07-01T10:00:00.000Z',
+    editedBy: CLIENT_MONEY_IDS.device,
+    deletedAt,
+    data,
+  };
+}
 
 function serverCsvFixture(): string {
   return `${[

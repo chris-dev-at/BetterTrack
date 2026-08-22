@@ -10,6 +10,7 @@ import { Badge, Empty, SkeletonBlock } from '../../../ui/origin';
 import { ACTIVE_PORTFOLIO_PARAM } from '../../portfolio/PortfolioSwitcher';
 import { widgetVariant } from '../config';
 import { usePortfolioSummaries } from '../homeData';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -96,11 +97,17 @@ export function PortfolioCardsWidget({
       queryKey: ['portfolio', portfolio.id, 'history', SPARK_RANGE],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         getPortfolioHistory(portfolio.id, SPARK_RANGE, false, signal),
+      enabled: portfolio.vaultId == null,
       staleTime: 3_600_000,
     })),
   });
 
-  if (portfoliosLoading) {
+  const loading =
+    portfoliosLoading ||
+    summaries.some((summary) => summary.isLoading) ||
+    histories.some((history) => history.isLoading);
+
+  if (loading) {
     return (
       <div className="bt-home-pcards">
         <SkeletonBlock height={92} />
@@ -110,6 +117,12 @@ export function PortfolioCardsWidget({
   }
 
   if (portfolios.length === 0) return <Empty title={t('home.widgets.portfolioCards.empty')} />;
+  if (
+    hasUnsafeAggregateMember(portfolios, summaries) ||
+    hasUnsafeAggregateMember(portfolios, histories)
+  ) {
+    return <UnavailableHomeAggregate />;
+  }
 
   if (widgetVariant('portfolio-cards', settings) === 'table') {
     const totalValue = portfolios.reduce(

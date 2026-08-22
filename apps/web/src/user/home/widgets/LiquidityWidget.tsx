@@ -5,6 +5,7 @@ import { MoneyText } from '../../../ui';
 import { Empty, SkeletonBlock } from '../../../ui/origin';
 import { widgetVariant } from '../config';
 import { usePortfolioSummaries } from '../homeData';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -52,6 +53,9 @@ export function LiquidityWidget({
   const loading = portfoliosLoading || results.some((result) => result.isLoading);
 
   if (loading) return <SkeletonBlock height={92} />;
+  if (hasUnsafeAggregateMember(scopedPortfolios, results)) {
+    return <UnavailableHomeAggregate />;
+  }
 
   const totals = split(
     results

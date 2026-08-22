@@ -5,6 +5,7 @@ import {
   type CustomTaxParams as ContractCustomTaxParams,
   type TaxCountry,
   type TaxMode,
+  type TaxSettingsResponse,
   type TaxYearPosition,
   type TaxYearReportResponse,
   type VaultDocument,
@@ -31,7 +32,6 @@ import {
 } from '@bettertrack/domain/tax';
 
 import { MarketDataSourceError, type MarketDataSource } from '../../../lib/marketDataSource';
-import type { VaultSyncEngine } from '../sync';
 import { VaultDerivedCache } from './cache';
 import { asMoneyFailure, moneyFailure, type VaultMoneyOutcome } from './errors';
 import {
@@ -40,7 +40,12 @@ import {
   type ClientPortfolioModel,
   type ClientTransactionRecord,
 } from './model';
-import { assertVaultSnapshotCurrent, liveEntities, validatedVaultSnapshot } from './session';
+import {
+  assertMoneySnapshotCurrent,
+  liveEntities,
+  validatedMoneySnapshot,
+  type VaultMoneySnapshotAccess,
+} from './session';
 import type { ClientTaxReport } from './types';
 
 interface EffectiveTaxSettings {
@@ -49,12 +54,40 @@ interface EffectiveTaxSettings {
   custom: CustomTaxParams | null;
 }
 
-type TaxRegime =
+export type TaxRegime =
   | { kind: 'none' }
   | { kind: 'manual' }
   | { kind: 'at' }
   | { kind: 'de' }
   | { kind: 'custom'; params: CustomTaxParams };
+
+export interface TaxRowRegimeFacts {
+  taxMode: TaxMode | null;
+  taxCountry: TaxCountry | null;
+  taxParams: unknown;
+}
+
+/**
+ * Resolve the living tax regime through the same classifier used by the
+ * portfolio tax engine. Cross-portfolio composition calls this seam instead
+ * of independently interpreting frozen row facts.
+ */
+export function activeTaxRegime(
+  settings: Pick<TaxSettingsResponse, 'mode' | 'country' | 'custom'>,
+): TaxRegime {
+  return regimeFromSettings(
+    validateSettings({
+      mode: settings.mode,
+      country: settings.country,
+      custom: settings.custom,
+    }),
+  );
+}
+
+/** Apply the engine's living-regime/manual-row exception to a report row. */
+export function taxRegimeForRow(row: TaxRowRegimeFacts, active: TaxRegime): TaxRegime {
+  return regimeForRow(row, active);
+}
 
 interface TaxEngineOptions {
   /** Shared engine clock; tax derivation deliberately has no calendar cutoff. */
@@ -72,7 +105,7 @@ export interface ClientTaxEngine {
 }
 
 export function createClientTaxEngine(
-  sync: VaultSyncEngine,
+  snapshotAccess: VaultMoneySnapshotAccess,
   market: MarketDataSource,
   options: TaxEngineOptions = {},
 ): ClientTaxEngine {
@@ -85,7 +118,7 @@ export function createClientTaxEngine(
         if (!Number.isInteger(year) || year < 1900 || year > 3000) {
           throw moneyFailure('TAX_DATA_INVALID', `Unsupported tax-report year ${year}.`);
         }
-        const snapshot = validatedVaultSnapshot(sync);
+        const snapshot = validatedMoneySnapshot(snapshotAccess);
         const model = readPortfolioModel(snapshot.document, portfolioId);
         const settings = effectiveTaxSettings(snapshot.document, model);
         const converted = await taxableTransactions(model, market, signal);
@@ -97,6 +130,7 @@ export function createClientTaxEngine(
           ownerUserId: snapshot.ownerUserId,
           vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
+          snapshotId: snapshot.snapshotId,
           vaultVersion: snapshot.vaultVersion,
           writeId: snapshot.writeId,
           assetPriceWatermark,
@@ -104,7 +138,7 @@ export function createClientTaxEngine(
         };
         const cached = cache.get(key);
         if (cached !== undefined) {
-          assertVaultSnapshotCurrent(sync, snapshot);
+          assertMoneySnapshotCurrent(snapshotAccess, snapshot);
           return { ok: true, value: cached };
         }
 
@@ -113,6 +147,7 @@ export function createClientTaxEngine(
           ownerUserId: snapshot.ownerUserId,
           vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
+          snapshotId: snapshot.snapshotId,
           report: report.report,
           computedTaxTargetEur: report.computedTaxTargetEur,
           vaultVersion: snapshot.vaultVersion,
@@ -120,7 +155,7 @@ export function createClientTaxEngine(
           assetPriceWatermark,
           freshness: converted.stale ? 'stale' : 'fresh',
         };
-        assertVaultSnapshotCurrent(sync, snapshot);
+        assertMoneySnapshotCurrent(snapshotAccess, snapshot);
         cache.set(key, value);
         return { ok: true, value };
       } catch (cause) {
@@ -143,11 +178,11 @@ export interface ClientTaxYearsOverview {
 
 /** The paranoid tax page's year index: vault-held mode plus the activity years. */
 export function clientTaxYears(
-  sync: VaultSyncEngine,
+  snapshotAccess: VaultMoneySnapshotAccess,
   portfolioId: string,
 ): VaultMoneyOutcome<ClientTaxYearsOverview> {
   try {
-    const snapshot = validatedVaultSnapshot(sync);
+    const snapshot = validatedMoneySnapshot(snapshotAccess);
     const model = readPortfolioModel(snapshot.document, portfolioId);
     const settings = effectiveTaxSettings(snapshot.document, model);
     const years = new Set<number>();
@@ -158,7 +193,7 @@ export function clientTaxYears(
     for (const movement of model.cashMovements) {
       if (movement.taxYear !== null) years.add(movement.taxYear);
     }
-    assertVaultSnapshotCurrent(sync, snapshot);
+    assertMoneySnapshotCurrent(snapshotAccess, snapshot);
     return {
       ok: true,
       value: { mode: settings.mode, years: [...years].sort((left, right) => right - left) },
@@ -620,10 +655,7 @@ function addRegimeEvent(
   }
 }
 
-function regimeForRow(
-  row: ClientTransactionRecord | ClientDividendRecord,
-  active: TaxRegime,
-): TaxRegime {
+function regimeForRow(row: TaxRowRegimeFacts, active: TaxRegime): TaxRegime {
   if (row.taxMode !== 'manual_per_trade' && active.kind !== 'manual') {
     return active;
   }

@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'vitest';
 
-import type { PortfolioSummary } from '@bettertrack/contracts';
+import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
 
 import { SCOPE_ALL, SCOPE_SELECTED } from './config';
-import { resolveScope, resolveWidgetScope } from './homeData';
+import { composeHomeRollup, homePortfolioRead, resolveScope, resolveWidgetScope } from './homeData';
 
 /**
  * Scope resolution: the rule that turns a *stored* scope into the portfolios a
@@ -32,6 +32,17 @@ const MAIN = portfolio('p-main', 'Main', true);
 const SAVINGS = portfolio('p-savings', 'Savings');
 const PENSION = portfolio('p-pension', 'Pension');
 const ALL = [MAIN, SAVINGS, PENSION];
+
+const TOTALS: PortfolioTotals = {
+  marketValueEur: 900.02,
+  investedEur: 800.01,
+  unrealizedPnlEur: 100.01,
+  unrealizedPnlPct: 12.5,
+  dayChangeEur: 10.01,
+  dayChangePct: 1.1,
+  cashEur: 100.03,
+  totalValueEur: 1000.05,
+};
 
 const names = (result: { portfolios: readonly PortfolioSummary[] }) =>
   result.portfolios.map((entry) => entry.name);
@@ -198,5 +209,204 @@ describe('a subset roll-up is exactly what its members sum to', () => {
   test('a duplicated id is counted once', () => {
     // The parser de-duplicates, but resolution must not depend on that having run.
     expect(sumOf(resolveScope(ALL, SCOPE_SELECTED, [MAIN.id, MAIN.id]))).toBe(10_000);
+  });
+});
+
+describe('Home money roll-up coverage', () => {
+  test('a settled error wins over stale cached totals', () => {
+    expect(homePortfolioRead(MAIN, { isError: true, data: { totals: TOTALS } })).toEqual({
+      state: 'error',
+    });
+  });
+
+  test('a pre-move cached API response cannot make a vaulted stub visible', () => {
+    const vaulted = {
+      ...SAVINGS,
+      vaultId: '00000000-0000-4000-8000-000000000001',
+      vaultAlias: 'Private',
+    };
+
+    expect(homePortfolioRead(vaulted, { isError: false, data: { totals: TOTALS } })).toEqual({
+      state: 'error',
+    });
+  });
+
+  test('plain-only successful figures compose as complete server-shaped totals', () => {
+    const rollup = composeHomeRollup(
+      [MAIN, SAVINGS],
+      [
+        { state: 'success', provenance: { kind: 'plain' }, totals: TOTALS },
+        {
+          state: 'success',
+          provenance: { kind: 'plain' },
+          totals: {
+            ...TOTALS,
+            marketValueEur: 99.98,
+            investedEur: 49.99,
+            unrealizedPnlEur: 49.99,
+            dayChangeEur: -0.01,
+            cashEur: 0.02,
+            totalValueEur: 100,
+          },
+        },
+      ],
+    );
+
+    expect(rollup).toMatchObject({
+      status: 'ready',
+      totalValue: { valueEur: 1100.05, coverage: { kind: 'complete' } },
+      invested: { valueEur: 850, coverage: { kind: 'complete' } },
+      cash: { valueEur: 100.05, coverage: { kind: 'complete' } },
+      dayChange: { valueEur: 10, coverage: { kind: 'complete' } },
+      dayChangePct: { coverage: { kind: 'complete' } },
+    });
+  });
+
+  test('a vaulted 403/error can only produce a qualified partial figure, never a bare total', () => {
+    const vaulted = {
+      ...SAVINGS,
+      vaultId: '00000000-0000-4000-8000-000000000001',
+      vaultAlias: 'Private',
+    };
+    const rollup = composeHomeRollup(
+      [MAIN, vaulted],
+      [{ state: 'success', provenance: { kind: 'plain' }, totals: TOTALS }, { state: 'error' }],
+    );
+
+    expect(rollup.status).toBe('ready');
+    if (rollup.status !== 'ready') throw new Error('Expected a qualified partial roll-up.');
+    expect(rollup.totalValue.valueEur).toBe(TOTALS.totalValueEur);
+    for (const figure of [
+      rollup.totalValue,
+      rollup.invested,
+      rollup.cash,
+      rollup.dayChange,
+      rollup.dayChangePct,
+    ]) {
+      expect(figure.coverage).toEqual({
+        kind: 'partial',
+        visiblePortfolioCount: 1,
+        lockedPortfolioCount: 1,
+        qualifier: {
+          kind: 'locked-portfolios',
+          count: 1,
+          messageKey: 'vaultComposition.lockedPortfoliosQualifierOne',
+        },
+      });
+    }
+  });
+
+  test('an explicitly authenticated unlocked-vault result composes as visible', () => {
+    const vaulted = {
+      ...SAVINGS,
+      vaultId: '00000000-0000-4000-8000-000000000001',
+      vaultAlias: 'Private',
+    };
+    const rollup = composeHomeRollup(
+      [MAIN, vaulted],
+      [
+        { state: 'success', provenance: { kind: 'plain' }, totals: TOTALS },
+        {
+          state: 'success',
+          provenance: {
+            kind: 'vaulted-unlocked',
+            vaultId: vaulted.vaultId,
+            snapshotId: 'vault-version:write-id',
+            isCurrent: () => true,
+          },
+          totals: TOTALS,
+        },
+      ],
+    );
+
+    expect(rollup.status).toBe('ready');
+    if (rollup.status !== 'ready') throw new Error('Expected a complete mixed roll-up.');
+    expect(rollup.totalValue).toEqual({
+      valueEur: TOTALS.totalValueEur * 2,
+      coverage: {
+        kind: 'complete',
+        visiblePortfolioCount: 2,
+        lockedPortfolioCount: 0,
+        qualifier: null,
+      },
+    });
+  });
+
+  test.each([
+    [
+      'a mismatched vault',
+      {
+        kind: 'vaulted-unlocked' as const,
+        vaultId: '00000000-0000-4000-8000-000000000002',
+        snapshotId: 'vault-version:write-id',
+        isCurrent: () => true,
+      },
+    ],
+    [
+      'a stale document set',
+      {
+        kind: 'vaulted-unlocked' as const,
+        vaultId: '00000000-0000-4000-8000-000000000001',
+        snapshotId: 'vault-version:write-id',
+        isCurrent: () => false,
+      },
+    ],
+    [
+      'a revoked session check',
+      {
+        kind: 'vaulted-unlocked' as const,
+        vaultId: '00000000-0000-4000-8000-000000000001',
+        snapshotId: 'vault-version:write-id',
+        isCurrent: () => {
+          throw new Error('revoked');
+        },
+      },
+    ],
+  ])('%s is classified as locked at composition time', (_label, provenance) => {
+    const vaulted = {
+      ...SAVINGS,
+      vaultId: '00000000-0000-4000-8000-000000000001',
+      vaultAlias: 'Private',
+    };
+    const rollup = composeHomeRollup(
+      [MAIN, vaulted],
+      [
+        { state: 'success', provenance: { kind: 'plain' }, totals: TOTALS },
+        { state: 'success', provenance, totals: TOTALS },
+      ],
+    );
+
+    expect(rollup.status).toBe('ready');
+    if (rollup.status !== 'ready') throw new Error('Expected a qualified partial roll-up.');
+    expect(rollup.totalValue).toMatchObject({
+      valueEur: TOTALS.totalValueEur,
+      coverage: {
+        kind: 'partial',
+        lockedPortfolioCount: 1,
+        qualifier: { count: 1 },
+      },
+    });
+  });
+
+  test('an errored plain member exposes no numeric fallback', () => {
+    const rollup = composeHomeRollup(
+      [MAIN, SAVINGS],
+      [{ state: 'success', provenance: { kind: 'plain' }, totals: TOTALS }, { state: 'error' }],
+    );
+
+    expect(rollup).toEqual({
+      status: 'unavailable',
+      rows: [
+        { portfolio: MAIN, totals: TOTALS },
+        { portfolio: SAVINGS, totals: null },
+      ],
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading: false,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: 1 },
+    });
   });
 });

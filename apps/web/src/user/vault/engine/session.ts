@@ -21,11 +21,26 @@ import type { ClientTaxReport } from './types';
 
 export interface ValidatedVaultSnapshot {
   document: VaultDocument;
+  /** Collision-free identity of every authenticated document in this snapshot. */
+  snapshotId: string;
   vaultVersion: number;
   vaultKeyId: string;
   writeId: string;
   ownerUserId: string;
 }
+
+/**
+ * Read-only snapshot seam used by the E6 split-document adapter. Legacy v1
+ * sessions still enter through `VaultSyncEngine`; a per-vault document set can
+ * now invoke the same engine without fabricating a legacy envelope or sync
+ * writer around already-authenticated plaintext.
+ */
+export interface VaultMoneySnapshotSource {
+  validatedSnapshot(): ValidatedVaultSnapshot;
+  assertSnapshotCurrent(snapshot: ValidatedVaultSnapshot): void;
+}
+
+export type VaultMoneySnapshotAccess = VaultSyncEngine | VaultMoneySnapshotSource;
 
 export interface VaultDocumentSession {
   document: VaultDocument;
@@ -80,6 +95,11 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
   return validatedSnapshot(engine, false);
 }
 
+/** Resolve either the legacy sync-backed snapshot or E6's split-doc source. */
+export function validatedMoneySnapshot(access: VaultMoneySnapshotAccess): ValidatedVaultSnapshot {
+  return isSnapshotSource(access) ? access.validatedSnapshot() : validatedVaultSnapshot(access);
+}
+
 /**
  * Validate a scan candidate without letting one corrupt standing-order row hide
  * every later order. All document, non-order entity, and run-row structural
@@ -107,6 +127,7 @@ export function refreshedStandingOrderSnapshot(
   const active = state.active;
   if (
     active !== null &&
+    snapshot.snapshotId === legacySnapshotId(active.header) &&
     active.header.vaultVersion === snapshot.vaultVersion &&
     active.header.keyId === snapshot.vaultKeyId &&
     active.header.writeId === snapshot.writeId
@@ -148,6 +169,7 @@ function validatedSnapshot(
   }
   return {
     document: session.document,
+    snapshotId: legacySnapshotId(candidate.header),
     vaultVersion: candidate.header.vaultVersion,
     vaultKeyId: candidate.header.keyId,
     writeId: candidate.header.writeId,
@@ -170,6 +192,7 @@ export function assertVaultSnapshotCurrent(
     );
   }
   if (
+    snapshot.snapshotId !== legacySnapshotId(state.active.header) ||
     state.active.header.vaultVersion !== snapshot.vaultVersion ||
     state.active.header.keyId !== snapshot.vaultKeyId ||
     state.active.header.writeId !== snapshot.writeId
@@ -180,6 +203,22 @@ export function assertVaultSnapshotCurrent(
       { retryable: true },
     );
   }
+}
+
+/** Recheck the exact source used by {@link validatedMoneySnapshot}. */
+export function assertMoneySnapshotCurrent(
+  access: VaultMoneySnapshotAccess,
+  snapshot: ValidatedVaultSnapshot,
+): void {
+  if (isSnapshotSource(access)) {
+    access.assertSnapshotCurrent(snapshot);
+    return;
+  }
+  assertVaultSnapshotCurrent(access, snapshot);
+}
+
+function isSnapshotSource(access: VaultMoneySnapshotAccess): access is VaultMoneySnapshotSource {
+  return 'validatedSnapshot' in access;
 }
 
 /** Bind an in-memory report to the authenticated vault and selected portfolio. */
@@ -196,6 +235,7 @@ export function assertTaxReportScope(
     tax.ownerUserId !== snapshot.ownerUserId ||
     tax.vaultKeyId !== snapshot.vaultKeyId ||
     tax.portfolioId !== portfolioId ||
+    tax.snapshotId !== snapshot.snapshotId ||
     tax.vaultVersion !== snapshot.vaultVersion ||
     tax.writeId !== snapshot.writeId
   ) {
@@ -205,6 +245,14 @@ export function assertTaxReportScope(
       { retryable: true },
     );
   }
+}
+
+function legacySnapshotId(header: {
+  vaultVersion: number;
+  keyId: string;
+  writeId: string;
+}): string {
+  return JSON.stringify(['vault-document-v1', header.vaultVersion, header.keyId, header.writeId]);
 }
 
 function assertAuthoritativeSyncState(state: VaultSyncState, phase: string): void {
