@@ -5963,7 +5963,8 @@
     }
   },
   "vaultComposition": {
-    "lockedPortfoliosQualifier": "+ {{count}} locked portfolios"
+    "lockedPortfoliosQualifierOne": "+ {{count}} locked portfolio",
+    "lockedPortfoliosQualifierOther": "+ {{count}} locked portfolios"
   },
   "vaultMoney": {
     "error": {

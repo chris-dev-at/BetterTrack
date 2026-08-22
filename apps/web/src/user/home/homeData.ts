@@ -3,7 +3,13 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 
 import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
 
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import {
+  composePortfolioFigures,
+  type AdditivePortfolioFigures,
+  type PortfolioFigureCoverage,
+  type QualifiedPortfolioFigure,
+} from '../vault/engine/composition';
 import { SCOPE_ALL, SCOPE_SELECTED, type WidgetScope } from './config';
 
 /**
@@ -22,9 +28,10 @@ const PORTFOLIO_STALE_MS = 60_000;
 
 /** The caller's active portfolios — the exact query the switcher and pages use. */
 export function usePortfoliosQuery() {
+  const store = usePortfolioStore();
   return useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: PORTFOLIO_STALE_MS,
   });
 }
@@ -34,21 +41,72 @@ export interface PortfolioRow {
   totals: PortfolioTotals | null;
 }
 
-export interface Rollup {
+interface RollupBase {
   rows: PortfolioRow[];
-  totalValue: number;
-  invested: number;
-  cash: number;
-  dayChange: number;
+  loading: boolean;
+}
+
+export interface ReadyRollup extends RollupBase {
+  status: 'ready';
+  totalValue: QualifiedPortfolioFigure;
+  invested: QualifiedPortfolioFigure;
+  cash: QualifiedPortfolioFigure;
+  dayChange: QualifiedPortfolioFigure;
   /**
    * Day change as a share of the *previous* total value. Computed uniformly for
    * one portfolio and for a roll-up so the figure always describes the number
    * rendered directly above it (net worth, cash included) — the portfolio
    * page's `dayChangePct` answers a different question (market value only).
    */
-  dayChangePct: number | null;
-  loading: boolean;
+  dayChangePct: {
+    valuePct: number | null;
+    coverage: PortfolioFigureCoverage;
+  };
 }
+
+export interface UnavailableRollup extends RollupBase {
+  status: 'unavailable';
+  /** No numeric fallback exists: an errored plain member is unavailable, never zero. */
+  totalValue: null;
+  invested: null;
+  cash: null;
+  dayChange: null;
+  dayChangePct: null;
+  coverage: {
+    kind: 'unavailable';
+    unavailablePortfolioCount: number;
+  };
+}
+
+export type Rollup = ReadyRollup | UnavailableRollup;
+
+export type HomePortfolioRead =
+  | { state: 'loading' }
+  | { state: 'error' }
+  | {
+      state: 'success';
+      /** Provenance is part of the value: an old API-cache hit is not an unlocked vault read. */
+      provenance:
+        | { kind: 'plain' }
+        | {
+            kind: 'vaulted-unlocked';
+            vaultId: string;
+            /** Identity of the authenticated envelope set that produced these totals. */
+            snapshotId: string;
+            /** Synchronous E3/E6 revocation + CAS check at the composition side effect. */
+            isCurrent(): boolean;
+          };
+      totals: PortfolioTotals;
+    };
+
+const HOME_FIGURE_KEYS = [
+  'totalValueEur',
+  'marketValueEur',
+  'investedEur',
+  'unrealizedPnlEur',
+  'dayChangeEur',
+  'cashEur',
+] as const satisfies readonly (keyof AdditivePortfolioFigures)[];
 
 /**
  * One `GET /portfolios/:id` per portfolio, each under the page-level
@@ -56,10 +114,11 @@ export interface Rollup {
  * React Query dedupe/cancel per portfolio instead of per batch.
  */
 export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
+  const store = usePortfolioStore();
   return useQueries({
     queries: portfolios.map((portfolio) => ({
       queryKey: ['portfolio', portfolio.id],
-      queryFn: ({ signal }: { signal: AbortSignal }) => getPortfolio(portfolio.id, signal),
+      queryFn: ({ signal }: { signal: AbortSignal }) => store.getPortfolio(portfolio.id, signal),
       staleTime: PORTFOLIO_STALE_MS,
     })),
   });
@@ -68,34 +127,165 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
 /** Roll the per-portfolio summaries up into the figures every headline widget needs. */
 export function useRollup(portfolios: readonly PortfolioSummary[]): Rollup {
   const results = usePortfolioSummaries(portfolios);
+  return composeHomeRollup(
+    portfolios,
+    results.map((result, index) => homePortfolioRead(portfolios[index]!, result)),
+  );
+}
+
+/**
+ * A vaulted stub cannot trust this query's cached `PortfolioResponse`: the key
+ * may still hold its pre-move plain response while the server refusal is in
+ * flight. Until the E10 per-vault store/CAS owner can brand an authenticated
+ * unlocked result, production Home therefore classifies the stub as locked.
+ */
+export function homePortfolioRead(
+  portfolio: PortfolioSummary,
+  result: {
+    isError: boolean;
+    data?: { totals: PortfolioTotals };
+  },
+): HomePortfolioRead {
+  if (portfolio.vaultId != null) return { state: 'error' };
+  if (result.isError) return { state: 'error' };
+  if (result.data !== undefined) {
+    return { state: 'success', provenance: { kind: 'plain' }, totals: result.data.totals };
+  }
+  return { state: 'loading' };
+}
+
+/**
+ * Safety-critical Home composition boundary.
+ *
+ * A vaulted read failure is a locked member, never a zero-valued visible one.
+ * A plain read failure cannot honestly be described as locked, so the whole
+ * roll-up becomes unavailable and exposes no number at all. Successful values
+ * are merged only through E6's structured composition seam.
+ */
+export function composeHomeRollup(
+  portfolios: readonly PortfolioSummary[],
+  reads: readonly HomePortfolioRead[],
+): Rollup {
   // Derived fresh each render rather than memoized: `useQueries` hands back a
   // new array identity every time anyway, so a memo here would never hit and
   // the arithmetic below is a handful of adds over a handful of portfolios.
+  const normalizedReads = portfolios.map((portfolio, index): HomePortfolioRead => {
+    const read = reads[index] ?? { state: 'loading' };
+    if (read.state !== 'success') return read;
+    if (portfolio.vaultId == null) {
+      return read.provenance.kind === 'plain' ? read : { state: 'error' };
+    }
+    if (
+      read.provenance.kind !== 'vaulted-unlocked' ||
+      read.provenance.vaultId !== portfolio.vaultId ||
+      read.provenance.snapshotId.length === 0
+    ) {
+      return { state: 'error' };
+    }
+    try {
+      return read.provenance.isCurrent() ? read : { state: 'error' };
+    } catch {
+      return { state: 'error' };
+    }
+  });
   const rows = portfolios.map((portfolio, index) => ({
     portfolio,
-    totals: results[index]?.data?.totals ?? null,
+    totals: normalizedReads[index]?.state === 'success' ? normalizedReads[index].totals : null,
   }));
-  const loading = results.some((result) => result.isLoading);
+  const loading = portfolios.some(
+    (_, index) =>
+      normalizedReads[index]?.state !== 'success' && normalizedReads[index]?.state !== 'error',
+  );
+  if (loading) {
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading: true,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: 0 },
+    };
+  }
+  const unavailablePortfolioCount = portfolios.filter(
+    (portfolio, index) => portfolio.vaultId == null && normalizedReads[index]?.state === 'error',
+  ).length;
+  if (unavailablePortfolioCount > 0) {
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount },
+    };
+  }
 
-  const totalValue = sum(rows, (row) => row.totals?.totalValueEur);
-  const invested = sum(rows, (row) => row.totals?.investedEur);
-  const cash = sum(rows, (row) => row.totals?.cashEur);
-  const dayChange = sum(rows, (row) => row.totals?.dayChangeEur);
-  const previous = totalValue - dayChange;
+  const authoritativeRoster = portfolios.map((portfolio) =>
+    portfolio.vaultId == null
+      ? { portfolioId: portfolio.id, source: 'plain' as const, vaultId: null }
+      : { portfolioId: portfolio.id, source: 'vaulted' as const, vaultId: portfolio.vaultId },
+  );
+  const members = portfolios.map((portfolio, index) => {
+    const read = normalizedReads[index];
+    if (read?.state === 'success') {
+      return {
+        state: 'visible' as const,
+        portfolioId: portfolio.id,
+        source: portfolio.vaultId == null ? ('plain' as const) : ('vaulted' as const),
+        vaultId: portfolio.vaultId ?? null,
+        value: additiveFigures(read.totals),
+      };
+    }
+    // Loading rows are not rendered because `loading` keeps the widget on its
+    // skeleton. A settled failure reaches this branch only for a vaulted stub.
+    return {
+      state: 'locked' as const,
+      portfolioId: portfolio.id,
+      vaultId: requireVaultId(portfolio),
+    };
+  });
+  const composed = composePortfolioFigures({ authoritativeRoster, members }, HOME_FIGURE_KEYS);
+  const previous = composed.totalValueEur.valueEur - composed.dayChangeEur.valueEur;
 
   return {
+    status: 'ready',
     rows,
-    totalValue,
-    invested,
-    cash,
-    dayChange,
-    dayChangePct: previous > 0 ? (dayChange / previous) * 100 : null,
+    totalValue: composed.totalValueEur,
+    invested: composed.investedEur,
+    cash: composed.cashEur,
+    dayChange: composed.dayChangeEur,
+    dayChangePct: {
+      valuePct: previous > 0 ? (composed.dayChangeEur.valueEur / previous) * 100 : null,
+      coverage: composed.dayChangeEur.coverage,
+    },
     loading,
   };
 }
 
-function sum(rows: readonly PortfolioRow[], pick: (row: PortfolioRow) => number | undefined) {
-  return rows.reduce((total, row) => total + (pick(row) ?? 0), 0);
+function additiveFigures(
+  totals: PortfolioTotals,
+): Pick<AdditivePortfolioFigures, (typeof HOME_FIGURE_KEYS)[number]> {
+  return {
+    totalValueEur: totals.totalValueEur,
+    marketValueEur: totals.marketValueEur,
+    investedEur: totals.investedEur,
+    unrealizedPnlEur: totals.unrealizedPnlEur,
+    dayChangeEur: totals.dayChangeEur,
+    cashEur: totals.cashEur,
+  };
+}
+
+function requireVaultId(portfolio: PortfolioSummary): string {
+  if (portfolio.vaultId != null) return portfolio.vaultId;
+  throw new TypeError(
+    `Unavailable plain portfolio ${portfolio.id} cannot be classified as locked.`,
+  );
 }
 
 /** How a stored scope actually resolved — what the header tag has to state. */
