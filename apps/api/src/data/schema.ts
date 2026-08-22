@@ -3969,7 +3969,12 @@ export const driveConnections = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    /** The Google account's stable OIDC subject id (opaque ASCII, ≤ 255). */
+    /**
+     * The stable opaque principal id captured at consent (ASCII, ≤ 255). The
+     * client reads it from Drive `about.get` as `user.permissionId`; the column
+     * keeps its `google_sub` name from E0. It is compared for equality only —
+     * never sent to Google as a `login_hint` (that takes the email, §8/E5).
+     */
     googleSub: text('google_sub').notNull(),
     /** Display identity captured at consent — config, not portfolio content. */
     email: text('email').notNull(),

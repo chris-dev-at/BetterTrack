@@ -90,7 +90,7 @@ class MemoryDriveHome extends MemoryHome implements DriveDataHome {
   deletes = 0;
   beforeDelete: (() => void) | null = null;
   /**
-   * Extra same-name appdata objects, as two devices concurrently creating the
+   * Extra same-address Drive objects, as two devices concurrently creating the
    * file produce. `read()` keeps masking them the way the real adapter does;
    * only `observeReplicas()` reveals the unconverged set.
    */
@@ -521,7 +521,7 @@ describe('verified vault media switch matrix', () => {
       },
     };
 
-    // Two devices created the appdata object concurrently. `read()` masks the
+    // Two devices created the Drive object concurrently. `read()` masks the
     // second branch, so only the complete observation set can gate the purge.
     flow.drive.duplicates = [bytes(3, 3)];
     await expect(flow.switcher.purgeRetiredServer()).resolves.toMatchObject({

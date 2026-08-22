@@ -5,8 +5,14 @@ import express, { Router, type RequestHandler } from 'express';
 import {
   createVaultRequestSchema,
   createVaultResponseSchema,
+  createDriveConnectionRequestSchema,
+  createDriveConnectionResponseSchema,
   deleteVaultRequestSchema,
   deleteVaultResponseSchema,
+  driveConnectionDisconnectQuerySchema,
+  driveConnectionEmptyBodySchema,
+  driveConnectionIdParamSchema,
+  driveConnectionListResponseSchema,
   patchVaultRequestSchema,
   patchVaultResponseSchema,
   perVaultMediaStateResponseSchema,
@@ -51,6 +57,9 @@ import {
   vaultRetirementProofPublicKeySchema,
   type ParanoidMediaTransitionRequest,
   type CreateVaultRequest,
+  type CreateDriveConnectionRequest,
+  type DriveConnectionDisconnectQuery,
+  type DriveConnectionIdParam,
   type DeleteVaultRequest,
   type PatchVaultRequest,
   type PerVaultMediaTransitionRequest,
@@ -688,6 +697,111 @@ function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
 }
 
 export { buildCookieSessionOrPerVaultAccess as requireCookieSessionOrPerVaultAccess };
+
+/**
+ * Separately-authenticated Google Drive identities (E5). The global bearer
+ * policy classifies this whole module session-only; this local check preserves
+ * that boundary if the router is ever mounted elsewhere in a test or refactor.
+ */
+export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimiters): Router {
+  const router = Router();
+
+  router.use(requireUser, (req, _res, next) => {
+    if (req.apiKey) {
+      next(
+        forbidden(
+          'Drive connections are available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    next();
+  });
+  router.use((req, res, next) => {
+    const limiter = req.method === 'GET' ? limiters.vaultRead : limiters.vault;
+    limiter(req, res, next);
+  });
+
+  router.get('/', async (req, res) => {
+    const connections = await ctx.driveConnections.list(req.authUser!.id);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(driveConnectionListResponseSchema.parse({ connections }));
+  });
+
+  router.post('/', validateBody(createDriveConnectionRequestSchema), async (req, res) => {
+    const { connection } = await ctx.driveConnections.create(
+      req.authUser!.id,
+      req.valid?.body as CreateDriveConnectionRequest,
+      req.ip,
+    );
+    res.setHeader('Cache-Control', 'private, no-store');
+    // Create-or-refresh: re-consenting a known Google account upserts onto the
+    // same row and answers 201 as well (the documented status). The audit trail
+    // is where the two are told apart — `drive_connection.created` vs
+    // `drive_connection.refreshed`.
+    res.status(201).json(createDriveConnectionResponseSchema.parse({ connection }));
+  });
+
+  router.patch(
+    '/:connectionId/verified',
+    validateParams(driveConnectionIdParamSchema),
+    // Bodyless by contract. Without this the method would accept — and act on —
+    // an arbitrary JSON body, including a Google-token-shaped one, which is
+    // exactly the shape this module must never take on ANY of its routes.
+    validateBody(driveConnectionEmptyBodySchema),
+    async (req, res) => {
+      const { connectionId } = req.valid?.params as DriveConnectionIdParam;
+      const connection = await ctx.driveConnections.touch(req.authUser!.id, connectionId);
+      if (!connection) throw notFound('Drive connection not found.', 'DRIVE_CONNECTION_NOT_FOUND');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.json(createDriveConnectionResponseSchema.parse({ connection }));
+    },
+  );
+
+  router.delete(
+    '/:connectionId',
+    validateParams(driveConnectionIdParamSchema),
+    // The published contract's query schema is `.strict()`; parsing it with the
+    // same schema (instead of reading one field by hand) keeps route and
+    // OpenAPI on one definition and refuses an unknown parameter.
+    validateQuery(driveConnectionDisconnectQuerySchema),
+    validateBody(driveConnectionEmptyBodySchema),
+    async (req, res) => {
+      const { acknowledgeBound } = req.valid?.query as DriveConnectionDisconnectQuery;
+      const { connectionId } = req.valid?.params as DriveConnectionIdParam;
+      const result = await ctx.driveConnections.delete(
+        req.authUser!.id,
+        connectionId,
+        acknowledgeBound === 'true',
+        req.ip,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.status(204).end();
+          return;
+        case 'not_found':
+          throw notFound('Drive connection not found.', 'DRIVE_CONNECTION_NOT_FOUND');
+        case 'bound':
+          throw new ApiError(
+            409,
+            'DRIVE_CONNECTION_BOUND',
+            'Move every bound vault to another Drive connection before disconnecting, or explicitly acknowledge loss of reach.',
+            { vaults: result.vaults },
+          );
+        case 'last_medium':
+          throw new ApiError(
+            409,
+            'DRIVE_CONNECTION_LAST_MEDIUM',
+            'This Drive connection holds the only verified copy of a bound vault. Selecting the server medium is not enough: that vault must first hold a verified server copy (a completed full-doc-set attestation), or move to another Drive connection, before this connection can be removed.',
+            { vaults: result.vaults },
+          );
+      }
+    },
+  );
+
+  return router;
+}
 
 /** Parallel per-vault E1 surface. The legacy `/vault` router above is unchanged. */
 export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Router {

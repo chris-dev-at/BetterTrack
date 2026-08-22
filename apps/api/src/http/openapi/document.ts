@@ -110,6 +110,10 @@ const componentSchemas = {
     contracts.perVaultRetiredServerPurgeChallengeResponseSchema,
   PerVaultRetiredServerPurgeRequest: contracts.perVaultRetiredServerPurgeRequestSchema,
   PerVaultRetiredServerPurgeResponse: contracts.perVaultRetiredServerPurgeResponseSchema,
+  DriveConnection: contracts.driveConnectionSchema,
+  DriveConnectionListResponse: contracts.driveConnectionListResponseSchema,
+  CreateDriveConnectionRequest: contracts.createDriveConnectionRequestSchema,
+  CreateDriveConnectionResponse: contracts.createDriveConnectionResponseSchema,
 
   // Per-portfolio move pipeline (paranoid E4 #1414)
   PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
@@ -598,7 +602,6 @@ registry.registerComponent('securitySchemes', BEARER_SECURITY, {
 
 // `userId` param is defined inline in socialRoutes (not exported from contracts).
 const userIdParamSchema = z.object({ userId: z.string().uuid() }).strict();
-
 // Idempotency-Key request header (§13.4 V4-P2a, #417), documented on the covered
 // portfolio mutation endpoints. Optional (opt-in) — a request without it behaves
 // exactly as before. Header name + semantics come from `@bettertrack/contracts`.
@@ -4523,6 +4526,51 @@ const endpoints: EndpointDef[] = [
     body: R.OAuthTokenRequest,
     status: 200,
     response: R.OAuthTokenResponse,
+  },
+
+  // Separately-authenticated browser-only Google Drive identities (E5 #1415).
+  {
+    method: 'get',
+    path: '/drive-connections',
+    tag: 'Vault',
+    summary: 'List the caller’s separately authenticated Google Drive identities.',
+    description:
+      'Identity/config only: the response and backing table contain no Google access token, refresh token, or Drive file id.',
+    status: 200,
+    response: R.DriveConnectionListResponse,
+  },
+  {
+    method: 'post',
+    path: '/drive-connections',
+    tag: 'Vault',
+    summary: 'Register the Drive identity captured client-side after fresh Google consent.',
+    description:
+      'The strict body accepts only googleSub, email, and displayName. Google tokens stay in browser memory and never cross this endpoint. Create-or-refresh: re-consenting an already registered account upserts onto the same connection id and also answers 201; the audit trail distinguishes drive_connection.created from drive_connection.refreshed.',
+    body: R.CreateDriveConnectionRequest,
+    status: 201,
+    response: R.CreateDriveConnectionResponse,
+  },
+  {
+    method: 'patch',
+    path: '/drive-connections/{connectionId}/verified',
+    tag: 'Vault',
+    summary: 'Touch lastVerifiedAt after a browser directly verifies Drive access.',
+    description:
+      'Takes no request body; a non-empty body is refused, so no method of this module can carry a Google token.',
+    params: contracts.driveConnectionIdParamSchema,
+    status: 200,
+    response: R.CreateDriveConnectionResponse,
+  },
+  {
+    method: 'delete',
+    path: '/drive-connections/{connectionId}',
+    tag: 'Vault',
+    summary: 'Disconnect one caller-owned Drive identity without deleting the user’s Drive files.',
+    description:
+      'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that hold a VERIFIED server copy: media must contain server AND mediaAttestedAt must be set, because a selected-but-never-attested server medium is a declaration, not a copy. Anything else — a Drive-only vault, or a server+drive vault whose full doc set has never attested — is refused as the last medium (PROJECTPLAN §16, 2026-08-21 and 2026-08-22). Takes no request body; a non-empty body is refused.',
+    params: contracts.driveConnectionIdParamSchema,
+    query: contracts.driveConnectionDisconnectQuerySchema,
+    status: 204,
   },
 
   // Per-vault paranoid storage (E1 #1411) — config plus the BLIND per-doc store.
