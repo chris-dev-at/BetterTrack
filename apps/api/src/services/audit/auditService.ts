@@ -85,6 +85,15 @@ export const AuditAction = {
   PortfolioVaultMoveInReauthFail: 'portfolio.vault_move_in_reauth_fail',
   PortfolioVaultMoveOutReauthFail: 'portfolio.vault_move_out_reauth_fail',
   /**
+   * Google Drive identity registry (§13.5 V5-P13 / E5). Identity metadata only —
+   * the Google subject id, never a token, a file id or a byte of ciphertext.
+   */
+  DriveConnectionCreated: 'drive_connection.created',
+  /** Re-consent of an already registered Google account — an upsert onto the
+   *  same row, never a second registration. */
+  DriveConnectionRefreshed: 'drive_connection.refreshed',
+  DriveConnectionDeleted: 'drive_connection.deleted',
+  /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
    */
