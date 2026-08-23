@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -38,6 +39,13 @@ import { REALTIME_LIVE_FANOUT_CHANNEL } from '../gateway';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const POLL_MS = 30;
+
+function admissionAssetId(assetId: string): string {
+  return `opaque:${createHmac('sha256', harness.ctx.config.sessionSecrets[0]!)
+    .update('bettertrack:realtime-watch\0')
+    .update(assetId)
+    .digest('base64url')}`;
+}
 
 let harness: TestHarness;
 let stub: StubMarketData;
@@ -593,7 +601,9 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
       expect(
-        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(targetAssetId)),
+        ),
       ).toBe(0);
     });
   });
@@ -642,7 +652,9 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
       expect(
-        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(targetAssetId)),
+        ),
       ).toBe(0);
     });
   });
