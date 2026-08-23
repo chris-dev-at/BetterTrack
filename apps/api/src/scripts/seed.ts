@@ -5,10 +5,12 @@ import postgres from 'postgres';
 
 import { type AppConfig, loadConfig } from '../config/env';
 import { createAssetRepository } from '../data/repositories/assetRepository';
+import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { type CreateUserInput, createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
+import { createAuditService } from '../services/audit/auditService';
 import { seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { isKnownSecretPlaceholder } from '../services/password/knownPlaceholders';
 import { createPasswordHasher } from '../services/password/passwordHasher';
@@ -51,7 +53,12 @@ export interface SeedDependencies {
   };
   seedCatalog(): Promise<{ created: number; existing: number }>;
   seedOAuthClients(): Promise<
-    Array<{ clientId: string; action: string; scopes: readonly string[] }>
+    Array<{
+      clientId: string;
+      action: string;
+      scopes: readonly string[];
+      grantsWidened: number;
+    }>
   >;
 }
 
@@ -193,7 +200,7 @@ export async function seedDatabase(
   const clientResults = await dependencies.seedOAuthClients();
   for (const result of clientResults) {
     output.info(
-      `First-party OAuth client ${result.clientId}: ${result.action} (${result.scopes.length} scopes).`,
+      `First-party OAuth client ${result.clientId}: ${result.action} (${result.scopes.length} scopes, ${result.grantsWidened} active grants widened).`,
     );
   }
 }
@@ -242,6 +249,7 @@ async function main(): Promise<0 | 1> {
     const hasher = createPasswordHasher();
     const assetRepo = createAssetRepository(db);
     const oauthRepo = createOAuthRepository(db);
+    const audit = createAuditService(createAuditRepository(db));
 
     return await runSeedCommand(
       options,
@@ -250,7 +258,9 @@ async function main(): Promise<0 | 1> {
         portfolios: portfolioRepo,
         hasher,
         seedCatalog: () => seedAssetCatalog(assetRepo, COMMON_SYMBOLS_SEED),
-        seedOAuthClients: () => seedFirstPartyClients(oauthRepo),
+        // Production's updater runs migrate.js only, never this seed. Every new
+        // first-party scope therefore still requires its own data migration.
+        seedOAuthClients: () => seedFirstPartyClients(oauthRepo, undefined, audit),
       },
       output,
     );
