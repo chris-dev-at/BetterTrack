@@ -208,6 +208,8 @@ describe('stage 2 — a trade verb alone is not a trade', () => {
     row({ text: 'Auszahlung fuer Kauf Auto', amount: -9000 }),
   ];
 
+  // No `ai` seam anywhere in this block: the deterministic path has to stand on
+  // its own, because stage 3 is optional.
   it('never books apartment-sale proceeds as an unreviewed sell', async () => {
     const results = await classifyRows([UNBACKED[0]!]);
     expect(results[0]!.stage).toBe('keyword');
@@ -215,6 +217,10 @@ describe('stage 2 — a trade verb alone is not a trade', () => {
     expect(results[0]!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
     // The review queue has to say WHY, not just that.
     expect(results[0]!.evidence).toContain('no instrument evidence');
+    // …and the pre-filled default must be the RIGHT one: a reviewer bulk-approves
+    // defaults, so a wrong default is how a flagged row still books wrongly.
+    expect(results[0]!.kind).toBe('deposit');
+    expect(results[0]!.evidence).toContain('trade keyword "verkauf" ignored');
   });
 
   it('never books a car purchase as an unreviewed buy', async () => {
@@ -223,14 +229,55 @@ describe('stage 2 — a trade verb alone is not a trade', () => {
     expect(results[0]!.needsReview).toBe(true);
     expect(results[0]!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
     expect(results[0]!.evidence).toContain('no instrument evidence');
+    expect(results[0]!.kind).toBe('withdrawal');
+    expect(results[0]!.evidence).toContain('trade keyword "kauf" ignored');
+  });
+
+  it('gates without a cash word too — the kind then simply stays provisional', async () => {
+    // No cash keyword to fall back to, so the tie-break has nothing to do: the
+    // gate still fires and the trade kind stays sub-threshold.
+    const results = await classifyRows([row({ text: 'Verkauf Wohnung Wien', amount: 5000 })]);
+    expect(results[0]).toMatchObject({
+      kind: 'sell',
+      confidence: 0.6,
+      stage: 'keyword',
+      needsReview: true,
+    });
+    expect(results[0]!.evidence).toContain('no instrument evidence');
+    expect(results[0]!.evidence).not.toContain('ignored');
+  });
+
+  it('lets the cash tie-break lose to instrument evidence, not win over it', async () => {
+    // Same "Auszahlung … Kauf" collision, but an ISIN names what was traded:
+    // the gate never fires, so the trade reading stands at full keyword weight.
+    const results = await classifyRows([
+      row({ text: 'Auszahlung fuer Kauf VWCE', amount: -9000, isin: 'IE00BK5BQT80' }),
+    ]);
+    expect(results[0]).toMatchObject({
+      kind: 'buy',
+      confidence: 0.85,
+      stage: 'keyword',
+      needsReview: false,
+    });
+    expect(results[0]!.evidence).not.toContain('ignored');
+    expect(results[0]!.evidence).not.toContain('no instrument evidence');
+  });
+
+  it('keeps the table ordering intact — verkauf still outranks kauf', async () => {
+    // The tie-break must not have re-ranked anything: a bare sell verb with no
+    // cash word is still read as a SELL, never as the "kauf" inside it.
+    expect(await kinds([row({ text: 'Teilverkauf Depotposition', amount: 90 })])).toEqual(['sell']);
   });
 
   it('escalates the gated rows to stage 3 instead of resolving them', async () => {
-    const { seam, calls } = stubAiSeam(['0=deposit\n1=withdrawal']);
+    // Labels deliberately INVERTED against the deterministic cash fallback, so
+    // this can only pass if the rows really reached the model.
+    const { seam, calls } = stubAiSeam(['0=withdrawal\n1=deposit']);
     const results = await classifyRows(UNBACKED, { ai: seam });
     // Sub-threshold ⇒ the ambiguous pool ⇒ ONE batched call decides both.
     expect(calls).toHaveLength(1);
-    expect(results.map((result) => result.kind)).toEqual(['deposit', 'withdrawal']);
+    expect(results.map((result) => result.kind)).toEqual(['withdrawal', 'deposit']);
+    expect(results.map((result) => result.stage)).toEqual(['ai', 'ai']);
   });
 
   it('leaves a trade verb backed by an asset identity fully resolved', async () => {

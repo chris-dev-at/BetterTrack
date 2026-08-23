@@ -28,7 +28,8 @@ import {
  *    text, evaluated through RE2 alternations (linear time, so no pattern can
  *    stall an import — same discipline as the expense rule engine). Text is a
  *    weaker signal than shape, so a trade verb ALONE never carries a row over
- *    the review bar: with no instrument evidence it stays provisional.
+ *    the review bar: with no instrument evidence it stays provisional, and a
+ *    cash word in the same text outranks it.
  * 3. **ai** — the CHEAP-tier fallback for the ambiguous remainder ONLY: batched
  *    into as few calls as the caps allow, parsed defensively, kind labels only
  *    (`rowClassifierAi.ts`).
@@ -182,6 +183,9 @@ const KEYWORD_EXPECTED_SIGN: Partial<Record<ClassifiedKind, 1 | -1>> = {
 /** Trade kinds — the ones that can only exist against an instrument. */
 const KEYWORD_TRADE_KINDS: readonly ClassifiedKind[] = ['buy', 'sell'];
 
+/** Cash kinds — the reading a gated trade row falls back to (see below). */
+const KEYWORD_CASH_KINDS: readonly ClassifiedKind[] = ['deposit', 'withdrawal'];
+
 /**
  * Stage-2 confidence for a trade VERB the row carries no instrument evidence
  * for. Deliberately below {@link DEFAULT_REVIEW_CONFIDENCE}: prose alone cannot
@@ -196,8 +200,15 @@ interface KeywordHit {
   matched: string;
 }
 
-function matchKeywords(haystack: string): KeywordHit | null {
+/**
+ * First match in {@link KEYWORD_GROUPS} order — table order IS precedence.
+ * `only` narrows the scan to a subset of kinds WITHOUT reordering the table, so
+ * a second pass (the gated-trade cash fallback) reads the same precedence the
+ * unrestricted pass does.
+ */
+function matchKeywords(haystack: string, only?: readonly ClassifiedKind[]): KeywordHit | null {
   for (const group of KEYWORD_GROUPS) {
+    if (only !== undefined && !only.includes(group.kind)) continue;
     const match = group.pattern?.exec(haystack)?.[1];
     if (match !== undefined) return { kind: group.kind, matched: match };
   }
@@ -424,39 +435,55 @@ function applyKeyword(row: ClassifiableRow, draft: StageDraft): StageDraft {
   const hit = matchKeywords(haystack);
   if (!hit) return { ...draft, stage: 'keyword', needsReview: true };
 
+  // A trade VERB in free text is not a trade. "Gutschrift aus Verkauf Wohnung"
+  // (an apartment) and "Auszahlung fuer Kauf Auto" (a car) are cash movements
+  // that merely spell a direction verb; a buy/sell row naming NO instrument
+  // cannot produce a holding, so booking it unseen is corrupt by construction.
+  // Prose alone therefore never carries a trade over the bar — the row keeps a
+  // provisional kind but drops into the ambiguous pool for stage 3/a human.
+  const unbackedTrade = KEYWORD_TRADE_KINDS.includes(hit.kind) && !hasInstrumentEvidence(row);
+  // …and when the gate fires, the CASH reading wins the tie-break: a genuine
+  // trade carries an instrument, so with zero instrument evidence the cash word
+  // in the same text is overwhelmingly the likelier reading. The flag alone is
+  // not enough — a reviewer working through hundreds of flagged rows approves
+  // the pre-filled default in bulk, so a WRONG default is how a flagged row
+  // still becomes a wrong booking. Deterministic on purpose: this must hold
+  // with no AI seam configured, since stage 3 is optional.
+  // NOTE this is a tie-break INSIDE the gate, not a re-ranking of the table:
+  // `verkauf` still precedes `kauf`, and a row WITH instrument evidence never
+  // reaches this branch.
+  const cashFallback = unbackedTrade ? matchKeywords(haystack, KEYWORD_CASH_KINDS) : null;
+  const kind = cashFallback?.kind ?? hit.kind;
+  const matched = cashFallback?.matched ?? hit.matched;
+
   const amount = num(row.amount);
   const signedSign = amount !== null && amount !== 0 ? (amount > 0 ? 1 : -1) : null;
-  const expectedSign = KEYWORD_EXPECTED_SIGN[hit.kind];
+  // Both checks read the RESOLVED kind: a substituted cash kind has to face the
+  // same sign scrutiny the table's own cash hits do.
+  const expectedSign = KEYWORD_EXPECTED_SIGN[kind];
   const signContradicts =
     expectedSign !== undefined && signedSign !== null && signedSign !== expectedSign;
   // Cash movements essentially never carry an instrument identity — a keyword
   // that says "cash" on a row naming an asset is suspicious enough to show a
   // human (guards e.g. bond or ETF names containing "credit").
   const cashKindWithAsset =
-    (hit.kind === 'deposit' || hit.kind === 'withdrawal') && hasInstrumentIdentity(row);
-  // A trade VERB in free text is not a trade. "Gutschrift aus Verkauf Wohnung"
-  // (an apartment) and "Auszahlung fuer Kauf Auto" (a car) are cash movements
-  // that merely spell a direction verb; a buy/sell row naming NO instrument
-  // cannot produce a holding, so booking it unseen is corrupt by construction.
-  // Prose alone therefore never carries a trade over the bar — the row keeps
-  // its provisional kind but drops into the ambiguous pool for stage 3/a human.
-  const unbackedTrade = KEYWORD_TRADE_KINDS.includes(hit.kind) && !hasInstrumentEvidence(row);
+    (kind === 'deposit' || kind === 'withdrawal') && hasInstrumentIdentity(row);
 
   const notes: string[] = [];
   if (signContradicts) notes.push('contradicts the amount sign');
   if (cashKindWithAsset) notes.push('cash kind on a row carrying an asset identity');
   if (unbackedTrade) {
-    notes.push('no instrument evidence — no quantity, price, symbol or ISIN names what was traded');
+    const gate =
+      'no instrument evidence — no quantity, price, symbol or ISIN names what was traded';
+    notes.push(cashFallback !== null ? `trade keyword "${hit.matched}" ignored: ${gate}` : gate);
   }
-  const internalOnly = hit.kind === 'fee' || hit.kind === 'tax';
+  const internalOnly = kind === 'fee' || kind === 'tax';
 
   return {
-    kind: hit.kind,
+    kind,
     confidence: unbackedTrade ? UNBACKED_TRADE_CONFIDENCE : 0.85,
     stage: 'keyword',
-    evidence: `keyword "${hit.matched}" ⇒ ${hit.kind}${
-      notes.length > 0 ? ` (${notes.join('; ')})` : ''
-    }`,
+    evidence: `keyword "${matched}" ⇒ ${kind}${notes.length > 0 ? ` (${notes.join('; ')})` : ''}`,
     // Sub-threshold already forces review at the end of the cascade; stating it
     // here too keeps the invariant unconditional under a lowered review bar.
     needsReview: internalOnly || signContradicts || cashKindWithAsset || unbackedTrade,
