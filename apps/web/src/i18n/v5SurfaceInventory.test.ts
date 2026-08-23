@@ -118,6 +118,7 @@ user/control/panels/PrivacyPanel.tsx
 user/control/panels/PrivacyVaultSection.tsx
 user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
+user/control/panels/VaultTransferActions.tsx
 user/control/panels/WebhooksPanel.tsx
 user/control/panels/taxModeList.tsx
 user/forecast/ForecastPage.tsx
@@ -126,6 +127,8 @@ user/forecast/ProjectionSection.tsx
 user/forecast/StandingOrderDialog.tsx
 user/forecast/StandingOrdersSection.tsx
 user/home/HomePage.tsx
+user/home/WidgetFrame.tsx
+user/home/widgets/PortfolioCardsWidget.tsx
 user/oauth/ConsentPage.tsx
 user/parked/ParkedPage.tsx
 user/portfolio/CashDialog.tsx
@@ -133,6 +136,7 @@ user/portfolio/CashSourceDialog.tsx
 user/portfolio/CashSourcesPage.tsx
 user/portfolio/CustomInvestmentDialog.tsx
 user/portfolio/ImportPage.tsx
+user/portfolio/LockedPortfolioStub.tsx
 user/portfolio/MirrorchainPanel.tsx
 user/portfolio/ParanoidTaxReport.tsx
 user/portfolio/PortfolioPage.tsx
@@ -189,7 +193,15 @@ user/vault/VaultRuntimeProvider.tsx
 user/vault/engine/VaultMoneyEngineProvider.tsx
 user/vault/ui/ParanoidEnableWizard.tsx
 user/vault/ui/ParanoidSurfaceGate.tsx
+user/vault/ui/PortfolioVaultMoveWizard.tsx
+user/vault/ui/PortfolioVaultSection.tsx
+user/vault/ui/VaultCreationCeremony.tsx
+user/vault/ui/VaultManager.tsx
+user/vault/ui/VaultRestorePicker.tsx
+user/vault/ui/VaultStateAction.tsx
+user/vault/ui/VaultReceivePhrase.tsx
 user/vault/ui/VaultSyncChip.tsx
+user/vault/ui/VaultTransferQr.tsx
 user/vault/ui/VaultUnlockGate.tsx
 user/workboard/BudgetCalculator.tsx
 user/workboard/ComparisonPage.tsx

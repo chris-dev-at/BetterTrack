@@ -14,6 +14,7 @@ import {
   deriveVaultWrapKey,
   wrapContentKey,
 } from '../keys/keyCore';
+import { createVaultTransferQrSource } from '../qr/senderSource';
 import { acknowledgePlainCustodyRisk } from './acknowledgment';
 import { EndpointVaultKeystore, lockoutDelayMs } from './core';
 import type { DevicePasswordArgon2, DevicePasswordArgon2Options } from './deviceCrypto';
@@ -250,6 +251,19 @@ afterEach(() => {
 });
 
 describe('endpoint keystore custody and verified persistence', () => {
+  it('notifies and detaches synchronous session-end listeners', () => {
+    const core = keystore(new MemoryEndpointStorage());
+    const listener = vi.fn();
+    const unsubscribe = core.subscribeToSessionEnd(listener);
+
+    core.endSession();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    core.endSession();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it('defaults to wrapped custody and one password unlocks all phrases on one endpoint only', async () => {
     const firstStorage = new MemoryEndpointStorage();
     const secondStorage = new MemoryEndpointStorage();
@@ -346,6 +360,45 @@ describe('endpoint keystore custody and verified persistence', () => {
     });
   });
 
+  it('derives transfer reveal custody from the current real keystore entry', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+    await core.storePlainAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      acknowledgment: acknowledgePlainCustodyRisk(VAULT_1),
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+    const source = createVaultTransferQrSource({ keystore: core, vaultId: VAULT_1 });
+
+    await expect(source.requireLiveUnlock()).resolves.toBe('plain');
+    await core.switchToWrapped(VAULT_1, PASSWORD);
+    await expect(source.requireLiveUnlock()).resolves.toBe('wrapped');
+  });
+
+  it('re-verifies the device password without dropping the live E7 content-key session', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+
+    await expect(core.verifyDevicePassword(PASSWORD)).resolves.toBeUndefined();
+    await expect(core.withContentKey(VAULT_1, () => 'still-open')).resolves.toBe('still-open');
+    await expect(core.verifyDevicePassword(WRONG_PASSWORD)).rejects.toMatchObject({
+      code: 'wrong-password',
+      details: { failures: 1 },
+    });
+    await expect(core.withContentKey(VAULT_1, () => 'preserved')).resolves.toBe('preserved');
+    await expect(core.verifyDevicePassword(PASSWORD)).resolves.toBeUndefined();
+    expect((await storage.readEndpointSnapshot()).metadata).toMatchObject({
+      lockout: { failures: 0, lockedUntil: null },
+    });
+  });
+
   it('never writes a checksum-valid but non-opening phrase before verified open succeeds', async () => {
     const storage = new MemoryEndpointStorage();
     const core = keystore(storage);
@@ -358,6 +411,24 @@ describe('endpoint keystore custody and verified persistence', () => {
         fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
       }),
     ).rejects.toMatchObject({ code: 'verification-failed' });
+    expect((await storage.readEndpointSnapshot()).metadata).toBeNull();
+    expect(await storage.readEntry(VAULT_1)).toBeNull();
+  });
+
+  it('classifies an unavailable header separately from a rejected phrase and never writes', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+
+    await expect(
+      core.storeAfterVerifiedOpen({
+        vaultId: VAULT_1,
+        mnemonic: MNEMONIC,
+        devicePassword: PASSWORD,
+        fetchHeaderEnvelope: async () => {
+          throw new Error('offline');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'vault-header-unavailable' });
     expect((await storage.readEndpointSnapshot()).metadata).toBeNull();
     expect(await storage.readEntry(VAULT_1)).toBeNull();
   });
@@ -436,7 +507,7 @@ describe('endpoint keystore custody and verified persistence', () => {
     });
   });
 
-  it('synchronously zeros an active borrowed K_c when the session ends', async () => {
+  it('zeros an active borrowed K_c before synchronously notifying session listeners', async () => {
     const storage = new MemoryEndpointStorage();
     const core = keystore(storage);
     await core.storeAfterVerifiedOpen({
@@ -455,9 +526,15 @@ describe('endpoint keystore custody and verified persistence', () => {
     });
     await started.promise;
     expect(borrowed).toEqual(new Uint8Array(32).fill(0x31));
+    const sessionEnded = vi.fn(() => {
+      expect(borrowed).toEqual(new Uint8Array(32));
+    });
+    const unsubscribe = core.subscribeToSessionEnd(sessionEnded);
 
     core.endSession();
     expect(borrowed).toEqual(new Uint8Array(32));
+    expect(sessionEnded).toHaveBeenCalledTimes(1);
+    unsubscribe();
     release.resolve();
     await expect(operation).rejects.toMatchObject({ code: 'session-ended' });
   });

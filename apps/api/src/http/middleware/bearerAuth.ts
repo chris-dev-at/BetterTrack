@@ -158,6 +158,19 @@ export const VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
 ] as const satisfies readonly BearerRoute[];
 
 /**
+ * Drive identities unlock a browser-held Google capability and are therefore
+ * deliberately cookie-session-only. Keeping the complete route inventory here
+ * makes a future sibling an explicit bearer-policy decision instead of an
+ * accidental inheritance.
+ */
+export const DRIVE_CONNECTIONS_SESSION_ONLY_ROUTES = [
+  { method: 'GET', path: '/drive-connections' },
+  { method: 'POST', path: '/drive-connections' },
+  { method: 'PATCH', path: '/drive-connections/{connectionId}/verified' },
+  { method: 'DELETE', path: '/drive-connections/{connectionId}' },
+] as const satisfies readonly BearerRoute[];
+
+/**
  * Native account-security clients may manage existing passkeys, but they may
  * not enter either WebAuthn ceremony. Keeping the three management operations
  * in an exact method + path allowlist means registration, public sign-in and
@@ -562,6 +575,12 @@ export const MODULE_POLICIES = [
     kind: 'session-only',
     reason:
       'Per-vault storage defaults closed; the exact vault:sync and account:security allowlists resolve first.',
+  },
+  {
+    prefix: '/drive-connections',
+    kind: 'session-only',
+    reason:
+      'Drive identity config is paired with browser-memory Google capabilities and is never bearer-accessible.',
   },
   {
     prefix: '/oauth',

@@ -14,6 +14,7 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Badge, Button, Field, Icon, Input, Select, Seg } from '../../ui/origin';
+import { portfolioDisplayName } from '../portfolio/lockedPortfolio';
 import {
   SCOPE_ALL,
   SCOPE_IDS_MAX,
@@ -302,13 +303,16 @@ function ScopePicker({
   onSettingsChange: (patch: WidgetSettings) => void;
 }) {
   const t = useT();
+  const lockedFallback = t('vault.lockedStub.fallbackAlias');
   const [filter, setFilter] = useState('');
   const chosen = scopeIds ?? [];
   const needle = filter.trim().toLowerCase();
   const shown =
     needle === ''
       ? portfolios
-      : portfolios.filter((portfolio) => portfolio.name.toLowerCase().includes(needle));
+      : portfolios.filter((portfolio) =>
+          portfolioDisplayName(portfolio, lockedFallback).toLowerCase().includes(needle),
+        );
 
   function toggle(id: string, checked: boolean) {
     const next = checked
@@ -348,7 +352,9 @@ function ScopePicker({
                   onChange={(event) => toggle(portfolio.id, event.target.checked)}
                   type="checkbox"
                 />
-                <span className="bt-home-scope__name">{portfolio.name}</span>
+                <span className="bt-home-scope__name">
+                  {portfolioDisplayName(portfolio, lockedFallback)}
+                </span>
               </label>
             </li>
           );
@@ -456,7 +462,7 @@ function SettingsPopover({
                   ) : null}
                   {portfolios.map((portfolio) => (
                     <option key={portfolio.id} value={portfolio.id}>
-                      {portfolio.name}
+                      {portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias'))}
                     </option>
                   ))}
                 </Select>

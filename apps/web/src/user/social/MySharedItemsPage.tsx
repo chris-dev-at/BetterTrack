@@ -234,6 +234,24 @@ export function MySharedItemsPage() {
     }
     return set;
   }, [portfolioMetadataReady, portfoliosQuery.data]);
+  const vaultedPortfolioIds = useMemo(() => {
+    const set = new Set<string>();
+    if (!portfolioMetadataReady) return set;
+    for (const portfolio of portfoliosQuery.data?.portfolios ?? []) {
+      if (portfolio.vaultId != null) set.add(portfolio.id);
+    }
+    return set;
+  }, [portfolioMetadataReady, portfoliosQuery.data]);
+  // A vaulted portfolio is not a disabled sharing row. It is absent from every
+  // audience/public-profile affordance while its plain sibling stays present.
+  // Names are never masked here: this list only ever holds the caller's own
+  // shareable portfolios, a plain one has no name to protect, and a vaulted
+  // one's shares are revoked at move-in. Masking every row while the metadata
+  // read settles would rename the whole list on each background refetch.
+  const shareablePortfolios = portfolioMetadataReady
+    ? (data?.portfolios.filter((portfolio) => !vaultedPortfolioIds.has(portfolio.portfolioId)) ??
+      [])
+    : (data?.portfolios ?? []);
 
   // A background rejection invalidates the metadata that justified an open
   // portfolio picker. Close it instead of letting a stale false flag remove the
@@ -265,7 +283,7 @@ export function MySharedItemsPage() {
   }
 
   const nothing =
-    data.portfolios.length === 0 &&
+    shareablePortfolios.length === 0 &&
     data.conglomerates.length === 0 &&
     data.watchlists.length === 0 &&
     data.ideas.length === 0;
@@ -293,11 +311,11 @@ export function MySharedItemsPage() {
           description={t('social.myShared.emptyBody')}
         />
       ) : null}
-      {data.portfolios.length > 0 ? (
+      {shareablePortfolios.length > 0 ? (
         <section className="bt-section">
           <SectionHead title={t('social.kind.portfolios')} />
           <ul className="bt-band flex flex-col">
-            {data.portfolios.map((p) => (
+            {shareablePortfolios.map((p) => (
               <SharedRow
                 key={p.portfolioId}
                 name={p.name}

@@ -9,6 +9,7 @@ import { listConglomerates } from '../../../lib/conglomerateApi';
 import { Button } from '../../../ui/origin';
 import { AssetSearchBox } from '../../components/AssetSearchBox';
 import { usePortfolioStore } from '../PortfolioStoreProvider';
+import { isVaultedPortfolio } from '../lockedPortfolio';
 
 /** A committed compare target: the contract kind + its id, plus a display label. */
 export interface CompareTarget {
@@ -55,7 +56,7 @@ export function CompareControl({
 
   // Comparing a portfolio against itself is meaningless — offer only the others.
   const otherPortfolios = (portfoliosQuery.data?.portfolios ?? []).filter(
-    (p) => p.id !== currentPortfolioId,
+    (portfolio) => portfolio.id !== currentPortfolioId && !isVaultedPortfolio(portfolio),
   );
   const conglomerates = conglomeratesQuery.data?.conglomerates ?? [];
 
