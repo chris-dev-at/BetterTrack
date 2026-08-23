@@ -23,7 +23,8 @@ import type { DriveAccessTokenResult, GoogleDriveTokenClient } from './gisTokenC
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const FILE_FIELDS = 'id,name,size,modifiedTime,headRevisionId,trashed,appProperties';
-const DUPLICATE_SCAN_LIMIT = '100';
+const DRIVE_LIST_PAGE_SIZE = '100';
+const DRIVE_ADDRESS_OBJECT_LIMIT = 1_000;
 const DRIVE_VAULT_FILE_CONTEXT = 'bettertrack-drive-vault-account-v1:';
 const DRIVE_VAULT_DOC_FILE_CONTEXT = 'bettertrack-drive-vault-v2:';
 const DRIVE_OWNER_CONTEXT = 'bettertrack-drive-owner-v1:';
@@ -427,67 +428,89 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       ...(address.docKind ? [appPropertyFilter('docKind', address.docKind)] : []),
       'trashed = false',
     ];
-    const params = new URLSearchParams({
-      q: filters.join(' and '),
-      // The partial-response mask decides what Drive sends back: asking for
-      // `files(...)` alone makes Google OMIT `nextPageToken`, which would turn
-      // the truncation refusal below into a no-op that can never fire. The
-      // token is requested explicitly so a second page is a fact, not a guess.
-      fields: `nextPageToken,files(${FILE_FIELDS})`,
-      pageSize: DUPLICATE_SCAN_LIMIT,
-    });
-    const listed = await driveFetch(`${DRIVE_API}/files?${params.toString()}`);
-    if (listed.status === 'failure') return listed;
-    if (!listed.response.ok) {
-      return {
-        status: 'failure',
-        failure: httpFailure(listed.response, 'Drive vault lookup failed.'),
-      };
-    }
-
-    let payload: unknown;
-    try {
-      payload = await listed.response.json();
-    } catch (cause) {
-      return {
-        status: 'failure',
-        failure: {
-          code: 'api-failure',
-          message: 'Drive vault lookup returned invalid JSON.',
-          cause,
-        },
-      };
-    }
-    const files =
-      typeof payload === 'object' &&
-      payload !== null &&
-      Array.isArray((payload as { files?: unknown }).files)
-        ? (payload as { files: unknown[] }).files
-        : null;
-    if (files === null) {
-      return {
-        status: 'corrupt',
-        result: corrupt(
-          undefined,
-          null,
-          'malformed-metadata',
-          'Drive contains invalid vault metadata.',
-        ),
-      };
-    }
     // `docId` is not an appProperty, so every document sharing (vaultDigest,
-    // docKind) lands in this one page. Truncating it silently would let a real
-    // object read `absent` and be re-created as a second live branch, so a
-    // second page is refused loudly instead.
-    const nextPageToken = (payload as { nextPageToken?: unknown }).nextPageToken;
-    if (typeof nextPageToken === 'string' && nextPageToken.length > 0) {
-      return {
-        status: 'failure',
-        failure: {
-          code: 'api-failure',
-          message: `Drive returned more than ${DUPLICATE_SCAN_LIMIT} vault objects for one address.`,
-        },
-      };
+    // docKind) lands at this list address. Read every page before deciding that
+    // a document is absent; truncating would re-create a real object as a
+    // second live branch. The explicit ceiling bounds a hostile shared Drive.
+    const files: unknown[] = [];
+    const seenPageTokens = new Set<string>();
+    let pageToken: string | null = null;
+    for (;;) {
+      const params = new URLSearchParams({
+        q: filters.join(' and '),
+        // The partial-response mask decides what Drive sends back: asking for
+        // `files(...)` alone makes Google omit the token and silently defeats
+        // pagination.
+        fields: `nextPageToken,files(${FILE_FIELDS})`,
+        pageSize: DRIVE_LIST_PAGE_SIZE,
+      });
+      if (pageToken !== null) params.set('pageToken', pageToken);
+      const listed = await driveFetch(`${DRIVE_API}/files?${params.toString()}`);
+      if (listed.status === 'failure') return listed;
+      if (!listed.response.ok) {
+        return {
+          status: 'failure',
+          failure: httpFailure(listed.response, 'Drive vault lookup failed.'),
+        };
+      }
+
+      let payload: unknown;
+      try {
+        payload = await listed.response.json();
+      } catch (cause) {
+        return {
+          status: 'failure',
+          failure: {
+            code: 'api-failure',
+            message: 'Drive vault lookup returned invalid JSON.',
+            cause,
+          },
+        };
+      }
+      const pageFiles =
+        typeof payload === 'object' &&
+        payload !== null &&
+        Array.isArray((payload as { files?: unknown }).files)
+          ? (payload as { files: unknown[] }).files
+          : null;
+      if (pageFiles === null) {
+        return {
+          status: 'corrupt',
+          result: corrupt(
+            undefined,
+            null,
+            'malformed-metadata',
+            'Drive contains invalid vault metadata.',
+          ),
+        };
+      }
+      files.push(...pageFiles);
+      const nextPageToken = (payload as { nextPageToken?: unknown }).nextPageToken;
+      const hasNextPage = typeof nextPageToken === 'string' && nextPageToken.length > 0;
+      if (
+        files.length > DRIVE_ADDRESS_OBJECT_LIMIT ||
+        (hasNextPage && files.length >= DRIVE_ADDRESS_OBJECT_LIMIT)
+      ) {
+        return {
+          status: 'failure',
+          failure: {
+            code: 'api-failure',
+            message: `Drive returned more than ${DRIVE_ADDRESS_OBJECT_LIMIT} vault objects for one address.`,
+          },
+        };
+      }
+      if (!hasNextPage) break;
+      if (seenPageTokens.has(nextPageToken)) {
+        return {
+          status: 'failure',
+          failure: {
+            code: 'api-failure',
+            message: 'Drive vault lookup repeated a pagination token.',
+          },
+        };
+      }
+      seenPageTokens.add(nextPageToken);
+      pageToken = nextPageToken;
     }
     if (files.length === 0) return { status: 'absent' };
 
@@ -561,11 +584,10 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
    * 1. A cold lookup pulls the body of every candidate sharing
    *    (vaultDigest, docKind): warming a vault of N same-kind documents is
    *    O(N²) downloads.
-   * 2. Every `portfolio` doc of one vault shares that address, so the truncated-
-   *    page refusal in `findFile()` is a CLIFF, not a slowdown: past
-   *    `DUPLICATE_SCAN_LIMIT` objects every read and write of every portfolio
-   *    doc in that vault fails loudly (still preferable to one of them silently
-   *    reading `absent` and forking a second live branch).
+   * 2. Every `portfolio` doc of one vault shares that address. `findFile()`
+   *    paginates through the supported bounded set; only an address beyond
+   *    `DRIVE_ADDRESS_OBJECT_LIMIT` fails loudly (still preferable to one of
+   *    them silently reading `absent` and forking a second live branch).
    * 3. One malformed sibling fails the whole address rather than itself — the
    *    fail-closed direction, but with a vault-wide blast radius.
    * A `docDigest: sha256(…accountId:vaultId:docId)` appProperty would keep the
@@ -859,7 +881,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         'trashed = false',
       ].join(' and '),
       fields: 'files(id)',
-      pageSize: DUPLICATE_SCAN_LIMIT,
+      pageSize: DRIVE_LIST_PAGE_SIZE,
     });
     const listed = await driveFetch(`${DRIVE_API}/files?${query.toString()}`);
     if (listed.status === 'failure') return listed;

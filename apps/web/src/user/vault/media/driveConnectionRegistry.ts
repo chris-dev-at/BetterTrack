@@ -42,6 +42,15 @@ export interface DriveConnectionRegistryOptions {
   identify?: typeof readGoogleDriveIdentity;
 }
 
+interface RegisteredDriveClient {
+  raw: GoogleDriveTokenClient;
+  tokens: GoogleDriveTokenClient;
+  state: {
+    connection: DriveConnection;
+    mismatchMessage: string | null;
+  };
+}
+
 /**
  * What a registered connection contributes to its GIS client.
  *
@@ -65,7 +74,7 @@ export function driveTokenClientIdentity(connection?: DriveConnection): DriveTok
 export function createDriveConnectionRegistry(
   options: DriveConnectionRegistryOptions,
 ): DriveConnectionRegistry {
-  const clients = new Map<string, GoogleDriveTokenClient>();
+  const clients = new Map<string, RegisteredDriveClient>();
   const identify = options.identify ?? readGoogleDriveIdentity;
   const makeClient =
     options.tokenClient ??
@@ -75,20 +84,117 @@ export function createDriveConnectionRegistry(
         ...driveTokenClientIdentity(connection),
       }));
 
-  function clientFor(connection: DriveConnection): GoogleDriveTokenClient {
-    let client = clients.get(connection.id);
-    if (!client) {
-      client = makeClient(connection);
-      clients.set(connection.id, client);
+  function registerClient(
+    connection: DriveConnection,
+    raw: GoogleDriveTokenClient,
+  ): RegisteredDriveClient {
+    const state = { connection, mismatchMessage: null as string | null };
+    let entry!: RegisteredDriveClient;
+    const tokens: GoogleDriveTokenClient = {
+      get state() {
+        return state.mismatchMessage === null ? raw.state : 'identity-mismatch';
+      },
+
+      getAccessToken() {
+        return state.mismatchMessage === null
+          ? raw.getAccessToken()
+          : { status: 'identity-mismatch', message: state.mismatchMessage };
+      },
+
+      subscribe: (listener) => raw.subscribe(listener),
+
+      async authorize() {
+        const before = tokens.getAccessToken();
+        state.mismatchMessage = null;
+        const authorized = await raw.authorize();
+        if (authorized.status !== 'ok' || before.status === 'ok') return authorized;
+
+        const verified = await verifyIdentity(entry);
+        if (verified.status === 'ok') return authorized;
+        return {
+          status:
+            verified.status === 'identity-mismatch'
+              ? 'identity-mismatch'
+              : ('consent-required' as const),
+          message: verified.message,
+        };
+      },
+
+      identify: (identity) => raw.identify(identity),
+
+      clear() {
+        state.mismatchMessage = null;
+        raw.clear();
+      },
+
+      markExpired() {
+        state.mismatchMessage = null;
+        raw.markExpired();
+      },
+
+      markRevoked() {
+        state.mismatchMessage = null;
+        raw.markRevoked();
+      },
+    };
+    entry = { raw, tokens, state };
+    return entry;
+  }
+
+  function clientFor(connection: DriveConnection): RegisteredDriveClient {
+    let entry = clients.get(connection.id);
+    if (!entry) {
+      entry = registerClient(connection, makeClient(connection));
+      clients.set(connection.id, entry);
+    } else {
+      if (entry.state.connection.email !== connection.email) {
+        entry.raw.identify(driveTokenClientIdentity(connection));
+      }
+      entry.state.connection = connection;
     }
-    return client;
+    return entry;
+  }
+
+  async function verifyIdentity(
+    entry: RegisteredDriveClient,
+  ): Promise<DriveRegistryAuthorizationResult> {
+    const { connection } = entry.state;
+    try {
+      const identity = await identify(entry.raw);
+      if (identity.googleSub !== connection.googleSub) {
+        entry.state.mismatchMessage = `Sign in to Google (${connection.email}) to sync.`;
+        entry.raw.clear();
+        return {
+          status: 'identity-mismatch',
+          connection,
+          message: entry.state.mismatchMessage,
+        };
+      }
+      const verified = await options.api.verify(connection.id);
+      entry.state.connection = verified;
+      entry.state.mismatchMessage = null;
+      return { status: 'ok', connection: verified };
+    } catch (cause) {
+      // A token whose principal could not be proved must never remain reachable
+      // through `tokens(id)`, even when the failure was a transient about.get
+      // or registry-touch error rather than an explicit mismatch.
+      entry.state.mismatchMessage = null;
+      entry.raw.clear();
+      return {
+        status: 'failed',
+        connection,
+        message: cause instanceof Error ? cause.message : 'Google Drive verification failed.',
+      };
+    }
   }
 
   async function proveIdentity(
     connection: DriveConnection,
-    client: GoogleDriveTokenClient,
+    entry: RegisteredDriveClient,
   ): Promise<DriveRegistryAuthorizationResult> {
-    const authorized = await client.authorize();
+    entry.state.connection = connection;
+    entry.state.mismatchMessage = null;
+    const authorized = await entry.raw.authorize();
     if (authorized.status !== 'ok') {
       return {
         status: 'authorization-required',
@@ -96,24 +202,7 @@ export function createDriveConnectionRegistry(
         message: authorized.message,
       };
     }
-    try {
-      const identity = await identify(client);
-      if (identity.googleSub !== connection.googleSub) {
-        client.clear();
-        return {
-          status: 'identity-mismatch',
-          connection,
-          message: `Sign in to Google (${connection.email}) to sync.`,
-        };
-      }
-      return { status: 'ok', connection: await options.api.verify(connection.id) };
-    } catch (cause) {
-      return {
-        status: 'failed',
-        connection,
-        message: cause instanceof Error ? cause.message : 'Google Drive verification failed.',
-      };
-    }
+    return verifyIdentity(entry);
   }
 
   return {
@@ -130,16 +219,16 @@ export function createDriveConnectionRegistry(
         // the identity the row just resolved. The bootstrap client was minted
         // before any of this was known, so without the pin every re-mint for
         // the rest of the page session would run hint-less (account chooser)
-        // and fall back to the generic sign-in copy — including for a consumer
-        // that reaches the client through `tokens(connectionId)` and calls
-        // `authorize()` without the registry's identity check.
+        // and fall back to the generic sign-in copy. `tokens(connectionId)` is
+        // a checked facade: every later mint repeats the about.get equality
+        // proof before it exposes the new capability.
         bootstrap.identify(driveTokenClientIdentity(connection));
         // Re-consenting an already-registered account upserts onto the same id,
         // so the client it replaces is released here — otherwise its token and
         // expiry timer would outlive every reference to it.
         const replaced = clients.get(connection.id);
-        if (replaced && replaced !== bootstrap) replaced.clear();
-        clients.set(connection.id, bootstrap);
+        if (replaced?.raw !== bootstrap) replaced?.raw.clear();
+        clients.set(connection.id, registerClient(connection, bootstrap));
         return { status: 'ok', connection };
       } catch (cause) {
         bootstrap.clear();
@@ -155,20 +244,20 @@ export function createDriveConnectionRegistry(
     },
 
     authorization(connection) {
-      return clientFor(connection).state;
+      return clientFor(connection).tokens.state;
     },
 
     subscribe(connection, listener) {
-      return clientFor(connection).subscribe(listener);
+      return clientFor(connection).tokens.subscribe(listener);
     },
 
     tokens(connectionId) {
-      return clients.get(connectionId) ?? null;
+      return clients.get(connectionId)?.tokens ?? null;
     },
 
     async disconnect(connection, acknowledgeBound) {
       await options.api.delete(connection.id, acknowledgeBound);
-      clients.get(connection.id)?.clear();
+      clients.get(connection.id)?.raw.clear();
       clients.delete(connection.id);
     },
   };

@@ -24,6 +24,7 @@ export interface DataHomeTransportFailure {
     | 'token-expired'
     | 'gesture-required'
     | 'revoked'
+    | 'identity-mismatch'
     | 'permission-denied'
     | 'api-failure';
   /** The remote may have committed before the response was lost. */
