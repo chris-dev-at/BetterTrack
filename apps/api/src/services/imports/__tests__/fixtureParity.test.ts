@@ -5,7 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { parseCsv } from '../csv';
-import { extractRowFields, mapColumns, type MappableField } from '../columnMapping';
+import {
+  extractRowFields,
+  mapTableColumns,
+  understandTable,
+  type MappableField,
+} from '../columnMapping';
 import { flatexMapper } from '../mappers/flatex';
 import { georgeMapper } from '../mappers/george';
 import { ibkrMapper } from '../mappers/ibkr';
@@ -36,6 +41,12 @@ interface Expected {
   field: MappableField | 'unmapped';
   /** Must be the field's WINNER (defaults true when unambiguous). */
   winner?: boolean;
+  /**
+   * Whether the generic mapper demands a human look at this column. Defaults
+   * to FALSE: parity with a hardcoded mapper only means "cannot do worse" if
+   * the generic pipeline is also usable UNATTENDED, so every column states it.
+   */
+  needsReview?: boolean;
 }
 
 const PARITY: Record<string, Expected[]> = {
@@ -85,11 +96,15 @@ const PARITY: Record<string, Expected[]> = {
     { header: 'Betrag', field: 'amount' },
   ],
   // expenseBank/erste-george.ts: description = Partnername ?? Verwendungszweck.
+  // KNOWN GAP: the hardcoded mapper prefers Partnername deterministically; the
+  // dictionary ranks it only 0.02 above Verwendungszweck, inside
+  // CONTEST_EPSILON, so the generic mapper contests the pair and asks a human.
+  // Honest, but strictly more review than the hardcoded path needs.
   'erste-george.csv': [
     { header: 'Buchungsdatum', field: 'date' },
     { header: 'Valutadatum', field: 'date', winner: false },
-    { header: 'Partnername', field: 'description' },
-    { header: 'Verwendungszweck', field: 'description', winner: false },
+    { header: 'Partnername', field: 'description', needsReview: true },
+    { header: 'Verwendungszweck', field: 'description', winner: false, needsReview: true },
     { header: 'Betrag', field: 'amount' },
     { header: 'Währung', field: 'currency' },
   ],
@@ -115,11 +130,13 @@ const PARITY: Record<string, Expected[]> = {
     { header: 'Exchange Rate', field: 'ignore' },
   ],
   // expenseBank/revolut.ts: date = Completed ?? Started; description = Description ?? Type.
+  // KNOWN GAP (same shape as erste-george): Completed Date outranks Started
+  // Date by only 0.02, so the two contest and the date column asks a human.
   'revolut.csv': [
     { header: 'Type', field: 'kindHint' },
     { header: 'Product', field: 'unmapped' },
-    { header: 'Started Date', field: 'date', winner: false },
-    { header: 'Completed Date', field: 'date' },
+    { header: 'Started Date', field: 'date', winner: false, needsReview: true },
+    { header: 'Completed Date', field: 'date', needsReview: true },
     { header: 'Description', field: 'description' },
     { header: 'Amount', field: 'amount' },
     { header: 'Fee', field: 'fee' },
@@ -132,23 +149,36 @@ const PARITY: Record<string, Expected[]> = {
 describe('generic mapping parity with the hardcoded brokers', () => {
   for (const [fixture, expected] of Object.entries(PARITY)) {
     it(`maps ${fixture} to the fields ${fixture}’s hardcoded mapper uses`, () => {
-      const table = sniffTable(Buffer.from(readFixture(fixture), 'utf8'), fixture);
-      expect(table).not.toBeNull();
-      const result = mapColumns(table!.headers, table!.rows);
+      const understood = understandTable(Buffer.from(readFixture(fixture), 'utf8'), fixture);
+      expect(understood).not.toBeNull();
+      const result = understood!.mapping;
 
-      for (const { header, field, winner } of expected) {
+      for (const { header, field, winner, needsReview } of expected) {
         if (field === 'unmapped') {
           expect(result.unmapped).toContain(header);
           continue;
         }
         const mapping = result.mappings.find((m) => m.header === header);
         expect(mapping?.field, `${fixture}: ${header}`).toBe(field);
+        // Pinned per column: a fixture drifting INTO review is a regression in
+        // unattended operation even when the field assignment stays correct.
+        expect(mapping?.needsReview, `${fixture}: ${header} needsReview`).toBe(
+          needsReview === true,
+        );
         if (winner !== false && field !== 'ignore') {
           expect(result.fieldWinners[field]?.header).toBe(header);
         }
       }
     });
   }
+
+  it('sniffs every fixture without an unresolved table issue', () => {
+    for (const fixture of Object.keys(PARITY)) {
+      const understood = understandTable(Buffer.from(readFixture(fixture), 'utf8'), fixture);
+      expect(understood!.table.issues, fixture).toEqual([]);
+      expect(understood!.table.dateLocaleAmbiguous, fixture).toBe(false);
+    }
+  });
 });
 
 describe('IBKR multi-section statement — per-section generic mapping', () => {
@@ -164,9 +194,9 @@ describe('IBKR multi-section statement — per-section generic mapping', () => {
   }
 
   function mapSection(section: string) {
-    const table = sniffTable(sectionTable(section), `ibkr-${section}.csv`);
-    expect(table, section).not.toBeNull();
-    return { table: table!, result: mapColumns(table!.headers, table!.rows) };
+    const understood = understandTable(sectionTable(section), `ibkr-${section}.csv`);
+    expect(understood, section).not.toBeNull();
+    return { table: understood!.table, result: understood!.mapping };
   }
 
   it('sniffs each section to its own header row with EN/iso locales', () => {
@@ -216,6 +246,23 @@ describe('IBKR multi-section statement — per-section generic mapping', () => {
     }
   });
 
+  it('flags each section’s Total row instead of letting it book as a transaction', () => {
+    for (const section of ['Deposits & Withdrawals', 'Dividends'] as const) {
+      const { table } = mapSection(section);
+      const summaries = table.issues.filter((i) => i.kind === 'summary-row');
+      expect(summaries, section).toHaveLength(1);
+      // The flag points at a row that really is the section total.
+      expect(table.rows[summaries[0]!.row]?.[0], section).toBe('Total');
+    }
+  });
+
+  it('flags the Total and SubTotal rows of the whole multi-section statement', () => {
+    const table = sniffTable(Buffer.from(raw, 'utf8'), 'ibkr.csv')!;
+    const summaries = table.issues.filter((i) => i.kind === 'summary-row');
+    // Deposits total (line 10), Trades SubTotal + Total (15, 16), Dividends (19).
+    expect(summaries.map((i) => i.line)).toEqual([10, 15, 16, 19]);
+  });
+
   it('the hardcoded IBKR mapper still normalizes the raw fixture to 6 rows', () => {
     // Guard that the slicing above did not silently drift from the real file.
     const csv = parseCsv(raw);
@@ -224,11 +271,21 @@ describe('IBKR multi-section statement — per-section generic mapping', () => {
   });
 });
 
+/** mappers/tradeRepublic.ts TYPE_MAP, restated so the projection is checked against it. */
+const TR_KIND_BY_HINT: Record<string, string> = {
+  kauf: 'buy',
+  sparplan: 'buy',
+  verkauf: 'sell',
+  dividende: 'dividend',
+  einzahlung: 'deposit',
+  auszahlung: 'withdrawal',
+  zinsen: 'deposit',
+};
+
 describe('value round-trips — generic projection equals the hardcoded rows', () => {
   function project(fixture: string) {
-    const text = readFixture(fixture);
-    const table = sniffTable(Buffer.from(text, 'utf8'), fixture)!;
-    const result = mapColumns(table.headers, table.rows);
+    const table = sniffTable(Buffer.from(readFixture(fixture), 'utf8'), fixture)!;
+    const result = mapTableColumns(table);
     return table.rows.map((cells) => ({
       raw: extractRowFields(result, cells),
       table,
@@ -277,9 +334,10 @@ describe('value round-trips — generic projection equals the hardcoded rows', (
       if (line.row.amountEur !== null) {
         expect(parseLocalizedDecimal(raw.amount!, table.numberLocale)).toBe(line.row.amountEur);
       }
-      if (raw.kindHint !== undefined && raw.kindHint !== '') {
-        expect(raw.kindHint.toLowerCase()).not.toBe('');
-      }
+      // The generic projection lands on the very word tradeRepublicMapper keys
+      // its kind off — every row, no escape hatch. (The old assertion here
+      // compared a non-empty string to '' and could not fail.)
+      expect(TR_KIND_BY_HINT[(raw.kindHint ?? '').toLowerCase()], `row ${i}`).toBe(line.row.kind);
     });
     // The deposit row's EUR magnitude survives German notation.
     expect(parseLocalizedDecimal(projected[0]!.raw.amount!, 'de')).toBe(2000);

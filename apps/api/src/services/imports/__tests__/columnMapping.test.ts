@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  countKnownHeaderAliases,
   extractRowFields,
   mapColumns,
+  understandTable,
+  UnmappableTableError,
   type ColumnMapResult,
   type MappableField,
 } from '../columnMapping';
@@ -144,6 +147,17 @@ describe('mapColumns — measured traps, one header at a time', () => {
     ['Typ', 'kindHint'],
     ['Auftragsart', 'kindHint'],
     ['Transaction Type', 'kindHint'],
+    // Vocabulary the review found missing — every one of these is a header a
+    // real Austrian/German bank or broker prints.
+    ['Buchungstag', 'date'],
+    ['Wertstellung', 'date'],
+    ['Handelstag', 'date'],
+    ['Schlusstag', 'date'],
+    ['Trade Date', 'date'],
+    ['Stk.', 'quantity'],
+    ['Stk', 'quantity'],
+    ['Steuern', 'tax'],
+    ['Ausmachender Betrag', 'amount'],
   ];
 
   it.each(expects)('maps %j → %s', (header: string, field: MappableField) => {
@@ -155,6 +169,126 @@ describe('mapColumns — measured traps, one header at a time', () => {
   it('matches WKN / ISIN spelled with spaces via the loose key', () => {
     const result = mapColumns(['WKN / ISIN'], [['DE0001234567']]);
     expect(result.mappings[0]?.field).toBe('isin');
+  });
+
+  it('pairs every alias whose singular/plural both ship in the wild', () => {
+    for (const [singular, plural] of [
+      ['Gebühr', 'Gebühren'],
+      ['Steuer', 'Steuern'],
+      ['Fee', 'Fees'],
+    ]) {
+      expect(mapColumns([singular!], [[]]).mappings[0]?.field).toBe(
+        mapColumns([plural!], [[]]).mappings[0]?.field,
+      );
+    }
+  });
+});
+
+describe('mapColumns — a currency qualifier never hides the money column', () => {
+  it.each([
+    ['Amount (EUR)', 'amount'],
+    ['Amount (USD)', 'amount'],
+    ['Betrag (EUR)', 'amount'],
+    ['Betrag in EUR', 'amount'],
+    ['Amount EUR', 'amount'],
+    ['Kurs (EUR)', 'price'],
+  ])('maps %j → %s through the qualifier', (header: string, field: string) => {
+    expect(mapColumns([header], [[]]).mappings[0]?.field).toBe(field);
+  });
+
+  it('keeps the informational FX twin on ignore, never on amount', () => {
+    expect(mapColumns(['Amount (Foreign Currency)'], [[]]).mappings[0]?.field).toBe('ignore');
+    expect(mapColumns(['Type Foreign Currency'], [[]]).mappings[0]?.field).toBe('ignore');
+    // A non-ISO qualifier is NOT stripped — reducing this to `Betrag` would map
+    // the FX column as the real amount.
+    expect(mapColumns(['Betrag (Fremdwährung)'], [[]]).mappings).toEqual([]);
+  });
+
+  it('maps `amount` on an all-negative n26 month, where shape evidence alone cannot', () => {
+    // A routine month with no incoming transfer: every amount is negative, so
+    // the mixed-sign shape rule never fires and the alias must carry the column.
+    const understood = understandTable(
+      Buffer.from(
+        [
+          'Date,Payee,Account number,Transaction type,Payment reference,Amount (EUR),Amount (Foreign Currency),Type Foreign Currency,Exchange Rate',
+          '2024-01-05,REWE,,MasterCard Payment,,-42.50,,,',
+          '2024-01-10,Netflix,,Direct Debit,Netflix Monthly,-12.99,,,',
+          '2024-01-22,Spotify,,Direct Debit,Spotify Premium,-9.99,,,',
+        ].join('\n'),
+        'utf8',
+      ),
+      'n26-negative.csv',
+    );
+    expect(understood).not.toBeNull();
+    const { mapping } = understood!;
+    expect(mapping.fieldWinners.amount?.header).toBe('Amount (EUR)');
+    expect(mapping.fieldWinners.amount?.needsReview).toBe(false);
+    expect(mapping.unmapped).toEqual([]);
+    expect(mapping.mappings.find((m) => m.header === 'Amount (Foreign Currency)')?.field).toBe(
+      'ignore',
+    );
+  });
+});
+
+describe('understandTable — sniff and mapping composed', () => {
+  it('ranks the real header over a same-width preamble and maps its money column', () => {
+    const understood = understandTable(
+      Buffer.from(
+        [
+          'Konto;Inhaber;Waehrung;Filiale;Typ',
+          'Buchtag;Valuta;Buchungstext;TA-Nr.;Betrag',
+          '02.01.2024;02.01.2024;Einzahlung SEPA;100001;500,00',
+          '31.01.2024;31.01.2024;Gehalt;100003;2.500,00',
+        ].join('\n'),
+        'utf8',
+      ),
+      'preamble.csv',
+    );
+    expect(understood).not.toBeNull();
+    const { table, mapping } = understood!;
+    expect(table.headerRowIndex).toBe(2);
+    expect(mapping.fieldWinners.date?.header).toBe('Buchtag');
+    expect(mapping.fieldWinners.amount?.header).toBe('Betrag');
+    expect(mapping.fieldWinners.description?.header).toBe('Buchungstext');
+    // `Waehrung` lived in the PREAMBLE — nothing may claim currency from it.
+    expect(mapping.fieldWinners.currency).toBeUndefined();
+    expect(mapping.unmapped).toEqual([]);
+  });
+
+  it('forces review on every date column when the file’s slash order is ambiguous', () => {
+    const understood = understandTable(
+      Buffer.from(
+        'Date,Description,Amount\n01/02/2024,A,-1.00\n02/03/2024,B,-2.00\n03/04/2024,C,-3.00',
+        'utf8',
+      ),
+      'ambiguous.csv',
+    );
+    const { table, mapping } = understood!;
+    expect(table.dateLocaleAmbiguous).toBe(true);
+    expect(mapping.fieldWinners.date?.header).toBe('Date');
+    // The HEADER matched at 0.95 — that says nothing about the day/month order.
+    expect(mapping.fieldWinners.date?.needsReview).toBe(true);
+    expect(mapping.mappings.find((m) => m.header === 'Date')?.reason).toContain('ambiguous date');
+  });
+
+  it('refuses loudly when the file has data but no usable header', () => {
+    const buffer = Buffer.from(
+      'Datum;Betrag\n02.01.2024;Einzahlung;100001;500,00\n03.01.2024;Gehalt;100002;250,00',
+      'utf8',
+    );
+    expect(() => understandTable(buffer, 'narrow.csv')).toThrow(UnmappableTableError);
+    // The old failure mode: an empty result a caller reads as "nothing wrong".
+    expect(() => mapColumns([], [['02.01.2024', '500,00']])).toThrow(UnmappableTableError);
+    // An empty table is not an error — there is simply nothing to map.
+    expect(mapColumns([], [])).toEqual({ mappings: [], unmapped: [], fieldWinners: {} });
+  });
+
+  it('counts alias hits per row so the sniffer can break header ties', () => {
+    expect(countKnownHeaderAliases(['Buchtag', 'Valuta', 'Buchungstext', 'TA-Nr.', 'Betrag'])).toBe(
+      5,
+    );
+    expect(countKnownHeaderAliases(['Inhaber', 'Filiale'])).toBe(0);
+    expect(countKnownHeaderAliases(['', '  '])).toBe(0);
   });
 });
 
@@ -186,6 +320,17 @@ describe('mapColumns — value-shape evidence for unknown headers', () => {
     expect(result.unmapped).toEqual(['Unbekannt']);
   });
 
+  it('reads decimal shapes under the FILE’s sniffed locale, not a per-column guess', () => {
+    // `1,234.56` is English grouping. Under `en` these are mixed-sign amounts;
+    // under `de` they are not decimals at all (reading them there would book
+    // 1.23456), so the SAME cells must map differently per file locale.
+    const rows = [['-1,234.56'], ['2,345.67'], ['-3,456.78']];
+    expect(mapColumns(['Spalte'], rows, { numberLocale: 'en' }).fieldWinners.amount?.header).toBe(
+      'Spalte',
+    );
+    expect(mapColumns(['Spalte'], rows, { numberLocale: 'de' }).unmapped).toEqual(['Spalte']);
+  });
+
   it('combines alias + agreeing shape into one confidence with both reasons', () => {
     const result = mapColumns(['Betrag'], [['-50,00'], ['100,00']]);
     const amount = fieldOf(result, 'Betrag');
@@ -208,6 +353,25 @@ describe('mapColumns — ambiguity is represented, never coin-flipped', () => {
     expect(x.needsReview).toBe(true);
     expect(y.needsReview).toBe(true);
     expect(y.alternativeOf?.header).toBe('X');
+  });
+
+  it('records the true RUNNER-UP as the winner’s alternative, not the farthest contender', () => {
+    // Four same-field claims at .97/.95/.97/.84: the tied `Amount` is the
+    // runner-up a human must see. Overwriting on every contender used to leave
+    // the weaker `Endbetrag` in its place and hide the tie completely.
+    const rows = [
+      ['-1,00', '-1,00', '-1,00', '-1,00'],
+      ['2,00', '2,00', '2,00', '2,00'],
+    ];
+    const result = mapColumns(['Betrag', 'Endbetrag', 'Amount', 'Proceeds'], rows);
+    const winner = fieldOf(result, 'Betrag');
+    expect(result.fieldWinners.amount?.header).toBe('Betrag');
+    expect(winner.needsReview).toBe(true);
+    expect(winner.alternative?.header).toBe('Amount');
+    expect(winner.alternative?.confidence).toBe(fieldOf(result, 'Amount').confidence);
+    // …and it is genuinely the strongest of the losers.
+    const losers = ['Endbetrag', 'Amount', 'Proceeds'].map((h) => fieldOf(result, h).confidence);
+    expect(winner.alternative?.confidence).toBe(Math.max(...losers));
   });
 
   it('records a clear loser as a secondary claim without flagging review', () => {
