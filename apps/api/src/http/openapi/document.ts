@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
 import { openApiPathTemplateAcceptsBearer } from '../middleware/bearerAuth';
+import { pathRequiresAdminTwoFactorSetup, pathRequiresPasswordChange } from '../middleware/session';
 
 // zod-to-openapi augments the shared zod prototype with `.openapi()`, which the
 // registry uses to attach `$ref` ids. There is a single zod instance in the
@@ -704,6 +705,11 @@ interface EndpointDef {
   errorResponses?: Readonly<Record<number, string>>;
   /** Contract body returned with HTTP 503 by readiness-style public probes. */
   unavailableResponse?: z.ZodTypeAny;
+  /**
+   * Stable `ApiError.error.code` values emitted by this operation beyond the
+   * shared authentication-state and admin-step-up guards.
+   */
+  errorCodes?: readonly string[];
   /**
    * Success response media type; defaults to JSON. Paranoid-vault ciphertext
    * reads use `application/octet-stream` and describe their opaque bodies with a
@@ -1884,6 +1890,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}',
     tag: 'Admin',
     summary: 'Update one feedback submission lifecycle status or workspace archive state.',
+    errorCodes: contracts.FEEDBACK_STATUS_ERROR_CODES,
     params: contracts.idParamSchema,
     body: R.UpdateFeedbackRequest,
     status: 200,
@@ -2862,6 +2869,7 @@ const endpoints: EndpointDef[] = [
     path: '/feedback',
     tag: 'Feedback',
     summary: 'Submit a feature request, bug report, or other feedback.',
+    errorCodes: contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
     body: R.CreateFeedbackRequest,
     status: 201,
     response: R.CreateFeedbackResponse,
@@ -4983,6 +4991,44 @@ const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
   content: jsonContent(R.ApiError),
 });
 
+function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
+  return [
+    ...(endpoint.public ? [] : [contracts.AUTH_ERROR_CODES.unauthenticated]),
+    ...(!endpoint.public && pathRequiresPasswordChange(endpoint.path)
+      ? [contracts.AUTH_ERROR_CODES.passwordChangeRequired]
+      : []),
+    ...(pathRequiresAdminTwoFactorSetup(endpoint.path, endpoint.method)
+      ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
+      : []),
+    ...(endpoint.errorCodes ?? []),
+  ].filter((code, index, all) => all.indexOf(code) === index);
+}
+
+/**
+ * zod-to-openapi v7 preserves operation metadata but drops specification
+ * extensions from response configs. Apply the operation-level extension to its
+ * generated output instead, leaving the wire `ApiError` schema unchanged.
+ */
+function addErrorCodeExtensions<T extends { paths: Record<string, unknown> }>(document: T): T {
+  for (const endpoint of endpoints) {
+    const errorCodes = errorCodesForEndpoint(endpoint);
+    if (errorCodes.length === 0) continue;
+
+    const pathItem = document.paths[endpoint.path] as Record<string, unknown> | undefined;
+    const operation = pathItem?.[endpoint.method] as Record<string, unknown> | undefined;
+    if (!operation) {
+      // The same endpoint table registers the operation above. A mismatch would
+      // make this published vocabulary incomplete, so fail fast during document
+      // generation instead of serving misleading API metadata.
+      throw new Error(
+        `OpenAPI operation missing while adding error-code metadata: ${endpoint.method.toUpperCase()} ${endpoint.path}`,
+      );
+    }
+    operation['x-error-codes'] = errorCodes;
+  }
+  return document;
+}
+
 for (const ep of endpoints) {
   const responses: Record<string, ResponseConfig> = {};
   const responseHeaders = ep.noStore
@@ -5082,6 +5128,8 @@ export const OPENAPI_ENDPOINT_COUNT = endpoints.length;
 export const INTEGRATION_GUIDE = [
   '## Integrate with BetterTrack',
   '',
+  '`x-error-codes` is an additive list of stable, module-owned `ApiError.error.code` values, not an exhaustive refusal vocabulary.',
+  '',
   'Third-party apps get delegated, scoped, **revocable** access to a user’s',
   'BetterTrack workspace via OAuth 2.0 (authorization code + PKCE) — the user',
   'never hands your app their password or a personal key. Access tokens are',
@@ -5178,22 +5226,26 @@ export function buildOpenApiDocument() {
 
 function generateOpenApiDocument() {
   const generator = new OpenApiGeneratorV3(registry.definitions);
-  return generator.generateDocument({
-    openapi: '3.0.3',
-    info: {
-      title: 'BetterTrack API',
-      version: API_VERSION,
-      description:
-        'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
-        'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
-        'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
-        'access token (§6.13) — unless marked public.\n\n' +
-        INTEGRATION_GUIDE,
-    },
-    servers: [{ url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' }],
-    // Either scheme authenticates a request; API-key scopes further gate access.
-    security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
-  });
+  return addErrorCodeExtensions(
+    generator.generateDocument({
+      openapi: '3.0.3',
+      info: {
+        title: 'BetterTrack API',
+        version: API_VERSION,
+        description:
+          'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
+          'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
+          'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
+          'access token (§6.13) — unless marked public.\n\n' +
+          INTEGRATION_GUIDE,
+      },
+      servers: [
+        { url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' },
+      ],
+      // Either scheme authenticates a request; API-key scopes further gate access.
+      security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
+    }),
+  );
 }
 
 let cached: ReturnType<typeof buildOpenApiDocument> | null = null;
