@@ -4047,6 +4047,7 @@
         "open": "Tresor prüfen und öffnen",
         "back": "Zurück",
         "errors": {
+          "notABettertrackCode": "Dieser QR-Code ist kein BetterTrack-Transfer-Code.",
           "updateRequired": "Dieser Transfer-Code verwendet eine nicht unterstützte Version. Aktualisiere die App und versuche es erneut.",
           "missingMnemonic": "Der Transfer-Code enthält keine Seed-Phrase und wurde abgelehnt.",
           "missingVaultId": "Der Transfer-Code enthält keine Tresor-ID und wurde abgelehnt.",

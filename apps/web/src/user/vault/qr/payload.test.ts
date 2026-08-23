@@ -38,8 +38,42 @@ describe('btvault1 payload conformance vectors', () => {
     expect(rejectedOutcome(VECTORS.unknownPrefix.payload)).toBe(VECTORS.unknownPrefix.outcome);
   });
 
-  it('rejects a bare string with the update-app outcome', () => {
+  it('rejects a bare string as not a BetterTrack code', () => {
     expect(rejectedOutcome(VECTORS.bareString.payload)).toBe(VECTORS.bareString.outcome);
+  });
+
+  it('rejects a Wi-Fi QR as not a BetterTrack code', () => {
+    expect(rejectedOutcome(VECTORS.wifiQr.payload)).toBe(VECTORS.wifiQr.outcome);
+  });
+
+  it('rejects a query delimiter ahead of the form-encoded body', () => {
+    expect(rejectedOutcome(VECTORS.leadingQuestionMark.payload)).toBe(
+      VECTORS.leadingQuestionMark.outcome,
+    );
+  });
+
+  it('treats a blank display hint as absent', () => {
+    expect(parseVaultTransferPayload(VECTORS.blankName.payload)).toEqual(
+      VECTORS.blankName.expected,
+    );
+  });
+
+  it('treats a whitespace-only display hint as absent', () => {
+    expect(parseVaultTransferPayload(VECTORS.whitespaceName.payload)).toEqual(
+      VECTORS.whitespaceName.expected,
+    );
+  });
+
+  it('trims surrounding whitespace off a display hint but keeps its interior', () => {
+    expect(parseVaultTransferPayload(VECTORS.paddedName.payload)).toEqual(
+      VECTORS.paddedName.expected,
+    );
+  });
+
+  it('preserves a normal display hint through parse unchanged', () => {
+    expect(parseVaultTransferPayload(VECTORS.validRoundTrip.payload).name).toBe(
+      VAULT_TRANSFER_VECTOR_NAME,
+    );
   });
 
   it('rejects a missing mnemonic', () => {

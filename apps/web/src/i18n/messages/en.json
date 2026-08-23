@@ -4047,6 +4047,7 @@
         "open": "Verify and open vault",
         "back": "Back",
         "errors": {
+          "notABettertrackCode": "This QR code is not a BetterTrack transfer code.",
           "updateRequired": "This transfer code uses an unsupported version. Update the app before trying again.",
           "missingMnemonic": "The transfer code has no seed phrase and was rejected.",
           "missingVaultId": "The transfer code has no vault ID and was rejected.",

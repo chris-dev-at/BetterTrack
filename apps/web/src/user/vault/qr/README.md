@@ -2,13 +2,16 @@
 
 The binding payload is `btvault1:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprint>]`.
 There is deliberately no `//` authority: split at the first colon and parse the remainder as one
-`application/x-www-form-urlencoded` query. Reject every prefix except `btvault1:` with an
-update-required result, reject either missing required key, and ignore unknown query keys.
+`application/x-www-form-urlencoded` query. Reject anything that is not `btvaultN:` as
+not-a-bettertrack-code, reject `btvaultN:` with N > 1 as update-required, reject a body that
+starts with the query delimiter `?`, reject either missing required key, and ignore unknown query
+keys.
 Reject repeated `m` or `v` keys rather than selecting one occurrence.
 
 `m` is the lowercase, NFKD, single-space-separated 12-word English BIP39 phrase, including its
 checksum. `v` is the lowercase hyphenated vault UUID. `n` is an optional percent-encoded display
-hint of at most 64 Unicode code points; preserve its decoded value exactly without normalization.
+hint of at most 64 Unicode code points; trim its surrounding whitespace and treat a blank result
+as absent; otherwise preserve the decoded value exactly without normalization.
 `f` is the optional 16-character base64url key fingerprint. Encode the QR as UTF-8 byte mode with
 exact error-correction level M. Native clients must run the exported conformance vectors against
 their scanner before shipping.

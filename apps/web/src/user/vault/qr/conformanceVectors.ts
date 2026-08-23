@@ -43,7 +43,37 @@ export const VAULT_TRANSFER_CONFORMANCE_VECTORS = {
   },
   bareString: {
     payload: VAULT_TRANSFER_GOLDEN_PAYLOAD.slice('btvault1:'.length),
-    outcome: 'update-required',
+    outcome: 'not-a-bettertrack-code',
+  },
+  wifiQr: {
+    payload: 'WIFI:T:WPA;S:CafeGlockenspiel;P:hunter2;;',
+    outcome: 'not-a-bettertrack-code',
+  },
+  leadingQuestionMark: {
+    payload: `btvault1:?m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}`,
+    outcome: 'missing-mnemonic',
+  },
+  blankName: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=`,
+    expected: {
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    },
+  },
+  whitespaceName: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=%20%20`,
+    expected: {
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    },
+  },
+  paddedName: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=%20${VAULT_TRANSFER_VECTOR_NAME.replaceAll(' ', '+')}%20`,
+    expected: {
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+      name: VAULT_TRANSFER_VECTOR_NAME,
+    },
   },
   missingMnemonic: {
     payload: `btvault1:v=${VAULT_TRANSFER_VECTOR_VAULT_ID}`,

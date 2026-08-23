@@ -21,6 +21,7 @@ export const VAULT_TRANSFER_NAME_MAX_CHARS = 64;
 export const VAULT_TRANSFER_PAYLOAD_MAX_BYTES = 220;
 
 export const VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES = [
+  'not-a-bettertrack-code',
   'update-required',
   'missing-mnemonic',
   'missing-vault-id',
@@ -54,11 +55,25 @@ export interface VaultTransferPayload {
  */
 export function parseVaultTransferPayload(payload: string): VaultTransferPayload {
   const separator = payload.indexOf(':');
-  if (separator < 0 || payload.slice(0, separator + 1) !== VAULT_TRANSFER_SCHEME) {
+  const version =
+    separator < 0 ? undefined : /^btvault(\d+):$/.exec(payload.slice(0, separator + 1))?.[1];
+  if (version === undefined) {
+    throw new VaultTransferPayloadError('not-a-bettertrack-code');
+  }
+  if (Number(version) > 1) {
     throw new VaultTransferPayloadError('update-required');
   }
+  if (version !== '1') {
+    throw new VaultTransferPayloadError('not-a-bettertrack-code');
+  }
 
-  const query = new URLSearchParams(payload.slice(separator + 1));
+  const body = payload.slice(separator + 1);
+  if (body.startsWith('?')) {
+    // URLSearchParams strips one leading '?', which would silently accept a
+    // URL-shaped body; the query delimiter is never form-encoded data.
+    throw new VaultTransferPayloadError('missing-mnemonic');
+  }
+  const query = new URLSearchParams(body);
   if (query.getAll('m').length > 1) {
     throw new VaultTransferPayloadError('invalid-mnemonic');
   }
@@ -76,13 +91,13 @@ export function parseVaultTransferPayload(payload: string): VaultTransferPayload
 
   const mnemonic = validatedMnemonic(rawMnemonic);
   const vaultId = validatedVaultId(rawVaultId);
-  const name = query.get('n');
+  const name = query.get('n')?.trim();
   const fingerprint = query.get('f');
 
   return {
     mnemonic,
     vaultId,
-    ...(name == null ? {} : { name: validatedName(name) }),
+    ...(name ? { name: validatedName(name) } : {}),
     ...(fingerprint == null ? {} : { fingerprint: validatedFingerprint(fingerprint) }),
   };
 }
