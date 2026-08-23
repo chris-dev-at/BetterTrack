@@ -17,7 +17,7 @@ import { unauthorized } from '../../errors';
 import type { SessionSecurityContext } from '../../services/sessions/sessionService';
 import type { AppContext } from '../context';
 import { clearSessionCookie } from '../cookies';
-import { requireAdminTwoFactor } from '../middleware/session';
+import { adminTwoFactorOptionsForRoute, requireAdminTwoFactor } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
 
@@ -47,22 +47,34 @@ const sessionSecurityContextOf = (req: Request): SessionSecurityContext => {
 export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): void {
   // `ctx.adminTwoFactor` is read PER-REQUEST, never at mount — route factories
   // must stay side-effect free at mount time (checkOpenapiCoverage relies on it).
-  const allowFirstEnrollment = requireAdminTwoFactor(ctx, { allowBootstrap: true });
-  const requireCurrentAssurance = requireAdminTwoFactor(ctx);
+  const adminTwoFactorGate = (method: string, path: string) =>
+    requireAdminTwoFactor(ctx, adminTwoFactorOptionsForRoute(method, path));
 
-  router.get('/security/2fa/status', allowFirstEnrollment, async (req, res) => {
-    res.json(await ctx.adminTwoFactor.status(req.authUser!.id, sessionSecurityContextOf(req)));
-  });
+  router.get(
+    '/security/2fa/status',
+    adminTwoFactorGate('get', '/security/2fa/status'),
+    async (req, res) => {
+      res.json(await ctx.adminTwoFactor.status(req.authUser!.id, sessionSecurityContextOf(req)));
+    },
+  );
 
-  router.post('/security/2fa/totp/enroll', allowFirstEnrollment, async (req, res) => {
-    res.json(
-      await ctx.adminTwoFactor.enrollTotp(req.authUser!.id, req.ip, sessionSecurityContextOf(req)),
-    );
-  });
+  router.post(
+    '/security/2fa/totp/enroll',
+    adminTwoFactorGate('post', '/security/2fa/totp/enroll'),
+    async (req, res) => {
+      res.json(
+        await ctx.adminTwoFactor.enrollTotp(
+          req.authUser!.id,
+          req.ip,
+          sessionSecurityContextOf(req),
+        ),
+      );
+    },
+  );
 
   router.post(
     '/security/2fa/totp/confirm',
-    allowFirstEnrollment,
+    adminTwoFactorGate('post', '/security/2fa/totp/confirm'),
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorConfirmRequest;
@@ -79,7 +91,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
 
   router.post(
     '/security/2fa/totp/disable',
-    requireCurrentAssurance,
+    adminTwoFactorGate('post', '/security/2fa/totp/disable'),
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorDisableRequest;
@@ -96,7 +108,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
 
   router.post(
     '/security/2fa/email/start',
-    allowFirstEnrollment,
+    adminTwoFactorGate('post', '/security/2fa/email/start'),
     validateBody(adminTwoFactorEmailStartRequestSchema),
     async (req, res) => {
       const { email, proof } = req.valid?.body as AdminTwoFactorEmailStartRequest;
@@ -113,7 +125,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
 
   router.post(
     '/security/2fa/email/confirm',
-    allowFirstEnrollment,
+    adminTwoFactorGate('post', '/security/2fa/email/confirm'),
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
@@ -128,21 +140,33 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     },
   );
 
-  router.post('/security/2fa/email/disable', requireCurrentAssurance, async (req, res) => {
-    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip, sessionSecurityContextOf(req));
-    clearSessionCookie(res, ctx.config);
-    res.status(204).end();
-  });
+  router.post(
+    '/security/2fa/email/disable',
+    adminTwoFactorGate('post', '/security/2fa/email/disable'),
+    async (req, res) => {
+      await ctx.adminTwoFactor.disableEmail(
+        req.authUser!.id,
+        req.ip,
+        sessionSecurityContextOf(req),
+      );
+      clearSessionCookie(res, ctx.config);
+      res.status(204).end();
+    },
+  );
 
-  router.post('/security/2fa/recovery-codes', requireCurrentAssurance, async (req, res) => {
-    const result = await ctx.adminTwoFactor.regenerateRecoveryCodes(
-      req.authUser!.id,
-      req.ip,
-      sessionSecurityContextOf(req),
-    );
-    clearSessionCookie(res, ctx.config);
-    res.json(result.response);
-  });
+  router.post(
+    '/security/2fa/recovery-codes',
+    adminTwoFactorGate('post', '/security/2fa/recovery-codes'),
+    async (req, res) => {
+      const result = await ctx.adminTwoFactor.regenerateRecoveryCodes(
+        req.authUser!.id,
+        req.ip,
+        sessionSecurityContextOf(req),
+      );
+      clearSessionCookie(res, ctx.config);
+      res.json(result.response);
+    },
+  );
 }
 
 /**
