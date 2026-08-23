@@ -11,6 +11,10 @@ import {
 import {
   parseVaultTransferPayload,
   serializeVaultTransferPayload,
+  serializeVaultTransferPayloadWithinBudget,
+  VAULT_TRANSFER_NAME_MAX_CHARS,
+  VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
+  vaultTransferPayloadByteLength,
   VaultTransferPayloadError,
   type VaultTransferPayloadErrorOutcome,
 } from './payload';
@@ -104,6 +108,86 @@ describe('btvault1 payload conformance vectors', () => {
     const parsed = parseVaultTransferPayload(VECTORS.maxLengthComposedName.payload);
     expect(parsed).toEqual(VECTORS.maxLengthComposedName.expected);
     expect(serializeVaultTransferPayload(parsed)).toBe(VECTORS.maxLengthComposedName.payload);
+  });
+});
+
+/**
+ * §13 budgets "~150–220 chars … a comfortably scannable version-7-ish code".
+ * The `n` hint is the only member a sender chooses, so it is what gives way —
+ * measured in WIRE BYTES, because vault names are cleartext free-form (§21 Q4)
+ * and one emoji costs four bytes and twelve percent-encoded characters.
+ */
+describe('sender payload byte budget', () => {
+  const required = {
+    mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+    vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    fingerprint: VAULT_TRANSFER_VECTOR_FINGERPRINT,
+  };
+
+  it('keeps a short display hint', () => {
+    const payload = serializeVaultTransferPayloadWithinBudget({
+      ...required,
+      name: VAULT_TRANSFER_VECTOR_NAME,
+    });
+
+    expect(payload).toBe(VAULT_TRANSFER_GOLDEN_PAYLOAD);
+    expect(vaultTransferPayloadByteLength(payload)).toBeLessThanOrEqual(
+      VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
+    );
+  });
+
+  it('keeps a multi-byte hint that still fits the budget', () => {
+    const name = 'Café Wien';
+    const payload = serializeVaultTransferPayloadWithinBudget({ ...required, name });
+
+    expect(parseVaultTransferPayload(payload)).toMatchObject({ name });
+    expect(vaultTransferPayloadByteLength(payload)).toBeLessThanOrEqual(
+      VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
+    );
+  });
+
+  it('drops a multi-byte hint that would blow the budget, keeping every required member', () => {
+    const payload = serializeVaultTransferPayloadWithinBudget({
+      ...required,
+      name: '🔐'.repeat(64),
+    });
+
+    expect(parseVaultTransferPayload(payload)).toEqual({
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+      fingerprint: VAULT_TRANSFER_VECTOR_FINGERPRINT,
+    });
+    expect(vaultTransferPayloadByteLength(payload)).toBeLessThanOrEqual(
+      VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
+    );
+  });
+
+  it('drops a wire-legal 64-code-point composed hint that no longer fits', () => {
+    const payload = serializeVaultTransferPayloadWithinBudget({
+      ...required,
+      name: 'é'.repeat(VAULT_TRANSFER_NAME_MAX_CHARS),
+    });
+
+    // The WIRE still accepts it — only this sender declines to emit it.
+    expect(parseVaultTransferPayload(VECTORS.maxLengthComposedName.payload).name).toBe(
+      'é'.repeat(VAULT_TRANSFER_NAME_MAX_CHARS),
+    );
+    expect(parseVaultTransferPayload(payload).name).toBeUndefined();
+  });
+
+  it('drops a hint the wire itself rejects instead of failing the transfer', () => {
+    const payload = serializeVaultTransferPayloadWithinBudget({
+      ...required,
+      name: 'x'.repeat(VAULT_TRANSFER_NAME_MAX_CHARS + 1),
+    });
+
+    expect(parseVaultTransferPayload(payload).name).toBeUndefined();
+  });
+
+  it('pins the byte ceiling itself', () => {
+    expect(VAULT_TRANSFER_PAYLOAD_MAX_BYTES).toBe(220);
+    expect(vaultTransferPayloadByteLength('é')).toBe(2);
+    expect(vaultTransferPayloadByteLength('🔐')).toBe(4);
   });
 });
 

@@ -3974,6 +3974,14 @@
     "transfer": {
       "manualWords": "Show 12 words instead",
       "manualEntry": "Enter 12 words instead",
+      "reset": {
+        "forgot": "Forgot the password?",
+        "explain": "Resetting removes only the seed phrases stored in this browser — no vault data is lost, the encrypted copies on the server and in Google Drive stay untouched, and you can use the vault here again by entering its 12 words or scanning a transfer code from another device.",
+        "action": "Remove the phrases stored on this device",
+        "working": "Removing…",
+        "done": "The stored phrases were removed from this device. Enter the 12 words or scan a transfer code from another device to use this vault here again.",
+        "error": "The stored phrases could not be removed. Please try again."
+      },
       "settings": {
         "title": "Transfer between devices",
         "hint": "Show a 60-second transfer code for a live vault, or verify one from another device.",
@@ -4008,6 +4016,7 @@
         "errors": {
           "unlockRequired": "Unlock and open this vault on this device before showing its transfer code.",
           "password": "The device password could not be verified. The transfer code remains hidden.",
+          "lockedOut": "Too many wrong device passwords. This device accepts the password again at {{time}}; the transfer code was not shown. Wait, or reset the phrases stored on this device below.",
           "payload": "The transfer code could not be created. Close this screen and try again."
         }
       },
@@ -4048,6 +4057,7 @@
           "verification": "The phrase did not open the authenticated vault header. Nothing was saved on this device.",
           "password": "That device password is incorrect. Nothing was saved on this device.",
           "passwordLocked": "Device-password verification is temporarily locked. Wait before trying again; nothing was saved on this device.",
+          "devicePasswordInvalid": "The device password must be at least {{min}} characters long. Nothing was saved on this device.",
           "operation": "The vault could not be opened or saved right now. Nothing was saved on this device; check the connection and try again."
         }
       }

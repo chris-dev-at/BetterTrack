@@ -131,6 +131,50 @@ class LockedTransferKeystore extends EndpointVaultKeystore {
   override async verifyDevicePassword(): Promise<void> {}
 }
 
+/** A wrapped row whose password is gone: §12's only exit is the keystore reset. */
+class ResettableTransferKeystore extends EndpointVaultKeystore {
+  private wiped = false;
+
+  override async stateFor() {
+    return this.wiped
+      ? {
+          status: 'not-on-this-endpoint' as const,
+          requiredAction: {
+            kind: 'provide-phrase' as const,
+            methods: ['enter-words', 'scan-qr'] as const,
+          },
+        }
+      : {
+          status: 'stored+wrapped' as const,
+          session: 'locked' as const,
+          requiredAction: { kind: 'unlock' as const, credential: 'device-password' as const },
+        };
+  }
+
+  override async withContentKey<T>(
+    _vaultId: string,
+    _operation: (
+      contentKey: Uint8Array,
+      keyId: string,
+      assertSessionCurrent: () => void,
+    ) => Promise<T> | T,
+  ): Promise<T> {
+    throw new Error('locked');
+  }
+
+  override async reset() {
+    this.wiped = true;
+    this.endSession();
+    return {
+      scope: 'this-endpoint-only' as const,
+      storedPhrases: 'removed' as const,
+      remoteVaultCopies: 'server-and-drive-untouched' as const,
+      vaultDataLost: false as const,
+      nextAction: 're-enter-words-or-scan-qr' as const,
+    };
+  }
+}
+
 describe('VaultTransferActions production entry points', () => {
   it('reaches both the live sender and receive surfaces from Vault settings', async () => {
     const user = userEvent.setup();
@@ -189,5 +233,29 @@ describe('VaultTransferActions production entry points', () => {
 
     expect(await screen.findByRole('button', { name: 'Show transfer QR' })).toBeInTheDocument();
     expect(runtime.isVaultOpen(VAULT.id)).toBe(true);
+  });
+
+  it('offers the §12 keystore reset from the row password prompt', async () => {
+    const user = userEvent.setup();
+    const runtime = createVaultTransferRuntime({
+      keystore: new ResettableTransferKeystore(),
+      requestJson: vi.fn(async () => ({ vaults: [VAULT] })),
+      bindLockSignal: false,
+    });
+
+    render(<VaultTransferActions onNotice={vi.fn()} runtime={runtime} />);
+    await user.click(screen.getByText('Transfer between devices'));
+    await screen.findByLabelText('Device password');
+
+    await user.click(screen.getByRole('button', { name: 'Forgot the password?' }));
+    expect(screen.getByText(/no vault data is lost/i)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Remove the phrases stored on this device' }),
+    );
+
+    // The prompt gives way to the honest not-on-this-endpoint affordance, not
+    // to a second dead end.
+    expect(await screen.findByText(/phrase is not stored on this device/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Device password')).not.toBeInTheDocument();
   });
 });

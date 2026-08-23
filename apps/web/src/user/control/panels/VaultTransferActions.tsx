@@ -16,7 +16,7 @@ import { Button, Field, Input } from '../../../ui/origin';
 import { vaultTransferRuntime, type VaultTransferRuntime } from '../../vault/qr/runtime';
 import { createVaultTransferQrSource } from '../../vault/qr/senderSource';
 import { VaultReceivePhrase } from '../../vault/ui/VaultReceivePhrase';
-import { VaultTransferQr } from '../../vault/ui/VaultTransferQr';
+import { EndpointKeystoreResetFold, VaultTransferQr } from '../../vault/ui/VaultTransferQr';
 import type { Notice } from './PrivacyPanel';
 import { PanelFold, PanelList, PanelListItem, PanelNote } from './panelKit';
 
@@ -218,6 +218,21 @@ function VaultTransferRow({
     [runtime, vault.id, vault.keyFingerprint],
   );
 
+  /**
+   * §12's keystore reset. This row owns the session change so its own
+   * revocation listener does not paint "session ended" over the outcome; the
+   * re-read then lands on the honest not-on-this-endpoint affordance.
+   */
+  const resetKeystore = useCallback(async () => {
+    ownsSessionChange.current = true;
+    try {
+      await runtime.keystore.reset();
+    } finally {
+      ownsSessionChange.current = false;
+    }
+    await openSession();
+  }, [openSession, runtime.keystore]);
+
   useEffect(() => {
     void openSession();
     const unsubscribe = runtime.keystore.subscribeToSessionEnd(() => {
@@ -291,6 +306,8 @@ function VaultTransferRow({
             <Button disabled={password.length === 0} size="sm" type="submit">
               {t('vault.transfer.settings.unlock')}
             </Button>
+            {/* Binding §12: every device-password prompt offers the reset. */}
+            <EndpointKeystoreResetFold onReset={resetKeystore} />
           </form>
         ) : null}
         {phase === 'ready' ? (

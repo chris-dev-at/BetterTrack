@@ -16,11 +16,13 @@ import { deriveAccountBinding, deriveVaultWrapKey, wrapContentKey } from '../key
 import {
   createVaultTransferQrSource,
   parseVaultTransferPayload,
+  VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
   VAULT_TRANSFER_QR_EXPIRY_MS,
   VAULT_TRANSFER_STEP_UP_MAX_AGE_MS,
   VAULT_TRANSFER_VECTOR_FINGERPRINT,
   VAULT_TRANSFER_VECTOR_MNEMONIC,
   VAULT_TRANSFER_VECTOR_VAULT_ID,
+  VaultTransferSenderBlockedError,
 } from '../qr';
 
 const qrEncoder = vi.hoisted(() => ({ render: vi.fn() }));
@@ -55,6 +57,7 @@ function wrappedSource() {
     requireLiveUnlock: vi.fn(async () => 'wrapped' as const),
     verifyDevicePassword: vi.fn(async () => undefined),
     readMnemonic: vi.fn(async () => VAULT_TRANSFER_VECTOR_MNEMONIC),
+    resetEndpointKeystore: vi.fn(async () => undefined),
   };
 }
 
@@ -65,6 +68,7 @@ function plainSource() {
     requireLiveUnlock: vi.fn(async () => 'plain' as const),
     verifyDevicePassword: vi.fn(async () => undefined),
     readMnemonic: vi.fn(async () => VAULT_TRANSFER_VECTOR_MNEMONIC),
+    resetEndpointKeystore: vi.fn(async () => undefined),
   };
 }
 
@@ -85,10 +89,25 @@ function sessionLifecycle() {
 
 class ControlledTransferKeystore implements Pick<
   EndpointVaultKeystore,
-  'readMnemonic' | 'stateFor' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
+  | 'readMnemonic'
+  | 'reset'
+  | 'stateFor'
+  | 'subscribeToSessionEnd'
+  | 'verifyDevicePassword'
+  | 'withContentKey'
 > {
   readonly mnemonic = deferred<string>();
   readonly readMnemonic = vi.fn(() => this.mnemonic.promise);
+  readonly reset = vi.fn(async () => {
+    this.endSession();
+    return {
+      scope: 'this-endpoint-only' as const,
+      storedPhrases: 'removed' as const,
+      remoteVaultCopies: 'server-and-drive-untouched' as const,
+      vaultDataLost: false as const,
+      nextAction: 're-enter-words-or-scan-qr' as const,
+    };
+  });
   private readonly listeners = new Set<() => void>();
   private generation = 0;
 
@@ -220,6 +239,69 @@ describe('VaultTransferQr sender', () => {
     expect(screen.queryAllByText('abandon')).toHaveLength(0);
   });
 
+  it('names a device-password lockout with its retry time instead of demanding an unlock', async () => {
+    const source = wrappedSource();
+    const retryAt = Date.now() + 300_000;
+    source.requireLiveUnlock = vi.fn(async () => {
+      throw new VaultTransferSenderBlockedError('locked-out', retryAt);
+    });
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/too many wrong device passwords/i);
+    // The retry instant, not a bare "temporarily locked".
+    expect(alert.textContent ?? '').toMatch(/\d{1,2}:\d{2}/);
+    expect(
+      screen.queryByText(
+        'Unlock and open this vault on this device before showing its transfer code.',
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show again' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Forgot the password?' })).toBeInTheDocument();
+  });
+
+  it('reports the lockout the step-up attempt itself trips and wires the keystore reset', async () => {
+    const source = wrappedSource();
+    source.verifyDevicePassword = vi.fn(async () => {
+      throw new VaultTransferSenderBlockedError('locked-out', Date.now() + 30_000);
+    });
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    const password = await screen.findByLabelText('Device password');
+    fireEvent.change(password, { target: { value: DEVICE_PASSWORD } });
+    fireEvent.submit(password.closest('form')!);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/too many wrong device passwords/i);
+    expect(screen.queryByText(/device password could not be verified/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Device password')).not.toBeInTheDocument();
+
+    // §12: the state must carry a next action, and reset is the one that always
+    // exists. It must also say plainly that no vault data is lost.
+    fireEvent.click(screen.getByRole('button', { name: 'Forgot the password?' }));
+    expect(screen.getByText(/no vault data is lost/i)).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove the phrases stored on this device' }),
+    );
+
+    expect(
+      await screen.findByText(/stored phrases were removed from this device/i),
+    ).toBeInTheDocument();
+    expect(source.resetEndpointKeystore).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the forgot-password reset on the step-up prompt itself', async () => {
+    const source = wrappedSource();
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    await screen.findByLabelText('Device password');
+
+    expect(screen.getByRole('button', { name: 'Forgot the password?' })).toBeInTheDocument();
+  });
+
   it('requires a live unlock for plain custody too', async () => {
     const source = plainSource();
     source.requireLiveUnlock = vi.fn(async () => {
@@ -325,11 +407,12 @@ describe('VaultTransferQr sender', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('preserves a 64-character composed Unicode vault-name hint', async () => {
+  it('preserves a multi-byte vault-name hint that fits the scannable byte budget', async () => {
     const source = plainSource();
-    const vaultName = 'é'.repeat(64);
+    const vaultName = 'Café Wien';
     render(
       <VaultTransferQr
+        keyFingerprint={VAULT_TRANSFER_VECTOR_FINGERPRINT}
         source={source}
         vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID}
         vaultName={vaultName}
@@ -339,6 +422,26 @@ describe('VaultTransferQr sender', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
 
     expect(parseVaultTransferPayload((await latestQr()).value)).toMatchObject({ name: vaultName });
+  });
+
+  it('drops a wire-legal 64-code-point hint that would make the code unscannable', async () => {
+    const source = plainSource();
+    render(
+      <VaultTransferQr
+        keyFingerprint={VAULT_TRANSFER_VECTOR_FINGERPRINT}
+        source={source}
+        vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID}
+        vaultName={'é'.repeat(64)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    const payload = (await latestQr()).value;
+
+    expect(parseVaultTransferPayload(payload).name).toBeUndefined();
+    expect(new TextEncoder().encode(payload).length).toBeLessThanOrEqual(
+      VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
+    );
   });
 
   it('completes manual handoff using only the words and vault ID shown by the sender', async () => {
@@ -438,11 +541,28 @@ describe('VaultTransferQr sender', () => {
     expect(screen.getByLabelText('Vault seed-phrase transfer QR code')).toBeInTheDocument();
   });
 
+  it('keeps the words out of the DOM until the user opens the disclosure', async () => {
+    const source = plainSource();
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    // A QR-only request must not leave a textContent-scrapable copy of the
+    // phrase behind: the code itself is SVG geometry, this list is not.
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    await screen.findByLabelText('Vault seed-phrase transfer QR code');
+    expect(screen.queryAllByText('abandon')).toHaveLength(0);
+    expect(document.body.textContent).not.toContain('abandon');
+
+    // Opening the disclosure is the user's explicit ask; the list appears then.
+    fireEvent.click(screen.getByText('Show 12 words instead', { selector: 'summary' }));
+
+    expect(await screen.findAllByText('abandon')).toHaveLength(11);
+  });
+
   it('synchronously blanks an already-visible phrase when the live session ends', async () => {
     const source = plainSource();
     render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show 12 words instead' }));
     await screen.findByLabelText('Vault seed-phrase transfer QR code');
     expect(screen.getAllByText('abandon')).toHaveLength(11);
 

@@ -347,6 +347,63 @@ describe('VaultReceivePhrase receiver', () => {
     ).toBeInTheDocument();
   });
 
+  it('rejects a too-short device password locally, before any header fetch', async () => {
+    const user = userEvent.setup();
+    const keystore = receiver();
+    const fetchHeaderEnvelope = vi.fn(async () => new Uint8Array([1]));
+    render(
+      <VaultReceivePhrase
+        fetchHeaderEnvelope={fetchHeaderEnvelope}
+        initialPayload={VAULT_TRANSFER_GOLDEN_PAYLOAD}
+        keystore={keystore}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), 'short');
+    await user.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+
+    expect(
+      await screen.findByText(
+        'The device password must be at least 8 characters long. Nothing was saved on this device.',
+      ),
+    ).toBeInTheDocument();
+    expect(fetchHeaderEnvelope).not.toHaveBeenCalled();
+    expect(keystore.storeAfterVerifiedOpen).not.toHaveBeenCalled();
+    expect(screen.queryByText(/check the connection and try again/)).not.toBeInTheDocument();
+  });
+
+  it('names a keystore-side device-password length rejection instead of blaming the network', async () => {
+    const user = userEvent.setup();
+    const keystore = receiver();
+    keystore.storeAfterVerifiedOpen = vi.fn(async () => {
+      throw new EndpointKeystoreError(
+        'device-password-invalid',
+        'Device password must contain 8–1024 characters.',
+      );
+    });
+    render(
+      <VaultReceivePhrase
+        fetchHeaderEnvelope={vi.fn(async () => new Uint8Array([1]))}
+        initialPayload={VAULT_TRANSFER_GOLDEN_PAYLOAD}
+        keystore={keystore}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), DEVICE_PASSWORD);
+    await user.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+
+    expect(
+      await screen.findByText(
+        'The device password must be at least 8 characters long. Nothing was saved on this device.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/check the connection and try again/)).not.toBeInTheDocument();
+  });
+
   it('does not blame the phrase when the authenticated header is unavailable', async () => {
     const user = userEvent.setup();
     const keystore = receiver();

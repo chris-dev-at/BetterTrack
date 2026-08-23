@@ -142,7 +142,13 @@ export function VaultRuntimeProvider({
   );
 
   const lock = useCallback(
-    async (options: { broadcast?: boolean; transferAlreadyRevoked?: boolean } = {}) => {
+    async (
+      options: {
+        broadcast?: boolean;
+        markDeviceLocked?: boolean;
+        transferAlreadyRevoked?: boolean;
+      } = {},
+    ) => {
       operationGenerationRef.current += 1;
       // Revoke every plaintext seam before the first await. The gate can paint
       // in the same React turn while IndexedDB custody cleanup finishes.
@@ -156,10 +162,15 @@ export function VaultRuntimeProvider({
       driveRef.current = null;
       tokensRef.current?.clear();
       setDriveAuthorization('consent-required');
-      if (options.broadcast !== false && userId != null) {
-        rememberDeviceLocked(userId);
-        broadcastVaultLock(userId);
-      }
+      // The persistent §12 marker and the cross-tab broadcast are DELIBERATELY
+      // independent switches. `unlockFromDevice` reads only the marker, so
+      // coupling it to `broadcast` is what let a lock path (logout, PIN
+      // idle-lock, account switch, confirmed-unauthorized) silently reopen a
+      // kept-unlocked vault once the broadcast half moved into
+      // `requestVaultLock`. Only the provider's own unmount teardown — which is
+      // not a user-intended lock — opts out of the marker.
+      if (options.markDeviceLocked !== false && userId != null) rememberDeviceLocked(userId);
+      if (options.broadcast !== false && userId != null) broadcastVaultLock(userId);
       // Plaintext access is already synchronously revoked. A browser storage
       // failure must not become an unhandled rejection; the persistent lock
       // marker above also prevents a stale custody key from reopening the vault.
@@ -171,7 +182,10 @@ export function VaultRuntimeProvider({
   useLayoutEffect(() => {
     if (!authenticated) void lock();
     return () => {
-      void lock({ broadcast: false });
+      // Unmount/rebind teardown, not a lock the user asked for: revoke the live
+      // session but leave the persisted §12 marker exactly as it was, so a
+      // remount cannot invent a lock the user never performed.
+      void lock({ broadcast: false, markDeviceLocked: false });
     };
   }, [authenticated, lock, userId]);
 
@@ -191,9 +205,11 @@ export function VaultRuntimeProvider({
 
   useEffect(() => {
     const onRequest = () => {
-      // The endpoint-wide normal-branch runtime listens to this same signal.
-      // AuthContext already emitted the account-scoped storage lock; this
-      // handler owns only the provider-local teardown to avoid echoing it.
+      // Logout, the PIN idle-lock, an account switch and a confirmed-
+      // unauthorized bootstrap all arrive here. The endpoint-wide normal-branch
+      // runtime listens to this same signal and AuthContext already emitted the
+      // account-scoped storage lock, so only the echo is suppressed — the §12
+      // marker still has to be written, or the next visit reopens the vault.
       void lock({ broadcast: false, transferAlreadyRevoked: transfer.lockSignalBound });
     };
     globalThis.addEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);

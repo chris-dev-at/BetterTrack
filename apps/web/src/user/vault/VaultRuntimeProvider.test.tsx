@@ -1,13 +1,18 @@
 import { webcrypto } from 'node:crypto';
 
 import { useState } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { base64ToBytes } from './bytes';
 import type { DataHomeReadResult } from './dataHome';
 import type { DriveAccessTokenResult, DriveDataHome, GoogleDriveTokenClient } from './drive';
+import {
+  requestVaultLock,
+  VAULT_LOCK_REQUEST_EVENT,
+  vaultLockSignalStorageKey,
+} from './lockSignal';
 import type {
   DriveConnectionController,
   UnlockedVaultDriveRuntime,
@@ -54,6 +59,99 @@ function testSyncCoordinator(onStateRead: () => void = () => undefined) {
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+  localStorage.clear();
+});
+
+afterEach(() => {
+  localStorage.clear();
+});
+
+function memoryTokenClient(): GoogleDriveTokenClient {
+  const okToken: DriveAccessTokenResult = {
+    status: 'ok',
+    accessToken: 'memory-only',
+    expiresAt: Date.now() + 60_000,
+  };
+  return {
+    state: 'connected',
+    getAccessToken: vi.fn(() => okToken),
+    subscribe: vi.fn(() => () => undefined),
+    authorize: vi.fn(async () => okToken),
+    clear: vi.fn(),
+    markExpired: vi.fn(),
+    markRevoked: vi.fn(),
+    identify: vi.fn(),
+  };
+}
+
+/**
+ * §12 is binding: after logout, an explicit lock or the PIN idle-lock, the NEXT
+ * vault read prompts again. `unlockFromDevice` decides that from one persisted
+ * marker, and nothing pinned that marker until this block — which is exactly
+ * how a released `lock()` refactor could stop writing it unnoticed.
+ */
+describe('VaultRuntimeProvider §12 device-lock marker', () => {
+  const userId = '018f0000-0000-7000-8000-0000000000d4';
+  const markerKey = `bettertrack:vault-device-locked:${userId}`;
+
+  it('records the marker when the shared lock signal fires', async () => {
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId={userId}
+        dependencies={{ clientId: null, tokens: memoryTokenClient() }}
+      >
+        <TrustedDeviceHarness />
+      </VaultRuntimeProvider>,
+    );
+    expect(localStorage.getItem(markerKey)).toBeNull();
+
+    await act(async () => {
+      globalThis.dispatchEvent(new Event(VAULT_LOCK_REQUEST_EVENT));
+    });
+
+    expect(localStorage.getItem(markerKey)).toBe('1');
+  });
+
+  it('refuses the trusted-device unlock afterwards without reading any medium', async () => {
+    const readEnvelope = vi.fn(async () => envelope);
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId={userId}
+        dependencies={{ clientId: null, tokens: memoryTokenClient(), readEnvelope }}
+      >
+        <TrustedDeviceHarness />
+      </VaultRuntimeProvider>,
+    );
+
+    await act(async () => {
+      globalThis.dispatchEvent(new Event(VAULT_LOCK_REQUEST_EVENT));
+    });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'trusted unlock' }));
+
+    expect(await screen.findByText('device unlock refused', undefined, UNLOCK_WAIT)).toBeVisible();
+    expect(readEnvelope).not.toHaveBeenCalled();
+  });
+
+  it('keeps broadcasting the account-scoped cross-tab lock from the relocated seam', async () => {
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId={userId}
+        dependencies={{ clientId: null, tokens: memoryTokenClient() }}
+      >
+        <TrustedDeviceHarness />
+      </VaultRuntimeProvider>,
+    );
+
+    await act(async () => {
+      requestVaultLock(userId);
+    });
+
+    expect(localStorage.getItem(vaultLockSignalStorageKey(userId))).not.toBeNull();
+    expect(localStorage.getItem(markerKey)).toBe('1');
+  });
 });
 
 describe('VaultRuntimeProvider Drive bootstrap', () => {
@@ -460,6 +558,29 @@ function RuntimeConsumer({ onRender }: { onRender(): void }) {
   useVaultRuntime();
   onRender();
   return null;
+}
+
+/** Drives the trusted-device ("keep unlocked on this device") unlock path. */
+function TrustedDeviceHarness() {
+  const runtime = useVaultRuntime();
+  const [result, setResult] = useState('device unlock idle');
+  return (
+    <>
+      <button
+        onClick={() => {
+          void runtime
+            .unlockFromDevice({ authorizeDrive: false, driveOnly: false })
+            .then((unlocked) =>
+              setResult(unlocked ? 'device unlock accepted' : 'device unlock refused'),
+            );
+        }}
+        type="button"
+      >
+        trusted unlock
+      </button>
+      <span>{result}</span>
+    </>
+  );
 }
 
 function ManualLockHarness() {

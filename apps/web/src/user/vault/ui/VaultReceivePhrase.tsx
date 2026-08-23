@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
-import type { VaultKeyFingerprint } from '@bettertrack/contracts';
+import { MIN_PASSWORD_LENGTH, type VaultKeyFingerprint } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { Button, Field, Input, Textarea } from '../../../ui/origin';
@@ -141,6 +141,13 @@ export function VaultReceivePhrase({
     if (candidate == null) return;
     if (custody === 'wrapped' && devicePassword.length === 0) return;
     if (custody === 'plain' && !plainAcknowledged) return;
+    // Fail on the length locally. Otherwise the keystore rejects it only AFTER
+    // a full authenticated header fetch, and the generic transport copy tells
+    // the user to check their connection for a password that is simply short.
+    if (custody === 'wrapped' && devicePassword.length < MIN_PASSWORD_LENGTH) {
+      setErrorKey('vault.transfer.receiver.errors.devicePasswordInvalid');
+      return;
+    }
 
     invalidateActiveSave();
     const generation = operationGeneration.current + 1;
@@ -244,7 +251,7 @@ export function VaultReceivePhrase({
           className="bt-neg rounded-lg border border-red-800 bg-red-950/40 p-3 text-sm"
           role="alert"
         >
-          {t(errorKey)}
+          {t(errorKey, { min: MIN_PASSWORD_LENGTH })}
         </p>
       ) : null}
 
@@ -400,6 +407,7 @@ export function VaultReceivePhrase({
               <Input
                 autoComplete="new-password"
                 id="vault-receive-device-password"
+                minLength={MIN_PASSWORD_LENGTH}
                 onChange={(event) => setDevicePassword(event.target.value)}
                 required
                 type="password"
@@ -476,6 +484,10 @@ function receiveErrorKey(error: unknown): string {
       return 'vault.transfer.receiver.errors.password';
     case 'locked-out':
       return 'vault.transfer.receiver.errors.passwordLocked';
+    // A password the keystore itself rejects for its length is a form problem,
+    // not a transport problem; the client gate above normally catches it first.
+    case 'device-password-invalid':
+      return 'vault.transfer.receiver.errors.devicePasswordInvalid';
     default:
       return 'vault.transfer.receiver.errors.operation';
   }

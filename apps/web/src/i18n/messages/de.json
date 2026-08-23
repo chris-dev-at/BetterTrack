@@ -3974,6 +3974,14 @@
     "transfer": {
       "manualWords": "Stattdessen 12 Wörter anzeigen",
       "manualEntry": "Stattdessen 12 Wörter eingeben",
+      "reset": {
+        "forgot": "Passwort vergessen?",
+        "explain": "Beim Zurücksetzen werden nur die in diesem Browser gespeicherten Seed-Phrasen entfernt — es gehen keine Tresordaten verloren, die verschlüsselten Kopien am Server und in Google Drive bleiben unberührt, und du kannst den Tresor hier wieder verwenden, indem du seine 12 Wörter eingibst oder einen Transfer-Code von einem anderen Gerät scannst.",
+        "action": "Auf diesem Gerät gespeicherte Phrasen entfernen",
+        "working": "Wird entfernt…",
+        "done": "Die gespeicherten Phrasen wurden von diesem Gerät entfernt. Gib die 12 Wörter ein oder scanne einen Transfer-Code von einem anderen Gerät, um diesen Tresor hier wieder zu verwenden.",
+        "error": "Die gespeicherten Phrasen konnten nicht entfernt werden. Bitte versuche es erneut."
+      },
       "settings": {
         "title": "Zwischen Geräten übertragen",
         "hint": "Zeige einen 60 Sekunden gültigen Transfer-Code für einen aktiven Tresor an oder prüfe einen Code von einem anderen Gerät.",
@@ -4008,6 +4016,7 @@
         "errors": {
           "unlockRequired": "Entsperre und öffne diesen Tresor auf diesem Gerät, bevor du seinen Transfer-Code anzeigst.",
           "password": "Das Gerätepasswort konnte nicht bestätigt werden. Der Transfer-Code bleibt verborgen.",
+          "lockedOut": "Zu viele falsche Gerätepasswörter. Dieses Gerät akzeptiert das Passwort wieder um {{time}}; der Transfer-Code wurde nicht angezeigt. Warte, oder setze unten die auf diesem Gerät gespeicherten Phrasen zurück.",
           "payload": "Der Transfer-Code konnte nicht erstellt werden. Schließe diese Ansicht und versuche es erneut."
         }
       },
@@ -4048,6 +4057,7 @@
           "verification": "Die Phrase konnte den authentifizierten Tresorkopf nicht öffnen. Auf diesem Gerät wurde nichts gespeichert.",
           "password": "Dieses Gerätepasswort ist falsch. Auf diesem Gerät wurde nichts gespeichert.",
           "passwordLocked": "Die Gerätepasswortprüfung ist vorübergehend gesperrt. Warte, bevor du es erneut versuchst; auf diesem Gerät wurde nichts gespeichert.",
+          "devicePasswordInvalid": "Das Gerätepasswort muss mindestens {{min}} Zeichen lang sein. Auf diesem Gerät wurde nichts gespeichert.",
           "operation": "Der Tresor konnte gerade nicht geöffnet oder gespeichert werden. Auf diesem Gerät wurde nichts gespeichert; prüfe die Verbindung und versuche es erneut."
         }
       }
