@@ -247,14 +247,37 @@ describe('StandingOrdersSection', () => {
       ...(document.entities.cashMovement ?? []),
       vaultStandingOrderWithdrawal(priorRunId, '-1', '2026-07-22T08:00:00.000Z'),
     ];
-    // The order's own store commit must reject this persisted oversell rather
-    // than relying on a test double to manufacture a failure.
+    // Reconciliation skips this unchanged invalid baseline; the standing-order
+    // buy mutates its USD timeline so prospective validation rejects the real
+    // store commit instead of a test double manufacturing a failure.
     document.entities.transaction = [
       ...(document.entities.transaction ?? []),
       vaultOversoldTransaction(VAULT_OVERSOLD_TRANSACTION_ID),
     ];
     const sync = createMutableTestSync(document, fixture.header);
     const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
+    const failedOccurrenceId = await standingOrderOccurrenceId(VAULT_FAILED_ID, '2026-07-27');
+    await expect(
+      store.materializeStandingOrderOccurrence({
+        occurrenceId: failedOccurrenceId,
+        orderId: VAULT_FAILED_ID,
+        dueDate: '2026-07-27',
+        calendarDay: '2026-07-27',
+        timezone: 'Europe/Vienna',
+        executedAt: VAULT_SCAN_AT,
+        recordedAt: VAULT_SCAN_AT,
+        expectedCandidate: {
+          vaultVersion: fixture.header.vaultVersion,
+          vaultKeyId: fixture.header.keyId,
+          writeId: fixture.header.writeId,
+        },
+        price: 50,
+        quoteCurrency: 'USD',
+      }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_INVALID',
+      message: 'The transaction mutation would oversell the available holding.',
+    });
     const baseMarket = createClientMoneyMarket();
     let quoteRecovered = false;
     const market: MarketDataSource = {
