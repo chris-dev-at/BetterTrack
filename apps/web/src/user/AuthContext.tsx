@@ -308,6 +308,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const activeUserIdRef = useRef<string | null>(null);
 
   // Apply a resolved /auth/me-or-login user to local state, routing a
   // forced-change account into its trap, and a PIN account that has sat idle past
@@ -315,6 +316,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // *reads* the activity timestamp — a reload/refetch must never count as
   // activity; only real DOM interaction or an actual unlock records it.
   const applyUser = useCallback((me: MeResponse) => {
+    const previousUserId = activeUserIdRef.current;
+    if (previousUserId != null && previousUserId !== me.id) requestVaultLock(previousUserId);
+    activeUserIdRef.current = me.id;
     setUser(me);
     // Drive the display layer's default money currency from the session user's
     // base currency (§5.4, V3-P10d) — every converted figure the API returns
@@ -340,18 +344,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // subsequent login as a *different* account could briefly (or, for queries
   // with a nonzero staleTime, not-so-briefly) render the previous user's
   // cached name/email/portfolio/notifications before a refetch overwrote it.
-  const clearSession = useCallback(() => {
-    clearActivity();
-    setUser(null);
-    setStatus('anonymous');
-    // Back to the EUR default so the next account never inherits the previous
-    // user's base currency (mirrors the query-cache clear below).
-    setMoneyCurrency('EUR');
-    // Reset discreet mode too — a fresh anonymous shell must render real
-    // (default zero-state) amounts, and the next user's toggle sets it fresh.
-    setDiscreetMode(false);
-    queryClient.clear();
-  }, [queryClient]);
+  const clearSession = useCallback(
+    (vaultAlreadyLocked = false) => {
+      if (!vaultAlreadyLocked) requestVaultLock(activeUserIdRef.current);
+      activeUserIdRef.current = null;
+      clearActivity();
+      setUser(null);
+      setStatus('anonymous');
+      // Back to the EUR default so the next account never inherits the previous
+      // user's base currency (mirrors the query-cache clear below).
+      setMoneyCurrency('EUR');
+      // Reset discreet mode too — a fresh anonymous shell must render real
+      // (default zero-state) amounts, and the next user's toggle sets it fresh.
+      setDiscreetMode(false);
+      queryClient.clear();
+    },
+    [queryClient],
+  );
 
   // Latest clearSession, so the (mount-once) global policy never goes stale.
   const clearSessionRef = useRef(clearSession);
@@ -400,8 +409,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // has no user-app workspace — treat as anonymous rather than admitting
         // them here (§3, §5.5, §10).
         if (me.role === 'admin') {
-          setUser(null);
-          setStatus('anonymous');
+          clearSessionRef.current();
           return;
         }
         applyUser(me);
@@ -422,8 +430,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             void tryBootstrap();
           }, delayMs);
         } else if (isConfirmedUnauthorized(err)) {
-          setUser(null);
-          setStatus('anonymous');
+          clearSessionRef.current();
         } else {
           setStatus('session-unavailable');
         }
@@ -455,7 +462,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let lastPersistAt = 0;
 
     const lock = () => {
-      requestVaultLock();
+      requestVaultLock(userId);
       setStatus('pin-required');
     };
 
@@ -722,13 +729,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    requestVaultLock();
+    requestVaultLock(activeUserIdRef.current);
     try {
       await api.logout();
     } catch (err) {
       if (!(err instanceof ApiError)) throw err;
     } finally {
-      clearSession();
+      clearSession(true);
     }
   }, [clearSession]);
 
