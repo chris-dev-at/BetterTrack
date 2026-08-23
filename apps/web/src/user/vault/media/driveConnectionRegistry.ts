@@ -45,10 +45,12 @@ export interface DriveConnectionRegistryOptions {
 interface RegisteredDriveClient {
   raw: GoogleDriveTokenClient;
   tokens: GoogleDriveTokenClient;
-  state: {
-    connection: DriveConnection;
-    mismatchMessage: string | null;
-  };
+  state: RegisteredDriveClientState;
+}
+
+interface RegisteredDriveClientState {
+  connection: DriveConnection;
+  mismatchMessage: string | null;
 }
 
 /**
@@ -89,7 +91,6 @@ export function createDriveConnectionRegistry(
     raw: GoogleDriveTokenClient,
   ): RegisteredDriveClient {
     const state = { connection, mismatchMessage: null as string | null };
-    let entry!: RegisteredDriveClient;
     const tokens: GoogleDriveTokenClient = {
       get state() {
         return state.mismatchMessage === null ? raw.state : 'identity-mismatch';
@@ -109,7 +110,7 @@ export function createDriveConnectionRegistry(
         const authorized = await raw.authorize();
         if (authorized.status !== 'ok' || before.status === 'ok') return authorized;
 
-        const verified = await verifyIdentity(entry);
+        const verified = await verifyIdentity(raw, state);
         if (verified.status === 'ok') return authorized;
         return {
           status:
@@ -137,8 +138,7 @@ export function createDriveConnectionRegistry(
         raw.markRevoked();
       },
     };
-    entry = { raw, tokens, state };
-    return entry;
+    return { raw, tokens, state };
   }
 
   function clientFor(connection: DriveConnection): RegisteredDriveClient {
@@ -156,30 +156,31 @@ export function createDriveConnectionRegistry(
   }
 
   async function verifyIdentity(
-    entry: RegisteredDriveClient,
+    raw: GoogleDriveTokenClient,
+    state: RegisteredDriveClientState,
   ): Promise<DriveRegistryAuthorizationResult> {
-    const { connection } = entry.state;
+    const { connection } = state;
     try {
-      const identity = await identify(entry.raw);
+      const identity = await identify(raw);
       if (identity.googleSub !== connection.googleSub) {
-        entry.state.mismatchMessage = `Sign in to Google (${connection.email}) to sync.`;
-        entry.raw.clear();
+        state.mismatchMessage = `Sign in to Google (${connection.email}) to sync.`;
+        raw.clear();
         return {
           status: 'identity-mismatch',
           connection,
-          message: entry.state.mismatchMessage,
+          message: state.mismatchMessage,
         };
       }
       const verified = await options.api.verify(connection.id);
-      entry.state.connection = verified;
-      entry.state.mismatchMessage = null;
+      state.connection = verified;
+      state.mismatchMessage = null;
       return { status: 'ok', connection: verified };
     } catch (cause) {
       // A token whose principal could not be proved must never remain reachable
       // through `tokens(id)`, even when the failure was a transient about.get
       // or registry-touch error rather than an explicit mismatch.
-      entry.state.mismatchMessage = null;
-      entry.raw.clear();
+      state.mismatchMessage = null;
+      raw.clear();
       return {
         status: 'failed',
         connection,
@@ -202,7 +203,7 @@ export function createDriveConnectionRegistry(
         message: authorized.message,
       };
     }
-    return verifyIdentity(entry);
+    return verifyIdentity(entry.raw, entry.state);
   }
 
   return {
