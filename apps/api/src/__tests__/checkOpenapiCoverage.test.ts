@@ -35,6 +35,9 @@ describe('checkOpenapiCoverage', () => {
     expect(coverage.unclassified).toEqual([]);
     expect(coverage.unmountedPolicies).toEqual([]);
     expect(coverage.duplicatePolicies).toEqual([]);
+    expect(coverage.invalidPolicyPrefixes).toEqual([]);
+    expect(coverage.mounted).toContain('/api/v1/settings/webhooks');
+    expect(coverage.mounted).toContain('/api/v1/vaults');
     expect(coverage.classified).toEqual(coverage.mounted);
     expect(coverage.ok).toBe(true);
   });
@@ -50,6 +53,27 @@ describe('checkOpenapiCoverage', () => {
     });
 
     expect(() => assertBearerModulePolicyCoverage(routes)).toThrow(fixturePath);
+  });
+
+  it('names a nested application mount that only inherits its parent bearer policy', () => {
+    const fixturePath = '/api/v1/settings/foo';
+    const routes = buildRouteTable((ctx) => {
+      const app = createApp(ctx);
+      const router = express.Router();
+      router.get('/probe', (_request, response) => response.sendStatus(204));
+      app.use(fixturePath, router);
+      return app;
+    });
+
+    expect(() => assertBearerModulePolicyCoverage(routes)).toThrowError(
+      new Error(
+        [
+          'Bearer module policy coverage failed.',
+          'Mounted API modules without an explicit bearer classification:',
+          `  - ${fixturePath}`,
+        ].join('\n'),
+      ),
+    );
   });
 
   it('reports a mounted route with no matching operation in the spec', () => {

@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AppSettingsResponse, MeResponse, RegistrationToken } from '@bettertrack/contracts';
+import type { AppSettingsResponse, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
@@ -32,23 +33,14 @@ const settings: AppSettingsResponse = {
   updatedBy: null,
 };
 
-const registrationToken: RegistrationToken = {
-  id: '00000000-0000-0000-0000-0000000000dd',
-  label: 'beta wave 1',
-  status: 'active',
-  maxUses: 3,
-  useCount: 0,
-  expiresAt: null,
-  revokedAt: null,
-  createdAt: '2026-07-14T00:00:00.000Z',
-};
-
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
-      <AuthProvider>
-        <SettingsPage />
-      </AuthProvider>
+      <MemoryRouter>
+        <AuthProvider>
+          <SettingsPage />
+        </AuthProvider>
+      </MemoryRouter>
     </I18nProvider>,
   );
 }
@@ -66,8 +58,6 @@ beforeEach(() => {
   });
   vi.mocked(api.getSettings).mockResolvedValue(settings);
   vi.mocked(api.updateSettings).mockResolvedValue(settings);
-  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [] });
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [] });
 });
 
 test('shows all four registration modes, every one selectable (V4-P4a)', async () => {
@@ -99,71 +89,16 @@ test('switching to a self-serve mode and saving persists it', async () => {
   );
 });
 
-test('creates a registration token and shows the register URL once', async () => {
-  vi.mocked(api.createRegistrationToken).mockResolvedValue({
-    token: {
-      id: 'tok-1',
-      label: 'beta',
-      status: 'active',
-      maxUses: 3,
-      useCount: 0,
-      expiresAt: null,
-      revokedAt: null,
-      createdAt: '2026-07-14T00:00:00.000Z',
-    },
-    registerUrl: 'http://localhost:5173/register?token=RAW-SECRET',
-  });
+test('a saved gated mode points at the People workspace instead of hosting its queue', async () => {
+  vi.mocked(api.getSettings).mockResolvedValue({ ...settings, registrationMode: 'approval' });
   renderPage();
 
-  await userEvent.click(await screen.findByRole('button', { name: /create token/i }));
-
-  await waitFor(() => expect(api.createRegistrationToken).toHaveBeenCalled());
-  expect(await screen.findByText(/RAW-SECRET/)).toBeInTheDocument();
-});
-
-test('requires confirmation before revoking a registration token', async () => {
-  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [registrationToken] });
-  vi.mocked(api.revokeRegistrationToken).mockResolvedValue(undefined);
-  const user = userEvent.setup();
-  renderPage();
-
-  await screen.findByText(registrationToken.label!);
-  await user.click(screen.getByRole('button', { name: 'Revoke' }));
-  expect(await screen.findByText('Revoke registration token “beta wave 1”?')).toBeInTheDocument();
-  expect(api.revokeRegistrationToken).not.toHaveBeenCalled();
-
-  await user.click(screen.getByRole('button', { name: 'Cancel' }));
-  expect(api.revokeRegistrationToken).not.toHaveBeenCalled();
-
-  await user.click(screen.getByRole('button', { name: 'Revoke' }));
-  await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
-  await waitFor(() =>
-    expect(api.revokeRegistrationToken).toHaveBeenCalledWith(registrationToken.id),
+  expect(await screen.findByRole('link', { name: 'Open Registration' })).toHaveAttribute(
+    'href',
+    '/admin/registration',
   );
-});
-
-test('approves a pending registration from the queue', async () => {
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
-    requests: [
-      {
-        id: 'req-1',
-        email: 'queue@test.dev',
-        username: 'queue_user',
-        createdAt: '2026-07-14T00:00:00.000Z',
-      },
-    ],
-  });
-  vi.mocked(api.approveRegistrationRequest).mockResolvedValue({
-    ...admin,
-    id: 'new-user',
-    email: 'queue@test.dev',
-    username: 'queue_user',
-    role: 'user',
-  } as never);
-  renderPage();
-
-  await userEvent.click(await screen.findByRole('button', { name: /approve/i }));
-  await waitFor(() => expect(api.approveRegistrationRequest).toHaveBeenCalledWith('req-1'));
+  // The approval queue itself no longer lives here (#1406 W1).
+  expect(screen.queryByRole('heading', { name: 'Approval queue' })).not.toBeInTheDocument();
 });
 
 test('toggling beta mode and saving persists via updateSettings', async () => {
@@ -222,6 +157,5 @@ test('renders the P13b settings surface in German', async () => {
 
   expect(await screen.findByRole('heading', { name: 'Einstellungen' })).toBeInTheDocument();
   expect(screen.getByRole('radio', { name: /Geschlossen/i })).toBeChecked();
-  expect(screen.getByRole('heading', { name: 'Registrierungstoken' })).toBeInTheDocument();
-  expect(screen.getByRole('heading', { name: 'Freigabewarteschlange' })).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: /Beta-Modus/i })).toBeInTheDocument();
 });

@@ -19,7 +19,6 @@ import { cashBalance, externalCashFlowsForTwr } from '../domain/cashLedger';
 import { TARGET_POINTS } from '../services/portfolio/portfolioIntraday';
 import { createRecordingBackfill, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
-import { unlockRecentTaxYears } from '../testing/taxYearUnlocks';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -1552,8 +1551,6 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
   /** Deterministic marketing-friendly ladder: every 30 d back through the last 5 y. */
   async function seed30DayLadder(h: TestHarness) {
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1666,8 +1663,6 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
 
   it('graceful when history is shorter than the selected range (5Y over a 3-day portfolio → whole history)', async () => {
     const user = await harness.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness, { currency: 'EUR' });
@@ -1717,8 +1712,6 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     });
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1754,8 +1747,6 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     // Default harness: the manual provider is local (our own DB), so this is the
     // real end-to-end path with zero network.
     const user = await harness.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness, {
@@ -1802,8 +1793,6 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     });
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const stock = await seedAsset(h, { currency: 'EUR' });
@@ -1845,8 +1834,6 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     });
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1925,8 +1912,6 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { closes, marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1966,8 +1951,6 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { closes, marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -2006,8 +1989,6 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -2037,8 +2018,6 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -2072,8 +2051,6 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
 
   it('rejects an invalid overlay token instead of guessing', async () => {
     const user = await harness.seedUser();
-    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
-    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX&overlay=yes`);

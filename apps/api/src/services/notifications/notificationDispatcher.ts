@@ -15,6 +15,8 @@ import type {
   ConglomerateSharedEvent,
   DividendEventNotice,
   EarningsReminderEvent,
+  FeedbackReplyCreatedEvent,
+  FeedbackStatusChangedEvent,
   FollowAlertCreatedEvent,
   FollowAlertFiredEvent,
   FollowPublishedEvent,
@@ -102,7 +104,9 @@ export type DispatchableEvent =
   | DividendEventNotice
   | BudgetExceededEvent
   | StandingOrderSkippedEvent
-  | MirrorNotificationEvent;
+  | MirrorNotificationEvent
+  | FeedbackStatusChangedEvent
+  | FeedbackReplyCreatedEvent;
 
 /** The `type` strings the dispatcher accepts (guards the job payload). */
 export const DISPATCHABLE_EVENT_TYPES = [
@@ -131,6 +135,8 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
   'standing_order.skipped',
+  'feedback.status_changed',
+  'feedback.reply_created',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -240,6 +246,15 @@ function eventKeyFor(event: DispatchableEvent): string {
       // no-ops while a later distinct occurrence gets a fresh key (design §11).
       // The recipient userId (repo-side) keeps every member's row distinct.
       return `${event.type}:${event.chainId}:${event.refId}`;
+    case 'feedback.status_changed':
+      // Idempotency key: submission id + the persisted transition timestamp.
+      // An HTTP retry preserves lastStatusChangeAt, and a BullMQ redelivery of
+      // that transition therefore resolves to this exact same durable marker.
+      return `feedback.status_changed:${event.feedbackId}:${event.lastStatusChangeAt}`;
+    case 'feedback.reply_created':
+      // Idempotency key: the durable message id. A redelivered insert event can
+      // never create a second notification for the same staff reply.
+      return `feedback.reply_created:${event.messageId}`;
   }
 }
 
@@ -313,6 +328,24 @@ function friendActivityMessage(event: FriendActivityEvent): NotificationMessage 
       return notificationMessage('friendActivitySell', params);
     case 'watchlist_add':
       return notificationMessage('friendActivityWatchlistAdd', params);
+  }
+}
+
+/** Localizable feedback status copy without leaking enum tokens into DE text. */
+function feedbackStatusMessage(event: FeedbackStatusChangedEvent): NotificationMessage {
+  switch (event.status) {
+    case 'new':
+      return notificationMessage('feedbackStatusNew');
+    case 'triaged':
+      return notificationMessage('feedbackStatusTriaged');
+    case 'working_on_it':
+      return notificationMessage('feedbackStatusWorkingOnIt');
+    case 'saved_as_future_idea':
+      return notificationMessage('feedbackStatusSavedAsFutureIdea');
+    case 'declined':
+      return notificationMessage('feedbackStatusDeclined');
+    case 'shipped':
+      return notificationMessage('feedbackStatusShipped');
   }
 }
 
@@ -641,6 +674,33 @@ export function createNotificationDispatcher(
           },
           data: { conversationId: event.conversationId, messageId: event.messageId },
         };
+      case 'feedback.status_changed':
+        return {
+          eventKey,
+          message: feedbackStatusMessage(event),
+          payload: {
+            eventKey,
+            feedbackId: event.feedbackId,
+            status: event.status,
+            lastStatusChangeAt: event.lastStatusChangeAt,
+          },
+          data: {
+            feedbackId: event.feedbackId,
+            status: event.status,
+            lastStatusChangeAt: event.lastStatusChangeAt,
+          },
+        };
+      case 'feedback.reply_created':
+        return {
+          eventKey,
+          message: notificationMessage('feedbackReplyCreated'),
+          payload: {
+            eventKey,
+            feedbackId: event.feedbackId,
+            messageId: event.messageId,
+          },
+          data: { feedbackId: event.feedbackId, messageId: event.messageId },
+        };
       case 'dividend.event': {
         return {
           eventKey,
@@ -806,6 +866,16 @@ export function createNotificationDispatcher(
       case 'chat.message':
         // Deliberately no message content (privacy) — just that one is waiting.
         await email.sendChatMessage({ to, userId, actorUsername: event.senderUsername, locale });
+        return;
+      case 'feedback.status_changed':
+      case 'feedback.reply_created':
+        await email.sendFeedbackNotification({
+          to,
+          userId,
+          title: rendered.title,
+          body: rendered.body,
+          locale,
+        });
         return;
       case 'account.temp_password':
         return;

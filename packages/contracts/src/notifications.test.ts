@@ -59,6 +59,8 @@ describe('notification taxonomy (#368)', () => {
       'mirror.chain_dissolved',
       'mirror.sync_stalled',
       'standing_order.skipped',
+      'feedback.status_changed',
+      'feedback.reply_created',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',
@@ -238,6 +240,28 @@ describe('MIRRORCHAIN notification group (§13.5 V5-P7, design §11)', () => {
       expect(notificationChannelDefaultEnabled('push', type)).toBe(true);
       expect(notificationChannelDefaultEnabled('email', type)).toBe(false);
       // Not urgent — a membership change never bypasses quiet hours.
+      expect(isUrgentNotification({ type })).toBe(false);
+    }
+  });
+});
+
+describe('feedback notification group (#1340)', () => {
+  const FEEDBACK_TYPES = ['feedback.status_changed', 'feedback.reply_created'] as const;
+
+  it('keeps both submission updates in one deliberate feedback category', () => {
+    const group = NOTIFICATION_CATEGORIES.find((category) => category.key === 'feedback');
+    expect(group).toBeDefined();
+    expect([...(group?.types ?? [])].sort()).toEqual([...FEEDBACK_TYPES].sort());
+  });
+
+  it('uses lean defaults and never bypasses quiet hours', () => {
+    for (const type of FEEDBACK_TYPES) {
+      expect(isOptInNotificationType(type)).toBe(false);
+      expect(isAccountSecurityNotificationType(type)).toBe(false);
+      expect(notificationChannelDefaultEnabled('inapp', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('push', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('webpush', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('email', type)).toBe(false);
       expect(isUrgentNotification({ type })).toBe(false);
     }
   });

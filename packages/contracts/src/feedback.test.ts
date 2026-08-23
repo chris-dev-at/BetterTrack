@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FEEDBACK_CATEGORIES,
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_CONTEXT_MAX_KEYS,
+  FEEDBACK_DECLINED_REASON_REQUIRED,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_SHIPPED_VERSION_REQUIRED,
+  FEEDBACK_STATUS_DETAILS_INVALID,
   FEEDBACK_SUBJECT_MAX_LENGTH,
+  FEEDBACK_THREAD_MESSAGE_MAX_LENGTH,
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
   createFeedbackRequestSchema,
+  feedbackThreadMessageSchema,
+  feedbackThreadResponseSchema,
+  myFeedbackResponseSchema,
+  sendFeedbackMessageRequestSchema,
+  updateFeedbackArchiveRequestSchema,
+  updateFeedbackArchiveResponseSchema,
+  updateFeedbackRequestSchema,
   updateFeedbackStatusRequestSchema,
 } from './feedback';
 
@@ -26,6 +38,12 @@ describe('feedback contracts', () => {
     });
 
     expect(result.success).toBe(true);
+    expect(FEEDBACK_CATEGORIES).toEqual(['feature', 'bug', 'other', 'help', 'improvement']);
+    for (const category of ['help', 'improvement'] as const) {
+      expect(
+        createFeedbackRequestSchema.safeParse({ category, message: 'Helpdesk request' }).success,
+      ).toBe(true);
+    }
   });
 
   it('rejects an empty/over-length message, unknown category, and over-length subject', () => {
@@ -85,13 +103,20 @@ describe('feedback contracts', () => {
 
   it('defaults the admin inbox to category priority and the first page', () => {
     expect(adminFeedbackListQuerySchema.parse({})).toEqual({
+      archived: false,
       sort: 'category',
       page: 1,
       limit: 20,
     });
     expect(
-      adminFeedbackListQuerySchema.parse({ category: 'bug', sort: 'newest', page: '2' }),
-    ).toMatchObject({ category: 'bug', sort: 'newest', page: 2 });
+      adminFeedbackListQuerySchema.parse({
+        category: 'bug',
+        archived: 'true',
+        sort: 'newest',
+        page: '2',
+      }),
+    ).toMatchObject({ category: 'bug', archived: true, sort: 'newest', page: 2 });
+    expect(adminFeedbackListQuerySchema.parse({ archived: 'false' }).archived).toBe(false);
   });
 
   it('validates admin rows and locks status transitions to the shipped lifecycle', () => {
@@ -104,6 +129,11 @@ describe('feedback contracts', () => {
           message: 'Add a compact scenario switcher.',
           context: { platform: 'android' },
           status: 'new',
+          lastStatusChangeAt: '2026-08-18T08:00:00.000Z',
+          declinedReason: null,
+          shippedVersion: null,
+          deletedByUser: false,
+          archivedAt: null,
           submitter: {
             id: '00000000-0000-7000-8000-000000000002',
             username: 'mobile-user',
@@ -117,7 +147,182 @@ describe('feedback contracts', () => {
     });
 
     expect(response.success).toBe(true);
-    expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'done' }).success).toBe(true);
+    expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'working_on_it' }).success).toBe(
+      true,
+    );
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({
+        status: 'declined',
+        declinedReason: 'This would make the compact workflow harder to use.',
+      }).success,
+    ).toBe(true);
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({
+        status: 'shipped',
+        shippedVersion: '5.4.0',
+      }).success,
+    ).toBe(true);
     expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'closed' }).success).toBe(false);
+  });
+
+  it('separates archive state from lifecycle transitions on the generic admin PATCH', () => {
+    expect(updateFeedbackArchiveRequestSchema.parse({ archived: true })).toEqual({
+      archived: true,
+    });
+    expect(updateFeedbackRequestSchema.safeParse({ archived: false }).success).toBe(true);
+    expect(updateFeedbackRequestSchema.safeParse({ status: 'triaged' }).success).toBe(true);
+    expect(
+      updateFeedbackRequestSchema.safeParse({ status: 'triaged', archived: true }).success,
+    ).toBe(false);
+    expect(
+      updateFeedbackArchiveResponseSchema.safeParse({
+        id: '00000000-0000-7000-8000-000000000001',
+        archivedAt: '2026-08-20T12:00:00.000Z',
+        updatedAt: '2026-08-20T12:00:00.000Z',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('requires the owner explanation/version in the shared transition contract', () => {
+    const declined = updateFeedbackStatusRequestSchema.safeParse({ status: 'declined' });
+    expect(declined.success).toBe(false);
+    if (!declined.success) {
+      expect(declined.error.issues[0]).toMatchObject({
+        path: ['declinedReason'],
+        params: { apiErrorCode: FEEDBACK_DECLINED_REASON_REQUIRED },
+      });
+    }
+
+    const shipped = updateFeedbackStatusRequestSchema.safeParse({ status: 'shipped' });
+    expect(shipped.success).toBe(false);
+    if (!shipped.success) {
+      expect(shipped.error.issues[0]).toMatchObject({
+        path: ['shippedVersion'],
+        params: { apiErrorCode: FEEDBACK_SHIPPED_VERSION_REQUIRED },
+      });
+    }
+  });
+
+  it('reports the specific required-detail codes when outcome details are null', () => {
+    const declined = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'declined',
+      declinedReason: null,
+    });
+    expect(declined.success).toBe(false);
+    if (!declined.success) {
+      expect(declined.error.issues[0]).toMatchObject({
+        path: ['declinedReason'],
+        params: { apiErrorCode: FEEDBACK_DECLINED_REASON_REQUIRED },
+      });
+    }
+
+    const shipped = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'shipped',
+      shippedVersion: null,
+    });
+    expect(shipped.success).toBe(false);
+    if (!shipped.success) {
+      expect(shipped.error.issues[0]).toMatchObject({
+        path: ['shippedVersion'],
+        params: { apiErrorCode: FEEDBACK_SHIPPED_VERSION_REQUIRED },
+      });
+    }
+  });
+
+  it('rejects outcome details attached to a different status', () => {
+    const declinedReason = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'triaged',
+      declinedReason: 'This detail cannot belong to a triaged submission.',
+    });
+    expect(declinedReason.success).toBe(false);
+    if (!declinedReason.success) {
+      expect(declinedReason.error.issues[0]).toMatchObject({
+        path: ['declinedReason'],
+        params: { apiErrorCode: FEEDBACK_STATUS_DETAILS_INVALID },
+      });
+    }
+
+    const shippedVersion = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'working_on_it',
+      shippedVersion: '5.4.0',
+    });
+    expect(shippedVersion.success).toBe(false);
+    if (!shippedVersion.success) {
+      expect(shippedVersion.error.issues[0]).toMatchObject({
+        path: ['shippedVersion'],
+        params: { apiErrorCode: FEEDBACK_STATUS_DETAILS_INVALID },
+      });
+    }
+  });
+
+  it('reserves unread reply counts in caller-owned status rows', () => {
+    expect(
+      myFeedbackResponseSchema.safeParse({
+        submissions: [
+          {
+            id: '00000000-0000-7000-8000-000000000001',
+            category: 'bug',
+            subject: null,
+            message: 'The status read-back closes the loop.',
+            status: 'shipped',
+            lastStatusChangeAt: '2026-08-18T09:00:00.000Z',
+            declinedReason: null,
+            shippedVersion: '5.4.0',
+            unreadReplyCount: 0,
+            createdAt: '2026-08-18T08:00:00.000Z',
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('keeps support-thread messages parallel to chat while making the author side explicit', () => {
+    expect(sendFeedbackMessageRequestSchema.parse({ body: '  A concise reply.  ' })).toEqual({
+      body: 'A concise reply.',
+    });
+    expect(sendFeedbackMessageRequestSchema.safeParse({ body: '   ' }).success).toBe(false);
+    expect(
+      sendFeedbackMessageRequestSchema.safeParse({
+        body: 'x'.repeat(FEEDBACK_THREAD_MESSAGE_MAX_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      feedbackThreadResponseSchema.safeParse({
+        thread: {
+          id: '00000000-0000-7000-8000-000000000001',
+          unreadCount: 1,
+        },
+        messages: [
+          {
+            id: '00000000-0000-7000-8000-000000000002',
+            feedbackId: '00000000-0000-7000-8000-000000000001',
+            senderId: '00000000-0000-7000-8000-000000000003',
+            authorSide: 'admin',
+            body: 'We are looking into this.',
+            createdAt: '2026-08-20T08:00:00.000Z',
+          },
+        ],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts an anonymized author but never a malformed one', () => {
+    const message = {
+      id: '00000000-0000-7000-8000-000000000002',
+      feedbackId: '00000000-0000-7000-8000-000000000001',
+      authorSide: 'admin' as const,
+      body: 'The account that wrote this is gone; the answer is not.',
+      createdAt: '2026-08-20T08:00:00.000Z',
+    };
+
+    // A deleted author anonymizes their messages (#362) rather than recalling
+    // them, so the wire must carry the null the SET NULL column produces.
+    expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: null }).success).toBe(
+      true,
+    );
+    expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: '' }).success).toBe(false);
+    expect(feedbackThreadMessageSchema.safeParse(message).success).toBe(false);
   });
 });

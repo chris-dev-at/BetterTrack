@@ -15,9 +15,10 @@ export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 
 /**
  * Per-account issuance budget for bearer-started Google LINK tickets (#1328).
- * The public callback is independently protected by the login per-IP HTTP rail;
- * this namespace prevents a distributed caller from minting ceremonies for one
- * compromised account without consuming the normal login failure budget.
+ * The public callback is independently protected by a dedicated per-IP HTTP rail
+ * on the login schedule; this namespace prevents a distributed caller from
+ * minting ceremonies for one compromised account without consuming the normal
+ * login failure budget.
  */
 export const GOOGLE_LINK_ACCOUNT_NAMESPACE = 'google_link_account';
 
@@ -100,14 +101,15 @@ export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
 export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
 
 /**
- * Per-account brute-force throttle for the tax-year unlock re-auth (§16
- * 2026-08-07). Opening a locked tax year for amendments re-verifies the
- * account password; wrong attempts accrue here — independent of the login/2FA
- * counters and the per-IP limiter — so the unlock endpoint is never a
- * lighter-weight password oracle than login. Reuses the `loginAccount`
- * schedule like every sibling re-auth.
+ * Per-account brute-force throttle for the in-request vault deletion step-up
+ * (paranoid design §15). It is deliberately independent of login, account
+ * deletion, generic re-auth, and the v1 lost-key discard counter.
  */
-export const ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE = 'account_tax_year_unlock_account';
+export const ACCOUNT_VAULT_DELETE_NAMESPACE = 'account_vault_delete_account';
+
+/** Independent §15 brute-force budgets for the two E4 data-home transitions. */
+export const PORTFOLIO_VAULT_MOVE_IN_NAMESPACE = 'portfolio_vault_move_in_account';
+export const PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE = 'portfolio_vault_move_out_account';
 
 /**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the

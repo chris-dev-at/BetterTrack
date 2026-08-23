@@ -13,7 +13,6 @@ import {
 
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
-import { unlockRecentTaxYears } from '../testing/taxYearUnlocks';
 
 /**
  * V5-P4 German tax engine end-to-end (issue #580): the #576 fixture scenarios
@@ -74,9 +73,6 @@ async function seedAsset(symbol: string, type: 'stock' | 'etf' = 'stock') {
 /** One logged-in DE-mode user with their default portfolio and a stock asset. */
 async function setupDe() {
   const user = await harness.seedUser();
-  // Amendment mode (§16 2026-08-07): the DE scenarios backdate into passed
-  // years by design; the lock gate itself is pinned by taxYearLock.test.ts.
-  await unlockRecentTaxYears(harness.db, user.id);
   const agent = await loginAgent(harness.app, user.email, user.password);
   const pid = await defaultPortfolioId(agent);
   const asset = await seedAsset('BAYN.DE');
@@ -539,10 +535,9 @@ describe('DE year boundary: pots carry forward, the Sparer-Pauschbetrag does not
 
 // ─── Cutover: AT → DE mid-year — #635 live re-derivation (§16 2026-07-21) ─────
 
-describe('switching AT→DE mid-year re-derives the open year live under DE', () => {
+describe('switching AT→DE mid-year re-derives the year live under DE', () => {
   it('the AT-era gain re-enters the DE year (KESt refunds via correction); new rows settle under DE FIFO', async () => {
     const user = await harness.seedUser();
-    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset('BAYN.DE');
@@ -573,8 +568,7 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
       note: 'KESt withheld (AT)',
     });
 
-    // The switch — #635 live model: the whole OPEN year re-derives under DE
-    // on the next write/read.
+    // The switch makes the whole year re-derive under DE on the next write/read.
     const toDe = await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
@@ -629,7 +623,7 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
       taxParams: null,
     });
 
-    // One open year, ONE live regime: net = the DE target over all rows.
+    // One year, one live regime: net = the DE target over all rows.
     const years = await yearSummaries(agent, pid);
     expect(years[0]).toMatchObject({
       year: 2026,
@@ -651,7 +645,6 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
 
   it('a DE dividend backdated below a frozen-AT year replays that year for the ripple', async () => {
     const user = await harness.seedUser();
-    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset('BAYN.DE');
@@ -703,7 +696,7 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
         [-123.75, 2026],
       ]),
     );
-    // #635: the open year 2026 re-derives under the ACTIVE DE regime — the
+    // The year 2026 re-derives under the active DE regime — the
     // AT-frozen +450 falls under its own €1,000 allowance, so the ripple
     // posts exactly one unattached correction refunding the frozen KESt.
     const unattached = movements.filter(
@@ -717,15 +710,13 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
 
     const years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2025)).toMatchObject({
-      // Machinery-closed; explicitly unlocked above, so the policy flag reads
-      // amendable (§16 2026-08-07).
-      locked: false,
+      // Prior years remain live documentation and are always amendable.
       taxNetEur: 263.75,
       de: { allowanceUsedEur: 1000, kapestEur: 250, soliEur: 13.75 },
     });
     const y2026 = years.find((y) => y.year === 2026)!;
     expect(y2026.taxNetEur).toBe(0);
-    // The open year now carries the LIVE DE block: +450 under the allowance.
+    // The year now carries the live DE block: +450 under the allowance.
     expect(y2026.de).toMatchObject({
       allowanceUsedEur: 450,
       allowanceRemainingEur: 550,
@@ -793,7 +784,7 @@ describe('DE settlements derive append-only from rows + movements', () => {
     expect(correction).toMatchObject({
       amountEur: -197.82,
       taxYear: 2025,
-      note: 'Tax year correction (DE)',
+      note: 'Live tax correction (DE)',
     });
     let years = await yearSummaries(agent, pid);
     expect(years[0]).toMatchObject({ taxNetEur: 0 });
@@ -867,7 +858,7 @@ describe('DE settlements derive append-only from rows + movements', () => {
     expect(rippleRefund).toMatchObject({
       amountEur: 131.88,
       taxYear: 2025,
-      note: 'Tax year correction (DE)',
+      note: 'Live tax correction (DE)',
     });
 
     const years = await yearSummaries(agent, pid);

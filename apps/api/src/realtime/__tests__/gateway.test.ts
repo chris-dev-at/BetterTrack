@@ -292,7 +292,7 @@ async function mintOAuthToken(
     client_secret: clientSecret,
   });
   expect(tokenRes.status).toBe(200);
-  const grants = await harness.ctx.oauth.listGrants(userId);
+  const grants = await harness.ctx.oauth.listGrants(userId, null);
   expect(grants).toHaveLength(1);
   return {
     accessToken: tokenRes.body.access_token as string,
@@ -340,7 +340,7 @@ async function mintFirstPartyOAuthToken(
     client_secret: clientSecret,
   });
   expect(tokenRes.status).toBe(200);
-  const grants = await harness.ctx.oauth.listGrants(userId);
+  const grants = await harness.ctx.oauth.listGrants(userId, null);
   expect(grants).toHaveLength(1);
   return { accessToken: tokenRes.body.access_token as string, clientRowId: client.id };
 }
@@ -736,7 +736,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     });
     const unwatch = vi.fn();
     const liveMode: LiveModeService = {
-      watch: vi.fn(() => true),
+      watch: vi.fn(async () => ({ retirementEpoch: 0 })),
       unwatch,
       backfill: vi.fn(() => new Promise<never>(() => undefined)),
       onFrame: vi.fn(() => () => undefined),
@@ -809,7 +809,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       }
     });
     const liveMode: LiveModeService = {
-      watch: vi.fn(() => true),
+      watch: vi.fn(async () => ({ retirementEpoch: 0 })),
       unwatch: vi.fn(),
       backfill,
       onFrame: vi.fn(() => () => undefined),
@@ -901,7 +901,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     });
     const unwatch = vi.fn();
     const liveMode: LiveModeService = {
-      watch: vi.fn(() => true),
+      watch: vi.fn(async () => ({ retirementEpoch: 0 })),
       unwatch,
       backfill: vi.fn(async () => {
         await backfillGate;
@@ -1487,6 +1487,41 @@ describe('realtime gateway — rooms (§4.5)', () => {
     await revokedSilent;
     // …and the socket was evicted from the room, so a re-join has to re-earn it.
     expect(await joinRoom(bobSocket, 'portfolio', portfolioId)).toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+  });
+
+  it('refuses a realtime portfolio-room join for an owned vaulted stub (paranoid E2)', async () => {
+    await listenWithGateway();
+    const owner = await harness.seedUser({
+      email: 'vaulted-realtime@bettertrack.test',
+      username: 'vaulted_realtime',
+    });
+    const ownerLogin = await login(owner.email, owner.password);
+    const portfolioId = await defaultPortfolioId(ownerLogin.agent);
+
+    // Deterministic TEST VECTOR: public identity/config fixtures only, never
+    // credentials or portfolio-content bytes.
+    const vaultId = '019c8190-0000-7000-8000-000000000401';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: owner.id,
+      name: 'Realtime test vault',
+      headerDocId: '019c8190-0000-7000-8000-000000000402',
+      commonDocId: '019c8190-0000-7000-8000-000000000403',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'realtime-test-vector-public-proof',
+      keyFingerprint: 'realtime-test-vector-fingerprint',
+    });
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId, vaultAlias: 'Locked realtime stub' })
+      .where(eq(schema.portfolios.id, portfolioId));
+
+    const ownerSocket = await connect(ownerLogin.cookie);
+    expect(await joinRoom(ownerSocket, 'portfolio', portfolioId)).toEqual({
       ok: false,
       error: 'FORBIDDEN',
     });

@@ -91,7 +91,13 @@ export function createCashBudgetRepository(db: Database) {
         .from(cashBudgets)
         .innerJoin(portfolios, eq(portfolios.id, cashBudgets.portfolioId))
         .innerJoin(cashTags, eq(cashTags.id, cashBudgets.tagId))
-        .where(and(eq(cashBudgets.portfolioId, portfolioId), eq(portfolios.userId, userId)))
+        .where(
+          and(
+            eq(cashBudgets.portfolioId, portfolioId),
+            eq(portfolios.userId, userId),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .orderBy(asc(cashTags.name), asc(cashBudgets.periodKey));
       return rows.map((row) => ({
         ...toBudget(row.budget),
@@ -110,7 +116,7 @@ export function createCashBudgetRepository(db: Database) {
         .from(cashBudgets)
         .innerJoin(portfolios, eq(portfolios.id, cashBudgets.portfolioId))
         .innerJoin(cashTags, eq(cashTags.id, cashBudgets.tagId))
-        .where(eq(portfolios.userId, userId))
+        .where(and(eq(portfolios.userId, userId), isNull(portfolios.vaultId)))
         .orderBy(asc(cashBudgets.createdAt), asc(cashBudgets.id));
       return rows.map((row) => ({
         ...toBudget(row.budget),
@@ -124,7 +130,13 @@ export function createCashBudgetRepository(db: Database) {
         .select({ budget: cashBudgets })
         .from(cashBudgets)
         .innerJoin(portfolios, eq(portfolios.id, cashBudgets.portfolioId))
-        .where(and(eq(cashBudgets.id, budgetId), eq(portfolios.userId, userId)))
+        .where(
+          and(
+            eq(cashBudgets.id, budgetId),
+            eq(portfolios.userId, userId),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .limit(1);
       const row = rows[0];
       return row ? toBudget(row.budget) : null;
@@ -178,6 +190,7 @@ export function createCashBudgetRepository(db: Database) {
               SELECT 1 FROM ${portfolios}
               WHERE ${portfolios.id} = ${cashBudgets.portfolioId}
                 AND ${portfolios.userId} = ${userId}
+                AND ${portfolios.vaultId} IS NULL
             )`,
           ),
         )
@@ -195,6 +208,7 @@ export function createCashBudgetRepository(db: Database) {
               SELECT 1 FROM ${portfolios}
               WHERE ${portfolios.id} = ${cashBudgets.portfolioId}
                 AND ${portfolios.userId} = ${userId}
+                AND ${portfolios.vaultId} IS NULL
             )`,
           ),
         )

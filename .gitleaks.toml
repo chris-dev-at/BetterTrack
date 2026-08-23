@@ -13,6 +13,14 @@ id = "generic-api-key"
   [[rules.allowlists]]
   description = "Deterministic test tokens and documented non-secret placeholders"
   paths = [
+    # Per-portfolio vault schema tests (#1410 E0): deterministic AES-GCM/Ed25519
+    # test vectors — a fixed 16-char key fingerprint and a canonical-prefix DER
+    # proof key, public by design, never real key material.
+    '''^apps/api/src/__tests__/accountDeletion\.test\.ts$''',
+    '''^apps/api/src/__tests__/auth\.test\.ts$''',
+    '''^apps/api/src/__tests__/driveConnections\.test\.ts$''',
+    '''^apps/api/src/__tests__/vaultsSchema\.test\.ts$''',
+    '''^apps/api/src/__tests__/vaultBearerSync\.test\.ts$''',
     '''^apps/api/src/__tests__/accountKind\.test\.ts$''',
     '''^apps/api/src/__tests__/admin\.test\.ts$''',
     '''^apps/api/src/__tests__/appSettings\.test\.ts$''',
@@ -22,6 +30,8 @@ id = "generic-api-key"
     '''^apps/api/src/config/__tests__/env\.test\.ts$''',
     '''^apps/api/src/services/imports/__tests__/importService\.test\.ts$''',
     '''^apps/web/src/user/vault/vectors\.fixture\.json$''',
+    # E3 deterministic BIP39/HKDF/AES-GCM test vectors; public, never production key material.
+    '''^apps/web/src/user/vault/keys/keys\.test\.ts$''',
     # Vault conformance vectors relocated to the shared domain package (VAULT2-P5,
     # board §16): deterministic test key material (wrappedKey, contentKeyBase64,
     # header MACs, QR-wrap bytes) that both clients pin byte-for-byte — public by

@@ -1,7 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AdminHealthResponse, MeResponse } from '@bettertrack/contracts';
+import type {
+  AdminBackupStatusResponse,
+  AdminHealthResponse,
+  MeResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
@@ -83,6 +87,28 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const backupStatus: AdminBackupStatusResponse = {
+  configured: true,
+  level: 'ok',
+  reason: 'healthy',
+  checkedAt: '2026-08-20T10:00:00.000Z',
+  backup: {
+    lastSuccessAt: '2026-08-20T04:00:00.000Z',
+    ageSeconds: 6 * 3600,
+    lastAttemptOutcome: 'success',
+    artifactBytes: 4194304,
+    maxAgeSeconds: 26 * 3600,
+  },
+  restore: {
+    lastSuccessAt: '2026-08-10T04:00:00.000Z',
+    ageSeconds: 10 * 86400,
+    lastOutcome: 'success',
+    maxAgeSeconds: 35 * 86400,
+  },
+  offsite: { outcome: 'success', uploadedCount: 3 },
+  scheduler: { outcome: 'healthy', reason: 'none', checkedAt: '2026-08-20T09:59:00.000Z' },
+};
+
 beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
@@ -93,6 +119,52 @@ beforeEach(() => {
     twoFactorEmail: null,
     recoveryCodesRemaining: 8,
   });
+  vi.mocked(api.getBackupStatus).mockResolvedValue(backupStatus);
+});
+
+// #1406 W1: the Overview's backup attention row links here, so the evidence has
+// to be on this page rather than one workspace away.
+test('shows the backup and restore-drill evidence the Overview links to', async () => {
+  vi.mocked(api.getAdminHealth).mockResolvedValue(health);
+  renderPage();
+
+  const panel = await screen.findByRole('region', { name: 'Backup & restore drill' });
+  expect(within(panel).getByText('Ready')).toBeInTheDocument();
+  expect(
+    within(panel).getByText('A recent dump exists and a recent restore drill proved it.'),
+  ).toBeInTheDocument();
+  expect(within(panel).getByText('6 h 0 min ago')).toBeInTheDocument();
+  expect(within(panel).getByText('10 d 0 h ago')).toBeInTheDocument();
+});
+
+test('a critical backup verdict reads red with its reason, without breaking the page', async () => {
+  vi.mocked(api.getAdminHealth).mockResolvedValue(health);
+  vi.mocked(api.getBackupStatus).mockResolvedValue({
+    ...backupStatus,
+    level: 'critical',
+    reason: 'scheduler_unhealthy',
+    scheduler: { outcome: 'stale', reason: 'artifact_missing', checkedAt: null },
+  });
+  renderPage();
+
+  const panel = await screen.findByRole('region', { name: 'Backup & restore drill' });
+  expect(within(panel).getByText('Not ready')).toBeInTheDocument();
+  expect(
+    within(panel).getByText('The backup scheduler reports a problem with the stored backup.'),
+  ).toBeInTheDocument();
+  // The health snapshot above it still rendered.
+  expect(screen.getByRole('region', { name: 'System health' })).toBeInTheDocument();
+});
+
+test('a failed backup read degrades to a retry without touching the health snapshot', async () => {
+  vi.mocked(api.getAdminHealth).mockResolvedValue(health);
+  vi.mocked(api.getBackupStatus).mockRejectedValue(new Error('boom'));
+  renderPage();
+
+  const panel = await screen.findByRole('region', { name: 'Backup & restore drill' });
+  expect(await within(panel).findByText('Could not read the backup status.')).toBeInTheDocument();
+  expect(within(panel).getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'System health' })).toBeInTheDocument();
 });
 
 test('renders every component status once loaded', async () => {

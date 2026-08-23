@@ -35,13 +35,10 @@ import {
   ACCOUNT_SECURITY_SCOPE,
   passkeyManagementRouteAcceptsBearer,
   pathAcceptsBearer,
-  taxYearLockRouteAcceptsBearer,
+  taxYearDocumentationRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
-import { requireCookieSessionOrTaxYearLockBearer } from '../http/routes/settingsRoutes';
-import {
-  ACCOUNT_PASSKEY_NAMESPACE,
-  ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE,
-} from '../services/auth/loginThrottle';
+import { requireCookieSessionOrTaxYearDocumentationBearer } from '../http/routes/settingsRoutes';
+import { ACCOUNT_PASSKEY_NAMESPACE } from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
@@ -224,18 +221,7 @@ const ACCOUNT_SECURITY_WIDENED_ROUTES: readonly AccountSecurityRoute[] = [
     path: `/auth/passkeys/${MISSING_ID}`,
     body: { password: 'irrelevant-before-scope-check' },
   },
-  { name: 'tax-year lock state', method: 'get', path: '/settings/taxes/years' },
-  {
-    name: 'tax-year unlock',
-    method: 'post',
-    path: '/settings/taxes/years/2025/unlock',
-    body: { password: 'irrelevant-before-scope-check' },
-  },
-  {
-    name: 'tax-year relock',
-    method: 'post',
-    path: '/settings/taxes/years/2025/relock',
-  },
+  { name: 'tax-year documentation', method: 'get', path: '/settings/taxes/years' },
   { name: 'first-run completion', method: 'post', path: '/auth/first-run/complete' },
 ] as const;
 
@@ -308,27 +294,12 @@ async function exerciseWidenedAccountSecuritySurface(input: {
   expect(deleted.body).toEqual({ ok: true });
   responses.push(deleted);
 
-  const lockState = await request(harness.app)
+  const documentation = await request(harness.app)
     .get('/api/v1/settings/taxes/years')
     .set(bearer(input.token));
-  expect(lockState.status, JSON.stringify(lockState.body)).toBe(200);
-  const elapsedYear = (lockState.body.currentYear as number) - 1;
-  responses.push(lockState);
-
-  const unlocked = await request(harness.app)
-    .post(`/api/v1/settings/taxes/years/${elapsedYear}/unlock`)
-    .set(bearer(input.token))
-    .send({ password: input.password });
-  expect(unlocked.status, JSON.stringify(unlocked.body)).toBe(200);
-  expect(unlocked.body.unlockedYears).toContain(elapsedYear);
-  responses.push(unlocked);
-
-  const relocked = await request(harness.app)
-    .post(`/api/v1/settings/taxes/years/${elapsedYear}/relock`)
-    .set(bearer(input.token));
-  expect(relocked.status, JSON.stringify(relocked.body)).toBe(200);
-  expect(relocked.body.unlockedYears).not.toContain(elapsedYear);
-  responses.push(relocked);
+  expect(documentation.status, JSON.stringify(documentation.body)).toBe(200);
+  expect(documentation.body).toEqual({ years: [] });
+  responses.push(documentation);
 
   const completed = await request(harness.app)
     .post('/api/v1/auth/first-run/complete')
@@ -464,6 +435,46 @@ describe('#361 route × scope matrix', () => {
       scope: 'alerts:write',
       body: { assetId: MISSING_ID, kind: 'price_above', threshold: 100 },
     },
+    // #1338: feedback read-back must resolve through MODULE_POLICIES instead of
+    // the session-only API_KEY_FORBIDDEN fallback; capture remains a write.
+    {
+      name: 'own feedback status history',
+      method: 'get',
+      path: '/feedback/mine',
+      scope: 'feedback:read',
+    },
+    {
+      name: 'feedback submission',
+      method: 'post',
+      path: '/feedback',
+      scope: 'feedback:write',
+      body: { category: 'other', message: 'Bearer matrix feedback' },
+    },
+    {
+      name: 'own feedback deletion',
+      method: 'delete',
+      path: `/feedback/${MISSING_ID}`,
+      scope: 'feedback:write',
+    },
+    {
+      name: 'feedback thread',
+      method: 'get',
+      path: `/feedback/${MISSING_ID}/messages`,
+      scope: 'feedback:read',
+    },
+    {
+      name: 'feedback thread reply',
+      method: 'post',
+      path: `/feedback/${MISSING_ID}/messages`,
+      scope: 'feedback:write',
+      body: { body: 'Bearer matrix reply' },
+    },
+    {
+      name: 'feedback thread mark-read',
+      method: 'post',
+      path: `/feedback/${MISSING_ID}/read`,
+      scope: 'feedback:write',
+    },
     { name: '2fa status', method: 'get', path: '/auth/2fa/status', scope: 'account:security' },
     { name: 'sessions list', method: 'get', path: '/auth/sessions', scope: 'account:security' },
     {
@@ -556,6 +567,66 @@ describe('#361 route × scope matrix', () => {
   });
 });
 
+describe('[PARANOID-E2] bearer scope authorization precedes vault membership', () => {
+  it('audits INSUFFICIENT_SCOPE without disclosing the owned locked stub', async () => {
+    const unscoped = await mintKey(['market:read']);
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(unscoped.userId);
+
+    // Deterministic TEST VECTOR: public identity/config fixtures only; none of
+    // these values is a credential or portfolio-content payload.
+    const vaultId = '019c8190-0000-7000-8000-000000000301';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: unscoped.userId,
+      name: 'Scope-order test vault',
+      headerDocId: '019c8190-0000-7000-8000-000000000302',
+      commonDocId: '019c8190-0000-7000-8000-000000000303',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'scope-order-test-vector-public-proof',
+      keyFingerprint: 'scope-order-test-vector-fingerprint',
+    });
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId, vaultAlias: 'Locked scope-order stub' })
+      .where(eq(schema.portfolios.id, portfolioId));
+
+    const denied = await request(harness.app)
+      .get(`/api/v1/portfolios/${portfolioId}`)
+      .set(bearer(unscoped.token));
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(JSON.stringify(denied.body)).not.toContain('VAULTED_PORTFOLIO');
+
+    const denials = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, unscoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.meta).toMatchObject({
+      requiredScope: 'portfolio:read',
+      method: 'GET',
+      path: `/portfolios/${portfolioId}`,
+    });
+
+    const scoped = await harness.ctx.apiKeys.create({
+      userId: unscoped.userId,
+      name: 'scoped vault probe',
+      scopes: ['portfolio:read'],
+    });
+    const boundary = await request(harness.app)
+      .get(`/api/v1/portfolios/${portfolioId}`)
+      .set(bearer(scoped.token));
+    expect(boundary.status).toBe(403);
+    expect(boundary.body.error.code).toBe('VAULTED_PORTFOLIO');
+  });
+});
+
 describe('#1324 account:security parity for native account state', () => {
   it.each(['personal', 'oauth'] as const)(
     'serves all seven widened routes to a scoped %s bearer',
@@ -608,10 +679,10 @@ describe('#1324 account:security parity for native account state', () => {
     expect(pathAcceptsBearer('/auth/first-run/complete', 'GET')).toBe(false);
   });
 
-  it('keeps the tax-year router guard route- and scope-aware without the global policy', () => {
+  it('keeps the tax-year documentation guard read-only and scope-aware', () => {
     const invoke = (scopes: string[], method: string, path: string) => {
       const next = vi.fn();
-      requireCookieSessionOrTaxYearLockBearer(
+      requireCookieSessionOrTaxYearDocumentationBearer(
         {
           apiKey: {
             id: 'bypassed-policy-key',
@@ -642,9 +713,11 @@ describe('#1324 account:security parity for native account state', () => {
 
     expect(invoke([ACCOUNT_SECURITY_SCOPE], 'GET', '/taxes/years')).toHaveBeenCalledWith();
     expect(
-      invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/unlock'),
-    ).toHaveBeenCalledWith();
-    expect(taxYearLockRouteAcceptsBearer('POST', '/settings/taxes/years/2025/relock')).toBe(true);
+      invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/change'),
+    ).not.toHaveBeenCalledWith();
+    expect(
+      taxYearDocumentationRouteAcceptsBearer('POST', '/settings/taxes/years/2025/change'),
+    ).toBe(false);
   });
 
   it('keeps bearer passkey deletion on the shared contract, audit and account throttle', async () => {
@@ -694,48 +767,6 @@ describe('#1324 account:security parity for native account state', () => {
     ]);
   });
 
-  it('keeps bearer tax unlock on the shared audit and account throttle', async () => {
-    const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
-    const lockState = await request(harness.app)
-      .get('/api/v1/settings/taxes/years')
-      .set(bearer(principal.token));
-    const elapsedYear = (lockState.body.currentYear as number) - 1;
-    const path = `/api/v1/settings/taxes/years/${elapsedYear}/unlock`;
-
-    const bearerWrong = await request(harness.app)
-      .post(path)
-      .set(bearer(principal.token))
-      .send({ password: 'wrong-bearer-password' });
-    expect(bearerWrong.status).toBe(401);
-    expect(bearerWrong.body.error.code).toBe('INVALID_CREDENTIALS');
-    const limiter = progressiveKeys(ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE, principal.userId);
-    expect(await harness.ctx.redis.get(limiter.count)).toBe('1');
-
-    const cookie = await loginAgent(harness.app, principal.email, principal.password);
-    const cookieWrong = await cookie
-      .post(path)
-      .set(...XRW)
-      .send({ password: 'wrong-cookie-password' });
-    expect(cookieWrong.status).toBe(401);
-    expect(cookieWrong.body.error.code).toBe('INVALID_CREDENTIALS');
-    expect(await harness.ctx.redis.get(limiter.count)).toBe('2');
-
-    const audits = await harness.db
-      .select()
-      .from(schema.auditLog)
-      .where(
-        and(
-          eq(schema.auditLog.actorId, principal.userId),
-          eq(schema.auditLog.action, 'tax_year.unlock_reauth_fail'),
-        ),
-      );
-    expect(audits).toHaveLength(2);
-    expect(audits.map((row) => (row.meta as { year?: number }).year)).toEqual([
-      elapsedYear,
-      elapsedYear,
-    ]);
-  });
-
   it('404s an admin-kind bearer on every widened user route', async () => {
     const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
     await harness.db
@@ -772,6 +803,7 @@ describe('#1324 account:security parity for native account state', () => {
       'mirrorchain:write',
       'vault:sync',
       'feedback:write',
+      'feedback:read',
     ];
     expect(API_KEY_SCOPES).toEqual(preexistingScopes);
     const mobile = FIRST_PARTY_CLIENTS.find((client) => client.name === 'BetterTrackMobile');

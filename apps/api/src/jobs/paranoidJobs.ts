@@ -6,13 +6,42 @@ import {
   hasParanoidJobPolicy,
   paranoidJobPolicy,
   paranoidJobPolicyNames,
+  vaultedPortfolioFeatureForCapability,
   type ParanoidModeGuard,
+  type VaultedPortfolioJobMode,
 } from '../services/account/paranoidEnforcement';
 
 import type { JobDefinition, QueueName } from './types';
 
 const PARANOID_JOB_BOUND = Symbol('paranoid-job-bound');
 const PARANOID_USER_FILTER_JOB = Symbol('paranoid-user-filter-job');
+
+/**
+ * Exact idempotency keys for every queue killed by the per-portfolio matrix.
+ * This sits beside the executable binding gate so a newly classified killed
+ * job cannot ship with an undocumented retry identity:
+ *
+ * - snapshots.recompute/backfill: `(portfolio_id, date)` snapshot row;
+ * - notifications.earningsRemind: `(user_id, asset_id, report_date)`;
+ * - marketIntel.dividendScan: `(recipient_user_id, asset_id, ex_date)`;
+ * - standingOrders.process: `(standing_order_id, period_key)`;
+ * - mirror.replicate: `(mirror_chain_member_id, mirror_chain_op_seq)` watermark;
+ * - mirror.consistencySweep: repair state `(chain_id, status, active_owner_count)`
+ *   and finding fold `(problem_kind, normalized_title, message)`;
+ * - webhooks.deliver: `(subscription_id, delivery_id)` where delivery_id is a
+ *   deterministic hash of the logical event.
+ */
+export const VAULTED_PORTFOLIO_JOB_IDEMPOTENCY_KEYS: Readonly<Record<string, string>> = {
+  'snapshots.recompute': '(portfolio_id, date)',
+  'snapshots.backfill': '(portfolio_id, date)',
+  'notifications.earningsRemind': '(user_id, asset_id, report_date)',
+  'marketIntel.dividendScan': '(recipient_user_id, asset_id, ex_date)',
+  'standingOrders.process': '(standing_order_id, period_key)',
+  'mirror.replicate': '(mirror_chain_member_id, mirror_chain_op_seq)',
+  'mirror.consistencySweep':
+    '(chain_id, status, active_owner_count) / (problem_kind, normalized_title, message)',
+  'webhooks.deliver': '(subscription_id, delivery_id)',
+};
 
 export type ParanoidUserJobFilter = ((userId: string) => Promise<boolean>) & {
   readonly [PARANOID_USER_FILTER_JOB]: string;
@@ -30,6 +59,8 @@ export type ParanoidJobBinding =
         userIds: readonly string[],
         action: () => Promise<void>,
       ) => Promise<boolean>;
+      /** Re-check portfolio identity when a delivery job may outlive move-in. */
+      readonly isEventAllowed?: (event: DomainEvent) => Promise<boolean>;
     }
   | {
       readonly mode: 'perUser';
@@ -115,7 +146,25 @@ export function bindParanoidJob<N extends QueueName>(
         if (event && isParanoidKilledWebhookEvent(event)) {
           const userIds = paranoidWebhookSubjectIds(event);
           if (userIds.length > 0) {
-            const ran = await binding.runIfAllowed(userIds, () => handler(job, ctx));
+            let vaultedSkipped = false;
+            const ran = await binding.runIfAllowed(userIds, async () => {
+              // Re-read vault membership only AFTER the account transition
+              // locks are held by runIfAllowed. E4 move-in takes the conflicting
+              // account lock, so it cannot commit between this check and the
+              // external delivery.
+              if (binding.isEventAllowed && !(await binding.isEventAllowed(event))) {
+                vaultedSkipped = true;
+                return;
+              }
+              await handler(job, ctx);
+            });
+            if (vaultedSkipped) {
+              ctx.logger.info(
+                { type: event.type },
+                `${definition.name} skipped by vaulted-portfolio registry`,
+              );
+              return;
+            }
             if (!ran) {
               ctx.logger.info(
                 { userIds, type: event.type },
@@ -164,6 +213,20 @@ export function assertParanoidJobBindings(
   }
   for (const name of classified) {
     const policy = paranoidJobPolicy(name);
+    if (policy.capability && !VAULTED_PORTFOLIO_JOB_IDEMPOTENCY_KEYS[name]) {
+      throw new Error(`paranoid killed job ${name} has no documented idempotency key`);
+    }
+    if (policy.capability) {
+      const feature = vaultedPortfolioFeatureForCapability(policy.capability);
+      if (!feature) {
+        throw new Error(`paranoid killed job ${name} is absent from the vaulted-portfolio matrix`);
+      }
+      if (!feature.jobModes.includes(policy.mode as VaultedPortfolioJobMode)) {
+        throw new Error(
+          `paranoid killed job ${name} mode ${policy.mode} is absent from matrix row ${feature.id}`,
+        );
+      }
+    }
     const matches = byName.get(name) ?? [];
     if (matches.length !== 1) {
       throw new Error(

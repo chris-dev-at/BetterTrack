@@ -4,6 +4,7 @@ import {
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
+  adminBackupStatusResponseSchema,
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
   adminStatsSchema,
@@ -45,6 +46,7 @@ import {
   twoFactorMethodEnabledResponseSchema,
   twoFactorRecoveryCodesResponseSchema,
   versionResponseSchema,
+  type AdminBackupStatusResponse,
   type AdminHealthResponse,
   type AdminFeedbackListResponse,
   type AdminFeedbackListQuery,
@@ -393,7 +395,7 @@ export async function updateFeedbackStatus(
   id: string,
   body: UpdateFeedbackStatusRequest,
 ): Promise<UpdateFeedbackStatusResponse> {
-  const data = await apiRequest<unknown>(`/admin/feedback/${id}/status`, {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, {
     method: 'PATCH',
     body,
   });
@@ -526,6 +528,16 @@ export async function getAccountDefaults(signal?: AbortSignal): Promise<AccountD
 export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthResponse> {
   const data = await apiRequest<unknown>('/admin/health', { signal });
   return adminHealthResponseSchema.parse(data);
+}
+
+/**
+ * Backup / restore-drill readiness (#1406 W1). Read-only, and deliberately
+ * forgiving: a deployment without the backup sidecar answers `configured: false`
+ * rather than failing, so the Overview tile reads "not configured" locally.
+ */
+export async function getBackupStatus(signal?: AbortSignal): Promise<AdminBackupStatusResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/backup-status', { signal });
+  return adminBackupStatusResponseSchema.parse(data);
 }
 
 export async function updateAccountDefaults(

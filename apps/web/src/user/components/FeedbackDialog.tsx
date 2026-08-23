@@ -2,8 +2,10 @@ import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import {
+  FEEDBACK_CATEGORIES,
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_OPEN_LIMIT,
   FEEDBACK_SUBJECT_MAX_LENGTH,
   type CreateFeedbackRequest,
   type FeedbackCategory,
@@ -18,8 +20,8 @@ import { Dialog } from './Dialog';
 
 type SubmissionState = 'idle' | 'pending' | 'success' | 'error';
 
-/** The three API categories, kept in the server's triage order. */
-const CATEGORIES: readonly FeedbackCategory[] = ['feature', 'bug', 'other'];
+/** Every API category in its append-only wire order. */
+const CATEGORIES: readonly FeedbackCategory[] = FEEDBACK_CATEGORIES;
 
 type AutoFeedbackContext = {
   appVersion: string;
@@ -92,6 +94,8 @@ function buildFeedbackContext({
 
 function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): string {
   if (error instanceof ApiError) {
+    if (error.code === FEEDBACK_OPEN_LIMIT) return t('feedback.openLimit');
+
     if (error.code === 'VALIDATION_ERROR') {
       if (hasValidationFieldError(error.details, 'message')) {
         return t('feedback.messageTooLong', { max: FEEDBACK_MESSAGE_MAX_LENGTH });

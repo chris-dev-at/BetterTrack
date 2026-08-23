@@ -3,7 +3,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import { createInvite, newAdminRequestContext } from './support/adminApi';
 import { setWideningAudienceThroughLadder } from './support/audience';
 import { ACCOUNT_PASSWORD } from './support/config';
-import { recentOpenBookingDates } from './support/dates';
+import { recentBookingDates } from './support/dates';
 import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
 /**
@@ -93,7 +93,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await cashDialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(cashDialog).toBeHidden();
 
-  const [sapTradeDate] = await recentOpenBookingDates(owner, 1);
+  const [sapTradeDate] = recentBookingDates(1);
   await owner.getByRole('button', { name: '+ Transaction' }).click();
   const buyDialog = owner.getByRole('dialog', { name: /new transaction/i });
   await buyDialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');

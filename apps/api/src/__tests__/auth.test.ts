@@ -11,13 +11,21 @@ import {
 } from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
-import { emailLog, passwordResetTokens, users } from '../data/schema';
+import { emailLog, passwordResetTokens, users, vaults } from '../data/schema';
 import { PASSWORD_RESET_RESPONSE_FLOOR_MS } from '../services/auth/authService';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+// Deterministic TEST VECTOR identifiers and public verifier metadata only;
+// these values prove a normal v2 account can own vault config without turning
+// the legacy MeResponse field into a vault-presence signal.
+const ME_VAULT_ID = '018f1412-0000-7000-8000-000000000001';
+const ME_VAULT_HEADER_DOC_ID = '018f1412-0000-7000-8000-000000000002';
+const ME_VAULT_COMMON_DOC_ID = '018f1412-0000-7000-8000-000000000003';
+const ME_VAULT_PROOF_KEY = 'MCowBQYDK2VwAyEA' + 'A'.repeat(27) + '=';
 
 const SMTP_ENV = {
   SMTP_HOST: 'smtp.test.local',
@@ -203,7 +211,7 @@ describe('POST /api/v1/auth/logout', () => {
 });
 
 describe('GET /api/v1/auth/me', () => {
-  it('returns privacyMode for normal and paranoid accounts over session and bearer auth', async () => {
+  it('keeps privacyMode as legacy-v1 compatibility, not per-portfolio vault state', async () => {
     const normal = await harness.seedUser();
     const paranoid = await harness.seedUser({
       email: 'paranoid@bettertrack.test',
@@ -217,6 +225,17 @@ describe('GET /api/v1/auth/me', () => {
         paranoidDriveAttestedVersion: null,
       })
       .where(eq(users.id, paranoid.id));
+    await harness.db.insert(vaults).values({
+      id: ME_VAULT_ID,
+      userId: normal.id,
+      name: 'MeResponse semantics vector',
+      headerDocId: ME_VAULT_HEADER_DOC_ID,
+      commonDocId: ME_VAULT_COMMON_DOC_ID,
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: ME_VAULT_PROOF_KEY,
+      keyFingerprint: 'Abcdef0123456789',
+    });
 
     const normalAgent = request.agent(harness.app);
     const normalLogin = await normalAgent
@@ -236,6 +255,8 @@ describe('GET /api/v1/auth/me', () => {
     const paranoidSession = await paranoidAgent.get('/api/v1/auth/me');
     expect(normalSession.status).toBe(200);
     expect(paranoidSession.status).toBe(200);
+    // The normal account owns a real new-model vault, yet this compatibility
+    // field remains `normal`: clients must use Portfolio.vaultId + GET /vaults.
     expect(meResponseSchema.parse(normalSession.body).privacyMode).toBe('normal');
     expect(meResponseSchema.parse(paranoidSession.body).privacyMode).toBe('paranoid');
 

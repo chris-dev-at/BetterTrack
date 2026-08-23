@@ -44,6 +44,7 @@ const EXPECTED_SCOPES = [
   'mirrorchain:write',
   'vault:sync',
   'feedback:write',
+  'feedback:read',
 ] as const;
 
 describe('remembered-device policy invariants', () => {

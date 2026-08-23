@@ -21,12 +21,17 @@ const CATEGORY_TONE = {
   feature: 'sky',
   bug: 'red',
   other: 'neutral',
+  help: 'amber',
+  improvement: 'green',
 } as const;
 
 const STATUS_TONE = {
   new: 'amber',
   triaged: 'sky',
-  done: 'green',
+  working_on_it: 'amber',
+  saved_as_future_idea: 'neutral',
+  declined: 'red',
+  shipped: 'green',
 } as const;
 
 const DIAGNOSTIC_KEYS = [
@@ -112,6 +117,8 @@ export function FeedbackPage() {
             <option value="feature">{t('admin.feedback.category.feature')}</option>
             <option value="bug">{t('admin.feedback.category.bug')}</option>
             <option value="other">{t('admin.feedback.category.other')}</option>
+            <option value="help">{t('admin.feedback.category.help')}</option>
+            <option value="improvement">{t('admin.feedback.category.improvement')}</option>
           </select>
         </label>
 
@@ -205,6 +212,9 @@ function FeedbackRow({
               <Badge tone={STATUS_TONE[submission.status]}>
                 {t(`admin.feedback.status.${submission.status}`)}
               </Badge>
+              {submission.deletedByUser ? (
+                <Badge tone="neutral">{t('admin.feedback.deletedByUser')}</Badge>
+              ) : null}
             </div>
             {submission.subject ? (
               <h2 className="break-words text-base font-semibold text-neutral-100">
@@ -228,7 +238,17 @@ function FeedbackRow({
             >
               <option value="new">{t('admin.feedback.status.new')}</option>
               <option value="triaged">{t('admin.feedback.status.triaged')}</option>
-              <option value="done">{t('admin.feedback.status.done')}</option>
+              <option value="working_on_it">{t('admin.feedback.status.working_on_it')}</option>
+              <option value="saved_as_future_idea">
+                {t('admin.feedback.status.saved_as_future_idea')}
+              </option>
+              {!['new', 'triaged', 'working_on_it', 'saved_as_future_idea'].includes(
+                submission.status,
+              ) ? (
+                <option value={submission.status}>
+                  {t(`admin.feedback.status.${submission.status}`)}
+                </option>
+              ) : null}
             </select>
           </label>
         </div>

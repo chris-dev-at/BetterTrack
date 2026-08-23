@@ -1,9 +1,17 @@
 import type { RequestHandler } from 'express';
-import type { ZodTypeAny } from 'zod';
+import type { ZodIssue, ZodTypeAny } from 'zod';
 
 import { badRequest } from '../../errors';
 
 type Source = 'body' | 'query' | 'params';
+
+function contractErrorCode(issue: ZodIssue): string | undefined {
+  if (issue.code !== 'custom') return undefined;
+  const candidate = issue.params?.apiErrorCode;
+  return typeof candidate === 'string' && /^[A-Z][A-Z0-9_]+$/.test(candidate)
+    ? candidate
+    : undefined;
+}
 
 /**
  * Parses a request part with a shared zod schema before any logic runs
@@ -15,7 +23,17 @@ function validate(source: Source, schema: ZodTypeAny): RequestHandler {
     const input = source === 'body' ? req.body : source === 'query' ? req.query : req.params;
     const result = schema.safeParse(input);
     if (!result.success) {
-      next(badRequest('Invalid request.', 'VALIDATION_ERROR', result.error.flatten()));
+      // Shared contracts may opt a custom issue into a stable API error code.
+      // The pairing rule still lives in zod; this generic adapter only preserves
+      // its actionable code/message instead of flattening it to an opaque 400.
+      const specificIssue = result.error.issues.find((issue) => contractErrorCode(issue));
+      next(
+        badRequest(
+          specificIssue?.message ?? 'Invalid request.',
+          (specificIssue && contractErrorCode(specificIssue)) ?? 'VALIDATION_ERROR',
+          result.error.flatten(),
+        ),
+      );
       return;
     }
     req.valid ??= {};

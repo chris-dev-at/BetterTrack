@@ -97,6 +97,8 @@ async function waitForDatabaseLock(
  * `TEST_DATABASE_URL` selects the real harness but Vitest still sets
  * `NODE_ENV=test`, which deliberately selects the PGlite-compatible lock
  * emulation. Only this integration suite opts into the production branch.
+ * This mutates `process.env.NODE_ENV` process-wide, so it relies on the
+ * integration config's `singleFork` sequencing to keep other tests isolated.
  */
 async function withProductionPrivacyLocks<T>(run: () => Promise<T>): Promise<T> {
   const previous = process.env.NODE_ENV;
@@ -206,10 +208,15 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
       email: 'privacy-write-race@test.dev',
       username: 'privacy_write_race',
     });
+    const controlUser = await harness.seedUser({
+      email: 'privacy-write-control@test.dev',
+      username: 'privacy_write_control',
+    });
     const enableClient = postgres(REAL_DATABASE_URL!, { max: 1 });
     const observer = postgres(REAL_DATABASE_URL!, { max: 1 });
     const releaseEnable = deferred();
     const enableStarted = deferred();
+    const capturedAt = new Date('2026-08-19T12:00:00.000Z');
     let enable: Promise<unknown> | undefined;
     let flush: Promise<void> | undefined;
 
@@ -217,6 +224,13 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
       userId: user.id,
       feature: 'assets',
       assetId: 'guarded-asset-id',
+      occurredAt: capturedAt,
+    });
+    harness.ctx.usageAnalytics.capture({
+      userId: controlUser.id,
+      feature: 'workboard',
+      assetId: 'control-asset-id',
+      occurredAt: capturedAt,
     });
 
     try {
@@ -256,6 +270,26 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
             .from(schema.usageEvents)
             .where(eq(schema.usageEvents.userId, user.id)),
         ).toEqual([]);
+        expect(
+          await harness.db
+            .select({
+              userId: schema.usageEvents.userId,
+              feature: schema.usageEvents.feature,
+              assetId: schema.usageEvents.assetId,
+              day: schema.usageEvents.day,
+              hits: schema.usageEvents.hits,
+            })
+            .from(schema.usageEvents)
+            .where(eq(schema.usageEvents.userId, controlUser.id)),
+        ).toEqual([
+          {
+            userId: controlUser.id,
+            feature: 'workboard',
+            assetId: 'control-asset-id',
+            day: '2026-08-19',
+            hits: 1,
+          },
+        ]);
       });
     } finally {
       releaseEnable.resolve();

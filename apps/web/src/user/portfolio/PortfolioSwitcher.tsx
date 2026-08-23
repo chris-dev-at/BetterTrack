@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { PortfolioSummary } from '@bettertrack/contracts';
+import type { PortfolioKind, PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { Icon } from '../../ui/origin';
@@ -24,6 +24,14 @@ import {
 import { PortfolioWizard } from './wizard/PortfolioWizard';
 import { usePortfolioStore } from './PortfolioStoreProvider';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
+import { VaultStateAction } from '../vault/ui/VaultStateAction';
+import { useVaultEndpointState } from '../vault/ui/useVaultEndpointState';
+import {
+  isVaultedPortfolio,
+  lockedPortfolioCount,
+  portfolioDisplayName,
+  type PortfolioVaultStub,
+} from './lockedPortfolio';
 
 /**
  * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). A **selector, not a
@@ -135,12 +143,13 @@ export function resolveActivePortfolio(
 export function promotedDefaultName(
   portfolios: readonly PortfolioSummary[],
   deleting: PortfolioSummary,
+  lockedFallback: string,
 ): string | null {
   if (!deleting.isDefault) return null;
   const remaining = portfolios
     .filter((p) => p.id !== deleting.id && p.archivedAt === null)
     .sort((a, b) => a.sortOrder - b.sortOrder || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return remaining[0]?.name ?? null;
+  return remaining[0] ? portfolioDisplayName(remaining[0], lockedFallback) : null;
 }
 
 /** The `?portfolio=<id>` search string that pins one portfolio onto a link. */
@@ -205,6 +214,12 @@ export function PortfolioSwitcher() {
     staleTime: 60_000,
   });
   const portfolios = useMemo(() => activeQuery.data?.portfolios ?? [], [activeQuery.data]);
+  const lockedCount = lockedPortfolioCount(portfolios);
+  const lockedFallback = t('vault.lockedStub.fallbackAlias');
+  const displayName = useCallback(
+    (portfolio: PortfolioSummary) => portfolioDisplayName(portfolio, lockedFallback),
+    [lockedFallback],
+  );
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
   // Kinds come off the rows this list already carries (board #69) — no second
@@ -218,8 +233,8 @@ export function PortfolioSwitcher() {
     () =>
       needle === ''
         ? portfolios
-        : portfolios.filter((p) => p.name.toLocaleLowerCase().includes(needle)),
-    [portfolios, needle],
+        : portfolios.filter((p) => displayName(p).toLocaleLowerCase().includes(needle)),
+    [displayName, portfolios, needle],
   );
 
   useEffect(() => {
@@ -281,7 +296,7 @@ export function PortfolioSwitcher() {
           tint={active && activeKind ? portfolioIconTint(active, activeKind) : undefined}
         />
         <span className="bt-portfolio-trigger__name truncate">
-          {active?.name ?? t('portfolio.switcher.fallbackName')}
+          {active ? displayName(active) : t('portfolio.switcher.fallbackName')}
         </span>
         {active?.isDefault ? (
           <span className="bt-badge bt-portfolio-default">
@@ -328,6 +343,21 @@ export function PortfolioSwitcher() {
                 visible.map((p) => {
                   const selected = p.id === active?.id;
                   const kind = kinds[p.id] ?? DEFAULT_PORTFOLIO_KIND;
+                  if (isVaultedPortfolio(p)) {
+                    return (
+                      <LockedSwitcherRow
+                        key={p.id}
+                        kind={kind}
+                        name={displayName(p)}
+                        onSelect={() => {
+                          setActive(p.id);
+                          closeAndRestoreFocus();
+                        }}
+                        portfolio={p}
+                        selected={selected}
+                      />
+                    );
+                  }
                   return (
                     <button
                       key={p.id}
@@ -344,7 +374,7 @@ export function PortfolioSwitcher() {
                         icon={portfolioIconName(p, kind)}
                         tint={portfolioIconTint(p, kind)}
                       />
-                      <span className="bt-portfolio-option__name truncate">{p.name}</span>
+                      <span className="bt-portfolio-option__name truncate">{displayName(p)}</span>
                       {p.isDefault ? (
                         <span className="bt-badge bt-portfolio-default">
                           {t('portfolio.switcher.defaultBadge')}
@@ -358,6 +388,14 @@ export function PortfolioSwitcher() {
                 })
               )}
             </div>
+          ) : null}
+
+          {lockedCount > 0 ? (
+            <p className="bt-meta px-3 py-2">
+              {t(lockedCount === 1 ? 'vault.lockedStub.countOne' : 'vault.lockedStub.count', {
+                count: lockedCount,
+              })}
+            </p>
           ) : null}
 
           <div className="bt-menu-rule" />
@@ -377,7 +415,11 @@ export function PortfolioSwitcher() {
               {t('portfolio.switcher.addPortfolio')}
             </button>
             <Link
-              to={{ pathname: '/portfolio/settings', search: portfolioSearch(active?.id) }}
+              to={
+                active && isVaultedPortfolio(active)
+                  ? `/control/privacy?vault=${encodeURIComponent(active.vaultId)}`
+                  : { pathname: '/portfolio/settings', search: portfolioSearch(active?.id) }
+              }
               onClick={closeAndRestoreFocus}
               className="bt-menu-item"
             >
@@ -430,6 +472,55 @@ export function PortfolioSwitcher() {
           }}
         />
       ) : null}
+    </div>
+  );
+}
+
+function LockedSwitcherRow({
+  kind,
+  name,
+  onSelect,
+  portfolio,
+  selected,
+}: {
+  kind: PortfolioKind;
+  name: string;
+  onSelect(): void;
+  portfolio: PortfolioVaultStub;
+  selected: boolean;
+}) {
+  const t = useT();
+  const state = useVaultEndpointState(portfolio.vaultId);
+  return (
+    <div className="bt-menu-item bt-portfolio-option flex-wrap" data-vault-stub="true">
+      <button
+        aria-current={selected ? 'true' : undefined}
+        aria-label={name}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        onClick={onSelect}
+        type="button"
+      >
+        <PortfolioIconChip
+          group={false}
+          icon={portfolioIconName(portfolio, kind)}
+          tint={portfolioIconTint(portfolio, kind)}
+        />
+        <span className="bt-portfolio-option__name truncate">{name}</span>
+        <span className="bt-badge">{t('vault.lockedStub.badge')}</span>
+        {selected ? <Icon className="bt-gold" name="check" size={15} /> : null}
+      </button>
+      {state.data ? (
+        <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+      ) : (
+        <button
+          className="bt-link text-sm"
+          disabled={state.isPending}
+          onClick={() => void state.refetch()}
+          type="button"
+        >
+          {state.isError ? t('common.retry') : t('common.loading')}
+        </button>
+      )}
     </div>
   );
 }

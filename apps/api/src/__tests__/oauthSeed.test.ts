@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { ApiKeyScope } from '@bettertrack/contracts';
+
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import {
@@ -159,5 +161,53 @@ describe('seedFirstPartyClients (#395)', () => {
     const other = (await clientRow('btc_someOtherClient'))!;
     expect(other.scopes).toEqual(['portfolio:read']);
     expect(other.redirectUris).toEqual(['https://other.example/cb']);
+  });
+
+  it('unions a synthetic definition scope into active grants only for that first-party client', async () => {
+    const syntheticScope = 'synthetic:first-party' as ApiKeyScope;
+    const user = await harness.seedUser({
+      email: 'first-party-grant-reconcile@bt.test',
+      username: 'fpgrantreconcile',
+    });
+    await seedExistingMobile({ scopes: CEILING });
+    const mobile = (await clientRow(MOBILE.clientId))!;
+    const [thirdParty] = await harness.db
+      .insert(schema.oauthClients)
+      .values({
+        userId: user.id,
+        clientId: 'btc_thirdPartyReconcilePin',
+        name: 'Third party',
+        clientSecretHash: null,
+        redirectUris: ['https://third.example/callback'],
+        scopes: [...CEILING, syntheticScope],
+        isPublic: true,
+        isFirstParty: false,
+      })
+      .returning();
+
+    const [activeFirstParty, revokedFirstParty, activeThirdParty] = await harness.db
+      .insert(schema.oauthGrants)
+      .values([
+        { clientId: mobile.id, userId: user.id, scopes: ['portfolio:read'] },
+        {
+          clientId: mobile.id,
+          userId: user.id,
+          scopes: ['portfolio:read'],
+          revokedAt: new Date('2026-08-18T00:00:00.000Z'),
+        },
+        { clientId: thirdParty!.id, userId: user.id, scopes: ['portfolio:read'] },
+      ])
+      .returning();
+
+    await seedFirstPartyClients(repo, [
+      { ...MOBILE, scopeCeiling: [...MOBILE.scopeCeiling, syntheticScope] },
+    ]);
+
+    const grants = await harness.db.select().from(schema.oauthGrants);
+    const byId = new Map(grants.map((grant) => [grant.id, grant]));
+    expect(byId.get(activeFirstParty!.id)?.scopes).toEqual([...CEILING, syntheticScope]);
+    expect(byId.get(revokedFirstParty!.id)?.scopes).toEqual(['portfolio:read']);
+    expect(byId.get(activeThirdParty!.id)?.scopes).toEqual(['portfolio:read']);
+    expect((await clientRow(MOBILE.clientId))?.scopes).toEqual([...CEILING, syntheticScope]);
   });
 });

@@ -1125,7 +1125,18 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
 
     const expired = await startMobileGoogleLink(g.harness.app, token);
     const expiredHandle = expired.state.split('.')[0]!;
-    await g.harness.ctx.redis.expire(`google_mobile_link_ticket:${hashToken(expiredHandle)}`, 0);
+    const expiredKey = `google_mobile_link_ticket:${hashToken(expiredHandle)}`;
+    const expiredRecord = JSON.parse((await g.harness.ctx.redis.get(expiredKey))!) as Record<
+      string,
+      unknown
+    >;
+    await g.harness.ctx.redis.set(
+      expiredKey,
+      JSON.stringify({ ...expiredRecord, expiresAt: new Date(Date.now() - 1_000).toISOString() }),
+      'EX',
+      60,
+    );
+    expect(await g.harness.ctx.redis.ttl(expiredKey)).toBeGreaterThan(0);
     expect(
       new URL(
         expectMobileGoogleLocation(
@@ -1134,6 +1145,7 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
         ),
       ).searchParams.get('error'),
     ).toBe('google_state');
+    expect(await g.harness.ctx.redis.get(expiredKey)).not.toBeNull();
 
     const mismatchA = await startMobileGoogleLink(g.harness.app, token);
     const mismatchB = await startMobileGoogleLink(g.harness.app, token);
@@ -1264,6 +1276,28 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
     expect(failures).toHaveLength(2);
   });
 
+  it('redirects duplicate state parameters to the mobile google_state fallback', async () => {
+    const response = await request(g.harness.app).get(
+      '/api/v1/auth/google/link/callback?state=first&state=second&code=authcode',
+    );
+
+    const location = expectMobileGoogleLocation(response, 'error');
+    expect(new URL(location).searchParams.get('error')).toBe('google_state');
+    expect(hasSessionCookie(response)).toBe(false);
+    expect(g.verifierCalls()).toBe(0);
+
+    const failures = await g.harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'external_identity.link_failed'));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      actorId: null,
+      targetType: 'google_link',
+      meta: { reason: 'malformed_query', via: 'mobile_ticket' },
+    });
+  });
+
   it('preserves the existing different-account refusal and its error taxonomy', async () => {
     const caller = await g.harness.seedUser({
       email: 'mobile-conflict@example.com',
@@ -1321,10 +1355,39 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
       audits.find((row) => row.action === 'external_identity.link_failed')?.meta,
     ).toMatchObject({ reason: 'rate_limited' });
   });
+
+  it('resets the per-account issuance limiter after every successful ceremony', async () => {
+    const password = 'mobile-reset-password';
+    const user = await g.harness.seedUser({
+      email: 'mobile-reset@example.com',
+      username: 'mobile_reset',
+      password,
+    });
+    const token = await mintAccountSecurityKey(g.harness.app, user);
+    g.setClaims(claims({ sub: 'mobile-reset-sub', email: user.email }));
+
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const started = await startMobileGoogleLink(g.harness.app, token);
+      const callback = await mobileGoogleCallback(g.harness.app, started.state);
+      const location = expectMobileGoogleLocation(callback, 'google');
+      expect(new URL(location).searchParams.get('google')).toBe('linked');
+
+      const unlinked = await request(g.harness.app)
+        .post('/api/v1/auth/google/unlink')
+        .set(bearer(token))
+        .send({ password });
+      expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+    }
+
+    const audits = await g.harness.db.select().from(auditLog).where(eq(auditLog.targetId, user.id));
+    expect(audits.filter((row) => row.action === 'external_identity.link_started')).toHaveLength(
+      11,
+    );
+  });
 });
 
 describe('Google link — public callback abuse rail (#1328)', () => {
-  it('throttles a brute-force run per IP after auditing admitted failures', async () => {
+  it('throttles callbacks on the login schedule without spending the login-IP budget', async () => {
     const harness = await createTestApp({
       env: GOOGLE_ENV,
       rateLimitsEnabled: true,
@@ -1341,6 +1404,13 @@ describe('Google link — public callback abuse rail (#1328)', () => {
     expect(responses[25]!.status).toBe(429);
     expect(responses[25]!.headers.location).toBeUndefined();
     expect(responses[25]!.headers['retry-after']).toBeDefined();
+
+    const independentLogin = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({});
+    expect(independentLogin.status).toBe(400);
+    expect(independentLogin.headers['retry-after']).toBeUndefined();
 
     const failures = await harness.db
       .select()

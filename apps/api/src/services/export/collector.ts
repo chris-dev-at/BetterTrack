@@ -13,6 +13,7 @@ import {
   dividends,
   externalIdentities,
   feedback,
+  feedbackMessages,
   friendRequests,
   friendships,
   ideas,
@@ -31,7 +32,7 @@ import {
   shareAudiences,
   shareLinks,
   sharedItemActivityPrefs,
-  taxYearUnlocks,
+  taxYearChanges,
   transactions,
   userFollows,
   userTaxSettings,
@@ -107,6 +108,17 @@ function sanitize(
 }
 
 /**
+ * Support-thread replies from staff belong in the export — their bodies were
+ * addressed to this user — but `authorUserId` on an admin-side row is the
+ * replying account's internal id, identity the product never surfaces to a user
+ * anywhere else. Project it to null; `authorSide: 'admin'` already carries the
+ * meaning. Submitter-authored rows keep their (own) id verbatim.
+ */
+function projectFeedbackMessages(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  return rows.map((row) => (row.authorSide === 'admin' ? { ...row, authorUserId: null } : row));
+}
+
+/**
  * One CSV cell: JSON-safe stringify, quoting anything with a comma/quote/newline.
  * Also neutralizes spreadsheet formula injection — a leading `=`, `+`, `-`, `@`
  * (or tab/CR) in user-controlled text (e.g. `transactions.note`) is prefixed with
@@ -141,22 +153,32 @@ export async function collectUserExport(
 ): Promise<CollectedExport> {
   // Owner-id sets that the indirected tables key off. Resolved first so their
   // dependents can `inArray` on them (empty set ⇒ no rows, never a broad scan).
-  const [portfolioRows, conglomerateRows, audienceRows, customAssetRows] = await Promise.all([
-    db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, userId)),
-    db
-      .select({ id: conglomerates.id })
-      .from(conglomerates)
-      .where(eq(conglomerates.ownerId, userId)),
-    db
-      .select({ id: shareAudiences.id })
-      .from(shareAudiences)
-      .where(eq(shareAudiences.ownerId, userId)),
-    db.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId)),
-  ]);
-  const portfolioIds = portfolioRows.map((r) => r.id);
+  const [portfolioRows, conglomerateRows, audienceRows, customAssetRows, feedbackRows] =
+    await Promise.all([
+      db
+        .select({ id: portfolios.id, vaultId: portfolios.vaultId })
+        .from(portfolios)
+        .where(eq(portfolios.userId, userId)),
+      db
+        .select({ id: conglomerates.id })
+        .from(conglomerates)
+        .where(eq(conglomerates.ownerId, userId)),
+      db
+        .select({ id: shareAudiences.id })
+        .from(shareAudiences)
+        .where(eq(shareAudiences.ownerId, userId)),
+      db.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId)),
+      db.select().from(feedback).where(eq(feedback.userId, userId)),
+    ]);
+  // A vault-backed portfolio row is only a locked config stub. Its cleartext
+  // descendants are forbidden by the per-vault model, but filter them here too
+  // as a fail-closed export boundary in case stale/invalid rows survive a race or
+  // an interrupted move-in. The stub itself remains ordinary account config.
+  const cleartextPortfolioIds = portfolioRows.filter((r) => r.vaultId === null).map((r) => r.id);
   const conglomerateIds = conglomerateRows.map((r) => r.id);
   const audienceIds = audienceRows.map((r) => r.id);
   const customAssetIds = customAssetRows.map((r) => r.id);
+  const feedbackIds = feedbackRows.map((r) => r.id);
 
   /** Query a table only when its owner-id set is non-empty. */
   const inIds = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>): Promise<T[]> =>
@@ -173,10 +195,10 @@ export async function collectUserExport(
     alertRows,
     notificationRows,
     notificationSettingRows,
-    feedbackRows,
+    feedbackMessageRows,
     ideaRows,
     taxSettingRows,
-    taxYearUnlockRows,
+    taxYearChangeRows,
     friendRequestRows,
     friendshipRows,
     userFollowRows,
@@ -210,10 +232,12 @@ export async function collectUserExport(
     db.select().from(alerts).where(eq(alerts.userId, userId)),
     db.select().from(notifications).where(eq(notifications.userId, userId)),
     db.select().from(notificationSettings).where(eq(notificationSettings.userId, userId)),
-    db.select().from(feedback).where(eq(feedback.userId, userId)),
+    inIds(feedbackIds, (ids) =>
+      db.select().from(feedbackMessages).where(inArray(feedbackMessages.feedbackId, ids)),
+    ),
     db.select().from(ideas).where(eq(ideas.ownerId, userId)),
     db.select().from(userTaxSettings).where(eq(userTaxSettings.userId, userId)),
-    db.select().from(taxYearUnlocks).where(eq(taxYearUnlocks.userId, userId)),
+    db.select().from(taxYearChanges).where(eq(taxYearChanges.userId, userId)),
     db
       .select()
       .from(friendRequests)
@@ -236,22 +260,22 @@ export async function collectUserExport(
     // A user's OWN authored messages only — never the partner's content.
     db.select().from(chatMessages).where(eq(chatMessages.senderId, userId)),
     db.select().from(announcementDismissals).where(eq(announcementDismissals.userId, userId)),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(transactions).where(inArray(transactions.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(portfolioCashSources).where(inArray(portfolioCashSources.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(dividends).where(inArray(dividends.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db
         .select()
         .from(portfolioCashMovements)
         .where(inArray(portfolioCashMovements.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(portfolioSettings).where(inArray(portfolioSettings.portfolioId, ids)),
     ),
     db.select().from(conglomerates).where(eq(conglomerates.ownerId, userId)),
@@ -289,6 +313,7 @@ export async function collectUserExport(
     notifications: sanitize(notificationRows),
     notificationSettings: sanitize(notificationSettingRows),
     feedback: sanitize(feedbackRows),
+    feedbackMessages: projectFeedbackMessages(sanitize(feedbackMessageRows)),
     conglomerates: sanitize(conglomerateFull),
     conglomeratePositions: sanitize(conglomeratePositionRows),
     conglomerateShareLinks: sanitize(conglomerateShareLinkRows),
@@ -300,7 +325,7 @@ export async function collectUserExport(
     cashMovements: sanitize(cashMovementRows),
     portfolioSettings: sanitize(portfolioSettingRows),
     taxSettings: sanitize(taxSettingRows),
-    taxYearUnlocks: sanitize(taxYearUnlockRows),
+    taxYearChanges: sanitize(taxYearChangeRows),
     friendRequests: sanitize(friendRequestRows),
     friendships: sanitize(friendshipRows),
     userFollows: sanitize(userFollowRows),

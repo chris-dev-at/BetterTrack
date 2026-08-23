@@ -53,6 +53,7 @@ const EXPECTED_SCOPES = [
   'mirrorchain:write',
   'vault:sync',
   'feedback:write',
+  'feedback:read',
 ] as const satisfies readonly ApiKeyScope[];
 
 type Agent = ReturnType<typeof request.agent>;
@@ -158,13 +159,17 @@ async function mintFirstPartyToken(
   return { token: issued.token, grantId: issued.grantId, user, agent };
 }
 
-async function mintThirdPartyToken(scopes: readonly ApiKeyScope[]): Promise<{
+async function mintThirdPartyToken(
+  scopes: readonly ApiKeyScope[],
+  existing?: { user: TestUser; agent: Agent },
+): Promise<{
   token: string;
   grantId: string;
   user: TestUser;
+  agent: Agent;
 }> {
-  const user = await seedFreshUser();
-  const agent = await login(user);
+  const user = existing?.user ?? (await seedFreshUser());
+  const agent = existing?.agent ?? (await login(user));
   const registered = await agent
     .post('/api/v1/settings/oauth-clients')
     .set(...XRW)
@@ -185,7 +190,7 @@ async function mintThirdPartyToken(scopes: readonly ApiKeyScope[]): Promise<{
   });
   // This is the real row created by the public registration flow, not a mocked flag.
   expect(issued.firstParty).toBe(false);
-  return { token: issued.token, grantId: issued.grantId, user };
+  return { token: issued.token, grantId: issued.grantId, user, agent };
 }
 
 async function mintPersonalKey(scopes: readonly ApiKeyScope[]): Promise<{
@@ -204,16 +209,27 @@ async function mintPersonalKey(scopes: readonly ApiKeyScope[]): Promise<{
 }
 
 describe('#1325 first-party OAuth grant management', () => {
-  it('lists grants and lets the calling first-party grant revoke itself immediately', async () => {
-    const { token, grantId } = await mintFirstPartyToken(['account:security']);
+  it('annotates the current first-party grant and lets it revoke itself at logout', async () => {
+    const { token, grantId, user, agent } = await mintFirstPartyToken(['account:security']);
+    const sibling = await mintThirdPartyToken(['market:read'], { user, agent });
     expect((await harness.ctx.oauth.authenticateToken(token))?.firstParty).toBe(true);
 
     const listed = await request(harness.app)
       .get('/api/v1/settings/oauth-grants')
       .set(bearer(token));
     expect(listed.status, JSON.stringify(listed.body)).toBe(200);
-    expect(oauthGrantListResponseSchema.parse(listed.body).grants.map((grant) => grant.id)).toEqual(
-      [grantId],
+    const grants = oauthGrantListResponseSchema.parse(listed.body).grants;
+    expect(grants).toHaveLength(2);
+    expect(grants.find((grant) => grant.id === grantId)).toMatchObject({
+      firstParty: true,
+      current: true,
+    });
+    expect(grants.find((grant) => grant.id === sibling.grantId)).toMatchObject({
+      firstParty: false,
+      current: false,
+    });
+    expect(grants.filter((grant) => grant.id !== grantId).every((grant) => !grant.current)).toBe(
+      true,
     );
 
     await request(harness.app)
@@ -229,6 +245,22 @@ describe('#1325 first-party OAuth grant management', () => {
       .from(schema.oauthGrants)
       .where(eq(schema.oauthGrants.id, grantId));
     expect(stored?.revokedAt).toBeInstanceOf(Date);
+  });
+
+  it('marks every grant non-current for a cookie caller and keeps browser revocation enabled', async () => {
+    const { token, grantId, agent } = await mintFirstPartyToken(['account:security']);
+
+    const listed = await agent.get('/api/v1/settings/oauth-grants');
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    expect(oauthGrantListResponseSchema.parse(listed.body).grants).toEqual([
+      expect.objectContaining({ id: grantId, firstParty: true, current: false }),
+    ]);
+
+    await agent
+      .delete(`/api/v1/settings/oauth-grants/${grantId}`)
+      .set(...XRW)
+      .expect(204);
+    await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(401);
   });
 
   it('refuses a real third-party client on list and revoke and audits both probes', async () => {

@@ -1,6 +1,10 @@
 import type { RequestHandler } from 'express';
 
 import type { ApiKeyService } from '../../services/apiKeys/apiKeyService';
+import {
+  isVaultSensitiveUnattributedAssetRead,
+  vaultedPortfolioTargetForRequest,
+} from '../../services/account/vaultedPortfolioEnforcement';
 
 /**
  * Per-key request-log capture (§13.5 V5-P10, issue 2/2). Plain middleware — it
@@ -24,8 +28,25 @@ export function createApiKeyRequestLogMiddleware(apiKeys: ApiKeyService): Reques
       // (`/api/v1` stripped) and stable for the matched request.
       const method = req.method;
       const path = req.path;
+      const target = vaultedPortfolioTargetForRequest({
+        method,
+        path: req.originalUrl,
+        params: req.params,
+        query: req.query,
+        body: req.body,
+        valid: req.valid,
+      });
+      const suppressIfAnyVault = isVaultSensitiveUnattributedAssetRead(method, req.originalUrl);
       res.on('finish', () => {
-        void apiKeys.recordRequest({ keyId, userId, method, path, status: res.statusCode });
+        void apiKeys.recordRequest({
+          keyId,
+          userId,
+          method,
+          path,
+          status: res.statusCode,
+          targetPortfolioId: target?.portfolioId,
+          suppressIfAnyVault,
+        });
       });
     }
     next();

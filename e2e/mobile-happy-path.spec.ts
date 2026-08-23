@@ -3,7 +3,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import { newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD } from './support/config';
-import { recentOpenBookingDates } from './support/dates';
+import { recentBookingDates } from './support/dates';
 import { expectUserShellReady, recordSapTrade, watchAsset } from './support/flows';
 import { befriend, provisionUser, provisionUserInContext } from './support/users';
 
@@ -32,7 +32,7 @@ test('mobile happy path: money, portfolio wizard, market, chat and settings', as
   await apiRequest.dispose();
 
   const { page } = owner;
-  const [tradeDate] = await recentOpenBookingDates(page, 1);
+  const [tradeDate] = recentBookingDates(1);
 
   // The spec's contract is stricter than a project nickname: hold the actual
   // browser context to the owner-mandated iPhone-sized viewport and touch DPR.

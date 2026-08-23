@@ -169,6 +169,11 @@ const fixtures: VaultStrictEntity[] = [
       // at the same vault, so the membership is part of the persisted fixture.
       vaultId: uuid(77),
       alias: 'Locked wallet',
+      // E0 (#1410): the fresh `portfolios.vault_alias` column — always null in
+      // an ACCOUNT-level document (the two paranoid systems are mutually
+      // exclusive per account), carried so the strict payload stays
+      // column-complete.
+      vaultAlias: null,
     },
   },
   {

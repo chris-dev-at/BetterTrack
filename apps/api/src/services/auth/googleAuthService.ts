@@ -50,12 +50,12 @@ const stateKey = (state: string) => `google_oauth_state:${state}`;
 /** Google's real production authorize endpoint — the default when no override is set. */
 export const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
-/** Short lifetime shared by the browser-bound and native Google round trips. */
+/** Short lifetime for the server-bound native Google LINK ticket. */
 export const GOOGLE_MOBILE_LINK_TICKET_TTL_SECONDS = 10 * 60;
 const MOBILE_LINK_HANDLE_BYTES = 24;
 const MOBILE_LINK_SECRET_BYTES = 32;
-const MOBILE_LINK_HANDLE_LENGTH = 32;
-const MOBILE_LINK_SECRET_LENGTH = 43;
+const MOBILE_LINK_HANDLE_LENGTH = Math.ceil((MOBILE_LINK_HANDLE_BYTES * 4) / 3);
+const MOBILE_LINK_SECRET_LENGTH = Math.ceil((MOBILE_LINK_SECRET_BYTES * 4) / 3);
 const MOBILE_LINK_STATE = new RegExp(
   `^[A-Za-z0-9_-]{${MOBILE_LINK_HANDLE_LENGTH}}\\.[A-Za-z0-9_-]{${MOBILE_LINK_SECRET_LENGTH}}$`,
 );
@@ -201,6 +201,15 @@ export interface GoogleAuthService {
    * ceremony. The caller supplies no account selector and no redirect target.
    */
   startMobileLink(userId: string, ip?: string | null): Promise<MobileLinkStartResult>;
+  /**
+   * Resolve the guarded native target and audit a callback query that failed
+   * contract validation before ticket handling could begin.
+   */
+  handleMalformedMobileLinkCallback(ip?: string | null): Promise<{
+    status: 'error';
+    code: string;
+    redirectUri: string;
+  }>;
   /**
    * Consume a native LINK ticket, verify Google's code and link only the user id
    * carried by that server record. This path never creates a BetterTrack session.
@@ -503,6 +512,12 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       authorizationUrl: `${authorizeEndpoint}?${params.toString()}`,
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  async function handleMalformedMobileLinkCallback(ip?: string | null) {
+    const redirectUri = registeredMobileLinkRedirectUri();
+    await auditMobileLinkFailure({ ip, reason: 'malformed_query' });
+    return { status: 'error' as const, code: 'GOOGLE_STATE_INVALID', redirectUri };
   }
 
   /**
@@ -880,6 +895,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
         throw badRequest('Google verification failed.', 'GOOGLE_VERIFY_FAILED');
       }
       await linkToUser(ticket.userId, claims, input.ip, 'mobile_ticket');
+      await mobileLinkThrottle.reset(ticket.userId);
       await audit.record({
         actorId: ticket.userId,
         action: AuditAction.ExternalIdentityLinkSucceeded,
@@ -904,6 +920,8 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     buildAuthorizeUrl,
 
     startMobileLink,
+
+    handleMalformedMobileLinkCallback,
 
     handleMobileLinkCallback,
 

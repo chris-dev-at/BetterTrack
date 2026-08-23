@@ -119,6 +119,7 @@ const ASSET = {
 function taxYear(year: number) {
   return {
     year,
+    lastChangedAt: null,
     realizedPnlEur: 100,
     dividendsGrossEur: 0,
     taxWithheldEur: 27.5,
@@ -221,6 +222,7 @@ describe('buildNormalVaultDocument', () => {
       years: [
         {
           year: 2026,
+          lastChangedAt: null,
           realizedPnlEur: 0,
           dividendsGrossEur: 5,
           taxWithheldEur: 0,
@@ -233,6 +235,7 @@ describe('buildNormalVaultDocument', () => {
       year: 2026,
       summary: {
         year: 2026,
+        lastChangedAt: null,
         realizedPnlEur: 0,
         dividendsGrossEur: 5,
         taxWithheldEur: 0,
@@ -1157,7 +1160,7 @@ describe('buildNormalVaultDocument', () => {
       revision: `${REVISION}-${version}`,
     }));
     vi.mocked(getTaxYearReports).mockImplementation(async () => {
-      // `reconcileOpenYears`: posts the pending correction once, then converges
+      // Tax reconciliation posts the pending correction once, then converges
       // (the year's correction delta is zero afterwards).
       if (!ledger.some((row) => row.id === CORRECTION_ID)) {
         ledger.push(movement(CORRECTION_ID, 'tax_refund', 247.5));

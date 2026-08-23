@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { API_BASE_URL } from './support/config';
-import { relockTaxYear, unlockTaxYear } from './support/taxYears';
 import { provisionUser } from './support/users';
 import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
@@ -167,10 +166,6 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
   const page = owner.page;
   const api = owner.context.request;
 
-  // Tax-year unlocks are per account. Both years must be open before any booking:
-  // the 2024 SAP buy can reshape the later 2025 SAP sell's FIFO settlement.
-  for (const year of [2024, 2025]) await unlockTaxYear(page, year);
-
   await enableGermanyTaxMode(page);
   // Fund Main generously so the 2025 dividend's withholding never overdraws it.
   await depositToMain(page, '50000', '2024-01-02');
@@ -253,11 +248,10 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
   await expect(page.getByText('2025').first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('button', { name: 'Print', exact: true })).toBeVisible();
 
-  // Close 2024 again, then prove the same owner session cannot amend it until
-  // another explicit unlock. Re-book the first fixture buy through the real API.
-  await relockTaxYear(page, 2024);
+  // Living documentation: the same owner can add another past-year row with no
+  // ceremony, and the account marker records that edit.
   const firstTrade = TRADES[0]!;
-  const refused = await api.post(`${API_BASE_URL}/api/v1/portfolios/${pid}/transactions`, {
+  const amendment = await api.post(`${API_BASE_URL}/api/v1/portfolios/${pid}/transactions`, {
     headers: CSRF_HEADERS,
     data: {
       assetId: sap!.asset.id,
@@ -268,11 +262,13 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
       executedAt: `${firstTrade.date}T12:00:00.000Z`,
     },
   });
-  const refusedBody = (await refused.json()) as {
-    error: { code: string; details?: { year?: number } };
+  expect(amendment.status(), await amendment.text()).toBe(201);
+  const yearsResponse = await api.get(`${API_BASE_URL}/api/v1/settings/taxes/years`);
+  expect(yearsResponse.ok(), await yearsResponse.text()).toBeTruthy();
+  const documentation = (await yearsResponse.json()) as {
+    years: { year: number; lastChangedAt: string | null }[];
   };
-  expect(refused.status(), JSON.stringify(refusedBody)).toBe(409);
-  expect(refusedBody.error).toMatchObject({ code: 'TAX_YEAR_LOCKED', details: { year: 2024 } });
+  expect(documentation.years.find((row) => row.year === 2024)?.lastChangedAt).toBeTruthy();
 
   await owner.context.close();
 });

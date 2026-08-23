@@ -19,6 +19,7 @@ import {
   PARANOID_PURGE_REASONS,
   PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
+  PARANOID_VAULT_DOC_BUCKETS,
   PARANOID_VAULT_TABLE_NAMES,
   schemaTableNames,
 } from '../manifest';
@@ -138,6 +139,68 @@ describe('paranoid table classification completeness', () => {
       }
       // The fired marker is exactly-once alert bookkeeping: rebuilt, never trusted.
       expect(PARANOID_REHYDRATION_POLICY['cash_budget_fires']).toEqual({ kind: 'purge-only' });
+    });
+  });
+
+  /**
+   * The per-portfolio vault surface itself (E0 #1410): config rows, opaque
+   * ciphertext and the token-free Drive registry are `server` for exactly the
+   * reason the v1 `paranoid_*` rows are — account config + ciphertext, never
+   * portfolio content. Pinned so a re-classification is a deliberate review.
+   */
+  it('keeps the per-portfolio vault surface server-side (E0 #1410)', () => {
+    for (const table of [
+      'vaults',
+      'vault_blobs',
+      'vault_blob_history',
+      'vault_server_candidates',
+      'vault_retirements',
+      'vault_retired',
+      'drive_connections',
+    ]) {
+      expect(PARANOID_TABLE_CLASSIFICATION[table], `${table} should be server`).toBe('server');
+      expect(EXPORT_TABLE_CLASSIFICATION[table], `${table} needs an export skip`).toMatchObject({
+        kind: 'skip',
+      });
+    }
+  });
+
+  /**
+   * THE DOC-BUCKET AXIS (docs/paranoid-design.md §5, E0 #1410): every
+   * `vault`-classified table names the encrypted doc that carries it —
+   * `portfolio` (the member portfolio's own doc) or `common` (the vault-wide
+   * account-scoped doc) — with the same "equally exhaustive, CI fails on a
+   * gap" contract as the axis it extends.
+   */
+  describe('the doc-bucket axis (per-portfolio vaults, E0 #1410)', () => {
+    it('assigns exactly one bucket to every vault-classified table and to nothing else', () => {
+      expect(Object.keys(PARANOID_VAULT_DOC_BUCKETS).sort()).toEqual([
+        ...PARANOID_VAULT_TABLE_NAMES,
+      ]);
+    });
+
+    it('only uses the two bucket values', () => {
+      for (const [table, bucket] of Object.entries(PARANOID_VAULT_DOC_BUCKETS)) {
+        expect(['portfolio', 'common'], `${table} has an invalid doc bucket`).toContain(bucket);
+      }
+    });
+
+    it('pins the mechanical scoping rule on the telling cases', () => {
+      // portfolio-scoped rows ride the member portfolio's own doc...
+      expect(PARANOID_VAULT_DOC_BUCKETS['transactions']).toBe('portfolio');
+      expect(PARANOID_VAULT_DOC_BUCKETS['standing_order_runs']).toBe('portfolio');
+      expect(PARANOID_VAULT_DOC_BUCKETS['import_batches']).toBe('portfolio');
+      expect(PARANOID_VAULT_DOC_BUCKETS['cash_budgets']).toBe('portfolio');
+      // ...account-scoped, vault-referenced rows ride the common doc. The
+      // V5-P9 expense tables land here DELIBERATELY: the design note's §5
+      // wording assumed portfolio-scoped expense rows, but the live schema
+      // keys them by user_id only, and the axis follows the actual scoping
+      // column (recorded in the contracts' VAULT_ENTITY_DOC_BUCKETS note).
+      expect(PARANOID_VAULT_DOC_BUCKETS['user_tax_settings']).toBe('common');
+      expect(PARANOID_VAULT_DOC_BUCKETS['assets']).toBe('common');
+      expect(PARANOID_VAULT_DOC_BUCKETS['price_history']).toBe('common');
+      expect(PARANOID_VAULT_DOC_BUCKETS['expense_transactions']).toBe('common');
+      expect(PARANOID_VAULT_DOC_BUCKETS['cash_tags']).toBe('common');
     });
   });
 

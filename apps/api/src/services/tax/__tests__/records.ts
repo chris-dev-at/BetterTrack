@@ -13,7 +13,7 @@ import {
 
 /**
  * Row/movement fixture builders shared by the service-layer tax-engine unit
- * suites (openYear / countryState / customState). They mint the persisted
+ * suites (livingYear / countryState / customState). They mint the persisted
  * record shapes the engine reads (`TransactionRecord`, `DividendRecord`,
  * `CashMovementRecord`) with sensible tax-clean defaults, and rebuild the
  * recomputed-realizations view the same way the service does — via the domain

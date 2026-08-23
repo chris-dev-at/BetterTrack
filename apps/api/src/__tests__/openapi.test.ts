@@ -51,6 +51,14 @@ describe('OpenAPI document', () => {
     expect(schemas.ApiError).toBeDefined();
     expect(schemas.MeResponse).toBeDefined();
 
+    const grantList = schemas.OAuthGrantListResponse as JsonObject;
+    const grantArray = (grantList.properties as JsonObject).grants as JsonObject;
+    const grantRow = grantArray.items as JsonObject;
+    const grantProperties = grantRow.properties as JsonObject;
+    expect(grantProperties.firstParty).toEqual({ type: 'boolean' });
+    expect(grantProperties.current).toEqual({ type: 'boolean' });
+    expect(grantRow.required).toEqual(expect.arrayContaining(['firstParty', 'current']));
+
     // Paths exist for every documented endpoint.
     const paths = doc.paths as JsonObject;
     expect(Object.keys(paths).length).toBeGreaterThan(0);
@@ -101,10 +109,19 @@ describe('OpenAPI document', () => {
       '/search',
       '/assets/{id}',
       '/portfolios',
+      '/portfolios/{portfolioId}/vault/revision',
+      '/portfolios/{portfolioId}/vault/move-in',
+      '/portfolios/{portfolioId}/vault/move-out/challenge',
+      '/portfolios/{portfolioId}/vault/move-out',
+      '/vaults',
+      '/vaults/{vaultId}/docs/{docId}',
       '/custom-assets',
       '/conglomerates',
       '/backtest/preview',
       '/feedback',
+      '/feedback/mine',
+      '/feedback/{id}',
+      '/feedback/{id}/messages',
       '/social/requests',
     ];
     for (const path of expectedPaths) {
@@ -137,18 +154,16 @@ describe('OpenAPI document', () => {
     const apiKeys = (paths['/settings/api-keys'] as JsonObject).get as JsonObject;
     expect(apiKeys.security).toEqual([{ sessionCookie: [] }]);
 
-    // #1324: existing-passkey management, first-run completion and tax-year
-    // locks share account:security across the cookie and bearer front ends. The
-    // markers are derived from the same exact method/path policy as live
-    // requests; no endpoint-local security override may drift from it.
+    // #1324/#1399: existing-passkey management, first-run completion and the
+    // tax-year documentation list share account:security across the cookie and
+    // bearer front ends. The markers are derived from the same exact method/path
+    // policy as live requests; no endpoint-local security override may drift.
     const nativeAccountSecurityOperations = [
       ['get', '/auth/passkeys'],
       ['patch', '/auth/passkeys/{id}'],
       ['delete', '/auth/passkeys/{id}'],
       ['post', '/auth/first-run/complete'],
       ['get', '/settings/taxes/years'],
-      ['post', '/settings/taxes/years/{year}/unlock'],
-      ['post', '/settings/taxes/years/{year}/relock'],
     ] as const;
     for (const [method, path] of nativeAccountSecurityOperations) {
       const operation = (paths[path] as JsonObject)[method] as JsonObject;
@@ -157,6 +172,8 @@ describe('OpenAPI document', () => {
         { apiKeyBearer: [] },
       ]);
     }
+    expect(paths['/settings/taxes/years/{year}/unlock']).toBeUndefined();
+    expect(paths['/settings/taxes/years/{year}/relock']).toBeUndefined();
 
     // #1328: only the JSON start leg is authenticated + bearer-callable. Both
     // Google browser callbacks are genuinely public, while the legacy anonymous
@@ -226,6 +243,40 @@ describe('OpenAPI document', () => {
     expect((feedbackCreated['application/json'] as JsonObject).schema).toEqual({
       $ref: '#/components/schemas/CreateFeedbackResponse',
     });
+    const myFeedback = (paths['/feedback/mine'] as JsonObject).get as JsonObject;
+    expect(myFeedback.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    const myFeedbackOk = ((myFeedback.responses as JsonObject)['200'] as JsonObject)
+      .content as JsonObject;
+    expect((myFeedbackOk['application/json'] as JsonObject).schema).toEqual({
+      $ref: '#/components/schemas/MyFeedbackResponse',
+    });
+    const deleteFeedback = (paths['/feedback/{id}'] as JsonObject).delete as JsonObject;
+    expect(deleteFeedback.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    expect(deleteFeedback.responses as JsonObject).toHaveProperty('204');
+    expect(paths).toHaveProperty('/admin/feedback/{id}');
+    expect(paths).not.toHaveProperty('/admin/feedback/{id}/status');
+    expect(paths).not.toHaveProperty('/admin/feedback/{id}/archive');
+    expect(((paths['/admin/feedback/{id}'] as JsonObject).patch as JsonObject).security).toEqual([
+      { sessionCookie: [] },
+    ]);
+    const feedbackThread = (paths['/feedback/{id}/messages'] as JsonObject).get as JsonObject;
+    expect(feedbackThread.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    const feedbackThreadOk = ((feedbackThread.responses as JsonObject)['200'] as JsonObject)
+      .content as JsonObject;
+    expect((feedbackThreadOk['application/json'] as JsonObject).schema).toEqual({
+      $ref: '#/components/schemas/FeedbackThreadResponse',
+    });
+    expect(((paths['/feedback/{id}/messages'] as JsonObject).post as JsonObject).security).toEqual([
+      { sessionCookie: [] },
+      { apiKeyBearer: [] },
+    ]);
+    expect(((paths['/feedback/{id}/read'] as JsonObject).post as JsonObject).security).toEqual([
+      { sessionCookie: [] },
+      { apiKeyBearer: [] },
+    ]);
+    expect(
+      ((paths['/admin/feedback/{id}/messages'] as JsonObject).get as JsonObject).security,
+    ).toEqual([{ sessionCookie: [] }]);
 
     // #1327: plural remembered-device management is the bearer-capable sibling
     // of the browser-cookie mint/forget pair. Security is derived from the same
@@ -304,9 +355,9 @@ describe('OpenAPI document', () => {
       ]);
     }
 
-    // #1043: only opaque vault sync operations advertise bearer auth. Media
-    // transitions, candidate/retirement lifecycle and account transitions stay
-    // owning-browser-session operations in the generated contract too.
+    // #1043: only opaque legacy-vault sync operations advertise bearer auth.
+    // Media transitions, candidate/retirement lifecycle and account transitions
+    // stay owning-browser-session operations in the generated contract too.
     const vaultBearerOperations = [
       ['get', '/vault'],
       ['put', '/vault'],
@@ -336,6 +387,181 @@ describe('OpenAPI document', () => {
       ]);
     }
 
+    // E1 #1411: the per-vault surface is split three ways by the same policy
+    // resolver that gates live requests. Opaque doc sync plus media/history
+    // reads use vault:sync; DELETE alone uses account:security + in-body step-up;
+    // config and recovery-media transitions remain session-only.
+    const perVaultSyncOperations = [
+      ['get', '/vaults/{vaultId}/docs/{docId}'],
+      ['put', '/vaults/{vaultId}/docs/{docId}'],
+      ['get', '/vaults/{vaultId}/docs/{docId}/history'],
+      ['get', '/vaults/{vaultId}/docs/{docId}/history/{version}'],
+      ['get', '/vaults/{vaultId}/media'],
+    ] as const;
+    for (const [method, path] of perVaultSyncOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+
+    const deleteVault = (paths['/vaults/{vaultId}'] as JsonObject).delete as JsonObject;
+    expect(deleteVault.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    expect(deleteVault.description).toContain('account:security');
+    expect(deleteVault.description).toContain('step-up');
+
+    // E4 #1414: all four per-portfolio transition operations share the exact
+    // account:security bearer allowlist. Capture/transition receipts and every
+    // refusal are no-store; both commits publish their CAS/conflict/throttle
+    // statuses, and move-out carries the mandatory server-readable warning.
+    const portfolioVaultOperations = [
+      ['get', '/portfolios/{portfolioId}/vault/revision'],
+      ['post', '/portfolios/{portfolioId}/vault/move-in'],
+      ['post', '/portfolios/{portfolioId}/vault/move-out/challenge'],
+      ['post', '/portfolios/{portfolioId}/vault/move-out'],
+    ] as const;
+    for (const [method, path] of portfolioVaultOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+      expect(operation.description).toContain('account:security');
+      const responses = operation.responses as JsonObject;
+      expect(Object.keys(responses)).toEqual(expect.arrayContaining(['404', '409', '429']));
+      for (const response of Object.values(responses) as JsonObject[]) {
+        expect(response.headers as JsonObject).toHaveProperty('Cache-Control');
+      }
+    }
+
+    const revision = (paths['/portfolios/{portfolioId}/vault/revision'] as JsonObject)
+      .get as JsonObject;
+    const moveIn = (paths['/portfolios/{portfolioId}/vault/move-in'] as JsonObject)
+      .post as JsonObject;
+    const moveOutChallenge = (
+      paths['/portfolios/{portfolioId}/vault/move-out/challenge'] as JsonObject
+    ).post as JsonObject;
+    const moveOut = (paths['/portfolios/{portfolioId}/vault/move-out'] as JsonObject)
+      .post as JsonObject;
+    for (const operation of [moveIn, moveOut]) {
+      expect(operation.description).toContain('step-up');
+      expect(operation.description).toContain('CSRF + same-origin');
+      expect(operation.responses as JsonObject).toHaveProperty('412');
+    }
+    expect(moveOut.description).toContain('becomes server-readable again');
+    expect(moveOutChallenge.description).toContain('Ed25519');
+    expect(
+      (((revision.responses as JsonObject)['200'] as JsonObject).content as JsonObject)[
+        'application/json'
+      ],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultRevisionResponse' } });
+    expect(
+      ((moveIn.requestBody as JsonObject).content as JsonObject)['application/json'],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveInRequest' } });
+    expect(
+      ((moveOut.requestBody as JsonObject).content as JsonObject)['application/json'],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutRequest' } });
+    expect(
+      ((moveOutChallenge.requestBody as JsonObject).content as JsonObject)['application/json'],
+    ).toMatchObject({
+      schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutChallengeRequest' },
+    });
+    expect(
+      (((moveIn.responses as JsonObject)['200'] as JsonObject).content as JsonObject)[
+        'application/json'
+      ],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveInResponse' } });
+    expect(
+      (((moveOut.responses as JsonObject)['200'] as JsonObject).content as JsonObject)[
+        'application/json'
+      ],
+    ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutResponse' } });
+
+    const perVaultSessionOperations = [
+      ['get', '/vaults'],
+      ['post', '/vaults'],
+      ['get', '/vaults/{vaultId}'],
+      ['patch', '/vaults/{vaultId}'],
+      ['patch', '/vaults/{vaultId}/media'],
+      ['put', '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}'],
+      ['get', '/vaults/{vaultId}/media/server-candidate/{candidateId}'],
+      ['post', '/vaults/{vaultId}/media/retired/purge/challenge'],
+      ['post', '/vaults/{vaultId}/media/retired/purge'],
+    ] as const;
+    for (const [method, path] of perVaultSessionOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+      ]);
+    }
+
+    // The blind store stays binary at the public contract boundary. A JSON
+    // declaration here would invite generated clients to parse ciphertext.
+    for (const path of [
+      '/vaults/{vaultId}/docs/{docId}',
+      '/vaults/{vaultId}/docs/{docId}/history/{version}',
+      '/vaults/{vaultId}/media/server-candidate/{candidateId}',
+    ]) {
+      const operation = (paths[path] as JsonObject).get as JsonObject;
+      const ok = (operation.responses as JsonObject)['200'] as JsonObject;
+      const content = ok.content as JsonObject;
+      expect(Object.keys(content), `response media type for GET ${path}`).toEqual([
+        'application/octet-stream',
+      ]);
+      expect((content['application/octet-stream'] as JsonObject).schema).toMatchObject({
+        type: 'string',
+        format: 'binary',
+      });
+    }
+    for (const path of [
+      '/vaults/{vaultId}/docs/{docId}',
+      '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}',
+    ]) {
+      const operation = (paths[path] as JsonObject).put as JsonObject;
+      const requestBody = operation.requestBody as JsonObject;
+      expect(
+        Object.keys(requestBody.content as JsonObject),
+        `request media type for PUT ${path}`,
+      ).toEqual(['application/octet-stream']);
+      expect(
+        ((requestBody.content as JsonObject)['application/octet-stream'] as JsonObject).schema,
+      ).toMatchObject({ type: 'string', format: 'binary' });
+    }
+    const putDoc = (paths['/vaults/{vaultId}/docs/{docId}'] as JsonObject).put as JsonObject;
+    const putDocNoContent = (putDoc.responses as JsonObject)['204'] as JsonObject;
+    expect(putDocNoContent.content).toBeUndefined();
+    const headerParameterNames = (operation: JsonObject): string[] =>
+      (operation.parameters as JsonObject[])
+        .filter((parameter) => parameter.in === 'header')
+        .map((parameter) => String(parameter.name));
+    const getDoc = (paths['/vaults/{vaultId}/docs/{docId}'] as JsonObject).get as JsonObject;
+    expect(headerParameterNames(getDoc)).toEqual(['If-None-Match']);
+    const getDocOk = (getDoc.responses as JsonObject)['200'] as JsonObject;
+    expect(Object.keys(getDocOk.headers as JsonObject)).toEqual(['ETag']);
+    expect(headerParameterNames(putDoc)).toEqual(['If-Match', 'If-None-Match']);
+    expect(Object.keys(putDocNoContent.headers as JsonObject)).toEqual(['ETag']);
+
+    const historyVersion = (paths['/vaults/{vaultId}/docs/{docId}/history/{version}'] as JsonObject)
+      .get as JsonObject;
+    const historyOk = (historyVersion.responses as JsonObject)['200'] as JsonObject;
+    expect(Object.keys(historyOk.headers as JsonObject)).toEqual([
+      'ETag',
+      contracts.VAULT_HISTORY_CREATED_AT_HEADER,
+      contracts.VAULT_HISTORY_SIZE_BYTES_HEADER,
+      contracts.VAULT_HISTORY_MEDIUM_HEADER,
+    ]);
+    const candidateRead = (
+      paths['/vaults/{vaultId}/media/server-candidate/{candidateId}'] as JsonObject
+    ).get as JsonObject;
+    const candidateOk = (candidateRead.responses as JsonObject)['200'] as JsonObject;
+    expect(Object.keys(candidateOk.headers as JsonObject)).toEqual([
+      'ETag',
+      contracts.VAULT_SERVER_CANDIDATE_ID_HEADER,
+      contracts.VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+      contracts.VAULT_SERVER_CANDIDATE_READBACK_HEADER,
+    ]);
+
     // Paranoid transitions (§13.5 V5-P13) are session-only in the middleware, so
     // the derived spec must NOT advertise a bearer for either direction — a
     // client-generated SDK that offered it would only ever get 403s, and the
@@ -363,6 +589,74 @@ describe('OpenAPI document', () => {
     // The security scheme itself is the session cookie.
     const securitySchemes = (doc.components as JsonObject).securitySchemes as JsonObject;
     expect((securitySchemes.sessionCookie as JsonObject).in).toBe('cookie');
+  });
+
+  it('publishes contract-owned feedback error codes as operation metadata', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const submitFeedback = (paths['/feedback'] as JsonObject).post as JsonObject;
+    const updateFeedback = (paths['/admin/feedback/{id}'] as JsonObject).patch as JsonObject;
+    const submittedCodes = submitFeedback['x-error-codes'] as string[];
+    const updatedCodes = updateFeedback['x-error-codes'] as string[];
+
+    expect(submittedCodes).toEqual(
+      expect.arrayContaining([
+        ...Object.values(contracts.AUTH_ERROR_CODES),
+        ...contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
+      ]),
+    );
+    expect(updatedCodes).toEqual(
+      expect.arrayContaining([
+        ...Object.values(contracts.AUTH_ERROR_CODES),
+        contracts.ADMIN_2FA_SETUP_REQUIRED,
+        ...contracts.FEEDBACK_STATUS_ERROR_CODES,
+      ]),
+    );
+
+    // The feedback routes above are mounted API operations; keep this coverage
+    // dynamic so a newly exported `*_LIMIT`, `*_REQUIRED`, or `*_INVALID`
+    // feedback error cannot silently remain a bare `ApiError.error.code`.
+    const exportedFeedbackCodes = Object.entries(contracts).flatMap(([name, value]) =>
+      /^FEEDBACK_.*_(?:LIMIT|REQUIRED|INVALID)$/.test(name) && typeof value === 'string'
+        ? [value]
+        : [],
+    );
+    expect([...submittedCodes, ...updatedCodes]).toEqual(
+      expect.arrayContaining(exportedFeedbackCodes),
+    );
+  });
+
+  it('publishes mandatory-admin-2FA codes for every non-bootstrap admin operation', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const bootstrapOperations = new Set([
+      'GET /admin/security/2fa/status',
+      'POST /admin/security/2fa/totp/enroll',
+      'POST /admin/security/2fa/totp/confirm',
+      'POST /admin/security/2fa/email/start',
+      'POST /admin/security/2fa/email/confirm',
+    ]);
+    const methods = ['get', 'post', 'put', 'patch', 'delete'] as const;
+
+    for (const [path, pathItem] of Object.entries(paths)) {
+      if (!path.startsWith('/admin/')) continue;
+      for (const method of methods) {
+        const operation = (pathItem as JsonObject)[method] as JsonObject | undefined;
+        if (!operation) continue;
+        const errorCodes = operation['x-error-codes'] as string[];
+        const operationName = `${method.toUpperCase()} ${path}`;
+
+        if (bootstrapOperations.has(operationName)) {
+          expect(errorCodes, operationName).not.toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+        } else {
+          expect(errorCodes, operationName).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+        }
+      }
+    }
+
+    expect(
+      ((paths['/admin/problems/{id}/resolve'] as JsonObject).post as JsonObject)['x-error-codes'],
+    ).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
   });
 
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {

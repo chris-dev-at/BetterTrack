@@ -1,5 +1,17 @@
 import { defineConfig } from 'vitest/config';
 
+if (!process.env.TEST_DATABASE_URL) {
+  throw new Error(
+    'TEST_DATABASE_URL is required for vitest.config.integration.ts; the real Postgres suite must not silently skip.',
+  );
+}
+
+if (!process.env.TEST_REDIS_URL) {
+  throw new Error(
+    'TEST_REDIS_URL is required for vitest.config.integration.ts; the real Redis suites must not silently degrade to ioredis-mock.',
+  );
+}
+
 /**
  * Vitest config for the real-service integration job (postgres:17 + redis:7).
  * Run via: TEST_DATABASE_URL=... TEST_REDIS_URL=... pnpm test:integration
@@ -24,6 +36,12 @@ export default defineConfig({
       // (COALESCE + ::timestamptz casts) whose param typing differs between
       // PGlite and postgres-js — keep them proven on the real engine.
       'src/__tests__/notificationsArchive.test.ts',
+      // #1443: the feedback tombstone repeated exactly that shape and shipped a
+      // bare `Date` param inside its COALESCE/CASE — postgres-js threw at Bind
+      // and EVERY production delete answered 500 while the PGlite suite stayed
+      // green. The delete-per-status matrix lives here so the engine that broke
+      // is the engine that proves it.
+      'src/__tests__/feedbackDeleteMatrix.test.ts',
       // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).
@@ -48,6 +66,13 @@ export default defineConfig({
       // misordered `when` makes drizzle skip a migration on any database that
       // already applied a later-stamped one).
       'src/__tests__/migrationJournal.test.ts',
+      'src/services/account/__tests__/portfolioVaultTransitionService.test.ts',
+      'src/data/repositories/__tests__/portfolioVaultTransitionRepository.test.ts',
+      'src/data/repositories/__tests__/portfolioVaultRestoreRepository.test.ts',
+      'src/__tests__/vaultsE1.test.ts',
+      // #1485: disposing one harness must never close the worker-shared Redis
+      // singleton that another harness is still using.
+      'src/testing/createTestApp.test.ts',
     ],
     pool: 'forks',
     poolOptions: {

@@ -1,5 +1,6 @@
 import request from 'supertest';
 import type { Application } from 'express';
+import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +8,7 @@ import {
   createDividendResponseSchema,
   dividendListResponseSchema,
   taxSettingsResponseSchema,
+  taxYearChangesResponseSchema,
   taxYearListResponseSchema,
   taxYearReportResponseSchema,
   type CashMovement,
@@ -27,6 +29,17 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+// Deterministic TEST VECTOR ids and verifier-shaped strings are public fixtures,
+// not credentials or production retirement material.
+const VAULTED_TAX_YEARS_TEST_VECTOR = {
+  vaultId: '019c8620-0000-7000-8000-000000000001',
+  headerDocId: '019c8620-0000-7000-8000-000000000002',
+  commonDocId: '019c8620-0000-7000-8000-000000000003',
+  portfolioId: '019c8620-0000-7000-8000-000000000004',
+  retirementProofPublicKey: 'TEST VECTOR tax years public verifier',
+  keyFingerprint: 'TEST-VECTOR-TAX-YEARS-0001',
+} as const;
 
 let harness: TestHarness;
 
@@ -86,22 +99,6 @@ async function setup(mode?: 'manual_per_trade' | 'country_specific') {
     expect(res.status).toBe(200);
   }
   return { user, agent, pid, asset };
-}
-
-/**
- * Amendment mode (§16 2026-08-07): elapsed years now LOCK against mutations
- * (409 TAX_YEAR_LOCKED) until explicitly unlocked. The machinery tests below
- * backdate into passed years by design — they run with those years unlocked,
- * exactly the state in which the closed-year settlement machinery operates.
- * The lock gate itself (and the unlock ritual) is pinned by
- * `taxYearLock.test.ts`. Note the report's `locked` flag then reads `false`
- * (elapsed-but-amendable) for these years.
- */
-async function unlockYears(userId: string, years: number[]) {
-  await harness.db
-    .insert(schema.taxYearUnlocks)
-    .values(years.map((year) => ({ userId, year })))
-    .onConflictDoNothing();
 }
 
 async function trade(
@@ -202,6 +199,77 @@ describe('Settings → Taxes (V3-P4b)', () => {
       .set(...XRW)
       .send({ mode: 'country_specific', country: 'FR' });
     expect(unknownCountry.status).toBe(400);
+  });
+
+  it('omits transaction, dividend, and movement years belonging only to a vaulted portfolio', async () => {
+    const { user, agent, pid, asset } = await setup();
+    await harness.db.insert(schema.vaults).values({
+      id: VAULTED_TAX_YEARS_TEST_VECTOR.vaultId,
+      userId: user.id,
+      name: 'TEST VECTOR tax vault',
+      headerDocId: VAULTED_TAX_YEARS_TEST_VECTOR.headerDocId,
+      commonDocId: VAULTED_TAX_YEARS_TEST_VECTOR.commonDocId,
+      media: ['server'],
+      retirementProofPublicKey: VAULTED_TAX_YEARS_TEST_VECTOR.retirementProofPublicKey,
+      keyFingerprint: VAULTED_TAX_YEARS_TEST_VECTOR.keyFingerprint,
+    });
+    await harness.db.insert(schema.portfolios).values({
+      id: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+      userId: user.id,
+      name: 'TEST VECTOR locked tax stub',
+      vaultId: VAULTED_TAX_YEARS_TEST_VECTOR.vaultId,
+      vaultAlias: 'TEST VECTOR locked tax stub',
+    });
+    const [vaultedSource] = await harness.db
+      .insert(schema.portfolioCashSources)
+      .values({
+        portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+        name: 'TEST VECTOR vault cash',
+        type: 'cash',
+        isMain: true,
+      })
+      .returning();
+    if (!vaultedSource) throw new Error('Failed to seed TEST VECTOR vault cash source');
+
+    await harness.db.insert(schema.transactions).values([
+      {
+        portfolioId: pid,
+        assetId: asset.id,
+        side: 'buy',
+        quantity: '1',
+        price: '10',
+        executedAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      {
+        portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+        assetId: asset.id,
+        side: 'buy',
+        quantity: '1',
+        price: '10',
+        executedAt: new Date('1991-01-01T00:00:00.000Z'),
+      },
+    ]);
+    await harness.db.insert(schema.dividends).values({
+      portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+      assetId: asset.id,
+      cashSourceId: vaultedSource.id,
+      grossAmountEur: '10',
+      executedAt: new Date('1992-01-01T00:00:00.000Z'),
+      taxMode: 'none',
+    });
+    await harness.db.insert(schema.portfolioCashMovements).values({
+      portfolioId: VAULTED_TAX_YEARS_TEST_VECTOR.portfolioId,
+      sourceId: vaultedSource.id,
+      kind: 'tax_refund',
+      amountEur: '1',
+      taxYear: 1993,
+      executedAt: new Date('1994-01-01T00:00:00.000Z'),
+    });
+
+    const response = await agent.get('/api/v1/settings/taxes/years');
+    expect(response.status).toBe(200);
+    const parsed = taxYearChangesResponseSchema.parse(response.body);
+    expect(parsed.years.map(({ year }) => year)).toEqual([2024]);
   });
 });
 
@@ -343,6 +411,7 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
     expect(years).toEqual([
       {
         year: 2026,
+        lastChangedAt: expect.any(String),
         realizedPnlEur: 350,
         dividendsGrossEur: 0,
         taxWithheldEur: 123.75,
@@ -361,8 +430,7 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
   });
 
   it('November gain + February loss ⇒ NO offset (hard Jan-1 reset)', async () => {
-    const { user, agent, pid, asset } = await setup('country_specific');
-    await unlockYears(user.id, [2025]);
+    const { agent, pid, asset } = await setup('country_specific');
 
     await trade(agent, pid, {
       assetId: asset.id,
@@ -402,6 +470,7 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
     expect(years).toEqual([
       {
         year: 2026,
+        lastChangedAt: expect.any(String),
         realizedPnlEur: -100,
         dividendsGrossEur: 0,
         taxWithheldEur: 0,
@@ -410,9 +479,8 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
       },
       {
         year: 2025,
-        // #635: 2025 is closed-machinery; explicitly unlocked above, so the
-        // policy flag reads amendable (§16 2026-08-07).
-        locked: false,
+        lastChangedAt: expect.any(String),
+        // #1399: prior years remain live documentation and are always amendable.
         realizedPnlEur: 450,
         dividendsGrossEur: 0,
         taxWithheldEur: 123.75,
@@ -502,8 +570,7 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
   });
 
   it('backdated sells join THAT year’s pool and settle append-only', async () => {
-    const { user, agent, pid, asset } = await setup('country_specific');
-    await unlockYears(user.id, [2025]);
+    const { agent, pid, asset } = await setup('country_specific');
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1019,10 +1086,9 @@ describe('dividends land in a chosen cash source, tax-mode aware (V3-P4c)', () =
   });
 });
 
-// ─── Mode switches re-derive OPEN years (#635 live model; supersedes the ──────
-// ─── §16 2026-07-08 forward-only cutover for the current Vienna year) ─────────
+// ─── Mode switches re-derive every documented year (#1399) ───────────────────
 
-describe('mode switches re-derive open years (#635 live model)', () => {
+describe('mode switches re-derive living tax years', () => {
   it('re-taxes rows recorded under an earlier mode — the owner 2026 €0 regression', async () => {
     const { agent, pid, asset } = await setup();
     await trade(agent, pid, {
@@ -1052,12 +1118,11 @@ describe('mode switches re-derive open years (#635 live model)', () => {
     // The user-default switch heals lazily: nothing posts until a read/write.
     expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(0);
 
-    // The report read SELF-HEALS the open year: the formerly-untaxed +450
+    // The report read self-heals the year: the formerly-untaxed +450
     // re-derives under AT and withholds 27.5 % × 450 = 123.75 — the fix for
     // "2026 shows €0 net tax while prior years deduct".
     let years = await yearSummaries(agent, pid);
     expect(years[0]).toMatchObject({ year: 2026, realizedPnlEur: 450, taxNetEur: 123.75 });
-    expect(years[0]!.locked).toBeUndefined();
     let settlements = taxMovements((await cashState(agent, pid)).movements);
     expect(settlements).toHaveLength(1);
     expect(settlements[0]).toMatchObject({
@@ -1085,7 +1150,7 @@ describe('mode switches re-derive open years (#635 live model)', () => {
     years = await yearSummaries(agent, pid);
     expect(years[0]).toMatchObject({ realizedPnlEur: 550, taxNetEur: 151.25 });
 
-    // Switching back to none refunds the whole open year on the next read —
+    // Switching back to none refunds the whole year on the next read —
     // the live model is symmetric and reversible.
     const toNone = await agent
       .patch('/api/v1/settings/taxes')
@@ -1114,7 +1179,7 @@ describe('mode switches re-derive open years (#635 live model)', () => {
     expect(refunds.map((m) => m.amountEur)).toEqual([151.25]);
     expect(refunds[0]).toMatchObject({ taxYear: 2026 });
 
-    // And back to AT once more: every derivable row of the open year —
+    // And back to AT once more: every derivable row of the year —
     // including the two recorded under none — re-taxes (27.5 % × 600 = 165).
     await agent
       .patch('/api/v1/settings/taxes')
@@ -1124,9 +1189,8 @@ describe('mode switches re-derive open years (#635 live model)', () => {
     expect(years[0]).toMatchObject({ realizedPnlEur: 600, taxNetEur: 165 });
   });
 
-  it('closed years stay locked: a mode switch never re-taxes them (#635 boundary)', async () => {
-    const { user, agent, pid, asset } = await setup();
-    await unlockYears(user.id, [2024, 2025]);
+  it('mode switches re-derive past and current years alike', async () => {
+    const { agent, pid, asset } = await setup();
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1134,7 +1198,7 @@ describe('mode switches re-derive open years (#635 live model)', () => {
       price: 10,
       executedAt: '2024-06-01T10:00:00.000Z',
     });
-    // A 2025 gain recorded under none — that year is CLOSED now.
+    // A 2025 gain recorded under none.
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
@@ -1143,7 +1207,7 @@ describe('mode switches re-derive open years (#635 live model)', () => {
       executedAt: '2025-03-10T10:00:00.000Z',
       addProceedsToCash: true,
     });
-    // A 2026 gain recorded under none — the OPEN year.
+    // A 2026 gain recorded under none.
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
@@ -1158,681 +1222,199 @@ describe('mode switches re-derive open years (#635 live model)', () => {
       .set(...XRW)
       .send({ mode: 'country_specific', country: 'AT' });
 
-    // The read heals ONLY the open year: 2026's +250 withholds 68.75; the
-    // closed 2025 (+450) keeps its recording-time truth — €0, locked.
+    // Both years are living documentation under the active AT regime.
     const years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2026)).toMatchObject({
       realizedPnlEur: 250,
       taxNetEur: 68.75,
     });
-    expect(years.find((y) => y.year === 2026)!.locked).toBeUndefined();
     expect(years.find((y) => y.year === 2025)).toMatchObject({
-      locked: false,
       realizedPnlEur: 450,
-      taxNetEur: 0,
+      taxNetEur: 123.75,
     });
     const settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements).toHaveLength(1);
-    expect(settlements[0]).toMatchObject({ taxYear: 2026, amountEur: -68.75 });
+    expect(settlements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ taxYear: 2025, amountEur: -123.75 }),
+        expect.objectContaining({ taxYear: 2026, amountEur: -68.75 }),
+      ]),
+    );
   });
 });
 
-// ─── Rollover: the open-era heal locks into the closed year (#635 residue) ────
-// A year healed (or refunded) by the LIVE open-year derivation must keep that
-// state once Jan 1 closes it: post-rollover backdated mutations settle the
-// frozen components append-only and never reconcile the live corrections away.
-
-describe('healed years survive rollover (#635 residue lock)', () => {
+describe('living tax years ignore calendar rollover (#1399)', () => {
   let clock: number;
 
   beforeEach(async () => {
-    // A controlled tax clock, mid-2026; each test advances it across Jan 1.
     clock = Date.parse('2026-07-01T12:00:00.000Z');
     harness = await createTestApp({ taxNow: () => clock });
   });
 
-  it('a backdated sell after rollover keeps the healed withholding (write path)', async () => {
-    const { user, agent, pid, asset } = await setup();
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-10T10:00:00.000Z',
-    });
-    // Recorded under none (+450, untaxed), then healed live under AT.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 19,
-      executedAt: '2026-02-10T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'AT' });
-    let years = await yearSummaries(agent, pid);
-    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 123.75 });
-    const healed = taxMovements((await cashState(agent, pid)).movements);
-    expect(healed).toHaveLength(1);
-    expect(healed[0]).toMatchObject({ amountEur: -123.75, note: 'Live tax correction (AT)' });
-
-    // Jan 1 passes: 2026 closes carrying the healed state, and a read posts
-    // nothing further — the residue is locked, not drift.
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 123.75 });
-    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
-
-    // Backdating a sell into the closed year settles only its own marginal
-    // tax (27.5 % × 50 = 13.75, attached) — no refund resurrects the €0
-    // regression the heal fixed.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 25,
-      price: 12,
-      executedAt: '2026-03-10T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    const settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.filter((m) => m.kind === 'tax_refund')).toHaveLength(0);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-123.75, -13.75]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: false,
-      realizedPnlEur: 500,
-      taxNetEur: 137.5,
-    });
-  });
-
-  it('a year refunded under none while open is never re-taxed after rollover (dividend paths)', async () => {
-    const { user, agent, pid, asset } = await setup('country_specific');
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-10T10:00:00.000Z',
-    });
-    // AT-frozen +450 (withheld 123.75 attached), then refunded live under none.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 19,
-      executedAt: '2026-02-10T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'none' });
-    let years = await yearSummaries(agent, pid);
-    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 0 });
-
-    // Roll over, switch back to AT: the closed year keeps its refunded state.
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'AT' });
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 0 });
-
-    // A backdated dividend into it settles only its own marginal 27.5 % × 200
-    // = 55 (attached) — the frozen sell is NOT re-taxed (+123.75 stays out).
-    const dividend = await agent
-      .post(`/api/v1/portfolios/${pid}/dividends`)
-      .set(...XRW)
-      .send({ assetId: asset.id, grossAmountEur: 200, executedAt: '2026-06-01T10:00:00.000Z' });
-    expect(dividend.status, JSON.stringify(dividend.body)).toBe(201);
-    let settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([
-      -123.75, -55, 123.75,
-    ]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: false,
-      dividendsGrossEur: 200,
-      taxNetEur: 55,
-    });
-
-    // Deleting it restores the locked state exactly — zero correction posts.
-    const del = await agent
-      .delete(`/api/v1/portfolios/${pid}/dividends/${dividend.body.dividend.id}`)
-      .set(...XRW);
-    expect(del.status).toBe(204);
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-123.75, 123.75]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 0 });
-  });
-
-  it('a post-rollover delete reshapes the frozen component only, residue intact (delete path)', async () => {
-    const { user, agent, pid, asset } = await setup('country_specific');
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-05T10:00:00.000Z',
-    });
-    const expensiveBuy = await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 20,
-      executedAt: '2026-01-06T10:00:00.000Z',
-    });
-    // Moving-average basis 15 → +400 → 110 withheld (AT-frozen), then the
-    // whole year refunds live under none (residue −110, held €0).
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 100,
-      price: 19,
-      executedAt: '2026-02-01T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'none' });
-    let years = await yearSummaries(agent, pid);
-    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 0 });
-
-    // After rollover, deleting the €20 buy re-bases the AT-frozen sell (gain
-    // 400 → 900): the frozen component re-settles append-only to its new
-    // target MINUS the locked residue (247.50 − 110 = +137.50) — the open-era
-    // refund itself is never clawed back wholesale (pre-fix: +247.50).
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    const buyId = expensiveBuy.body.transactions[0].id as string;
-    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${buyId}`).set(...XRW);
-    expect(del.status, JSON.stringify(del.body)).toBe(204);
-    const settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-137.5, -110, 110]);
-    expect(settlements.find((m) => m.amountEur === -137.5)).toMatchObject({
-      taxYear: 2026,
-      transactionId: null,
-      note: 'Tax year correction (AT)',
-    });
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: false,
-      realizedPnlEur: 900,
-      taxNetEur: 137.5,
-    });
-  });
-
-  // Round-2 review (#656): the open era's state can live in ATTACHED joint-pool
-  // marginals, not just unattached corrections — under a nonlinear regime the
-  // frozen amounts don't decompose into standalone components, and only the
-  // ΔF/baseline lock preserves the coupling term.
-
-  it('a nonlinear open era (DE allowance sharing) survives rollover intact', async () => {
-    const { user, agent, pid, asset } = await setup();
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-10T10:00:00.000Z',
-    });
-    // Recorded under none (+450, frozen none) — under the €1,000 allowance,
-    // so switching to DE heals to a €0 target and posts NOTHING: the open-era
-    // state will sit entirely in the next sell's attached joint-pool marginal.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 19,
-      executedAt: '2026-02-10T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'DE' });
-    let years = await yearSummaries(agent, pid);
-    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 0 });
-    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(0);
-
-    // The second sell's marginal is a JOINT-pool figure: the none-frozen +450
-    // already consumed allowance, so (450 + 2900 − 1000) × 26.375 % = 619.81
-    // freezes onto the row — while the standalone DE decomposition of the
-    // year is only (2900 − 1000) × 26.375 % = 501.12 (gap: 118.69).
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 68,
-      executedAt: '2026-06-20T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    let settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements).toHaveLength(1);
-    expect(settlements[0]).toMatchObject({
-      amountEur: -619.81,
-      note: 'KapESt + Soli withheld (DE)',
-    });
-
-    // Jan 1 passes: the joint-vs-standalone gap is locked; a read posts nothing.
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 619.81 });
-    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
-
-    // A backdated dividend settles only its own standalone marginal (the
-    // allowance is exhausted on both views: 100 × 26.375 % = 26.38, attached).
-    // No unattached refund reconciles the coupling away (pre-fix: −118.69,
-    // permanently untaxing the healed gain).
-    const dividend = await agent
-      .post(`/api/v1/portfolios/${pid}/dividends`)
-      .set(...XRW)
-      .send({ assetId: asset.id, grossAmountEur: 100, executedAt: '2026-09-01T10:00:00.000Z' });
-    expect(dividend.status, JSON.stringify(dividend.body)).toBe(201);
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.filter((m) => m.kind === 'tax_refund')).toHaveLength(0);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-619.81, -26.38]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 646.19 });
-
-    // Deleting it restores the locked state exactly — zero correction posts.
-    const del = await agent
-      .delete(`/api/v1/portfolios/${pid}/dividends/${dividend.body.dividend.id}`)
-      .set(...XRW);
-    expect(del.status).toBe(204);
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur)).toEqual([-619.81]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 619.81 });
-  });
-
-  it('switching to manual closes the year in place — the coupling survives engine-row deletion', async () => {
-    const { agent, pid, asset } = await setup();
-    // The same DE joint-pool state, still mid-2026: held 619.81 (attached on
-    // the DE sell), standalone decomposition 501.12, coupling 118.69.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-10T10:00:00.000Z',
-    });
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 19,
-      executedAt: '2026-02-10T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'DE' });
-    const deSell = await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 68,
-      executedAt: '2026-06-20T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-
-    // Manual mode derives nothing, so the CURRENT year becomes closed-
-    // machinery immediately — the round-2 gap is reachable without rollover.
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'manual_per_trade' });
-    let years = await yearSummaries(agent, pid);
-    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 619.81 });
-
-    // Deleting the DE-frozen sell removes its standalone component (501.12 →
-    // 0) and cascades its attached −619.81, but the allowance the none-frozen
-    // row consumed stays locked: +118.69 re-withholds the coupling instead of
-    // the pre-fix €0 (which would evaporate the healed row's tax entirely).
-    const sellId = deSell.body.transactions[0].id as string;
-    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${sellId}`).set(...XRW);
-    expect(del.status, JSON.stringify(del.body)).toBe(204);
-    const settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur)).toEqual([-118.69]);
-    expect(settlements[0]).toMatchObject({
-      taxYear: 2026,
-      transactionId: null,
-      note: 'Tax year correction (DE)',
-    });
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
-      realizedPnlEur: 450,
-      taxNetEur: 118.69,
-    });
-  });
-
-  // Round-3 review (#656): FI mandates FIFO, so a mutation in ANOTHER closed
-  // year shifts an FI-frozen sell's lot consumption across the year boundary.
-  // The affected-years sets must pull those FI years in (as they do for DE /
-  // custom-FIFO) — otherwise the year never re-settles and the drift is later
-  // absorbed into the locked residue, permanently.
-
-  it('a mutation in an earlier closed year re-settles FI-frozen years by their ΔF (write + delete paths)', async () => {
-    const { user, agent, pid, asset } = await setup();
-    // The 2025 seeding below backdates from mid-2026 — amendment mode (§16).
-    await unlockYears(user.id, [2025]);
-    const toFi = await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'FI' });
-    expect(toFi.status).toBe(200);
-    // Two 2025 lots at different prices — the raw material for a lot shift.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2025-01-10T10:00:00.000Z',
-    });
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 20,
-      executedAt: '2025-02-10T10:00:00.000Z',
-    });
-    // Open-2026 FI sell: FIFO consumes the full €10 lot → gain 1,500 →
-    // 30 % = 450, attached.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 100,
-      price: 25,
-      executedAt: '2026-03-01T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    let settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements).toHaveLength(1);
-    expect(settlements[0]).toMatchObject({
-      amountEur: -450,
-      note: 'Capital-income tax withheld (FI)',
-    });
-
-    // Jan 1 passes: 2026 closes at 450; a read posts nothing.
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 450 });
-    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
-
-    // Backdating a sell into closed 2025 consumes 50 @ 10 first (gain 1,000 →
-    // 300 attached to the new row) and re-bases the 2026 sell to 50 @ 10 +
-    // 50 @ 20 (gain 1,500 → 1,000, FI target 450 → 300): 2026 must re-settle
-    // by its ΔF = −150 (pre-fix: no correction, and the 150 drift would later
-    // be absorbed into the locked residue as if it were open-era state).
-    const backdated = await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
-      price: 30,
-      executedAt: '2025-06-01T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-450, -300, 150]);
-    expect(settlements.find((m) => m.amountEur === 150)).toMatchObject({
-      kind: 'tax_refund',
-      taxYear: 2026,
-      transactionId: null,
-      note: 'Tax year correction (FI)',
-    });
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2025)).toMatchObject({ locked: false, taxNetEur: 300 });
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 300 });
-
-    // Deleting the 2025 sell hands the €10 lot back to the 2026 sell: its own
-    // attached 300 cascades away with the row, and 2026 re-settles by
-    // ΔF = +150 back to its original 450 (pre-fix: the deleted sell's year
-    // was the only affected year).
-    const sellId = backdated.body.transactions[0].id as string;
-    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${sellId}`).set(...XRW);
-    expect(del.status, JSON.stringify(del.body)).toBe(204);
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-450, -150, 150]);
-    expect(settlements.find((m) => m.amountEur === -150)).toMatchObject({
-      kind: 'tax_withholding',
-      taxYear: 2026,
-      transactionId: null,
-      note: 'Tax year correction (FI)',
-    });
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 450 });
-  });
-
-  // Round-4 review (#656): batch WRITES under a non-engine mode must settle
-  // engine-frozen closed-machinery years like the delete path does — a
-  // backdated trade reshapes frozen sells' gains no matter which mode records
-  // it, and a skipped settlement becomes permanent drift once the residue
-  // lock reads it as locked open-era state on the year's next touch.
-
-  it('a backdated buy recorded under none re-settles the frozen closed year by ΔF (write path)', async () => {
-    const { user, agent, pid, asset } = await setup('country_specific');
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 20,
-      executedAt: '2026-02-01T10:00:00.000Z',
-    });
-    // AT-frozen: gain 500 → 137.50 withheld, attached.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 100,
-      price: 25,
-      executedAt: '2026-03-01T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-
-    // Jan 1 passes, tracking switches off: 2026 is closed at 137.50.
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'none' });
-    let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 137.5 });
-
-    // A backdated €10 buy re-bases the frozen sell (avg 20 → 15, gain 500 →
-    // 1,000, AT target 275): the none-mode write must post the +137.50 ΔF
-    // (pre-fix: nothing, and the shortfall was permanent — held ≠
-    // decomposition read as locked residue ever after).
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-10T10:00:00.000Z',
-    });
-    let settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-137.5, -137.5]);
-    expect(settlements.find((m) => m.transactionId === null)).toMatchObject({
-      kind: 'tax_withholding',
-      taxYear: 2026,
-      note: 'Tax year correction (AT)',
-    });
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: false,
-      realizedPnlEur: 1000,
-      taxNetEur: 275,
-    });
-
-    // A subsequent touch reads residue 0 — held equals the decomposition, so
-    // the settlement is preserved: a backdated dividend under a re-armed AT
-    // settles only its own marginal (27.5 % × 200 = 55, attached), zero
-    // correction.
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'AT' });
-    const dividend = await agent
-      .post(`/api/v1/portfolios/${pid}/dividends`)
-      .set(...XRW)
-      .send({ assetId: asset.id, grossAmountEur: 200, executedAt: '2026-06-01T10:00:00.000Z' });
-    expect(dividend.status, JSON.stringify(dividend.body)).toBe(201);
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([
-      -137.5, -137.5, -55,
-    ]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 330 });
-  });
-
-  it('a backdated buy recorded under manual settles every year closed-machinery (openFrom = ∞)', async () => {
+  it('recomputes a prior year after a backdated insert and delete', async () => {
     const { agent, pid, asset } = await setup('country_specific');
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
       quantity: 100,
-      price: 20,
-      executedAt: '2026-02-01T10:00:00.000Z',
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
     });
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
       quantity: 100,
-      price: 25,
-      executedAt: '2026-03-01T10:00:00.000Z',
+      price: 20,
+      executedAt: '2026-06-10T10:00:00.000Z',
       addProceedsToCash: true,
     });
-    // Still mid-2026: manual derives nothing, so even the CURRENT year is
-    // closed-machinery — the write-path gap was reachable without rollover.
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'manual_per_trade' });
-
-    // Same reshape as under none (gain 500 → 1,000): the manual-mode write
-    // settles 2026 by ΔF = +137.50 in-year (pre-fix: nothing posted).
-    const backdatedBuy = await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 10,
-      executedAt: '2026-01-10T10:00:00.000Z',
-    });
-    let settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-137.5, -137.5]);
-    expect(settlements.find((m) => m.transactionId === null)).toMatchObject({
-      kind: 'tax_withholding',
-      taxYear: 2026,
-      note: 'Tax year correction (AT)',
-    });
-    let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
+    expect((await yearSummaries(agent, pid))[0]).toMatchObject({
+      year: 2026,
       realizedPnlEur: 1000,
       taxNetEur: 275,
     });
 
-    // Deleting the backdated buy reverses it exactly — the delete path reads
-    // residue 0 and settles ΔF = −137.50, so write and delete agree.
-    const buyId = backdatedBuy.body.transactions[0].id as string;
-    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${buyId}`).set(...XRW);
-    expect(del.status, JSON.stringify(del.body)).toBe(204);
-    settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([
-      -137.5, -137.5, 137.5,
-    ]);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({
-      realizedPnlEur: 500,
-      taxNetEur: 137.5,
-    });
-  });
-
-  it('a backdated none-mode sell shifts FI-frozen lots in another closed year (FIFO, write path)', async () => {
-    const { user, agent, pid, asset } = await setup();
-    // The 2025 seeding below backdates from mid-2026 — amendment mode (§16).
-    await unlockYears(user.id, [2025]);
-    const toFi = await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'country_specific', country: 'FI' });
-    expect(toFi.status).toBe(200);
-    await trade(agent, pid, {
+    clock = Date.parse('2027-02-01T12:00:00.000Z');
+    const inserted = await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
       quantity: 100,
-      price: 10,
-      executedAt: '2025-01-10T10:00:00.000Z',
-    });
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'buy',
-      quantity: 100,
-      price: 20,
-      executedAt: '2025-02-10T10:00:00.000Z',
-    });
-    // FIFO consumes the full €10 lot → gain 1,500 → 30 % = 450, attached.
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 100,
-      price: 25,
-      executedAt: '2026-03-01T10:00:00.000Z',
-      addProceedsToCash: true,
-    });
-    clock = Date.parse('2027-01-05T12:00:00.000Z');
-    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
-    await agent
-      .patch('/api/v1/settings/taxes')
-      .set(...XRW)
-      .send({ mode: 'none' });
-    let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 450 });
-
-    // The backdated 2025 sell is none-frozen (no engine component of its own)
-    // but consumes 50 @ 10 first, re-basing the 2026 FI sell to 50 @ 10 +
-    // 50 @ 20 (gain 1,500 → 1,000, target 450 → 300): the none-mode write
-    // must refund the ΔF = −150 (pre-fix: nothing — no engine settlement ran).
-    await trade(agent, pid, {
-      assetId: asset.id,
-      side: 'sell',
-      quantity: 50,
       price: 30,
-      executedAt: '2025-06-01T10:00:00.000Z',
-      addProceedsToCash: true,
+      executedAt: '2026-01-05T10:00:00.000Z',
     });
-    const settlements = taxMovements((await cashState(agent, pid)).movements);
-    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-450, 150]);
-    expect(settlements.find((m) => m.amountEur === 150)).toMatchObject({
-      kind: 'tax_refund',
-      taxYear: 2026,
-      transactionId: null,
-      note: 'Tax year correction (FI)',
+    expect((await yearSummaries(agent, pid))[0]).toMatchObject({
+      year: 2026,
+      realizedPnlEur: 0,
+      taxNetEur: 0,
     });
-    expect(settlements.filter((m) => m.taxYear === 2025)).toHaveLength(0);
-    years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 300 });
+
+    const deleted = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${inserted.body.transactions[0].id}`)
+      .set(...XRW);
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(204);
+    expect((await yearSummaries(agent, pid))[0]).toMatchObject({
+      year: 2026,
+      realizedPnlEur: 1000,
+      taxNetEur: 275,
+    });
   });
 });
 
-// ─── Uncovered sell (issue #369) ──────────────────────────────────────────────
+describe('living tax-year change markers (#1399)', () => {
+  const priorYear = 2024;
+  const oldMarker = new Date('2020-01-01T00:00:00.000Z');
 
-/** The held quantity of one asset from the portfolio overview (0 when closed). */
+  async function marker(agent: Agent, year: number) {
+    const response = await agent.get('/api/v1/settings/taxes/years');
+    expect(response.status).toBe(200);
+    const parsed = taxYearChangesResponseSchema.parse(response.body);
+    return parsed.years.find((entry) => entry.year === year);
+  }
+
+  async function ageMarker(userId: string, year: number) {
+    await harness.db
+      .update(schema.taxYearChanges)
+      .set({ lastChangedAt: oldMarker })
+      .where(and(eq(schema.taxYearChanges.userId, userId), eq(schema.taxYearChanges.year, year)));
+  }
+
+  it('marks prior-year create, edit, delete, cash and setting writes without touching other years', async () => {
+    const { user, agent, pid, asset } = await setup();
+    const createStartedAt = Date.now();
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 10,
+      price: 10,
+      executedAt: `${priorYear}-01-10T10:00:00.000Z`,
+    });
+    const created = await marker(agent, priorYear);
+    expect(created?.lastChangedAt).not.toBeNull();
+    expect(Date.parse(created!.lastChangedAt!)).toBeGreaterThanOrEqual(createStartedAt - 1_000);
+    expect(Date.parse(created!.lastChangedAt!)).toBeLessThanOrEqual(Date.now() + 1_000);
+
+    const sell = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 5,
+      price: 20,
+      executedAt: `${priorYear}-06-10T10:00:00.000Z`,
+    });
+
+    await ageMarker(user.id, priorYear);
+    const editStartedAt = Date.now();
+    const edited = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${sell.body.transactions[0].id}`)
+      .set(...XRW)
+      .send({ note: 'Added yesterday' });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    const afterEdit = await marker(agent, priorYear);
+    expect(Date.parse(afterEdit!.lastChangedAt!)).toBeGreaterThanOrEqual(editStartedAt - 1_000);
+    expect((await yearSummaries(agent, pid))[0]?.lastChangedAt).toBe(afterEdit!.lastChangedAt);
+
+    await ageMarker(user.id, priorYear);
+    const settingsChanged = await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'AT' });
+    expect(settingsChanged.status, JSON.stringify(settingsChanged.body)).toBe(200);
+    expect((await marker(agent, priorYear))?.lastChangedAt).not.toBe(oldMarker.toISOString());
+    expect((await yearSummaries(agent, pid)).find((year) => year.year === priorYear)).toMatchObject(
+      {
+        realizedPnlEur: 50,
+        taxNetEur: 13.75,
+      },
+    );
+
+    await ageMarker(user.id, priorYear);
+    const deposited = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 100, executedAt: `${priorYear}-08-10T10:00:00.000Z` });
+    expect(deposited.status, JSON.stringify(deposited.body)).toBe(201);
+    expect((await marker(agent, priorYear))?.lastChangedAt).not.toBe(oldMarker.toISOString());
+
+    await ageMarker(user.id, priorYear);
+    const deleted = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${sell.body.transactions[0].id}`)
+      .set(...XRW);
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(204);
+    const afterDelete = await marker(agent, priorYear);
+    expect(afterDelete?.lastChangedAt).not.toBe(oldMarker.toISOString());
+
+    const currentYear = Number(
+      new Intl.DateTimeFormat('en', { timeZone: 'Europe/Vienna', year: 'numeric' }).format(
+        new Date(),
+      ),
+    );
+    const priorMarkerBeforeCurrentWrite = afterDelete!.lastChangedAt;
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 1,
+      price: 10,
+      executedAt: `${currentYear}-07-10T10:00:00.000Z`,
+    });
+    expect((await marker(agent, priorYear))?.lastChangedAt).toBe(priorMarkerBeforeCurrentWrite);
+    expect((await marker(agent, currentYear))?.lastChangedAt).not.toBeNull();
+  });
+
+  it('leaves the removed mutation routes genuinely absent', async () => {
+    const { agent } = await setup();
+    for (const action of ['unlock', 'relock']) {
+      const response = await agent
+        .post(`/api/v1/settings/taxes/years/${priorYear}/${action}`)
+        .set(...XRW)
+        .send({ password: 'irrelevant' });
+      expect(response.status, action).toBe(404);
+    }
+  });
+});
+
 async function heldQuantity(agent: Agent, pid: string, assetId: string): Promise<number> {
-  const res = await agent.get(`/api/v1/portfolios/${pid}`);
-  expect(res.status).toBe(200);
-  const holdings = res.body.holdings as Array<{ asset: { id: string }; quantity: number }>;
-  return holdings.find((h) => h.asset.id === assetId)?.quantity ?? 0;
+  const response = await agent.get(`/api/v1/portfolios/${pid}`);
+  expect(response.status).toBe(200);
+  const holdings = response.body.holdings as Array<{ asset: { id: string }; quantity: number }>;
+  return holdings.find((holding) => holding.asset.id === assetId)?.quantity ?? 0;
 }
 
 describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
@@ -1910,6 +1492,7 @@ describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
     expect(years).toEqual([
       {
         year: 2026,
+        lastChangedAt: expect.any(String),
         realizedPnlEur: 0,
         dividendsGrossEur: 0,
         taxWithheldEur: 0,
@@ -1953,6 +1536,7 @@ describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
     expect(years).toEqual([
       {
         year: 2026,
+        lastChangedAt: expect.any(String),
         realizedPnlEur: 4000,
         dividendsGrossEur: 0,
         taxWithheldEur: 1100,

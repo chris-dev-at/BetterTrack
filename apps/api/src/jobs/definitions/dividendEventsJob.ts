@@ -15,7 +15,8 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * once per asset, and emits a `dividend.event` for each holder whose upcoming
  * ex-date falls within {@link DIVIDEND_EVENT_HORIZON_DAYS}.
  *
- * Two idempotency layers keep it "exactly once per user+asset+ex-date":
+ * Idempotency key: `(recipient_user_id, asset_id, ex_date)`. Two layers keep it
+ * exactly once for that key:
  *  1. it only emits for a holder who actually **opted in** (the type is off by
  *     default; a holder with every channel off is skipped so no dedupe marker is
  *     written that would later mask an enable), and

@@ -30,7 +30,9 @@ const ctxWith = (limit: number, firstCooldown: number): AppContext => {
       search: schedule,
       social: schedule,
       feedback: schedule,
+      feedbackThread: schedule,
       vault: schedule,
+      vaultRead: schedule,
       apiKey: schedule,
       loginIp: schedule,
       loginAccount: schedule,
@@ -52,7 +54,9 @@ const burstCtx = (): AppContext => {
       search: { windowSec: 60, limit: 60, ...ladder },
       social: { windowSec: 60 * 60, limit: 30, ...ladder },
       feedback: { windowSec: 60 * 60, limit: 5, ...ladder },
+      feedbackThread: { windowSec: 60 * 60, limit: 60, ...ladder },
       vault: { windowSec: 60, limit: 60, ...ladder },
+      vaultRead: { windowSec: 60, limit: 600, ...ladder },
       apiKey: { windowSec: 60, limit: 120, ...ladder },
       loginIp: { windowSec: 60, limit: 25, ...ladder },
       loginAccount: { windowSec: 15 * 60, limit: 10, ...ladder },
@@ -106,6 +110,29 @@ describe('progressive rate-limit middleware (§10)', () => {
       const { err } = await runOnce(general);
       expect(err).toBeUndefined();
     }
+  });
+});
+
+describe('per-vault read/write budgets (E1 review F3)', () => {
+  it('uses independent allowances, counters, and cooldowns for reads and writes', async () => {
+    const ctx = ctxWith(1, 20);
+    ctx.config.rateLimits.vaultRead = {
+      ...ctx.config.rateLimits.vaultRead,
+      limit: 2,
+    };
+    const { vault, vaultRead } = createRateLimiters(ctx);
+
+    expect((await runOnce(vault)).err).toBeUndefined();
+    expect((await runOnce(vault)).err).toBeInstanceOf(ApiError);
+
+    // Exhausting the write budget does not leak its cooldown into reads. The
+    // read guard has its own larger allowance, then trips independently.
+    expect((await runOnce(vaultRead)).err).toBeUndefined();
+    expect((await runOnce(vaultRead)).err).toBeUndefined();
+    expect((await runOnce(vaultRead)).err).toBeInstanceOf(ApiError);
+
+    expect(await redis.get(progressiveKeys('vault', '10.0.0.1').cooldown)).toBe('1');
+    expect(await redis.get(progressiveKeys('vault_read', '10.0.0.1').cooldown)).toBe('1');
   });
 });
 

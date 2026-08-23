@@ -202,6 +202,13 @@ const envSchema = z.object({
   // in production so a mid-download restart never loses a ready file.
   BT_EXPORT_DIR: z.string().optional(),
 
+  // ── Backup readiness surface (#1406 W1) ────────────────────────────────────
+  // Path to the backup scheduler's machine-readable status file, mounted
+  // READ-ONLY into the api container. Unset ⇒ the admin Overview's readiness
+  // tile reads "not configured"; the API never writes here and never runs a
+  // backup, so the worst case of a wrong path is a blank tile.
+  BT_BACKUP_STATUS_FILE: optionalNonEmpty,
+
   // ── Data retention (§13.5 V5-P14, PL-01) ─────────────────────────────────
   // Owner-adjustable retention windows for identifying operational trails.
   // Unset (or blank) uses the conservative defaults below; explicit `0` keeps
@@ -291,12 +298,37 @@ const envSchema = z.object({
     .int()
     .min(1024)
     .default(16 * 1024 * 1024),
+  // Per-portfolio vaults (docs/paranoid-design.md §3, E0 #1410): per-doc-kind
+  // envelope size caps for the per-vault doc set (header / common / one doc per
+  // member portfolio). Same ops-knob family as BT_VAULT_MAX_BYTES, which keeps
+  // capping the v1 account-singleton blob until E9 retires it. The per-doc
+  // history reuses the BT_VAULT_HISTORY_* window below (same semantics, one
+  // knob family — deliberately no second pair of history knobs).
+  BT_VAULT_MAX_BYTES_HEADER: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(1 * 1024 * 1024),
+  BT_VAULT_MAX_BYTES_COMMON: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(4 * 1024 * 1024),
+  BT_VAULT_MAX_BYTES_PORTFOLIO: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(8 * 1024 * 1024),
   BT_VAULT_HISTORY_MAX_VERSIONS: z.coerce.number().int().min(1).max(1000).default(10),
   BT_VAULT_HISTORY_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   // Dedicated modest write limiter for vault PUTs (like every other write
   // family). Per user; a generous steady-state so multi-device sync never trips.
   BT_VAULT_RATE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BT_VAULT_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+  // Vault reads have a separate, larger budget so normal sync polling cannot
+  // exhaust (or inherit a cooldown from) the mutation budget. The window stays
+  // shared with the write family; only the allowance and Redis namespace split.
+  BT_VAULT_READ_RATE_LIMIT: z.coerce.number().int().positive().default(600),
 });
 
 export type EnvSchemaKey = keyof z.infer<typeof envSchema>;
@@ -351,6 +383,8 @@ export const COMPOSE_MANAGED_ENV_KEYS = Object.freeze({
   PORT: 'The internal API port is coupled to the proxy upstream and healthcheck.',
   BT_EXPORT_DIR:
     'The durable export path is coupled to the shared named-volume mount in both containers.',
+  BT_BACKUP_STATUS_FILE:
+    'The readiness status path is coupled to the read-only backupstatus volume mounted into the api container.',
 } satisfies Partial<Record<EnvSchemaKey, string>>);
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -686,6 +720,16 @@ export interface AppConfig {
    */
   vault: {
     maxBytes: number;
+    /**
+     * Per-doc-kind envelope caps of the PER-PORTFOLIO vault doc set
+     * (docs/paranoid-design.md §3, E0 #1410); the E1 blind store enforces them
+     * at its PUT boundary. The per-doc history shares `history` below.
+     */
+    docMaxBytes: {
+      header: number;
+      common: number;
+      portfolio: number;
+    };
     history: {
       maxVersions: number;
       maxAgeMs: number;
@@ -780,6 +824,15 @@ export interface AppConfig {
     dir: string;
   };
   /**
+   * Backup readiness (#1406 W1). `statusFile` is the read-only path to the
+   * scheduler's machine-readable status file; `undefined` on a deployment
+   * without the backup sidecar, which the admin surface reports as "not
+   * configured" rather than as a failure.
+   */
+  backup: {
+    statusFile?: string;
+  };
+  /**
    * Operational data retention (§13.5 V5-P14, PL-01). Values are whole days;
    * `0` means retain forever, while an unset env uses the documented defaults.
    */
@@ -831,8 +884,12 @@ export interface AppConfig {
     social: ProgressiveSchedule;
     /** Authenticated feedback submissions, per user — five per hour (#1315). */
     feedback: ProgressiveSchedule;
+    /** Support-thread replies, per author — a conversation budget, not the capture guard (#1339). */
+    feedbackThread: ProgressiveSchedule;
     /** Paranoid vault writes, per user — a modest dedicated write budget (§13.5 V5-P13, design §4). */
     vault: ProgressiveSchedule;
+    /** Paranoid vault reads, per user — independent from the write budget and cooldown state. */
+    vaultRead: ProgressiveSchedule;
     /** Personal API key request rate, per key id (bearer requests, §6.13). */
     apiKey: ProgressiveSchedule;
     /** Login/PIN request rate, per IP. */
@@ -1048,6 +1105,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     vault: {
       maxBytes: e.BT_VAULT_MAX_BYTES,
+      // Per-doc-kind caps of the per-portfolio vault doc set (E0 #1410); the
+      // E1 blind store enforces them at its PUT boundary.
+      docMaxBytes: {
+        header: e.BT_VAULT_MAX_BYTES_HEADER,
+        common: e.BT_VAULT_MAX_BYTES_COMMON,
+        portfolio: e.BT_VAULT_MAX_BYTES_PORTFOLIO,
+      },
       history: {
         maxVersions: e.BT_VAULT_HISTORY_MAX_VERSIONS,
         maxAgeMs: e.BT_VAULT_HISTORY_MAX_AGE_DAYS * 24 * 60 * 60 * 1000,
@@ -1103,6 +1167,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
+    },
+    backup: {
+      statusFile: e.BT_BACKUP_STATUS_FILE,
     },
     retention: {
       auditDays: e.BT_AUDIT_RETENTION_DAYS,
@@ -1170,6 +1237,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         decaySec: 15 * 60,
         retainCountOnViolation: true,
       },
+      // Support-thread replies (#1339), per author — deliberately NOT the
+      // capture budget above. Replying is the workflow the thread exists for:
+      // the owner answering a queue of submissions in one sitting, and a
+      // submitter answering follow-up questions, are both normal traffic, and
+      // neither may be turned away because the other rail's five-per-hour
+      // anti-spam allowance is spent. Sized for a conversation (a message every
+      // minute, sustained, for an hour) and — again unlike capture — an
+      // exhausted counter is NOT retained, so the bounded cooldown genuinely
+      // reopens the rail. Admin callers additionally pass the router-level
+      // `admin` budget, so this one only has to be conversation-shaped.
+      feedbackThread: {
+        windowSec: 60 * 60,
+        limit: 60,
+        cooldownsSec: [60, 300, 900, 3600],
+        decaySec: 15 * 60,
+      },
       // Paranoid vault writes, per user (§13.5 V5-P13, design §4): a modest
       // dedicated write budget like every other write family. Generous enough
       // that legitimate multi-device sync never trips (default 60/min); the
@@ -1178,6 +1261,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       vault: {
         windowSec: e.BT_VAULT_RATE_WINDOW_SEC,
         limit: e.BT_VAULT_RATE_LIMIT,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
+      },
+      // Reads use their own larger allowance and Redis namespace. Reusing the
+      // vault window keeps the operator surface small while preventing sync
+      // polling from consuming the write family's budget or cooldown ladder.
+      vaultRead: {
+        windowSec: e.BT_VAULT_RATE_WINDOW_SEC,
+        limit: e.BT_VAULT_READ_RATE_LIMIT,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },

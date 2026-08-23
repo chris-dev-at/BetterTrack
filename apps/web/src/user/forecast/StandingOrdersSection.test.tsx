@@ -29,7 +29,7 @@ import {
   createMutableTestSync,
   decryptClientMoneyFixture,
 } from '../vault/engine/clientMoney.testSupport';
-import { createVaultMoneyEngine, moneyFailure } from '../vault/engine';
+import { createVaultMoneyEngine } from '../vault/engine';
 import { createParanoidAppPortfolioStore } from '../vault/engine/paranoidPortfolioStore';
 import {
   VaultMoneyEngineContext,
@@ -38,7 +38,7 @@ import {
 import { createStandingOrderMaterializationLifecycle } from '../vault/standingOrders/lifecycle';
 import type { StandingOrderMaterializationResult } from '../vault/standingOrders/materialize';
 import { standingOrderOccurrenceId } from '../vault/standingOrders/occurrenceId';
-import { createVaultPortfolioStore } from '../vault/vaultPortfolioStore';
+import { createVaultPortfolioStore, VaultPortfolioStoreError } from '../vault/vaultPortfolioStore';
 
 const PORTFOLIOS: PortfolioSummary[] = [
   {
@@ -171,6 +171,37 @@ describe('StandingOrdersSection', () => {
     expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
   });
 
+  test('logs a throwing materialization subscriber without failing its scan', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const sync = createMutableTestSync(fixture.document, fixture.header);
+    const market = createClientMoneyMarket().market;
+    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market, {
+      retryCount: 0,
+      materialize: async () => ({
+        ok: true,
+        value: { today: '2026-07-27', booked: [], deferred: [], failed: [], skipped: [] },
+      }),
+    });
+    const observerError = new Error('observer failed');
+    const healthyObserver = vi.fn();
+    lifecycle.subscribeStandingOrderMaterialization(() => {
+      throw observerError;
+    });
+    lifecycle.subscribeStandingOrderMaterialization(healthyObserver);
+    const logError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      await expect(lifecycle.onAppOpen()).resolves.toMatchObject({ ok: true });
+      expect(healthyObserver).toHaveBeenCalledOnce();
+      expect(logError).toHaveBeenCalledWith(
+        'Failed to notify standing-order materialization observer.',
+        observerError,
+      );
+    } finally {
+      logError.mockRestore();
+    }
+  });
+
   test('shows only affected vault rows after a scan and clears a quote notice after recovery', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = structuredClone(fixture.document);
@@ -182,9 +213,9 @@ describe('StandingOrdersSection', () => {
         label: 'Deferred quote',
       }),
       vaultStandingOrder(VAULT_FAILED_ID, {
-        kind: 'buy-asset',
-        assetId: CLIENT_MONEY_IDS.usdAsset,
-        label: 'Corrupt order',
+        kind: 'cash-add',
+        assetId: null,
+        label: 'Commit failure',
       }),
       vaultStandingOrder(VAULT_BOOKED_ID, { label: 'Salary' }),
       vaultStandingOrder(VAULT_PAUSED_ID, { label: 'Paused', status: 'paused' }),
@@ -216,6 +247,20 @@ describe('StandingOrdersSection', () => {
     ];
     const sync = createMutableTestSync(document, fixture.header);
     const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
+    const materializeOccurrence = store.materializeStandingOrderOccurrence.bind(store);
+    const commitOccurrence = vi
+      .spyOn(store, 'materializeStandingOrderOccurrence')
+      .mockImplementation((input, signal) => {
+        if (input.orderId === VAULT_FAILED_ID) {
+          return Promise.reject(
+            new VaultPortfolioStoreError(
+              'VAULT_DATA_INVALID',
+              'The test commit is deliberately invalid.',
+            ),
+          );
+        }
+        return materializeOccurrence(input, signal);
+      });
     const baseMarket = createClientMoneyMarket();
     let quoteRecovered = false;
     const market: MarketDataSource = {
@@ -226,9 +271,6 @@ describe('StandingOrdersSection', () => {
             'MARKET_DATA_UNSUPPORTED',
             'The test quote is deliberately unsupported.',
           );
-        }
-        if (assetId === CLIENT_MONEY_IDS.usdAsset) {
-          throw moneyFailure('VAULT_CORRUPT', 'The test order is deliberately corrupt.');
         }
         return baseMarket.market.quote(assetId, signal);
       },
@@ -263,6 +305,10 @@ describe('StandingOrdersSection', () => {
         failed: [{ orderId: VAULT_FAILED_ID, dueDate: '2026-07-27', errorCode: 'VAULT_CORRUPT' }],
       },
     });
+    expect(commitOccurrence).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: VAULT_FAILED_ID }),
+      undefined,
+    );
     renderVaultSection({ engine, sync, store });
 
     await waitFor(() =>
@@ -272,13 +318,19 @@ describe('StandingOrdersSection', () => {
     const failedRow = documentElementById(`standing-order-${VAULT_FAILED_ID}`);
     const insufficientRow = documentElementById(`standing-order-${VAULT_INSUFFICIENT_ID}`);
     expect(
-      within(deferredRow).getByText('Not booked — quote unavailable since 01.07.2026'),
+      within(deferredRow).getByText(
+        'Not booked — quote unavailable — oldest missed booking due since 01.07.2026',
+      ),
     ).toBeInTheDocument();
+    const failedNotice = within(failedRow).getByText(
+      'Not booked — booking error — oldest missed booking due since 01.07.2026',
+    );
+    expect(failedNotice).toHaveClass('bt-neg');
+    expect(failedNotice).not.toHaveClass('bt-gold-note');
     expect(
-      within(failedRow).getByText('Not booked — booking error since 01.07.2026'),
-    ).toBeInTheDocument();
-    expect(
-      within(insufficientRow).getByText('Not booked — insufficient cash since 23.07.2026'),
+      within(insufficientRow).getByText(
+        'Not booked — insufficient cash — oldest missed booking due since 23.07.2026',
+      ),
     ).toBeInTheDocument();
 
     for (const orderId of [VAULT_BOOKED_ID, VAULT_PAUSED_ID, VAULT_FUTURE_ID]) {
@@ -300,9 +352,13 @@ describe('StandingOrdersSection', () => {
     await waitFor(() =>
       expect(within(deferredRow).queryByText(/^Not booked/)).not.toBeInTheDocument(),
     );
-    expect(within(failedRow).getByText(/^Not booked — booking error/)).toBeInTheDocument();
     expect(
-      within(insufficientRow).getByText('Not booked — insufficient cash since 23.07.2026'),
+      within(failedRow).getByText(/^Not booked — booking error — oldest missed booking due since/),
+    ).toBeInTheDocument();
+    expect(
+      within(insufficientRow).getByText(
+        'Not booked — insufficient cash — oldest missed booking due since 23.07.2026',
+      ),
     ).toBeInTheDocument();
   });
 
@@ -385,7 +441,9 @@ describe('StandingOrdersSection', () => {
     });
 
     expect(
-      within(row).getByText('Not booked — booking error since 01.07.2026'),
+      within(row).getByText(
+        'Not booked — booking error — oldest missed booking due since 01.07.2026',
+      ),
     ).toBeInTheDocument();
   });
 

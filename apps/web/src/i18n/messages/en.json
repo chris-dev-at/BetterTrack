@@ -341,7 +341,8 @@
         "mirrorchain:read": "View your group portfolios, members, activity and invitations",
         "mirrorchain:write": "Accept or decline group invitations and leave group portfolios",
         "vault:sync": "Synchronize your client-encrypted vault across your devices",
-        "feedback:write": "Send feedback, feature requests and bug reports on your behalf"
+        "feedback:write": "Send feedback, feature requests and bug reports on your behalf",
+        "feedback:read": "View your feedback submissions and their status"
       },
       "module": {
         "portfolio": {
@@ -390,7 +391,7 @@
         },
         "feedback": {
           "label": "Feedback",
-          "description": "Send feature requests, bug reports and other feedback on your behalf. Feedback is write-only in v1."
+          "description": "View your feedback submissions and their status, or send feature requests, bug reports and other feedback on your behalf."
         }
       }
     }
@@ -468,9 +469,38 @@
       "subtitle": "Everything linking BetterTrack to the outside — sign-in, encrypted storage, and compact connector controls.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
+      "driveAccounts": {
+        "title": "Google Drive connections",
+        "empty": "No Drive account is connected yet.",
+        "addFirst": "Connect a Drive account",
+        "add": "Connect another Drive account",
+        "connected": "Ready",
+        "needsSignIn": "Sign-in needed",
+        "revoked": "Access revoked",
+        "signIn": "Sign in to Google ({{email}}) to sync",
+        "signInNew": "Sign in to Google and allow access to connect an account.",
+        "disconnect": "Disconnect",
+        "unbound": "No vault uses this connection.",
+        "boundVaults": "Used by: {{vaults}}",
+        "loadError": "Drive connections could not be loaded.",
+        "added": "Drive account connected.",
+        "verified": "Drive access verified.",
+        "disconnected": "Drive account disconnected. Its files remain in Google Drive.",
+        "acknowledge": "Vaults still use this connection. Disconnecting now removes their Drive binding and keeps each verified server copy exactly as it is — any change that reached Drive but not the server stays behind. The encrypted files remain your property in Google Drive.",
+        "acknowledgeAction": "Disconnect and leave files in Drive",
+        "lastMedium": "A vault using this connection has no verified server copy, so Drive holds its only copy. Choosing the server medium is not enough — that vault must finish a verified server copy, or move to another Drive account, before you disconnect.",
+        "error": "The Drive connection could not be changed.",
+        "bindings": "Vault Drive bindings",
+        "moveTarget": "Move {{vault}} to Drive account",
+        "choose": "Choose Drive account",
+        "move": "Move",
+        "moved": "The vault was verified in the new Drive account and moved.",
+        "moveCleanupFailed": "The vault moved, but the old Drive copy could not be deleted. It remains in the previous account.",
+        "moveError": "The vault stayed on its current Drive account because the new copy could not be verified."
+      },
       "drive": {
-        "title": "Google Drive app data",
-        "description": "Keep your encrypted paranoid vault in your private Drive app-data folder. BetterTrack cannot access ordinary Drive files.",
+        "title": "Google Drive vault storage",
+        "description": "Encrypted files live in the visible BetterTrack Vaults folder. BetterTrack can access only files it created, never the rest of your Drive.",
         "status": {
           "connected": "Connected",
           "needsSignIn": "Needs sign-in",
@@ -485,16 +515,16 @@
         "passphraseLabel": "Vault passphrase",
         "unlockAndContinue": "Unlock and continue",
         "unlockError": "The vault could not be unlocked from an authenticated encrypted copy.",
-        "configMissing": "Google Drive app-data storage is not configured on this deployment.",
+        "configMissing": "Google Drive vault storage is not configured on this deployment.",
         "lastMedium": "Drive is your only vault medium, so it cannot be disconnected.",
-        "connectedNotice": "Google Drive app-data storage connected.",
-        "disconnectedNotice": "Google Drive app-data storage disconnected.",
-        "leftover": "Drive was disconnected, but Google could not delete the leftover ciphertext. It remains only in your own app-data folder.",
+        "connectedNotice": "Google Drive vault storage connected.",
+        "disconnectedNotice": "Google Drive vault storage disconnected.",
+        "leftover": "Drive was disconnected, but Google could not delete the leftover ciphertext. It remains in your BetterTrack Vaults folder.",
         "leftoverSyncPending": "Drive was disconnected and the storage choice was saved, but Google could not delete the leftover ciphertext and synchronization still needs attention.",
         "syncPending": "The storage choice was saved, but synchronization still needs attention. BetterTrack will retry from the encrypted pending copy.",
         "actionError": "The storage change was cancelled because a verified copy could not be completed.",
         "syncRequired": "Your latest encrypted changes are not on every selected medium yet, so the storage choice was left unchanged. Try again once synchronization has finished.",
-        "unreadableLeftover": "A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the BetterTrack app data in your Google account, then try again.",
+        "unreadableLeftover": "A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the affected encrypted file from BetterTrack Vaults, then try again.",
         "loadError": "Drive storage status could not be loaded.",
         "purgedNotice": "The retained server recovery copy was deleted.",
         "purgeError": "The retained server copy was not deleted. The recovery window or read-back proof may not be ready.",
@@ -570,6 +600,12 @@
         },
         "chatMessage": {
           "label": "Chat messages"
+        },
+        "feedbackStatusChanged": {
+          "label": "Feedback status changes"
+        },
+        "feedbackReplyCreated": {
+          "label": "Feedback replies"
         },
         "watchlistShared": {
           "label": "Shared watchlists"
@@ -684,6 +720,7 @@
         "budgets": "Budgets",
         "markets": "Markets",
         "mirrorchain": "Group portfolios",
+        "feedback": "Feedback",
         "account": "Account"
       },
       "grid": {
@@ -1016,7 +1053,9 @@
           "mirrorRemoved": "Removed from a group portfolio",
           "mirrorOwnershipTransferred": "Group portfolio ownership transferred",
           "mirrorChainDissolved": "Group portfolio dissolved",
-          "mirrorSyncStalled": "Group portfolio sync stalled"
+          "mirrorSyncStalled": "Group portfolio sync stalled",
+          "feedbackStatusChanged": "Feedback status changed",
+          "feedbackReplyCreated": "New feedback reply"
         }
       },
       "scope": {
@@ -1147,14 +1186,15 @@
         "registeredOn": "Registered {{createdAt}}"
       },
       "grants": {
-        "sectionDescription": "Third-party apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
+        "sectionDescription": "Apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
         "loadError": {
           "title": "Couldn't load your authorized apps"
         },
         "empty": {
           "title": "No authorized apps"
         },
-        "canAccess": "{{appName}} can:",
+        "canAccess": " can:",
+        "firstPartyBadge": "BetterTrack app",
         "authorizedLastUsed": "Authorized {{createdAt}} · last used {{lastUsedAt}}",
         "authorizedNeverUsed": "Authorized {{createdAt}} · never used",
         "revokeAccess": "Revoke access"
@@ -1337,6 +1377,7 @@
     }
   },
   "portfolio": {
+    "vaultedPortfolioUnavailable": "This feature is unavailable for a locked vault portfolio. Choose a plain portfolio instead.",
     "sourceTag": {
       "importFrom": "Imported · {{source}}",
       "syncFrom": "Synced · {{source}}",
@@ -1680,26 +1721,7 @@
       },
       "expandYear": "Show {{year}} details",
       "collapseYear": "Hide {{year}} details",
-      "locked": "Locked",
-      "lockedHint": "This tax year has ended and is locked: entries dated into it are refused, so its settled taxes can no longer change. Unlock it to record an amendment.",
-      "unlocked": "Unlocked for amendments",
-      "unlockedHint": "You unlocked this passed year: backdated entries are accepted and change its settled taxes until you re-lock it.",
-      "unlockAction": "Unlock…",
-      "relockAction": "Re-lock",
-      "relockYearAction": "Re-lock {{year}}",
-      "unlockedBannerOne": "Tax year {{year}} is unlocked for amendments — re-lock it when you are done.",
-      "unlockedBannerOther": "Tax years {{years}} are unlocked for amendments — re-lock them when you are done.",
-      "unlockSuccess": "Tax year {{year}} unlocked for amendments.",
-      "relockSuccess": "Tax year {{year}} locked again.",
-      "unlockDialog": {
-        "title": "Unlock tax year {{year}}",
-        "description": "Amending a passed year is an explicit step — confirm it with your password.",
-        "consequence": "While {{year}} is unlocked, entries dated into it change its settled taxes — corrections are recorded as separate movements, nothing is rewritten. The year stays amendable until you re-lock it.",
-        "passwordLabel": "Your password",
-        "confirm": "Unlock {{year}}",
-        "wrongPassword": "That password is incorrect.",
-        "throttled": "Too many attempts. Please wait a moment and try again."
-      },
+      "lastEdited": "Last edited {{date}}",
       "realized": "Realized",
       "tax": "Tax",
       "sell": {
@@ -2168,6 +2190,8 @@
         "editDefault": "Edit the account default →",
         "loadError": "Couldn’t load this portfolio’s tax mode."
       },
+      "vaultHeading": "Private vault",
+      "vaultHint": "Move this portfolio into one of your encrypted vaults. Its money data stops being readable by the server, and its existing shares are revoked for good.",
       "groupHeading": "Group portfolio",
       "groupHint": "Share this portfolio with friends — everyone edits the same book.",
       "groupActive": "{{name}} · {{count}} members",
@@ -2747,9 +2771,9 @@
         "nextRun": "Next run: {{date}}",
         "noNextRun": "No next run scheduled.",
         "endsOn": "Ends {{date}}",
-        "notBookedQuoteUnavailable": "Not booked — quote unavailable since {{date}}",
-        "notBookedInsufficientCash": "Not booked — insufficient cash since {{date}}",
-        "notBookedFailed": "Not booked — booking error since {{date}}",
+        "notBookedQuoteUnavailable": "Not booked — quote unavailable — oldest missed booking due since {{date}}",
+        "notBookedInsufficientCash": "Not booked — insufficient cash — oldest missed booking due since {{date}}",
+        "notBookedFailed": "Not booked — booking error — oldest missed booking due since {{date}}",
         "pause": "Pause",
         "pausing": "Pausing…",
         "resume": "Resume",
@@ -3590,6 +3614,190 @@
     "lock": {
       "action": "Lock vault"
     },
+    "manager": {
+      "title": "Vaults",
+      "subtitle": "Keep separate encrypted vaults and choose which portfolios belong to each one.",
+      "create": "Create vault",
+      "empty": "No vaults yet. Create one when you want a client-encrypted home for a portfolio.",
+      "loadError": "Vaults could not be loaded.",
+      "connectionsError": "Drive connections could not be loaded. Server storage remains available.",
+      "portfoliosError": "Vault membership could not be loaded. No portfolio action is available until retry succeeds.",
+      "listLabel": "Your vaults",
+      "nameLabel": "Vault name",
+      "boundDrive": "Drive: {{connection}}",
+      "boundDriveUnavailable": "connection details unavailable",
+      "renameError": "The vault could not be renamed.",
+      "portfolios": "Portfolios in this vault",
+      "noPortfolios": "No portfolios in this vault yet.",
+      "deleteWarning": "Move every portfolio out first. Deleting an empty vault permanently removes its encrypted copies.",
+      "deleteAction": "Delete empty vault",
+      "deleteReferenced": "This vault still contains a portfolio. Move every portfolio out before deleting it.",
+      "deleteError": "The vault could not be deleted. Nothing changed.",
+      "deferred": {
+        "rotate": "Rotating the recovery words isn’t available yet: it needs a verified round trip on every storage this vault uses. Until then this vault and its words stay exactly as they are.",
+        "startFresh": "Starting fresh isn’t available yet: discarding a vault’s encrypted copies needs the same verified storage round trip. To remove a vault today, move its portfolios out and delete it.",
+        "scanQr": "Scanning a transfer QR isn’t available yet. Enter the 12 words on this device instead.",
+        "restore": "Choosing an older encrypted copy isn’t available yet. Every copy is kept — none is discarded — and this vault’s current copy stays usable."
+      },
+      "explainer": {
+        "names": "Vault names and storage settings stay readable so BetterTrack can show and route them while locked.",
+        "storage": "Portfolio contents are encrypted in your browser before they reach the selected storage.",
+        "privacy": "Each portfolio belongs to at most one vault; unlocking one does not unlock the others."
+      },
+      "media": {
+        "server": "Encrypted on BetterTrack",
+        "drive": "Google Drive only",
+        "both": "BetterTrack + Google Drive"
+      },
+      "state": {
+        "locked": "Locked on this device",
+        "ready": "Ready on this device",
+        "notOnEndpoint": "Words needed on this device",
+        "invalidEndpoint": "Device storage needs a reset"
+      },
+      "action": {
+        "unlock": "Unlock",
+        "open": "Open",
+        "providePhrase": "Enter words",
+        "scanQr": "Scan QR",
+        "resetEndpoint": "Reset this device",
+        "rename": "Rename",
+        "changeMedia": "Change storage",
+        "rotate": "Rotate recovery words",
+        "startFresh": "Start fresh"
+      },
+      "access": {
+        "title": "{{name}} access",
+        "unlock": "Enter this device password. Forgetting it loses nothing if you still have your 12 words.",
+        "open": "Open the stored words on this device without another prompt.",
+        "opening": "Opening this vault on this device…",
+        "provide-phrase": "Enter the 12 words or scan them from another device. A lost phone loses nothing when another phrase copy exists.",
+        "scan-qr": "Scan the transfer QR from an already unlocked device.",
+        "restore": "Choose among the authenticated current and bounded history copies. Damaged copies stay visible for diagnosis.",
+        "restoreLoadError": "Restore copies could not be loaded.",
+        "reset-endpoint": "Reset this device’s stored custody. It clears the stored words for every vault on this device, not just this one, so each will ask for its 12 words again here. Server and Drive ciphertext stay untouched.",
+        "rotate": "Rotation replaces the recovery words after every selected copy passes a verified round trip.",
+        "start-fresh": "Starting fresh permanently discards this vault’s encrypted contents. Other vaults and account data stay unchanged.",
+        "unknownAction": "This link asks for a vault step that does not exist. Nothing was changed — continue with this vault’s current step below.",
+        "devicePassword": "Device password",
+        "newDevicePassword": "New device password",
+        "words": "12 recovery words",
+        "resetConfirm": "Remove the stored vault words for every vault on this device. My remote encrypted copies stay unchanged.",
+        "startFreshConfirm": "I understand this is destruction, not recovery, and permanently deletes this vault’s encrypted data.",
+        "error": "That action could not be completed. The vault remains unchanged.",
+        "action": "Continue"
+      }
+    },
+    "creation": {
+      "title": "Create a vault",
+      "step": "Step {{current}} of {{total}}",
+      "steps": {
+        "1": "Name",
+        "2": "Storage",
+        "3": "Recovery words",
+        "4": "Verify one word",
+        "5": "Keep the words safe",
+        "6": "This device"
+      },
+      "nameLabel": "Vault name",
+      "media": {
+        "server": "Encrypted documents stay on BetterTrack.",
+        "drive": "Encrypted documents stay only in the selected Drive.",
+        "both": "Keep verified encrypted copies in both places.",
+        "driveSoon": "Drive storage for a new vault isn’t available yet — choose BetterTrack for now."
+      },
+      "driveConnectionLabel": "Google Drive connection",
+      "driveConnectionPlaceholder": "Choose a Drive account",
+      "wordsHint": "Write these 12 words down in order. BetterTrack cannot recover or reset them.",
+      "wordsStored": "I stored the words",
+      "verifyLabel": "Word {{word}}",
+      "verifyWrong": "That word does not match. Check your copy and try again; your phrase is still here.",
+      "verifyAction": "Verify word",
+      "lossContrast": "Forgetting this device password loses nothing: enter the 12 words again. Losing this phone loses nothing when you still have a phrase copy.",
+      "lossAcknowledgment": "I understand that losing every copy of the 12 words permanently loses this vault’s data.",
+      "custody": {
+        "wrapped": "Protect the words with a device password",
+        "wrappedHint": "Recommended. The password wraps the phrase stored on this browser; it does not replace the 12 words.",
+        "plainOption": "Advanced device custody",
+        "plain": "Store the words unwrapped on this device",
+        "plainWarning": "Anyone who can read this browser’s local storage could open the vault.",
+        "plainAcknowledgment": "I accept the extra risk of storing the phrase unwrapped on this device."
+      },
+      "devicePassword": "Device password",
+      "error": "The vault could not be created. No recovery step was skipped; try again.",
+      "errorIncomplete": "The vault “{{name}}” was created but its setup did not finish, so it is empty and unusable. Creating again would add a second vault — delete “{{name}}” in the list below first. Your 12 words belong to that unfinished vault only.",
+      "creating": "Creating vault…",
+      "create": "Create vault"
+    },
+    "lockedStub": {
+      "fallbackAlias": "Locked portfolio",
+      "subtitle": "This portfolio belongs to an encrypted vault.",
+      "badge": "Locked",
+      "body": "Unlock only its vault to view balances, activity, and tools.",
+      "countOne": "1 locked portfolio",
+      "count": "{{count}} locked portfolios"
+    },
+    "restorePicker": {
+      "hint": "Choose any authenticated current or history copy. Corrupt candidates remain visible for diagnosis but cannot replace the active vault.",
+      "empty": "No restore candidates were found.",
+      "source": {
+        "server-history": "BetterTrack history",
+        "current-server": "Current BetterTrack copy",
+        "quarantined-local": "Quarantined local copy",
+        "unknown": "Vault copy"
+      },
+      "status": {
+        "available": "Available",
+        "corrupt": "Corrupt — cannot restore",
+        "unreadable": "Unreadable — cannot restore",
+        "unsupported": "Needs a newer app"
+      },
+      "error": "That copy could not be restored. The current vault stays unchanged.",
+      "action": "Restore selected copy",
+      "restoring": "Restoring…"
+    },
+    "portfolioMove": {
+      "subject": "{{portfolio}} · {{vault}}",
+      "targetLabel": "Target vault",
+      "targetPlaceholder": "Choose a vault",
+      "targetStateError": "The target vault’s state on this device could not be read.",
+      "credentialKind": "Confirmation method",
+      "credentialValue": "Account confirmation",
+      "credential": {
+        "password": "Account password",
+        "code": "Authenticator code",
+        "recoveryCode": "Recovery code"
+      },
+      "precondition": {
+        "mirrorchain": "Leave or dissolve this portfolio’s active group before moving it.",
+        "mirrorchainFix": "Open group settings",
+        "import": "Finish or cancel the pending import before moving this portfolio.",
+        "importFix": "Open imports",
+        "export": "Wait for the account export to finish before moving this portfolio.",
+        "exportFix": "Open account export",
+        "vaultLocked": "Open the target vault on this device before moving a portfolio into it.",
+        "captureUnavailable": "This version can’t prepare the portfolio’s encrypted copy on this device yet, so no move can start. Nothing about this portfolio changes."
+      },
+      "stepUpHint": "Confirm with your BetterTrack account password, a current authenticator code, or a recovery code.",
+      "moveIn": {
+        "title": "Move portfolio into a vault",
+        "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares. Those shares are not restored if you move it out later.",
+        "action": "Move into vault",
+        "working": "Moving portfolio into the vault…",
+        "done": "The portfolio is encrypted in the vault and locked on the server.",
+        "error": "The portfolio was not moved. Its server data is unchanged."
+      },
+      "moveOut": {
+        "title": "Move portfolio out of the vault",
+        "unlockRequired": "Unlock this vault on this device before moving the portfolio out.",
+        "warning": "Moving this portfolio out makes it server-readable again. BetterTrack restores its decrypted money data under the same portfolio ID; previous shares stay revoked.",
+        "confirm": "I understand that this portfolio becomes server-readable again.",
+        "action": "Restore as a normal portfolio",
+        "working": "Restoring the portfolio…",
+        "done": "The portfolio is restored under the same ID and is server-readable again.",
+        "error": "The portfolio could not be restored completely. It remains locked in the vault; retry resumes the same move."
+      }
+    },
     "enable": {
       "title": "Enable Paranoid mode",
       "step": "Step {{current}} of {{total}}",
@@ -3740,6 +3948,118 @@
       "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"
+      },
+      "aggregate": {
+        "synced": "All synced ✓",
+        "syncing": "Syncing",
+        "lockedOne": "Locked (1)",
+        "locked": "Locked ({{count}})",
+        "attention": "Attention: {{name}}",
+        "signInGoogle": "Sign in to Google",
+        "openRestore": "Choose a restore copy",
+        "row": {
+          "synced": "Encrypted copies are current",
+          "syncing": "Encrypted changes are syncing",
+          "locked": "Unlock or provide the recovery words on this device",
+          "attention": "Storage needs attention"
+        },
+        "rowState": {
+          "synced": "Synced",
+          "syncing": "Syncing",
+          "locked": "Locked",
+          "attention": "Needs attention"
+        }
+      }
+    },
+    "transfer": {
+      "manualWords": "Show 12 words instead",
+      "manualEntry": "Enter 12 words instead",
+      "reset": {
+        "forgot": "Forgot the password?",
+        "explain": "Resetting removes only the seed phrases stored in this browser — no vault data is lost, the encrypted copies on the server and in Google Drive stay untouched, and you can use the vault here again by entering its 12 words or scanning a transfer code from another device.",
+        "action": "Remove the phrases stored on this device",
+        "working": "Removing…",
+        "done": "The stored phrases were removed from this device. Enter the 12 words or scan a transfer code from another device to use this vault here again.",
+        "error": "The stored phrases could not be removed. Please try again."
+      },
+      "settings": {
+        "title": "Transfer between devices",
+        "hint": "Show a 60-second transfer code for a live vault, or verify one from another device.",
+        "receive": "Receive transferred vault",
+        "loading": "Loading transferable vaults…",
+        "empty": "No transferable vault is registered for this account yet.",
+        "unavailable": "Vault details could not be loaded. You can still receive with a transfer code.",
+        "received": "The transferred vault was verified and saved on this device.",
+        "opening": "Opening the local vault session…",
+        "notOnEndpoint": "This vault’s phrase is not stored on this device. Receive it from another device first.",
+        "openError": "This vault could not be opened for transfer right now.",
+        "sessionEnded": "The vault session was locked. Reopen it before transferring.",
+        "reopen": "Reopen for transfer",
+        "unlockHint": "Unlocks the endpoint phrase before the transfer step-up.",
+        "unlock": "Unlock for transfer",
+        "unlockError": "The device password could not unlock this endpoint."
+      },
+      "sender": {
+        "showQr": "Show transfer QR",
+        "title": "Transfer this vault",
+        "checking": "Checking the live vault session…",
+        "passwordHint": "Showing the phrase is a step-up action. Re-enter this endpoint’s device password; the approval lasts for at most 60 seconds.",
+        "devicePassword": "Device password",
+        "verifyAndShowQr": "Verify and show QR",
+        "verifyAndShowWords": "Verify and show words",
+        "banner": "Anyone who captures this code owns this vault — no screenshots, no screen sharing, mind who can see your screen.",
+        "qrAria": "Vault seed-phrase transfer QR code",
+        "vaultId": "Vault ID",
+        "expires": "This code blanks automatically after 60 seconds.",
+        "expired": "This transfer code expired and is now blank. Show it again manually.",
+        "showAgain": "Show again",
+        "errors": {
+          "unlockRequired": "Unlock and open this vault on this device before showing its transfer code.",
+          "password": "The device password could not be verified. The transfer code remains hidden.",
+          "lockedOut": "Too many wrong device passwords. This device accepts the password again at {{time}}; the transfer code was not shown. Wait, or reset the phrases stored on this device below.",
+          "payload": "The transfer code could not be created. Close this screen and try again."
+        }
+      },
+      "receiver": {
+        "title": "Open a transferred vault",
+        "intro": "Scan or paste one transfer code, or enter the 12 words manually. BetterTrack verifies the encrypted vault before saving anything on this device.",
+        "method": "Phrase transfer method",
+        "scanPaste": "Scan or paste code",
+        "payload": "Transfer code",
+        "payloadHint": "Paste the complete value beginning with btvault1:.",
+        "mnemonic": "12-word seed phrase",
+        "mnemonicHint": "Enter the English words in order, separated by spaces.",
+        "vaultId": "Vault ID",
+        "nameOptional": "Vault name (optional)",
+        "fingerprintOptional": "Key fingerprint (optional)",
+        "checked": "The phrase and transfer format are valid",
+        "vaultName": "Vault name",
+        "custody": "Protection on this device",
+        "wrapped": "Protect with a device password",
+        "wrappedHint": "Recommended and selected by default. The phrase is encrypted before this endpoint stores it.",
+        "plain": "Store without password wrapping",
+        "plainHint": "Advanced recovery option with weaker protection on this browser profile.",
+        "devicePassword": "Device password",
+        "devicePasswordHint": "Set or enter this endpoint’s password. It never leaves this device.",
+        "plainWarning": "Without password wrapping, anyone who can access this browser profile may recover the seed phrase and own the vault.",
+        "plainAcknowledgment": "I understand the weaker protection and want plain custody for this vault.",
+        "verifying": "Verifying vault…",
+        "open": "Verify and open vault",
+        "back": "Back",
+        "errors": {
+          "updateRequired": "This transfer code uses an unsupported version. Update the app before trying again.",
+          "missingMnemonic": "The transfer code has no seed phrase and was rejected.",
+          "missingVaultId": "The transfer code has no vault ID and was rejected.",
+          "invalidMnemonic": "The seed phrase must be 12 valid English BIP39 words with a valid checksum.",
+          "invalidVaultId": "The transfer code contains an invalid vault ID.",
+          "invalidName": "The vault-name hint is longer than 64 characters.",
+          "invalidFingerprint": "The transfer code contains an invalid key fingerprint.",
+          "verification": "The phrase did not open the authenticated vault header. Nothing was saved on this device.",
+          "password": "That device password is incorrect. Nothing was saved on this device.",
+          "passwordLocked": "Device-password verification is temporarily locked. Wait before trying again; nothing was saved on this device.",
+          "devicePasswordInvalid": "The device password must be at least {{min}} characters long. Nothing was saved on this device.",
+          "operation": "The vault could not be opened or saved right now. Nothing was saved on this device; check the connection and try again."
+        }
       }
     },
     "settings": {
@@ -3966,9 +4286,13 @@
       "audit": "Audit log",
       "sections": {
         "people": "People",
-        "configuration": "Configuration",
-        "diagnostics": "Diagnostics"
-      }
+        "overview": "Overview",
+        "support": "Support",
+        "operations": "Operations",
+        "product": "Product & Comms",
+        "securityApi": "Security & API"
+      },
+      "registration": "Registration"
     },
     "settings": {
       "title": "Settings",
@@ -3997,7 +4321,9 @@
             "title": "Open",
             "description": "Automatic registration — anyone can create an account and sign straight in."
           }
-        }
+        },
+        "manageLead": "The queue and access tokens for this mode live in the People workspace.",
+        "manageLink": "Open Registration"
       },
       "features": {
         "title": "Feature toggles",
@@ -4118,6 +4444,8 @@
         "alertTriggered": "alert.triggered",
         "earningsReminder": "earnings.reminder",
         "chatMessage": "chat.message",
+        "feedbackStatusChanged": "feedback.status_changed",
+        "feedbackReplyCreated": "feedback.reply_created",
         "watchlistShared": "watchlist.shared",
         "conglomerateShared": "conglomerate.shared",
         "friendActivity": "friend.activity",
@@ -4467,12 +4795,15 @@
     },
     "feedback": {
       "title": "Feedback",
-      "subtitle": "Feature requests first, followed by bugs and other submissions.",
+      "subtitle": "Feature ideas, bugs, help requests, improvements, and other submissions.",
       "refresh": "Refresh",
       "loading": "Loading feedback…",
       "loadError": "Could not load feedback.",
       "actionError": "Could not update the feedback status.",
       "empty": "No feedback yet.",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "archived": "Archived",
       "filters": {
         "category": "Category",
         "sort": "Sort",
@@ -4483,16 +4814,22 @@
         "newest": "Newest first"
       },
       "category": {
-        "feature": "Feature/change",
+        "feature": "Feature idea",
         "bug": "Bug",
-        "other": "Other"
+        "other": "Other",
+        "help": "Need help",
+        "improvement": "Improvement"
       },
       "status": {
         "new": "New",
         "triaged": "Triaged",
-        "done": "Done"
+        "working_on_it": "Working on it",
+        "saved_as_future_idea": "Saved as a future idea",
+        "declined": "Declined",
+        "shipped": "Shipped"
       },
       "statusControl": "Status for feedback from {{user}}",
+      "deletedByUser": "Deleted by user",
       "fields": {
         "status": "Status",
         "message": "Message",
@@ -4608,6 +4945,168 @@
       },
       "loadMore": "Load more",
       "loadingMore": "Loading…"
+    },
+    "palette": {
+      "trigger": "Search or jump to…",
+      "shortcut": "⌘K",
+      "title": "Admin command palette",
+      "inputAria": "Search pages, users and problems",
+      "placeholder": "Search pages, users, problems…",
+      "resultsAria": "Search results",
+      "groups": {
+        "pages": "Pages",
+        "people": "People",
+        "problems": "Open problems"
+      },
+      "verb": {
+        "page": "Page",
+        "user": "User",
+        "disabled": "Disabled"
+      },
+      "searching": "Searching…",
+      "noUsers": "No matching users.",
+      "noProblems": "No matching open problems.",
+      "usersError": "Could not search users.",
+      "problemsError": "Could not load problems.",
+      "noResults": "Nothing matches “{{query}}”.",
+      "navigateHint": "↑ ↓ to move",
+      "openHint": "↵ to open",
+      "scopeNote": "Navigation only — nothing here changes data."
+    },
+    "overview": {
+      "title": "Overview",
+      "subtitle": "What needs an operator, then the state of everything else.",
+      "refresh": "Refresh",
+      "severity": {
+        "critical": "Critical",
+        "warn": "Attention",
+        "info": "Waiting"
+      },
+      "attention": {
+        "title": "Needs your attention",
+        "allClear": "All clear — nothing is waiting for you.",
+        "unknown": "The attention checks could not be read. Refresh to try again.",
+        "partial": "Some checks could not be read, so this list may be incomplete.",
+        "registrations": {
+          "title": "Registration requests",
+          "detail": "Applicants waiting for approval or rejection.",
+          "unit": "pending"
+        },
+        "problems": {
+          "title": "Open problems",
+          "detail": "Captured errors, failed jobs and provider failures.",
+          "unit": "open"
+        },
+        "component": {
+          "title": "{{component}} is not healthy"
+        },
+        "heartbeat": {
+          "title": "Job system heartbeat"
+        },
+        "queueFailed": {
+          "title": "Failed jobs in the queues",
+          "detail": "Jobs that exhausted their retries.",
+          "unit": "failed"
+        },
+        "queueBacklog": {
+          "title": "Queue backlog",
+          "detail": "Waiting jobs are piling up.",
+          "unit": "waiting"
+        },
+        "smtp": {
+          "title": "Outbound email is off",
+          "detail": "SMTP is not configured, so no account mail is delivered."
+        },
+        "backup": {
+          "title": "Backup readiness"
+        },
+        "countOne": "1 item",
+        "countOther": "{{count}} items"
+      },
+      "tiles": {
+        "title": "At a glance",
+        "users": "Accounts",
+        "usersFoot": "{{active}} active · {{disabled}} disabled",
+        "activeUsers": "Active users",
+        "dau": "today",
+        "activeUsersFoot": "{{weekly}} this week · {{monthly}} this month",
+        "gateway": "Realtime gateway",
+        "sockets": "sockets",
+        "gatewayOn": "Gateway attached",
+        "gatewayOff": "Gateway disabled",
+        "uptime": "API uptime",
+        "apiVersion": "Version {{version}}",
+        "loadError": "{{tile}} could not be read."
+      },
+      "deploy": {
+        "title": "Deploys",
+        "web": "Web",
+        "api": "API",
+        "builtAt": "API built {{date}}",
+        "loadError": "The API build marker could not be read."
+      },
+      "activity": {
+        "title": "Recent admin activity",
+        "viewAll": "View audit log",
+        "empty": "No admin actions recorded yet.",
+        "loadError": "Could not load recent activity."
+      }
+    },
+    "support": {
+      "title": "Support",
+      "subtitle": "Where user reports land and get answered.",
+      "comingSoon": "The helpdesk console — threads, internal notes, tags and saved views — arrives with W3.",
+      "openInbox": "Open the feedback inbox"
+    },
+    "registration": {
+      "title": "Registration",
+      "subtitle": "Who gets in: the approval queue and the access tokens that gate sign-up.",
+      "currentMode": "Current registration mode",
+      "changeMode": "Change the mode in Settings",
+      "decideError": "Could not update that registration request.",
+      "createTokenError": "Could not create the registration token.",
+      "revokeTokenError": "Could not revoke the registration token.",
+      "modeUnknown": "The active registration mode could not be read, so it is unclear whether this applies right now.",
+      "requestGone": "That application is no longer in the queue — someone may have handled it already.",
+      "tokenGone": "That token no longer exists; it may already have been revoked."
+    },
+    "backup": {
+      "title": "Backup & restore drill",
+      "notConfigured": "No backup status file is wired into this deployment.",
+      "loadError": "Could not read the backup status.",
+      "lastDump": "Last successful dump",
+      "lastDrill": "Last successful restore drill",
+      "dumpBudget": "Dump must be newer than",
+      "drillBudget": "Drill must be newer than",
+      "ago": "{{age}} ago",
+      "never": "Never",
+      "level": {
+        "ok": "Ready",
+        "warn": "Unproven",
+        "critical": "Not ready",
+        "unknown": "Not configured"
+      },
+      "reason": {
+        "healthy": "A recent dump exists and a recent restore drill proved it.",
+        "not_configured": "This deployment reports no backup status.",
+        "permission_denied": "The backup status file exists but this server may not read it. Check the mount and the file permissions.",
+        "unreadable": "The backup status file could not be read.",
+        "backup_missing": "No successful dump has been recorded.",
+        "backup_stale": "The newest dump is older than the 26-hour target.",
+        "clock_skew": "The recorded backup time lies in the future, so the evidence cannot be trusted. Check the clocks.",
+        "restore_missing": "No restore drill has ever passed, so recovery is unproven.",
+        "restore_stale": "The newest restore drill is older than the 35-day target.",
+        "offsite_failed": "The last offsite upload failed; the local dump is intact.",
+        "scheduler_unhealthy": "The backup scheduler reports a problem with the stored backup."
+      }
+    },
+    "common": {
+      "duration": {
+        "dayHour": "{{days}} d {{hours}} h",
+        "hourMinute": "{{hours}} h {{minutes}} min",
+        "minuteSecond": "{{minutes}} min {{seconds}} s",
+        "second": "{{seconds}} s"
+      }
     }
   },
   "create": {
@@ -5316,6 +5815,34 @@
     "mirrorSyncStalled": {
       "title": "Syncing {{chain}} is stuck",
       "body": "The group portfolio {{chain}} could not finish syncing. Open it and choose Retry sync."
+    },
+    "feedbackStatusNew": {
+      "title": "Feedback reopened",
+      "body": "Your feedback submission is back in the inbox."
+    },
+    "feedbackStatusTriaged": {
+      "title": "Feedback update",
+      "body": "Your feedback submission is being reviewed."
+    },
+    "feedbackStatusWorkingOnIt": {
+      "title": "Feedback in progress",
+      "body": "Work has started on your feedback submission."
+    },
+    "feedbackStatusSavedAsFutureIdea": {
+      "title": "Feedback saved for later",
+      "body": "Your feedback submission has been saved as a future idea."
+    },
+    "feedbackStatusDeclined": {
+      "title": "Feedback update",
+      "body": "Your feedback submission was declined. Open it for details."
+    },
+    "feedbackStatusShipped": {
+      "title": "Feedback shipped",
+      "body": "Your feedback submission was shipped."
+    },
+    "feedbackReplyCreated": {
+      "title": "New feedback reply",
+      "body": "There is a new reply to your feedback submission."
     }
   },
   "control": {
@@ -5378,20 +5905,22 @@
     "authorizedApps": "Authorized apps",
     "appearance": "Appearance",
     "feedback": "Send feedback",
-    "feedbackSub": "Feature requests and bug reports"
+    "feedbackSub": "Help requests, improvements, features, and bugs"
   },
   "feedback": {
     "title": "Send feedback",
-    "dialogDescription": "Send a feature request, bug report, or other note to BetterTrack.",
+    "dialogDescription": "Send a bug, help request, improvement, feature idea, or other note to BetterTrack.",
     "settingsLabel": "Help improve BetterTrack",
-    "settingsHint": "Feature request, bug report, or another note.",
+    "settingsHint": "Bug, help request, improvement, feature idea, or another note.",
     "open": "Write feedback",
     "category": "Category",
     "categoryPlaceholder": "Select a category",
     "categoryOption": {
-      "feature": "Feature / improvement",
+      "feature": "Feature idea",
       "bug": "Bug",
-      "other": "Other"
+      "other": "Other",
+      "help": "Need help",
+      "improvement": "Improvement"
     },
     "subject": "Subject (optional)",
     "message": "Message",
@@ -5405,7 +5934,18 @@
     "submit": "Submit feedback",
     "submitting": "Submitting…",
     "success": "Thanks — your feedback was submitted.",
-    "submitError": "Couldn't submit your feedback. Please try again."
+    "submitError": "Couldn't submit your feedback. Please try again.",
+    "openLimit": "You already have 20 open requests. Please wait for triage or delete an open request before submitting another.",
+    "status": {
+      "new": "Sent",
+      "triaged": "Read / in review",
+      "working_on_it": "In progress",
+      "saved_as_future_idea": "On the waiting list",
+      "shipped": "Shipped",
+      "comingIn": "Coming in {{version}}",
+      "declined": "Declined",
+      "declinedWithReason": "Declined — {{reason}}"
+    }
   },
   "privacy": {
     "subtitle": "Control what the screen shows and where your data lives.",

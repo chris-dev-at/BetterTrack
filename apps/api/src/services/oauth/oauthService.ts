@@ -113,7 +113,7 @@ export interface OAuthService {
     logoUrl?: string | null;
     ip?: string | null;
   }): Promise<OAuthClientSummary>;
-  listGrants(userId: string): Promise<OAuthGrantSummary[]>;
+  listGrants(userId: string, currentGrantId: string | null): Promise<OAuthGrantSummary[]>;
   revokeGrant(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
   /** Administrative suspension: revoke grants and invalidate pending auth codes. */
   revokeAllForUser(userId: string): Promise<void>;
@@ -249,10 +249,12 @@ function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): Api
  * the token at issue time) intersected with the app's CURRENT allowed-scope
  * ceiling. This single `min()` makes both required behaviours fall out for free:
  *
- *  - Widening the app (admin adds a scope) can NEVER silently widen a live grant
- *    — the token never consented to the new scope, so the intersection omits it;
- *    the user gains it only by running the consent flow again (which re-stamps
- *    the grant/token with the freshly-consented set).
+ *  - Ordinary app widening (an admin adds a scope) can NEVER silently widen a
+ *    live grant — the token never consented to the new scope, so the intersection
+ *    omits it; the user gains it only by running the consent flow again. The
+ *    deliberate product-owned exception is the boot reconcile for official
+ *    first-party apps: it widens their active grants, but issued access tokens
+ *    remain immutable snapshots and gain the scope only after refresh.
  *  - Narrowing the app (admin removes a scope, or a redirect URI) applies
  *    IMMEDIATELY — the removed scope drops out of every existing token/grant the
  *    next time it is used, without re-issuing or revoking anything.
@@ -605,12 +607,14 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return toClientSummary(row);
     },
 
-    async listGrants(userId) {
+    async listGrants(userId, currentGrantId) {
       const rows = await repo.listGrantsForUser(userId);
       return rows.map(({ grant, client }) => ({
         id: grant.id,
         clientId: client.clientId,
         appName: client.name,
+        firstParty: client.isFirstParty,
+        current: grant.id === currentGrantId,
         // Show the EFFECTIVE scopes (consented ∩ the app's current ceiling) so the
         // "authorized apps" list reflects what the token can actually do after an
         // admin narrows the app — never a scope the app no longer allows.

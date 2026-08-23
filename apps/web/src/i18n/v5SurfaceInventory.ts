@@ -249,9 +249,11 @@ export const V5_SURFACE_INVENTORY = [
       'assets.live',
       'workboard.overview',
       'admin.health',
+      'admin.backup',
+      'admin.common.duration',
     ],
     copyReview:
-      'Intraday/live labels, prior-close label, dense-chart states, and failover status reviewed.',
+      'Intraday/live labels, prior-close label, dense-chart states, and failover status reviewed. #1406 W1 adds the read-only backup/restore-drill panel the Overview attention row links to, and moves the hand-built uptime string onto the localized shared duration units.',
     states: {
       loading: covered(
         'Portfolio, analytics, asset, watchlist, and health reads all render skeleton/spinner states.',
@@ -280,9 +282,9 @@ export const V5_SURFACE_INVENTORY = [
     // claimed by the phase surface that ships it.
     routes: [],
     components: ['admin/AdminApp.tsx', 'admin/components/AdminLayout.tsx'],
-    copyRoots: ['admin.nav'],
+    copyRoots: ['admin.nav', 'admin.palette'],
     copyReview:
-      'Console chrome every V5 admin surface is reached through: the section nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels.',
+      'Console chrome every V5 admin surface is reached through: the nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels. The post-V5 W1 rebuild (#1406) regrouped those same entries under six operator workspaces, pointed the console index and the not-found fallback at the new Overview instead of Users, and added the shell-hosted palette trigger and shortcut. Every existing page path is unchanged.',
     states: {
       loading: unverified(
         'AdminLayout renders the localized admin.nav.loading spinner until the session resolves.',
@@ -494,7 +496,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p7-mirrorchain',
-    phases: ['P7'],
+    phases: ['P7', 'P13'],
     routes: ['/portfolio/settings', '/people/shared'],
     components: [
       'user/portfolio/MirrorchainPanel.tsx',
@@ -521,7 +523,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p8-social-comments-and-groups',
-    phases: ['P8'],
+    phases: ['P8', 'P13'],
     routes: [
       '/people',
       '/people/chat',
@@ -727,12 +729,24 @@ export const V5_SURFACE_INVENTORY = [
       'user/control/panels/ParanoidAccountExport.tsx',
       'user/control/panels/PrivacyPanel.tsx',
       'user/control/panels/PrivacyVaultSection.tsx',
+      'user/home/WidgetFrame.tsx',
+      'user/home/widgets/PortfolioCardsWidget.tsx',
+      'user/portfolio/LockedPortfolioStub.tsx',
+      'user/control/panels/VaultTransferActions.tsx',
       'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
       'user/vault/ui/ParanoidEnableWizard.tsx',
       'user/vault/ui/ParanoidSurfaceGate.tsx',
+      'user/vault/ui/PortfolioVaultMoveWizard.tsx',
+      'user/vault/ui/PortfolioVaultSection.tsx',
+      'user/vault/ui/VaultCreationCeremony.tsx',
+      'user/vault/ui/VaultManager.tsx',
+      'user/vault/ui/VaultRestorePicker.tsx',
+      'user/vault/ui/VaultStateAction.tsx',
+      'user/vault/ui/VaultReceivePhrase.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
+      'user/vault/ui/VaultTransferQr.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
       'ui/MoneyText.tsx',
       'ui/charts/AllocationDonut.tsx',
@@ -740,7 +754,7 @@ export const V5_SURFACE_INVENTORY = [
     ],
     copyRoots: ['privacy', 'vault', 'vaultMoney', 'vaultExports', 'common.charts'],
     copyReview:
-      'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, loss, and recovery copy reviewed.',
+      'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, QR transfer, loss, and recovery copy reviewed.',
     states: {
       loading: covered(
         'Account-mode, enable, unlock, and sync transitions expose Splash/progress/status.',
@@ -754,9 +768,20 @@ export const V5_SURFACE_INVENTORY = [
     },
     tests: [
       'user/AccountModeRoot.test.tsx',
+      'user/portfolio/LockedPortfolioStub.test.tsx',
+      'user/portfolio/PortfolioWorkspace.test.tsx',
+      'user/home/widgets/PortfolioCardsWidget.test.tsx',
+      'user/control/panels/VaultTransferActions.test.tsx',
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
+      'user/vault/ui/PortfolioVaultMoveWizard.test.tsx',
+      'user/vault/ui/PortfolioVaultSection.test.tsx',
+      'user/vault/ui/VaultCreationCeremony.test.tsx',
+      'user/vault/ui/VaultManager.test.tsx',
+      'user/vault/ui/VaultRestorePicker.test.tsx',
+      'user/vault/ui/VaultReceivePhrase.test.tsx',
       'user/vault/ui/VaultUnlockGate.test.tsx',
       'user/vault/ui/VaultSyncChip.test.tsx',
+      'user/vault/ui/VaultTransferQr.test.tsx',
       'ui/MoneyText.test.tsx',
       'ui/charts/AllocationDonut.test.tsx',
     ],
@@ -781,12 +806,10 @@ export const V5_SURFACE_INVENTORY = [
       'admin.users',
     ],
     copyReview:
-      'Phone-safe admin login/traps, registration settings, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate.',
+      'Phone-safe admin login/traps, the registration-mode selector, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate. The registration access tokens and the approval queue this row once also covered moved to the People workspace with #1406 W1 — their copy still lives under `admin.settings.*`, but it is now reviewed on admin/pages/RegistrationPage.tsx.',
     states: {
-      loading: covered('Session, settings, user, token, request, and 2FA progress stays explicit.'),
-      empty: unverified(
-        'User search, registration tokens, and approval requests distinguish empty results.',
-      ),
+      loading: covered('Session, settings, user, and 2FA progress stays explicit.'),
+      empty: unverified('User search distinguishes an empty result from an unread one.'),
       error: covered(
         'Session and resource reads expose localized retry; form and mutation failures remain inline.',
       ),
@@ -855,6 +878,11 @@ export const NON_V5_SURFACES = [
     note: 'V1 admin session provider; holds state, renders nothing.',
   },
   {
+    path: 'admin/components/AdminCommandPalette.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/EmailLogTable.tsx',
     reason: 'no-v5-deliverable',
     note: 'V2 email-log table (#187).',
@@ -898,6 +926,21 @@ export const NON_V5_SURFACES = [
     path: 'admin/pages/InvitesPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V1 invite management (#11); still English-only.',
+  },
+  {
+    path: 'admin/pages/OverviewPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) operator Overview; localized and tested in its own feature change.',
+  },
+  {
+    path: 'admin/pages/RegistrationPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the approval queue and access tokens, re-housed out of the V5 settings page into the People workspace.',
+  },
+  {
+    path: 'admin/pages/SupportPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) Support landing; the helpdesk console it stands in for is W3.',
   },
   {
     path: 'admin/pages/UserDetailPage.tsx',
@@ -1133,11 +1176,6 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign R2 widget picker.',
   },
   {
-    path: 'user/home/WidgetFrame.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 widget frame.',
-  },
-  {
     path: 'user/home/widgets/AlertsWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (alerts).',
@@ -1206,11 +1244,6 @@ export const NON_V5_SURFACES = [
     path: 'user/home/widgets/PerformanceChartWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (performance chart).',
-  },
-  {
-    path: 'user/home/widgets/PortfolioCardsWidget.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 home-board widget (portfolio cards).',
   },
   {
     path: 'user/home/widgets/RecentTransactionsWidget.tsx',
@@ -1363,6 +1396,11 @@ export const NON_V5_ROUTES = [
     note: 'V4-P2c self-service account deletion.',
   },
   {
+    path: '/admin',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the console index stopped redirecting to Users and now lands on the operator Overview.',
+  },
+  {
     path: '/admin/announcements',
     reason: 'no-v5-deliverable',
     note: 'V4-P5 announcement composer.',
@@ -1375,6 +1413,16 @@ export const NON_V5_ROUTES = [
     note: 'Post-V5 owner feedback inbox (#1316).',
   },
   { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
+  {
+    path: '/admin/registration',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the People workspace’s approval queue and access tokens.',
+  },
+  {
+    path: '/admin/support',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the Support workspace landing ahead of the W3 helpdesk console.',
+  },
   { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
   {
     path: '/ask',
@@ -1597,6 +1645,22 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The navigation helper deliberately defaults runtime feature flags to enabled while they load or fail; server route guards remain the authoritative kill-switch boundary.',
   },
   {
+    component: 'user/components/OriginShell.tsx',
+    read: 'OriginShell.vaultsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The global chip is absent until the cleartext vault directory is known; the Privacy manager owns its retryable loading/error states, so shell chrome never paints a false sync result.',
+    delegatedTo: 'VaultManager',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
+    read: 'OriginShell.vaultStates',
+    states: ['loading', 'error'],
+    reason:
+      'The chip waits for a complete endpoint-state set instead of omitting a vault or guessing its action; each vault state has loading/retry UI in the Privacy manager.',
+    delegatedTo: 'VaultManagerRow',
+  },
+  {
     component: 'user/portfolio/PortfolioWorkspace.tsx',
     read: 'PortfolioWorkspace.items',
     states: ['loading', 'error'],
@@ -1612,12 +1676,36 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     delegatedTo: 'AccountModeRoot',
   },
   {
+    component: 'user/vault/ui/PortfolioVaultSection.tsx',
+    read: 'PortfolioVaultSection.vaultsQuery',
+    states: ['error'],
+    reason:
+      'Most accounts own no vault, so an unreachable vault directory must not sprout a vault error on every portfolio settings page; the move-in entry stays absent and the Privacy manager owns the retryable error state for the same read.',
+    delegatedTo: 'VaultManager',
+  },
+  {
+    component: 'user/vault/ui/VaultManager.tsx',
+    read: 'VaultManager.endpointQueries',
+    states: ['loading', 'error'],
+    reason:
+      'Every dynamic endpoint query is passed to its matching VaultManagerRow, which renders a disabled loading action or a retry action in the exact vault row.',
+    delegatedTo: 'VaultManagerRow',
+  },
+  {
     component: 'user/home/HomePage.tsx',
     read: 'HomeBoard.$destructured',
     states: ['loading', 'error'],
     reason:
       'AccountModeRoot resolves the same account-scoped privacy query before the authenticated home board can mount.',
     delegatedTo: 'AccountModeRoot',
+  },
+  {
+    component: 'user/control/panels/ConnectionsPanel.tsx',
+    read: 'ConnectionsPanel.vaultConfigs',
+    states: ['loading', 'error'],
+    reason:
+      'This read decides whether the Drive-connections group EXISTS (an account with no vault has nothing to bind one to), so the group is deliberately absent while it is unresolved or failing rather than flashing a titled skeleton — and an error card at accounts that should never see the group would be worse than its absence. Once it resolves with a vault, DriveAccountsSection observes the very same query key and renders that read’s skeleton and load-error itself.',
+    delegatedTo: 'DriveAccountsSection',
   },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
@@ -1686,9 +1774,19 @@ export const V5_NON_HOOK_ASYNC_BOUNDARY = [
     note: 'Drive authorization snapshot from the vault connection controller.',
   },
   {
+    component: 'user/control/panels/ConnectionsPanel.tsx',
+    site: 'useRegistryAuthorization.useSyncExternalStore',
+    note: 'Per-connection GIS authorization snapshot; every state is rendered in the Drive identity row.',
+  },
+  {
     component: 'user/control/panels/NotificationsPanel.tsx',
     site: 'WebPushRow.useEffect',
     note: 'Reads the browser web-push permission/subscription state on mount.',
+  },
+  {
+    component: 'user/control/panels/VaultTransferActions.tsx',
+    site: 'VaultTransferActions.useEffect',
+    note: 'Loads registered vault configs and renders explicit loading, error, and empty branches.',
   },
   {
     component: 'user/forecast/StandingOrdersSection.tsx',
@@ -1751,8 +1849,31 @@ export type V5AsyncStateDebtLedger = Readonly<
  * also the cause of #1372 — it fired unconditionally above the router, so an
  * anonymous public share issued a protected `GET /vaults`, took the 401 through
  * the shared unauthorized-session handling, and had its own share query cleared.
+ *
+ * 183 → 181 with the #1406 W1 admin IA: the approval queue and the registration
+ * access tokens moved off SettingsPage into the People workspace's own page, so
+ * two reads left the inventoried V5 surface. Neither read was dropped — both are
+ * re-analyzed under the deferred non-V5 ledger, with their states still observed.
+ *
+ * 181 → 182 with the W1 review: HealthPage gained the read-only backup/restore
+ * drill panel the Overview's attention row links to. It observes both its
+ * loading and its error state, so the zero-debt ceiling below is unaffected.
+ *
+ * 184 → 185 with the E5 review (PR #1460, F1): ConnectionsPanel hoists the vault
+ * config read that decides whether the Drive-connections group has an audience
+ * at all. It is one request, not a second — the group's own section observes the
+ * same query key — and it is exempted above rather than added to the debt: an
+ * absent group is the designed answer while it is unresolved or failing.
+ *
+ * 185 → 203 with paranoid E8: the shell directory/chip (2), fail-closed
+ * portfolio workspace (1), locked stubs/switcher/cards (6), Vault manager (6,
+ * including the deferred-action notice that still shows the vault's live next
+ * step) and the move-in section on portfolio settings (2) join the reviewed
+ * surface. Every read handles both states directly or delegates them to the
+ * exact row that owns the retry action. The +18 is disjoint from E5's
+ * ConnectionsPanel read above, which E8 does not touch.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 183;
+export const V5_ASYNC_READ_SITE_BASELINE = 203;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -1767,11 +1888,21 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  */
 // #1316 adds one fully handled post-V5 admin feedback read. It increases the
 // analyzed non-V5 read universe without adding any deferred state debt.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 56;
+//
+// 56 → 69 with the post-V5 admin rebuild W1 (#1406): the operator Overview (8),
+// the People workspace's Registration page (3) and the ⌘K palette (2). Two of the
+// Registration reads are the approval-queue and access-token reads that moved off
+// the inventoried SettingsPage, so the pair is re-analyzed here rather than lost.
+// The Overview reads the approval-queue SIZE off `/admin/stats` rather than
+// listing the queue (W1 review M5), which is why it holds eight reads and not
+// nine. Every one of the thirteen observes both its loading and its error state,
+// which is why the debt ceiling below is unchanged.
+// E8 moves PortfolioCardsWidget's two reads into the P13 reviewed inventory.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 67;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
-  readSites: 42,
-  stateGaps: 63,
+  readSites: 40,
+  stateGaps: 59,
 } as const;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
@@ -1837,10 +1968,6 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
   'user/home/widgets/PerformanceChartWidget.tsx': {
     'PerformanceChartWidget.combined': ['error'],
     'PerformanceChartWidget.historyQuery': ['error'],
-  },
-  'user/home/widgets/PortfolioCardsWidget.tsx': {
-    'PortfolioCardsWidget.histories': ['loading', 'error'],
-    'PortfolioCardsWidget.summaries': ['loading', 'error'],
   },
   'user/home/widgets/QuickCashWidget.tsx': {
     'QuickCashWidget.sourcesQuery': ['error'],

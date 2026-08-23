@@ -10,8 +10,7 @@
   },
   "include": [
     "./**/*.ts",
-    "./support/fakeGoogleIdp.mjs",
-    "./support/workerServer.mjs",
+    "./support/**/*.mjs",
     "../playwright.config.ts",
     "../apps/api/src/http/types.ts"
   ]

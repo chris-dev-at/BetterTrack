@@ -30,7 +30,6 @@ import {
   twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
-  type GoogleMobileLinkCallbackQuery,
   type GoogleRegisterRequest,
   type GoogleUnlinkRequest,
   type LoginRequest,
@@ -70,7 +69,7 @@ import {
   setSessionCookie,
 } from '../cookies';
 import { requireAuth, requireUser } from '../middleware/session';
-import { validateBody, validateParams, validateQuery } from '../middleware/validate';
+import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
 import type { AppContext } from '../context';
@@ -782,10 +781,19 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.get(
     '/google/link/callback',
     requireGoogleConfigured,
-    limiters.login,
-    validateQuery(googleMobileLinkCallbackQuerySchema),
+    limiters.googleLinkCallback,
     async (req, res) => {
-      const query = req.valid?.query as GoogleMobileLinkCallbackQuery;
+      const parsedQuery = googleMobileLinkCallbackQuerySchema.safeParse(req.query);
+      if (!parsedQuery.success) {
+        const result = await ctx.google.handleMalformedMobileLinkCallback(req.ip);
+        res.redirect(
+          googleMobileLinkRedirect(result.redirectUri, {
+            error: googleErrorParam(result.code),
+          }),
+        );
+        return;
+      }
+      const query = parsedQuery.data;
       const result = await ctx.google.handleMobileLinkCallback({
         state: query.state,
         code: query.code,

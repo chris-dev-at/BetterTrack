@@ -11,6 +11,8 @@ import { EM_DASH, formatDate, formatMoney, formatQuantity } from '../../lib/form
 import { getTaxYearReport, listPortfolios } from '../../lib/portfolioApi';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
+import { LockedPortfolioStub } from './LockedPortfolioStub';
+import { isVaultedPortfolio, portfolioDisplayName } from './lockedPortfolio';
 
 /**
  * Print-optimized, chrome-free rendering of ONE portfolio+year tax report
@@ -222,10 +224,19 @@ export function TaxReportPrintPage() {
     staleTime: 60_000,
     enabled: privacyMode === 'normal',
   });
+  const targetPortfolio = portfoliosQuery.data?.portfolios.find(
+    (portfolio) => portfolio.id === portfolioId,
+  );
+  const vaulted = isVaultedPortfolio(targetPortfolio);
   const reportQuery = useQuery({
     queryKey: ['portfolio', 'taxYear', portfolioId, year],
     queryFn: ({ signal }) => getTaxYearReport(portfolioId!, year!, signal),
-    enabled: paramsValid && privacyMode === 'normal',
+    enabled:
+      paramsValid &&
+      privacyMode === 'normal' &&
+      portfoliosQuery.isSuccess &&
+      targetPortfolio != null &&
+      !vaulted,
     staleTime: 30_000,
   });
 
@@ -241,7 +252,17 @@ export function TaxReportPrintPage() {
     }
   }, [ready]);
 
-  const portfolioName = portfoliosQuery.data?.portfolios.find((p) => p.id === portfolioId)?.name;
+  const portfolioName = targetPortfolio
+    ? portfolioDisplayName(targetPortfolio, t('vault.lockedStub.fallbackAlias'))
+    : undefined;
+
+  if (vaulted) {
+    return (
+      <div className="min-h-screen bg-white p-8 text-neutral-900">
+        <LockedPortfolioStub portfolio={targetPortfolio} />
+      </div>
+    );
+  }
 
   const toolbar = (
     <div className="tax-print-toolbar mb-6 flex items-center justify-between gap-3">
@@ -309,6 +330,8 @@ export function TaxReportPrintPage() {
         <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.paranoidHint')}</p>
       ) : !paramsValid ? (
         <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.missingParams')}</p>
+      ) : portfoliosQuery.isSuccess && targetPortfolio == null ? (
+        <p className="text-sm text-neutral-700">{t('common.unavailable')}</p>
       ) : reportQuery.isPending ? (
         <p className="text-sm text-neutral-700">{EM_DASH}</p>
       ) : reportQuery.isError ? (

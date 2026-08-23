@@ -40,7 +40,6 @@ import {
   standingOrderRuns,
 } from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import { unlockTaxYears } from '../../../testing/taxYearUnlocks';
 
 /**
  * The user-visible paranoid round trip: seed a real normal account, CAPTURE it
@@ -119,7 +118,7 @@ interface Captured {
  * The wizard's reads, in the wizard's ORDER. Order is not cosmetic here: several
  * of these GETs WRITE. `/portfolios` materializes "Main", `…/cash` materializes
  * its main source, `/expenses/categories` seeds the default categories, and the
- * tax-report reads run the #635 self-heal, which INSERTS the open years' pending
+ * tax-report reads run the self-heal, which inserts the years' pending
  * correction cash movements. The ledger read therefore has to sit where the
  * client puts it — concurrent with the tax-year list and before the per-year
  * reports — or this helper would quietly see a settled account the wizard never
@@ -326,7 +325,7 @@ function restoreDocument(userId: string, captured: Captured): ParanoidDisableReq
     ),
     // The account-level tax settings, as ONE row (the migration emits exactly
     // one and the restore rejects more). Without it the post-restore tax replay
-    // would re-derive every open year under a regime the account never had.
+    // would re-derive every year under a regime the account never had.
     entity(joinId(), 'taxSetting', {
       userId,
       mode: captured.taxSettings.mode,
@@ -631,7 +630,7 @@ describe('paranoid capture round trip', () => {
      * What this pins is the server half the client's protocol rests on, in the
      * wizard's order against real endpoints: (a) the capture's own reads WRITE —
      * `/expenses/categories` seeds this account's defaults and the tax-report
-     * reads run the #635 self-heal, which INSERTS the open year's correction
+     * reads run the tax self-heal, which inserts the year's correction
      * cash movement AFTER `…/cash` snapshotted the ledger; (b) the pass-1
      * document is therefore INCOMPLETE, missing a money row, and the CAS is what
      * refuses it; (c) a second pass converges — nothing writes, the token holds
@@ -641,8 +640,6 @@ describe('paranoid capture round trip', () => {
      * in `migration.test.ts`.
      */
     const { agent, userId } = await seedAgent();
-    // Amendment mode (§16 2026-08-07): the fixture backdates a 2025 buy.
-    await unlockTaxYears(harness.db, userId, [2025]);
     const portfolioId = await defaultPortfolioId(agent);
     const [asset] = await harness.db
       .insert(assets)
@@ -715,7 +712,7 @@ describe('paranoid capture round trip', () => {
     // account — and the capture is the only writer in this test.
     expect(afterPass1).not.toBe(opened);
     const correction = (await corrections())[0];
-    expect(correction, 'the tax read posted the open year correction').toBeTruthy();
+    expect(correction, 'the tax read posted the year correction').toBeTruthy();
     expect(pass1.categories.length).toBeGreaterThan(0);
     // The dangerous half: the correction is a CASH MOVEMENT the pass-1 ledger
     // read cannot contain, because the tax read posted it afterwards.

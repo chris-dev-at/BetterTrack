@@ -4,7 +4,7 @@ import { scopeSatisfies } from '@bettertrack/contracts';
 
 import { forbidden, notFound, unauthorized } from '../../errors';
 import {
-  isParanoidKilledScope,
+  isLegacyParanoidRefusedScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
 import { normalizeRoutePath } from '../../services/security/routePath';
@@ -19,17 +19,18 @@ export const VAULT_SYNC_SCOPE = 'vault:sync';
 
 /**
  * How an allowlist entry's `{param}` placeholders match a live path segment.
- * Declared per entry rather than inferred from the placeholder's spelling, so a
- * later route whose id parameter happens to be named `{version}` cannot silently
+ * Declared per placeholder rather than inferred from its spelling, so a later
+ * route whose UUID parameter happens to be named `{version}` cannot silently
  * change matching semantics for a shared helper.
  */
 type RouteParamKind = 'uuid' | 'positive-integer';
 
-/** One method + path template in a bearer allowlist. `param` defaults to `uuid`. */
+/** One method + path template in a bearer allowlist. Unlisted params default to `uuid`. */
 interface BearerRoute {
   readonly method: string;
   readonly path: string;
-  readonly param?: RouteParamKind;
+  /** Matcher overrides keyed by the placeholder name without braces. */
+  readonly params?: Readonly<Record<string, RouteParamKind>>;
 }
 
 /**
@@ -39,11 +40,26 @@ interface BearerRoute {
  * transitions are deliberately absent from this list.
  */
 export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
+  // Legacy account-singleton surface (kept through E9).
   { method: 'GET', path: '/vault' },
   { method: 'PUT', path: '/vault' },
   { method: 'GET', path: '/vault/media' },
   { method: 'GET', path: '/vault/history' },
-  { method: 'GET', path: '/vault/history/{version}', param: 'positive-integer' },
+  {
+    method: 'GET',
+    path: '/vault/history/{version}',
+    params: { version: 'positive-integer' },
+  },
+  // Per-vault, per-doc blind store (E1 #1411).
+  { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}' },
+  { method: 'PUT', path: '/vaults/{vaultId}/docs/{docId}' },
+  { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}/history' },
+  {
+    method: 'GET',
+    path: '/vaults/{vaultId}/docs/{docId}/history/{version}',
+    params: { version: 'positive-integer' },
+  },
+  { method: 'GET', path: '/vaults/{vaultId}/media' },
 ] as const satisfies readonly BearerRoute[];
 
 /**
@@ -96,11 +112,62 @@ export const MIRRORCHAIN_SESSION_ONLY_ROUTES: readonly BearerRoute[] = [];
  * completeness check used by MIRRORCHAIN.
  */
 export const VAULT_SESSION_ONLY_ROUTES = [
+  // Legacy account-singleton recovery-media transitions (kept through E9).
   { method: 'PATCH', path: '/vault/media' },
   { method: 'PUT', path: '/vault/media/server-candidate' },
   { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
   { method: 'POST', path: '/vault/media/retired/purge/challenge' },
   { method: 'POST', path: '/vault/media/retired/purge' },
+  // Per-vault config and recovery-media transitions. DELETE is the one
+  // account:security + in-request step-up carve-out declared separately below.
+  { method: 'GET', path: '/vaults' },
+  { method: 'POST', path: '/vaults' },
+  { method: 'GET', path: '/vaults/{vaultId}' },
+  { method: 'PATCH', path: '/vaults/{vaultId}' },
+  { method: 'PATCH', path: '/vaults/{vaultId}/media' },
+  {
+    method: 'PUT',
+    path: '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}',
+  },
+  { method: 'GET', path: '/vaults/{vaultId}/media/server-candidate/{candidateId}' },
+  { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge/challenge' },
+  { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * Per-portfolio vault transitions shared by web and native clients under §15.
+ * Each POST carries the same in-request step-up credential on both paths. The
+ * revision read shares the control-plane scope because it is the CAS input to
+ * the destructive move-in commit, not an ordinary portfolio-data read.
+ */
+export const PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/portfolios/{portfolioId}/vault/revision' },
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * Destructive vault state shared by web and native clients under §15. This is
+ * the single account-security allowlist consumed by the global bearer policy;
+ * every unlisted sibling under either control-plane namespace stays closed.
+ */
+export const VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'DELETE', path: '/vaults/{vaultId}' },
+  ...PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * Drive identities unlock a browser-held Google capability and are therefore
+ * deliberately cookie-session-only. Keeping the complete route inventory here
+ * makes a future sibling an explicit bearer-policy decision instead of an
+ * accidental inheritance.
+ */
+export const DRIVE_CONNECTIONS_SESSION_ONLY_ROUTES = [
+  { method: 'GET', path: '/drive-connections' },
+  { method: 'POST', path: '/drive-connections' },
+  { method: 'PATCH', path: '/drive-connections/{connectionId}/verified' },
+  { method: 'DELETE', path: '/drive-connections/{connectionId}' },
 ] as const satisfies readonly BearerRoute[];
 
 /**
@@ -115,23 +182,9 @@ export const PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST = [
   { method: 'DELETE', path: '/auth/passkeys/{id}' },
 ] as const satisfies readonly BearerRoute[];
 
-/**
- * The account-level tax-year lock ritual exposed to native clients. The year
- * segment is numeric, unlike the UUID resource ids used by the other exact
- * allowlists in this module.
- */
-export const TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST = [
+/** The account-level tax-documentation list exposed to native clients. */
+export const TAX_YEAR_DOCUMENTATION_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/settings/taxes/years' },
-  {
-    method: 'POST',
-    path: '/settings/taxes/years/{year}/unlock',
-    param: 'positive-integer',
-  },
-  {
-    method: 'POST',
-    path: '/settings/taxes/years/{year}/relock',
-    param: 'positive-integer',
-  },
 ] as const satisfies readonly BearerRoute[];
 
 /**
@@ -155,12 +208,18 @@ const ROUTE_PARAM_MATCHERS: Record<RouteParamKind, RegExp> = {
   'positive-integer': POSITIVE_INTEGER_ROUTE_SEGMENT,
 };
 
+function routeParamKind(route: BearerRoute, normalizedParamName: string): RouteParamKind {
+  for (const [name, kind] of Object.entries(route.params ?? {})) {
+    if (name.toLowerCase() === normalizedParamName) return kind;
+  }
+  return 'uuid';
+}
+
 function matchesRoute(path: string, route: BearerRoute, allowPathTemplate = false): boolean {
   const actual = normalizedRouteSegments(path);
   const expected = normalizedRouteSegments(route.path);
-  // The matcher comes from the allowlist entry, never from how the placeholder
-  // happens to be spelled — renaming `{version}` cannot change what matches.
-  const paramMatcher = ROUTE_PARAM_MATCHERS[route.param ?? 'uuid'];
+  // Each matcher comes from this route's explicit placeholder map, never from
+  // how the placeholder happens to be spelled.
   return (
     actual.length === expected.length &&
     expected.every((segment, index) => {
@@ -170,10 +229,33 @@ function matchesRoute(path: string, route: BearerRoute, allowPathTemplate = fals
         // carry real ids, so a literal `{param}` must never enter an allowlist.
         // Refusing arbitrary static words keeps a future same-depth admin route
         // from matching a parameter placeholder.
-        return (allowPathTemplate && actualSegment === segment) || paramMatcher.test(actualSegment);
+        if (allowPathTemplate && actualSegment === segment) return true;
+        const paramName = segment.slice(1, -1);
+        // `normalizeRoutePath` lowercases templates because Express matching is
+        // case-insensitive. Normalize declared map keys too, otherwise a future
+        // `{docVersion}` override would silently fall back to UUID matching.
+        const paramMatcher = ROUTE_PARAM_MATCHERS[routeParamKind(route, paramName)];
+        return paramMatcher.test(actualSegment);
       }
       return segment === actualSegment;
     })
+  );
+}
+
+/**
+ * Whether a path is inside one portfolio's vault control-plane namespace. The
+ * prefix check is intentionally separate from the exact allowlist: it is the
+ * default-deny fence that prevents a future transition route from inheriting
+ * the coarse `/portfolios` read/write scopes.
+ */
+function isPortfolioVaultControlPath(path: string, allowPathTemplate = false): boolean {
+  const segments = normalizedRouteSegments(path);
+  if (segments.length < 3 || segments[0] !== 'portfolios' || segments[2] !== 'vault') {
+    return false;
+  }
+  const portfolioId = segments[1]!;
+  return (
+    UUID_ROUTE_SEGMENT.test(portfolioId) || (allowPathTemplate && portfolioId === '{portfolioid}')
   );
 }
 
@@ -197,6 +279,23 @@ export function vaultSyncRouteAcceptsBearer(method: string, path: string): boole
   return routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
+/** Whether one exact destructive vault-control route admits `account:security`. */
+export function vaultAccountSecurityRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST, method, path);
+}
+
+/** Whether one exact per-portfolio vault transition admits `account:security`. */
+export function portfolioVaultAccountSecurityRouteAcceptsBearer(
+  method: string,
+  path: string,
+): boolean {
+  return routeAllowlistAccepts(
+    PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
+    method,
+    path,
+  );
+}
+
 /** Whether one exact method + path is in the MIRRORCHAIN bearer allowlist. */
 export function mirrorchainRouteAcceptsBearer(method: string, path: string): boolean {
   return routeAllowlistAccepts(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST, method, path);
@@ -207,9 +306,9 @@ export function passkeyManagementRouteAcceptsBearer(method: string, path: string
   return routeAllowlistAccepts(PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
-/** Whether one exact method + path is in the tax-year lock bearer surface. */
-export function taxYearLockRouteAcceptsBearer(method: string, path: string): boolean {
-  return routeAllowlistAccepts(TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST, method, path);
+/** Whether one exact method + path is the tax-year documentation read. */
+export function taxYearDocumentationRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(TAX_YEAR_DOCUMENTATION_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /** Whether one live grant-management request is in the first-party bearer allowlist. */
@@ -334,7 +433,7 @@ export const ACCOUNT_SECURITY_SCOPE = 'account:security';
  * Read-only modules (market) carry a write scope string no key can hold, so any
  * mutation is denied *and audited* through the same path as a genuine missing
  * scope. Session-only entries are deliberate defaults; exact route carve-outs
- * (auth, vault sync, tax-year locks) resolve before this table.
+ * (auth, vault sync, tax-year documentation) resolve before this table.
  *
  * The `/settings` catch-all keeps the coarse account/profile bucket on the
  * social scope (unchanged since V2-P12); the more specific `/settings/notifications`
@@ -350,7 +449,8 @@ export const MODULE_POLICIES = [
   {
     prefix: '/version',
     kind: 'allow',
-    reason: 'Deployment metadata is mounted before authentication and is public.',
+    reason:
+      'Deployment metadata is mounted before authentication and is public; its census row changed pathAcceptsBearer("/version") from false to true with no observable effect.',
   },
   {
     prefix: '/health',
@@ -414,12 +514,12 @@ export const MODULE_POLICIES = [
   // Ideas (§13.4 V4-P9) are a Workboard surface — a saved Workboard analysis —
   // so they gate on the same workboard scope pair as conglomerates/backtest.
   { prefix: '/ideas', kind: 'scope', read: 'workboard:read', write: 'workboard:write' },
-  // #1315: feedback is a create-only module in v1. Mapping it explicitly is
-  // critical: without this row a bearer falls through to API_KEY_FORBIDDEN
-  // before the new feedback:write scope can ever be evaluated.
-  // Revisit the read half when #1338 adds GET /feedback/mine: write access must
-  // not silently grant access to a user's submission history.
-  { prefix: '/feedback', kind: 'scope', read: 'feedback:write', write: 'feedback:write' },
+  // #1315/#1338/#1339: explicit feedback scopes keep capture, caller-owned
+  // status history and nested support-thread routes out of the session-only
+  // fallback that caused the recurring API_KEY_FORBIDDEN module-policy gap.
+  // Reads remain separate from `feedback:write`: submission/thread history must
+  // not be granted silently by capture/reply access.
+  { prefix: '/feedback', kind: 'scope', read: 'feedback:read', write: 'feedback:write' },
   {
     prefix: '/expenses',
     kind: 'session-only',
@@ -469,6 +569,18 @@ export const MODULE_POLICIES = [
     prefix: '/vault',
     kind: 'session-only',
     reason: 'Vault storage defaults closed; the exact vault:sync allowlist resolves first.',
+  },
+  {
+    prefix: '/vaults',
+    kind: 'session-only',
+    reason:
+      'Per-vault storage defaults closed; the exact vault:sync and account:security allowlists resolve first.',
+  },
+  {
+    prefix: '/drive-connections',
+    kind: 'session-only',
+    reason:
+      'Drive identity config is paired with browser-memory Google capabilities and is never bearer-accessible.',
   },
   {
     prefix: '/oauth',
@@ -622,14 +734,12 @@ function resolvePolicy(
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
-  // Tax-year lock state is account-security state shared by web and native
-  // clients (owner ruling 2026-08-17). The password re-auth and per-account
-  // throttle remain in the unlock service for both credential kinds. Keep an
-  // exact route allowlist here so a future sibling cannot inherit access from
-  // this carve-out or from the `/settings` social-scope catch-all below.
+  // Tax-year documentation is account state shared by web and native clients.
+  // Keep an exact read-only allowlist so a future sibling cannot inherit access
+  // from this carve-out or the `/settings` social-scope catch-all below.
   if (path === '/settings/taxes/years' || path.startsWith('/settings/taxes/years/')) {
     return routeAllowlistAccepts(
-      TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST,
+      TAX_YEAR_DOCUMENTATION_BEARER_ROUTE_ALLOWLIST,
       requestMethod,
       path,
       allowPathTemplate,
@@ -637,13 +747,36 @@ function resolvePolicy(
       ? { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE }
       : { kind: 'session-only' };
   }
-  // #1043: native clients may synchronize the already-encrypted vault with the
-  // single inherently read-write vault:sync scope. The exact method-aware
-  // allowlist admits the live blob, media-state read and conflict-history reads
-  // only. Staging, media transitions, retirement and purge stay browser-session
-  // work, and any future /vault route defaults closed.
+  // §15 destructive vault operations are shared by the browser and native
+  // control layers. Admit only the exact method/path pairs under
+  // account:security; each mutation carries the same in-body step-up for both
+  // credential kinds.
   if (
-    (path === '/vault' || path.startsWith('/vault/')) &&
+    routeAllowlistAccepts(
+      VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+  ) {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
+  // The ordinary `/portfolios` module is bearer-capable, but the nested vault
+  // namespace is a security control plane. Keep every unlisted method, sibling,
+  // and future route session-only instead of letting it inherit portfolio:*.
+  if (isPortfolioVaultControlPath(path, allowPathTemplate)) {
+    return { kind: 'session-only' };
+  }
+  // #1043 / E1 #1411: native clients may synchronize already-encrypted vault
+  // bytes with the single inherently read-write vault:sync scope. The exact
+  // method-aware allowlist admits live blobs, media-state reads and conflict
+  // history only. Config, staging, media transitions, retirement and purge stay
+  // browser-session work, and every future /vault or /vaults route defaults closed.
+  if (
+    (path === '/vault' ||
+      path.startsWith('/vault/') ||
+      path === '/vaults' ||
+      path.startsWith('/vaults/')) &&
     routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, requestMethod, path, allowPathTemplate)
   ) {
     return { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE };
@@ -751,7 +884,11 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     const required = SAFE_METHODS.has(req.method) ? policy.read : policy.write;
-    if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(required)) {
+    // E2 un-kills bearer scopes for the per-portfolio model: owning a vault is
+    // never an account-wide scope decision. This one narrow bridge is ONLY for
+    // live v1 accounts whose durable users.privacy_mode is still `paranoid`;
+    // E9 removes it together with that column after the verified wipe.
+    if (req.authUser?.privacyMode === 'paranoid' && isLegacyParanoidRefusedScope(required)) {
       next(
         forbidden(
           'This API scope is unavailable while paranoid mode is active.',
@@ -765,7 +902,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // token. Enforced here at check time — the single authoritative point that
     // also covers tokens minted before the rule.
     if (!scopeSatisfies(req.apiKey.scopes, required)) {
-      denyScope(ctx, req, required).then(
+      recordBearerScopeDenied(ctx, req, required).then(
         () =>
           next(
             forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
@@ -781,7 +918,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       // is first-party-only — it does not imply scope alone would ever suffice.
       // Reuse the established audited denial rail: probing another app's grants
       // is a credential-boundary event the account owner must be able to trace.
-      denyScope(ctx, req, required).then(
+      recordBearerScopeDenied(ctx, req, required).then(
         () =>
           next(
             forbidden(
@@ -797,12 +934,22 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
   };
 }
 
-function denyScope(ctx: AppContext, req: Request, requiredScope: string): Promise<void> {
+/**
+ * Persist one bearer scope refusal through the credential-kind-specific audit
+ * service. Router-local defense-in-depth guards reuse this rail so a future
+ * middleware remount cannot silently lose the global guard's denial audit.
+ */
+export function recordBearerScopeDenied(
+  ctx: AppContext,
+  req: Request,
+  requiredScope: string,
+  path = req.path,
+): Promise<void> {
   const common = {
     userId: req.authUser!.id,
     requiredScope,
     method: req.method,
-    path: req.path,
+    path,
     ip: req.ip ?? null,
   };
   if (req.apiKey!.kind === 'oauth') {

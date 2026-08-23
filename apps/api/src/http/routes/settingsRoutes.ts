@@ -6,8 +6,6 @@ import {
   discordWebhookRequestSchema,
   idParamSchema,
   scopeSatisfies,
-  taxYearLockParamsSchema,
-  unlockTaxYearRequestSchema,
   updateAccountSettingsRequestSchema,
   updateHomeLayoutRequestSchema,
   updateNotificationSettingsRequestSchema,
@@ -17,7 +15,6 @@ import {
   type CreateApiKeyRequest,
   type CreateOAuthClientRequest,
   type DiscordWebhookRequest,
-  type UnlockTaxYearRequest,
   type UpdateAccountSettingsRequest,
   type UpdateHomeLayoutRequest,
   type UpdateNotificationSettingsRequest,
@@ -34,23 +31,27 @@ import { TelegramSetupError } from '../../services/notifications/telegramSetupSe
 import {
   ACCOUNT_SECURITY_SCOPE,
   oauthGrantRouteAcceptsBearer,
-  taxYearLockRouteAcceptsBearer,
+  taxYearDocumentationRouteAcceptsBearer,
 } from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
- * Defense-in-depth for the three bearer-callable tax-year lock routes. The
+ * Defense-in-depth for the bearer-callable tax-year documentation read. The
  * global policy makes the same decision before routing, but this guard remains
  * independently method/path-aware AND scope-aware so bypassing or regressing
- * that table cannot expose the ritual to an unrelated bearer.
+ * that table cannot expose account documentation to an unrelated bearer.
  */
-export const requireCookieSessionOrTaxYearLockBearer: RequestHandler = (req, _res, next) => {
+export const requireCookieSessionOrTaxYearDocumentationBearer: RequestHandler = (
+  req,
+  _res,
+  next,
+) => {
   const bearerAllowed =
     req.apiKey !== undefined &&
     scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-    taxYearLockRouteAcceptsBearer(
+    taxYearDocumentationRouteAcceptsBearer(
       req.method,
       `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
     );
@@ -60,7 +61,7 @@ export const requireCookieSessionOrTaxYearLockBearer: RequestHandler = (req, _re
   }
   next(
     forbidden(
-      'This tax-year lock endpoint requires the owning session or account-security access.',
+      'Tax-year documentation requires the owning session or account-security access.',
       'API_KEY_FORBIDDEN',
     ),
   );
@@ -311,55 +312,10 @@ export function createSettingsRouter(ctx: AppContext): Router {
     res.json(settings);
   });
 
-  // ── Tax year locking (§16 2026-08-07) ──────────────────────────────────────
-  // Elapsed Vienna years auto-lock; mutations dated into them 409
-  // (TAX_YEAR_LOCKED) until the explicit unlock ritual below re-opens ONE
-  // named year for amendments. The owning cookie session and a bearer holding
-  // `account:security` share this account-state surface; the local guard is an
-  // independent route + scope check behind the global policy table.
-
-  // GET /settings/taxes/years — the caller's lock state (current year +
-  // explicitly-unlocked years). Powers the report banner and the mobile slot.
-  router.get('/taxes/years', requireCookieSessionOrTaxYearLockBearer, async (req, res) => {
-    res.json(await ctx.taxYearLock.lockState(req.authUser!.id));
+  // GET /settings/taxes/years — account-wide living documentation, newest first.
+  router.get('/taxes/years', requireCookieSessionOrTaxYearDocumentationBearer, async (req, res) => {
+    res.json(await ctx.tax.getYearChanges(req.authUser!.id));
   });
-
-  // POST /settings/taxes/years/:year/unlock — password re-auth, then open the
-  // named elapsed year for amendments. Per-account throttled + audited.
-  router.post(
-    '/taxes/years/:year/unlock',
-    requireCookieSessionOrTaxYearLockBearer,
-    validateParams(taxYearLockParamsSchema),
-    validateBody(unlockTaxYearRequestSchema),
-    async (req, res) => {
-      const { year } = req.valid?.params as { year: number };
-      const { password } = req.valid?.body as UnlockTaxYearRequest;
-      const state = await ctx.taxYearLock.unlock({
-        userId: req.authUser!.id,
-        year,
-        password,
-        ip: req.ip ?? null,
-      });
-      res.json(state);
-    },
-  );
-
-  // POST /settings/taxes/years/:year/relock — close the year again (audited;
-  // no re-auth: locking is the safe direction).
-  router.post(
-    '/taxes/years/:year/relock',
-    requireCookieSessionOrTaxYearLockBearer,
-    validateParams(taxYearLockParamsSchema),
-    async (req, res) => {
-      const { year } = req.valid?.params as { year: number };
-      const state = await ctx.taxYearLock.relock({
-        userId: req.authUser!.id,
-        year,
-        ip: req.ip ?? null,
-      });
-      res.json(state);
-    },
-  );
 
   // ── Personal API keys (§6.13, V2-P12) ──────────────────────────────────────
   // Session-only: the bearer scope guard blocks API-key requests from reaching
@@ -426,11 +382,16 @@ export function createSettingsRouter(ctx: AppContext): Router {
 
   // GET /settings/oauth-grants — apps the caller has authorized (active grants).
   router.get('/oauth-grants', requireCookieSessionOrFirstPartyOAuthGrant, async (req, res) => {
-    const grants = await ctx.oauth.listGrants(req.authUser!.id);
+    const currentGrantId = req.apiKey?.kind === 'oauth' ? req.apiKey.id : null;
+    const grants = await ctx.oauth.listGrants(req.authUser!.id, currentGrantId);
     res.json({ grants });
   });
 
-  // DELETE /settings/oauth-grants/:id — revoke a grant; kills its tokens instantly.
+  /**
+   * DELETE /settings/oauth-grants/:id — revoke a grant; kills its tokens instantly.
+   * A first-party client revoking its own authenticated grant during logout is
+   * intentional; the next authorization presents consent again.
+   */
   router.delete(
     '/oauth-grants/:id',
     requireCookieSessionOrFirstPartyOAuthGrant,

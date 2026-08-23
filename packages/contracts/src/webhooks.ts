@@ -51,6 +51,8 @@ export const WEBHOOK_EVENT_TYPES = [
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
   'standing_order.skipped',
+  'feedback.status_changed',
+  'feedback.reply_created',
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -168,6 +170,14 @@ export const PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS = {
     reason:
       'Standing-order events reveal private schedule data unavailable to the paranoid server.',
   },
+  'feedback.status_changed': {
+    disposition: 'allowed',
+    reason: 'Feedback lifecycle updates contain helpdesk metadata, not portfolio content.',
+  },
+  'feedback.reply_created': {
+    disposition: 'allowed',
+    reason: 'Feedback reply notices identify a helpdesk thread without exposing portfolio content.',
+  },
 } as const satisfies Record<WebhookEventType, ParanoidWebhookEventTypeClassification>;
 
 /**
@@ -184,8 +194,13 @@ export const PARANOID_KILLED_WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] =
   );
 
 /** True when a paranoid account can never receive this subscribable event. */
-export function isParanoidKilledWebhookEventType(type: WebhookEventType): boolean {
-  return PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS[type].disposition === 'killed';
+export function isParanoidKilledWebhookEventType(type: string): boolean {
+  const classification = (
+    PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS as Readonly<
+      Record<string, ParanoidWebhookEventTypeClassification | undefined>
+    >
+  )[type];
+  return classification?.disposition === 'killed';
 }
 
 /** Signature transport headers on every delivery POST. */
