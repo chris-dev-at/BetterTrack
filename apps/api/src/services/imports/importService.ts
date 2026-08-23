@@ -6,6 +6,7 @@ import type {
   ImportBrokerListResponse,
   ImportPreviewResponse,
   ImportRow,
+  ImportRowCandidate,
   ImportRowOutcome,
   ImportRowResult,
   SearchResultItem,
@@ -14,6 +15,7 @@ import type {
 import {
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
+  IMPORT_ROW_CANDIDATE_LIMIT,
   importSourceTag,
 } from '@bettertrack/contracts';
 
@@ -171,6 +173,46 @@ function instrumentLookupAttempts(key: InstrumentIdentity): InstrumentLookupAtte
 }
 
 /**
+ * Near-matches for ONE unresolved identity (§13.4): the ranked hits the search
+ * already returned while looking for an exact identity match. Captured at zero
+ * extra cost — no additional query is spent and the enrichment budgets are
+ * untouched — and surfaced on the preview row as display-only suggestions.
+ * A candidate NEVER resolves a row: it cannot flip `unmapped` to `mapped` and
+ * can never reach the apply path.
+ */
+type CandidateSink = Map<string, SearchResultItem>;
+
+/**
+ * Fold one search result set into the sink. Keyed by uppercase symbol so the
+ * symbol/ISIN/name attempts (which overlap heavily) de-duplicate; Map insertion
+ * order preserves each result set's own rank order across attempts.
+ */
+function captureCandidates(sink: CandidateSink, results: readonly SearchResultItem[]): void {
+  for (const item of results) {
+    const dedupeKey = item.symbol.toUpperCase();
+    if (!sink.has(dedupeKey)) sink.set(dedupeKey, item);
+  }
+}
+
+/**
+ * The row-facing suggestion list: first {@link IMPORT_ROW_CANDIDATE_LIMIT} in
+ * captured rank order, reduced to what a human needs to choose. No score is
+ * invented — nothing here was measured. Null when nothing usable was seen
+ * (the contract field stays absent rather than an empty array).
+ */
+function finalizeCandidates(sink: CandidateSink): ImportRowCandidate[] | null {
+  const candidates = [...sink.values()].slice(0, IMPORT_ROW_CANDIDATE_LIMIT).map((item) => ({
+    id: item.id,
+    symbol: item.symbol,
+    name: item.name,
+    currency: item.currency,
+    exchange: item.exchange,
+    type: item.type,
+  }));
+  return candidates.length > 0 ? candidates : null;
+}
+
+/**
  * The COMPLETE staging boundary. Every normalized field a mapper emits is
  * persisted verbatim into a constrained `import_rows` column — `char(3)`
  * currency, `numeric(20,8)` quantity, `numeric(20,6)` price/fee/amount — and
@@ -239,13 +281,20 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     if (!owned) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
   }
 
-  /** Resolve an identity only from Postgres; this path can never start provider work. */
+  /**
+   * Resolve an identity only from Postgres; this path can never start provider
+   * work. When `candidates` is given, every non-matching hit of each attempt's
+   * result set is kept for the unresolved-row suggestions — the results were
+   * already fetched, so this reads nothing extra.
+   */
   async function resolveInstrumentLocally(
     userId: string,
     key: InstrumentIdentity,
+    candidates?: CandidateSink,
   ): Promise<SearchResultItem | null> {
     for (const attempt of instrumentLookupAttempts(key)) {
       const result = await search.search(userId, attempt.query, { allowEnrichment: false });
+      if (candidates) captureCandidates(candidates, result.results);
       const hit = result.results.find(attempt.matches);
       if (hit) return hit;
     }
@@ -257,17 +306,21 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * ceilings. The query slot is spent before search because that call may launch
    * fire-and-forget provider work. A settled retry is catalog-only, so neither
    * retries nor exhausted imports can silently enqueue more upstream searches.
+   * Candidate capture rides on the results each attempt already receives (the
+   * immediate set and the post-settle refresh) — no extra slot, ever.
    */
   async function enrichInstrument(
     userId: string,
     key: InstrumentIdentity,
     budget: EnrichmentBudget,
+    candidates?: CandidateSink,
   ): Promise<SearchResultItem | null> {
     for (const attempt of instrumentLookupAttempts(key)) {
       if (budget.remainingQueries <= 0 || budget.remainingWaitMs <= 0) return null;
 
       budget.remainingQueries -= 1;
       const result = await search.search(userId, attempt.query);
+      if (candidates) captureCandidates(candidates, result.results);
       const immediateHit = result.results.find(attempt.matches);
       if (immediateHit) return immediateHit;
       if (!result.enriching) continue;
@@ -293,6 +346,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       }
 
       const refreshed = await search.search(userId, attempt.query, { allowEnrichment: false });
+      if (candidates) captureCandidates(candidates, refreshed.results);
       const hit = refreshed.results.find(attempt.matches);
       if (hit) return hit;
     }
@@ -402,6 +456,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       asset: row.asset,
       result: row.result,
       resultMessage: row.resultMessage,
+      ...(row.candidates && row.candidates.length > 0 ? { candidates: row.candidates } : {}),
     };
   }
 
@@ -468,11 +523,16 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       // for every identity that never gets its own admission. Hence phase 3.
 
       // Phase 1 — the complete local pass, before any provider work is admitted,
-      // so an already-catalogued instrument never depends on the budget.
+      // so an already-catalogued instrument never depends on the budget. Each
+      // identity also gets a candidate sink fed from the results every attempt
+      // returns — used only if the identity never resolves.
       const resolutions = new Map<string, SearchResultItem | null>();
+      const candidateSinks = new Map<string, CandidateSink>();
       const unresolved: Array<[key: string, row: NormalizedImportRow]> = [];
       for (const [key, row] of instruments) {
-        const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+        const sink: CandidateSink = new Map();
+        candidateSinks.set(key, sink);
+        const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row, sink));
         resolutions.set(key, local);
         if (local === null) unresolved.push([key, row]);
       }
@@ -490,7 +550,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         // A sibling admission may already have upserted this identity. Re-reading
         // is catalog-only, so it costs no slot and keeps one for a genuine miss.
         if (enrichmentStarted) {
-          const appeared = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          const appeared = await resolutionQueue.run(() =>
+            resolveInstrumentLocally(userId, row, candidateSinks.get(key)),
+          );
           if (appeared !== null) {
             resolutions.set(key, appeared);
             continue;
@@ -498,7 +560,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }
         enrichmentStarted = true;
         const enriched = await resolutionQueue.run(() =>
-          enrichInstrument(userId, row, enrichmentBudget),
+          enrichInstrument(userId, row, enrichmentBudget, candidateSinks.get(key)),
         );
         if (enriched !== null) resolutions.set(key, enriched);
       }
@@ -512,9 +574,22 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       if (enrichmentStarted) {
         for (const [key, row] of unresolved) {
           if (resolutions.get(key) !== null) continue;
-          const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          const local = await resolutionQueue.run(() =>
+            resolveInstrumentLocally(userId, row, candidateSinks.get(key)),
+          );
           if (local !== null) resolutions.set(key, local);
         }
+      }
+
+      // Suggestion lists for the identities that never resolved, from the
+      // results the resolution attempts already fetched. Resolved identities
+      // discard their sink — suggestions exist only where the row stays
+      // `unmapped`.
+      const candidateLists = new Map<string, ImportRowCandidate[]>();
+      for (const [key] of unresolved) {
+        if (resolutions.get(key) !== null) continue;
+        const list = finalizeCandidates(candidateSinks.get(key) ?? new Map());
+        if (list !== null) candidateLists.set(key, list);
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);
@@ -540,6 +615,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             note: null,
             assetId: null,
             contentHash: null,
+            candidates: null,
           };
         }
 
@@ -550,12 +626,17 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
         let flag: StageImportRowInput['flag'] = 'mapped';
         let message: string | null = null;
+        let candidates: ImportRowCandidate[] | null = null;
         if (needsInstrument(row.kind) && !asset) {
+          // The row stays `unmapped` and excluded from apply; the captured
+          // near-matches ride along as INFORMATION for a human decision, never
+          // as one (§13.4: never silently guessed).
           flag = 'unmapped';
           const identity = row.isin ?? row.symbol ?? row.name ?? '(unknown)';
           message =
             `Instrument "${identity}" was not found in the asset catalog — ` +
             'search for it under Assets first, then re-upload.';
+          candidates = (rawKey ? candidateLists.get(rawKey) : undefined) ?? null;
         } else if ((row.kind === 'buy' || row.kind === 'sell') && asset) {
           if (asset.currency !== row.currency) {
             flag = 'error';
@@ -599,6 +680,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           note: row.note,
           assetId: asset?.id ?? null,
           contentHash: hash,
+          candidates,
         };
       });
 

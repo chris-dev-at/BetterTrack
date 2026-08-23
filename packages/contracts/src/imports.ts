@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { currencyCodeSchema } from './market';
+import { assetTypeSchema, currencyCodeSchema } from './market';
 
 /**
  * Broker CSV imports (PROJECTPLAN.md §13.4 V4-P8). Upload a broker's CSV export
@@ -93,11 +93,37 @@ export const importRowAssetSchema = z
 export type ImportRowAsset = z.infer<typeof importRowAssetSchema>;
 
 /**
+ * One near-match suggestion for an UNRESOLVED row (§13.4): a ranked hit the
+ * local-catalog search already returned during exact-identity resolution that
+ * did NOT match exactly. Purely informational — the row stays `unmapped`,
+ * excluded from apply; nothing is ever auto-applied or auto-matched. At most
+ * five per row, de-duplicated by symbol, in the search's own rank order.
+ */
+export const IMPORT_ROW_CANDIDATE_LIMIT = 5;
+
+/** A suggested candidate instrument: what a human needs to choose, no more. */
+export const importRowCandidateSchema = z
+  .object({
+    id: z.string().uuid(),
+    symbol: z.string(),
+    name: z.string(),
+    currency: currencyCodeSchema,
+    exchange: z.string().nullable(),
+    type: assetTypeSchema,
+  })
+  .strict();
+export type ImportRowCandidate = z.infer<typeof importRowCandidateSchema>;
+
+/**
  * One staged (normalized) CSV row. Trade rows carry `quantity`/`price`/`fee` in
  * the file's stated `currency`; dividend and cash rows carry the EUR magnitude
  * in `amountEur` (the cash ledger is EUR-only, §14). `raw` is the original CSV
  * line for the preview's expandable detail; `message` explains an `error` /
  * `unmapped` flag. `result`/`resultMessage` are null until the batch is applied.
+ *
+ * `candidates` is OPTIONAL and additive (shipped mobile builds parse this
+ * payload with zod): present only on rows whose instrument did NOT resolve,
+ * carrying the near-matches the search already returned — never auto-applied.
  */
 export const importRowSchema = z
   .object({
@@ -121,6 +147,7 @@ export const importRowSchema = z
     asset: importRowAssetSchema.nullable(),
     result: importRowResultSchema.nullable(),
     resultMessage: z.string().nullable(),
+    candidates: z.array(importRowCandidateSchema).max(IMPORT_ROW_CANDIDATE_LIMIT).optional(),
   })
   .strict();
 export type ImportRow = z.infer<typeof importRowSchema>;

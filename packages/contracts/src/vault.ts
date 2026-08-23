@@ -4,7 +4,9 @@ import { MAX_PASSWORD_LENGTH } from './auth';
 import { cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
+  IMPORT_ROW_CANDIDATE_LIMIT,
   importBatchStatusSchema,
+  importRowCandidateSchema,
   importRowFlagSchema,
   importRowKindSchema,
   importRowResultSchema,
@@ -1242,6 +1244,20 @@ const importRowRowSchema = z
     contentHash: z.string().nullable(),
     result: importRowResultSchema.nullable(),
     resultMessage: z.string().nullable(),
+    /**
+     * The `import_rows.candidates` column: display-only near-matches for an
+     * unresolved row (§13.4). `.nullable().optional()` for the same reason as
+     * `portfolios.kind` below — restore/disable strict-parses documents written
+     * before this column existed, and those carry no `candidates` key at all;
+     * requiring it would lock every pre-existing vault out. Writers emit the
+     * field explicitly (null when none captured), so new documents never rely
+     * on the optionality.
+     */
+    candidates: z
+      .array(importRowCandidateSchema)
+      .max(IMPORT_ROW_CANDIDATE_LIMIT)
+      .nullable()
+      .optional(),
   })
   .strict();
 
