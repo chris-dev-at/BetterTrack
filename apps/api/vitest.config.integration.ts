@@ -30,6 +30,9 @@ export default defineConfig({
     include: [
       'src/__tests__/auth.test.ts',
       'src/__tests__/admin.test.ts',
+      // #1456: includes the feedback rate-limit case so its Redis lifecycle is
+      // proven alongside the later login cases in this single-fork suite.
+      'src/__tests__/adminFeedback.test.ts',
       'src/__tests__/workboard.test.ts',
       'src/__tests__/password.test.ts',
       // #437: the archive/delete repo methods carry raw SQL fragments

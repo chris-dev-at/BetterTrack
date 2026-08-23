@@ -923,56 +923,52 @@ describe('admin feedback inbox', () => {
 
   it('meters admin replies on the conversation budget, not the capture budget', async () => {
     const limitedHarness = await createTestApp({ rateLimitsEnabled: true });
-    try {
-      const limitedAdmin = await limitedHarness.seedAdmin();
-      const limitedAdminAgent = await limitedHarness.loginAdmin(limitedAdmin);
-      const submitter = await limitedHarness.seedUser({
-        email: 'limited-admin-feedback@bt.test',
-        username: 'limitedadminfeedback',
-      });
-      const captureLimit = limitedHarness.ctx.config.rateLimits.feedback.limit;
-      const threadLimit = limitedHarness.ctx.config.rateLimits.feedbackThread.limit;
-      expect(threadLimit).toBeGreaterThan(captureLimit);
-      const submissions = await limitedHarness.db
-        .insert(schema.feedback)
-        .values(
-          Array.from({ length: captureLimit + 1 }, (_, index) => ({
-            userId: submitter.id,
-            category: 'other' as const,
-            message: `Rate-limit replies ${index}.`,
-          })),
-        )
-        .returning();
+    const limitedAdmin = await limitedHarness.seedAdmin();
+    const limitedAdminAgent = await limitedHarness.loginAdmin(limitedAdmin);
+    const submitter = await limitedHarness.seedUser({
+      email: 'limited-admin-feedback@bt.test',
+      username: 'limitedadminfeedback',
+    });
+    const captureLimit = limitedHarness.ctx.config.rateLimits.feedback.limit;
+    const threadLimit = limitedHarness.ctx.config.rateLimits.feedbackThread.limit;
+    expect(threadLimit).toBeGreaterThan(captureLimit);
+    const submissions = await limitedHarness.db
+      .insert(schema.feedback)
+      .values(
+        Array.from({ length: captureLimit + 1 }, (_, index) => ({
+          userId: submitter.id,
+          category: 'other' as const,
+          message: `Rate-limit replies ${index}.`,
+        })),
+      )
+      .returning();
 
-      // Answering a queue of submissions in one sitting is the workflow this
-      // rail exists for: the owner must not be throttled against their own
-      // inbox by the submitter-facing anti-spam allowance.
-      for (const [index, submission] of submissions.entries()) {
-        const accepted = await limitedAdminAgent
-          .post(`/api/v1/admin/feedback/${submission.id}/messages`)
-          .set(...XRW)
-          .send({ body: `Admin reply ${index}` });
-        expect(accepted.status).toBe(201);
-      }
-      // Replies never consume the capture budget, which stays whole for the
-      // owner's own `POST /feedback`.
-      expect(
-        await limitedHarness.ctx.redis.get(progressiveKeys('feedback', limitedAdmin.id).count),
-      ).toBeNull();
-
-      // The conversation budget is still a budget: exhaust it and the rail closes.
-      const threadKeys = progressiveKeys('feedback_thread', limitedAdmin.id);
-      expect(await limitedHarness.ctx.redis.get(threadKeys.count)).toBe(String(submissions.length));
-      await limitedHarness.ctx.redis.set(threadKeys.count, String(threadLimit), 'EX', 3600);
-      const limited = await limitedAdminAgent
-        .post(`/api/v1/admin/feedback/${submissions[0]!.id}/messages`)
+    // Answering a queue of submissions in one sitting is the workflow this
+    // rail exists for: the owner must not be throttled against their own
+    // inbox by the submitter-facing anti-spam allowance.
+    for (const [index, submission] of submissions.entries()) {
+      const accepted = await limitedAdminAgent
+        .post(`/api/v1/admin/feedback/${submission.id}/messages`)
         .set(...XRW)
-        .send({ body: 'One too many.' });
-      expect(limited.status).toBe(429);
-      expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
-    } finally {
-      await limitedHarness.ctx.redis.quit?.();
+        .send({ body: `Admin reply ${index}` });
+      expect(accepted.status).toBe(201);
     }
+    // Replies never consume the capture budget, which stays whole for the
+    // owner's own `POST /feedback`.
+    expect(
+      await limitedHarness.ctx.redis.get(progressiveKeys('feedback', limitedAdmin.id).count),
+    ).toBeNull();
+
+    // The conversation budget is still a budget: exhaust it and the rail closes.
+    const threadKeys = progressiveKeys('feedback_thread', limitedAdmin.id);
+    expect(await limitedHarness.ctx.redis.get(threadKeys.count)).toBe(String(submissions.length));
+    await limitedHarness.ctx.redis.set(threadKeys.count, String(threadLimit), 'EX', 3600);
+    const limited = await limitedAdminAgent
+      .post(`/api/v1/admin/feedback/${submissions[0]!.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'One too many.' });
+    expect(limited.status).toBe(429);
+    expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
   });
 
   it('keeps status transitions unreachable to personal API keys', async () => {
