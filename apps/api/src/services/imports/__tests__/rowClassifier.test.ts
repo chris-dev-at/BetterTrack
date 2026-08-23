@@ -194,6 +194,98 @@ describe('stage 2 — multilingual keyword table', () => {
   });
 });
 
+/**
+ * The instrument-evidence gate. A `buy`/`sell` VERB in free text is not a
+ * trade: "Gutschrift aus Verkauf Wohnung" is an apartment sale landing in the
+ * cash account and "Auszahlung fuer Kauf Auto" is a car. A row that names no
+ * instrument at all (no quantity, no price, no symbol, no ISIN) cannot produce
+ * a holding — booking it as a trade is corrupt by construction — so stage 2
+ * must never resolve it above the review bar on the verb alone.
+ */
+describe('stage 2 — a trade verb alone is not a trade', () => {
+  const UNBACKED: ClassifiableRow[] = [
+    row({ text: 'Einzahlung Gutschrift aus Verkauf Wohnung', amount: 5000 }),
+    row({ text: 'Auszahlung fuer Kauf Auto', amount: -9000 }),
+  ];
+
+  it('never books apartment-sale proceeds as an unreviewed sell', async () => {
+    const results = await classifyRows([UNBACKED[0]!]);
+    expect(results[0]!.stage).toBe('keyword');
+    expect(results[0]!.needsReview).toBe(true);
+    expect(results[0]!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
+    // The review queue has to say WHY, not just that.
+    expect(results[0]!.evidence).toContain('no instrument evidence');
+  });
+
+  it('never books a car purchase as an unreviewed buy', async () => {
+    const results = await classifyRows([UNBACKED[1]!]);
+    expect(results[0]!.stage).toBe('keyword');
+    expect(results[0]!.needsReview).toBe(true);
+    expect(results[0]!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
+    expect(results[0]!.evidence).toContain('no instrument evidence');
+  });
+
+  it('escalates the gated rows to stage 3 instead of resolving them', async () => {
+    const { seam, calls } = stubAiSeam(['0=deposit\n1=withdrawal']);
+    const results = await classifyRows(UNBACKED, { ai: seam });
+    // Sub-threshold ⇒ the ambiguous pool ⇒ ONE batched call decides both.
+    expect(calls).toHaveLength(1);
+    expect(results.map((result) => result.kind)).toEqual(['deposit', 'withdrawal']);
+  });
+
+  it('leaves a trade verb backed by an asset identity fully resolved', async () => {
+    const results = await classifyRows([
+      row({ text: 'Kauf Aktien', amount: -500, isin: 'US0378331005' }),
+    ]);
+    expect(results[0]).toMatchObject({
+      kind: 'buy',
+      confidence: 0.85,
+      stage: 'keyword',
+      needsReview: false,
+    });
+    expect(results[0]!.evidence).not.toContain('no instrument evidence');
+  });
+
+  it('leaves a structural trade row untouched (the gate is stage 2 only)', async () => {
+    const results = await classifyRows([
+      row({ text: 'Verkauf 10 Stueck', quantity: 10, price: 50, amount: 500, symbol: 'AAPL' }),
+    ]);
+    expect(results[0]).toMatchObject({
+      kind: 'sell',
+      confidence: 0.95,
+      stage: 'structure',
+      needsReview: false,
+    });
+  });
+
+  it('leaves cash keywords resolved (the gate applies to TRADE kinds only)', async () => {
+    const results = await classifyRows([row({ text: 'SEPA-Gutschrift Gehalt', amount: 2400 })]);
+    expect(results[0]).toMatchObject({
+      kind: 'deposit',
+      confidence: 0.85,
+      stage: 'keyword',
+      needsReview: false,
+    });
+    expect(results[0]!.evidence).not.toContain('no instrument evidence');
+  });
+
+  it('keeps an identified payout a dividend, not an unreviewed plain deposit', async () => {
+    const results = await classifyRows([
+      row({
+        text: 'Ertragsgutschrift Ausschuettung Vanguard FTSE All-World',
+        amount: 41.2,
+        isin: 'IE00B3RBWM25',
+      }),
+    ]);
+    expect(results[0]).toMatchObject({
+      kind: 'dividend',
+      confidence: 0.85,
+      stage: 'keyword',
+      needsReview: false,
+    });
+  });
+});
+
 // A mixed file — the NORMAL case (§16 2026-07-31): cash movements, trades, a
 // dividend, a fee and a tax row in ONE file, resolved without any model call.
 const MIXED_FIXTURE: ClassifiableRow[] = [

@@ -26,7 +26,9 @@ import {
  *    Handles the majority at high confidence.
  * 2. **keyword** — a multilingual first-match-wins verb table over the row's
  *    text, evaluated through RE2 alternations (linear time, so no pattern can
- *    stall an import — same discipline as the expense rule engine).
+ *    stall an import — same discipline as the expense rule engine). Text is a
+ *    weaker signal than shape, so a trade verb ALONE never carries a row over
+ *    the review bar: with no instrument evidence it stays provisional.
  * 3. **ai** — the CHEAP-tier fallback for the ambiguous remainder ONLY: batched
  *    into as few calls as the caps allow, parsed defensively, kind labels only
  *    (`rowClassifierAi.ts`).
@@ -177,6 +179,18 @@ const KEYWORD_EXPECTED_SIGN: Partial<Record<ClassifiedKind, 1 | -1>> = {
   withdrawal: -1,
 };
 
+/** Trade kinds — the ones that can only exist against an instrument. */
+const KEYWORD_TRADE_KINDS: readonly ClassifiedKind[] = ['buy', 'sell'];
+
+/**
+ * Stage-2 confidence for a trade VERB the row carries no instrument evidence
+ * for. Deliberately below {@link DEFAULT_REVIEW_CONFIDENCE}: prose alone cannot
+ * settle a trade, so the row joins the ambiguous pool and stage 3 (or a human)
+ * decides. Same score as stage 1's "trade shape, no direction" — a real signal,
+ * incomplete.
+ */
+const UNBACKED_TRADE_CONFIDENCE = 0.6;
+
 interface KeywordHit {
   kind: KeywordGroup['kind'];
   matched: string;
@@ -204,6 +218,23 @@ function nonBlank(value: string | null | undefined): string | null {
 
 function hasInstrumentIdentity(row: ClassifiableRow): boolean {
   return nonBlank(row.symbol) !== null || nonBlank(row.isin) !== null;
+}
+
+/**
+ * Any evidence that the row is ABOUT an instrument: a traded quantity, a price,
+ * or an identity. Zero is not evidence — a quantity or price of 0 names no
+ * instrument, exactly as stage 1 refuses to read a trade out of `quantity: 0`
+ * (and exports that pad empty numeric columns with 0 must not slip past the
+ * gate below).
+ */
+function hasInstrumentEvidence(row: ClassifiableRow): boolean {
+  const quantity = num(row.quantity);
+  const price = num(row.price);
+  return (
+    (quantity !== null && quantity !== 0) ||
+    (price !== null && price !== 0) ||
+    hasInstrumentIdentity(row)
+  );
 }
 
 const DIRECT_HINT_KINDS = [
@@ -403,20 +434,32 @@ function applyKeyword(row: ClassifiableRow, draft: StageDraft): StageDraft {
   // human (guards e.g. bond or ETF names containing "credit").
   const cashKindWithAsset =
     (hit.kind === 'deposit' || hit.kind === 'withdrawal') && hasInstrumentIdentity(row);
+  // A trade VERB in free text is not a trade. "Gutschrift aus Verkauf Wohnung"
+  // (an apartment) and "Auszahlung fuer Kauf Auto" (a car) are cash movements
+  // that merely spell a direction verb; a buy/sell row naming NO instrument
+  // cannot produce a holding, so booking it unseen is corrupt by construction.
+  // Prose alone therefore never carries a trade over the bar — the row keeps
+  // its provisional kind but drops into the ambiguous pool for stage 3/a human.
+  const unbackedTrade = KEYWORD_TRADE_KINDS.includes(hit.kind) && !hasInstrumentEvidence(row);
 
   const notes: string[] = [];
   if (signContradicts) notes.push('contradicts the amount sign');
   if (cashKindWithAsset) notes.push('cash kind on a row carrying an asset identity');
+  if (unbackedTrade) {
+    notes.push('no instrument evidence — no quantity, price, symbol or ISIN names what was traded');
+  }
   const internalOnly = hit.kind === 'fee' || hit.kind === 'tax';
 
   return {
     kind: hit.kind,
-    confidence: 0.85,
+    confidence: unbackedTrade ? UNBACKED_TRADE_CONFIDENCE : 0.85,
     stage: 'keyword',
     evidence: `keyword "${hit.matched}" ⇒ ${hit.kind}${
       notes.length > 0 ? ` (${notes.join('; ')})` : ''
     }`,
-    needsReview: internalOnly || signContradicts || cashKindWithAsset,
+    // Sub-threshold already forces review at the end of the cascade; stating it
+    // here too keeps the invariant unconditional under a lowered review bar.
+    needsReview: internalOnly || signContradicts || cashKindWithAsset || unbackedTrade,
   };
 }
 
