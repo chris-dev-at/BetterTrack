@@ -194,7 +194,7 @@ export interface AuditService {
 
 export function createAuditService(
   auditRepo: AuditRepository,
-  withPrivacyMode: WithAuditPrivacyMode = (_userId, run) => run('normal'),
+  withPrivacyMode: WithAuditPrivacyMode = (_userId, run) => run(null),
 ): AuditService {
   return {
     record: (input) => {

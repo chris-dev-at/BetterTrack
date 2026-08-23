@@ -2597,9 +2597,12 @@ describe('portfolio vault move-out strict restore', () => {
           : entity,
       ),
     };
-    // The final character of an unpadded base64url value can contain unused
-    // bits. Mutate the first character so the decoded proof bytes always differ.
-    const mutateBase64url = (value: string) => `${value[0] === 'A' ? 'B' : 'A'}${value.slice(1)}`;
+    // The final base64url character can contain unused padding bits. Mutating
+    // it from A to B may therefore decode to the exact same Ed25519 signature.
+    // The first character always carries significant bits, so this guarantees
+    // a different canonical byte sequence while keeping the input well-formed.
+    const mutateSignificantBase64urlCharacter = (value: string) =>
+      `${value.startsWith('A') ? 'B' : 'A'}${value.slice(1)}`;
     const cases: readonly [
       string,
       PortfolioVaultMoveOutRequest,
@@ -2611,7 +2614,7 @@ describe('portfolio vault move-out strict restore', () => {
           ...valid,
           vaultProof: {
             ...valid.vaultProof,
-            signature: mutateBase64url(valid.vaultProof.signature),
+            signature: mutateSignificantBase64urlCharacter(valid.vaultProof.signature),
           },
         },
         proofService,
@@ -2622,7 +2625,7 @@ describe('portfolio vault move-out strict restore', () => {
           ...valid,
           vaultProof: {
             ...valid.vaultProof,
-            challenge: mutateBase64url(valid.vaultProof.challenge),
+            challenge: mutateSignificantBase64urlCharacter(valid.vaultProof.challenge),
           },
         },
         proofService,
