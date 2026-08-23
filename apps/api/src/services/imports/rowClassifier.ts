@@ -22,17 +22,31 @@ import {
  *
  * Stages:
  * 1. **structure** — deterministic shape (quantity+price ⇒ trade; a canonical
- *    `kindHint`; the amount sign inside a known family). No AI, no text trust.
- *    Handles the majority at high confidence.
+ *    `kindHint`; the amount sign inside a known family). No AI.
  * 2. **keyword** — a multilingual first-match-wins verb table over the row's
  *    text, evaluated through RE2 alternations (linear time, so no pattern can
- *    stall an import — same discipline as the expense rule engine). Text is a
- *    weaker signal than shape, so a trade verb ALONE never carries a row over
- *    the review bar: with no instrument evidence it stays provisional, and a
- *    cash word in the same text outranks it.
+ *    stall an import — same discipline as the expense rule engine).
  * 3. **ai** — the CHEAP-tier fallback for the ambiguous remainder ONLY: batched
  *    into as few calls as the caps allow, parsed defensively, kind labels only
  *    (`rowClassifierAi.ts`).
+ *
+ * **Stages 1 and 2 are not alternatives — stage 2 ALWAYS runs.** A structural
+ * reading is a shape inference (quantity, price, an amount sign); the row's own
+ * text is independent evidence, and a stage-1 verdict may not clear the review
+ * bar while that evidence is unread. Concretely: `Dividendengutschrift …` with
+ * quantity 100, price 0.412 and amount +41.20 has the exact shape of a sale and
+ * would liquidate a position that was never sold. The two readings must AGREE,
+ * or the row is flagged. Where they disagree the TEXT wins the default kind —
+ * the amount SIGN is the weakest link in the chain (an unsigned `Betrag` column
+ * inverts every trade in a file), while a DECLARED `kindHint` outranks both.
+ *
+ * A second, orthogonal scan runs first: {@link NON_TRADE_MARKERS}. Storno
+ * reversals, Depotüberträge, Kapitalmaßnahmen and Vorabpauschalen have trade or
+ * cash SHAPE but are none of the five wire kinds. Booking them costs real money
+ * (a reversal read as a buy doubles the position; a transfer-in read as a sale
+ * fabricates a realized gain), and no model call can rescue a vocabulary that
+ * has no word for them — so they are pinned to a human decision and never
+ * reach stage 3.
  *
  * The wire vocabulary (`buy | sell | dividend | deposit | withdrawal`,
  * §13.4 V4-P8) is LOCKED. `fee | tax | unknown` are internal-only kinds for rows
@@ -53,10 +67,12 @@ export interface ClassifiableRow {
   /** Descriptive free text: memo, booking type, note — whatever Task A kept. */
   text: string | null;
   /**
-   * Task A's hint column, expected to carry a canonical token (`buy`, `sell`,
-   * `dividend`, `deposit`, `withdrawal`, `fee`, `tax`) or a family token
-   * (`trade`, `cash`). Anything else degrades gracefully: the raw value joins
-   * the stage-2 keyword haystack instead of being trusted structurally.
+   * Task A's hint column (`Typ`, `Auftragsart`, `Buchungsart`, `Transaction
+   * type`, …). A canonical token — English (`buy`, `sell`, …) OR the German
+   * vocabulary those columns actually carry (`Kauf`, `Verkauf`, `Dividende`,
+   * `Ertrag`, `Einzahlung`, `Auszahlung`, `Sparplan`, `Zinsen`) — is trusted
+   * structurally. Anything else degrades gracefully: the raw value joins the
+   * stage-2 keyword haystack instead.
    */
   kindHint: string | null;
   quantity: number | null;
@@ -103,78 +119,307 @@ export interface ClassifyContext {
   aiMaxRowsPerCall?: number;
   aiMaxCalls?: number;
   /**
-   * Caller distrusts AI-derived kinds wholesale (e.g. the model failed a
-   * calibration): well-formed replies still fill `kind`, but every AI-derived
-   * result is flagged `needsReview`.
+   * Distrust AI-derived kinds wholesale. **Defaults to TRUE and is a FLOOR, not
+   * a toggle**: every stage-3 row is `needsReview`, and setting this to `false`
+   * does not release one. A well-formed reply still fills `kind` and a
+   * deterministic stage agreeing still raises the row's `confidence` — what a
+   * caller can never do is buy its way out of the human decision with a model
+   * call. Turning stage 3 ON must not make the classifier less safe than
+   * leaving it off, and it used to.
    */
   aiLowTrustResults?: boolean;
   reviewConfidenceBelow?: number;
+}
+
+// --- Text normalization ------------------------------------------------------
+
+/**
+ * German arrives in three spellings and the row text is not a lookup key we can
+ * enumerate, so the HAYSTACK is normalized into both ASCII forms and every
+ * pattern is written in ASCII only.
+ *
+ * This is a measured defect, not theory: `'VERÄUSSERUNG'.toLowerCase()` is
+ * `veräusserung` — capital ß uppercases to SS, so the round trip produces a
+ * spelling that matches NEITHER `veräußerung` NOR `veraeusserung`, and all-caps
+ * German exports lost the sell verb entirely. Folding (`ä`→`a`, `ß`→`ss`) and
+ * expanding (`ä`→`ae`, `ß`→`ss`) both map that string onto a listed
+ * alternative, so all three spellings hit the same row of the table.
+ */
+interface Haystack {
+  /** ä→a ö→o ü→u ß→ss, remaining diacritics stripped (`veräußerung` → `verausserung`). */
+  folded: string;
+  /** ä→ae ö→oe ü→ue ß→ss — the ASCII spelling German exports ship (`veraeusserung`). */
+  expanded: string;
+}
+
+const EMPTY_HAYSTACK: Haystack = { folded: '', expanded: '' };
+
+function stripDiacritics(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function toHaystack(raw: string): Haystack {
+  // NFC first: a decomposed `a`+U+0308 from the file must still be seen as `ä`
+  // by the expansion below, which matches the composed character.
+  const lower = raw.normalize('NFC').toLowerCase();
+  return {
+    folded: stripDiacritics(lower.replace(/ß/g, 'ss')),
+    expanded: stripDiacritics(
+      lower.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss'),
+    ),
+  };
+}
+
+function joinHaystack(parts: readonly (string | null)[]): Haystack {
+  const joined = parts.filter((part) => part !== null).join(' ');
+  return joined === '' ? EMPTY_HAYSTACK : toHaystack(joined);
+}
+
+// --- Pattern compilation -----------------------------------------------------
+
+/**
+ * Terms that must start on a WORD BOUNDARY. German compounds are matched as
+ * substrings on purpose (`Teilverkauf`, `Depotgebühr`, `Sparplanausführung` all
+ * have to hit), but the short ENGLISH verbs are also substrings of ordinary
+ * words and of security names, and an unanchored match there is a money bug:
+ *
+ * - `sell` inside **Gesellschaft** — `Ausschuettung Beispiel Gesellschaft mbH`
+ *   with an ISIN and a positive amount resolved to `sell/0.85/unreviewed`,
+ *   i.e. a dividend on a huge share of German securities liquidated the
+ *   position instead of recording income. Measured, not hypothetical.
+ * - `fee` inside **coffee**, `charge` inside **Recharge** (a top-up, the
+ *   opposite direction).
+ *
+ * A leading boundary is enough for these: the collisions are all mid-word, and
+ * legitimate suffixes (`selling`, `fees`, `charges`, `buyback`) must still hit.
+ */
+const PREFIX_ANCHORED = new Set(['sell', 'buy', 'fee', 'charge', 'disposal']);
+
+/**
+ * Terms whose collision starts ON a boundary, so only a FULL word match is
+ * safe: `sale` inside **Salesforce** (`Dividende Salesforce Inc` resolved to
+ * `sell/0.85/unreviewed` — the same fabricated disposal), `sold` inside
+ * **Soldat**. An optional plural keeps `sales` matching.
+ */
+const WORD_ANCHORED = new Set(['sale', 'sold']);
+
+/** The regex source for one human-written term. */
+function alternationSource(term: string): string {
+  if (WORD_ANCHORED.has(term)) return `\\b${term}s?\\b`;
+  if (PREFIX_ANCHORED.has(term)) return `\\b${term}`;
+  return term;
+}
+
+/**
+ * Lowercase ASCII alternation, compiled once at module load. RE2 matching time
+ * is linear — a pattern cannot backtrack an import into a stall (mirrors
+ * `ruleEngine.compileRegex`). Static patterns cannot fail to compile, but an
+ * inert group beats a crashed import, so the failure mode matches the expense
+ * rule engine's.
+ */
+function compileAlternation(alternatives: readonly string[]): RE2 | null {
+  try {
+    return new RE2(`(${alternatives.map(alternationSource).join('|')})`);
+  } catch {
+    return null;
+  }
+}
+
+/** First alternative that hits, scanning the folded then the expanded spelling. */
+function execAlternation(pattern: RE2 | null, haystack: Haystack): string | null {
+  if (pattern === null) return null;
+  return pattern.exec(haystack.folded)?.[1] ?? pattern.exec(haystack.expanded)?.[1] ?? null;
+}
+
+// --- Non-trade markers -------------------------------------------------------
+
+/**
+ * Terms that make a row NOT one of the five wire kinds, whatever its shape says.
+ * Each of these has trade or cash shape and would otherwise book real money:
+ *
+ * - **reversal** — `Storno Wertpapierabrechnung Kauf` with quantity, price and a
+ *   negative amount is structurally a perfect buy; booking it adds a SECOND
+ *   purchase and doubles the position. Every German broker emits these. A
+ *   reversal of ANY kind is wrong in the same way (a stornierte Einzahlung is
+ *   not a deposit), so this marker voids the kind outright.
+ * - **transfer** — `Depotübertrag Einbuchung` moves a position between
+ *   custodians. Read as a sale it fabricates a realized gain, and read as a
+ *   deposit it fabricates contributed capital.
+ * - **corporateAction** — `Kapitalmaßnahme Umtausch/Fusion/Split` restates a
+ *   holding; it is neither a purchase nor a disposal.
+ * - **taxAccrual** — `Vorabpauschale` / `Thesaurierung`: a German advance
+ *   lump-sum tax charge on an accumulating fund, whose per-unit "price" and
+ *   share count read exactly like a trade.
+ *
+ * Marker rows are pinned sub-threshold, always `needsReview`, and deliberately
+ * NEVER sent to stage 3: the model's vocabulary has no word for a reversal or a
+ * corporate action, so a call could only produce a confident wrong answer.
+ */
+interface MarkerGroup {
+  id: 'reversal' | 'transfer' | 'corporateAction' | 'taxAccrual';
+  /** True ⇒ no kind survives at all (a Storno of a fee is not a fee). */
+  voidsKind: boolean;
+  alternatives: readonly string[];
+  pattern: RE2 | null;
+}
+
+function markerGroup(
+  id: MarkerGroup['id'],
+  voidsKind: boolean,
+  alternatives: readonly string[],
+): MarkerGroup {
+  return { id, voidsKind, alternatives, pattern: compileAlternation(alternatives) };
+}
+
+export const NON_TRADE_MARKERS: readonly MarkerGroup[] = [
+  markerGroup('reversal', true, [
+    'stornierung',
+    'stornobuchung',
+    'storno',
+    'rueckbuchung',
+    'ruckbuchung',
+    'cancellation',
+    'cancelled',
+    'canceled',
+    'reversal',
+  ]),
+  markerGroup('transfer', false, [
+    'depotuebertrag',
+    'depotubertrag',
+    'depoteingang',
+    'depotausgang',
+    'einbuchung',
+    'ausbuchung',
+    'einlieferung',
+    'auslieferung',
+  ]),
+  markerGroup('corporateAction', false, [
+    'kapitalmassnahme',
+    'corporate action',
+    'umtausch',
+    'fusion',
+    'merger',
+    'aktiensplit',
+    'split',
+  ]),
+  markerGroup('taxAccrual', false, ['vorabpauschale', 'thesaurierung', 'thesaurierend']),
+];
+
+interface MarkerHit {
+  group: MarkerGroup;
+  matched: string;
+}
+
+function matchNonTradeMarker(haystack: Haystack): MarkerHit | null {
+  for (const group of NON_TRADE_MARKERS) {
+    const matched = execAlternation(group.pattern, haystack);
+    if (matched !== null) return { group, matched };
+  }
+  return null;
 }
 
 // --- Stage 2 table -----------------------------------------------------------
 
 interface KeywordGroup {
   kind: Exclude<ClassifiedKind, 'unknown'>;
-  /**
-   * Lowercase RE2 alternation, compiled once at module load. RE2 matching time
-   * is linear — a pattern cannot backtrack an import into a stall (mirrors
-   * `ruleEngine.compileRegex`). Static patterns cannot fail to compile, but an
-   * inert group beats a crashed import, so the failure mode matches the expense
-   * rule engine's.
-   */
+  alternatives: readonly string[];
   pattern: RE2 | null;
 }
 
-function compileKeywordPattern(alternation: string): RE2 | null {
-  try {
-    return new RE2(alternation);
-  } catch {
-    return null;
-  }
+function keywordGroup(kind: KeywordGroup['kind'], alternatives: readonly string[]): KeywordGroup {
+  return { kind, alternatives, pattern: compileAlternation(alternatives) };
 }
 
-const KEYWORD_GROUPS: readonly KeywordGroup[] = [
-  // Order IS semantics (first match wins). Cost markers outrank direction verbs:
-  // a row whose text names a fee/tax is never itself a trade. `Verkauf` precedes
-  // `Kauf` because substring matching must not read the sell out of a buy word
-  // ("verkauf" contains "kauf") — RE2 has no lookarounds, ordering does the job.
-  // Dividends precede deposits because "Dividendengutschrift" contains
-  // "gutschrift". ASCII-transliterated umlaut variants are spelled out.
-  {
-    kind: 'tax',
-    pattern: compileKeywordPattern('(kest|kapitalertragsteuer|quellensteuer|withholding)'),
-  },
-  {
-    kind: 'fee',
-    pattern: compileKeywordPattern(
-      '(gebühr|gebuehr|provision|entgelt|depotgebühr|depotgebuehr|fee|charge|commission)',
-    ),
-  },
-  {
-    kind: 'sell',
-    pattern: compileKeywordPattern('(verkauf|veräußerung|veraeusserung|sell|sale|sold|disposal)'),
-  },
-  { kind: 'buy', pattern: compileKeywordPattern('(kauf|buy|purchase|sparplan)') },
-  {
-    kind: 'dividend',
-    pattern: compileKeywordPattern(
-      '(dividende|dividend|ausschüttung|ausschuettung|distribution|coupon)',
-    ),
-  },
-  {
-    kind: 'deposit',
-    pattern: compileKeywordPattern(
-      '(einzahlung|gutschrift|überweisung|ueberweisung|zahlungseingang|deposit|credit|top-?up)',
-    ),
-  },
-  {
-    kind: 'withdrawal',
-    pattern: compileKeywordPattern('(auszahlung|lastschrift|belastung|abbuchung|withdrawal|debit)'),
-  },
+/**
+ * Order IS semantics (first match wins). Cost markers outrank direction verbs: a
+ * row whose text names a fee/tax is never itself a trade. `Verkauf` precedes
+ * `Kauf` because substring matching must not read the sell out of a buy word
+ * ("verkauf" contains "kauf") — RE2 has no lookarounds, ordering does the job.
+ * Dividends precede deposits because `Ertragsgutschrift`, `Dividendengutschrift`
+ * and `Ausschüttungsgutschrift` all contain `gutschrift`.
+ *
+ * Alternatives are ASCII only and cover BOTH German spellings (`gebuhr` folded /
+ * `gebuehr` expanded) — see {@link Haystack}. Within a group, the more specific
+ * alternative is listed first so `evidence` names the term a human would.
+ */
+export const KEYWORD_GROUPS: readonly KeywordGroup[] = [
+  keywordGroup('tax', [
+    'kapitalertragsteuer',
+    'ertragsteuer',
+    'quellensteuer',
+    'withholding',
+    'kest',
+  ]),
+  keywordGroup('fee', [
+    'depotgebuehr',
+    'depotgebuhr',
+    'gebuehr',
+    'gebuhr',
+    'provision',
+    'entgelt',
+    'commission',
+    'charge',
+    'fee',
+  ]),
+  keywordGroup('sell', [
+    'verkauf',
+    'veraeusserung',
+    'verausserung',
+    'disposal',
+    'sell',
+    'sale',
+    'sold',
+  ]),
+  keywordGroup('buy', ['sparplan', 'purchase', 'kauf', 'buy']),
+  keywordGroup('dividend', [
+    'ertragsgutschrift',
+    'ertrag',
+    'dividende',
+    'dividend',
+    'ausschuettung',
+    'ausschuttung',
+    'distribution',
+    'coupon',
+  ]),
+  keywordGroup('deposit', [
+    // Interest is cash income with no instrument behind it. The four shipped
+    // broker mappers all book it as an external deposit
+    // (`mappers/tradeRepublic.ts` TYPE_MAP, `mappers/flatex.ts`); the classifier
+    // states that convention explicitly instead of reaching it by accident
+    // through the `gutschrift` in `Zinsgutschrift`.
+    'zinsgutschrift',
+    'zinsen',
+    'interest',
+    'einzahlung',
+    'zahlungseingang',
+    'ueberweisung',
+    'uberweisung',
+    'gutschrift',
+    'deposit',
+    'credit',
+    'top-up',
+    'topup',
+  ]),
+  keywordGroup('withdrawal', [
+    'auszahlung',
+    'lastschrift',
+    'belastung',
+    'abbuchung',
+    'withdrawal',
+    'debit',
+  ]),
 ];
 
-/** Cash-family kinds whose implied direction a signed amount can contradict. */
+/**
+ * Every kind's implied cash direction. `deposit`/`dividend` are money IN,
+ * `withdrawal` money OUT — and so are trades: a purchase pays money out, a sale
+ * takes money in. Stage 1 treats that same sign as decisive proof of direction,
+ * so stage 2 refusing to check it was a hole big enough to drive `Kauf VWCE`
+ * with amount +9000 through at 0.85 unreviewed.
+ */
 const KEYWORD_EXPECTED_SIGN: Partial<Record<ClassifiedKind, 1 | -1>> = {
+  buy: -1,
+  sell: 1,
   deposit: 1,
   dividend: 1,
   withdrawal: -1,
@@ -186,6 +431,9 @@ const KEYWORD_TRADE_KINDS: readonly ClassifiedKind[] = ['buy', 'sell'];
 /** Cash kinds — the reading a gated trade row falls back to (see below). */
 const KEYWORD_CASH_KINDS: readonly ClassifiedKind[] = ['deposit', 'withdrawal'];
 
+/** The five kinds that can actually be booked; `fee`/`tax` are internal-only. */
+const WIRE_KINDS: readonly ClassifiedKind[] = ['buy', 'sell', 'dividend', 'deposit', 'withdrawal'];
+
 /**
  * Stage-2 confidence for a trade VERB the row carries no instrument evidence
  * for. Deliberately below {@link DEFAULT_REVIEW_CONFIDENCE}: prose alone cannot
@@ -194,6 +442,19 @@ const KEYWORD_CASH_KINDS: readonly ClassifiedKind[] = ['deposit', 'withdrawal'];
  * incomplete.
  */
 const UNBACKED_TRADE_CONFIDENCE = 0.6;
+
+/**
+ * Two signals that read the same row differently, or a signal the amount sign
+ * contradicts. Sub-threshold on purpose: the row keeps its likeliest kind but
+ * cannot be booked unattended.
+ */
+const CONFLICTED_CONFIDENCE = 0.6;
+
+/** A non-trade marker fired: pinned below the bar, human decision required. */
+const MARKER_CONFIDENCE = 0.6;
+
+/** A reversal voids the kind entirely — nothing survives to be confident about. */
+const REVERSAL_CONFIDENCE = 0.4;
 
 interface KeywordHit {
   kind: KeywordGroup['kind'];
@@ -206,11 +467,11 @@ interface KeywordHit {
  * a second pass (the gated-trade cash fallback) reads the same precedence the
  * unrestricted pass does.
  */
-function matchKeywords(haystack: string, only?: readonly ClassifiedKind[]): KeywordHit | null {
+function matchKeywords(haystack: Haystack, only?: readonly ClassifiedKind[]): KeywordHit | null {
   for (const group of KEYWORD_GROUPS) {
     if (only !== undefined && !only.includes(group.kind)) continue;
-    const match = group.pattern?.exec(haystack)?.[1];
-    if (match !== undefined) return { kind: group.kind, matched: match };
+    const matched = execAlternation(group.pattern, haystack);
+    if (matched !== null) return { kind: group.kind, matched };
   }
   return null;
 }
@@ -232,39 +493,83 @@ function hasInstrumentIdentity(row: ClassifiableRow): boolean {
 }
 
 /**
- * Any evidence that the row is ABOUT an instrument: a traded quantity, a price,
- * or an identity. Zero is not evidence — a quantity or price of 0 names no
- * instrument, exactly as stage 1 refuses to read a trade out of `quantity: 0`
- * (and exports that pad empty numeric columns with 0 must not slip past the
- * gate below).
+ * Any evidence that the row is ABOUT an instrument: an identity, or a traded
+ * quantity. Zero is not evidence — a quantity of 0 names no instrument, exactly
+ * as stage 1 refuses to read a trade out of `quantity: 0` (and exports that pad
+ * empty numeric columns with 0 must not slip past the gate below).
+ *
+ * A PRICE is deliberately not evidence on its own. `price` is whatever slice A's
+ * column mapper put there, and an FX rate, a `Saldo` or a closing price all land
+ * in that slot: `Auszahlung fuer Kauf Auto` correctly gates at
+ * `withdrawal/0.6/review`, but one stray `price: 1.0912` used to flip it to
+ * `buy/0.85/unreviewed`. A number with no identity and no share count does not
+ * name an instrument.
  */
 function hasInstrumentEvidence(row: ClassifiableRow): boolean {
   const quantity = num(row.quantity);
-  const price = num(row.price);
-  return (
-    (quantity !== null && quantity !== 0) ||
-    (price !== null && price !== 0) ||
-    hasInstrumentIdentity(row)
-  );
+  return hasInstrumentIdentity(row) || (quantity !== null && quantity !== 0);
 }
 
-const DIRECT_HINT_KINDS = [
-  'buy',
-  'sell',
-  'dividend',
-  'deposit',
-  'withdrawal',
-  'fee',
-  'tax',
-] as const;
+/**
+ * Canonical hint tokens. Slice A maps the German `Typ` / `Auftragsart` /
+ * `Buchungsart` columns into `kindHint` and ranks them by a GERMAN word set
+ * (`columnMapping.ts` KIND_WORDS), and the four shipped broker mappers translate
+ * exactly these values — so accepting English tokens only left the 0.92
+ * "declared intent" path dead for the files it was built for. Keys are matched
+ * against the folded AND expanded spelling of the hint, so `Ausschüttung`,
+ * `Ausschuettung` and `AUSSCHÜTTUNG` all land here.
+ *
+ * `zinsen` → `deposit` mirrors `mappers/tradeRepublic.ts`: cash interest has no
+ * instrument behind it and the repo books it as an external deposit.
+ */
+const DIRECT_HINT_TOKENS: Readonly<Record<string, ClassifiedKind>> = {
+  buy: 'buy',
+  kauf: 'buy',
+  ankauf: 'buy',
+  zukauf: 'buy',
+  purchase: 'buy',
+  sparplan: 'buy',
+  savings_plan: 'buy',
+  sell: 'sell',
+  verkauf: 'sell',
+  teilverkauf: 'sell',
+  verausserung: 'sell',
+  veraeusserung: 'sell',
+  sale: 'sell',
+  dividend: 'dividend',
+  dividende: 'dividend',
+  ertrag: 'dividend',
+  ertragsgutschrift: 'dividend',
+  ausschuttung: 'dividend',
+  ausschuettung: 'dividend',
+  distribution: 'dividend',
+  deposit: 'deposit',
+  einzahlung: 'deposit',
+  zinsen: 'deposit',
+  zinsgutschrift: 'deposit',
+  interest: 'deposit',
+  topup: 'deposit',
+  'top-up': 'deposit',
+  withdrawal: 'withdrawal',
+  auszahlung: 'withdrawal',
+  fee: 'fee',
+  gebuhr: 'fee',
+  gebuehr: 'fee',
+  spesen: 'fee',
+  provision: 'fee',
+  tax: 'tax',
+  steuer: 'tax',
+  kest: 'tax',
+  kapitalertragsteuer: 'tax',
+  quellensteuer: 'tax',
+};
 
-type DirectHintKind = (typeof DIRECT_HINT_KINDS)[number];
-
-function toDirectHintKind(token: string): DirectHintKind | null {
-  return (DIRECT_HINT_KINDS as readonly string[]).includes(token)
-    ? (token as DirectHintKind)
-    : null;
+function toDirectHintKind(token: Haystack): ClassifiedKind | null {
+  return DIRECT_HINT_TOKENS[token.folded] ?? DIRECT_HINT_TOKENS[token.expanded] ?? null;
 }
+
+/** Family tokens: not a kind, but a declared bucket the amount sign can resolve. */
+const CASH_FAMILY_HINTS = new Set(['cash', 'bar', 'geld']);
 
 interface StageDraft {
   kind: ClassifiedKind;
@@ -280,6 +585,38 @@ interface StageDraft {
    * verdict back to the hint's own claim).
    */
   hintConsumed?: boolean;
+  /**
+   * A high-precision structural reading (trade shape, canonical hint, declared
+   * cash family). These are CORROBORATED against the keyword table rather than
+   * replaced by it. Everything else falls through to stage 2 outright.
+   *
+   * Deliberately not "confidence >= threshold": a caller that lowers the review
+   * bar must not thereby stop stage 2 from resolving weak rows.
+   */
+  decisive?: boolean;
+  /** The kind came from a DECLARED hint column, not inferred from an amount sign. */
+  declared?: boolean;
+}
+
+/** Everything the cascade knows about one row after the deterministic stages. */
+interface RowVerdict {
+  kind: ClassifiedKind;
+  confidence: number;
+  stage: ClassificationStage;
+  evidence: string;
+  needsReview: boolean;
+  /**
+   * A deterministic stage PROVED this row cannot be a trade (no instrument
+   * evidence, or a non-trade marker). Stage 3 may not relabel it `buy`/`sell`:
+   * a model verdict cannot conjure the instrument the row does not name.
+   */
+  tradeBlocked: boolean;
+  /**
+   * Whether stage 3 may look at this row at all. False for marker rows — the
+   * five wire labels contain no answer for a Storno or a Kapitalmaßnahme, so a
+   * call could only buy a confident wrong one.
+   */
+  aiEligible: boolean;
 }
 
 /**
@@ -287,16 +624,16 @@ interface StageDraft {
  * stage asserts below the review threshold is explicitly provisional and left
  * for stage 2/3 to confirm or replace.
  */
-function classifyByStructure(row: ClassifiableRow): StageDraft {
+function classifyByStructure(row: ClassifiableRow, hint: Haystack): StageDraft {
   const quantity = num(row.quantity);
   const price = num(row.price);
   const amount = num(row.amount);
   // Zero amounts carry no direction; ±0 collapses to "no sign".
   const sign = amount !== null && amount !== 0 ? (amount > 0 ? 1 : -1) : null;
 
-  const hintToken = nonBlank(row.kindHint)?.toLowerCase() ?? null;
-  const hintKind = hintToken !== null ? toDirectHintKind(hintToken) : null;
-  const hintFamily = hintToken === 'trade' ? 'security' : hintToken === 'cash' ? 'cash' : null;
+  const hintLabel = hint.folded === '' ? null : hint.folded;
+  const hintKind = hintLabel !== null ? toDirectHintKind(hint) : null;
+  const cashFamilyHint = hintLabel !== null && CASH_FAMILY_HINTS.has(hint.folded);
 
   // 1. quantity + price ⇒ trade family. Direction needs a SIGN: the amount
   //    sign when the source provides one, else a NEGATIVE quantity
@@ -314,6 +651,7 @@ function classifyByStructure(row: ClassifiableRow): StageDraft {
             stage: 'structure',
             evidence: `quantity+price ⇒ trade; ${sign !== null ? 'amount' : 'quantity'} sign ⇒ ${direction}`,
             needsReview: false,
+            decisive: true,
           }
         : {
             kind: 'unknown',
@@ -332,20 +670,23 @@ function classifyByStructure(row: ClassifiableRow): StageDraft {
           kind: hintKind,
           confidence: 0.92,
           stage: 'structure',
-          evidence: `kindHint "${hintToken}"`,
+          evidence: `kindHint "${hintLabel}"`,
           needsReview: hintKind === 'fee' || hintKind === 'tax',
           hintConsumed: true,
+          decisive: true,
+          declared: true,
         };
       } else if (draft.kind !== hintKind) {
         draft = {
           ...draft,
           confidence: 0.7,
-          evidence: `${draft.evidence}; conflicts with kindHint "${hintToken}"`,
+          evidence: `${draft.evidence}; conflicts with kindHint "${hintLabel}"`,
           needsReview: true,
           hintConsumed: true,
+          decisive: false,
         };
       } else {
-        draft = { ...draft, hintConsumed: true };
+        draft = { ...draft, hintConsumed: true, declared: true };
       }
     }
     return draft;
@@ -357,28 +698,31 @@ function classifyByStructure(row: ClassifiableRow): StageDraft {
       kind: hintKind,
       confidence: 0.92,
       stage: 'structure',
-      evidence: `kindHint "${hintToken}"`,
+      evidence: `kindHint "${hintLabel}"`,
       needsReview: hintKind === 'fee' || hintKind === 'tax',
       hintConsumed: true,
+      decisive: true,
+      declared: true,
     };
   }
 
   // 4. Declared cash family: the amount sign IS the decision.
-  if (hintFamily === 'cash') {
+  if (cashFamilyHint) {
     return sign !== null
       ? {
           kind: sign === 1 ? 'deposit' : 'withdrawal',
           confidence: 0.88,
           stage: 'structure',
-          evidence: `cash kindHint "${hintToken}" + amount ${sign === 1 ? 'in' : 'out'}flow`,
+          evidence: `cash kindHint "${hintLabel}" + amount ${sign === 1 ? 'in' : 'out'}flow`,
           needsReview: false,
           hintConsumed: true,
+          decisive: true,
         }
       : {
           kind: 'unknown',
           confidence: 0.5,
           stage: 'structure',
-          evidence: `cash kindHint "${hintToken}" without an amount sign`,
+          evidence: `cash kindHint "${hintLabel}" without an amount sign`,
           needsReview: true,
           hintConsumed: true,
         };
@@ -419,21 +763,114 @@ function classifyByStructure(row: ClassifiableRow): StageDraft {
   };
 }
 
-/** Stage 2 override applied to a sub-threshold structure draft. */
-function applyKeyword(row: ClassifiableRow, draft: StageDraft): StageDraft {
-  // A hint stage 1 consumed structurally is NOT re-mined as prose here — see
-  // {@link StageDraft.hintConsumed}. Non-canonical hint values still join the
-  // haystack, exactly as the input contract promises.
-  const haystack = [draft.hintConsumed === true ? null : nonBlank(row.kindHint), nonBlank(row.text)]
-    .filter((part) => part !== null)
-    .join(' ')
-    .toLowerCase();
+/** The signed direction the row's amount asserts, or null when it asserts none. */
+function amountSign(row: ClassifiableRow): 1 | -1 | null {
+  const amount = num(row.amount);
+  return amount !== null && amount !== 0 ? (amount > 0 ? 1 : -1) : null;
+}
+
+function contradictsAmountSign(row: ClassifiableRow, kind: ClassifiedKind): boolean {
+  const expected = KEYWORD_EXPECTED_SIGN[kind];
+  const actual = amountSign(row);
+  return expected !== undefined && actual !== null && actual !== expected;
+}
+
+/**
+ * A non-trade marker fired. Nothing here can be booked: the row is pinned below
+ * the review bar, flagged, blocked from a trade label, and kept away from stage
+ * 3 entirely. The kind is the loudest CORRECT default available — `fee`/`tax`
+ * when the table names one (a Vorabpauschale really is a tax charge), otherwise
+ * `unknown`. A reversal voids even that.
+ */
+function markerVerdict(marker: MarkerHit, prose: Haystack): RowVerdict {
+  const tableHit = marker.group.voidsKind ? null : matchKeywords(prose);
+  const keepable =
+    tableHit !== null && !WIRE_KINDS.includes(tableHit.kind) ? tableHit.kind : 'unknown';
+  return {
+    kind: keepable,
+    confidence: marker.group.voidsKind ? REVERSAL_CONFIDENCE : MARKER_CONFIDENCE,
+    stage: 'keyword',
+    evidence:
+      `non-trade marker "${marker.matched}" (${marker.group.id}) — ` +
+      'this row is none of buy/sell/dividend/deposit/withdrawal; a human must decide',
+    needsReview: true,
+    tradeBlocked: true,
+    aiEligible: false,
+  };
+}
+
+/**
+ * A decisive stage-1 reading, checked against the row's own text. Agreement
+ * keeps stage 1's verdict; silence leaves it standing (there is nothing to
+ * contradict it); disagreement drops the row below the bar.
+ *
+ * Which reading survives a disagreement is the whole point: a DECLARED hint
+ * outranks prose, but a direction INFERRED from an amount sign does not. The
+ * sign is the least reliable link in the chain — an unsigned `Betrag` column
+ * inverts every trade in a file — so `Dividendengutschrift …` keeps `dividend`
+ * and `Vorabpauschale …` keeps `tax`, instead of a fabricated sale.
+ */
+function corroborate(row: ClassifiableRow, draft: StageDraft, prose: Haystack): RowVerdict {
+  const base: RowVerdict = {
+    kind: draft.kind,
+    confidence: draft.confidence,
+    stage: draft.stage,
+    evidence: draft.evidence,
+    needsReview: draft.needsReview,
+    tradeBlocked: false,
+    aiEligible: true,
+  };
+
+  // A declared or inferred direction the row's own amount contradicts is the
+  // same defect stage 2 checks for; stage 1 must not be exempt from it.
+  if (contradictsAmountSign(row, draft.kind)) {
+    return {
+      ...base,
+      confidence: Math.min(base.confidence, CONFLICTED_CONFIDENCE),
+      evidence: `${draft.evidence} (contradicts the amount sign)`,
+      needsReview: true,
+    };
+  }
+
+  const hit = matchKeywords(prose);
+  if (hit === null || hit.kind === draft.kind) {
+    return hit === null
+      ? base
+      : { ...base, evidence: `${draft.evidence}; text agrees ("${hit.matched}")` };
+  }
+
+  // Disagreement. Keep the DECLARED kind, replace an INFERRED one.
+  const keepDeclared = draft.declared === true;
+  return {
+    kind: keepDeclared ? draft.kind : hit.kind,
+    confidence: CONFLICTED_CONFIDENCE,
+    stage: keepDeclared ? draft.stage : 'keyword',
+    evidence:
+      `${draft.evidence}; text says ${hit.kind} ("${hit.matched}") — readings disagree, ` +
+      `${keepDeclared ? 'the declared kind stands' : 'the text wins the default'}`,
+    needsReview: true,
+    tradeBlocked: !keepDeclared && !KEYWORD_TRADE_KINDS.includes(hit.kind),
+    aiEligible: true,
+  };
+}
+
+/** Stage 2 — the keyword table resolves a row stage 1 left provisional. */
+function applyKeyword(row: ClassifiableRow, draft: StageDraft, prose: Haystack): RowVerdict {
+  const base: RowVerdict = {
+    kind: draft.kind,
+    confidence: draft.confidence,
+    stage: 'keyword',
+    evidence: draft.evidence,
+    needsReview: true,
+    tradeBlocked: false,
+    aiEligible: true,
+  };
   // No hit (or nothing to scan): mark the row attempted-at-keyword; it lands in
   // the stage-3 pool unless a later stage resolves it.
-  if (haystack === '') return { ...draft, stage: 'keyword', needsReview: true };
+  if (prose.folded === '') return base;
 
-  const hit = matchKeywords(haystack);
-  if (!hit) return { ...draft, stage: 'keyword', needsReview: true };
+  const hit = matchKeywords(prose);
+  if (!hit) return base;
 
   // A trade VERB in free text is not a trade. "Gutschrift aus Verkauf Wohnung"
   // (an apartment) and "Auszahlung fuer Kauf Auto" (a car) are cash movements
@@ -452,17 +889,13 @@ function applyKeyword(row: ClassifiableRow, draft: StageDraft): StageDraft {
   // NOTE this is a tie-break INSIDE the gate, not a re-ranking of the table:
   // `verkauf` still precedes `kauf`, and a row WITH instrument evidence never
   // reaches this branch.
-  const cashFallback = unbackedTrade ? matchKeywords(haystack, KEYWORD_CASH_KINDS) : null;
+  const cashFallback = unbackedTrade ? matchKeywords(prose, KEYWORD_CASH_KINDS) : null;
   const kind = cashFallback?.kind ?? hit.kind;
   const matched = cashFallback?.matched ?? hit.matched;
 
-  const amount = num(row.amount);
-  const signedSign = amount !== null && amount !== 0 ? (amount > 0 ? 1 : -1) : null;
   // Both checks read the RESOLVED kind: a substituted cash kind has to face the
   // same sign scrutiny the table's own cash hits do.
-  const expectedSign = KEYWORD_EXPECTED_SIGN[kind];
-  const signContradicts =
-    expectedSign !== undefined && signedSign !== null && signedSign !== expectedSign;
+  const signContradicts = contradictsAmountSign(row, kind);
   // Cash movements essentially never carry an instrument identity — a keyword
   // that says "cash" on a row naming an asset is suspicious enough to show a
   // human (guards e.g. bond or ETF names containing "credit").
@@ -473,26 +906,58 @@ function applyKeyword(row: ClassifiableRow, draft: StageDraft): StageDraft {
   if (signContradicts) notes.push('contradicts the amount sign');
   if (cashKindWithAsset) notes.push('cash kind on a row carrying an asset identity');
   if (unbackedTrade) {
-    const gate =
-      'no instrument evidence — no quantity, price, symbol or ISIN names what was traded';
+    const gate = 'no instrument evidence — no quantity, symbol or ISIN names what was traded';
     notes.push(cashFallback !== null ? `trade keyword "${hit.matched}" ignored: ${gate}` : gate);
   }
   const internalOnly = kind === 'fee' || kind === 'tax';
+  const doubtful = unbackedTrade || signContradicts;
+  // Stage 2 REPLACES a weaker structural reading — but a reviewer needs to see
+  // the reading it replaced, above all the `conflicts with kindHint` note stage
+  // 1 raised on an unsigned-amount file. Dropping it left the queue showing a
+  // verdict with no trace of the signal that disagreed with it.
+  const superseded =
+    draft.stage === 'structure' && draft.kind !== 'unknown' && draft.kind !== kind
+      ? `; supersedes structure: ${draft.evidence}`
+      : '';
 
   return {
     kind,
-    confidence: unbackedTrade ? UNBACKED_TRADE_CONFIDENCE : 0.85,
+    confidence: doubtful ? UNBACKED_TRADE_CONFIDENCE : 0.85,
     stage: 'keyword',
-    evidence: `keyword "${matched}" ⇒ ${kind}${notes.length > 0 ? ` (${notes.join('; ')})` : ''}`,
+    evidence: `keyword "${matched}" ⇒ ${kind}${notes.length > 0 ? ` (${notes.join('; ')})` : ''}${superseded}`,
     // Sub-threshold already forces review at the end of the cascade; stating it
     // here too keeps the invariant unconditional under a lowered review bar.
     needsReview: internalOnly || signContradicts || cashKindWithAsset || unbackedTrade,
+    tradeBlocked: unbackedTrade,
+    aiEligible: true,
   };
+}
+
+/** The deterministic half of the cascade for one row: markers, stage 1, stage 2. */
+function classifyDeterministically(row: ClassifiableRow): RowVerdict {
+  const hint = joinHaystack([nonBlank(row.kindHint)]);
+  const text = nonBlank(row.text);
+
+  // Markers scan hint AND text unconditionally: a `Storno` in either column
+  // voids the row, and no consumed-hint bookkeeping may hide it.
+  const marker = matchNonTradeMarker(joinHaystack([nonBlank(row.kindHint), text]));
+
+  const draft = classifyByStructure(row, hint);
+  // A hint stage 1 consumed structurally is NOT re-mined as prose — see
+  // {@link StageDraft.hintConsumed}. Non-canonical hint values still join the
+  // haystack, exactly as the input contract promises.
+  const prose = joinHaystack([draft.hintConsumed === true ? null : nonBlank(row.kindHint), text]);
+
+  if (marker !== null) return markerVerdict(marker, prose);
+  return draft.decisive === true ? corroborate(row, draft, prose) : applyKeyword(row, draft, prose);
 }
 
 // --- Stage 3 -----------------------------------------------------------------
 
+/** The model alone — deliberately BELOW the review bar it is measured against. */
 const AI_CONFIDENCE = 0.75;
+/** The model AND an independent deterministic stage reached the same kind. */
+const AI_CORROBORATED_CONFIDENCE = 0.85;
 const UNRESOLVED_CONFIDENCE = 0.25;
 
 /**
@@ -534,6 +999,20 @@ async function classifyBatchWithAi(
 }
 
 /**
+ * Sanitize a caller-supplied budget. `Math.max` PROPAGATES NaN, which made the
+ * old sanitizer decorative and was not theoretical: `aiMaxRowsPerCall: NaN`
+ * produced `slice(cursor, cursor + NaN)` ⇒ an empty batch ⇒ a cursor that never
+ * advanced ⇒ an infinite SYNCHRONOUS loop that wedged the whole Node event loop
+ * (vitest's own timeout could not fire). `aiMaxCalls: NaN` made `used >= NaN`
+ * permanently false and disabled the budget outright.
+ */
+function budget(value: number | undefined, fallback: number, min: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  const truncated = Math.trunc(value);
+  return truncated < min ? min : truncated;
+}
+
+/**
  * Classify a whole file's rows. Returns exactly one {@link RowClassification}
  * per input row, in input order, `index` = position in `rows`. Never throws on
  * row content: an unusable row is `unknown` + `needsReview`, nothing more.
@@ -542,43 +1021,41 @@ export async function classifyRows(
   rows: readonly ClassifiableRow[],
   ctx: ClassifyContext = {},
 ): Promise<RowClassification[]> {
-  const threshold = ctx.reviewConfidenceBelow ?? DEFAULT_REVIEW_CONFIDENCE;
-  const maxRowsPerCall = Math.max(1, ctx.aiMaxRowsPerCall ?? DEFAULT_AI_MAX_ROWS_PER_CALL);
-  const maxCalls = Math.max(0, ctx.aiMaxCalls ?? DEFAULT_AI_MAX_CALLS);
+  // A non-finite bar would make EVERY `confidence < threshold` comparison false
+  // and silently switch the review gate off for the whole file — the same NaN
+  // class of defect as the AI budgets below, with a far larger blast radius.
+  const threshold =
+    ctx.reviewConfidenceBelow !== undefined && Number.isFinite(ctx.reviewConfidenceBelow)
+      ? Math.min(1, Math.max(0, ctx.reviewConfidenceBelow))
+      : DEFAULT_REVIEW_CONFIDENCE;
+  const rowsPerCall = budget(ctx.aiMaxRowsPerCall, DEFAULT_AI_MAX_ROWS_PER_CALL, 1);
+  const maxCalls = budget(ctx.aiMaxCalls, DEFAULT_AI_MAX_CALLS, 0);
 
-  const results: RowClassification[] = [];
+  const verdicts: RowVerdict[] = [];
   const pool: { index: number; row: ClassifiableRow }[] = [];
 
   for (const [index, row] of rows.entries()) {
-    let draft = classifyByStructure(row);
-    // Stage 2 runs whenever stage 1 could not clear the confidence bar.
-    if (draft.confidence < threshold) draft = applyKeyword(row, draft);
-
-    const resolved = draft.kind !== 'unknown' && draft.confidence >= threshold;
-    if (!resolved) pool.push({ index, row });
-    results.push({
-      index,
-      kind: draft.kind,
-      confidence: draft.confidence,
-      stage: draft.stage,
-      evidence: draft.evidence,
-      needsReview: draft.needsReview,
-    });
+    const verdict = classifyDeterministically(row);
+    verdicts.push(verdict);
+    const resolved = verdict.kind !== 'unknown' && verdict.confidence >= threshold;
+    if (!resolved && verdict.aiEligible) pool.push({ index, row });
   }
 
   // Stage 3: batched CHEAP-tier fallback for the ambiguous remainder ONLY —
   // spending a model call on a row stages 1–2 settled would be a bug.
   if (ctx.ai !== undefined && pool.length > 0) {
     let callsUsed = 0;
-    let cursor = 0;
-    while (cursor < pool.length) {
-      const batch = pool.slice(cursor, cursor + maxRowsPerCall);
-      cursor += batch.length;
+    // `cursor` advances by the validated step UNCONDITIONALLY. The old loop
+    // advanced by `batch.length`, so any input that produced an empty batch
+    // spun forever; nothing a caller passes can wedge this one.
+    for (let cursor = 0; cursor < pool.length; cursor += rowsPerCall) {
+      const batch = pool.slice(cursor, cursor + rowsPerCall);
+      if (batch.length === 0) continue;
 
       if (callsUsed >= maxCalls) {
         // Budget exhausted: flag the remainder for review rather than looping.
         for (const { index } of batch) {
-          const flagged = results[index];
+          const flagged = verdicts[index];
           if (flagged === undefined) continue;
           flagged.needsReview = true;
           flagged.evidence += '; ai call budget exhausted';
@@ -589,36 +1066,67 @@ export async function classifyRows(
 
       const labels = await classifyBatchWithAi(ctx.ai, batch);
       for (const sent of batch) {
+        const prior = verdicts[sent.index];
+        if (prior === undefined) continue;
         const label = labels.get(sent.index) ?? null;
-        if (label !== null) {
-          results[sent.index] = {
-            index: sent.index,
-            kind: label,
-            confidence: AI_CONFIDENCE,
-            stage: 'ai',
-            evidence: `ai ⇒ ${label}`,
-            needsReview: ctx.aiLowTrustResults === true,
-          };
-        } else {
+
+        if (label === null) {
           // Malformed or missing line: needs-review, NEVER a guessed kind.
-          const unresolved = results[sent.index];
-          if (unresolved === undefined) continue;
-          unresolved.needsReview = true;
-          unresolved.confidence = Math.min(unresolved.confidence, UNRESOLVED_CONFIDENCE);
-          unresolved.evidence += '; ai reply missing/malformed for this row';
+          prior.needsReview = true;
+          prior.confidence = Math.min(prior.confidence, UNRESOLVED_CONFIDENCE);
+          prior.evidence += '; ai reply missing/malformed for this row';
+          continue;
         }
+
+        // A deterministic stage proved no instrument is named. The model may
+        // not overturn that: it sees the same fields and cannot conjure the
+        // ISIN the row does not carry, and booking a phantom trade is the
+        // costliest wrong answer in the file.
+        if (prior.tradeBlocked && KEYWORD_TRADE_KINDS.includes(label)) {
+          prior.needsReview = true;
+          prior.evidence += `; ai proposed ${label} — refused, the row names no instrument`;
+          continue;
+        }
+
+        // An independent deterministic stage reaching the same kind is real
+        // corroboration, so it RANKS the row higher in the review queue — it
+        // does not release it (see `needsReview` below).
+        const agreed = prior.kind !== 'unknown' && prior.kind === label;
+        verdicts[sent.index] = {
+          kind: label,
+          confidence: agreed ? AI_CORROBORATED_CONFIDENCE : AI_CONFIDENCE,
+          stage: 'ai',
+          // The prior reading is EVIDENCE, not a draft to be discarded: it is
+          // what a reviewer needs to judge the model's answer against.
+          evidence: `${prior.evidence}; ai ⇒ ${label}`,
+          // UNCONDITIONAL, and deliberately not an expression a caller can
+          // influence: `ctx.aiLowTrustResults` is a FLOOR that defaults true,
+          // whatever stages 1–2 demanded is subsumed, and corroboration ranks
+          // rather than releases. A model label is therefore never the reason a
+          // row stops being reviewed — which is the whole point, because a
+          // stage-3 verdict used to clear flags stages 1–2 had raised and made
+          // switching the AI fallback on LESS safe than leaving it off.
+          needsReview: true,
+          tradeBlocked: prior.tradeBlocked,
+          aiEligible: false,
+        };
       }
     }
   }
 
-  for (const result of results) {
-    // The confidence bar calibrates the stages-1–2 heuristics. An AI verdict
-    // is a label the model asserted at a fixed NOMINAL score (0.75) — sweeping
-    // it under this bar would flag EVERY model answer and turn stage 3 into
-    // paid review-flagging. Trust in AI output is governed explicitly by
-    // `aiLowTrustResults` instead.
-    if (result.stage !== 'ai' && result.confidence < threshold) result.needsReview = true;
-    result.confidence = Math.round(Math.min(1, Math.max(0, result.confidence)) * 100) / 100;
-  }
-  return results;
+  return verdicts.map((verdict, index) => {
+    // The confidence bar applies to EVERY stage. Exempting stage 3 from it let
+    // a nominal 0.75 model verdict — below the bar this module documents —
+    // clear review flags that stages 1–2 had raised, which made turning the AI
+    // fallback ON strictly less safe than leaving it off.
+    const needsReview = verdict.needsReview || verdict.confidence < threshold;
+    return {
+      index,
+      kind: verdict.kind,
+      confidence: Math.round(Math.min(1, Math.max(0, verdict.confidence)) * 100) / 100,
+      stage: verdict.stage,
+      evidence: verdict.evidence,
+      needsReview,
+    };
+  });
 }
