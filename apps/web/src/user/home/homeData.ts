@@ -113,6 +113,16 @@ const HOME_FIGURE_KEYS = [
  * One `GET /portfolios/:id` per portfolio, each under the page-level
  * `['portfolio', id]` key. `useQueries` keeps the fan-out declarative and lets
  * React Query dedupe/cancel per portfolio instead of per batch.
+ *
+ * The read goes through the portfolio STORE seam rather than `portfolioApi`
+ * directly (PARANOID-E6 #1416), so a future resolver-backed store can serve a
+ * vaulted portfolio from its decrypted document set without this call site
+ * changing. Until that store exists, a vaulted stub stays DISABLED: the server
+ * cannot read a sealed vault, so the request could only ever 403, and asking is
+ * itself a money read against a portfolio the user sealed. `homePortfolioRead`
+ * classifies a vaulted stub from the stub alone and never consults this result,
+ * so skipping the request costs the rollup nothing — the member still lands in
+ * the composition as `locked` and still carries its qualifier.
  */
 export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
   const store = usePortfolioStore();
@@ -120,6 +130,7 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
     queries: portfolios.map((portfolio) => ({
       queryKey: ['portfolio', portfolio.id],
       queryFn: ({ signal }: { signal: AbortSignal }) => store.getPortfolio(portfolio.id, signal),
+      enabled: !isVaultedPortfolio(portfolio),
       staleTime: PORTFOLIO_STALE_MS,
     })),
   });
@@ -354,6 +365,30 @@ export function useResolvedScope(
   scopeIds?: readonly string[],
 ): ResolvedScope {
   return useMemo(() => resolveScope(portfolios, scope, scopeIds), [portfolios, scope, scopeIds]);
+}
+
+/**
+ * The portfolios a widget instance is allowed to see, applied BEFORE
+ * {@link resolveWidgetScope} so a vaulted portfolio can never reach a widget
+ * that has no way to account for it (§14, PARANOID-E6 #1416).
+ *
+ * The server cannot read a sealed vault. A widget that simply drops those
+ * members would still render its total with full confidence, and a contribution
+ * that is missing reads to a user as zero — a real balance. So the rule is
+ * inverted from the usual default: a widget sees vaulted portfolios only by
+ * declaring `handlesVaultedPortfolios`, which is a claim that it either
+ * qualifies the total through the composition boundary or fails closed to
+ * "unavailable". Everything else keeps them out of scope.
+ *
+ * Kept here rather than inline in `HomePage` so the rule has exactly one
+ * definition and can be asserted directly.
+ */
+export function portfoliosVisibleToWidget(
+  portfolios: readonly PortfolioSummary[],
+  definition: { handlesVaultedPortfolios?: boolean },
+): readonly PortfolioSummary[] {
+  if (definition.handlesVaultedPortfolios === true) return portfolios;
+  return portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
 }
 
 /**

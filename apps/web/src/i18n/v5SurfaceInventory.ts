@@ -1176,6 +1176,11 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign R2 widget picker.',
   },
   {
+    path: 'user/home/widgets/aggregateSafety.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'PARANOID-E6 (#1416) home-board completeness guard; renders the shared unavailable outcome from the catalog.',
+  },
+  {
     path: 'user/home/widgets/AlertsWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (alerts).',
@@ -1900,9 +1905,12 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // E8 moves PortfolioCardsWidget's two reads into the P13 reviewed inventory.
 export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 67;
 
+// PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
+// `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error
+// state is observed and the read leaves the deferred ledger.
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
-  readSites: 40,
-  stateGaps: 59,
+  readSites: 39,
+  stateGaps: 58,
 } as const;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
@@ -1966,8 +1974,10 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
     'NetWorthWidget.rollup': ['error'],
   },
   'user/home/widgets/PerformanceChartWidget.tsx': {
+    // `historyQuery`'s error row was paid down by PARANOID-E6 (#1416): the
+    // single-portfolio branch now renders `UnavailableHomeAggregate` on
+    // isError, so the read is observed rather than deferred.
     'PerformanceChartWidget.combined': ['error'],
-    'PerformanceChartWidget.historyQuery': ['error'],
   },
   'user/home/widgets/QuickCashWidget.tsx': {
     'QuickCashWidget.sourcesQuery': ['error'],

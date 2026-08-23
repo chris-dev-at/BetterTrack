@@ -55,6 +55,7 @@ const PERFORMANCE_RANGE_OPTIONS = PERFORMANCE_RANGES.map((range) => ({
 export const WIDGET_REGISTRY = {
   'net-worth': {
     type: 'net-worth',
+    handlesVaultedPortfolios: true,
     icon: 'wallet',
     labelKey: 'home.widgets.netWorth.title',
     descriptionKey: 'home.widgets.netWorth.description',
@@ -66,6 +67,7 @@ export const WIDGET_REGISTRY = {
   },
   'today-change': {
     type: 'today-change',
+    handlesVaultedPortfolios: true,
     icon: 'pulse',
     labelKey: 'home.widgets.todayChange.title',
     descriptionKey: 'home.widgets.todayChange.description',
@@ -77,6 +79,7 @@ export const WIDGET_REGISTRY = {
   },
   liquidity: {
     type: 'liquidity',
+    handlesVaultedPortfolios: true,
     icon: 'scale',
     labelKey: 'home.widgets.liquidity.title',
     descriptionKey: 'home.widgets.liquidity.description',
@@ -89,6 +92,7 @@ export const WIDGET_REGISTRY = {
   },
   concentration: {
     type: 'concentration',
+    handlesVaultedPortfolios: true,
     icon: 'target',
     labelKey: 'home.widgets.concentration.title',
     descriptionKey: 'home.widgets.concentration.description',
@@ -100,6 +104,7 @@ export const WIDGET_REGISTRY = {
   },
   'portfolio-cards': {
     type: 'portfolio-cards',
+    handlesVaultedPortfolios: true,
     icon: 'portfolios',
     labelKey: 'home.widgets.portfolioCards.title',
     descriptionKey: 'home.widgets.portfolioCards.description',
@@ -114,6 +119,7 @@ export const WIDGET_REGISTRY = {
   },
   'performance-chart': {
     type: 'performance-chart',
+    handlesVaultedPortfolios: true,
     icon: 'trending-up',
     labelKey: 'home.widgets.performanceChart.title',
     descriptionKey: 'home.widgets.performanceChart.description',
@@ -127,6 +133,7 @@ export const WIDGET_REGISTRY = {
   },
   'net-worth-history': {
     type: 'net-worth-history',
+    handlesVaultedPortfolios: true,
     icon: 'pulse',
     labelKey: 'home.widgets.netWorthHistory.title',
     descriptionKey: 'home.widgets.netWorthHistory.description',
@@ -145,6 +152,7 @@ export const WIDGET_REGISTRY = {
   },
   'cashflow-chart': {
     type: 'cashflow-chart',
+    handlesVaultedPortfolios: true,
     icon: 'cash',
     labelKey: 'home.widgets.cashflowChart.title',
     descriptionKey: 'home.widgets.cashflowChart.description',
@@ -163,6 +171,7 @@ export const WIDGET_REGISTRY = {
   },
   allocation: {
     type: 'allocation',
+    handlesVaultedPortfolios: true,
     icon: 'pie',
     labelKey: 'home.widgets.allocation.title',
     descriptionKey: 'home.widgets.allocation.description',
@@ -192,6 +201,7 @@ export const WIDGET_REGISTRY = {
   },
   'top-movers': {
     type: 'top-movers',
+    handlesVaultedPortfolios: true,
     icon: 'trending-up',
     labelKey: 'home.widgets.topMovers.title',
     descriptionKey: 'home.widgets.topMovers.description',
@@ -250,6 +260,7 @@ export const WIDGET_REGISTRY = {
   },
   'cash-balances': {
     type: 'cash-balances',
+    handlesVaultedPortfolios: true,
     icon: 'cash',
     labelKey: 'home.widgets.cashBalances.title',
     descriptionKey: 'home.widgets.cashBalances.description',

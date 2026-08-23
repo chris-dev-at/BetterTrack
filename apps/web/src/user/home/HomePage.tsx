@@ -6,7 +6,7 @@ import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
-import { isVaultedPortfolio, portfolioDisplayName } from '../portfolio/lockedPortfolio';
+import { portfolioDisplayName } from '../portfolio/lockedPortfolio';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
@@ -20,7 +20,12 @@ import {
   setWidgetSize,
   type WidgetType,
 } from './config';
-import { resolveWidgetScope, usePortfoliosQuery, type ResolvedScope } from './homeData';
+import {
+  portfoliosVisibleToWidget,
+  resolveWidgetScope,
+  usePortfoliosQuery,
+  type ResolvedScope,
+} from './homeData';
 import { useHomeBoard } from './homeSync';
 import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
@@ -336,10 +341,7 @@ function HomeBoard() {
         <div className={cx('bt-home-grid', editing && 'is-editing')} ref={gridRef}>
           {config.widgets.map((widget, index) => {
             const definition = widgetDefinition(widget.type);
-            const availablePortfolios =
-              widget.type === 'portfolio-cards'
-                ? portfolios
-                : portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
+            const availablePortfolios = portfoliosVisibleToWidget(portfolios, definition);
             const scope = resolveWidgetScope(availablePortfolios, widget.settings, {
               supportsScope: definition.supportsScope,
               allowsAll: definition.scopeAllowsAll !== false,
