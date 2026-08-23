@@ -1,14 +1,19 @@
-import { Suspense } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Suspense, useMemo } from 'react';
+import { Outlet, useLocation, useSearchParams } from 'react-router-dom';
+
+import { useQuery } from '@tanstack/react-query';
 
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
 import { LocalNav, usePreservedSearch } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
-import { SubTabLink } from '../../ui/origin';
+import { Button, SubTabLink } from '../../ui/origin';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
-import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
+import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
+import { LockedPortfolioStub } from './LockedPortfolioStub';
+import { isVaultedPortfolio } from './lockedPortfolio';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /**
  * The portfolio workspace (PRODUCT_BLUEPRINT.md §4 "Portfolio-local
@@ -23,19 +28,56 @@ import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
  */
 export function PortfolioWorkspace() {
   const t = useT();
+  const store = usePortfolioStore();
+  const [searchParams] = useSearchParams();
   const items = useSectionNavItems('portfolio');
+  const portfolios = useQuery({
+    queryKey: ['portfolios'],
+    queryFn: ({ signal }) => store.listPortfolios(signal),
+    staleTime: 60_000,
+  });
+  const active = useMemo(
+    () =>
+      resolveActivePortfolio(
+        portfolios.data?.portfolios ?? [],
+        searchParams.get(ACTIVE_PORTFOLIO_PARAM),
+      ),
+    [portfolios.data, searchParams],
+  );
+  const locked = isVaultedPortfolio(active);
+  // A locked stub has one job: lead to its state action. Portfolio operations,
+  // including Import, never remain as tempting dead-end tabs around it.
+  //
+  // Only a KNOWN-locked portfolio collapses the strip. Collapsing it while the
+  // list is still in flight would blank the local nav down to Overview on every
+  // cold load of the hot path — the page body below already refuses to render
+  // anything but a skeleton until the same read resolves, so nothing leaks.
+  const visibleItems = locked ? items.filter((item) => item.to === '/portfolio') : items;
 
   return (
     <div>
       <LocalNav
         ariaLabel={t(SECTION_NAV.portfolio.ariaLabelKey)}
-        items={items}
+        items={visibleItems}
         preserveParams={SECTION_NAV.portfolio.preserveParams}
       />
       {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
           only the page area waits, so a cold page still says it is loading. */}
       <Suspense fallback={<Skeleton className="rounded-md" height="h-64" />}>
-        <Outlet />
+        {portfolios.isPending ? (
+          <Skeleton className="rounded-md" height="h-64" />
+        ) : portfolios.isError ? (
+          <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
+            <span>{t('common.unavailable')}</span>
+            <Button onClick={() => void portfolios.refetch()} size="sm" type="button">
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : locked ? (
+          <LockedPortfolioStub portfolio={active} />
+        ) : (
+          <Outlet />
+        )}
       </Suspense>
     </div>
   );

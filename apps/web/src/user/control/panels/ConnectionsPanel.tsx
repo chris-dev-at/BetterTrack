@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
+
+import type { DriveConnection, VaultConfig } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
@@ -9,10 +11,15 @@ import { ApiError } from '../../../lib/apiClient';
 import { formatDateTime } from '../../../lib/format';
 import { getGoogleDriveClientId } from '../../../lib/runtimeConfig';
 import {
+  createDriveConnection,
+  deleteDriveConnection,
   getGoogleLinkStatus,
   getParanoidMediaState,
   googleStartUrl,
+  listDriveConnections,
+  listVaultConfigs,
   unlinkGoogle,
+  verifyDriveConnection,
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
 import { Badge, Button, Field, Input, type BadgeTone } from '../../../ui/origin';
@@ -22,6 +29,10 @@ import type {
   DriveConnectionController,
   VaultRetiredPurgeResult,
 } from '../../vault/media';
+import {
+  createDriveConnectionRegistry,
+  type DriveConnectionRegistry,
+} from '../../vault/media/driveConnectionRegistry';
 import { useResolvedPrivacyModeState, vaultMediaQueryKey } from '../../vault/usePrivacyMode';
 import {
   useOptionalVaultRuntime,
@@ -265,6 +276,311 @@ const DRIVE_STATUS_TONE: Record<string, BadgeTone> = {
   working: 'blue',
   disconnected: 'neutral',
 };
+
+const DRIVE_CONNECTIONS_KEY = ['vaults', 'drive-connections'] as const;
+const VAULT_CONFIGS_KEY = ['vaults', 'configs'] as const;
+
+function useRegistryAuthorization(registry: DriveConnectionRegistry, connection: DriveConnection) {
+  const subscribe = useCallback(
+    (listener: () => void) => registry.subscribe(connection, listener),
+    [connection, registry],
+  );
+  const getSnapshot = useCallback(() => registry.authorization(connection), [connection, registry]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+function DriveIdentityRow({
+  connection,
+  registry,
+  vaults,
+  working,
+  onAuthorize,
+  onDisconnect,
+}: {
+  connection: DriveConnection;
+  registry: DriveConnectionRegistry;
+  vaults: readonly VaultConfig[];
+  working: boolean;
+  onAuthorize: () => void;
+  onDisconnect: () => void;
+}) {
+  const t = useT();
+  const authorization = useRegistryAuthorization(registry, connection);
+  const bound = vaults.filter(({ driveConnectionId }) => driveConnectionId === connection.id);
+  const label = connection.displayName
+    ? `${connection.displayName} · ${connection.email}`
+    : connection.email;
+  return (
+    <Row
+      hint={
+        bound.length === 0
+          ? t('settings.connections.driveAccounts.unbound')
+          : t('settings.connections.driveAccounts.boundVaults', {
+              vaults: bound.map(({ name }) => name).join(', '),
+            })
+      }
+      label={label}
+    >
+      <Badge tone={authorization === 'connected' ? 'pos' : 'gold'}>
+        {t(
+          authorization === 'connected'
+            ? 'settings.connections.driveAccounts.connected'
+            : authorization === 'revoked'
+              ? 'settings.connections.driveAccounts.revoked'
+              : 'settings.connections.driveAccounts.needsSignIn',
+        )}
+      </Badge>
+      {authorization !== 'connected' ? (
+        <Button disabled={working} onClick={onAuthorize} size="sm" variant="primary">
+          {t('settings.connections.driveAccounts.signIn', { email: connection.email })}
+        </Button>
+      ) : null}
+      <Button disabled={working} onClick={onDisconnect} size="sm" variant="quiet">
+        {t('settings.connections.driveAccounts.disconnect')}
+      </Button>
+    </Row>
+  );
+}
+
+export interface DriveVaultMoveResult {
+  cleanupFailures: readonly { docId: string; message: string }[];
+}
+
+/** Compact N-account registry and per-vault binding projection (E5). */
+function DriveAccountsSection({
+  registry,
+  moveVault,
+}: {
+  registry: DriveConnectionRegistry;
+  moveVault?: (vaultId: string, connectionId: string) => Promise<DriveVaultMoveResult>;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [working, setWorking] = useState<string | null>(null);
+  const [acknowledge, setAcknowledge] = useState<DriveConnection | null>(null);
+  const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
+  const [message, setMessage] = useState<{
+    tone: 'error' | 'success' | 'info';
+    text: string;
+  } | null>(null);
+  const connections = useQuery({
+    queryKey: DRIVE_CONNECTIONS_KEY,
+    queryFn: ({ signal }) => listDriveConnections(signal),
+    staleTime: 15_000,
+  });
+  const vaults = useQuery({
+    queryKey: VAULT_CONFIGS_KEY,
+    queryFn: ({ signal }) => listVaultConfigs(signal),
+    staleTime: 15_000,
+  });
+
+  async function refresh(): Promise<void> {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: DRIVE_CONNECTIONS_KEY }),
+      queryClient.invalidateQueries({ queryKey: VAULT_CONFIGS_KEY }),
+    ]);
+  }
+
+  async function connect(): Promise<void> {
+    setWorking('new');
+    setMessage(null);
+    const result = await registry.connect();
+    if (result.status === 'ok') {
+      setMessage({ tone: 'success', text: t('settings.connections.driveAccounts.added') });
+      await refresh();
+    } else {
+      // Closing the Google consent popup is the common outcome here, and it is
+      // actionable: say what to do instead of "could not be changed".
+      setMessage({
+        tone: 'error',
+        text: t(
+          result.status === 'authorization-required'
+            ? 'settings.connections.driveAccounts.signInNew'
+            : 'settings.connections.driveAccounts.error',
+        ),
+      });
+    }
+    setWorking(null);
+  }
+
+  async function authorize(connection: DriveConnection): Promise<void> {
+    setWorking(connection.id);
+    setMessage(null);
+    const result = await registry.authorize(connection);
+    setMessage(
+      result.status === 'ok'
+        ? { tone: 'success', text: t('settings.connections.driveAccounts.verified') }
+        : {
+            tone: 'error',
+            text:
+              result.status === 'authorization-required' || result.status === 'identity-mismatch'
+                ? t('settings.connections.driveAccounts.signIn', { email: connection.email })
+                : t('settings.connections.driveAccounts.error'),
+          },
+    );
+    if (result.status === 'ok') await refresh();
+    setWorking(null);
+  }
+
+  async function disconnect(connection: DriveConnection, confirmed: boolean): Promise<void> {
+    setWorking(connection.id);
+    setMessage(null);
+    try {
+      await registry.disconnect(connection, confirmed);
+      setAcknowledge(null);
+      setMessage({ tone: 'success', text: t('settings.connections.driveAccounts.disconnected') });
+      await refresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'DRIVE_CONNECTION_BOUND' && !confirmed) {
+        setAcknowledge(connection);
+      } else {
+        setMessage({
+          tone: 'error',
+          text:
+            error instanceof ApiError && error.code === 'DRIVE_CONNECTION_LAST_MEDIUM'
+              ? t('settings.connections.driveAccounts.lastMedium')
+              : t('settings.connections.driveAccounts.error'),
+        });
+      }
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function move(vault: VaultConfig): Promise<void> {
+    const target = moveTargets[vault.id];
+    if (!moveVault || !target) return;
+    setWorking(vault.id);
+    setMessage(null);
+    try {
+      const result = await moveVault(vault.id, target);
+      // The chosen target is now the vault's own connection, so it drops out of
+      // the option list and the <select> renders blank. Clearing the remembered
+      // choice disables **Move** with it — otherwise the button stays live on a
+      // value that would ask for a migration onto the connection the vault
+      // already sits on.
+      setMoveTargets(({ [vault.id]: _chosen, ...rest }) => rest);
+      setMessage({
+        tone: result.cleanupFailures.length > 0 ? 'info' : 'success',
+        text: t(
+          result.cleanupFailures.length > 0
+            ? 'settings.connections.driveAccounts.moveCleanupFailed'
+            : 'settings.connections.driveAccounts.moved',
+        ),
+      });
+      await refresh();
+    } catch {
+      setMessage({ tone: 'error', text: t('settings.connections.driveAccounts.moveError') });
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  return (
+    <PanelGroup label={t('settings.connections.driveAccounts.title')}>
+      {connections.isPending || vaults.isPending ? (
+        <Row stack>
+          <Skeleton height="h-4" width="w-40" />
+        </Row>
+      ) : connections.isError || vaults.isError ? (
+        <Row stack>
+          <PanelNote>{t('settings.connections.driveAccounts.loadError')}</PanelNote>
+        </Row>
+      ) : (
+        <>
+          {connections.data.length === 0 ? (
+            <Row stack>
+              <PanelNote>{t('settings.connections.driveAccounts.empty')}</PanelNote>
+            </Row>
+          ) : (
+            connections.data.map((connection) => (
+              <DriveIdentityRow
+                connection={connection}
+                key={connection.id}
+                onAuthorize={() => void authorize(connection)}
+                onDisconnect={() => void disconnect(connection, false)}
+                registry={registry}
+                vaults={vaults.data}
+                working={working === connection.id}
+              />
+            ))
+          )}
+          <Row stack>
+            <Button disabled={working !== null} onClick={() => void connect()} size="sm">
+              {t(
+                connections.data.length === 0
+                  ? 'settings.connections.driveAccounts.addFirst'
+                  : 'settings.connections.driveAccounts.add',
+              )}
+            </Button>
+          </Row>
+
+          {moveVault && connections.data.length > 1 ? (
+            <PanelFold summary={t('settings.connections.driveAccounts.bindings')}>
+              <div className="flex flex-col gap-3">
+                {vaults.data
+                  .filter(({ driveConnectionId }) => driveConnectionId != null)
+                  .map((vault) => (
+                    <div className="flex flex-wrap items-center gap-2" key={vault.id}>
+                      <span className="text-sm">{vault.name}</span>
+                      <select
+                        aria-label={t('settings.connections.driveAccounts.moveTarget', {
+                          vault: vault.name,
+                        })}
+                        className="bt-input w-auto"
+                        onChange={(event) =>
+                          setMoveTargets((current) => ({
+                            ...current,
+                            [vault.id]: event.target.value,
+                          }))
+                        }
+                        value={moveTargets[vault.id] ?? ''}
+                      >
+                        <option value="">{t('settings.connections.driveAccounts.choose')}</option>
+                        {connections.data
+                          .filter(({ id }) => id !== vault.driveConnectionId)
+                          .map((connection) => (
+                            <option key={connection.id} value={connection.id}>
+                              {connection.email}
+                            </option>
+                          ))}
+                      </select>
+                      <Button
+                        disabled={!moveTargets[vault.id] || working !== null}
+                        onClick={() => void move(vault)}
+                        size="sm"
+                      >
+                        {t('settings.connections.driveAccounts.move')}
+                      </Button>
+                    </div>
+                  ))}
+              </div>
+            </PanelFold>
+          ) : null}
+        </>
+      )}
+
+      {acknowledge ? (
+        <Row stack>
+          <Alert tone="info">{t('settings.connections.driveAccounts.acknowledge')}</Alert>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => void disconnect(acknowledge, true)} size="sm" variant="danger">
+              {t('settings.connections.driveAccounts.acknowledgeAction')}
+            </Button>
+            <Button onClick={() => setAcknowledge(null)} size="sm" variant="quiet">
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </Row>
+      ) : null}
+      {message ? (
+        <Row stack>
+          <Alert tone={message.tone}>{message.text}</Alert>
+        </Row>
+      ) : null}
+    </PanelGroup>
+  );
+}
 
 function useDriveAuthorization(connection: DriveConnectionController | null) {
   const subscribe = useCallback(
@@ -529,8 +845,7 @@ function DriveVaultSection({
         ) : null}
       </Row>
 
-      {/* The one kept line of Drive prose: it states the access scope — the
-          app-data folder only, never ordinary Drive files. */}
+      {/* The one kept line states the least-privilege drive.file boundary. */}
       <Row stack>
         <PanelNote>{t('settings.connections.drive.description')}</PanelNote>
       </Row>
@@ -718,26 +1033,85 @@ function ConnectorSlots() {
 export function ConnectionsPanel({
   driveConnection,
   driveUnlock,
+  driveRegistry,
+  driveMoveVault,
   driveConfigured = Boolean(getGoogleDriveClientId()),
 }: {
   driveConnection?: DriveConnectionController | null;
   driveUnlock?:
     | ((passphrase: string, options: VaultDriveUnlockOptions) => Promise<DriveConnectionController>)
     | null;
+  driveRegistry?: DriveConnectionRegistry | null;
+  /**
+   * The Y → Z move. No production caller supplies it yet: `migrateDriveConnection`
+   * needs one source/target `DriveDataHome` PAIR PER DOCUMENT and a replicated
+   * write path for the §8 identity echo, and the live runtime still composes the
+   * single account-scoped envelope-v1 home. Both arrive with the client-engine
+   * re-home in E6 (#1416), which is where this prop gets its implementation,
+   * and the vault UI that surfaces it lands in E8 (#1418). Recorded as an
+   * unmet #1415 acceptance line in PROJECTPLAN §16 (2026-08-22).
+   */
+  driveMoveVault?: (vaultId: string, connectionId: string) => Promise<DriveVaultMoveResult>;
   driveConfigured?: boolean;
 } = {}) {
   const t = useT();
   const runtime = useOptionalVaultRuntime();
   const privacy = useResolvedPrivacyModeState();
+  const driveClientId = getGoogleDriveClientId();
+  // The account-level `privacyMode` is NOT the audience gate. It is the retired
+  // v1 column: per §16 (2026-08-21, E2) it reports 'normal' for every new-model
+  // vault owner and E9 deletes it, and `createVault` never writes 'paranoid' —
+  // only the legacy enable ceremony did. Gating on it hid this whole group from
+  // exactly the owners E8 creates.
+  //
+  // What makes the group meaningful is owning a vault to bind a Drive account
+  // to, so the audience is "has at least one vault", with legacy paranoid
+  // accounts kept in the OR until E9 removes their account-level rail. The
+  // runtime client id stays capability, not audience: without it there is no
+  // registry, so nothing renders and nothing is requested.
+  const legacyParanoid = privacy.privacyMode === 'paranoid';
+  const resolvedDriveRegistry = useMemo(
+    () =>
+      driveRegistry === undefined
+        ? driveClientId
+          ? createDriveConnectionRegistry({
+              clientId: driveClientId,
+              api: {
+                create: createDriveConnection,
+                verify: verifyDriveConnection,
+                delete: deleteDriveConnection,
+              },
+            })
+          : null
+        : driveRegistry,
+    [driveClientId, driveRegistry],
+  );
   const resolvedDriveConnection =
     driveConnection === undefined ? (runtime?.connection ?? null) : driveConnection;
   const resolvedDriveUnlock =
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
+  // The section's own vault read, hoisted so the answer decides whether the
+  // section exists at all. Same key and staleTime, so the two observers share
+  // ONE request — the audience test costs nothing extra once the group renders,
+  // and an account with no vault pays a single cheap config read instead of the
+  // pair (connections + vaults) the group would fire.
+  const vaultConfigs = useQuery({
+    queryKey: VAULT_CONFIGS_KEY,
+    queryFn: ({ signal }) => listVaultConfigs(signal),
+    staleTime: 15_000,
+    enabled: resolvedDriveRegistry != null,
+  });
+  const showDriveAccounts =
+    resolvedDriveRegistry != null && (legacyParanoid || (vaultConfigs.data?.length ?? 0) > 0);
   return (
     <div className="bt-cc-panel">
       <PanelHead title={t('control.connections')} />
 
       <GoogleSection />
+
+      {showDriveAccounts && resolvedDriveRegistry ? (
+        <DriveAccountsSection registry={resolvedDriveRegistry} moveVault={driveMoveVault} />
+      ) : null}
 
       <DriveVaultSection
         accountId={privacy.accountId}

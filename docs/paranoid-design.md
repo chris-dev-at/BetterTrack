@@ -357,8 +357,18 @@ reconciliation (#895/#896) and is kept because it is right:
 3. The last medium can never be removed.
 
 Changing a vault's **Drive connection** (Y → Z) is a media migration with the
-same discipline: write to Z's namespace, verify, PATCH the binding, best-effort
-delete from Y.
+same discipline, and it starts one step earlier than a byte copy (E5): the
+header doc's §8 `driveConnection` identity echo is first rewritten to Z through
+the NORMAL replicated write path — every active medium, server included — and
+only then is the (now Z-naming) doc set written to Z's namespace, verified,
+the binding PATCHed, and Y best-effort deleted. A byte-only copy would leave
+the encrypted header naming Y, so words + the right Google login would no
+longer discover the vault after the move; and for a replicated vault the
+server's per-doc attestation rows would disagree with the new Drive bytes,
+which is exactly what `PATCH /vaults/:vaultId/media` verifies. Source and
+target connection must differ — a same-connection "move" resolves both homes to
+one object, so the copy is skipped as already-equal and the cleanup would then
+delete the only copy while reporting success.
 
 ## 8. Google Drive — separate authentication, multi-connection, collision-safe namespace
 
@@ -370,9 +380,11 @@ X, back up to Drive Y, put another vault on Drive Z: supported natively.
 
 **Ground truth first, because the owner asked "does the Drive stuff work":**
 the shipped transport (`apps/web/src/user/vault/drive/gisTokenClient.ts`,
-`driveDataHome.ts`) is real, tested, browser-only code requesting exactly
-`https://www.googleapis.com/auth/drive.appdata`
-(`gisTokenClient.ts:2`) — but it has NEVER run on production: prod's web
+`driveDataHome.ts`) is real, tested, browser-only code requesting exactly one
+Drive scope (`DRIVE_FILE_SCOPE`, `gisTokenClient.ts:2`) — up to E5 that scope
+was `https://www.googleapis.com/auth/drive.appdata`; E5 moved it to
+`https://www.googleapis.com/auth/drive.file` per the §21 Q5 ruling recorded
+below, and no other scope is ever requested — but it has NEVER run on production: prod's web
 runtime config serves `googleDriveClientId: ""` because
 `BT_GOOGLE_DRIVE_CLIENT_ID` was never set on the host (docs/ops.md, "Browser
 Google Drive runtime configuration"). So no live user has ever written a Drive
@@ -399,13 +411,20 @@ with zero user migration.
   shared-physical-Drive case, allowed.
 - **Token model — client-side only, unchanged in kind from v1 §6:** GIS token
   client, SPA client id from env, tokens minted in the browser **per
-  connection** with `login_hint` = the connection's `google_sub`, ~1 h
+  connection** with `login_hint` = the connection's **email**, ~1 h
   lifetime, memory-only, never sent to or stored by the server, no server
-  proxy endpoints. Consequence (the binding Drive-only guarantee, carried
+  proxy endpoints. (E5 correction: GIS documents `hint`/`login_hint` as an
+  email address or an ID-token `sub`. What the registry stores as `google_sub`
+  is Drive's `about.get` `user.permissionId` — an opaque Permission-resource
+  id that Google does not document as a hint value, so it is kept for the
+  post-consent principal check and the email is the hint.) Consequence (the binding Drive-only guarantee, carried
   over): for a Drive-only vault the server holds zero cleartext, zero active
   ciphertext, and zero CAPABILITY to fetch the Drive copy. Refresh = GIS
-  re-mint (silent while the Google session lives, a user gesture otherwise);
-  the sync indicator (§14) surfaces "sign in to Google (Y) to sync" — never a
+  re-mint (silent while the Google session lives, a user gesture otherwise).
+  **Every re-mint repeats `about.get` and compares its `permissionId` with the
+  connection's stored `google_sub`; a chooser switch fails closed as the
+  distinct `identity-mismatch` state before the new token can reach storage.**
+  The sync indicator (§14) surfaces "sign in to Google (Y) to sync" — never a
   silent stall.
 - **Scope RULED (2026-08-20, §21 Q5) — move from `drive.appdata` to
   `drive.file` with a visible "BetterTrack Vaults" folder.** The hidden `appDataFolder` is
@@ -433,7 +452,14 @@ with zero user migration.
   connection); in-app **disconnect** refuses while any vault is bound to the
   connection unless the vault first migrates off it (§7) — or, behind an
   explicit acknowledgment, the user accepts that the app loses reach to that
-  copy (the files remain their property in their Drive).
+  copy (the files remain their property in their Drive). **A Drive-ONLY vault
+  is the one case the acknowledgment cannot cover** (E5, PROJECTPLAN §16
+  2026-08-21): dropping its last medium would leave the empty media set the
+  `vaults_media_state` CHECK rejects, and the only copy of every doc behind a
+  binding that no longer exists — the refusal (`DRIVE_CONNECTION_LAST_MEDIUM`)
+  is decided before the acknowledgment is read, so the owner is never offered
+  a loss of reach that was never on the table. Add and attest the server
+  medium first, then disconnect.
 - **Collision-safe namespace (two users, one physical Drive):** whatever the
   scope, both users' files can share one container (appdata: one hidden
   folder per Google account × client; drive.file: one visible folder), so the
@@ -452,11 +478,38 @@ with zero user migration.
     `ownerDigest` `appProperties` filter (rename/move-proof) and NEVER writes
     a file whose `ownerDigest` is not its own (checked before every update);
     concurrent creates dedupe by re-querying before first write.
+  - **The visible folder is reconciled, not assumed unique (E5):** lookup-
+    then-create is not atomic on Drive, so two devices — or two per-document
+    homes starting together — can both create one. Every creator re-lists
+    afterwards, adopts the same deterministic winner (lowest folder id) and
+    discards the folder it created if it lost and is still empty. Objects are
+    always found by `appProperties`, never by parent, so even a stray folder
+    never hides a doc.
   - **Cannot read each other:** contents are AEAD ciphertext under different
     K_c; and even a maliciously renamed/copied file fails decryption because
     `accountBinding`/`vaultId`/`docId` sit in the AAD (§5). Names and
     appProperties are digests — no emails, no vault names, no portfolio hints
     in anything a co-user of the Drive could see.
+  - **Bounded paged lookup (E5 follow-up):** `docId` remains out of
+    `appProperties`, so all documents with the same (`ownerDigest`,
+    `vaultDigest`, `docKind`) share one list address. The chosen resolution is
+    pagination, not a new `docDigest` object-format field: the client reads
+    100 objects per Drive page and supports at most **1,000 candidate objects
+    per address** (therefore up to 1,000 portfolio documents for the usual
+    portfolio address). It reads every page before declaring a document
+    absent; a repeated page token or an address above the supported ceiling
+    fails closed. This removes the former 100-object cliff while bounding the
+    request/download work a shared Drive can impose.
+  - **Residual shared-Drive denial of service (accepted, manual remedy):** a
+    co-tenant of the same physical Drive can create an app-owned file carrying
+    another user's `ownerDigest`/`vaultDigest`/`docKind` and a copied plaintext
+    header with a higher `docVersion`. AEAD still prevents the co-tenant from
+    reading or clobbering the real document, so the confidentiality/integrity
+    property above holds, but the forged higher-version candidate can wedge
+    that address. This design **does not claim DoS resistance against a
+    co-tenant of the same Drive**. The manual remedy is to remove the forged
+    candidate from the visible **BetterTrack Vaults** folder (or Drive trash)
+    and retry sync.
   - This extends the shipped derivation
     (`driveDataHome.ts#driveVaultFileName`,
     `sha256("bettertrack-drive-vault-account-v1:" + accountId)`) from

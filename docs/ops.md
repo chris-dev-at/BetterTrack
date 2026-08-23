@@ -79,14 +79,30 @@ The second URI is required for the native Google account-linking flow. Here,
 
 Set `BT_GOOGLE_DRIVE_CLIENT_ID` in the deployment env to the public client id of
 a Google Cloud OAuth **Web application** credential whose authorized JavaScript
-origin is the BetterTrack user-app origin. BetterTrack requests only
-`https://www.googleapis.com/auth/drive.appdata`. Leaving the value blank hides
-the Google Drive card unless Drive is already a selected vault medium.
+origin is the BetterTrack user-app origin. Enable the Google Drive API for that
+project. BetterTrack requests exactly
+`https://www.googleapis.com/auth/drive.file`: it creates a visible
+**BetterTrack Vaults** folder and can access only the files it created through
+that grant, never unrelated Drive files. Users may authenticate Drive separately
+from their BetterTrack Google sign-in and may register multiple Drive accounts;
+each connection gets its own browser-memory GIS token and Google login hint.
+Leaving the value blank hides new Drive connection controls unless Drive is
+already a selected vault medium.
+
+File and folder discovery uses opaque digest `appProperties` plus cached Drive
+ids, not display names. Users may rename or move the folder and encrypted files
+without breaking synchronization. Two BetterTrack accounts may intentionally
+use the same physical Google Drive; their owner/account/vault/document digests
+keep namespaces disjoint.
 
 The client id is public by design; do not put a client secret, access token, or
 refresh token in this variable. The OAuth flow remains browser-only through
 Google Identity Services: the BetterTrack API receives no Drive token, file id,
 or proxied Drive request.
+
+Production had no stranded hidden-folder data when this scope changed: the prod
+host had never set `BT_GOOGLE_DRIVE_CLIENT_ID`, so `/config.js` exposed an empty
+`googleDriveClientId` and the GIS Drive client could not initialize.
 
 After changing the value, recreate only the `web` container with the same base
 and topology Compose files used by the deployment (for example, append

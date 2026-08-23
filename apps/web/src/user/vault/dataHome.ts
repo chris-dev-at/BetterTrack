@@ -23,6 +23,8 @@ export interface DataHomeTransportFailure {
     | 'consent-required'
     | 'token-expired'
     | 'gesture-required'
+    | 'revoked'
+    | 'identity-mismatch'
     | 'permission-denied'
     | 'api-failure';
   /** The remote may have committed before the response was lost. */

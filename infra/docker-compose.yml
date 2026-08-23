@@ -154,9 +154,10 @@ services:
       BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
       BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
       BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
-      # Public Google Cloud SPA OAuth client id for the browser-only
-      # drive.appdata flow. It is rendered into config.js at container start;
-      # no client secret or Drive token belongs in this setting.
+      # Public Google Cloud SPA OAuth client id for the browser-only drive.file
+      # flow (§21 Q5 — visible "BetterTrack Vaults" folder). It is rendered into
+      # config.js at container start; no client secret or Drive token belongs in
+      # this setting.
       BT_GOOGLE_DRIVE_CLIENT_ID: '${BT_GOOGLE_DRIVE_CLIENT_ID:-}'
       # Same value the api reads (below). The front proxy renders the static CSP
       # at start, and the admin Diagnostics panel embeds this URL in an iframe on

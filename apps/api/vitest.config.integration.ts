@@ -70,6 +70,9 @@ export default defineConfig({
       'src/data/repositories/__tests__/portfolioVaultTransitionRepository.test.ts',
       'src/data/repositories/__tests__/portfolioVaultRestoreRepository.test.ts',
       'src/__tests__/vaultsE1.test.ts',
+      // #1485: disposing one harness must never close the worker-shared Redis
+      // singleton that another harness is still using.
+      'src/testing/createTestApp.test.ts',
     ],
     pool: 'forks',
     poolOptions: {

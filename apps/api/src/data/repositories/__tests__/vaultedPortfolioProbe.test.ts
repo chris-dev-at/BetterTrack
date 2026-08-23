@@ -96,7 +96,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await h.ctx.redis.quit?.();
+  await h.dispose();
 });
 
 describe('vaulted portfolio cleartext probe', () => {

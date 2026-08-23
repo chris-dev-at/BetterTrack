@@ -591,6 +591,74 @@ describe('OpenAPI document', () => {
     expect((securitySchemes.sessionCookie as JsonObject).in).toBe('cookie');
   });
 
+  it('publishes contract-owned feedback error codes as operation metadata', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const submitFeedback = (paths['/feedback'] as JsonObject).post as JsonObject;
+    const updateFeedback = (paths['/admin/feedback/{id}'] as JsonObject).patch as JsonObject;
+    const submittedCodes = submitFeedback['x-error-codes'] as string[];
+    const updatedCodes = updateFeedback['x-error-codes'] as string[];
+
+    expect(submittedCodes).toEqual(
+      expect.arrayContaining([
+        ...Object.values(contracts.AUTH_ERROR_CODES),
+        ...contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
+      ]),
+    );
+    expect(updatedCodes).toEqual(
+      expect.arrayContaining([
+        ...Object.values(contracts.AUTH_ERROR_CODES),
+        contracts.ADMIN_2FA_SETUP_REQUIRED,
+        ...contracts.FEEDBACK_STATUS_ERROR_CODES,
+      ]),
+    );
+
+    // The feedback routes above are mounted API operations; keep this coverage
+    // dynamic so a newly exported `*_LIMIT`, `*_REQUIRED`, or `*_INVALID`
+    // feedback error cannot silently remain a bare `ApiError.error.code`.
+    const exportedFeedbackCodes = Object.entries(contracts).flatMap(([name, value]) =>
+      /^FEEDBACK_.*_(?:LIMIT|REQUIRED|INVALID)$/.test(name) && typeof value === 'string'
+        ? [value]
+        : [],
+    );
+    expect([...submittedCodes, ...updatedCodes]).toEqual(
+      expect.arrayContaining(exportedFeedbackCodes),
+    );
+  });
+
+  it('publishes mandatory-admin-2FA codes for every non-bootstrap admin operation', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const bootstrapOperations = new Set([
+      'GET /admin/security/2fa/status',
+      'POST /admin/security/2fa/totp/enroll',
+      'POST /admin/security/2fa/totp/confirm',
+      'POST /admin/security/2fa/email/start',
+      'POST /admin/security/2fa/email/confirm',
+    ]);
+    const methods = ['get', 'post', 'put', 'patch', 'delete'] as const;
+
+    for (const [path, pathItem] of Object.entries(paths)) {
+      if (!path.startsWith('/admin/')) continue;
+      for (const method of methods) {
+        const operation = (pathItem as JsonObject)[method] as JsonObject | undefined;
+        if (!operation) continue;
+        const errorCodes = operation['x-error-codes'] as string[];
+        const operationName = `${method.toUpperCase()} ${path}`;
+
+        if (bootstrapOperations.has(operationName)) {
+          expect(errorCodes, operationName).not.toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+        } else {
+          expect(errorCodes, operationName).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+        }
+      }
+    }
+
+    expect(
+      ((paths['/admin/problems/{id}/resolve'] as JsonObject).post as JsonObject)['x-error-codes'],
+    ).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI

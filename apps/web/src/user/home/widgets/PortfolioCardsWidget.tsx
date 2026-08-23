@@ -6,8 +6,16 @@ import { EM_DASH, formatPercent } from '../../../lib/format';
 import { getPortfolioHistory } from '../../../lib/portfolioApi';
 import { MAIN_SERIES } from '../../../ui/charts/palette';
 import { MoneyText } from '../../../ui';
-import { Badge, Empty, SkeletonBlock } from '../../../ui/origin';
+import { Badge, Button, Empty, SkeletonBlock } from '../../../ui/origin';
 import { ACTIVE_PORTFOLIO_PARAM } from '../../portfolio/PortfolioSwitcher';
+import {
+  isVaultedPortfolio,
+  lockedPortfolioCount,
+  portfolioDisplayName,
+  type PortfolioVaultStub,
+} from '../../portfolio/lockedPortfolio';
+import { VaultStateAction } from '../../vault/ui/VaultStateAction';
+import { useVaultEndpointState } from '../../vault/ui/useVaultEndpointState';
 import { widgetVariant } from '../config';
 import { usePortfolioSummaries } from '../homeData';
 import type { WidgetProps } from './types';
@@ -35,6 +43,9 @@ import type { WidgetProps } from './types';
 
 /** The sparkline window. Matches the portfolio page's default range. */
 const SPARK_RANGE = '1M' as const;
+
+/** Placeholder while one cell's own figure is still loading. */
+const ELLIPSIS = '…';
 
 /**
  * A trend shape, not a chart: no axes, no ticks, no hover. Drawn inline so a
@@ -96,6 +107,7 @@ export function PortfolioCardsWidget({
       queryKey: ['portfolio', portfolio.id, 'history', SPARK_RANGE],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         getPortfolioHistory(portfolio.id, SPARK_RANGE, false, signal),
+      enabled: !isVaultedPortfolio(portfolio),
       staleTime: 3_600_000,
     })),
   });
@@ -111,91 +123,234 @@ export function PortfolioCardsWidget({
 
   if (portfolios.length === 0) return <Empty title={t('home.widgets.portfolioCards.empty')} />;
 
+  const lockedCount = lockedPortfolioCount(portfolios);
+  const lockedFallback = t('vault.lockedStub.fallbackAlias');
+
   if (widgetVariant('portfolio-cards', settings) === 'table') {
     const totalValue = portfolios.reduce(
       (sum, _portfolio, index) => sum + (summaries[index]?.data?.totals.totalValueEur ?? 0),
       0,
     );
     return (
-      <table className="bt-table bt-home-ptable">
-        <thead>
-          <tr>
-            <th scope="col">{t('home.widgets.portfolioCards.colName')}</th>
-            <th className="is-num" scope="col">
-              {t('home.widgets.portfolioCards.colValue')}
-            </th>
-            <th className="is-num" scope="col">
-              {t('home.widgets.portfolioCards.colToday')}
-            </th>
-            <th className="is-num" scope="col">
-              {t('home.widgets.portfolioCards.colShare')}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {portfolios.map((portfolio, index) => {
-            const totals = summaries[index]?.data?.totals ?? null;
-            return (
-              <tr key={portfolio.id}>
-                <td>
-                  <Link
-                    className="bt-home-txn__link"
-                    to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
-                  >
-                    {portfolio.name}
-                  </Link>
-                </td>
-                <td className="is-num">
-                  {totals === null ? EM_DASH : <MoneyText amount={totals.totalValueEur} />}
-                </td>
-                <td className="is-num">
-                  {totals === null ? EM_DASH : <MoneyText amount={totals.dayChangeEur} signed />}
-                </td>
-                <td className="is-num bt-muted">
-                  {totals === null || totalValue <= 0
-                    ? EM_DASH
-                    : formatPercent((totals.totalValueEur / totalValue) * 100)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <>
+        {lockedCount > 0 ? (
+          <p className="bt-meta mb-2">
+            {t(lockedCount === 1 ? 'vault.lockedStub.countOne' : 'vault.lockedStub.count', {
+              count: lockedCount,
+            })}
+          </p>
+        ) : null}
+        <table className="bt-table bt-home-ptable">
+          <thead>
+            <tr>
+              <th scope="col">{t('home.widgets.portfolioCards.colName')}</th>
+              <th className="is-num" scope="col">
+                {t('home.widgets.portfolioCards.colValue')}
+              </th>
+              <th className="is-num" scope="col">
+                {t('home.widgets.portfolioCards.colToday')}
+              </th>
+              <th className="is-num" scope="col">
+                {t('home.widgets.portfolioCards.colShare')}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {portfolios.map((portfolio, index) => {
+              if (isVaultedPortfolio(portfolio)) {
+                return (
+                  <LockedPortfolioTableRow
+                    fallback={lockedFallback}
+                    key={portfolio.id}
+                    portfolio={portfolio}
+                  />
+                );
+              }
+              const totals = summaries[index]?.data?.totals ?? null;
+              return (
+                <tr key={portfolio.id}>
+                  <td>
+                    <Link
+                      className="bt-home-txn__link"
+                      to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
+                    >
+                      {portfolioDisplayName(portfolio, lockedFallback)}
+                    </Link>
+                    {/* One failed row retries itself; the other nine keep their
+                        figures instead of being replaced by a single panel. */}
+                    {summaries[index]?.isError || histories[index]?.isError ? (
+                      <button
+                        className="bt-link ml-2 text-xs"
+                        onClick={() => {
+                          void summaries[index]?.refetch();
+                          void histories[index]?.refetch();
+                        }}
+                        type="button"
+                      >
+                        {t('common.retry')}
+                      </button>
+                    ) : null}
+                  </td>
+                  <td className="is-num">
+                    {summaries[index]?.isPending ? (
+                      ELLIPSIS
+                    ) : totals === null ? (
+                      EM_DASH
+                    ) : (
+                      <MoneyText amount={totals.totalValueEur} />
+                    )}
+                  </td>
+                  <td className="is-num">
+                    {totals === null ? EM_DASH : <MoneyText amount={totals.dayChangeEur} signed />}
+                  </td>
+                  <td className="is-num bt-muted">
+                    {totals === null || totalValue <= 0
+                      ? EM_DASH
+                      : formatPercent((totals.totalValueEur / totalValue) * 100)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </>
     );
   }
 
   return (
-    <div className="bt-home-pcards">
-      {portfolios.map((portfolio, index) => {
-        const totals = summaries[index]?.data?.totals ?? null;
-        const values = (histories[index]?.data?.points ?? []).map((point) => point.valueEur);
-        return (
-          <Link
-            className="bt-panel bt-panel--soft bt-home-pcard"
-            key={portfolio.id}
-            to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
-          >
-            <span className="bt-home-pcard__head">
-              <span className="bt-row-title bt-home-pcard__name">{portfolio.name}</span>
-              {portfolio.isDefault ? <Badge>{t('home.defaultPortfolio')}</Badge> : null}
-            </span>
-            <span className="bt-home-pcard__body">
-              <span className="bt-home-pcard__figures">
-                <span className="bt-num bt-home-pcard__value">
-                  {totals === null ? '…' : <MoneyText amount={totals.totalValueEur} />}
-                </span>
-                <span className="bt-meta">
-                  {totals === null ? null : <MoneyText amount={totals.dayChangeEur} signed />}
-                </span>
-              </span>
-              <MiniSpark
-                label={t('home.widgets.portfolioCards.sparkAriaLabel', { name: portfolio.name })}
-                values={values}
+    <div className="flex flex-col gap-2">
+      {lockedCount > 0 ? (
+        <p className="bt-meta">
+          {t(lockedCount === 1 ? 'vault.lockedStub.countOne' : 'vault.lockedStub.count', {
+            count: lockedCount,
+          })}
+        </p>
+      ) : null}
+      <div className="bt-home-pcards">
+        {portfolios.map((portfolio, index) => {
+          if (isVaultedPortfolio(portfolio)) {
+            return (
+              <LockedPortfolioCard
+                fallback={lockedFallback}
+                key={portfolio.id}
+                portfolio={portfolio}
               />
-            </span>
-          </Link>
-        );
-      })}
+            );
+          }
+          const totals = summaries[index]?.data?.totals ?? null;
+          // No trend shape while this portfolio's own series is loading or
+          // failed — the cell degrades, the board does not.
+          const values =
+            histories[index]?.isPending || histories[index]?.isError
+              ? []
+              : (histories[index]?.data?.points ?? []).map((point) => point.valueEur);
+          return (
+            <Link
+              className="bt-panel bt-panel--soft bt-home-pcard"
+              key={portfolio.id}
+              to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
+            >
+              <span className="bt-home-pcard__head">
+                <span className="bt-row-title bt-home-pcard__name">
+                  {portfolioDisplayName(portfolio, lockedFallback)}
+                </span>
+                {portfolio.isDefault ? <Badge>{t('home.defaultPortfolio')}</Badge> : null}
+              </span>
+              <span className="bt-home-pcard__body">
+                <span className="bt-home-pcard__figures">
+                  <span className="bt-num bt-home-pcard__value">
+                    {summaries[index]?.isPending ? (
+                      ELLIPSIS
+                    ) : totals === null ? (
+                      EM_DASH
+                    ) : (
+                      <MoneyText amount={totals.totalValueEur} />
+                    )}
+                  </span>
+                  <span className="bt-meta">
+                    {summaries[index]?.isError ? (
+                      t('common.unavailable')
+                    ) : totals === null ? null : (
+                      <MoneyText amount={totals.dayChangeEur} signed />
+                    )}
+                  </span>
+                </span>
+                <MiniSpark
+                  label={t('home.widgets.portfolioCards.sparkAriaLabel', {
+                    name: portfolioDisplayName(portfolio, lockedFallback),
+                  })}
+                  values={values}
+                />
+              </span>
+            </Link>
+          );
+        })}
+      </div>
     </div>
+  );
+}
+
+function LockedPortfolioTableRow({
+  fallback,
+  portfolio,
+}: {
+  fallback: string;
+  portfolio: PortfolioVaultStub;
+}) {
+  const t = useT();
+  const state = useVaultEndpointState(portfolio.vaultId);
+  return (
+    <tr data-vault-stub="true">
+      <td className="bt-row-title">{portfolioDisplayName(portfolio, fallback)}</td>
+      <td colSpan={3}>
+        {state.data ? (
+          <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+        ) : (
+          <Button
+            disabled={state.isPending}
+            onClick={() => void state.refetch()}
+            size="sm"
+            type="button"
+            variant="quiet"
+          >
+            {state.isError ? t('common.retry') : t('common.loading')}
+          </Button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function LockedPortfolioCard({
+  fallback,
+  portfolio,
+}: {
+  fallback: string;
+  portfolio: PortfolioVaultStub;
+}) {
+  const t = useT();
+  const state = useVaultEndpointState(portfolio.vaultId);
+  return (
+    <article className="bt-panel bt-panel--soft bt-home-pcard" data-vault-stub="true">
+      <span className="bt-home-pcard__head">
+        <span className="bt-row-title bt-home-pcard__name">
+          {portfolioDisplayName(portfolio, fallback)}
+        </span>
+        <Badge>{t('vault.lockedStub.badge')}</Badge>
+      </span>
+      {state.data ? (
+        <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+      ) : (
+        <Button
+          disabled={state.isPending}
+          onClick={() => void state.refetch()}
+          size="sm"
+          type="button"
+          variant="quiet"
+        >
+          {state.isError ? t('common.retry') : t('common.loading')}
+        </Button>
+      )}
+    </article>
   );
 }

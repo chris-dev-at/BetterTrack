@@ -6,6 +6,7 @@ import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
+import { isVaultedPortfolio, portfolioDisplayName } from '../portfolio/lockedPortfolio';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
@@ -265,9 +266,18 @@ function HomeBoard() {
    * without opening the settings.
    */
   function scopeTag(scope: ResolvedScope): ScopeTag | null {
-    if (scope.mode === 'single') return { label: scope.single?.name ?? '', detail: null };
+    if (scope.mode === 'single') {
+      return {
+        label: scope.single
+          ? portfolioDisplayName(scope.single, t('vault.lockedStub.fallbackAlias'))
+          : '',
+        detail: null,
+      };
+    }
     if (scope.mode !== 'subset') return null;
-    const names = scope.portfolios.map((portfolio) => portfolio.name).join(', ');
+    const names = scope.portfolios
+      .map((portfolio) => portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias')))
+      .join(', ');
     return {
       label: t('home.builder.scopeCount', { count: scope.portfolios.length }),
       detail: names,
@@ -326,7 +336,11 @@ function HomeBoard() {
         <div className={cx('bt-home-grid', editing && 'is-editing')} ref={gridRef}>
           {config.widgets.map((widget, index) => {
             const definition = widgetDefinition(widget.type);
-            const scope = resolveWidgetScope(portfolios, widget.settings, {
+            const availablePortfolios =
+              widget.type === 'portfolio-cards'
+                ? portfolios
+                : portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
+            const scope = resolveWidgetScope(availablePortfolios, widget.settings, {
               supportsScope: definition.supportsScope,
               allowsAll: definition.scopeAllowsAll !== false,
             });
@@ -359,13 +373,13 @@ function HomeBoard() {
                 onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
                 placeAfter={isLast ? target(config.widgets.length) : null}
                 placeBefore={target(index)}
-                portfolios={portfolios}
+                portfolios={availablePortfolios}
                 scopeTag={scopeTag(scope)}
                 widget={widget}
               >
                 <Component
                   onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
-                  portfolios={portfolios}
+                  portfolios={availablePortfolios}
                   portfoliosLoading={portfoliosQuery.isLoading}
                   scopedPortfolio={scope.single}
                   scopedPortfolios={scope.portfolios}

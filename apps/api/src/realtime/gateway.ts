@@ -315,6 +315,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   // and counts distinct assets. Key every account's id from first write so a
   // later paranoid transition has no raw Redis key/AOF history to erase, while
   // normal and paranoid viewers still coalesce onto the same global identity.
+  // Rotating the first SESSION_SECRET during a rolling restart temporarily lets
+  // one asset occupy two global members while sharedGlobalAsset can return false
+  // across secret generations. Both effects self-heal when the old lease expires,
+  // so the inconsistency lasts at most one admission lease TTL.
   const admissionAssetId = (assetId: string): string =>
     `opaque:${createHmac('sha256', config.sessionSecrets[0]!)
       .update('bettertrack:realtime-watch\0')

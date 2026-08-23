@@ -25,7 +25,7 @@ export interface ParsedCsv {
 const DELIMITERS = [';', ',', '\t'] as const;
 
 /** Count occurrences of `delim` in `line`, ignoring quoted stretches. */
-function countUnquoted(line: string, delim: string): number {
+export function countUnquoted(line: string, delim: string): number {
   let count = 0;
   let inQuotes = false;
   for (let i = 0; i < line.length; i++) {

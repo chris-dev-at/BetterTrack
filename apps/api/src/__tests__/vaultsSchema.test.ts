@@ -68,7 +68,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await h.ctx.redis.quit?.();
+  await h.dispose();
 });
 
 describe('vaults — media + Drive-binding CHECK (§3, acceptance a/b/d)', () => {
