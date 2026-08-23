@@ -3,10 +3,13 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { eq } from 'drizzle-orm';
+import postgres from 'postgres';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { Database } from '../data/db';
 import { newId } from '../data/ids';
+import { createDriveConnectionRepository } from '../data/repositories/driveConnectionRepository';
 import { auditLog, driveConnections, vaults } from '../data/schema';
 import {
   DRIVE_CONNECTIONS_SESSION_ONLY_ROUTES,
@@ -19,12 +22,51 @@ import { createTestApp, type SeededUser, type TestHarness } from '../testing/cre
 import { BEARER_OPAQUE_MOUNT_METHOD, mountedBearerRouteInventory } from './bearerRouteInventory';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 let h: TestHarness;
 
 beforeEach(async () => {
   h = await createTestApp();
 });
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+interface DatabaseLockWait {
+  pid: number;
+  query: string;
+  waitEvent: string | null;
+}
+
+async function waitForDriveLockWaiters(
+  observer: ReturnType<typeof postgres>,
+  predicate: (rows: DatabaseLockWait[]) => boolean,
+  description: string,
+): Promise<DatabaseLockWait[]> {
+  const deadline = Date.now() + 4_000;
+  let observed: DatabaseLockWait[] = [];
+  while (Date.now() < deadline) {
+    observed = await observer<DatabaseLockWait[]>`
+      SELECT pid, query, wait_event AS "waitEvent"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+    `;
+    if (predicate(observed)) return observed;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${description}; observed ${JSON.stringify(
+      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+    )}`,
+  );
+}
 
 async function login(user: SeededUser) {
   const agent = request.agent(h.app);
@@ -400,6 +442,135 @@ describe('Drive connection registry', () => {
       .expect(409);
     expect(acknowledged.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
   });
+
+  it('maps a deferred vault FK raised at disconnect commit to the bound 409 family', async () => {
+    const user = await h.seedUser({
+      email: 'drive-disconnect-commit-fk@bt.test',
+      username: 'drive_disconnect_commit_fk',
+    });
+    const agent = await login(user);
+    const connection = await connect(agent, {
+      googleSub: 'drive-disconnect-commit-fk-subject',
+      email: 'drive-disconnect-commit-fk@example.test',
+    });
+    const failAtCommit = new Proxy(h.db, {
+      get(target, property) {
+        if (property === 'transaction') {
+          return (callback: (rawTx: unknown) => Promise<unknown>) =>
+            h.db.transaction(async (rawTx) => {
+              await callback(rawTx);
+              throw {
+                code: '23503',
+                constraint: 'vaults_drive_connection_id_drive_connections_id_fk',
+              };
+            });
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as Database;
+    const repository = createDriveConnectionRepository(failAtCommit);
+    const originalDelete = h.ctx.driveConnections.delete;
+    h.ctx.driveConnections.delete = (userId, connectionId, acknowledgeBound) =>
+      repository.delete(
+        userId,
+        connectionId,
+        acknowledgeBound,
+        new Date('2026-08-22T10:00:00.000Z'),
+      );
+
+    try {
+      const refused = await agent
+        .delete(`/api/v1/drive-connections/${connection.id}?acknowledgeBound=true`)
+        .set(...XRW)
+        .expect(409);
+      expect(refused.body.error.code).toBe('DRIVE_CONNECTION_BOUND');
+      expect(refused.body.error.details).toEqual({ vaults: [] });
+    } finally {
+      h.ctx.driveConnections.delete = originalDelete;
+    }
+    expect(
+      await h.db.select().from(driveConnections).where(eq(driveConnections.id, connection.id)),
+    ).toHaveLength(1);
+  });
+
+  it.skipIf(!REAL_DATABASE_URL)(
+    'returns 409 when vault creation commits inside a real overlapping disconnect attempt',
+    async () => {
+      if (!REAL_DATABASE_URL) throw new Error('Real Postgres is required for the overlap test');
+      const user = await h.seedUser({
+        email: 'drive-create-disconnect-overlap@bt.test',
+        username: 'drive_create_disconnect_overlap',
+      });
+      const agent = await login(user);
+      const connection = await connect(agent, {
+        googleSub: 'drive-create-disconnect-overlap-subject',
+        email: 'drive-create-disconnect-overlap@example.test',
+      });
+      const controller = postgres(REAL_DATABASE_URL, { max: 1 });
+      const observer = postgres(REAL_DATABASE_URL, { max: 1 });
+      const lockReady = deferred();
+      const releaseLock = deferred();
+      const pending: Promise<unknown>[] = [];
+      const lockOwner = controller.begin(async (transaction) => {
+        await transaction`
+          SELECT id FROM drive_connections
+          WHERE id = ${connection.id}
+          FOR UPDATE
+        `;
+        lockReady.resolve();
+        await releaseLock.promise;
+      });
+      pending.push(lockOwner);
+
+      try {
+        await Promise.race([
+          lockReady.promise,
+          lockOwner.then(() => {
+            throw new Error('Drive row-lock owner exited before acquiring the test lock');
+          }),
+        ]);
+
+        // Queue the vault's deferred FK check first. Its plain owner-scoped
+        // SELECT sees the committed connection while the commit waits for the
+        // row lock; this proves the two repository transactions truly overlap.
+        const creation = createVault(agent, connection.id, ['drive'], 'Overlapping vault');
+        pending.push(creation);
+        await waitForDriveLockWaiters(
+          observer,
+          (rows) => rows.some(({ query }) => /^\s*commit\b/iu.test(query)),
+          'the vault create commit to wait on the Drive row lock',
+        );
+
+        const disconnection = Promise.resolve(
+          agent.delete(`/api/v1/drive-connections/${connection.id}`).set(...XRW),
+        );
+        pending.push(disconnection);
+        await waitForDriveLockWaiters(
+          observer,
+          (rows) =>
+            rows.some(({ query }) => /^\s*commit\b/iu.test(query)) &&
+            rows.some(
+              ({ query }) =>
+                /from\s+"?drive_connections"?/iu.test(query) && /for\s+update/iu.test(query),
+            ),
+          'both the vault create and Drive disconnect transactions to overlap',
+        );
+
+        releaseLock.resolve();
+        await lockOwner;
+        const [created, refused] = await Promise.all([creation, disconnection]);
+        expect(created.status).toBe(201);
+        expect(refused.status).toBe(409);
+        expect(refused.body.error.code).toBe('DRIVE_CONNECTION_LAST_MEDIUM');
+      } finally {
+        releaseLock.resolve();
+        await Promise.allSettled(pending);
+        await Promise.all([controller.end(), observer.end()]);
+      }
+    },
+    15_000,
+  );
 
   it('refuses to detach a server+drive vault whose server copy was never verified, acknowledged or not', async () => {
     // The data-loss shape the media LABEL hides: a vault created
