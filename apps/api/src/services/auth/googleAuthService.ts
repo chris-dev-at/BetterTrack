@@ -206,7 +206,6 @@ export interface GoogleAuthService {
    * contract validation before ticket handling could begin.
    */
   handleMalformedMobileLinkCallback(ip?: string | null): Promise<{
-    status: 'error';
     code: string;
     redirectUri: string;
   }>;
@@ -517,7 +516,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
   async function handleMalformedMobileLinkCallback(ip?: string | null) {
     const redirectUri = registeredMobileLinkRedirectUri();
     await auditMobileLinkFailure({ ip, reason: 'malformed_query' });
-    return { status: 'error' as const, code: 'GOOGLE_STATE_INVALID', redirectUri };
+    return { code: 'GOOGLE_STATE_INVALID', redirectUri };
   }
 
   /**
