@@ -2597,8 +2597,9 @@ describe('portfolio vault move-out strict restore', () => {
           : entity,
       ),
     };
-    const mutateLastBase64url = (value: string) =>
-      `${value.slice(0, -1)}${value.endsWith('A') ? 'B' : 'A'}`;
+    // The final character of an unpadded base64url value can contain unused
+    // bits. Mutate the first character so the decoded proof bytes always differ.
+    const mutateBase64url = (value: string) => `${value[0] === 'A' ? 'B' : 'A'}${value.slice(1)}`;
     const cases: readonly [
       string,
       PortfolioVaultMoveOutRequest,
@@ -2610,7 +2611,7 @@ describe('portfolio vault move-out strict restore', () => {
           ...valid,
           vaultProof: {
             ...valid.vaultProof,
-            signature: mutateLastBase64url(valid.vaultProof.signature),
+            signature: mutateBase64url(valid.vaultProof.signature),
           },
         },
         proofService,
@@ -2621,7 +2622,7 @@ describe('portfolio vault move-out strict restore', () => {
           ...valid,
           vaultProof: {
             ...valid.vaultProof,
-            challenge: mutateLastBase64url(valid.vaultProof.challenge),
+            challenge: mutateBase64url(valid.vaultProof.challenge),
           },
         },
         proofService,
