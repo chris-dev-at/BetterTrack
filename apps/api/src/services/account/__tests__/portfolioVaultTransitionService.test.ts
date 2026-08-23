@@ -2597,12 +2597,8 @@ describe('portfolio vault move-out strict restore', () => {
           : entity,
       ),
     };
-    const mutateBase64urlSignificantBit = (value: string) => {
-      if (value.length === 0) throw new Error('TEST VECTOR requires non-empty base64url');
-      // The final unpadded character can carry unused bits. Mutating the first
-      // character guarantees the decoded payload changes as well as its spelling.
-      return `${value[0] === 'A' ? 'B' : 'A'}${value.slice(1)}`;
-    };
+    const mutateLastBase64url = (value: string) =>
+      `${value.slice(0, -1)}${value.endsWith('A') ? 'B' : 'A'}`;
     const cases: readonly [
       string,
       PortfolioVaultMoveOutRequest,
@@ -2614,7 +2610,7 @@ describe('portfolio vault move-out strict restore', () => {
           ...valid,
           vaultProof: {
             ...valid.vaultProof,
-            signature: mutateBase64urlSignificantBit(valid.vaultProof.signature),
+            signature: mutateLastBase64url(valid.vaultProof.signature),
           },
         },
         proofService,
@@ -2625,7 +2621,7 @@ describe('portfolio vault move-out strict restore', () => {
           ...valid,
           vaultProof: {
             ...valid.vaultProof,
-            challenge: mutateBase64urlSignificantBit(valid.vaultProof.challenge),
+            challenge: mutateLastBase64url(valid.vaultProof.challenge),
           },
         },
         proofService,

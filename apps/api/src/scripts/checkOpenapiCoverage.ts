@@ -89,9 +89,9 @@ export interface BearerModulePolicyCoverage {
   ok: boolean;
   /** Top-level API modules and direct nested application mounts discovered from Express. */
   mounted: string[];
-  /** Mounts with a top-level row, a closed parent, or a distinct nested admission boundary. */
+  /** Mounts with a top-level row, a closed parent, or a distinct resolved-policy identity. */
   classified: string[];
-  /** Nested mounts that silently inherit a bearer-capable parent without a distinct boundary. */
+  /** Nested mounts that silently inherit a bearer-capable parent's resolved policy. */
   unclassified: string[];
   /** Bearer policies whose module is no longer mounted. */
   unmountedPolicies: string[];
@@ -492,9 +492,9 @@ function isTopLevelApiModulePath(path: string): boolean {
  * `MODULE_POLICIES` deliberately remains a single-segment table so
  * `unmountedPolicies` stays a symmetric top-level mount check. A direct nested
  * `app.use` is classified when its parent rejects bearer credentials or when
- * runtime bearer admission differs from its parent. A same-admission sub-router
- * below a bearer-capable parent belongs inside that parent router instead of
- * silently inheriting through application wiring.
+ * its resolved policy identity differs from its parent. A same-policy
+ * sub-router below a bearer-capable parent belongs inside that parent router
+ * instead of silently inheriting through application wiring.
  */
 function nestedMountIsBearerClassified(path: string): boolean {
   const modulePrefix = `${API_PREFIX}/`;
