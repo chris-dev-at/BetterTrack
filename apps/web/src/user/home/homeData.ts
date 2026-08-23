@@ -5,6 +5,7 @@ import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
 
 import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import { SCOPE_ALL, SCOPE_SELECTED, type WidgetScope } from './config';
+import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 
 /**
  * Shared data layer for the Home widget board.
@@ -60,6 +61,7 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
     queries: portfolios.map((portfolio) => ({
       queryKey: ['portfolio', portfolio.id],
       queryFn: ({ signal }: { signal: AbortSignal }) => getPortfolio(portfolio.id, signal),
+      enabled: !isVaultedPortfolio(portfolio),
       staleTime: PORTFOLIO_STALE_MS,
     })),
   });

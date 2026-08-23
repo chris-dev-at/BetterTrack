@@ -14,6 +14,7 @@ import { MAIN_SERIES } from '../../ui/charts/palette';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
@@ -67,10 +68,10 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const store = usePortfolioStore();
   const privacyMode = useResolvedPrivacyMode();
 
-  const portfolioId = useMemo(
-    () => (portfolios.find((p) => p.isDefault) ?? portfolios[0])?.id ?? null,
-    [portfolios],
-  );
+  const portfolioId = useMemo(() => {
+    const available = portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
+    return (available.find((portfolio) => portfolio.isDefault) ?? available[0])?.id ?? null;
+  }, [portfolios]);
 
   // ── Factor state ───────────────────────────────────────────────────────────
   const [horizon, setHorizon] = useState('20');

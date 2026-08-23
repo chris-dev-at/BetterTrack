@@ -27,6 +27,9 @@ const ParanoidEnableWizard = lazy(() =>
 const PrivacyVaultSection = lazy(() =>
   import('./PrivacyVaultSection').then((module) => ({ default: module.PrivacyVaultSection })),
 );
+const VaultManager = lazy(() =>
+  import('../../vault/ui/VaultManager').then((module) => ({ default: module.VaultManager })),
+);
 
 /**
  * Control Center → Privacy: the compact entry point for both privacy modes.
@@ -76,6 +79,10 @@ export function PrivacyPanel() {
           />
         </Row>
       </PanelGroup>
+
+      <Suspense fallback={<SkeletonBlock height={180} />}>
+        <VaultManager />
+      </Suspense>
 
       {notice ? <Alert tone={notice.tone}>{t(notice.key)}</Alert> : null}
 
