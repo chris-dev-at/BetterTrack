@@ -113,16 +113,19 @@ export function parseCsv(text: string): ParsedCsv {
 }
 
 /**
- * Parse a broker-notation decimal. Handles German (`1.234,56` — comma decimal,
- * dot/space thousands) and plain (`1234.56`) notation in one pass: when a comma
- * is present it is the decimal separator and dots/spaces are grouping; without
- * one, a dot is the decimal separator. Currency letters/symbols and sign
- * prefixes survive (`-751,00 EUR` → -751). Returns null when nothing numeric
- * remains — or when the notation is AMBIGUOUS: `1.000` with no decimal comma is
- * German grouping (1000) or a plain decimal (1.0), and guessing wrong books a
- * quantity ~1000× off. Refusing costs one reported row; guessing costs money.
+ * Strip a decimal cell's DECORATION — currency symbols, ISO letters, spaces —
+ * down to the digits, separators and sign that decide its value. Returns null
+ * when the cell is not a decorated number at all.
+ *
+ * This is the SINGLE definition of "what is left once the currency comes off"
+ * (§M4). It exists as its own export because `table.parseLocalizedDecimal`'s
+ * cross-notation guard has to inspect exactly this string: the guard used to
+ * test the RAW cell, so `'1,234.56 EUR'` slipped past it and was then booked as
+ * 1.23456 — a thousandth of the real amount. Any future change to the
+ * decoration rules must move both the parse and the guard together, which one
+ * shared function makes unavoidable.
  */
-export function parseDecimal(input: string): number | null {
+export function stripDecimalDecoration(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
   // A parenthesized number is an accounting NEGATIVE — stripping the parens
@@ -135,8 +138,25 @@ export function parseDecimal(input: string): number | null {
   const core = /\d[\s\S]*\d/.exec(trimmed)?.[0] ?? '';
   if (/[^0-9.,\s']/.test(core)) return null;
   // Keep digits, separators and the leading sign; drop currency symbols/letters.
-  let cleaned = trimmed.replace(/[^0-9.,\-+]/g, '');
+  const cleaned = trimmed.replace(/[^0-9.,\-+]/g, '');
   if (cleaned === '' || cleaned === '-' || cleaned === '+') return null;
+  return cleaned;
+}
+
+/**
+ * Parse a broker-notation decimal. Handles German (`1.234,56` — comma decimal,
+ * dot/space thousands) and plain (`1234.56`) notation in one pass: when a comma
+ * is present it is the decimal separator and dots/spaces are grouping; without
+ * one, a dot is the decimal separator. Currency letters/symbols and sign
+ * prefixes survive (`-751,00 EUR` → -751) — see {@link stripDecimalDecoration}.
+ * Returns null when nothing numeric remains — or when the notation is
+ * AMBIGUOUS: `1.000` with no decimal comma is German grouping (1000) or a plain
+ * decimal (1.0), and guessing wrong books a quantity ~1000× off. Refusing costs
+ * one reported row; guessing costs money.
+ */
+export function parseDecimal(input: string): number | null {
+  let cleaned = stripDecimalDecoration(input);
+  if (cleaned === null) return null;
   // The sign is only meaningful leading; a trailing one ("751,00-", an
   // SAP-style export form) silently dropped would flip a booking's direction.
   const sign = cleaned.startsWith('-') ? -1 : 1;

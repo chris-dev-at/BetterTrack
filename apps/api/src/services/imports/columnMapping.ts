@@ -25,10 +25,12 @@
 
 import { parseDay } from './csv';
 import {
-  isCalendarDaySample,
   ISO_CURRENCIES,
+  MAX_CELL_CHARS,
   parseLocalizedDecimal,
   sniffTable,
+  tallyNumberLocale,
+  trimTrailingPunctuation,
   type NumberLocale,
   type SniffedTable,
 } from './table';
@@ -315,6 +317,25 @@ const ALIAS_SOURCE: readonly (readonly [alias: string, entry: AliasEntry])[] = [
 
 // --- Header normalization + key building ------------------------------------
 
+const HEADER_EDGE = new Set(['"', "'", ' ', '\t', '\n', '\r', '\f', '\v']);
+
+/**
+ * Strip quote/whitespace padding from both ends by walking the string.
+ *
+ * `/^["'\s]+|["'\s]+$/g` is quadratic on a header like `'a' + ' '.repeat(n) +
+ * 'x'`: the trailing alternative retries from every start position and
+ * backtracks the whole run each time. `countKnownHeaderAliases` runs this over
+ * every cell of every modal-width row, so it is the same single-upload DoS as
+ * the sniffer's own trimming — finding 1, one module over.
+ */
+function trimHeaderEdges(header: string): string {
+  let start = 0;
+  let end = header.length;
+  while (start < end && HEADER_EDGE.has(header[start]!)) start += 1;
+  while (end > start && HEADER_EDGE.has(header[end - 1]!)) end -= 1;
+  return header.slice(start, end);
+}
+
 /**
  * Lowercase, parens → spaces, collapse whitespace, THEN trim
  * (`Amount (EUR)` → `amount eur`).
@@ -328,9 +349,7 @@ const ALIAS_SOURCE: readonly (readonly [alias: string, entry: AliasEntry])[] = [
  * mixed-sign shape, and the amount column then went unmapped entirely.
  */
 function normalizeHeader(header: string): string {
-  return header
-    .toLowerCase()
-    .replace(/^["'\s]+|["'\s]+$/g, '')
+  return trimHeaderEdges(header.toLowerCase())
     .replace(/[()]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -487,6 +506,10 @@ function analyzeShape(cells: string[], numberLocale: NumberLocale): ShapeEvidenc
     const cell = raw.trim();
     if (cell === '') continue;
     samples += 1;
+    // Counted as a sample but contributing to no fraction: a cell this long is
+    // evidence AGAINST the column being dates/decimals/ISINs, and analyzing it
+    // is the work a hostile upload wants to buy (finding 1).
+    if (cell.length > MAX_CELL_CHARS) continue;
     if (/^[A-Z]{2}[A-Z0-9]{9}\d$/.test(cell)) isin += 1;
     if (/^[A-Z]{3}$/.test(cell) && ISO_CURRENCIES.has(cell)) currency += 1;
     const value = parseLocalizedDecimal(cell, numberLocale);
@@ -495,7 +518,9 @@ function analyzeShape(cells: string[], numberLocale: NumberLocale): ShapeEvidenc
       if (value > 0) positive = true;
       if (value < 0) negative = true;
     }
-    if (parseDay(cell.replace(/[.,;]+$/, '').trim()) !== null) date += 1;
+    // Shared linear trimmer — the inline `/[.,;]+$/` here was the third copy of
+    // the quadratic pattern the sniffer carried (finding 1).
+    if (parseDay(trimTrailingPunctuation(cell)) !== null) date += 1;
     if (
       cell
         .toLowerCase()
@@ -575,21 +600,11 @@ export const CONTEST_EPSILON = 0.05;
  * dots are separators, not decimals.
  */
 function detectColumnNumberLocale(cells: string[]): NumberLocale {
-  let de = 0;
-  let en = 0;
-  for (const cell of cells) {
-    if (isCalendarDaySample(cell)) continue;
-    if (/\d,\d{1,2}(?!\d)/.test(cell)) de += 1;
-    else if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(cell)) en += 1;
-    else if (/\d\.\d{1,2}(?!\d)/.test(cell)) en += 1;
-    else if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(cell)) {
-      if (/,/.test(cell)) de += 1;
-      else {
-        de += 0.5;
-        en += 0.5;
-      }
-    }
-  }
+  // The VOTING rules live in table.ts as the single definition (§M4); this copy
+  // used to restate them and so missed the mirror-ambiguous `1,250` fix that
+  // stops a German file flipping to `en`. Only the tie rule is this caller's
+  // own: German on a tie, per the JSDoc above.
+  const { de, en } = tallyNumberLocale(cells);
   return de >= en ? 'de' : 'en';
 }
 
