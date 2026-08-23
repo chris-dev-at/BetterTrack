@@ -95,6 +95,23 @@ export const FEEDBACK_DECLINED_REASON_REQUIRED = 'FEEDBACK_DECLINED_REASON_REQUI
 export const FEEDBACK_SHIPPED_VERSION_REQUIRED = 'FEEDBACK_SHIPPED_VERSION_REQUIRED';
 export const FEEDBACK_STATUS_DETAILS_INVALID = 'FEEDBACK_STATUS_DETAILS_INVALID';
 
+/** Stable `ApiError.error.code` values emitted when a new submission is refused. */
+export const FEEDBACK_SUBMISSION_ERROR_CODES = [FEEDBACK_OPEN_LIMIT] as const;
+
+/** Stable `ApiError.error.code` values emitted by feedback lifecycle validation. */
+export const FEEDBACK_STATUS_ERROR_CODES = [
+  FEEDBACK_DECLINED_REASON_REQUIRED,
+  FEEDBACK_SHIPPED_VERSION_REQUIRED,
+  FEEDBACK_STATUS_DETAILS_INVALID,
+] as const;
+
+/** All stable feedback error codes, composed from the route-level subsets above. */
+export const FEEDBACK_ERROR_CODES = [
+  ...FEEDBACK_SUBMISSION_ERROR_CODES,
+  ...FEEDBACK_STATUS_ERROR_CODES,
+] as const;
+export type FeedbackErrorCode = (typeof FEEDBACK_ERROR_CODES)[number];
+
 interface FeedbackStatusDetails {
   status: FeedbackStatus;
   declinedReason?: string | null;

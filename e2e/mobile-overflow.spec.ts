@@ -1152,6 +1152,13 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'Menu contents depend on each configurable widget kind and layout state; the widget-builder e2e flow owns that state matrix.',
   },
   {
+    surface: 'VaultTransferQr sender screen',
+    sources: ['apps/web/src/user/vault/ui/VaultTransferQr.tsx'],
+    routes: ['/control/privacy'],
+    justification:
+      'Opening it requires a locally stored live seed-phrase session and deliberately reveals the master secret; the E10 mocked-camera transfer flow owns that secret lifecycle.',
+  },
+  {
     surface: 'VaultSyncChip status dialog',
     sources: ['apps/web/src/user/vault/ui/VaultSyncChip.tsx'],
     routes: ['/'],

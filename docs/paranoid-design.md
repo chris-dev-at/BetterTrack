@@ -420,8 +420,11 @@ with zero user migration.
   post-consent principal check and the email is the hint.) Consequence (the binding Drive-only guarantee, carried
   over): for a Drive-only vault the server holds zero cleartext, zero active
   ciphertext, and zero CAPABILITY to fetch the Drive copy. Refresh = GIS
-  re-mint (silent while the Google session lives, a user gesture otherwise);
-  the sync indicator (§14) surfaces "sign in to Google (Y) to sync" — never a
+  re-mint (silent while the Google session lives, a user gesture otherwise).
+  **Every re-mint repeats `about.get` and compares its `permissionId` with the
+  connection's stored `google_sub`; a chooser switch fails closed as the
+  distinct `identity-mismatch` state before the new token can reach storage.**
+  The sync indicator (§14) surfaces "sign in to Google (Y) to sync" — never a
   silent stall.
 - **Scope RULED (2026-08-20, §21 Q5) — move from `drive.appdata` to
   `drive.file` with a visible "BetterTrack Vaults" folder.** The hidden `appDataFolder` is
@@ -487,6 +490,26 @@ with zero user migration.
     `accountBinding`/`vaultId`/`docId` sit in the AAD (§5). Names and
     appProperties are digests — no emails, no vault names, no portfolio hints
     in anything a co-user of the Drive could see.
+  - **Bounded paged lookup (E5 follow-up):** `docId` remains out of
+    `appProperties`, so all documents with the same (`ownerDigest`,
+    `vaultDigest`, `docKind`) share one list address. The chosen resolution is
+    pagination, not a new `docDigest` object-format field: the client reads
+    100 objects per Drive page and supports at most **1,000 candidate objects
+    per address** (therefore up to 1,000 portfolio documents for the usual
+    portfolio address). It reads every page before declaring a document
+    absent; a repeated page token or an address above the supported ceiling
+    fails closed. This removes the former 100-object cliff while bounding the
+    request/download work a shared Drive can impose.
+  - **Residual shared-Drive denial of service (accepted, manual remedy):** a
+    co-tenant of the same physical Drive can create an app-owned file carrying
+    another user's `ownerDigest`/`vaultDigest`/`docKind` and a copied plaintext
+    header with a higher `docVersion`. AEAD still prevents the co-tenant from
+    reading or clobbering the real document, so the confidentiality/integrity
+    property above holds, but the forged higher-version candidate can wedge
+    that address. This design **does not claim DoS resistance against a
+    co-tenant of the same Drive**. The manual remedy is to remove the forged
+    candidate from the visible **BetterTrack Vaults** folder (or Drive trash)
+    and retry sync.
   - This extends the shipped derivation
     (`driveDataHome.ts#driveVaultFileName`,
     `sha256("bettertrack-drive-vault-account-v1:" + accountId)`) from

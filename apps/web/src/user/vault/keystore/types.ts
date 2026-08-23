@@ -97,7 +97,10 @@ export interface OpenedVault {
 }
 
 /** Fetches opaque header-envelope bytes from any reachable E1/E5 medium. */
-export type FetchVaultHeaderEnvelope = (input: { vaultId: string }) => Promise<Uint8Array>;
+export type FetchVaultHeaderEnvelope = (input: {
+  vaultId: string;
+  signal?: AbortSignal;
+}) => Promise<Uint8Array>;
 
 export interface StoreWrappedPhraseInput {
   vaultId: string;
@@ -106,6 +109,8 @@ export interface StoreWrappedPhraseInput {
   devicePassword?: string;
   expectedFingerprint?: VaultKeyFingerprint;
   fetchHeaderEnvelope: FetchVaultHeaderEnvelope;
+  /** Receiver cancellation fence; checked again at the persistence barrier. */
+  signal?: AbortSignal;
 }
 
 export interface StorePlainPhraseInput {
@@ -114,6 +119,8 @@ export interface StorePlainPhraseInput {
   acknowledgment: PlainCustodyAcknowledgmentToken;
   expectedFingerprint?: VaultKeyFingerprint;
   fetchHeaderEnvelope: FetchVaultHeaderEnvelope;
+  /** Receiver cancellation fence; checked again at the persistence barrier. */
+  signal?: AbortSignal;
 }
 
 declare const plainCustodyAcknowledgmentBrand: unique symbol;

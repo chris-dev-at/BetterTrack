@@ -1054,21 +1054,76 @@ describe('Drive file DataHome', () => {
     expect(String(fetch.mock.calls[3]![0])).toContain('/drive/v3/files?');
   });
 
-  it('refuses a truncated lookup page instead of reading it as the whole address', async () => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(json({ files: [metadata()], nextPageToken: 'page-2' }));
-    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
-
-    await expect(home.read()).resolves.toMatchObject({
-      status: 'transport-failure',
-      failure: { code: 'api-failure', message: expect.stringMatching(/more than 100/) },
+  it('paginates an address with more than 100 documents without reading the target as absent', async () => {
+    const docIds = [
+      ...Array.from(
+        { length: 100 },
+        (_, index) => `018f0000-0000-7000-8000-${String(index + 300).padStart(12, '0')}`,
+      ),
+      DOC_A,
+    ];
+    const documents = await Promise.all(
+      docIds.map(async (docId, index) => {
+        const bytes = await envelopeV2Doc(ACCOUNT_A, VAULT_A, docId, 1, 'portfolio');
+        return {
+          bytes,
+          file: metadata({
+            id: `paged-drive-file-${index}`,
+            size: String(bytes.byteLength),
+            headRevisionId: `paged-revision-${index}`,
+            appProperties: {
+              ownerDigest: await driveOwnerDigest(ACCOUNT_A),
+              vaultDigest: await driveVaultDigest(ACCOUNT_A, VAULT_A),
+              docKind: 'portfolio',
+              docVersion: '1',
+              formatVersion: '2',
+            },
+          }),
+        };
+      }),
+    );
+    const bodies = new Map(documents.map(({ bytes, file }) => [file.id, bytes] as const));
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/drive/v3/files')) {
+        return url.searchParams.get('pageToken') === 'page-2'
+          ? json({ files: documents.slice(100).map(({ file }) => file) })
+          : json({
+              files: documents.slice(0, 100).map(({ file }) => file),
+              nextPageToken: 'page-2',
+            });
+      }
+      const fileId = decodeURIComponent(url.pathname.split('/').at(-1) ?? '');
+      const bytes = bodies.get(fileId);
+      return bytes
+        ? new Response(bytes.slice(), { status: 200 })
+        : new Response(null, { status: 404 });
     });
-    // The refusal is only reachable if the partial-response mask ASKS for the
-    // token: a `fields=files(...)` mask makes Drive omit `nextPageToken`, and
-    // this guard would then be dead code that can never fire in production.
-    const mask = new URL(String(fetch.mock.calls[0]![0])).searchParams.get('fields');
+    const home = createDriveDataHome({
+      accountId: ACCOUNT_A,
+      vaultId: VAULT_A,
+      docId: DOC_A,
+      docKind: 'portfolio',
+      tokens: tokenSource(),
+      fetch,
+      folderId: 'visible-bettertrack-folder',
+    });
+
+    const read = await home.read();
+    expect(read).toMatchObject({ status: 'ok', info: { version: 1 } });
+    if (read.status === 'ok') expect(read.envelope).toEqual(documents.at(-1)!.bytes);
+    const listCalls = fetch.mock.calls.filter(([input]) =>
+      new URL(String(input)).pathname.endsWith('/drive/v3/files'),
+    );
+    expect(listCalls).toHaveLength(2);
+    expect(
+      listCalls.map(([input]) => new URL(String(input)).searchParams.get('pageToken')),
+    ).toEqual([null, 'page-2']);
+    // Pagination works only if the partial-response mask explicitly asks for
+    // the token; Drive omits it from `fields=files(...)` responses.
+    const mask = new URL(String(listCalls[0]![0])).searchParams.get('fields');
     expect(mask?.startsWith('nextPageToken,files(')).toBe(true);
+    expect(new URL(String(listCalls[0]![0])).searchParams.get('pageSize')).toBe('100');
   });
 
   it('re-resolves the visible folder after a create fails against the cached one', async () => {

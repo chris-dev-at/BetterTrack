@@ -143,6 +143,15 @@ describe('one-word creation ceremony', () => {
     expect(samples).toEqual([Uint8Array.of(0), Uint8Array.of(0)]);
   });
 
+  it('varies the single selected word when the random sample varies', () => {
+    const first = createMnemonicWordChallenge(ZERO_ENTROPY_MNEMONIC, () => Uint8Array.of(0));
+    const last = createMnemonicWordChallenge(ZERO_ENTROPY_MNEMONIC, () => Uint8Array.of(11));
+
+    expect(first).toEqual({ wordNumber: 1 });
+    expect(last).toEqual({ wordNumber: 12 });
+    expect(new Set([first.wordNumber, last.wordNumber]).size).toBe(2);
+  });
+
   it('accepts only the selected single word and fails closed for invalid challenges', () => {
     const challenge = { wordNumber: 12 } as const;
 

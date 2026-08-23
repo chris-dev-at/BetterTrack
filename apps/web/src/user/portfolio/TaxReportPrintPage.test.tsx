@@ -7,6 +7,14 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { TaxYearReportResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
+vi.mock('../vault/keystore/runtime', () => ({
+  endpointVaultKeystore: {
+    stateFor: vi.fn(async () => ({
+      status: 'not-on-this-endpoint',
+      requiredAction: { kind: 'provide-phrase', methods: ['enter-words', 'scan-qr'] },
+    })),
+  },
+}));
 import * as portfolioApi from '../../lib/portfolioApi';
 
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
@@ -196,6 +204,24 @@ describe('TaxReportPrintPage', () => {
   test('missing params render a hint instead of querying', async () => {
     renderPrint('/portfolio/tax/print');
     expect(await screen.findByText(/Choose a portfolio and year to print/i)).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('a vaulted portfolio renders only its alias and never reads the server tax report', async () => {
+    vi.mocked(portfolioApi.listPortfolios).mockResolvedValue({
+      portfolios: [
+        {
+          ...PORTFOLIO_LIST.portfolios[0]!,
+          name: 'Secret portfolio name',
+          vaultId: '018f0000-0000-7000-8000-000000000001',
+          vaultAlias: 'Vault portfolio 1',
+        },
+      ],
+    });
+    renderPrint('/portfolio/tax/print?portfolio=p1&year=2026');
+
+    expect(await screen.findByRole('heading', { name: 'Vault portfolio 1' })).toBeInTheDocument();
+    expect(screen.queryByText('Secret portfolio name')).not.toBeInTheDocument();
     expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
   });
 
