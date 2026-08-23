@@ -67,9 +67,10 @@ describe('feedback repository ownership boundary', () => {
       await expect(
         repo.createMessageForAdmin(staff.id, tombstoned!.id, 'Unread tombstoned reply.'),
       ).resolves.not.toBeNull();
-      await expect(
-        repo.deleteMine(owner.id, tombstoned!.id, new Date('2026-08-20T12:00:00.000Z')),
-      ).resolves.toMatchObject({ deletedByUserAt: expect.any(Date) });
+      const deletedAt = new Date('2026-08-20T12:00:00.000Z');
+      await expect(repo.deleteMine(owner.id, tombstoned!.id, deletedAt)).resolves.toMatchObject({
+        deletedByUserAt: deletedAt,
+      });
 
       const rows = await repo.listMine(owner.id);
 
