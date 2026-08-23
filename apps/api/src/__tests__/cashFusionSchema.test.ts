@@ -73,7 +73,7 @@ describe('cash fusion schema (migration 0075)', () => {
   });
 
   afterAll(async () => {
-    await h.ctx.redis.quit?.();
+    await h.dispose();
   });
 
   describe('tags', () => {

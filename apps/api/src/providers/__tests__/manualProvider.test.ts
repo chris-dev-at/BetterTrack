@@ -233,7 +233,7 @@ describe('createManualAssetSource over Postgres/price_history (§5.5)', () => {
   });
 
   afterAll(async () => {
-    await h.ctx.redis.quit?.();
+    await h.dispose();
   });
 
   it('reads a custom asset and its carry-forward history end to end', async () => {

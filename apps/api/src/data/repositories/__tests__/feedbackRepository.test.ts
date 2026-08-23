@@ -34,7 +34,7 @@ describe('feedback repository ownership boundary', () => {
       expect(rows.map((row) => row.id)).toEqual([owned!.id]);
       expect(rows.every((row) => row.userId === owner.id)).toBe(true);
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -77,7 +77,7 @@ describe('feedback repository ownership boundary', () => {
       expect(rows[0]).toMatchObject({ id: live!.id, unreadReplyCount: 1 });
       expect(rows.some((row) => row.id === tombstoned!.id)).toBe(false);
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -122,7 +122,7 @@ describe('feedback repository ownership boundary', () => {
         },
       });
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -198,7 +198,7 @@ describe('feedback repository ownership boundary', () => {
         repo.getThreadForSubmitter(owner.id, owned!.id, { limit: 2, cursor: owned!.id }),
       ).resolves.toEqual({ status: 'invalid_cursor' });
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -249,7 +249,7 @@ describe('feedback repository ownership boundary', () => {
         },
       });
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -290,7 +290,7 @@ describe('feedback repository ownership boundary', () => {
       expect(await repo.listMine(owner.id)).toEqual([]);
       expect((await repo.listMine(other.id)).map((row) => row.id)).toEqual([foreign!.id]);
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 });
