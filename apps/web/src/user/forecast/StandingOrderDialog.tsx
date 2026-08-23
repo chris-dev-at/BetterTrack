@@ -17,6 +17,7 @@ import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { isVaultedPortfolio, portfolioDisplayName } from '../portfolio/lockedPortfolio';
 import { vaultedPortfolioErrorMessage } from '../portfolio/vaultedPortfolioError';
 
 const inputClass = cx('bt-input w-full', '', '');
@@ -59,11 +60,18 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
   const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const isEdit = !!existing;
+  const availablePortfolios = useMemo(
+    () => portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio)),
+    [portfolios],
+  );
 
   const defaultPortfolioId = useMemo(() => {
     if (existing) return existing.portfolioId;
-    return (portfolios.find((p) => p.isDefault) ?? portfolios[0])?.id ?? '';
-  }, [existing, portfolios]);
+    return (
+      (availablePortfolios.find((portfolio) => portfolio.isDefault) ?? availablePortfolios[0])
+        ?.id ?? ''
+    );
+  }, [availablePortfolios, existing]);
 
   const [portfolioId, setPortfolioId] = useState(defaultPortfolioId);
   const [kind, setKind] = useState<StandingOrderKind>(existing?.kind ?? 'buy-asset');
@@ -210,7 +218,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
         </div>
 
         {/* Portfolio (create only — an order is bound to its portfolio at creation). */}
-        {!isEdit && portfolios.length > 1 ? (
+        {!isEdit && availablePortfolios.length > 1 ? (
           <label className="flex flex-col gap-1.5">
             <span className="text-sm font-medium bt-soft">
               {t('forecast.standingOrders.dialog.portfolioLabel')}
@@ -221,9 +229,9 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
               aria-label={t('forecast.standingOrders.dialog.portfolioLabel')}
               className={inputClass}
             >
-              {portfolios.map((p) => (
+              {availablePortfolios.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name}
+                  {portfolioDisplayName(p, t('vault.lockedStub.fallbackAlias'))}
                 </option>
               ))}
             </select>

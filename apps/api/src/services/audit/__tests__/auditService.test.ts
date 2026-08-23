@@ -5,7 +5,7 @@ import type { AuditRepository } from '../../../data/repositories/auditRepository
 import { auditLog } from '../../../data/schema';
 import { AuditAction, createAuditService } from '../auditService';
 
-describe('AuditService transaction-bound writes', () => {
+describe('AuditService', () => {
   it('records through the supplied transaction executor instead of the primary repository', async () => {
     // Deterministic TEST VECTOR identifiers; none are credentials.
     const actorId = '019c8200-0000-7000-8000-000000000001';
@@ -39,6 +39,32 @@ describe('AuditService transaction-bound writes', () => {
       targetId: portfolioId,
       ip: '192.0.2.1',
       meta: { vaultId: '019c8200-0000-7000-8000-000000000003' },
+    });
+  });
+
+  it('redacts scope-denial resource paths when no privacy hook is supplied', async () => {
+    const record = vi.fn<AuditRepository['record']>();
+    const audit = createAuditService({
+      record,
+      list: vi.fn(),
+      listForTarget: vi.fn(),
+      deleteOlderThan: vi.fn(),
+    } as unknown as AuditRepository);
+
+    await audit.record({
+      actorId: '019c8200-0000-7000-8000-000000000004',
+      action: AuditAction.ApiKeyScopeDenied,
+      targetType: 'api_key',
+      targetId: '019c8200-0000-7000-8000-000000000005',
+      meta: { method: 'GET', path: '/api/v1/assets/private-asset/quote' },
+    });
+
+    expect(record).toHaveBeenCalledWith({
+      actorId: '019c8200-0000-7000-8000-000000000004',
+      action: AuditAction.ApiKeyScopeDenied,
+      targetType: 'api_key',
+      targetId: '019c8200-0000-7000-8000-000000000005',
+      meta: { method: 'GET', path: '[redacted-resource-path]' },
     });
   });
 });

@@ -145,6 +145,24 @@ describe('MySharedItemsPage', () => {
     await waitFor(() => expect(share).toBeEnabled());
   });
 
+  test('names every shared portfolio while the vault metadata is still pending', async () => {
+    const read = deferred<Awaited<ReturnType<typeof listPortfolios>>>();
+    vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
+    vi.mocked(listPortfolios).mockReturnValue(read.promise);
+    renderPage();
+
+    // The sharing action waits for the metadata; the row's NAME never does —
+    // masking it would rename every plain portfolio on each background refetch.
+    expect(await screen.findByText('Main')).toBeInTheDocument();
+    expect(screen.queryByText('Locked portfolio')).not.toBeInTheDocument();
+
+    await act(async () => {
+      read.resolve(portfolioList());
+    });
+
+    expect(screen.getByText('Main')).toBeInTheDocument();
+  });
+
   test('retries failed MIRRORCHAIN metadata before opening a live, authoritative picker', async () => {
     vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
     vi.mocked(listPortfolios)
@@ -357,6 +375,31 @@ describe('MySharedItemsPage', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     expect(screen.getByRole('radio', { name: /only me/i })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
+  });
+
+  test('removes every sharing affordance for a vaulted portfolio while keeping its plain sibling', async () => {
+    const SECONDARY_ID = '00000000-0000-0000-0000-000000000002';
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [
+        { portfolioId: PORTFOLIO_ID, name: 'Vaulted Main', audience: 'private', friendCount: 0 },
+        { portfolioId: SECONDARY_ID, name: 'Plain Trading', audience: 'private', friendCount: 0 },
+      ],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [],
+    });
+    const metadata = portfolioList();
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [
+        { ...metadata.portfolios[0]!, vaultId: '00000000-0000-0000-0000-000000000099' },
+        { ...metadata.portfolios[0]!, id: SECONDARY_ID, name: 'Plain Trading' },
+      ],
+    });
+    renderPage();
+
+    expect(await screen.findByText('Plain Trading')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Vaulted Main')).not.toBeInTheDocument());
+    expect(screen.getAllByRole('button', { name: 'Share' })).toHaveLength(1);
   });
 
   test('shows an ideas group with a per-item audience entry point (V4-P9)', async () => {

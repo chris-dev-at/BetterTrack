@@ -45,6 +45,10 @@ const CHALLENGE_NONCE = 'TEST_VECTOR_deterministic_nonce_32';
 const DOCUMENT_SET_HASH = 'S'.repeat(43);
 const document = { schemaVersion: 1, entities: [], mergeLog: [], mirrorProvenance: [] };
 
+function mutateSignificantBase64urlCharacter(value: string): string {
+  return `${value.startsWith('A') ? 'B' : 'A'}${value.slice(1)}`;
+}
+
 function proof(
   overrides: { documentDigest?: string; documentSetHash?: string; challenge?: string } = {},
 ) {
@@ -220,7 +224,9 @@ describe('portfolio vault move-out phrase proof', () => {
           const signed = proof();
           return {
             ...signed,
-            signature: `${signed.signature.slice(0, -1)}${signed.signature.endsWith('A') ? 'B' : 'A'}`,
+            // Avoid the unused padding bits in the final base64url character:
+            // changing those bits can still decode to the original signature.
+            signature: mutateSignificantBase64urlCharacter(signed.signature),
           };
         })(),
       },

@@ -22,7 +22,9 @@ import {
 } from './PortfolioSwitcher';
 import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portfolioKinds';
 import { usePortfolioStore } from './PortfolioStoreProvider';
+import { isVaultedPortfolio } from './lockedPortfolio';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { PortfolioVaultSection } from '../vault/ui/PortfolioVaultSection';
 
 /**
  * Portfolio settings — the Settings tab of the portfolio workspace
@@ -81,7 +83,9 @@ export function PortfolioSettingsPage() {
     queryFn: ({ signal }) => store.listPortfolios(signal, true),
     staleTime: 60_000,
   });
-  const archived = (archivedQuery.data?.portfolios ?? []).filter((p) => p.archivedAt !== null);
+  const archived = (archivedQuery.data?.portfolios ?? []).filter(
+    (portfolio) => portfolio.archivedAt !== null && !isVaultedPortfolio(portfolio),
+  );
 
   // Seed the rename field from the resolved portfolio, and re-seed whenever the
   // active portfolio changes — but never clobber an edit in progress.
@@ -292,6 +296,9 @@ export function PortfolioSettingsPage() {
         </section>
       </NormalModeOnly>
 
+      {/* ── Private vault (§9 move-in) ──────────────────────────────────── */}
+      <PortfolioVaultSection onMoved={refetchLists} portfolio={portfolio} />
+
       {/* ── Archived ────────────────────────────────────────────────────── */}
       <section aria-label={t('portfolio.switcher.archivedDialogTitle')} className="bt-section">
         <SectionHead title={t('portfolio.switcher.archivedDialogTitle')} />
@@ -421,7 +428,11 @@ export function PortfolioSettingsPage() {
           }}
           onConfirm={() => deleteMutation.mutate(confirmDelete.id)}
           portfolio={confirmDelete}
-          promotedDefault={promotedDefaultName(portfolios, confirmDelete)}
+          promotedDefault={promotedDefaultName(
+            portfolios,
+            confirmDelete,
+            t('vault.lockedStub.fallbackAlias'),
+          )}
           submitting={deleteMutation.isPending}
         />
       ) : null}
