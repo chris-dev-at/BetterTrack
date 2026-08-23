@@ -60,6 +60,9 @@ export interface TwoFactorAuthorizationState {
   securityGeneration: number;
 }
 
+/** Factor columns already read under a caller-owned users-row lock. */
+export type LockedTwoFactorState = Pick<TwoFactorState, 'secret' | 'enabled' | 'emailEnabled'>;
+
 /** Internal result wrapper; the HTTP layer emits only `response`. */
 export interface TwoFactorMutationResult<T> {
   response: T;
@@ -168,13 +171,22 @@ export interface TwoFactorService {
    * TOTP code. Requires the TOTP method on; a malformed/undecryptable secret
    * verifies as false. Does not touch recovery codes.
    */
-  verifyTotpCode(userId: string, code: string): Promise<boolean>;
+  verifyTotpCode(
+    userId: string,
+    code: string,
+    lockedState?: LockedTwoFactorState,
+  ): Promise<boolean>;
   /**
    * Login-challenge factor check (§6.1): consume one unused recovery code
    * single-use, returning whether a match was found. Works whenever any method is
    * on, so recovery codes stay usable across the method mix.
    */
-  consumeRecoveryCode(userId: string, code: string): Promise<boolean>;
+  consumeRecoveryCode(
+    userId: string,
+    code: string,
+    lockedState?: LockedTwoFactorState,
+    lockedRepository?: Pick<TwoFactorRepository, 'consumeRecoveryCode'>,
+  ): Promise<boolean>;
 }
 
 // The email-method setup code (#298): a short-lived numeric code proving the user
@@ -224,7 +236,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
     badRequest('Two-factor authentication is not enabled.', 'TWO_FACTOR_NOT_ENABLED');
 
   /** True when at least one 2FA method is currently on. */
-  const anyMethodOn = (state: TwoFactorState) => state.enabled || state.emailEnabled;
+  const anyMethodOn = (state: Pick<TwoFactorState, 'enabled' | 'emailEnabled'>) =>
+    state.enabled || state.emailEnabled;
 
   /** Generate a fresh recovery-code batch; repository composites persist hashes. */
   function recoveryCodeBatch(): { codes: string[]; hashes: string[] } {
@@ -655,8 +668,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       return { totp: Boolean(state?.enabled), email: Boolean(state?.emailEnabled) };
     },
 
-    async verifyTotpCode(userId, code) {
-      const state = await twoFactorRepo.getState(userId);
+    async verifyTotpCode(userId, code, lockedState) {
+      const state = lockedState ?? (await twoFactorRepo.getState(userId));
       if (!state?.enabled || !state.secret) return false;
       let secret: string;
       try {
@@ -667,11 +680,11 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       return consumeTotpStep(userId, secret, code);
     },
 
-    async consumeRecoveryCode(userId, code) {
-      const state = await twoFactorRepo.getState(userId);
+    async consumeRecoveryCode(userId, code, lockedState, lockedRepository) {
+      const state = lockedState ?? (await twoFactorRepo.getState(userId));
       if (!state || !anyMethodOn(state)) return false;
       const hash = hashToken(normalizeRecoveryCode(code));
-      return twoFactorRepo.consumeRecoveryCode(userId, hash, new Date());
+      return (lockedRepository ?? twoFactorRepo).consumeRecoveryCode(userId, hash, new Date());
     },
   };
 }

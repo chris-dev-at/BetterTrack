@@ -22,6 +22,7 @@ import { createPushSubscriptionRepository } from '../data/repositories/pushSubsc
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   createParanoidEnforcementRepository,
+  withExclusiveLockedPrivacyMode,
   withFreshLockedPrivacyModes,
   withLockedPrivacyModes,
 } from '../data/repositories/paranoidEnforcementRepository';
@@ -50,6 +51,7 @@ import {
   createApiKeyRequestLogCleanupJob,
   createDataRetentionCleanupJob,
   createNotificationsDispatchJob,
+  createPortfolioVaultFinalizeJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
   createDeferredDeliveryJob,
@@ -105,7 +107,7 @@ import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyt
 import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
 import { createMetricsServer } from '../metrics';
-import { createMarketData } from '../providers';
+import { createMarketData, purgeManualAssetCaches } from '../providers';
 import { initObservability } from '../services/observability/sentry';
 import { createProblemService } from '../services/observability/problemService';
 import { createProblemRepository } from '../data/repositories/problemRepository';
@@ -124,12 +126,19 @@ import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
 import { createWebPushChannel } from '../services/notifications/webPush';
 import { createCashTagRepository } from '../data/repositories/cashTagRepository';
+import { createCashBudgetRepository } from '../data/repositories/cashBudgetRepository';
+import { createCashSummaryRepository } from '../data/repositories/cashSummaryRepository';
 import {
   createParanoidModeGuard,
   isParanoidOwnedSubjectBlocked,
   ParanoidModeError,
   runIfParanoidOwnedSubjectAllowed,
 } from '../services/account/paranoidEnforcement';
+import { isVaultedPortfolioContentEventAllowed } from '../services/account/vaultedPortfolioEnforcement';
+import { createPortfolioVaultMoveOutFinalizer } from '../services/account/portfolioVaultTransitionService';
+import { createCashBudgetService } from '../services/cash/cashBudgetService';
+import { purgeBacktestCaches } from '../services/backtest/backtestService';
+import { releaseRetiredLiveAssets } from '../services/liveMode';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -161,16 +170,16 @@ const { db, client } = createDatabase(config.databaseUrl);
 // bounded per job rather than by a client socket.
 const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const workerUserRepo = createUserRepository(db);
+const paranoidSubjects = createParanoidEnforcementRepository(db);
 const paranoidGuard = createParanoidModeGuard({
   privacyModeFor: async (userId) => (await workerUserRepo.findById(userId))?.privacyMode ?? null,
   withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(lockDb, userIds, run),
 });
-const paranoidSubjects = createParanoidEnforcementRepository(db);
 const isBlockedPortfolio = async (portfolioId: string) =>
   isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
 const runPortfolioJobIfAllowed = async (portfolioId: string, action: () => Promise<void>) =>
   runIfParanoidOwnedSubjectAllowed(
-    await paranoidSubjects.portfolioOwner(portfolioId),
+    () => paranoidSubjects.portfolioOwner(portfolioId),
     paranoidGuard,
     'portfolioJobs',
     action,
@@ -347,6 +356,56 @@ const assetRepo = createAssetRepository(db);
 const friendshipRepo = createFriendshipRepository(db);
 const profileRepo = createProfileRepository(db);
 const currencyService = createCurrencyService({ source: createMarketDataFxSource(marketData) });
+// E4 recovery uses an explicitly transition-authorized snapshot engine. This
+// private instance runs only for the durable transition retry plan under the
+// owner's exclusive privacy lock.
+const portfolioVaultFinalizationSnapshots = createPortfolioSnapshotService({
+  snapshotRepo: createPortfolioSnapshotRepository(db),
+  portfolioRepo,
+  transactionRepo,
+  cashMovementRepo,
+  marketData,
+  currencyService,
+  logger,
+});
+const portfolioVaultFinalizationCashBudgets = createCashBudgetService({
+  budgets: createCashBudgetRepository(db),
+  summaries: createCashSummaryRepository(db),
+  tags: createCashTagRepository(db),
+  portfolios: portfolioRepo,
+  notify,
+  logger,
+});
+const portfolioVaultFinalizer = createPortfolioVaultMoveOutFinalizer({
+  db,
+  withFinalizationLock: (userId, run) => withExclusiveLockedPrivacyMode(lockDb, userId, run),
+  runPostCommit: async (userId, portfolioId, plan) => {
+    await marketData.settled();
+    await Promise.all([
+      purgeManualAssetCaches(deadLetterConnection, plan.customAssetIds),
+      purgeBacktestCaches(deadLetterConnection, userId),
+    ]);
+    const affectedPortfolios = new Set([portfolioId]);
+    for (const assetId of plan.customAssetIds) {
+      const references = await portfolioVaultFinalizationSnapshots.resolveAssetReferences(assetId);
+      await portfolioVaultFinalizationSnapshots.invalidateForAsset(assetId);
+      for (const reference of references) affectedPortfolios.add(reference.portfolioId);
+    }
+    for (const affectedPortfolioId of [...affectedPortfolios].sort()) {
+      await portfolioVaultFinalizationSnapshots.recompute(affectedPortfolioId);
+    }
+  },
+  runAfterMoveOutUnlock: async (userId, portfolioId, plan) => {
+    await portfolioVaultFinalizationCashBudgets.evaluateRequired(userId, portfolioId);
+    await events.publish({
+      type: 'portfolio.changed',
+      userId,
+      portfolioId,
+      occurredAt: plan.completedAt,
+    });
+    await releaseRetiredLiveAssets(deadLetterConnection, plan.customAssetIds);
+  },
+});
 const audience = createAudienceService({
   repo: createShareAudienceRepository(db),
   friendship: friendshipRepo,
@@ -471,6 +530,18 @@ const webhookBridge = createWebhookBridge({
   },
   logger,
   paranoid: paranoidGuard,
+  vaultedPortfolio: {
+    portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+    standingOrderPortfolio: (userId, standingOrderId) =>
+      paranoidSubjects.standingOrderPortfolio(userId, standingOrderId),
+    cashBudgetPortfolio: (userId, budgetId) =>
+      paranoidSubjects.cashBudgetPortfolio(userId, budgetId),
+    legacyExpenseBudgetExists: (userId, budgetId) =>
+      paranoidSubjects.legacyExpenseBudgetExists(userId, budgetId),
+    userHasPlainHolding: (userId, assetId) => paranoidSubjects.userHasPlainHolding(userId, assetId),
+    mirrorMemberPortfolios: (chainId, principalUserIds) =>
+      paranoidSubjects.mirrorMemberPortfolios(chainId, principalUserIds),
+  },
 });
 
 const coreJobDeps = {
@@ -502,6 +573,7 @@ const definitions = assembleRegisteredJobDefinitions({
   createDeferredDeliveryJob: createDeferredDeliveryJob({ digest: digestService }),
   createExportBuildJob: createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob: createExportCleanupJob({ exportService: dataExportService }),
+  createPortfolioVaultFinalizeJob: createPortfolioVaultFinalizeJob(portfolioVaultFinalizer),
   createSnapshotsRecomputeJob: bindParanoidJob(createSnapshotsRecomputeJob({ snapshots }), {
     mode: 'portfolio',
     runIfAllowed: runPortfolioJobIfAllowed,
@@ -564,6 +636,20 @@ const definitions = assembleRegisteredJobDefinitions({
     createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
     {
       mode: 'event',
+      isEventAllowed: (event) =>
+        isVaultedPortfolioContentEventAllowed(event, {
+          portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+          standingOrderPortfolio: (userId, standingOrderId) =>
+            paranoidSubjects.standingOrderPortfolio(userId, standingOrderId),
+          cashBudgetPortfolio: (userId, budgetId) =>
+            paranoidSubjects.cashBudgetPortfolio(userId, budgetId),
+          legacyExpenseBudgetExists: (userId, budgetId) =>
+            paranoidSubjects.legacyExpenseBudgetExists(userId, budgetId),
+          userHasPlainHolding: (userId, assetId) =>
+            paranoidSubjects.userHasPlainHolding(userId, assetId),
+          mirrorMemberPortfolios: (chainId, principalUserIds) =>
+            paranoidSubjects.mirrorMemberPortfolios(chainId, principalUserIds),
+        }),
       runIfAllowed: async (userIds, action) => {
         try {
           await paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);

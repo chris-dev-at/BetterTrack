@@ -150,13 +150,19 @@ export function PanelFold({
   summary,
   children,
   open,
+  onToggle,
 }: {
   summary: ReactNode;
   children: ReactNode;
   open?: boolean;
+  onToggle?: (open: boolean) => void;
 }) {
   return (
-    <details className="bt-cc-fold" open={open}>
+    <details
+      className="bt-cc-fold"
+      onToggle={(event) => onToggle?.(event.currentTarget.open)}
+      open={open}
+    >
       <summary>{summary}</summary>
       <div className="bt-cc-fold__body">{children}</div>
     </details>

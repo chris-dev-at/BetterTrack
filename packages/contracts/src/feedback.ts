@@ -95,6 +95,23 @@ export const FEEDBACK_DECLINED_REASON_REQUIRED = 'FEEDBACK_DECLINED_REASON_REQUI
 export const FEEDBACK_SHIPPED_VERSION_REQUIRED = 'FEEDBACK_SHIPPED_VERSION_REQUIRED';
 export const FEEDBACK_STATUS_DETAILS_INVALID = 'FEEDBACK_STATUS_DETAILS_INVALID';
 
+/** Stable `ApiError.error.code` values emitted when a new submission is refused. */
+export const FEEDBACK_SUBMISSION_ERROR_CODES = [FEEDBACK_OPEN_LIMIT] as const;
+
+/** Stable `ApiError.error.code` values emitted by feedback lifecycle validation. */
+export const FEEDBACK_STATUS_ERROR_CODES = [
+  FEEDBACK_DECLINED_REASON_REQUIRED,
+  FEEDBACK_SHIPPED_VERSION_REQUIRED,
+  FEEDBACK_STATUS_DETAILS_INVALID,
+] as const;
+
+/** All stable feedback error codes, composed from the route-level subsets above. */
+export const FEEDBACK_ERROR_CODES = [
+  ...FEEDBACK_SUBMISSION_ERROR_CODES,
+  ...FEEDBACK_STATUS_ERROR_CODES,
+] as const;
+export type FeedbackErrorCode = (typeof FEEDBACK_ERROR_CODES)[number];
+
 interface FeedbackStatusDetails {
   status: FeedbackStatus;
   declinedReason?: string | null;
@@ -180,6 +197,8 @@ export const adminFeedbackSubmissionSchema = z
     declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).nullable(),
     shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).nullable(),
     deletedByUser: z.boolean(),
+    /** Admin-only workspace state; submitter-facing responses never carry it. */
+    archivedAt: z.string().datetime().nullable(),
     submitter: z
       .object({
         id: z.string().uuid(),
@@ -303,6 +322,12 @@ export type SendFeedbackMessageResponse = z.infer<typeof sendFeedbackMessageResp
 export const adminFeedbackListQuerySchema = z
   .object({
     category: feedbackCategorySchema.optional(),
+    // Query strings arrive as text: `z.coerce.boolean()` would treat the
+    // literal "false" as true and silently show the wrong inbox.
+    archived: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
     sort: feedbackSortSchema.default('category'),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -348,3 +373,29 @@ export const updateFeedbackStatusResponseSchema = z
   .strict()
   .superRefine(refineFeedbackStatusDetails);
 export type UpdateFeedbackStatusResponse = z.infer<typeof updateFeedbackStatusResponseSchema>;
+
+/** Explicit admin workspace archive state; independent from lifecycle status. */
+export const updateFeedbackArchiveRequestSchema = z.object({ archived: z.boolean() }).strict();
+export type UpdateFeedbackArchiveRequest = z.infer<typeof updateFeedbackArchiveRequestSchema>;
+
+export const updateFeedbackArchiveResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    archivedAt: z.string().datetime().nullable(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type UpdateFeedbackArchiveResponse = z.infer<typeof updateFeedbackArchiveResponseSchema>;
+
+/** The existing generic admin PATCH accepts exactly one independent mutation. */
+export const updateFeedbackRequestSchema = z.union([
+  updateFeedbackStatusRequestSchema,
+  updateFeedbackArchiveRequestSchema,
+]);
+export type UpdateFeedbackRequest = z.infer<typeof updateFeedbackRequestSchema>;
+
+export const updateFeedbackResponseSchema = z.union([
+  updateFeedbackStatusResponseSchema,
+  updateFeedbackArchiveResponseSchema,
+]);
+export type UpdateFeedbackResponse = z.infer<typeof updateFeedbackResponseSchema>;

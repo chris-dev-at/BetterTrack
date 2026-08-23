@@ -9,6 +9,7 @@ export type EndpointKeystoreErrorCode =
   | 'session-ended'
   | 'storage-invalid'
   | 'vault-not-stored'
+  | 'vault-header-unavailable'
   | 'verification-failed'
   | 'wrong-password';
 

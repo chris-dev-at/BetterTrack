@@ -10,8 +10,9 @@ import {
 
 import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
-import { VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
+import { VAULT_AGGREGATE_SYNC_STATES, VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
 import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
+import { VAULT_STATE_AFFORDANCES } from '../user/vault/vaultStateAffordance';
 import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
 
@@ -146,6 +147,37 @@ test('registers progress + error copy for every paranoid enable stage in EN and 
   }
 });
 
+test('registers the portfolio move wizard and its server-readable warning in EN and DE', () => {
+  const keys = [
+    'vault.portfolioMove.stepUpHint',
+    'vault.portfolioMove.moveIn.title',
+    'vault.portfolioMove.moveIn.warning',
+    'vault.portfolioMove.moveIn.action',
+    'vault.portfolioMove.moveIn.working',
+    'vault.portfolioMove.moveIn.done',
+    'vault.portfolioMove.moveIn.error',
+    'vault.portfolioMove.moveOut.title',
+    'vault.portfolioMove.moveOut.unlockRequired',
+    'vault.portfolioMove.moveOut.warning',
+    'vault.portfolioMove.moveOut.confirm',
+    'vault.portfolioMove.moveOut.action',
+    'vault.portfolioMove.moveOut.working',
+    'vault.portfolioMove.moveOut.done',
+    'vault.portfolioMove.moveOut.error',
+  ];
+  for (const locale of Object.values(LOCALES)) {
+    for (const key of keys) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+  expect(localizedMessage('en', 'vault.portfolioMove.moveOut.warning')).toContain(
+    'server-readable again',
+  );
+  expect(localizedMessage('de', 'vault.portfolioMove.moveOut.warning')).toContain(
+    'für den BetterTrack-Server wieder lesbar',
+  );
+});
+
 test('registers status copy for every vault sync state and medium in EN and DE', () => {
   // Same blind spot as the enable stages: `VaultSyncChip` renders
   // `vault.sync.status.<state>` and `vault.sync.medium.<medium>` as template
@@ -158,6 +190,29 @@ test('registers status copy for every vault sync state and medium in EN and DE',
     }
     for (const medium of VAULT_MEDIA) {
       const key = `vault.sync.medium.${medium}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const state of VAULT_AGGREGATE_SYNC_STATES) {
+      for (const key of [
+        `vault.sync.aggregate.${state}`,
+        `vault.sync.aggregate.row.${state}`,
+        `vault.sync.aggregate.rowState.${state}`,
+      ]) {
+        expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+      }
+    }
+    for (const affordance of Object.values(VAULT_STATE_AFFORDANCES)) {
+      for (const key of [affordance.labelKey, affordance.stateKey]) {
+        expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+      }
+    }
+    for (const key of [
+      'vault.sync.aggregate.lockedOne',
+      'vault.sync.aggregate.signInGoogle',
+      'vault.sync.aggregate.openRestore',
+      'vault.manager.action.scanQr',
+      'vault.manager.access.restore',
+    ]) {
       expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
     }
   }

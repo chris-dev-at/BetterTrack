@@ -1283,7 +1283,19 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
 
     const location = expectMobileGoogleLocation(response, 'error');
     expect(new URL(location).searchParams.get('error')).toBe('google_state');
+    expect(hasSessionCookie(response)).toBe(false);
     expect(g.verifierCalls()).toBe(0);
+
+    const failures = await g.harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'external_identity.link_failed'));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      actorId: null,
+      targetType: 'google_link',
+      meta: { reason: 'malformed_query', via: 'mobile_ticket' },
+    });
   });
 
   it('preserves the existing different-account refusal and its error taxonomy', async () => {
@@ -1366,6 +1378,11 @@ describe('Google link — bearer-minted mobile ticket (#1328)', () => {
         .send({ password });
       expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
     }
+
+    const audits = await g.harness.db.select().from(auditLog).where(eq(auditLog.targetId, user.id));
+    expect(audits.filter((row) => row.action === 'external_identity.link_started')).toHaveLength(
+      11,
+    );
   });
 });
 

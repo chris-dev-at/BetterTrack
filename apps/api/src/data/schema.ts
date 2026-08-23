@@ -656,6 +656,8 @@ export const feedback = pgTable(
     submitterLastReadAt: timestamp('submitter_last_read_at', { withTimezone: true }),
     adminLastReadAt: timestamp('admin_last_read_at', { withTimezone: true }),
     deletedByUserAt: timestamp('deleted_by_user_at', { withTimezone: true }),
+    // Admin workspace hygiene only: never exposed on the submitter rail.
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     // No trigger/$onUpdate owns these: status transitions set both explicitly.
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3967,7 +3969,12 @@ export const driveConnections = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    /** The Google account's stable OIDC subject id (opaque ASCII, ≤ 255). */
+    /**
+     * The stable opaque principal id captured at consent (ASCII, ≤ 255). The
+     * client reads it from Drive `about.get` as `user.permissionId`; the column
+     * keeps its `google_sub` name from E0. It is compared for equality only —
+     * never sent to Google as a `login_hint` (that takes the email, §8/E5).
+     */
     googleSub: text('google_sub').notNull(),
     /** Display identity captured at consent — config, not portfolio content. */
     email: text('email').notNull(),
@@ -4001,6 +4008,13 @@ export const vaults = pgTable(
      */
     name: text('name').notNull(),
     /**
+     * Config-registered singleton doc identities (R1). They are client-minted,
+     * distinct UUIDs and remain stable when the active server copy is retired.
+     * Portfolio docs use the locked stub's id directly (`doc_id = portfolio_id`).
+     */
+    headerDocId: uuid('header_doc_id').notNull(),
+    commonDocId: uuid('common_doc_id').notNull(),
+    /**
      * Media set ⊆ {server, drive}, non-empty (CHECK below). The contract enum
      * additionally knows the RESERVED `local` value (phone-local-only, a
      * future version) — the CHECK is the deepest server boundary rejecting it
@@ -4024,10 +4038,26 @@ export const vaults = pgTable(
      */
     retirementProofPublicKey: text('retirement_proof_public_key').notNull(),
     /**
+     * Lifetime monotonic allocator for R4 retirement generations. It survives
+     * a successful purge (which necessarily deletes `vault_retirements`) so a
+     * later server retirement for this same vault can never reuse a generation.
+     */
+    retirementGeneration: integer('retirement_generation').notNull().default(0),
+    /**
      * Non-secret HKDF verification tag of K_c (§4) — lets a client confirm
      * "these words open THIS vault" before destructive steps. Never a key.
      */
     keyFingerprint: text('key_fingerprint').notNull(),
+    /** Last successful R3 full-doc-set media attestation. */
+    mediaAttestedAt: timestamp('media_attested_at', { withTimezone: true }),
+    /**
+     * Drive connection proven by the attestation, when Drive is selected.
+     * The migration makes this FK DEFERRABLE INITIALLY DEFERRED for the same
+     * account-deletion ordering reason as `drive_connection_id`.
+     */
+    mediaAttestedDriveConnectionId: uuid('media_attested_drive_connection_id').references(
+      () => driveConnections.id,
+    ),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -4040,6 +4070,8 @@ export const vaults = pgTable(
     primaryKey({ name: 'vaults_v3_pk', columns: [t.id] }),
     uniqueIndex('vaults_user_name_unique').on(t.userId, t.name),
     index('vaults_drive_connection_idx').on(t.driveConnectionId),
+    check('vaults_config_doc_ids_distinct', sql`${t.headerDocId} <> ${t.commonDocId}`),
+    check('vaults_retirement_generation_nonnegative', sql`${t.retirementGeneration} >= 0`),
     /**
      * The §3 config invariants in one CHECK: (1) `media` is exactly one
      * non-empty duplicate-free subset of {server, drive} (the enumeration
@@ -4061,6 +4093,31 @@ export const vaults = pgTable(
           or (not ${t.media} @> array['drive']::text[] and ${t.driveConnectionId} is null)
         )`,
     ),
+    /**
+     * No attestation means no attesting connection. A successful attestation
+     * names the current Drive binding exactly when Drive is selected; a
+     * server-only attestation has no connection id.
+     */
+    check(
+      'vaults_media_attestation_state',
+      sql`(
+          ${t.mediaAttestedAt} is null
+          and ${t.mediaAttestedDriveConnectionId} is null
+        ) or (
+          ${t.mediaAttestedAt} is not null
+          and (
+            (
+              ${t.media} @> array['drive']::text[]
+              and ${t.mediaAttestedDriveConnectionId} is not null
+              and ${t.mediaAttestedDriveConnectionId} = ${t.driveConnectionId}
+            )
+            or (
+              not ${t.media} @> array['drive']::text[]
+              and ${t.mediaAttestedDriveConnectionId} is null
+            )
+          )
+        )`,
+    ),
   ],
 );
 
@@ -4069,9 +4126,12 @@ export const vaults = pgTable(
  * a vault's doc set (`header` / `common` / one `portfolio` doc per member).
  * `blob` is the full opaque envelope v2 (magic + cleartext-but-portfolio-free
  * header + AES-256-GCM ciphertext) — stored and returned verbatim, never
- * interpreted past the envelope header (`formatVersion` + `docVersion` for
- * CAS, exactly the v1 discipline). `version` is the per-doc monotonic CAS
- * token surfaced as the `ETag`. Per-kind size caps ride the
+ * interpreted past R2's six-field envelope projection (`formatVersion`,
+ * `docVersion`, `vaultId`, `docId`, `docKind`, `writeId`). The address fields
+ * must agree with this row and `writeId` supplies replay idempotency; no
+ * payload byte is parsed. `version` is client-owned merge state surfaced as the
+ * `ETag`; the server compares only the HTTP precondition and never orders or
+ * version-gates it. Per-kind size caps ride the
  * `BT_VAULT_MAX_BYTES_*` env family (enforced by the E1 store).
  */
 export const vaultBlobs = pgTable(
@@ -4100,9 +4160,9 @@ export const vaultBlobs = pgTable(
      * stub delete still refuses at commit.
      */
     portfolioId: uuid('portfolio_id').references(() => portfolios.id),
-    /** Monotonic per-doc compare-and-swap token. Starts at 1. */
+    /** Client-owned merge version; opaque to the server beyond ETag equality. */
     version: integer('version').notNull(),
-    /** Envelope layout version read from the header — the ONLY other field. */
+    /** Envelope layout version from the allowed R2 server-header projection. */
     formatVersion: integer('format_version').notNull(),
     /** Envelope byte length — the per-kind size-cap guard reads it; no content. */
     sizeBytes: integer('size_bytes').notNull(),
@@ -4130,6 +4190,11 @@ export const vaultBlobs = pgTable(
       'vault_blobs_portfolio_state',
       sql`(${t.docKind} = 'portfolio' and ${t.portfolioId} is not null)
         or (${t.docKind} <> 'portfolio' and ${t.portfolioId} is null)`,
+    ),
+    /** R1 deepest boundary: a portfolio doc's address IS its locked stub id. */
+    check(
+      'vault_blobs_portfolio_doc_id',
+      sql`${t.docKind} <> 'portfolio' or ${t.docId} = ${t.portfolioId}`,
     ),
   ],
 );
@@ -4173,6 +4238,11 @@ export const vaultServerCandidates = pgTable(
   'vault_server_candidates',
   {
     id: uuid('id').primaryKey().$defaultFn(newId),
+    /**
+     * R3 batch identity. Nullable only because this is an append-only column
+     * on E0's already-shipped table; every E1-created candidate supplies it.
+     */
+    transitionId: uuid('transition_id'),
     vaultId: uuid('vault_id')
       .notNull()
       .references(() => vaults.id, { onDelete: 'cascade' }),
@@ -4186,6 +4256,7 @@ export const vaultServerCandidates = pgTable(
   },
   (t) => [
     uniqueIndex('vault_server_candidates_doc_unique').on(t.vaultId, t.docId),
+    index('vault_server_candidates_transition_idx').on(t.vaultId, t.transitionId),
     index('vault_server_candidates_expires_idx').on(t.expiresAt),
   ],
 );
@@ -4211,13 +4282,19 @@ export const vaultServerCandidates = pgTable(
  * challenge and the minimum-retention window, cascading the recovery set
  * away. The E1 route test must pin this refusal.
  */
-export const vaultRetirements = pgTable('vault_retirements', {
-  vaultId: uuid('vault_id')
-    .primaryKey()
-    .references(() => vaults.id, { onDelete: 'cascade' }),
-  retirementProofPublicKey: text('retirement_proof_public_key').notNull(),
-  retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const vaultRetirements = pgTable(
+  'vault_retirements',
+  {
+    vaultId: uuid('vault_id')
+      .primaryKey()
+      .references(() => vaults.id, { onDelete: 'cascade' }),
+    retirementProofPublicKey: text('retirement_proof_public_key').notNull(),
+    /** Snapshot of the positive lifetime generation allocated from `vaults`. */
+    generation: integer('generation').notNull().default(1),
+    retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('vault_retirements_generation_positive', sql`${t.generation} > 0`)],
+);
 
 /**
  * Recoverable server ciphertext after a server-medium removal
@@ -4244,6 +4321,141 @@ export const vaultRetired = pgTable(
   (t) => [uniqueIndex('vault_retired_doc_version_unique').on(t.vaultId, t.docId, t.version)],
 );
 
+/**
+ * Durable, content-free E4 transition state for one portfolio. Capture state is
+ * short-lived; the completed move receipts remain so an uncertain client retry
+ * can return the committed result without replaying destructive/restorative
+ * writes. Vault ids intentionally have no FK: deleting a later-empty vault must
+ * not erase the idempotency receipt for an already-completed transition.
+ */
+export const portfolioVaultTransitionStates = pgTable(
+  'portfolio_vault_transition_states',
+  {
+    portfolioId: uuid('portfolio_id')
+      .primaryKey()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    captureRevision: text('capture_revision'),
+    captureExpiresAt: timestamp('capture_expires_at', { withTimezone: true }),
+    captureVaultId: uuid('capture_vault_id'),
+    captureMediaAttestedAt: timestamp('capture_media_attested_at', { withTimezone: true }),
+    captureMediaAttestedDriveConnectionId: uuid('capture_media_attested_drive_connection_id'),
+    /** Monotonic identity of the current/latest committed move-in lifecycle. */
+    lifecycleGeneration: integer('lifecycle_generation').notNull().default(0),
+    moveInVaultId: uuid('move_in_vault_id'),
+    moveInDocVersion: integer('move_in_doc_version'),
+    moveInCompletedAt: timestamp('move_in_completed_at', { withTimezone: true }),
+    /** Opaque owner-manual ids held behind the cross-process Live Mode fence. */
+    moveInRetiredCustomAssetIds: uuid('move_in_retired_custom_asset_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    moveOutVaultId: uuid('move_out_vault_id'),
+    moveOutId: uuid('move_out_id'),
+    moveOutDocumentDigest: text('move_out_document_digest'),
+    /** Exact encrypted roster CAS captured under the move-out row locks. */
+    moveOutDocumentSetHash: text('move_out_document_set_hash'),
+    /** Pinned receipt verifier keeps phrase-held replay valid after vault deletion. */
+    moveOutProofPublicKey: text('move_out_proof_public_key'),
+    moveOutCompletedAt: timestamp('move_out_completed_at', { withTimezone: true }),
+    /** Durable retry marker for idempotent post-commit derived-state convergence. */
+    moveOutPostCommitPending: boolean('move_out_post_commit_pending').notNull().default(false),
+    moveOutPostCommitCustomAssetIds: uuid('move_out_post_commit_custom_asset_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    /** Fair retry cursor: new/null plans run before the oldest prior attempt. */
+    moveOutPostCommitLastAttemptAt: timestamp('move_out_post_commit_last_attempt_at', {
+      withTimezone: true,
+    }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'portfolio_vault_transition_states_capture_pair',
+      sql`(${t.captureRevision} is null) = (${t.captureExpiresAt} is null)`,
+    ),
+    check(
+      'portfolio_vault_transition_states_capture_target_attestation',
+      sql`(
+          ${t.captureVaultId} is null
+          and ${t.captureMediaAttestedAt} is null
+          and ${t.captureMediaAttestedDriveConnectionId} is null
+        ) or (
+          ${t.captureVaultId} is not null
+          and ${t.captureMediaAttestedAt} is not null
+        )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_move_in_receipt',
+      sql`(
+          ${t.moveInVaultId} is null
+          and ${t.moveInDocVersion} is null
+          and ${t.moveInCompletedAt} is null
+        ) or (
+          ${t.moveInVaultId} is not null
+          and ${t.moveInDocVersion} is not null
+          and ${t.moveInCompletedAt} is not null
+        )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_move_out_receipt',
+      sql`(
+          ${t.moveOutVaultId} is null
+          and ${t.moveOutId} is null
+          and ${t.moveOutDocumentDigest} is null
+          and ${t.moveOutDocumentSetHash} is null
+          and ${t.moveOutProofPublicKey} is null
+          and ${t.moveOutCompletedAt} is null
+        ) or (
+          ${t.moveOutVaultId} is not null
+          and ${t.moveOutId} is not null
+          and ${t.moveOutDocumentDigest} is not null
+          and ${t.moveOutDocumentSetHash} is not null
+          and ${t.moveOutProofPublicKey} is not null
+          and ${t.moveOutCompletedAt} is not null
+        )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_doc_version_nonnegative',
+      sql`${t.moveInDocVersion} is null or ${t.moveInDocVersion} >= 0`,
+    ),
+    check(
+      'portfolio_vault_transition_states_lifecycle_generation_range',
+      sql`${t.lifecycleGeneration} >= 0`,
+    ),
+    check(
+      'portfolio_vault_transition_states_receipt_lifecycle',
+      sql`${t.lifecycleGeneration} > 0 or (
+        ${t.moveInCompletedAt} is null and ${t.moveOutCompletedAt} is null
+      )`,
+    ),
+    check(
+      'portfolio_vault_transition_states_move_in_retirements',
+      sql`${t.moveInCompletedAt} is not null or cardinality(${t.moveInRetiredCustomAssetIds}) = 0`,
+    ),
+    check(
+      'portfolio_vault_transition_states_post_commit_plan',
+      sql`(
+        ${t.moveOutPostCommitPending} and ${t.moveOutCompletedAt} is not null
+      ) or (
+        not ${t.moveOutPostCommitPending}
+        and cardinality(${t.moveOutPostCommitCustomAssetIds}) = 0
+        and ${t.moveOutPostCommitLastAttemptAt} is null
+      )`,
+    ),
+    uniqueIndex('portfolio_vault_transition_states_move_out_id_unique')
+      .on(t.moveOutId)
+      .where(sql`${t.moveOutId} is not null`),
+    index('portfolio_vault_transition_states_user_portfolio_idx').on(t.userId, t.portfolioId),
+    index('portfolio_vault_transition_states_pending_finalize_idx')
+      .on(sql`${t.moveOutPostCommitLastAttemptAt} asc nulls first`, t.updatedAt, t.portfolioId)
+      .where(sql`${t.moveOutPostCommitPending}`),
+  ],
+);
+
 export type DriveConnectionRow = typeof driveConnections.$inferSelect;
 export type NewDriveConnectionRow = typeof driveConnections.$inferInsert;
 export type VaultRow = typeof vaults.$inferSelect;
@@ -4258,6 +4470,9 @@ export type VaultRetirementRow = typeof vaultRetirements.$inferSelect;
 export type NewVaultRetirementRow = typeof vaultRetirements.$inferInsert;
 export type VaultRetiredRow = typeof vaultRetired.$inferSelect;
 export type NewVaultRetiredRow = typeof vaultRetired.$inferInsert;
+export type PortfolioVaultTransitionStateRow = typeof portfolioVaultTransitionStates.$inferSelect;
+export type NewPortfolioVaultTransitionStateRow =
+  typeof portfolioVaultTransitionStates.$inferInsert;
 
 export const schema = {
   users,
@@ -4360,6 +4575,7 @@ export const schema = {
   vaultServerCandidates,
   vaultRetirements,
   vaultRetired,
+  portfolioVaultTransitionStates,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,

@@ -13,6 +13,7 @@
 import type { RequestHandler } from 'express';
 
 import {
+  PARANOID_KILLED_CAPABILITIES,
   PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
   type ApiKeyScope,
   type ParanoidKilledCapability,
@@ -21,6 +22,11 @@ import {
 import type { DomainEvent } from '../../events';
 import { ApiError, forbidden, notFound } from '../../errors';
 import { normalizeRoutePath } from '../security/routePath';
+import {
+  portfolioIdForPortfolioContentEvent,
+  VaultedPortfolioError,
+  type VaultedPortfolioGuard,
+} from './vaultedPortfolioGuard';
 
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
@@ -112,6 +118,16 @@ export type ParanoidServiceSubject =
   | 'userIdField'
   | 'portfolioIdFirst'
   | 'portfolioIdFirstAllowMissing'
+  | 'portfolioIdSecond'
+  | 'optionalPortfolioIdSecond'
+  | 'portfolioIdFieldSecond'
+  | 'userAndPortfolioIdFields'
+  | 'importBatchIdSecond'
+  | 'portfolioAudienceTarget'
+  | 'optionalPortfolioIdOptionSecond'
+  | 'standingOrderIdSecond'
+  | 'cashBudgetIdSecond'
+  | 'cashMovementIdSecond'
   | 'assetIdFirst'
   | 'paranoidWebhookSubjects'
   | 'dynamicPrincipals'
@@ -170,11 +186,82 @@ export interface ParanoidJobPolicyEntry {
 
 export interface ParanoidKillRegistryEntry {
   readonly capability: ParanoidKilledCapability;
+  /** The one §11 feature row this executable capability contributes to. */
+  readonly vaultedFeature: VaultedPortfolioFeatureDefinition;
   readonly routes: readonly ParanoidRouteRule[];
   readonly services: readonly ParanoidServiceBinding[];
   readonly scopes: readonly ApiKeyScope[];
   readonly jobs: readonly string[];
   readonly webhookEventTypes: readonly string[];
+}
+
+export type VaultedPortfolioJobMode = 'portfolio' | 'perUser' | 'serviceFiltered' | 'event';
+
+export type VaultedPortfolioFeatureId =
+  | 'sharing-public'
+  | 'server-computed-reads'
+  | 'server-jobs'
+  | 'imports'
+  | 'portfolio-api-access'
+  | 'mirrorchain'
+  | 'portfolio-webhooks';
+
+export interface VaultedPortfolioMatrixPolicy {
+  /** Targeted calls refuse; background/event work silently skips the portfolio. */
+  readonly vaulted: 'refuse' | 'skip';
+  readonly siblingPlain: 'allow';
+  readonly vaultFree: 'allow';
+  readonly allowedParity: 'byte-identical';
+}
+
+export interface VaultedPortfolioTransitionCarveout {
+  readonly method: 'GET' | 'POST';
+  readonly operation: 'revision' | 'move-in' | 'move-out/challenge' | 'move-out';
+  readonly reason: string;
+}
+
+export interface VaultedPortfolioFeatureDefinition {
+  /** The matching numbered item in paranoid-design.md section 11. */
+  readonly sectionItem: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  readonly id: VaultedPortfolioFeatureId;
+  readonly description: string;
+  readonly matrix: VaultedPortfolioMatrixPolicy;
+  /** Explicit exit-door exceptions; absent on every feature except portfolio API access. */
+  readonly transitionCarveouts?: readonly VaultedPortfolioTransitionCarveout[];
+}
+
+/**
+ * Executable evidence folded into one §11 row from PARANOID_KILL_REGISTRY.
+ * These are references to the actual route/service/job/scope/event policies,
+ * not a second list maintained by the matrix test.
+ */
+export interface VaultedPortfolioBoundaryEvidence {
+  readonly routes: readonly {
+    readonly capability: ParanoidKilledCapability;
+    readonly rule: ParanoidRouteRule;
+  }[];
+  readonly services: readonly ParanoidServiceBinding[];
+  readonly jobs: readonly {
+    readonly capability: ParanoidKilledCapability;
+    readonly name: string;
+    readonly mode: VaultedPortfolioJobMode;
+  }[];
+  readonly scopes: readonly {
+    readonly capability: ParanoidKilledCapability;
+    readonly scope: ApiKeyScope;
+  }[];
+  readonly webhookEvents: readonly {
+    readonly capability: ParanoidKilledCapability;
+    readonly eventType: string;
+  }[];
+}
+
+export interface VaultedPortfolioFeatureRegistryEntry extends VaultedPortfolioFeatureDefinition {
+  readonly capabilities: readonly ParanoidKilledCapability[];
+  /** Scopes stay valid account-wide; these require a portfolio boundary. */
+  readonly scopes: readonly ApiKeyScope[];
+  readonly jobModes: readonly VaultedPortfolioJobMode[];
+  readonly evidence: VaultedPortfolioBoundaryEvidence;
 }
 
 export interface ParanoidApiScopeClassification {
@@ -252,28 +339,28 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'unfollowItem',
     'listItemFollows',
     'listMyShared',
+  ]),
+  serviceBinding('sharing', 'social', 'portfolioAudienceTarget', [
     'getAudience',
     'setAudience',
     'applyAudienceVisibility',
   ]),
+  serviceBinding('sharing', 'social', 'portfolioIdSecond', ['getSharedPortfolio']),
   serviceBinding('sharing', 'social', 'intrinsic', ['getByPublicLink']),
-  serviceBinding('mirrorchain', 'mirror', 'userIdFirst', [
-    'enrichPortfolioSummaries',
-    'convertToChain',
-    'createChain',
-    'convertChain',
-    'declineInvite',
-    'revokeInvite',
-  ]),
+  serviceBinding('mirrorchain', 'mirror', 'userIdFirst', ['createChain']),
+  serviceBinding('mirrorchain', 'mirror', 'portfolioIdSecond', ['convertToChain', 'convertChain']),
   serviceBinding(
     'mirrorchain',
     'mirror',
     'dynamicPrincipals',
     [
       'listChainsForUser',
+      'enrichPortfolioSummaries',
       'getMemberList',
       'getActivity',
       'listInvites',
+      'declineInvite',
+      'revokeInvite',
       'setMemberRole',
       'transferOwnership',
       'removeMember',
@@ -284,27 +371,62 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     undefined,
     ['dynamicPrincipals'],
   ),
-  serviceBinding(
-    'mirrorchain',
-    'mirror',
-    'userIdFirstAndDynamicPrincipals',
-    ['submit*'],
-    undefined,
-    ['dynamicPrincipals'],
-  ),
+  serviceBinding('mirrorchain', 'mirror', 'portfolioIdSecond', ['submit*'], undefined, [
+    'dynamicPrincipals',
+  ]),
   serviceBinding('mirrorchain', 'mirror', 'portfolioIdFirstAllowMissing', [
     'syncedMembership',
     'overlayForPortfolio',
   ]),
-  serviceBinding('portfolioServer', 'portfolio', 'userIdFirst', ['*']),
+  // The account-level list/create/default rails remain available to a normal
+  // account that owns vaults. Every operation that names an existing portfolio
+  // is re-keyed to that portfolio's `vault_id` at the service boundary.
+  serviceBinding('portfolioServer', 'portfolio', 'userIdFirst', [
+    'listPortfolios',
+    'createPortfolio',
+    'getDefaultPortfolioId',
+  ]),
+  serviceBinding('portfolioServer', 'portfolio', 'portfolioIdSecond', [
+    'archivePortfolio',
+    'restorePortfolio',
+    'deletePortfolio',
+    'updatePortfolio',
+    'updatePortfolioWithVisibility',
+    'listTransactions',
+    'createTransactions',
+    'updateTransaction',
+    'deleteTransaction',
+    'getPortfolio',
+    'getCashMovements',
+    'listCashSources',
+    'createCashSource',
+    'updateCashSource',
+    'archiveCashSource',
+    'restoreCashSource',
+    'transferCash',
+    'setCashBalance',
+    'depositCash',
+    'withdrawCash',
+    'chargeCashFee',
+    'updateCashMovement',
+    'deleteCashMovement',
+    'previewCash',
+    'getHistory',
+    'getAssetValueSeries',
+    'getSnapshotFreshness',
+  ]),
+  serviceBinding('portfolioServer', 'portfolio', 'portfolioIdFirst', ['invalidateHistory']),
   serviceBinding('portfolioServer', 'customAssets', 'userIdFirst', ['*']),
-  serviceBinding('portfolioServer', 'analytics', 'userIdFirst', ['*']),
+  serviceBinding('portfolioServer', 'analytics', 'portfolioIdSecond', ['*']),
   serviceBinding('portfolioServer', 'portfolioMarketIntel', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'marketIntel', 'userIdFirst', ['newsDigest']),
   serviceBinding('portfolioServer', 'tax', 'userIdFirst', [
     'getSettings',
     'updateSettings',
-    'getEffectiveSettings',
+    'getYearChanges',
+  ]),
+  serviceBinding('portfolioServer', 'tax', 'optionalPortfolioIdSecond', ['getEffectiveSettings']),
+  serviceBinding('portfolioServer', 'tax', 'portfolioIdSecond', [
     'getPortfolioTaxSettings',
     'setPortfolioTaxOverride',
     'clearPortfolioTaxOverride',
@@ -312,11 +434,10 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'recordDividend',
     'listDividends',
     'deleteDividend',
-    'getYearChanges',
     'getYearReports',
     'getYearReport',
   ]),
-  serviceBinding('portfolioServer', 'tax', 'userIdField', ['planTransactionTaxes']),
+  serviceBinding('portfolioServer', 'tax', 'userAndPortfolioIdFields', ['planTransactionTaxes']),
   // The Home board is UI configuration, but its widget settings carry portfolio
   // ids, asset ids and the captured asset LABEL (a ticker). Storing that on the
   // server for an account whose portfolio exists only in the client-encrypted
@@ -337,9 +458,34 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   // the same capability the ledger does. Auto-tagging itself needs no binding —
   // it runs inside the movement INSERT (see `data/repositories/cashSystemTagStamp`),
   // which the ledger's own capability already governs.
-  serviceBinding('portfolioServer', 'cashTags', 'userIdFirst', ['*']),
-  serviceBinding('portfolioServer', 'cashBudgets', 'userIdFirst', ['*']),
-  serviceBinding('portfolioServer', 'aiFeatures', 'userIdFirst', ['insights']),
+  serviceBinding('portfolioServer', 'cashTags', 'cashMovementIdSecond', ['setMovementTags']),
+  serviceBinding('portfolioServer', 'cashTags', 'userIdFirst', [
+    'listTags',
+    'createTag',
+    'updateTag',
+    'deleteTag',
+    'ensureSystemTags',
+    'listRules',
+    'createRule',
+    'updateRule',
+    'deleteRule',
+    'applyRules',
+    'previewRules',
+  ]),
+  serviceBinding('portfolioServer', 'cashBudgets', 'portfolioIdSecond', [
+    'listBudgets',
+    'summary',
+    'trends',
+    'evaluate',
+    'evaluateRequired',
+  ]),
+  serviceBinding('portfolioServer', 'cashBudgets', 'portfolioIdFieldSecond', ['createBudget']),
+  serviceBinding('portfolioServer', 'cashBudgets', 'cashBudgetIdSecond', [
+    'updateBudget',
+    'deleteBudget',
+  ]),
+  serviceBinding('portfolioServer', 'cashBudgets', 'userIdFirst', ['listAllBudgets']),
+  serviceBinding('portfolioServer', 'aiFeatures', 'portfolioIdFieldSecond', ['insights']),
   serviceBinding('portfolioServer', 'snapshots', 'portfolioIdFirst', [
     'getSeries',
     'getOverlays',
@@ -351,23 +497,29 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'resolveAssetReferences',
     'invalidateForAsset',
   ]),
-  serviceBinding('imports', 'imports', 'userIdFirst', [
-    'createBatch',
+  serviceBinding('imports', 'imports', 'portfolioIdFieldSecond', ['createBatch']),
+  serviceBinding('imports', 'imports', 'importBatchIdSecond', [
     'getBatch',
     'applyBatch',
     'discardBatch',
   ]),
   serviceBinding('imports', 'expenseImports', 'userIdFirst', ['preview', 'apply']),
-  serviceBinding('standingOrderExecution', 'standingOrders', 'userIdFirst', [
+  serviceBinding('standingOrderExecution', 'standingOrders', 'optionalPortfolioIdOptionSecond', [
     'list',
-    'listRuns',
+  ]),
+  serviceBinding('standingOrderExecution', 'standingOrders', 'userIdFirst', ['listRuns']),
+  serviceBinding('standingOrderExecution', 'standingOrders', 'portfolioIdFieldSecond', ['create']),
+  serviceBinding('standingOrderExecution', 'standingOrders', 'standingOrderIdSecond', [
     'get',
-    'create',
     'update',
     'pause',
     'resume',
     'remove',
+  ]),
+  serviceBinding('standingOrderExecution', 'standingOrders', 'portfolioIdSecond', [
     'skipDuePeriodsForPortfolioRestore',
+  ]),
+  serviceBinding('standingOrderExecution', 'standingOrders', 'userIdFirst', [
     'rollbackSkippedPeriodsForPortfolioRestore',
   ]),
   serviceBinding(
@@ -458,7 +610,6 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'listFollowers',
       'setActivityAlert',
       'listSharedWithMe',
-      'getSharedPortfolio',
       'getSharedConglomerate',
       'getSharedWatchlist',
     ],
@@ -582,6 +733,12 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
  */
 export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
   serviceExemption(
+    'vaultedPortfolioGuard',
+    ['*'],
+    'kept',
+    'The identity-only per-portfolio policy primitive is itself the enforcement boundary, not an account content surface.',
+  ),
+  serviceExemption(
     'redis',
     ['*'],
     'kept',
@@ -666,10 +823,28 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
   ),
   serviceExemption(
+    'vaults',
+    ['*'],
+    'kept',
+    'The `/vaults` surface is the deliberate encrypted-data home. Its `vault:sync` scope is the permanent §11 item-5 ciphertext carve-out, so this service is intentionally kept.',
+  ),
+  serviceExemption(
+    'driveConnections',
+    ['*'],
+    'kept',
+    'Drive identities and per-vault bindings are client-storage routing metadata; OAuth tokens and Drive file identifiers never enter the server.',
+  ),
+  serviceExemption(
     'paranoidTransitions',
     ['*'],
     'kept',
     'The transition orchestrator owns the exclusive account lock and is the only path that changes privacy mode; enable, disable, and safe metadata reads must remain reachable for idempotent retries.',
+  ),
+  serviceExemption(
+    'portfolioVaultTransitions',
+    ['*'],
+    'kept',
+    'The per-portfolio transition orchestrator owns the account/vault/portfolio lock chain and is the only exit door that may atomically flip vault membership; capture, move-in, move-out, and outcome-ambiguous retries must bypass the state they change.',
   ),
   serviceExemption(
     'paranoidGuard',
@@ -922,6 +1097,12 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     capability: 'portfolioJobs',
     mode: 'serviceFiltered',
   }),
+  jobPolicy('portfolioVaultJobs.ts', 'createPortfolioVaultFinalizeJob', 'portfolioVault.finalize', {
+    capability: null,
+    mode: 'kept',
+    reason:
+      'This recovery sweep is transition infrastructure: its service processes only durable pending move-out receipts under the exclusive owner privacy lock.',
+  }),
   jobPolicy('usageAnalyticsJobs.ts', 'createUsageRollupJob', 'usage.rollup', {
     capability: null,
     mode: 'kept',
@@ -987,13 +1168,110 @@ const jobsFor = (capability: ParanoidKilledCapability): readonly string[] =>
     (entry) => entry.surface.name,
   );
 
+const REFUSE_VAULTED_PORTFOLIO_POLICY = {
+  vaulted: 'refuse',
+  siblingPlain: 'allow',
+  vaultFree: 'allow',
+  allowedParity: 'byte-identical',
+} as const satisfies VaultedPortfolioMatrixPolicy;
+
+const SKIP_VAULTED_PORTFOLIO_POLICY = {
+  vaulted: 'skip',
+  siblingPlain: 'allow',
+  vaultFree: 'allow',
+  allowedParity: 'byte-identical',
+} as const satisfies VaultedPortfolioMatrixPolicy;
+
 /**
- * The typed §8 kill registry. It is intentionally declarative in this issue;
- * #884 will consume it to mount the actual route/service/job enforcement.
+ * The only portfolio routes allowed to cross the locked-stub boundary. E4
+ * mounts these operations; keeping the allowlist in the same registry that
+ * defines the kill matrix prevents a controller-only exception from quietly
+ * widening the exit door.
+ */
+export const VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY = [
+  {
+    method: 'GET',
+    operation: 'revision',
+    reason: 'Read the revision token required to serialize a portfolio transition.',
+  },
+  {
+    method: 'POST',
+    operation: 'move-in',
+    reason: 'Replay a committed move-in through its durable idempotency receipt.',
+  },
+  {
+    method: 'POST',
+    operation: 'move-out/challenge',
+    reason: 'Issue a graph-bound phrase-possession challenge for the designed exit.',
+  },
+  {
+    method: 'POST',
+    operation: 'move-out',
+    reason: "Restore a locked stub through E4's authenticated move-out transaction.",
+  },
+] as const satisfies readonly VaultedPortfolioTransitionCarveout[];
+
+/**
+ * Section labels contain no executable rail membership. Each capability below
+ * selects one label directly on PARANOID_KILL_REGISTRY; the public seven-row
+ * matrix is then derived from those executable rows.
+ */
+const VAULTED_PORTFOLIO_FEATURES = {
+  sharingPublic: {
+    sectionItem: 1,
+    id: 'sharing-public',
+    description: 'Sharing, audiences, public links, and public-profile portfolio inclusion.',
+    matrix: REFUSE_VAULTED_PORTFOLIO_POLICY,
+  },
+  serverComputedReads: {
+    sectionItem: 2,
+    id: 'server-computed-reads',
+    description: 'Every server-computed read whose input is this portfolio.',
+    matrix: REFUSE_VAULTED_PORTFOLIO_POLICY,
+  },
+  serverJobs: {
+    sectionItem: 3,
+    id: 'server-jobs',
+    description: 'Portfolio snapshot, holdings scan, and standing-order server work.',
+    matrix: SKIP_VAULTED_PORTFOLIO_POLICY,
+  },
+  imports: {
+    sectionItem: 4,
+    id: 'imports',
+    description: 'Server-side imports whose selected destination is this portfolio.',
+    matrix: REFUSE_VAULTED_PORTFOLIO_POLICY,
+  },
+  portfolioApiAccess: {
+    sectionItem: 5,
+    id: 'portfolio-api-access',
+    description: 'Session or bearer API access that targets this portfolio.',
+    matrix: REFUSE_VAULTED_PORTFOLIO_POLICY,
+    transitionCarveouts: VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY,
+  },
+  mirrorchain: {
+    sectionItem: 6,
+    id: 'mirrorchain',
+    description: 'Mirrorchain create, convert, invite, join, and membership for this portfolio.',
+    matrix: REFUSE_VAULTED_PORTFOLIO_POLICY,
+  },
+  portfolioWebhooks: {
+    sectionItem: 7,
+    id: 'portfolio-webhooks',
+    description: 'Portfolio-content webhook production and delivery.',
+    matrix: SKIP_VAULTED_PORTFOLIO_POLICY,
+  },
+} as const satisfies Record<string, VaultedPortfolioFeatureDefinition>;
+
+/**
+ * The executable kill registry and single source for the §11 matrix. Runtime
+ * route/service/job composition consumes these same rows, while the derived
+ * VAULTED_PORTFOLIO_FEATURE_REGISTRY below only groups their evidence for the
+ * seven design-level assertions.
  */
 export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   {
     capability: 'publicProfile',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.sharingPublic,
     routes: [{ prefix: '/social/profiles/' }],
     services: servicesFor('publicProfile'),
     scopes: [],
@@ -1002,6 +1280,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'sharing',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.sharingPublic,
     routes: [
       { prefix: '/social/links/' },
       { exact: '/social/groups' },
@@ -1029,6 +1308,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'mirrorchain',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.mirrorchain,
     routes: [{ prefix: '/mirrorchain/' }],
     services: servicesFor('mirrorchain'),
     scopes: [],
@@ -1037,6 +1317,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'portfolioServer',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.serverComputedReads,
     routes: [
       { exact: '/portfolios' },
       { prefix: '/portfolios/' },
@@ -1080,6 +1361,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'imports',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.imports,
     routes: [{ exact: '/imports' }, { prefix: '/imports/' }, { prefix: '/expenses/import/' }],
     services: servicesFor('imports'),
     scopes: [],
@@ -1088,6 +1370,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'portfolioApiScope',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.portfolioApiAccess,
     routes: [],
     services: servicesFor('portfolioApiScope'),
     scopes: [
@@ -1103,6 +1386,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'standingOrderExecution',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.serverJobs,
     routes: [{ exact: '/standing-orders' }, { prefix: '/standing-orders/' }],
     services: servicesFor('standingOrderExecution'),
     scopes: [],
@@ -1112,6 +1396,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'portfolioJobs',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.serverJobs,
     routes: [],
     services: servicesFor('portfolioJobs'),
     scopes: [],
@@ -1120,6 +1405,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
   {
     capability: 'portfolioWebhooks',
+    vaultedFeature: VAULTED_PORTFOLIO_FEATURES.portfolioWebhooks,
     routes: [],
     services: servicesFor('portfolioWebhooks'),
     scopes: [],
@@ -1130,6 +1416,172 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
     webhookEventTypes: ['portfolio.changed', ...PARANOID_KILLED_WEBHOOK_EVENT_TYPES],
   },
 ] as const;
+
+interface MutableVaultedPortfolioFeatureRegistryEntry {
+  definition: VaultedPortfolioFeatureDefinition;
+  capabilities: ParanoidKilledCapability[];
+  routes: Array<{ capability: ParanoidKilledCapability; rule: ParanoidRouteRule }>;
+  services: ParanoidServiceBinding[];
+  jobs: Array<{
+    capability: ParanoidKilledCapability;
+    name: string;
+    mode: VaultedPortfolioJobMode;
+  }>;
+  scopes: Array<{ capability: ParanoidKilledCapability; scope: ApiKeyScope }>;
+  webhookEvents: Array<{ capability: ParanoidKilledCapability; eventType: string }>;
+}
+
+const VAULTED_PORTFOLIO_JOB_MODES = new Set<ParanoidJobMode>([
+  'portfolio',
+  'perUser',
+  'serviceFiltered',
+  'event',
+]);
+
+/**
+ * Fold the executable capability rows into the seven design rows. Validation
+ * happens during module composition: a new contract capability, an empty rail,
+ * a duplicate capability, or a killed job without a matching mode prevents the
+ * API from starting instead of waiting for the first affected request.
+ */
+function deriveVaultedPortfolioFeatureRegistry(): readonly VaultedPortfolioFeatureRegistryEntry[] {
+  const contractCapabilities = [...PARANOID_KILLED_CAPABILITIES].sort();
+  const registryCapabilities = PARANOID_KILL_REGISTRY.map((entry) => entry.capability).sort();
+  if (
+    contractCapabilities.length !== registryCapabilities.length ||
+    contractCapabilities.some((capability, index) => capability !== registryCapabilities[index])
+  ) {
+    throw new Error(
+      `vaulted-portfolio registry drift: contracts [${contractCapabilities.join(', ')}] vs executable registry [${registryCapabilities.join(', ')}]`,
+    );
+  }
+  if (new Set(registryCapabilities).size !== registryCapabilities.length) {
+    throw new Error('vaulted-portfolio registry classifies a capability more than once');
+  }
+
+  const byFeature = new Map<
+    VaultedPortfolioFeatureId,
+    MutableVaultedPortfolioFeatureRegistryEntry
+  >();
+  for (const row of PARANOID_KILL_REGISTRY) {
+    const railCount =
+      row.routes.length +
+      row.services.length +
+      row.scopes.length +
+      row.jobs.length +
+      row.webhookEventTypes.length;
+    if (railCount === 0) {
+      throw new Error(`vaulted-portfolio capability ${row.capability} has no executable rail`);
+    }
+
+    const current = byFeature.get(row.vaultedFeature.id) ?? {
+      definition: row.vaultedFeature,
+      capabilities: [],
+      routes: [],
+      services: [],
+      jobs: [],
+      scopes: [],
+      webhookEvents: [],
+    };
+    if (
+      current.definition.sectionItem !== row.vaultedFeature.sectionItem ||
+      current.definition.description !== row.vaultedFeature.description ||
+      current.definition.matrix !== row.vaultedFeature.matrix ||
+      current.definition.transitionCarveouts !== row.vaultedFeature.transitionCarveouts
+    ) {
+      throw new Error(
+        `vaulted-portfolio feature ${row.vaultedFeature.id} has conflicting metadata`,
+      );
+    }
+
+    current.capabilities.push(row.capability);
+    current.routes.push(...row.routes.map((rule) => ({ capability: row.capability, rule })));
+    current.services.push(...row.services);
+    current.scopes.push(...row.scopes.map((scope) => ({ capability: row.capability, scope })));
+    current.webhookEvents.push(
+      ...row.webhookEventTypes.map((eventType) => ({
+        capability: row.capability,
+        eventType,
+      })),
+    );
+
+    const jobPolicies = PARANOID_JOB_POLICIES.filter(
+      (entry) => entry.policy.capability === row.capability,
+    );
+    const policyNames = jobPolicies.map((entry) => entry.surface.name).sort();
+    const registryNames = [...row.jobs].sort();
+    if (
+      policyNames.length !== registryNames.length ||
+      policyNames.some((name, index) => name !== registryNames[index])
+    ) {
+      throw new Error(`vaulted-portfolio job evidence drift for ${row.capability}`);
+    }
+    for (const { surface, policy } of jobPolicies) {
+      if (!policy.capability || !VAULTED_PORTFOLIO_JOB_MODES.has(policy.mode)) {
+        throw new Error(
+          `vaulted-portfolio job ${surface.name} has invalid killed mode ${policy.mode}`,
+        );
+      }
+      current.jobs.push({
+        capability: row.capability,
+        name: surface.name,
+        mode: policy.mode as VaultedPortfolioJobMode,
+      });
+    }
+    byFeature.set(row.vaultedFeature.id, current);
+  }
+
+  const derived = [...byFeature.values()]
+    .sort((left, right) => left.definition.sectionItem - right.definition.sectionItem)
+    .map(({ definition, capabilities, routes, services, jobs, scopes, webhookEvents }) => ({
+      ...definition,
+      capabilities,
+      scopes: [...new Set(scopes.map((entry) => entry.scope))],
+      jobModes: [...new Set(jobs.map((entry) => entry.mode))],
+      evidence: { routes, services, jobs, scopes, webhookEvents },
+    }));
+  const expectedSections = [1, 2, 3, 4, 5, 6, 7];
+  if (
+    derived.length !== expectedSections.length ||
+    derived.some((entry, index) => entry.sectionItem !== expectedSections[index])
+  ) {
+    throw new Error(
+      `vaulted-portfolio registry must derive exactly section 11 items ${expectedSections.join(', ')}`,
+    );
+  }
+  const carveoutCarriers = derived.filter((entry) => (entry.transitionCarveouts?.length ?? 0) > 0);
+  const derivedCarveoutKeys = carveoutCarriers
+    .flatMap((entry) => entry.transitionCarveouts ?? [])
+    .map((entry) => `${entry.method}:${entry.operation}`)
+    .sort();
+  const requiredCarveoutKeys = VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY.map(
+    (entry) => `${entry.method}:${entry.operation}`,
+  ).sort();
+  if (
+    carveoutCarriers.length !== 1 ||
+    carveoutCarriers[0]?.id !== 'portfolio-api-access' ||
+    derivedCarveoutKeys.length !== requiredCarveoutKeys.length ||
+    derivedCarveoutKeys.some((key, index) => key !== requiredCarveoutKeys[index])
+  ) {
+    throw new Error('vaulted-portfolio transition carve-outs must belong only to portfolio API');
+  }
+  return derived;
+}
+
+/** Seven §11 rows derived exclusively from the executable kill registry. */
+export const VAULTED_PORTFOLIO_FEATURE_REGISTRY = deriveVaultedPortfolioFeatureRegistry();
+
+const VAULTED_PORTFOLIO_FEATURE_BY_CAPABILITY = new Map(
+  VAULTED_PORTFOLIO_FEATURE_REGISTRY.flatMap((entry) =>
+    entry.capabilities.map((capability) => [capability, entry] as const),
+  ),
+);
+
+export function vaultedPortfolioFeatureForCapability(
+  capability: ParanoidKilledCapability,
+): VaultedPortfolioFeatureRegistryEntry | undefined {
+  return VAULTED_PORTFOLIO_FEATURE_BY_CAPABILITY.get(capability);
+}
 
 const keptRoutes = (
   reason: string,
@@ -1347,10 +1799,16 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/alerts' },
     { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
   ]),
-  ...keptRoutes('The opaque ciphertext vault is the paranoid-mode data home.', [
+  ...keptRoutes('Opaque ciphertext vault storage is the paranoid-mode data home.', [
     { exact: '/vault' },
     { prefix: '/vault/' },
+    { exact: '/vaults' },
+    { prefix: '/vaults/' },
   ]),
+  ...keptRoutes(
+    'Drive connection rows contain identity and routing metadata only; Drive credentials and file identifiers remain client-side.',
+    [{ exact: '/drive-connections' }, { prefix: '/drive-connections/' }],
+  ),
   ...keptRoutes(
     'Local workboard organization remains available; sharing settings are classified separately.',
     [
@@ -1585,7 +2043,18 @@ export function isParanoidSurfaceClassified(surface: ParanoidSurface): boolean {
   return paranoidSurfaceClassification(surface) !== undefined;
 }
 
-const KILLED_SCOPES = new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes));
+/**
+ * Temporary v1 compatibility rail. These scopes are refused ONLY when the
+ * authenticated user row still carries `privacy_mode = 'paranoid'`; owning a
+ * per-portfolio vault never reaches this set. E9 removes the set, predicate,
+ * bearer branch, and column together after the verified legacy wipe.
+ *
+ * Derived from the legacy inventory so the scope roster is not hand-listed a
+ * second time during the E2→E9 overlap window.
+ */
+const LEGACY_PARANOID_REFUSED_SCOPES = new Set(
+  PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes),
+);
 
 /**
  * Explicit paranoid-mode policy for every public API-key scope. This remains a
@@ -1758,9 +2227,9 @@ export function paranoidClassificationsForRoute(
   return matches;
 }
 
-export function isParanoidKilledScope(scope: string): boolean {
-  for (const killedScope of KILLED_SCOPES) {
-    if (killedScope === scope) return true;
+export function isLegacyParanoidRefusedScope(scope: string): boolean {
+  for (const refusedScope of LEGACY_PARANOID_REFUSED_SCOPES) {
+    if (refusedScope === scope) return true;
   }
   return false;
 }
@@ -1945,47 +2414,79 @@ export function registeredServiceMethods(
 export interface ParanoidOwnedSubjectView {
   exists: boolean;
   userId: string | null;
+  /** Undefined is accepted only by legacy-focused unit fakes. Production always supplies it. */
+  vaultId?: string | null;
 }
 
 export interface ParanoidServiceGuardResolvers {
   portfolioOwner(portfolioId: string): Promise<ParanoidOwnedSubjectView>;
   assetOwner(assetId: string): Promise<ParanoidOwnedSubjectView>;
+  importBatchPortfolio(userId: string, batchId: string): Promise<ParanoidOwnedSubjectView>;
+  standingOrderPortfolio(
+    userId: string,
+    standingOrderId: string,
+  ): Promise<ParanoidOwnedSubjectView>;
+  cashBudgetPortfolio(userId: string, budgetId: string): Promise<ParanoidOwnedSubjectView>;
+  cashMovementPortfolio(userId: string, movementId: string): Promise<ParanoidOwnedSubjectView>;
 }
 
 export async function isParanoidOwnedSubjectBlocked(
-  subject: { exists: boolean; userId: string | null },
+  subject: { exists: boolean; userId: string | null; vaultId?: string | null },
   guard: Pick<ParanoidModeGuard, 'isParanoid'>,
 ): Promise<boolean> {
   if (!subject.exists) return true;
+  if (subject.vaultId) return true;
   return subject.userId !== null && (await guard.isParanoid(subject.userId));
 }
 
 /** Transition-serialized action for a portfolio/asset-owned subject. */
 export async function runIfParanoidOwnedSubjectAllowed(
-  subject: { exists: boolean; userId: string | null },
+  resolveSubject: () => Promise<{
+    exists: boolean;
+    userId: string | null;
+    vaultId?: string | null;
+  }>,
   guard: Pick<ParanoidModeGuard, 'runAllowed'>,
   capability: ParanoidKilledCapability,
   action: () => Promise<void>,
 ): Promise<boolean> {
-  if (!subject.exists) return false;
-  if (subject.userId === null) {
+  const candidate = await resolveSubject();
+  if (!candidate.exists || candidate.vaultId) return false;
+  if (candidate.userId === null) {
+    const fresh = await resolveSubject();
+    if (!fresh.exists || fresh.userId !== null || fresh.vaultId) return false;
     await action();
     return true;
   }
+  let ran = false;
   try {
-    await guard.runAllowed(subject.userId, capability, action);
-    return true;
+    await guard.runAllowed(candidate.userId, capability, async () => {
+      // The first lookup only discovers which account row to lock. Re-resolve
+      // inside that lock: E4 may have moved the portfolio into a vault while
+      // the worker/service was waiting to acquire it.
+      const fresh = await resolveSubject();
+      if (!fresh.exists || fresh.userId !== candidate.userId || fresh.vaultId) return;
+      await action();
+      ran = true;
+    });
+    return ran;
   } catch (error) {
     if (error instanceof ParanoidModeError) return false;
     throw error;
   }
 }
 
-async function invokeServiceSubject<T>(
+/**
+ * Execute one registry binding through the same subject resolver used by the
+ * AppContext proxy. Exported so the registry-driven matrix can exercise the
+ * real composition boundary without reimplementing its policy switch.
+ */
+export async function invokeRegisteredServiceSubject<T>(
   binding: ParanoidServiceBinding,
   args: readonly unknown[],
   guard: ParanoidModeGuard,
   resolvers: ParanoidServiceGuardResolvers,
+  vaulted: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>,
   invoke: () => Promise<T>,
 ): Promise<T | undefined> {
   if (binding.subject === 'intrinsic' || binding.subject === 'dynamicPrincipals') return invoke();
@@ -2000,7 +2501,13 @@ async function invokeServiceSubject<T>(
     ) {
       return invoke();
     }
-    const subjectIds = paranoidWebhookSubjectIds(event as DomainEvent);
+    const domainEvent = event as DomainEvent;
+    const portfolioId = portfolioIdForPortfolioContentEvent(domainEvent);
+    if (portfolioId) {
+      const portfolio = await resolvers.portfolioOwner(portfolioId);
+      if (portfolio.exists && portfolio.vaultId) return undefined;
+    }
+    const subjectIds = paranoidWebhookSubjectIds(domainEvent);
     if (subjectIds.length === 0) return invoke();
     try {
       return await guard.runAllowedMany(subjectIds, binding.capability, invoke);
@@ -2020,6 +2527,115 @@ async function invokeServiceSubject<T>(
     return guard.runAllowed(userId, binding.capability, invoke);
   }
 
+  const requireString = (value: unknown, label: string): string => {
+    if (typeof value !== 'string') {
+      throw new Error(`paranoid guard ${binding.service} requires ${label}`);
+    }
+    return value;
+  };
+  const portfolioFromInput = (value: unknown, label: string): string => {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !('portfolioId' in value) ||
+      typeof value.portfolioId !== 'string'
+    ) {
+      throw new Error(`paranoid guard ${binding.service} requires ${label}.portfolioId`);
+    }
+    return value.portfolioId;
+  };
+
+  if (
+    binding.subject === 'portfolioIdSecond' ||
+    binding.subject === 'optionalPortfolioIdSecond' ||
+    binding.subject === 'portfolioIdFieldSecond' ||
+    binding.subject === 'userAndPortfolioIdFields'
+  ) {
+    const input = args[0];
+    const userId =
+      binding.subject === 'userAndPortfolioIdFields'
+        ? requireString(
+            input && typeof input === 'object' && 'userId' in input ? input.userId : null,
+            'input.userId',
+          )
+        : requireString(args[0], 'a user id');
+    const rawPortfolioId =
+      binding.subject === 'portfolioIdSecond' || binding.subject === 'optionalPortfolioIdSecond'
+        ? args[1]
+        : binding.subject === 'portfolioIdFieldSecond'
+          ? portfolioFromInput(args[1], 'input')
+          : portfolioFromInput(input, 'input');
+
+    return guard.runAllowed(userId, binding.capability, async () => {
+      if (binding.subject === 'optionalPortfolioIdSecond' && rawPortfolioId === undefined) {
+        return invoke();
+      }
+      const portfolioId = requireString(rawPortfolioId, 'a portfolio id');
+      return vaulted.runOwnedPortfolioAllowed(userId, portfolioId, invoke);
+    });
+  }
+
+  if (binding.subject === 'optionalPortfolioIdOptionSecond') {
+    const userId = requireString(args[0], 'a user id');
+    const options = args[1];
+    const portfolioId =
+      options &&
+      typeof options === 'object' &&
+      'portfolioId' in options &&
+      typeof options.portfolioId === 'string'
+        ? options.portfolioId
+        : null;
+    return guard.runAllowed(userId, binding.capability, () =>
+      portfolioId ? vaulted.runOwnedPortfolioAllowed(userId, portfolioId, invoke) : invoke(),
+    );
+  }
+
+  if (binding.subject === 'portfolioAudienceTarget') {
+    const userId = requireString(args[0], 'a user id');
+    const kind = requireString(args[1], 'an audience kind');
+    return guard.runAllowed(userId, binding.capability, () => {
+      if (kind !== 'portfolio') return invoke();
+      return vaulted.runOwnedPortfolioAllowed(
+        userId,
+        requireString(args[2], 'a portfolio id'),
+        invoke,
+      );
+    });
+  }
+
+  if (binding.subject === 'importBatchIdSecond') {
+    const userId = requireString(args[0], 'a user id');
+    const batchId = requireString(args[1], 'an import batch id');
+    return guard.runAllowed(userId, binding.capability, async () => {
+      const subject = await resolvers.importBatchPortfolio(userId, batchId);
+      if (subject.exists && subject.userId === userId && subject.vaultId) {
+        throw new VaultedPortfolioError();
+      }
+      return invoke();
+    });
+  }
+
+  if (
+    binding.subject === 'standingOrderIdSecond' ||
+    binding.subject === 'cashBudgetIdSecond' ||
+    binding.subject === 'cashMovementIdSecond'
+  ) {
+    const userId = requireString(args[0], 'a user id');
+    const id = requireString(args[1], 'an owned portfolio resource id');
+    return guard.runAllowed(userId, binding.capability, async () => {
+      const subject =
+        binding.subject === 'standingOrderIdSecond'
+          ? await resolvers.standingOrderPortfolio(userId, id)
+          : binding.subject === 'cashBudgetIdSecond'
+            ? await resolvers.cashBudgetPortfolio(userId, id)
+            : await resolvers.cashMovementPortfolio(userId, id);
+      if (subject.exists && subject.userId === userId && subject.vaultId) {
+        throw new VaultedPortfolioError();
+      }
+      return invoke();
+    });
+  }
+
   const subjectId = args[0];
   if (typeof subjectId !== 'string') {
     throw new Error(`paranoid guard ${binding.service} requires a string subject id`);
@@ -2028,19 +2644,38 @@ async function invokeServiceSubject<T>(
     return guard.runAllowed(subjectId, binding.capability, invoke);
   }
 
-  const owner =
+  const resolveOwner = () =>
     binding.subject === 'portfolioIdFirst' || binding.subject === 'portfolioIdFirstAllowMissing'
-      ? await resolvers.portfolioOwner(subjectId)
-      : await resolvers.assetOwner(subjectId);
+      ? resolvers.portfolioOwner(subjectId)
+      : resolvers.assetOwner(subjectId);
+  const owner = await resolveOwner();
   // A stale queued/deferred id is deliberately denied: after enable the source
   // portfolio is gone, so absence must not turn into "normal account".
   if (!owner.exists) {
     if (binding.subject === 'portfolioIdFirstAllowMissing') return invoke();
     throw new ParanoidModeError(binding.capability);
   }
+  if (owner.vaultId) throw new VaultedPortfolioError();
   // Global market assets have no owner and are valid for asset-level kept paths.
-  if (owner.userId === null) return invoke();
-  return guard.runAllowed(owner.userId, binding.capability, invoke);
+  if (owner.userId === null) {
+    const fresh = await resolveOwner();
+    if (!fresh.exists || fresh.userId !== null || fresh.vaultId) {
+      throw new ParanoidModeError(binding.capability);
+    }
+    return invoke();
+  }
+  return guard.runAllowed(owner.userId, binding.capability, async () => {
+    // Account discovery happens before the lock, so the authoritative vault
+    // and ownership decision must happen again after the lock is held.
+    const fresh = await resolveOwner();
+    if (!fresh.exists) {
+      if (binding.subject === 'portfolioIdFirstAllowMissing') return invoke();
+      throw new ParanoidModeError(binding.capability);
+    }
+    if (fresh.userId !== owner.userId) throw new ParanoidModeError(binding.capability);
+    if (fresh.vaultId) throw new VaultedPortfolioError();
+    return invoke();
+  });
 }
 
 /**
@@ -2052,10 +2687,17 @@ export function guardRegisteredServices<T extends Record<string, object>>(
   services: T,
   guard: ParanoidModeGuard,
   resolvers: ParanoidServiceGuardResolvers,
+  vaulted: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>,
 ): T {
   const byService = new Map<string, Map<string, ParanoidServiceBinding>>();
   const classified = new Map<string, Set<string>>();
   for (const binding of PARANOID_SERVICE_BINDINGS) {
+    const feature = vaultedPortfolioFeatureForCapability(binding.capability);
+    if (!feature || !feature.evidence.services.includes(binding)) {
+      throw new Error(
+        `paranoid service registry ${binding.service}.${binding.methods.join(',')} is absent from the derived vaulted-portfolio matrix`,
+      );
+    }
     const service = services[binding.service];
     if (!service) {
       throw new Error(`paranoid service registry missing executable service: ${binding.service}`);
@@ -2108,8 +2750,13 @@ export function guardRegisteredServices<T extends Record<string, object>>(
         const binding = typeof property === 'string' ? methods.get(property) : undefined;
         if (!binding || typeof value !== 'function') return value;
         return async (...args: unknown[]) => {
-          return invokeServiceSubject(binding, args, guard, resolvers, async () =>
-            Reflect.apply(value, target, args),
+          return invokeRegisteredServiceSubject(
+            binding,
+            args,
+            guard,
+            resolvers,
+            vaulted,
+            async () => Reflect.apply(value, target, args),
           );
         };
       },

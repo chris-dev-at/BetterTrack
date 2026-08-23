@@ -54,7 +54,6 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, notFound, unauthorized } from '../../errors';
-import { BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI } from '../../services/oauth/firstPartyClients';
 import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
@@ -786,9 +785,10 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     async (req, res) => {
       const parsedQuery = googleMobileLinkCallbackQuerySchema.safeParse(req.query);
       if (!parsedQuery.success) {
+        const result = await ctx.google.handleMalformedMobileLinkCallback(req.ip);
         res.redirect(
-          googleMobileLinkRedirect(BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI, {
-            error: 'google_state',
+          googleMobileLinkRedirect(result.redirectUri, {
+            error: googleErrorParam(result.code),
           }),
         );
         return;

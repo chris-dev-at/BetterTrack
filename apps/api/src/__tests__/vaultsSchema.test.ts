@@ -28,6 +28,8 @@ function vaultValues(overrides: Partial<typeof schema.vaults.$inferInsert> = {})
   return {
     userId,
     name: `vault-${newId()}`,
+    headerDocId: newId(),
+    commonDocId: newId(),
     media: ['server'],
     retirementProofPublicKey: PROOF_KEY,
     keyFingerprint: FINGERPRINT,
@@ -66,7 +68,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await h.ctx.redis.quit?.();
+  await h.dispose();
 });
 
 describe('vaults — media + Drive-binding CHECK (§3, acceptance a/b/d)', () => {
@@ -121,6 +123,37 @@ describe('vaults — media + Drive-binding CHECK (§3, acceptance a/b/d)', () =>
     await insertVault({ name: 'Duplicate me' });
     await expect(insertVault({ name: 'Duplicate me' })).rejects.toThrow();
   });
+
+  it('requires distinct config-registered header/common doc ids (R1)', async () => {
+    const docId = newId();
+    await expect(insertVault({ headerDocId: docId, commonDocId: docId })).rejects.toThrow();
+  });
+
+  it('pins a media attestation to the current Drive connection (R3)', async () => {
+    const attestedAt = new Date('2026-08-20T12:00:00.000Z');
+    const connection = await insertConnection(userId);
+    await insertVault({
+      media: ['drive'],
+      driveConnectionId: connection.id,
+      mediaAttestedAt: attestedAt,
+      mediaAttestedDriveConnectionId: connection.id,
+    });
+    await expect(
+      insertVault({
+        media: ['drive'],
+        driveConnectionId: connection.id,
+        mediaAttestedAt: attestedAt,
+        mediaAttestedDriveConnectionId: null,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      insertVault({
+        media: ['server'],
+        mediaAttestedAt: null,
+        mediaAttestedDriveConnectionId: connection.id,
+      }),
+    ).rejects.toThrow();
+  });
 });
 
 describe('drive_connections — per-user uniqueness, shared physical Drive (§8)', () => {
@@ -164,26 +197,44 @@ describe('vault_blobs — doc-kind shape (§3/§5, acceptance c)', () => {
   it('accepts a well-formed header + common + portfolio doc set', async () => {
     const vault = await insertVault();
     const portfolio = await insertPortfolio();
-    await h.db.insert(schema.vaultBlobs).values(blobValues(vault.id, { docKind: 'header' }));
-    await h.db.insert(schema.vaultBlobs).values(blobValues(vault.id, { docKind: 'common' }));
     await h.db
       .insert(schema.vaultBlobs)
-      .values(blobValues(vault.id, { docKind: 'portfolio', portfolioId: portfolio!.id }));
+      .values(blobValues(vault.id, { docId: vault.headerDocId, docKind: 'header' }));
+    await h.db
+      .insert(schema.vaultBlobs)
+      .values(blobValues(vault.id, { docId: vault.commonDocId, docKind: 'common' }));
+    await h.db.insert(schema.vaultBlobs).values(
+      blobValues(vault.id, {
+        docId: portfolio!.id,
+        docKind: 'portfolio',
+        portfolioId: portfolio!.id,
+      }),
+    );
 
     // The doc set's shape: a second header or common doc for the SAME vault is
     // refused; the same portfolio cannot hold a second doc in ANY vault.
     await expect(
-      h.db.insert(schema.vaultBlobs).values(blobValues(vault.id, { docKind: 'header' })),
+      h.db
+        .insert(schema.vaultBlobs)
+        .values(blobValues(vault.id, { docId: newId(), docKind: 'header' })),
     ).rejects.toThrow();
-    await expect(
-      h.db.insert(schema.vaultBlobs).values(blobValues(vault.id, { docKind: 'common' })),
-    ).rejects.toThrow();
-    const secondVault = await insertVault();
-    await h.db.insert(schema.vaultBlobs).values(blobValues(secondVault.id, { docKind: 'header' }));
     await expect(
       h.db
         .insert(schema.vaultBlobs)
-        .values(blobValues(secondVault.id, { docKind: 'portfolio', portfolioId: portfolio!.id })),
+        .values(blobValues(vault.id, { docId: newId(), docKind: 'common' })),
+    ).rejects.toThrow();
+    const secondVault = await insertVault();
+    await h.db
+      .insert(schema.vaultBlobs)
+      .values(blobValues(secondVault.id, { docId: secondVault.headerDocId, docKind: 'header' }));
+    await expect(
+      h.db.insert(schema.vaultBlobs).values(
+        blobValues(secondVault.id, {
+          docId: portfolio!.id,
+          docKind: 'portfolio',
+          portfolioId: portfolio!.id,
+        }),
+      ),
     ).rejects.toThrow();
   });
 
@@ -205,10 +256,64 @@ describe('vault_blobs — doc-kind shape (§3/§5, acceptance c)', () => {
     ).rejects.toThrow();
   });
 
+  it('rejects a portfolio doc whose doc id is not its portfolio id (R1)', async () => {
+    const vault = await insertVault();
+    const portfolio = await insertPortfolio();
+    await expect(
+      h.db.insert(schema.vaultBlobs).values(
+        blobValues(vault.id, {
+          docId: newId(),
+          docKind: 'portfolio',
+          portfolioId: portfolio!.id,
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
   it('rejects an unknown doc kind', async () => {
     const vault = await insertVault();
     await expect(
       h.db.insert(schema.vaultBlobs).values(blobValues(vault.id, { docKind: 'roster' })),
+    ).rejects.toThrow();
+  });
+});
+
+describe('vault retirement/transition ruling columns (R3/R4)', () => {
+  it('stores a transition id and allocates only positive retirement generations', async () => {
+    const vault = await insertVault();
+    const transitionId = newId();
+    const blob = Buffer.from('candidate');
+    const [candidate] = await h.db
+      .insert(schema.vaultServerCandidates)
+      .values({
+        vaultId: vault.id,
+        transitionId,
+        docId: vault.headerDocId,
+        version: 1,
+        formatVersion: 2,
+        sizeBytes: blob.byteLength,
+        blob,
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+      .returning();
+    expect(candidate!.transitionId).toBe(transitionId);
+
+    const [retirement] = await h.db
+      .insert(schema.vaultRetirements)
+      .values({ vaultId: vault.id, retirementProofPublicKey: PROOF_KEY })
+      .returning();
+    expect(retirement!.generation).toBe(1);
+    await expect(
+      h.db
+        .update(schema.vaultRetirements)
+        .set({ generation: 0 })
+        .where(eq(schema.vaultRetirements.vaultId, vault.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.vaults)
+        .set({ retirementGeneration: -1 })
+        .where(eq(schema.vaults.id, vault.id)),
     ).rejects.toThrow();
   });
 });
@@ -247,6 +352,198 @@ describe('portfolios — the locked stub (§3)', () => {
   });
 });
 
+describe('portfolio_vault_transition_states — durable E4 receipts', () => {
+  const completedAt = new Date('2026-08-21T12:00:00.000Z');
+
+  it('requires complete capture and transition receipt groups', async () => {
+    const portfolio = await insertPortfolio();
+    await h.db.insert(schema.portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId,
+    });
+
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ captureRevision: 'TEST_VECTOR_revision' })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ captureVaultId: newId() })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ captureMediaAttestedAt: completedAt })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ captureMediaAttestedDriveConnectionId: newId() })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ moveInVaultId: newId() })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ moveOutId: newId() })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.portfolioVaultTransitionStates)
+        .set({ moveOutDocumentSetHash: 'TEST_VECTOR_orphan_document_set_hash' })
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).rejects.toThrow();
+
+    const moveInVaultId = newId();
+    const moveOutVaultId = newId();
+    const moveOutId = newId();
+    await h.db
+      .update(schema.portfolioVaultTransitionStates)
+      .set({
+        captureRevision: 'TEST_VECTOR_revision',
+        captureExpiresAt: new Date('2026-08-21T12:05:00.000Z'),
+      })
+      .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id));
+
+    const captureVaultId = newId();
+    const captureMediaAttestedAt = new Date('2026-08-21T11:59:00.000Z');
+    const [stored] = await h.db
+      .update(schema.portfolioVaultTransitionStates)
+      .set({
+        captureVaultId,
+        captureMediaAttestedAt,
+        lifecycleGeneration: 1,
+        moveInVaultId,
+        moveInDocVersion: 0,
+        moveInCompletedAt: completedAt,
+        moveOutVaultId,
+        moveOutId,
+        moveOutDocumentDigest: 'TEST_VECTOR_document_digest',
+        moveOutDocumentSetHash: 'TEST_VECTOR_document_set_hash',
+        moveOutProofPublicKey: 'TEST VECTOR proof public key',
+        moveOutCompletedAt: completedAt,
+      })
+      .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id))
+      .returning();
+
+    expect(stored).toMatchObject({
+      portfolioId: portfolio.id,
+      userId,
+      captureVaultId,
+      captureMediaAttestedAt,
+      captureMediaAttestedDriveConnectionId: null,
+      lifecycleGeneration: 1,
+      moveInVaultId,
+      moveInDocVersion: 0,
+      moveOutVaultId,
+      moveOutId,
+      moveOutDocumentSetHash: 'TEST_VECTOR_document_set_hash',
+    });
+  });
+
+  it('rejects invalid lifecycle generations, a negative doc version, and duplicate move-out ids', async () => {
+    const first = await insertPortfolio();
+    const second = await insertPortfolio();
+    const moveOutId = newId();
+
+    await expect(
+      h.db.insert(schema.portfolioVaultTransitionStates).values({
+        portfolioId: first.id,
+        userId,
+        lifecycleGeneration: -1,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.db.insert(schema.portfolioVaultTransitionStates).values({
+        portfolioId: first.id,
+        userId,
+        moveInVaultId: newId(),
+        moveInDocVersion: 1,
+        moveInCompletedAt: completedAt,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.db.insert(schema.portfolioVaultTransitionStates).values({
+        portfolioId: first.id,
+        userId,
+        lifecycleGeneration: 1,
+        moveInVaultId: newId(),
+        moveInDocVersion: -1,
+        moveInCompletedAt: completedAt,
+      }),
+    ).rejects.toThrow();
+
+    await h.db.insert(schema.portfolioVaultTransitionStates).values({
+      portfolioId: first.id,
+      userId,
+      lifecycleGeneration: 1,
+      moveOutVaultId: newId(),
+      moveOutId,
+      moveOutDocumentDigest: 'TEST_VECTOR_first_digest',
+      moveOutDocumentSetHash: 'TEST_VECTOR_first_document_set_hash',
+      moveOutProofPublicKey: 'TEST VECTOR first proof public key',
+      moveOutCompletedAt: completedAt,
+    });
+    await expect(
+      h.db.insert(schema.portfolioVaultTransitionStates).values({
+        portfolioId: second.id,
+        userId,
+        lifecycleGeneration: 1,
+        moveOutVaultId: newId(),
+        moveOutId,
+        moveOutDocumentDigest: 'TEST_VECTOR_second_digest',
+        moveOutDocumentSetHash: 'TEST_VECTOR_second_document_set_hash',
+        moveOutProofPublicKey: 'TEST VECTOR second proof public key',
+        moveOutCompletedAt: completedAt,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('keeps vault ids as receipts without FKs and cascades with the portfolio', async () => {
+    const portfolio = await insertPortfolio();
+    const deletedVaultId = newId();
+    await h.db.insert(schema.portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId,
+      lifecycleGeneration: 1,
+      moveInVaultId: deletedVaultId,
+      moveInDocVersion: 1,
+      moveInCompletedAt: completedAt,
+      moveOutVaultId: deletedVaultId,
+      moveOutId: newId(),
+      moveOutDocumentDigest: 'TEST_VECTOR_deleted_vault_digest',
+      moveOutDocumentSetHash: 'TEST_VECTOR_deleted_vault_document_set_hash',
+      moveOutProofPublicKey: 'TEST VECTOR deleted vault proof public key',
+      moveOutCompletedAt: completedAt,
+    });
+
+    expect(
+      await h.db
+        .select()
+        .from(schema.portfolioVaultTransitionStates)
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).toHaveLength(1);
+    await h.db.delete(schema.portfolios).where(eq(schema.portfolios.id, portfolio.id));
+    expect(
+      await h.db
+        .select()
+        .from(schema.portfolioVaultTransitionStates)
+        .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolio.id)),
+    ).toEqual([]);
+  });
+});
+
 describe('coexistence — the v1 account-level surface is untouched (§19 regression)', () => {
   it('a live v1 paranoid account keeps working with the new tables present', async () => {
     const legacy = await h.seedUser({ email: 'legacy-v1@bt.test', username: 'legacy_v1' });
@@ -276,6 +573,8 @@ describe('coexistence — the v1 account-level surface is untouched (§19 regres
       .values({
         userId: legacy.id,
         name: 'coexistence',
+        headerDocId: newId(),
+        commonDocId: newId(),
         media: ['server'],
         retirementProofPublicKey: PROOF_KEY,
         keyFingerprint: FINGERPRINT,

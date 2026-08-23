@@ -10,7 +10,8 @@ vi.mock('../lib/userApi');
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
 import { AuthProvider, useAuth } from './AuthContext';
-import { VAULT_LOCK_REQUEST_EVENT } from './vault/lockSignal';
+import { VAULT_LOCK_REQUEST_EVENT, vaultLockSignalStorageKey } from './vault/lockSignal';
+import { createVaultTransferRuntime } from './vault/qr/runtime';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -28,13 +29,16 @@ const member: MeResponse = {
 };
 
 function AuthProbe() {
-  const { status, user, retrySession } = useAuth();
+  const { status, user, retrySession, logout } = useAuth();
   return (
     <div>
       <span data-testid="status">{status}</span>
       <span data-testid="user">{user?.username ?? 'none'}</span>
       <button type="button" onClick={retrySession}>
         Retry session
+      </button>
+      <button type="button" onClick={() => void logout()}>
+        Sign out
       </button>
     </div>
   );
@@ -139,5 +143,34 @@ test('the existing PIN idle deadline also revokes the unlocked vault immediately
     expect(lockRequested).toHaveBeenCalledOnce();
   } finally {
     globalThis.removeEventListener(VAULT_LOCK_REQUEST_EVENT, lockRequested);
+  }
+});
+
+test('normal-mode logout broadcasts the account lock to another tab transfer runtime', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(api.logout).mockResolvedValue();
+  const runtime = createVaultTransferRuntime({
+    bindLockSignal: true,
+    requestJson: vi.fn(),
+  });
+  runtime.setAccountId(member.id);
+  const sessionEnded = vi.fn();
+  runtime.keystore.subscribeToSessionEnd(sessionEnded);
+
+  try {
+    renderProvider();
+    await expectStatus('authenticated');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Sign out' }));
+
+    await expectStatus('anonymous');
+    expect(sessionEnded).toHaveBeenCalledTimes(1);
+    const key = vaultLockSignalStorageKey(member.id);
+    const value = localStorage.getItem(key);
+    expect(value).not.toBeNull();
+
+    globalThis.dispatchEvent(new StorageEvent('storage', { key, newValue: value }));
+    expect(sessionEnded).toHaveBeenCalledTimes(2);
+  } finally {
+    runtime.dispose();
   }
 });

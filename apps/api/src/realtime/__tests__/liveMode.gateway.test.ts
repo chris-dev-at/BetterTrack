@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -38,6 +39,13 @@ import { REALTIME_LIVE_FANOUT_CHANNEL } from '../gateway';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const POLL_MS = 30;
+
+function admissionAssetId(assetId: string): string {
+  return `opaque:${createHmac('sha256', harness.ctx.config.sessionSecrets[0]!)
+    .update('bettertrack:realtime-watch\0')
+    .update(assetId)
+    .digest('base64url')}`;
+}
 
 let harness: TestHarness;
 let stub: StubMarketData;
@@ -593,7 +601,9 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
       expect(
-        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(targetAssetId)),
+        ),
       ).toBe(0);
     });
   });
@@ -642,7 +652,9 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await vi.waitFor(async () => {
       expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
       expect(
-        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+        await harness.ctx.redis.zcard(
+          realtimeAdmissionKeys.globalAssetWatches(admissionAssetId(targetAssetId)),
+        ),
       ).toBe(0);
     });
   });
@@ -799,6 +811,48 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(failureLog?.[0]).toMatchObject({ userId: user.id });
     expect(failureLog?.[0]).not.toHaveProperty('assetId');
     expect(JSON.stringify(failureLog)).not.toContain(logAssetId);
+  });
+
+  it('keeps sibling owned-asset watches alive during exact target invalidation', async () => {
+    const { socket, user } = await connectAccount('scoped-live@bt.test', 'scoped_live');
+    const [target, sibling] = await harness.db
+      .insert(assets)
+      .values([
+        {
+          providerId: 'manual',
+          providerRef: `target:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'TARGET',
+          name: 'Target live asset',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'manual',
+          providerRef: `sibling:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'SIBLING',
+          name: 'Sibling live asset',
+          currency: 'EUR',
+        },
+      ])
+      .returning({ id: assets.id });
+
+    await expect(watch(socket, target!.id, '10m')).resolves.toMatchObject({ ok: true });
+    await expect(watch(socket, sibling!.id, '10m')).resolves.toMatchObject({ ok: true });
+    expect(harness.ctx.liveMode.watcherCount(target!.id)).toBe(1);
+    expect(harness.ctx.liveMode.watcherCount(sibling!.id)).toBe(1);
+
+    await harness.ctx.realtime.invalidateOwnedLiveMode(user.id, [target!.id]);
+
+    expect(harness.ctx.liveMode.watcherCount(target!.id)).toBe(0);
+    expect(harness.ctx.liveMode.watcherCount(sibling!.id)).toBe(1);
+    expect(await harness.ctx.redis.hlen(realtimeAdmissionKeys.userWatchAssets(user.id))).toBe(1);
+
+    // Omitting the list remains the v1 whole-account transition behavior.
+    await harness.ctx.realtime.invalidateOwnedLiveMode(user.id);
+    expect(harness.ctx.liveMode.watcherCount(sibling!.id)).toBe(0);
   });
 
   it('releases a held watch even when the unwatch frame is rate-limited', async () => {

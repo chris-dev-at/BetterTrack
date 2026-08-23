@@ -50,6 +50,12 @@ interface StoredMnemonicRead {
   revision: number;
 }
 
+interface RecordedPasswordFailure {
+  revision: number;
+  failures: number;
+  lockedUntil: number | null;
+}
+
 export interface EndpointVaultKeystoreOptions {
   storage?: EndpointKeystoreStorage;
   argon2?: DevicePasswordArgon2;
@@ -71,6 +77,7 @@ export class EndpointVaultKeystore {
   private readonly wrappedEntropy = new Map<string, Uint8Array>();
   private readonly contentKeys = new Map<string, CachedContentKey>();
   private readonly activeContentKeyBorrows = new Set<Uint8Array>();
+  private readonly sessionEndListeners = new Set<() => void>();
   private sessionGeneration = 0;
   private sessionRevision: number | null = null;
 
@@ -216,11 +223,87 @@ export class EndpointVaultKeystore {
     }
   }
 
+  /**
+   * E7 step-up: verifies the endpoint password without tearing down the live
+   * content-key session. No mnemonic is read, no remote medium is touched, and
+   * the normal wrong-password lockout ladder still advances.
+   */
+  async verifyDevicePassword(devicePassword: string): Promise<void> {
+    const generation = this.sessionGeneration;
+    const stable = await this.readStableEntries();
+    this.reconcileSessionRevision(stable.revision);
+    this.requireCurrentGeneration(generation);
+    if (
+      stable.metadata == null ||
+      this.devicePasswordMetadata == null ||
+      this.deviceKey == null ||
+      this.sessionRevision !== stable.revision
+    ) {
+      throw new EndpointKeystoreError(
+        'phrase-locked',
+        'A live wrapped-custody session is required for password step-up.',
+      );
+    }
+    const metadata = parseEndpointPasswordMetadata(stable.metadata);
+    if (!sameEndpointPassword(metadata, this.devicePasswordMetadata)) {
+      this.endSession();
+      throw new EndpointKeystoreError(
+        'session-ended',
+        'Endpoint password metadata changed before step-up.',
+      );
+    }
+    this.assertNotLockedOut(metadata);
+
+    let candidate: Uint8Array | undefined;
+    try {
+      candidate = await deriveDeviceKey(devicePassword, metadata.kdf, this.argon2);
+      this.requireCurrentGeneration(generation);
+      if (!(await verifyEndpointPassword(metadata, candidate))) {
+        const failure = await this.registerWrongPassword(metadata, stable.revision);
+        this.requireCurrentGeneration(generation);
+        if (failure.revision !== stable.revision + 1) {
+          this.endSession();
+          throw new EndpointKeystoreError(
+            'session-ended',
+            'Endpoint custody changed during password step-up.',
+          );
+        }
+        this.sessionRevision = failure.revision;
+        this.devicePasswordMetadata = {
+          ...metadata,
+          lockout: { failures: failure.failures, lockedUntil: failure.lockedUntil },
+        };
+        throw passwordFailureError(failure);
+      }
+      this.requireCurrentGeneration(generation);
+      if (metadata.lockout.failures === 0 && metadata.lockout.lockedUntil == null) return;
+
+      const resetRevision = await this.resetPasswordLockout(metadata, stable.revision);
+      this.requireCurrentGeneration(generation);
+      if (resetRevision !== stable.revision + 1) {
+        this.endSession();
+        throw new EndpointKeystoreError(
+          'session-ended',
+          'Endpoint custody changed during password step-up.',
+        );
+      }
+      this.sessionRevision = resetRevision;
+      this.devicePasswordMetadata = {
+        ...metadata,
+        lockout: { failures: 0, lockedUntil: null },
+      };
+    } finally {
+      if (candidate != null) zeroBytes(candidate);
+    }
+  }
+
   /** Default save path: verified open first, then wrapped custody. */
   async storeAfterVerifiedOpen(input: StoreWrappedPhraseInput): Promise<OpenedVault> {
     requireVaultId(input.vaultId);
+    assertNotAborted(input.signal);
     const initialGeneration = this.sessionGeneration;
     const snapshot = await this.storage.readEndpointSnapshot();
+    assertNotAborted(input.signal);
     this.reconcileSessionRevision(snapshot.revision);
     this.requireCurrentGeneration(initialGeneration);
     const entropy = mnemonicToEntropy(input.mnemonic);
@@ -231,17 +314,40 @@ export class EndpointVaultKeystore {
         input.mnemonic,
         input.fetchHeaderEnvelope,
         input.expectedFingerprint,
+        input.signal,
       );
+      assertNotAborted(input.signal);
       this.requireCurrentGeneration(initialGeneration);
-      const session = await this.ensureDeviceKey(input.devicePassword, snapshot, initialGeneration);
+      let custodySnapshot = snapshot;
+      // The receiver deliberately asks for a password even when this endpoint
+      // already has a live wrapped session. Never let ensureDeviceKey's normal
+      // session-reuse path turn that user-supplied value into an unchecked
+      // decoration: a wrong value must fail before the new phrase is wrapped.
+      if (input.devicePassword !== undefined && this.deviceKey != null) {
+        await this.verifyDevicePassword(input.devicePassword);
+        assertNotAborted(input.signal);
+        this.requireCurrentGeneration(initialGeneration);
+        custodySnapshot = await this.storage.readEndpointSnapshot();
+        assertNotAborted(input.signal);
+        this.reconcileSessionRevision(custodySnapshot.revision);
+        this.requireCurrentGeneration(initialGeneration);
+      }
+      const session = await this.ensureDeviceKey(
+        input.devicePassword,
+        custodySnapshot,
+        initialGeneration,
+      );
+      assertNotAborted(input.signal);
       const payload = await wrapMnemonicEntropy(
         input.vaultId,
         entropy,
         session.deviceKey,
         this.randomBytes,
       );
+      assertNotAborted(input.signal);
       const entry: StoredPhraseEntry = { vaultId: input.vaultId, custody: 'wrapped', payload };
       this.requireCurrentGeneration(session.generation);
+      assertNotAborted(input.signal);
       const written = await this.storage.writeEntry(session.revision, input.vaultId, entry);
       if (written.status === 'stale') {
         throw new EndpointKeystoreError(
@@ -267,8 +373,10 @@ export class EndpointVaultKeystore {
   /** Exceptional save path: impossible without a fresh runtime acknowledgment. */
   async storePlainAfterVerifiedOpen(input: StorePlainPhraseInput): Promise<OpenedVault> {
     requireVaultId(input.vaultId);
+    assertNotAborted(input.signal);
     const generation = this.sessionGeneration;
     const snapshot = await this.storage.readEndpointSnapshot();
+    assertNotAborted(input.signal);
     this.reconcileSessionRevision(snapshot.revision);
     this.requireCurrentGeneration(generation);
     const entropy = mnemonicToEntropy(input.mnemonic);
@@ -279,9 +387,12 @@ export class EndpointVaultKeystore {
         input.mnemonic,
         input.fetchHeaderEnvelope,
         input.expectedFingerprint,
+        input.signal,
       );
+      assertNotAborted(input.signal);
       this.requireCurrentGeneration(generation);
       consumePlainCustodyAcknowledgment(input.vaultId, input.acknowledgment);
+      assertNotAborted(input.signal);
       const entry: StoredPhraseEntry = {
         vaultId: input.vaultId,
         custody: 'plain',
@@ -291,6 +402,7 @@ export class EndpointVaultKeystore {
           entropy: encodeBase64Url(entropy),
         },
       };
+      assertNotAborted(input.signal);
       const written = await this.storage.writeEntry(snapshot.revision, input.vaultId, entry);
       if (written.status === 'stale') {
         throw new EndpointKeystoreError(
@@ -546,6 +658,15 @@ export class EndpointVaultKeystore {
     this.sessionGeneration += 1;
     invalidatePlainCustodyAcknowledgments();
     this.clearSessionSecrets();
+    this.notifySessionEnd();
+  }
+
+  /** Synchronous revocation signal for secret-bearing session UI. */
+  subscribeToSessionEnd(listener: () => void): () => void {
+    this.sessionEndListeners.add(listener);
+    return () => {
+      this.sessionEndListeners.delete(listener);
+    };
   }
 
   handleIdle(pinLockEnabled: boolean): void {
@@ -579,23 +700,42 @@ export class EndpointVaultKeystore {
     mnemonic: string,
     fetchHeaderEnvelope: FetchVaultHeaderEnvelope,
     expectedFingerprint: OpenedVault['keyFingerprint'] | undefined,
+    signal?: AbortSignal,
   ): Promise<VerifiedVaultHeaderOpen> {
+    let envelope: Uint8Array;
+    try {
+      assertNotAborted(signal);
+      envelope = await fetchHeaderEnvelope({ vaultId, ...(signal ? { signal } : {}) });
+      assertNotAborted(signal);
+    } catch (cause) {
+      if (isAbortError(cause)) throw cause;
+      if (cause instanceof EndpointKeystoreError) throw cause;
+      throw new EndpointKeystoreError(
+        'vault-header-unavailable',
+        'The authenticated vault header could not be fetched.',
+        {},
+        { cause },
+      );
+    }
+    if (!(envelope instanceof Uint8Array)) {
+      throw new EndpointKeystoreError(
+        'vault-header-unavailable',
+        'Vault header fetch did not return envelope bytes.',
+      );
+    }
+
     let verified: VerifiedVaultHeaderOpen;
     try {
-      const envelope = await fetchHeaderEnvelope({ vaultId });
-      if (!(envelope instanceof Uint8Array)) {
-        throw new EndpointKeystoreError(
-          'verification-failed',
-          'Vault header fetch did not return envelope bytes.',
-        );
-      }
+      assertNotAborted(signal);
       verified = await openVaultHeaderWithMnemonic({
         envelope,
         mnemonic,
         expectedVaultId: vaultId,
         expectedFingerprint,
       });
+      assertNotAborted(signal);
     } catch (cause) {
+      if (isAbortError(cause)) throw cause;
       throw new EndpointKeystoreError(
         'verification-failed',
         'The words did not open the authenticated vault header.',
@@ -727,6 +867,15 @@ export class EndpointVaultKeystore {
     verifiedMetadata: EndpointPasswordMetadataV1,
     expectedRevision: number,
   ): Promise<never> {
+    throw passwordFailureError(
+      await this.registerWrongPassword(verifiedMetadata, expectedRevision),
+    );
+  }
+
+  private async registerWrongPassword(
+    verifiedMetadata: EndpointPasswordMetadataV1,
+    expectedRevision: number,
+  ): Promise<RecordedPasswordFailure> {
     let revision = expectedRevision;
     for (let retry = 0; retry < 32; retry += 1) {
       const now = this.now();
@@ -755,13 +904,7 @@ export class EndpointVaultKeystore {
         continue;
       }
       const { failures, lockedUntil } = updated.result;
-      throw new EndpointKeystoreError(
-        lockedUntil == null ? 'wrong-password' : 'locked-out',
-        lockedUntil == null
-          ? 'The endpoint device password is incorrect.'
-          : 'Device-password verification is temporarily locked.',
-        { failures, ...(lockedUntil == null ? {} : { retryAt: lockedUntil }) },
-      );
+      return { revision: updated.revision, failures, lockedUntil };
     }
     throw new EndpointKeystoreError(
       'session-ended',
@@ -822,7 +965,12 @@ export class EndpointVaultKeystore {
     this.sessionGeneration += 1;
     invalidatePlainCustodyAcknowledgments();
     this.clearSessionSecrets();
+    this.notifySessionEnd();
     return this.sessionGeneration;
+  }
+
+  private notifySessionEnd(): void {
+    for (const listener of [...this.sessionEndListeners]) listener();
   }
 
   private requireCurrentGeneration(generation: number): void {
@@ -858,6 +1006,17 @@ export class EndpointVaultKeystore {
     if (existing != null) zeroBytes(existing);
     this.wrappedEntropy.delete(vaultId);
   }
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The vault receive operation was canceled.', 'AbortError');
+}
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof DOMException && cause.name === 'AbortError';
 }
 
 export function lockoutDelayMs(failures: number): number {
@@ -901,4 +1060,17 @@ function openedVaultReceipt(verified: VerifiedVaultHeaderOpen): OpenedVault {
     keyId: verified.keyId,
     keyFingerprint: verified.keyFingerprint,
   };
+}
+
+function passwordFailureError(failure: RecordedPasswordFailure): EndpointKeystoreError {
+  return new EndpointKeystoreError(
+    failure.lockedUntil == null ? 'wrong-password' : 'locked-out',
+    failure.lockedUntil == null
+      ? 'The endpoint device password is incorrect.'
+      : 'Device-password verification is temporarily locked.',
+    {
+      failures: failure.failures,
+      ...(failure.lockedUntil == null ? {} : { retryAt: failure.lockedUntil }),
+    },
+  );
 }

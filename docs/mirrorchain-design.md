@@ -576,11 +576,13 @@ service surface is merged.
 
 ## 14. Constraints & non-goals
 
-- **Paranoid mode (V5-P13):** MIRRORCHAIN requires the server to read and
-  re-apply portfolio content; it is therefore **absent by design for paranoid
-  accounts** (consistent with their no-sharing/no-social posture). A paranoid
-  member cannot join or create chains; this is a constraint recorded here, not
-  designed here (the P13 note owns its side).
+- **Vaulted portfolios (V5-P13 / paranoid E2):** MIRRORCHAIN requires the server
+  to read and re-apply portfolio content, so a portfolio whose
+  `portfolios.vault_id` is set cannot create, join, invite into, or remain in a
+  chain. The exclusion is portfolio-scoped: another plain portfolio owned by
+  the same account retains the complete create/join/invite/replication surface.
+  The P13 note owns the move-in mutual-exclusion transaction; this note owns the
+  mirror side of that boundary.
 - No cross-instance or cross-device replication — one database, server-side
   logical replication only. No re-merge of forks. No compaction of the oplog.
 - No public chains, no non-friend invites, no per-row member permissions

@@ -26,7 +26,7 @@ describe('createMarketData registers both providers (§5.1)', () => {
   });
 
   afterAll(async () => {
-    await h.ctx.redis.quit?.();
+    await h.dispose();
   });
 
   it('exposes a registry resolving yahoo + manual by providerId', () => {

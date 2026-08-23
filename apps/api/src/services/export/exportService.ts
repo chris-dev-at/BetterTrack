@@ -1,15 +1,28 @@
 import { access, chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join as joinPath } from 'node:path';
 
-import { eq } from 'drizzle-orm';
+import { and, arrayContains, eq } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
-import type { ExportRequest, ExportStatus, VaultMediaSet } from '@bettertrack/contracts';
+import type {
+  ExportRequest,
+  ExportStatus,
+  VaultDocKind,
+  VaultMediaList,
+  VaultMediaSet,
+} from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
 import type { Database } from '../../data/db';
 import type { ExportRepository } from '../../data/repositories/exportRepository';
-import { paranoidVaults, users, type ExportJobRow } from '../../data/schema';
+import {
+  paranoidVaults,
+  portfolioVaultTransitionStates,
+  users,
+  vaultBlobs,
+  vaults as vaultConfigs,
+  type ExportJobRow,
+} from '../../data/schema';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { ApiError, badRequest, notFound, tooManyRequests, unauthorized } from '../../errors';
 import type { Logger } from '../../logger';
@@ -22,7 +35,7 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 
 import { collectUserExport } from './collector';
-import { buildExportZip } from './zip';
+import { buildExportZip, type VaultCiphertextExport } from './zip';
 
 /** One request per this window per user (§13.4 V4-P6a "rate-limited 1/day"). */
 export const EXPORT_RATE_LIMIT_MS = 24 * 60 * 60 * 1000;
@@ -126,6 +139,20 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
 
   const filePathFor = (jobId: string) => joinPath(dir, `${jobId}.zip`);
 
+  const hasPendingPortfolioMoveOut = async (userId: string): Promise<boolean> => {
+    const [pending] = await db
+      .select({ portfolioId: portfolioVaultTransitionStates.portfolioId })
+      .from(portfolioVaultTransitionStates)
+      .where(
+        and(
+          eq(portfolioVaultTransitionStates.userId, userId),
+          eq(portfolioVaultTransitionStates.moveOutPostCommitPending, true),
+        ),
+      )
+      .limit(1);
+    return Boolean(pending);
+  };
+
   const fileExists = async (path: string): Promise<boolean> => {
     try {
       await access(path);
@@ -139,6 +166,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     userId: string;
     token: string;
   }): Promise<ExportDownload> {
+    // E4 restores the cleartext graph atomically, then converges derived rows
+    // from a durable retry plan. Do not consume a one-shot download token or
+    // stream an archive while those derived rows may still be incomplete.
+    if (await hasPendingPortfolioMoveOut(input.userId)) {
+      throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
+    }
     if (!input.token) throw badRequest('A download token is required.', 'EXPORT_TOKEN_REQUIRED');
     const row = await exportRepo.consumeDownloadable({
       userId: input.userId,
@@ -302,18 +335,87 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       await withAccountTransitionLock(job.userId, async () => {
         const lockedJob = await exportRepo.findById(jobId);
         if (!lockedJob || (lockedJob.status === 'ready' && lockedJob.filePath)) return;
+        // Deliberately outside the BUILD_FAILED catch: BullMQ must retry this
+        // same queued job after E4 clears its durable pending marker. Building
+        // now could capture restored cleartext before all derived rows converge,
+        // depending on which finalizer phase won the lock.
+        if (await hasPendingPortfolioMoveOut(job.userId)) {
+          throw new Error('account export deferred by portfolio vault finalization');
+        }
         const filePath = filePathFor(jobId);
         const buildingPath = `${filePath}.building`;
         try {
-          const [account] = await db
-            .select({
-              privacyMode: users.privacyMode,
-              mediaSet: users.paranoidMediaSet,
-            })
-            .from(users)
-            .where(eq(users.id, job.userId))
-            .limit(1);
+          const [accountRows, vaultDocRows] = await Promise.all([
+            db
+              .select({
+                privacyMode: users.privacyMode,
+                mediaSet: users.paranoidMediaSet,
+              })
+              .from(users)
+              .where(eq(users.id, job.userId))
+              .limit(1),
+            // E1 per-vault ciphertext is independent of the legacy account-wide
+            // privacy flag. Select only the safe manifest projection plus the
+            // current opaque bytes, owner-scoped in SQL; the LEFT JOIN keeps an
+            // empty server-backed vault visible in the manifest.
+            db
+              .select({
+                vaultId: vaultConfigs.id,
+                media: vaultConfigs.media,
+                docId: vaultBlobs.docId,
+                docKind: vaultBlobs.docKind,
+                version: vaultBlobs.version,
+                formatVersion: vaultBlobs.formatVersion,
+                sizeBytes: vaultBlobs.sizeBytes,
+                updatedAt: vaultBlobs.updatedAt,
+                blob: vaultBlobs.blob,
+              })
+              .from(vaultConfigs)
+              .leftJoin(vaultBlobs, eq(vaultBlobs.vaultId, vaultConfigs.id))
+              .where(
+                and(
+                  eq(vaultConfigs.userId, job.userId),
+                  arrayContains(vaultConfigs.media, ['server']),
+                ),
+              ),
+          ]);
+          const [account] = accountRows;
           if (!account) return;
+
+          const vaultsById = new Map<string, VaultCiphertextExport>();
+          for (const row of vaultDocRows) {
+            let vault = vaultsById.get(row.vaultId);
+            if (!vault) {
+              vault = {
+                vaultId: row.vaultId,
+                media: row.media as VaultMediaList,
+                docs: [],
+              };
+              vaultsById.set(row.vaultId, vault);
+            }
+            if (row.docId === null) continue;
+            // Every selected doc column is NOT NULL; only the LEFT JOIN can make
+            // it nullable, and a non-null PK means the complete row is present.
+            if (
+              row.docKind === null ||
+              row.version === null ||
+              row.formatVersion === null ||
+              row.sizeBytes === null ||
+              row.updatedAt === null ||
+              row.blob === null
+            ) {
+              throw new Error('incomplete current vault document row');
+            }
+            vault.docs.push({
+              docId: row.docId,
+              docKind: row.docKind as VaultDocKind,
+              version: row.version,
+              formatVersion: row.formatVersion,
+              sizeBytes: row.sizeBytes,
+              updatedAt: row.updatedAt,
+              blob: row.blob,
+            });
+          }
 
           const paranoid = account.privacyMode === 'paranoid';
           const collected = await collectUserExport(db, job.userId, { serverOnly: paranoid });
@@ -337,6 +439,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
             userId: job.userId,
             collected,
             generatedAt,
+            vaults: [...vaultsById.values()],
             ...(paranoid
               ? {
                   paranoid: {

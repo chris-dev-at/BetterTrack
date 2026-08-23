@@ -34,7 +34,50 @@ describe('feedback repository ownership boundary', () => {
       expect(rows.map((row) => row.id)).toEqual([owned!.id]);
       expect(rows.every((row) => row.userId === owner.id)).toBe(true);
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
+    }
+  });
+
+  it('excludes tombstoned submissions from the unread reply aggregate', async () => {
+    const harness = await createTestApp();
+    try {
+      const owner = await harness.seedUser({
+        email: 'feedback-unread-tombstone-owner@bt.test',
+        username: 'feedbackunreadtombowner',
+      });
+      const staff = await harness.seedUser({
+        email: 'feedback-unread-tombstone-staff@bt.test',
+        username: 'feedbackunreadtombstaff',
+      });
+      const repo = createFeedbackRepository(harness.db);
+      const live = await repo.create(owner.id, {
+        category: 'help',
+        message: 'Keep this submission visible.',
+      });
+      const tombstoned = await repo.create(owner.id, {
+        category: 'bug',
+        message: 'Remove this submission from my list.',
+      });
+      expect(live).not.toBeNull();
+      expect(tombstoned).not.toBeNull();
+
+      await expect(
+        repo.createMessageForAdmin(staff.id, live!.id, 'Unread live reply.'),
+      ).resolves.not.toBeNull();
+      await expect(
+        repo.createMessageForAdmin(staff.id, tombstoned!.id, 'Unread tombstoned reply.'),
+      ).resolves.not.toBeNull();
+      await expect(
+        repo.deleteMine(owner.id, tombstoned!.id, new Date('2026-08-20T12:00:00.000Z')),
+      ).resolves.not.toBeNull();
+
+      const rows = await repo.listMine(owner.id);
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: live!.id, unreadReplyCount: 1 });
+      expect(rows.some((row) => row.id === tombstoned!.id)).toBe(false);
+    } finally {
+      await harness.dispose();
     }
   });
 
@@ -79,7 +122,7 @@ describe('feedback repository ownership boundary', () => {
         },
       });
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -155,7 +198,7 @@ describe('feedback repository ownership boundary', () => {
         repo.getThreadForSubmitter(owner.id, owned!.id, { limit: 2, cursor: owned!.id }),
       ).resolves.toEqual({ status: 'invalid_cursor' });
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -177,7 +220,10 @@ describe('feedback repository ownership boundary', () => {
       });
       expect(owned).not.toBeNull();
       const reply = await repo.createMessageForAdmin(staff.id, owned!.id, 'We can reproduce it.');
-      expect(reply).toMatchObject({ authorSide: 'admin', authorUserId: staff.id });
+      expect(reply).toMatchObject({
+        submitterUserId: submitter.id,
+        row: { authorSide: 'admin', authorUserId: staff.id },
+      });
 
       // The exact statement both deletion paths rely on (userRepository.remove →
       // accountDeletionService / adminService). An admin's replies live on OTHER
@@ -192,11 +238,18 @@ describe('feedback repository ownership boundary', () => {
       expect(after).toMatchObject({
         status: 'ok',
         page: {
-          rows: [{ id: reply!.id, authorSide: 'admin', authorUserId: null, body: reply!.body }],
+          rows: [
+            {
+              id: reply!.row.id,
+              authorSide: 'admin',
+              authorUserId: null,
+              body: reply!.row.body,
+            },
+          ],
         },
       });
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 
@@ -237,7 +290,7 @@ describe('feedback repository ownership boundary', () => {
       expect(await repo.listMine(owner.id)).toEqual([]);
       expect((await repo.listMine(other.id)).map((row) => row.id)).toEqual([foreign!.id]);
     } finally {
-      await harness.ctx.redis.quit?.();
+      await harness.dispose();
     }
   });
 });

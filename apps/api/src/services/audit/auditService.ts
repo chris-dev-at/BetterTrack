@@ -1,4 +1,9 @@
-import type { AuditRepository, RecordAuditInput } from '../../data/repositories/auditRepository';
+import type { Database } from '../../data/db';
+import {
+  createAuditRepository,
+  type AuditRepository,
+  type RecordAuditInput,
+} from '../../data/repositories/auditRepository';
 
 type LockedPrivacyMode = 'normal' | 'paranoid' | null;
 type WithAuditPrivacyMode = <T>(
@@ -56,6 +61,9 @@ export const AuditAction = {
   UserUsernameChanged: 'user.username_changed',
   UserEmailChanged: 'user.email_changed',
   UserDeleted: 'user.deleted',
+  /** Admin workspace hygiene for the helpdesk queue; no submitter lifecycle change. */
+  FeedbackArchived: 'feedback.archived',
+  FeedbackUnarchived: 'feedback.unarchived',
   AccountDeleteFail: 'account.delete_fail',
   // Self-service data export (§13.4 V4-P6a, #494).
   AccountExportRequested: 'account.export_requested',
@@ -65,6 +73,26 @@ export const AuditAction = {
   ParanoidDisabled: 'account.paranoid_disabled',
   /** A failed re-auth on the irreversible paranoid discard (throttled like deletion). */
   ParanoidDiscardFail: 'account.paranoid_discard_fail',
+  /** Per-vault lifecycle metadata only; ciphertext and credentials are never copied. */
+  VaultCreated: 'vault.created',
+  VaultUpdated: 'vault.updated',
+  VaultDeleted: 'vault.deleted',
+  VaultMediaChanged: 'vault.media_changed',
+  VaultRetiredPurged: 'vault.retired_purged',
+  VaultDeleteReauthFail: 'vault.delete_reauth_fail',
+  PortfolioVaultMovedIn: 'portfolio.vault_moved_in',
+  PortfolioVaultMovedOut: 'portfolio.vault_moved_out',
+  PortfolioVaultMoveInReauthFail: 'portfolio.vault_move_in_reauth_fail',
+  PortfolioVaultMoveOutReauthFail: 'portfolio.vault_move_out_reauth_fail',
+  /**
+   * Google Drive identity registry (§13.5 V5-P13 / E5). Identity metadata only —
+   * the Google subject id, never a token, a file id or a byte of ciphertext.
+   */
+  DriveConnectionCreated: 'drive_connection.created',
+  /** Re-consent of an already registered Google account — an upsert onto the
+   *  same row, never a second registration. */
+  DriveConnectionRefreshed: 'drive_connection.refreshed',
+  DriveConnectionDeleted: 'drive_connection.deleted',
   /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
@@ -150,6 +178,12 @@ export const AuditAction = {
 
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;
+  /**
+   * Persist an audit row through the caller's transaction executor. This is
+   * reserved for security transitions whose state change and success audit
+   * must either commit or roll back together.
+   */
+  recordInTransaction(executor: Database, input: RecordAuditInput): Promise<void>;
   list(params: { limit: number; cursor?: string }): ReturnType<AuditRepository['list']>;
   listForTarget(params: {
     targetId: string;
@@ -160,7 +194,7 @@ export interface AuditService {
 
 export function createAuditService(
   auditRepo: AuditRepository,
-  withPrivacyMode: WithAuditPrivacyMode = (_userId, run) => run('normal'),
+  withPrivacyMode: WithAuditPrivacyMode = (_userId, run) => run(null),
 ): AuditService {
   return {
     record: (input) => {
@@ -187,6 +221,7 @@ export function createAuditService(
         }),
       );
     },
+    recordInTransaction: (executor, input) => createAuditRepository(executor).record(input),
     list: (params) => auditRepo.list(params),
     listForTarget: (params) => auditRepo.listForTarget(params),
   };

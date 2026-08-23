@@ -419,7 +419,7 @@ export const PARANOID_CLIENT_ROUTE_DECISIONS: readonly ParanoidClientRouteDecisi
 
 /**
  * A storage medium a blob syncs to (`§4`). `server` = the BetterTrack blind
- * store; `drive` = the user's Google Drive appdata folder. Both are blind
+ * store; `drive` = the user's visible BetterTrack Vaults folder. Both are blind
  * compare-and-swap blob stores; the client picks a non-empty subset.
  */
 export const VAULT_MEDIA = ['server', 'drive'] as const;

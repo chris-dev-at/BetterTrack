@@ -20,6 +20,17 @@ import { createTestApp, type TestHarness } from '../../../testing/createTestApp'
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const EXPORT_DIR = joinPath(tmpdir(), 'bettertrack-test-exports');
 
+// TEST VECTOR: one complete durable E4 move-out receipt, reused only across
+// isolated test databases. The pending bit is the account-export fence.
+const PENDING_MOVE_OUT_VECTOR = {
+  vaultId: '00000000-0000-7000-8000-000000000901',
+  moveOutId: '00000000-0000-7000-8000-000000000902',
+  documentDigest: 'TEST_VECTOR_pending_export_document_digest',
+  documentSetHash: 'TEST_VECTOR_pending_export_document_set_hash',
+  proofPublicKey: 'TEST VECTOR pending export proof public key',
+  completedAt: new Date('2026-08-21T12:34:56.000Z'),
+} as const;
+
 let harness: TestHarness;
 
 beforeEach(async () => {
@@ -45,6 +56,33 @@ async function seedPortfolio(userId: string, name: string): Promise<string> {
     .values({ userId, name })
     .returning({ id: schema.portfolios.id });
   return row!.id;
+}
+
+async function seedPendingPortfolioMoveOut(userId: string, portfolioId: string): Promise<void> {
+  await harness.db.insert(schema.portfolioVaultTransitionStates).values({
+    portfolioId,
+    userId,
+    lifecycleGeneration: 1,
+    moveOutVaultId: PENDING_MOVE_OUT_VECTOR.vaultId,
+    moveOutId: PENDING_MOVE_OUT_VECTOR.moveOutId,
+    moveOutDocumentDigest: PENDING_MOVE_OUT_VECTOR.documentDigest,
+    moveOutDocumentSetHash: PENDING_MOVE_OUT_VECTOR.documentSetHash,
+    moveOutProofPublicKey: PENDING_MOVE_OUT_VECTOR.proofPublicKey,
+    moveOutCompletedAt: PENDING_MOVE_OUT_VECTOR.completedAt,
+    moveOutPostCommitPending: true,
+    moveOutPostCommitCustomAssetIds: [],
+  });
+}
+
+async function clearPendingPortfolioMoveOut(portfolioId: string): Promise<void> {
+  await harness.db
+    .update(schema.portfolioVaultTransitionStates)
+    .set({
+      moveOutPostCommitPending: false,
+      moveOutPostCommitCustomAssetIds: [],
+      moveOutPostCommitLastAttemptAt: null,
+    })
+    .where(eq(schema.portfolioVaultTransitionStates.portfolioId, portfolioId));
 }
 
 /** Unzip a downloaded archive into { path -> text }. */
@@ -417,6 +455,98 @@ describe('account data export', () => {
     expect(gone.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
+  it('defers a pending build without poisoning the job, then builds that same job after E4 clears', async () => {
+    const enqueueBuild = vi.fn(async (_jobId: string) => undefined);
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: enqueueBuild,
+    });
+    const user = await harness.seedUser({
+      email: 'pending-export-build@bettertrack.test',
+      username: 'pending_export_build',
+    });
+    const portfolioId = await seedPortfolio(user.id, 'TEST VECTOR pending build portfolio');
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status).toBe(200);
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    await seedPendingPortfolioMoveOut(user.id, portfolioId);
+
+    await expect(harness.ctx.dataExport.buildExport(jobId)).rejects.toThrow(
+      'account export deferred by portfolio vault finalization',
+    );
+    const [deferred] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(deferred).toMatchObject({
+      status: 'pending',
+      error: null,
+      filePath: null,
+      fileSize: null,
+    });
+    expect(enqueueBuild).toHaveBeenCalledOnce();
+    expect(enqueueBuild).toHaveBeenCalledWith(jobId);
+
+    await clearPendingPortfolioMoveOut(portfolioId);
+    await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
+    const [ready] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(ready).toMatchObject({ status: 'ready', error: null });
+    expect(ready!.filePath).toBeTruthy();
+    expect(existsSync(ready!.filePath!)).toBe(true);
+  });
+
+  it('does not consume a ready download token while E4 is pending, then accepts the same token', async () => {
+    const user = await harness.seedUser({
+      email: 'pending-export-download@bettertrack.test',
+      username: 'pending_export_download',
+    });
+    const portfolioId = await seedPortfolio(user.id, 'TEST VECTOR pending download portfolio');
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status).toBe(200);
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    await seedPendingPortfolioMoveOut(user.id, portfolioId);
+
+    const blocked = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(blocked.status).toBe(404);
+    expect(blocked.body.error.code).toBe('EXPORT_NOT_FOUND');
+    const [preserved] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(preserved).toMatchObject({
+      status: 'ready',
+      downloadTokenHash: hashToken(downloadToken),
+    });
+
+    await clearPendingPortfolioMoveOut(portfolioId);
+    const downloaded = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .responseType('blob');
+    expect(downloaded.status).toBe(200);
+    expect(unzipText(downloaded.body as Buffer)['manifest.json']).toBeTruthy();
+    const [consumed] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(consumed!.downloadTokenHash).toBeNull();
+  });
+
   it('cleanup deletes expired export files and rows', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
@@ -446,6 +576,336 @@ describe('account data export', () => {
       .from(schema.exportJobs)
       .where(eq(schema.exportJobs.id, jobId));
     expect(after.length).toBe(0);
+  });
+
+  it('exports only owner-scoped current docs from server-backed per-vault configs', async () => {
+    const owner = await harness.seedUser({
+      email: 'vault-export@bettertrack.test',
+      username: 'vault-export',
+    });
+    const stranger = await harness.seedUser({
+      email: 'foreign-vault-export@bettertrack.test',
+      username: 'foreign-vault-export',
+    });
+
+    // TEST VECTORS: fixed UUIDs, timestamps and opaque bytes make manifest paths,
+    // ordering, metadata and byte-exact ZIP assertions deterministic.
+    const SERVER_VAULT_ID = '00000000-0000-7000-8000-000000000101';
+    const EMPTY_SERVER_DRIVE_VAULT_ID = '00000000-0000-7000-8000-000000000102';
+    const DRIVE_ONLY_VAULT_ID = '00000000-0000-7000-8000-000000000103';
+    const FOREIGN_SERVER_VAULT_ID = '00000000-0000-7000-8000-000000000104';
+    const SERVER_HEADER_DOC_ID = '00000000-0000-7000-8000-000000000201';
+    const SERVER_COMMON_DOC_ID = '00000000-0000-7000-8000-000000000202';
+    const EMPTY_HEADER_DOC_ID = '00000000-0000-7000-8000-000000000211';
+    const EMPTY_COMMON_DOC_ID = '00000000-0000-7000-8000-000000000212';
+    const DRIVE_HEADER_DOC_ID = '00000000-0000-7000-8000-000000000221';
+    const DRIVE_COMMON_DOC_ID = '00000000-0000-7000-8000-000000000222';
+    const FOREIGN_HEADER_DOC_ID = '00000000-0000-7000-8000-000000000231';
+    const FOREIGN_COMMON_DOC_ID = '00000000-0000-7000-8000-000000000232';
+    const updatedAt = new Date('2026-08-20T12:34:56.000Z');
+    const currentBytes = Buffer.from([0x00, 0xff, 0x10, 0x80, 0x2a, 0x00, 0x4d]);
+    const driveOnlyBytes = Buffer.from('DRIVE_ONLY_DOC_MUST_NOT_EXPORT');
+    const foreignBytes = Buffer.from('FOREIGN_DOC_MUST_NOT_EXPORT');
+    const historyBytes = Buffer.from('HISTORY_DOC_MUST_NOT_EXPORT');
+    const candidateBytes = Buffer.from('CANDIDATE_DOC_MUST_NOT_EXPORT');
+    const retiredBytes = Buffer.from('RETIRED_DOC_MUST_NOT_EXPORT');
+    const verifierSentinel = ['retirement', 'verifier', 'must', 'not', 'export'].join('-');
+    const fingerprintSentinel = ['key', 'fingerprint', 'must', 'not', 'export'].join('-');
+    const vaultNameSentinel = 'VAULT_NAME_MUST_NOT_EXPORT';
+
+    const [driveConnection] = await harness.db
+      .insert(schema.driveConnections)
+      .values({
+        userId: owner.id,
+        googleSub: 'test-vector-google-sub',
+        email: 'vault-drive@bettertrack.test',
+        displayName: 'Drive identity must not export',
+      })
+      .returning({ id: schema.driveConnections.id });
+
+    await harness.db.insert(schema.vaults).values([
+      {
+        id: SERVER_VAULT_ID,
+        userId: owner.id,
+        name: vaultNameSentinel,
+        media: ['server'],
+        driveConnectionId: null,
+        headerDocId: SERVER_HEADER_DOC_ID,
+        commonDocId: SERVER_COMMON_DOC_ID,
+        retirementProofPublicKey: verifierSentinel,
+        keyFingerprint: fingerprintSentinel,
+      },
+      {
+        id: EMPTY_SERVER_DRIVE_VAULT_ID,
+        userId: owner.id,
+        name: 'EMPTY_SERVER_DRIVE_NAME_MUST_NOT_EXPORT',
+        media: ['server', 'drive'],
+        driveConnectionId: driveConnection!.id,
+        headerDocId: EMPTY_HEADER_DOC_ID,
+        commonDocId: EMPTY_COMMON_DOC_ID,
+        retirementProofPublicKey: verifierSentinel,
+        keyFingerprint: fingerprintSentinel,
+      },
+      {
+        id: DRIVE_ONLY_VAULT_ID,
+        userId: owner.id,
+        name: 'DRIVE_ONLY_NAME_MUST_NOT_EXPORT',
+        media: ['drive'],
+        driveConnectionId: driveConnection!.id,
+        headerDocId: DRIVE_HEADER_DOC_ID,
+        commonDocId: DRIVE_COMMON_DOC_ID,
+        retirementProofPublicKey: verifierSentinel,
+        keyFingerprint: fingerprintSentinel,
+      },
+      {
+        id: FOREIGN_SERVER_VAULT_ID,
+        userId: stranger.id,
+        name: 'FOREIGN_VAULT_NAME_MUST_NOT_EXPORT',
+        media: ['server'],
+        driveConnectionId: null,
+        headerDocId: FOREIGN_HEADER_DOC_ID,
+        commonDocId: FOREIGN_COMMON_DOC_ID,
+        retirementProofPublicKey: verifierSentinel,
+        keyFingerprint: fingerprintSentinel,
+      },
+    ]);
+
+    await harness.db.insert(schema.vaultBlobs).values([
+      {
+        vaultId: SERVER_VAULT_ID,
+        docId: SERVER_HEADER_DOC_ID,
+        docKind: 'header',
+        portfolioId: null,
+        version: 4,
+        formatVersion: 17,
+        sizeBytes: currentBytes.byteLength,
+        blob: currentBytes,
+        updatedAt,
+      },
+      {
+        vaultId: DRIVE_ONLY_VAULT_ID,
+        docId: DRIVE_HEADER_DOC_ID,
+        docKind: 'header',
+        portfolioId: null,
+        version: 8,
+        formatVersion: 1,
+        sizeBytes: driveOnlyBytes.byteLength,
+        blob: driveOnlyBytes,
+      },
+      {
+        vaultId: FOREIGN_SERVER_VAULT_ID,
+        docId: FOREIGN_HEADER_DOC_ID,
+        docKind: 'header',
+        portfolioId: null,
+        version: 2,
+        formatVersion: 1,
+        sizeBytes: foreignBytes.byteLength,
+        blob: foreignBytes,
+      },
+    ]);
+
+    // Only `vault_blobs` is exportable. These three server-side lifecycle stores
+    // carry conspicuous bytes so an accidental broad query cannot pass silently.
+    await Promise.all([
+      harness.db.insert(schema.vaultBlobHistory).values({
+        vaultId: SERVER_VAULT_ID,
+        docId: SERVER_HEADER_DOC_ID,
+        version: 3,
+        formatVersion: 17,
+        sizeBytes: historyBytes.byteLength,
+        blob: historyBytes,
+      }),
+      harness.db.insert(schema.vaultServerCandidates).values({
+        transitionId: '00000000-0000-7000-8000-000000000301',
+        vaultId: SERVER_VAULT_ID,
+        docId: SERVER_COMMON_DOC_ID,
+        version: 1,
+        formatVersion: 17,
+        sizeBytes: candidateBytes.byteLength,
+        blob: candidateBytes,
+        expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+      }),
+      harness.db.insert(schema.vaultRetired).values({
+        vaultId: SERVER_VAULT_ID,
+        docId: SERVER_HEADER_DOC_ID,
+        version: 2,
+        formatVersion: 17,
+        sizeBytes: retiredBytes.byteLength,
+        blob: retiredBytes,
+        createdAt: new Date('2026-08-18T00:00:00.000Z'),
+      }),
+    ]);
+
+    const lockedPortfolioId = await seedPortfolio(owner.id, 'Locked stub config may export');
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId: SERVER_VAULT_ID, vaultAlias: 'Locked alias config may export' })
+      .where(eq(schema.portfolios.id, lockedPortfolioId));
+    const [asset] = await harness.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'E1-EXPORT-LOCKED',
+        type: 'stock',
+        symbol: 'E1LOCK',
+        name: 'Locked-child test asset',
+        currency: 'EUR',
+        exchange: 'XETRA',
+      })
+      .returning({ id: schema.assets.id });
+    const [cashSource] = await harness.db
+      .insert(schema.portfolioCashSources)
+      .values({
+        portfolioId: lockedPortfolioId,
+        name: 'LOCKED_CASH_SOURCE_MUST_NOT_EXPORT',
+        type: 'bank',
+        isMain: true,
+      })
+      .returning({ id: schema.portfolioCashSources.id });
+    await Promise.all([
+      harness.db.insert(schema.transactions).values({
+        portfolioId: lockedPortfolioId,
+        assetId: asset!.id,
+        side: 'buy',
+        quantity: '1',
+        price: '123',
+        executedAt: new Date('2026-08-01T00:00:00.000Z'),
+        note: 'LOCKED_TRANSACTION_MUST_NOT_EXPORT',
+      }),
+      harness.db.insert(schema.dividends).values({
+        portfolioId: lockedPortfolioId,
+        assetId: asset!.id,
+        cashSourceId: cashSource!.id,
+        grossAmountEur: '7',
+        executedAt: new Date('2026-08-02T00:00:00.000Z'),
+        note: 'LOCKED_DIVIDEND_MUST_NOT_EXPORT',
+        taxMode: 'none',
+      }),
+      harness.db.insert(schema.portfolioCashMovements).values({
+        portfolioId: lockedPortfolioId,
+        sourceId: cashSource!.id,
+        kind: 'deposit',
+        amountEur: '9',
+        executedAt: new Date('2026-08-03T00:00:00.000Z'),
+        note: 'LOCKED_CASH_MOVEMENT_MUST_NOT_EXPORT',
+      }),
+      harness.db.insert(schema.portfolioSettings).values({
+        portfolioId: lockedPortfolioId,
+        key: 'locked-export-test',
+        value: { sentinel: 'LOCKED_SETTING_MUST_NOT_EXPORT' },
+      }),
+    ]);
+
+    // The account deliberately remains legacy `privacyMode = normal`: E1 vault
+    // discovery must not depend on that account-wide switch.
+    const agent = await loginAgent(harness.app, owner.email, owner.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: owner.password });
+    expect(requested.status).toBe(200);
+    const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    const downloaded = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .responseType('blob');
+    expect(downloaded.status).toBe(200);
+
+    const files = unzipSync(new Uint8Array(downloaded.body as Buffer));
+    const manifestRaw = strFromU8(files['manifest.json']!);
+    const manifest = JSON.parse(manifestRaw) as {
+      vaults: {
+        vaultId: string;
+        media: string[];
+        docs: Record<string, unknown>[];
+      }[];
+    };
+    expect(manifest.vaults.map((vault) => vault.vaultId)).toEqual([
+      SERVER_VAULT_ID,
+      EMPTY_SERVER_DRIVE_VAULT_ID,
+    ]);
+    expect(manifest.vaults[0]).toEqual({
+      vaultId: SERVER_VAULT_ID,
+      media: ['server'],
+      docs: [
+        {
+          docId: SERVER_HEADER_DOC_ID,
+          docKind: 'header',
+          version: 4,
+          formatVersion: 17,
+          sizeBytes: currentBytes.byteLength,
+          updatedAt: updatedAt.toISOString(),
+          file: `paranoid/vaults/${SERVER_VAULT_ID}/docs/${SERVER_HEADER_DOC_ID}.btvault`,
+        },
+      ],
+    });
+    expect(manifest.vaults[1]).toEqual({
+      vaultId: EMPTY_SERVER_DRIVE_VAULT_ID,
+      media: ['server', 'drive'],
+      docs: [],
+    });
+    expect(Object.keys(manifest.vaults[0]!).sort()).toEqual(['docs', 'media', 'vaultId']);
+    expect(Object.keys(manifest.vaults[0]!.docs[0]!).sort()).toEqual([
+      'docId',
+      'docKind',
+      'file',
+      'formatVersion',
+      'sizeBytes',
+      'updatedAt',
+      'version',
+    ]);
+
+    const currentPath = `paranoid/vaults/${SERVER_VAULT_ID}/docs/${SERVER_HEADER_DOC_ID}.btvault`;
+    expect(Buffer.from(files[currentPath]!)).toEqual(currentBytes);
+    expect(Object.keys(files).filter((path) => path.startsWith('paranoid/vaults/'))).toEqual([
+      currentPath,
+    ]);
+
+    const portfolioRows = JSON.parse(strFromU8(files['data/portfolios.json']!)) as {
+      id: string;
+      vaultId: string | null;
+    }[];
+    expect(portfolioRows).toContainEqual(
+      expect.objectContaining({ id: lockedPortfolioId, vaultId: SERVER_VAULT_ID }),
+    );
+    for (const entity of [
+      'transactions',
+      'cashSources',
+      'dividends',
+      'cashMovements',
+      'portfolioSettings',
+    ]) {
+      expect(JSON.parse(strFromU8(files[`data/${entity}.json`]!))).toEqual([]);
+    }
+
+    const archiveText = Object.values(files)
+      .map((bytes) => strFromU8(bytes))
+      .join('\n');
+    for (const forbidden of [
+      driveOnlyBytes.toString(),
+      foreignBytes.toString(),
+      historyBytes.toString(),
+      candidateBytes.toString(),
+      retiredBytes.toString(),
+      verifierSentinel,
+      fingerprintSentinel,
+      vaultNameSentinel,
+      'DRIVE_ONLY_NAME_MUST_NOT_EXPORT',
+      'FOREIGN_VAULT_NAME_MUST_NOT_EXPORT',
+      'Drive identity must not export',
+      'LOCKED_CASH_SOURCE_MUST_NOT_EXPORT',
+      'LOCKED_TRANSACTION_MUST_NOT_EXPORT',
+      'LOCKED_DIVIDEND_MUST_NOT_EXPORT',
+      'LOCKED_CASH_MOVEMENT_MUST_NOT_EXPORT',
+      'LOCKED_SETTING_MUST_NOT_EXPORT',
+    ]) {
+      expect(archiveText).not.toContain(forbidden);
+    }
+    expect(manifestRaw).not.toContain('retirementProofPublicKey');
+    expect(manifestRaw).not.toContain('keyFingerprint');
+    expect(manifestRaw).not.toContain('headerDocId');
+    expect(manifestRaw).not.toContain('commonDocId');
   });
 
   it('exports only server-classified data plus the current opaque server vault', async () => {

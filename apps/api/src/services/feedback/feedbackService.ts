@@ -14,6 +14,7 @@ import {
   type MyFeedbackSubmission,
   type SendFeedbackMessageRequest,
   type SendFeedbackMessageResponse,
+  type UpdateFeedbackArchiveResponse,
   type UpdateFeedbackStatusRequest,
   type UpdateFeedbackStatusResponse,
 } from '@bettertrack/contracts';
@@ -25,6 +26,8 @@ import type {
   FeedbackThreadLookup,
 } from '../../data/repositories/feedbackRepository';
 import { conflict } from '../../errors';
+import { AuditAction, type AuditService } from '../audit/auditService';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 
 const DEFAULT_THREAD_LIMIT = 40;
 
@@ -36,6 +39,11 @@ export type FeedbackThreadResult =
   | { status: 'ok'; thread: FeedbackThreadResponse }
   | { status: 'not_found' }
   | { status: 'invalid_cursor' };
+
+export interface FeedbackAdminActor {
+  id: string;
+  ip?: string | null;
+}
 
 function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   return {
@@ -49,6 +57,7 @@ function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
     declinedReason: row.declinedReason,
     shippedVersion: row.shippedVersion,
     deletedByUser: row.deletedByUserAt !== null,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     submitter: row.submitter,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -142,16 +151,29 @@ export interface FeedbackService {
   markReadForAdmin(id: string): Promise<boolean>;
   /** Owner-only lifecycle transition; returns null when the row vanished. */
   updateStatus(
+    adminUserId: string,
     id: string,
     input: UpdateFeedbackStatusRequest,
   ): Promise<UpdateFeedbackStatusResponse | null>;
+  /** Archive/unarchive is admin workspace hygiene, independent of lifecycle status. */
+  setArchived(
+    id: string,
+    archived: boolean,
+    actor: FeedbackAdminActor,
+  ): Promise<UpdateFeedbackArchiveResponse | null>;
 }
 
 export interface FeedbackServiceDeps {
   repo: FeedbackRepository;
+  notify: NotificationCenter;
+  audit: AuditService;
 }
 
-export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackService {
+export function createFeedbackService({
+  repo,
+  notify,
+  audit,
+}: FeedbackServiceDeps): FeedbackService {
   return {
     async submit(userId, input) {
       const row = await repo.create(userId, input);
@@ -215,17 +237,46 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
     },
 
     async sendMessageForAdmin(adminUserId, id, input) {
-      const row = await repo.createMessageForAdmin(adminUserId, id, input.body);
-      return row ? { message: toThreadMessage(row, 'admin') } : null;
+      const created = await repo.createMessageForAdmin(adminUserId, id, input.body);
+      if (!created) return null;
+      const { row, submitterUserId, deletedByUserAt } = created;
+
+      // A staff reply notifies its submitter only. This also covers the unusual
+      // self-helpdesk case: an admin answering their own submission never receives
+      // a notification about their own action. A user-deleted thread has left the
+      // submitter rail entirely, so it remains silent while admins retain the audit.
+      if (deletedByUserAt === null && submitterUserId !== adminUserId) {
+        await notify.emit({
+          type: 'feedback.reply_created',
+          userId: submitterUserId,
+          feedbackId: id,
+          messageId: row.id,
+          occurredAt: row.createdAt.toISOString(),
+        });
+      }
+      return { message: toThreadMessage(row, 'admin') };
     },
 
     markReadForAdmin(id) {
       return repo.markReadForAdmin(id);
     },
 
-    async updateStatus(id, input) {
-      const row = await repo.setStatus(id, input, new Date());
-      if (!row) return null;
+    async updateStatus(adminUserId, id, input) {
+      const transition = await repo.setStatus(id, input);
+      if (!transition) return null;
+      const { row, changed } = transition;
+
+      if (changed && row.deletedByUserAt === null && row.userId !== adminUserId) {
+        const occurredAt = row.lastStatusChangeAt.toISOString();
+        await notify.emit({
+          type: 'feedback.status_changed',
+          userId: row.userId,
+          feedbackId: row.id,
+          status: row.status,
+          lastStatusChangeAt: occurredAt,
+          occurredAt,
+        });
+      }
       return {
         id: row.id,
         status: row.status,
@@ -233,6 +284,29 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
         declinedReason: row.declinedReason,
         shippedVersion: row.shippedVersion,
         updatedAt: row.updatedAt.toISOString(),
+      };
+    },
+
+    async setArchived(id, archived, actor) {
+      const result = await repo.setArchived(id, archived, new Date());
+      if (!result) return null;
+
+      // A same-state request is deliberately side-effect free. That keeps the
+      // PATCH idempotent in the audit trail as well as in the feedback row.
+      if (result.changed) {
+        await audit.record({
+          actorId: actor.id,
+          action: archived ? AuditAction.FeedbackArchived : AuditAction.FeedbackUnarchived,
+          targetType: 'feedback',
+          targetId: result.row.id,
+          ip: actor.ip ?? null,
+        });
+      }
+
+      return {
+        id: result.row.id,
+        archivedAt: result.row.archivedAt ? result.row.archivedAt.toISOString() : null,
+        updatedAt: result.row.updatedAt.toISOString(),
       };
     },
   };

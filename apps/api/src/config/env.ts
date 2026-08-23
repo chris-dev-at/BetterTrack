@@ -325,6 +325,10 @@ const envSchema = z.object({
   // family). Per user; a generous steady-state so multi-device sync never trips.
   BT_VAULT_RATE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BT_VAULT_RATE_LIMIT: z.coerce.number().int().positive().default(60),
+  // Vault reads have a separate, larger budget so normal sync polling cannot
+  // exhaust (or inherit a cooldown from) the mutation budget. The window stays
+  // shared with the write family; only the allowance and Redis namespace split.
+  BT_VAULT_READ_RATE_LIMIT: z.coerce.number().int().positive().default(600),
 });
 
 export type EnvSchemaKey = keyof z.infer<typeof envSchema>;
@@ -884,6 +888,8 @@ export interface AppConfig {
     feedbackThread: ProgressiveSchedule;
     /** Paranoid vault writes, per user — a modest dedicated write budget (§13.5 V5-P13, design §4). */
     vault: ProgressiveSchedule;
+    /** Paranoid vault reads, per user — independent from the write budget and cooldown state. */
+    vaultRead: ProgressiveSchedule;
     /** Personal API key request rate, per key id (bearer requests, §6.13). */
     apiKey: ProgressiveSchedule;
     /** Login/PIN request rate, per IP. */
@@ -1255,6 +1261,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       vault: {
         windowSec: e.BT_VAULT_RATE_WINDOW_SEC,
         limit: e.BT_VAULT_RATE_LIMIT,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
+      },
+      // Reads use their own larger allowance and Redis namespace. Reusing the
+      // vault window keeps the operator surface small while preventing sync
+      // polling from consuming the write family's budget or cooldown ladder.
+      vaultRead: {
+        windowSec: e.BT_VAULT_RATE_WINDOW_SEC,
+        limit: e.BT_VAULT_READ_RATE_LIMIT,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },

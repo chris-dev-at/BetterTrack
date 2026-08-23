@@ -305,14 +305,14 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
   // V5-P13 arc b, the PER-PORTFOLIO vault model (docs/paranoid-design.md §3/§8,
-  // epic E0 #1410): vault CONFIG rows + the blind per-doc ciphertext store.
-  // Ciphertext export (for vaults whose media include `server`) rides the §18
-  // export interplay in a later epic, exactly like the v1 rows above.
+  // epic E0 #1410): raw table rows stay out of the general collector. E1's
+  // dedicated `vaults` export section carries the safe { vaultId, media }
+  // projection plus current ciphertext for vaults whose media include server.
   vaults: skipped(
-    'Per-portfolio vault config (V5-P13 arc b) — media set + non-secret verifier/fingerprint, no portfolio content; config export rides the §18 export interplay of a later epic.',
+    'Per-portfolio vault raw config rows (V5-P13 arc b) are skipped here; E1 exports the safe { vaultId, media } projection through the dedicated vaults manifest section.',
   ),
   vault_blobs: skipped(
-    'Per-portfolio vault doc ciphertext (V5-P13 arc b) — opaque encrypted blobs + CAS/version metadata, never cleartext; ciphertext export rides the §18 export interplay of a later epic.',
+    'Per-portfolio vault raw blob rows (V5-P13 arc b) are skipped here; E1 exports current server-backed opaque ciphertext through the dedicated vaults manifest section.',
   ),
   vault_blob_history: skipped(
     'Per-portfolio vault bounded ciphertext history (V5-P13 arc b) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
@@ -328,6 +328,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   ),
   drive_connections: skipped(
     'Separately authenticated Google Drive connection registry (V5-P13 arc b §8) — identity config only (sub/email/display name), never tokens or file ids; config export lands with a later export sweep.',
+  ),
+  portfolio_vault_transition_states: skipped(
+    'Per-portfolio vault capture state and idempotency receipts (E4) — content-free internal transition metadata, never portfolio data.',
   ),
 };
 
@@ -643,6 +646,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   vault_retirements: 'server',
   vault_retired: 'server',
   drive_connections: 'server',
+  portfolio_vault_transition_states: 'server',
 };
 
 /**

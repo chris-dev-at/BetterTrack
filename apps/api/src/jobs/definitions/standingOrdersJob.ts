@@ -26,6 +26,9 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * provider hiccup or insufficient cash) which already retries on the next daily
  * scan, and a post-claim booking failure is a deliberate at-most-once tombstone
  * that must never be retried — neither may turn into an immediate re-run.
+ *
+ * Idempotency key: `(standing_order_id, period_key)`, enforced by the unique
+ * run-ledger claim before any money row is written.
  */
 
 export const STANDING_ORDERS_SCHEDULER_ID = 'standingOrders.process';

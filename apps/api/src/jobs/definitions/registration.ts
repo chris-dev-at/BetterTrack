@@ -112,6 +112,12 @@ export const JOB_REGISTRATION_DESCRIPTORS = [
     'createSnapshotsBackfillJob',
   ),
   descriptor(
+    'createPortfolioVaultFinalizeJob',
+    QUEUE_NAMES.portfolioVaultFinalize,
+    'portfolioVaultJobs.ts',
+    'createPortfolioVaultFinalizeJob',
+  ),
+  descriptor(
     'createUsageRollupJob',
     QUEUE_NAMES.usageRollup,
     'usageAnalyticsJobs.ts',
