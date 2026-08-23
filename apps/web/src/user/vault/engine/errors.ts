@@ -92,6 +92,14 @@ function keystoreFailure(cause: EndpointKeystoreError): VaultMoneyFailure {
     case 'crypto-failed':
     case 'storage-invalid':
       return typedFailure('VAULT_CORRUPT', cause.message, false);
+    // `vault-header-unavailable` (E7, #1451): the authenticated header envelope
+    // could not be fetched, or came back as something other than bytes. That is
+    // a transport/availability failure, not corruption — the ciphertext is
+    // untouched and the next attempt may well succeed — so it must not be
+    // reported as VAULT_CORRUPT, which is final and alarming. Unavailable and
+    // retryable is the honest reading, and it keeps the figure UNKNOWN rather
+    // than quietly absent.
+    case 'vault-header-unavailable':
     case 'vault-not-stored':
     case 'device-password-required':
     case 'device-password-not-configured':
