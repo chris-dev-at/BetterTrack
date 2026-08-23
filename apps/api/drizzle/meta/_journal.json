@@ -694,6 +694,13 @@
       "when": 1787290071083,
       "tag": "0098_portfolio_vault_transition_states",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1787491534259,
+      "tag": "0099_living_tax_year_touch_guards",
+      "breakpoints": true
     }
   ]
 }
