@@ -409,4 +409,36 @@ describe('Home money roll-up coverage', () => {
       coverage: { kind: 'unavailable', unavailablePortfolioCount: 1 },
     });
   });
+
+  test('an all-locked scope is unavailable, not a 0 total wearing a qualifier', () => {
+    // With no visible member there is nothing for the qualifier to qualify: the
+    // composed figures would be 0 only because none of them could be read.
+    const vaulted = { ...SAVINGS, vaultId: '00000000-0000-4000-8000-000000000001' };
+
+    const rollup = composeHomeRollup([vaulted], [{ state: 'error' }]);
+
+    expect(rollup).toMatchObject({
+      status: 'unavailable',
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: 1 },
+    });
+  });
+
+  test('a mixed scope still composes its readable subtotal with the qualifier', () => {
+    // The counterpart to the rule above: one readable member IS a basis, so the
+    // total is real and the qualifier does its job rather than suppressing it.
+    const vaulted = { ...SAVINGS, vaultId: '00000000-0000-4000-8000-000000000001' };
+
+    const rollup = composeHomeRollup(
+      [MAIN, vaulted],
+      [{ state: 'success', provenance: { kind: 'plain' }, totals: TOTALS }, { state: 'error' }],
+    );
+
+    expect(rollup.status).toBe('ready');
+    expect(rollup.totalValue?.coverage).toMatchObject({ kind: 'partial' });
+  });
 });

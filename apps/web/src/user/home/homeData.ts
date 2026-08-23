@@ -262,6 +262,27 @@ export function composeHomeRollup(
       vaultId: requireVaultId(portfolio),
     };
   });
+  // A qualifier needs something to qualify. When EVERY member is locked there is
+  // no visible value to add, so the composed figures would come back as 0 — not
+  // because the money is zero, but because none of it could be read. Rendering
+  // "0,00 € + 1 locked portfolio" states a balance the client has no basis for,
+  // which is the silent-zero failure the qualifier exists to prevent. A mixed
+  // scope still composes normally: there, the qualifier genuinely qualifies a
+  // real subtotal.
+  if (members.length > 0 && members.every((member) => member.state === 'locked')) {
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: members.length },
+    };
+  }
+
   const composed = composePortfolioFigures({ authoritativeRoster, members }, HOME_FIGURE_KEYS);
   const previous = composed.totalValueEur.valueEur - composed.dayChangeEur.valueEur;
 

@@ -450,6 +450,28 @@ test('a vaulted 403 keeps every Home aggregate visibly qualified instead of coer
   expect(within(netWorth).getByText('10,000.00 €')).toBeInTheDocument();
 });
 
+test('a scope holding only vaulted portfolios reports unknown, never a 0 balance', async () => {
+  // Reachable since the headline widgets opted into `handlesVaultedPortfolios`:
+  // the scope picker can now land on nothing but sealed vaults. With no readable
+  // member there is no total to qualify, so the only honest answer is
+  // "unavailable" — a 0,00 € hero here would be a confident, invented balance.
+  const vaulted: PortfolioSummary = {
+    ...SAVINGS,
+    vaultId: '00000000-0000-4000-8000-000000000001',
+    vaultAlias: 'Private',
+  };
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [vaulted] });
+  vi.mocked(getPortfolio).mockRejectedValue(new Error('403 VAULTED_PORTFOLIO'));
+  storeBoard('net-worth');
+
+  renderHome();
+
+  const netWorth = await screen.findByRole('region', { name: 'Net worth' });
+  expect(await within(netWorth).findByText("This information isn't available.")).toBeVisible();
+  expect(within(netWorth).queryByText('0.00 €')).not.toBeInTheDocument();
+  expect(within(netWorth).queryByText('0,00 €')).not.toBeInTheDocument();
+});
+
 test('a non-headline aggregate renders unavailable instead of omitting a vaulted error', async () => {
   const vaulted: PortfolioSummary = {
     ...SAVINGS,
