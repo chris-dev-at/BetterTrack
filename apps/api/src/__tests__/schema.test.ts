@@ -45,7 +45,7 @@ describe('schema (§5.5)', () => {
   });
 
   afterAll(async () => {
-    await h.ctx.redis.quit?.();
+    await h.dispose();
   });
 
   it('rejects a paranoid account without a selected media set', async () => {

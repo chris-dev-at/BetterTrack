@@ -9,7 +9,8 @@ export type DriveAuthorizationState =
   | 'connected'
   | 'token-expired'
   | 'gesture-required'
-  | 'revoked';
+  | 'revoked'
+  | 'identity-mismatch';
 
 export type DriveAccessTokenResult =
   | { status: 'ok'; accessToken: string; expiresAt: number }

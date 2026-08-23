@@ -46,6 +46,7 @@ import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
 import { useMutationFeedback } from '../hooks/useMutationFeedback';
+import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
@@ -640,7 +641,9 @@ function SharePickerDialog({
     queryFn: ({ signal }) => listIdeas(signal),
   });
 
-  const portfolios = portfoliosQuery.data?.portfolios ?? [];
+  const portfolios = (portfoliosQuery.data?.portfolios ?? []).filter(
+    (portfolio) => !isVaultedPortfolio(portfolio),
+  );
   const conglomerates = conglomeratesQuery.data?.conglomerates ?? [];
   const ideas = ideasQuery.data?.ideas ?? [];
   const empty = portfolios.length === 0 && conglomerates.length === 0 && ideas.length === 0;

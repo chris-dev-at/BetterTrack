@@ -17,6 +17,7 @@ import {
   type TransactionPrefillRow,
 } from '../components/TransactionDialog';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 
 type AllocateMode = AllocateRequest['mode'];
 
@@ -287,7 +288,9 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
     staleTime: 60_000,
   });
   const portfolioId = useMemo(() => {
-    const list = portfoliosQuery.data?.portfolios ?? [];
+    const list = (portfoliosQuery.data?.portfolios ?? []).filter(
+      (portfolio) => !isVaultedPortfolio(portfolio),
+    );
     return (list.find((p) => p.isDefault) ?? list[0])?.id ?? null;
   }, [portfoliosQuery.data]);
 

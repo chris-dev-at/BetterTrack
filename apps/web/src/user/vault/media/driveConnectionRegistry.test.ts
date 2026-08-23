@@ -50,7 +50,9 @@ describe('per-connection Drive registry', () => {
   it('keeps Y and Z capabilities separate and sends only identity to BetterTrack', async () => {
     const y = connection('018f0000-0000-7000-8000-000000000401', 'sub-y', 'y@example.test');
     const z = connection('018f0000-0000-7000-8000-000000000402', 'sub-z', 'z@example.test');
-    const clients = [tokenClient('token-y'), tokenClient('token-z')];
+    const yClient = tokenClient('token-y');
+    const zClient = tokenClient('token-z');
+    const clients = [yClient, zClient];
     const hints: Array<string | undefined> = [];
     const create = vi.fn().mockResolvedValueOnce(y).mockResolvedValueOnce(z);
     const registry = createDriveConnectionRegistry({
@@ -77,11 +79,11 @@ describe('per-connection Drive registry', () => {
     // A bootstrap client is minted before the row exists, so it carries no
     // hint. The registry pins it to the resolved identity instead of leaving
     // every re-mint of this page session hint-less and generically worded.
-    expect(registry.tokens(y.id)?.identify).toHaveBeenCalledWith({
+    expect(yClient.identify).toHaveBeenCalledWith({
       loginHint: y.email,
       identityLabel: y.email,
     });
-    expect(registry.tokens(z.id)?.identify).toHaveBeenCalledWith({
+    expect(zClient.identify).toHaveBeenCalledWith({
       loginHint: z.email,
       identityLabel: z.email,
     });
@@ -163,7 +165,9 @@ describe('per-connection Drive registry', () => {
     // the last reference to it; the live one keeps the fresh capability.
     expect(first.clear).toHaveBeenCalledTimes(1);
     expect(second.clear).not.toHaveBeenCalled();
-    expect(registry.tokens(y.id)).toBe(second);
+    // Consumers receive the principal-checking facade, never the raw GIS
+    // capability that could re-mint without repeating about.get.
+    expect(registry.tokens(y.id)).not.toBe(second);
     expect(registry.tokens(y.id)?.getAccessToken()).toMatchObject({
       status: 'ok',
       accessToken: 'second-y-token',
@@ -206,5 +210,48 @@ describe('per-connection Drive registry', () => {
       status: 'ok',
       accessToken: 'renewed-token-z',
     });
+  });
+
+  it('fails closed when the chooser switches Google accounts between capability mints', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000407', 'sub-y', 'y@example.test');
+    const raw = tokenClient('y-token');
+    const identify = vi
+      .fn()
+      .mockResolvedValueOnce({
+        googleSub: y.googleSub,
+        email: y.email,
+        displayName: y.displayName,
+      })
+      .mockResolvedValueOnce({
+        googleSub: 'chooser-switched-to-z',
+        email: 'z@example.test',
+        displayName: 'Z',
+      });
+    const verify = vi.fn(async () => y);
+    const registry = createDriveConnectionRegistry({
+      clientId: 'browser-client-id',
+      api: { create: vi.fn(async () => y), verify, delete: vi.fn() },
+      tokenClient: () => raw,
+      identify,
+    });
+
+    await expect(registry.connect()).resolves.toMatchObject({ status: 'ok', connection: y });
+    const capability = registry.tokens(y.id);
+    expect(capability).not.toBeNull();
+    capability!.markExpired();
+
+    await expect(capability!.authorize()).resolves.toEqual({
+      status: 'identity-mismatch',
+      message: 'Sign in to Google (y@example.test) to sync.',
+    });
+    expect(identify).toHaveBeenCalledTimes(2);
+    expect(raw.authorize).toHaveBeenCalledTimes(2);
+    expect(raw.clear).toHaveBeenCalledTimes(1);
+    expect(verify).not.toHaveBeenCalled();
+    expect(capability!.getAccessToken()).toEqual({
+      status: 'identity-mismatch',
+      message: 'Sign in to Google (y@example.test) to sync.',
+    });
+    expect(registry.authorization(y)).toBe('identity-mismatch');
   });
 });
