@@ -139,15 +139,15 @@ async function issuePublicClientToken(input: {
 
 async function mintFirstPartyToken(
   scopes: readonly ApiKeyScope[],
-  existingUser?: TestUser,
+  existing?: { user: TestUser; agent: Agent },
 ): Promise<{
   token: string;
   grantId: string;
   user: TestUser;
   agent: Agent;
 }> {
-  const user = existingUser ?? (await seedFreshUser());
-  const agent = await login(user);
+  const user = existing?.user ?? (await seedFreshUser());
+  const agent = existing?.agent ?? (await login(user));
   const issued = await issuePublicClientToken({
     agent,
     userId: user.id,

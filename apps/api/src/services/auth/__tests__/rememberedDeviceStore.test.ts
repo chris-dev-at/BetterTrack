@@ -135,10 +135,33 @@ describe('remembered-device Redis ownership boundary', () => {
     );
   });
 
+  it('rejects revoke-all when a write transaction command fails', async () => {
+    await store.createForUser(USER_A, DEVICE_A);
+    const transactionFailure = new Error('injected Redis command failure');
+    const batchPrototype = Object.getPrototypeOf(redis.pipeline()) as {
+      exec: (...args: unknown[]) => unknown;
+    };
+    const exec = vi
+      .spyOn(batchPrototype, 'exec')
+      .mockResolvedValueOnce([[null, USER_A]])
+      .mockResolvedValueOnce([[transactionFailure, null]]);
+    const onRevoked = vi.fn();
+
+    try {
+      await expect(store.revokeAllForUser(USER_A, onRevoked)).rejects.toBe(transactionFailure);
+      expect(exec).toHaveBeenCalledTimes(2);
+      expect(onRevoked).not.toHaveBeenCalled();
+    } finally {
+      exec.mockRestore();
+      await store.clearForUser(USER_A, DEVICE_A);
+    }
+  });
+
   it('revokes a large mixed fan-out with one read pipeline and one write transaction', async () => {
     const ownedDeviceIds = Array.from({ length: 25 }, (_, index) => `owned-device-${index}`);
     const foreignDeviceIds = Array.from({ length: 3 }, (_, index) => `foreign-device-${index}`);
     const staleDeviceIds = Array.from({ length: 2 }, (_, index) => `stale-device-${index}`);
+    await store.createForUser(USER_B, 'existing-foreign-device');
     const existingForeignIndex = await redis.smembers(rememberedDevicesForUserKey(USER_B));
 
     for (const deviceId of ownedDeviceIds) {
