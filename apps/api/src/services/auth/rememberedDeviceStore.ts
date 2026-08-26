@@ -1,4 +1,4 @@
-import type { Redis } from 'ioredis';
+import type { ChainableCommander, Redis } from 'ioredis';
 
 import type { RememberedDeviceSummary } from '@bettertrack/contracts';
 
@@ -92,6 +92,39 @@ function pipelineValue<T>(
   return value as T;
 }
 
+function throwFirstPipelineError(results: [error: Error | null, result: unknown][] | null): void {
+  if (!results) {
+    throw new Error('Remembered-device write transaction returned an incomplete result');
+  }
+  for (const [error] of results) {
+    if (error) throw error;
+  }
+}
+
+function queueClear(transaction: ChainableCommander, userId: string, deviceId: string): void {
+  transaction.del(
+    rememberedDeviceKey(deviceId),
+    rememberedDeviceMetadataKey(deviceId),
+    pinQuickAuthMarkerKey(deviceId),
+  );
+  transaction.srem(rememberedDevicesForUserKey(userId), deviceId);
+}
+
+function queuePrune(
+  transaction: ChainableCommander,
+  userId: string,
+  deviceId: string,
+  boundUserId: string | null,
+): void {
+  transaction.srem(rememberedDevicesForUserKey(userId), deviceId);
+  // When the forward binding is absent, ancillary state cannot belong to any
+  // live account. A foreign binding is different: remove only the poisoned
+  // caller-index member and leave the real owner's state byte-for-byte intact.
+  if (boundUserId === null) {
+    transaction.del(rememberedDeviceMetadataKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+  }
+}
+
 export function createRememberedDeviceStore(
   redis: Redis,
   options: RememberedDeviceStoreOptions = {},
@@ -99,15 +132,9 @@ export function createRememberedDeviceStore(
   const clock = options.now ?? Date.now;
 
   async function clearForUser(userId: string, deviceId: string): Promise<void> {
-    await redis
-      .multi()
-      .del(
-        rememberedDeviceKey(deviceId),
-        rememberedDeviceMetadataKey(deviceId),
-        pinQuickAuthMarkerKey(deviceId),
-      )
-      .srem(rememberedDevicesForUserKey(userId), deviceId)
-      .exec();
+    const transaction = redis.multi();
+    queueClear(transaction, userId, deviceId);
+    throwFirstPipelineError(await transaction.exec());
   }
 
   async function pruneUnownedIndexMember(
@@ -115,14 +142,9 @@ export function createRememberedDeviceStore(
     deviceId: string,
     boundUserId: string | null,
   ): Promise<void> {
-    const transaction = redis.multi().srem(rememberedDevicesForUserKey(userId), deviceId);
-    // When the forward binding is absent, ancillary state cannot belong to any
-    // live account. A foreign binding is different: remove only the poisoned
-    // caller-index member and leave the real owner's state byte-for-byte intact.
-    if (boundUserId === null) {
-      transaction.del(rememberedDeviceMetadataKey(deviceId), pinQuickAuthMarkerKey(deviceId));
-    }
-    await transaction.exec();
+    const transaction = redis.multi();
+    queuePrune(transaction, userId, deviceId, boundUserId);
+    throwFirstPipelineError(await transaction.exec());
   }
 
   const store: RememberedDeviceStore = {
@@ -270,22 +292,13 @@ export function createRememberedDeviceStore(
       for (const [index, deviceId] of deviceIds.entries()) {
         const boundUserId = pipelineValue<string | null>(readResults, index);
         if (boundUserId !== userId) {
-          writes.srem(indexKey, deviceId);
-          if (boundUserId === null) {
-            writes.del(rememberedDeviceMetadataKey(deviceId), pinQuickAuthMarkerKey(deviceId));
-          }
+          queuePrune(writes, userId, deviceId, boundUserId);
           continue;
         }
-        writes
-          .del(
-            rememberedDeviceKey(deviceId),
-            rememberedDeviceMetadataKey(deviceId),
-            pinQuickAuthMarkerKey(deviceId),
-          )
-          .srem(indexKey, deviceId);
+        queueClear(writes, userId, deviceId);
         revokedHandles.push(rememberedDeviceHandle(deviceId));
       }
-      await writes.exec();
+      throwFirstPipelineError(await writes.exec());
 
       for (const handle of revokedHandles) onRevoked?.(handle);
       return revokedHandles.length;
