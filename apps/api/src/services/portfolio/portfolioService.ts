@@ -278,7 +278,10 @@ export interface PortfolioService {
     inputs: TransactionInput[],
     opts?: { source?: string; force?: boolean },
   ): Promise<TransactionDto[]>;
-  /** `opts.force` applies a MIRRORCHAIN replica mutation without re-emitting it. */
+  /**
+   * `opts.force` is accepted for the shared MIRRORCHAIN mutation shape but is
+   * intentionally inert here; `mirrorService` decides replica re-emission.
+   */
   updateTransaction(
     userId: string,
     portfolioId: string,
@@ -380,8 +383,8 @@ export interface PortfolioService {
   ): Promise<SetCashBalanceResponse>;
   /**
    * Record an external cash deposit (§14) into a source (Main by default,
-   * V3-P3). `opts.force` (MIRRORCHAIN replica apply, design §2) skips the
-   * the replication force rail only — a deposit has no overdraw gate to waive.
+   * V3-P3). `opts.force` is accepted for the shared MIRRORCHAIN mutation shape
+   * but is inert here — a deposit has no overdraw gate to waive.
    */
   depositCash(
     userId: string,
