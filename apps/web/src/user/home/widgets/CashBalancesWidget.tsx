@@ -6,6 +6,7 @@ import { useT } from '../../../i18n';
 import { listCashSources } from '../../../lib/portfolioApi';
 import { MoneyText } from '../../../ui';
 import { Empty, SkeletonBlock } from '../../../ui/origin';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -17,10 +18,9 @@ import type { WidgetProps } from './types';
  * visits shares one entry with the cash pages instead of issuing a parallel
  * request.
  *
- * Nothing is truncated. The footer total is the sum of exactly the rows above it
- * — a "total" that silently included sources the user cannot see would be worse
- * than no total at all, and cash sources are few enough (a handful per portfolio)
- * that the honest version also fits.
+ * Whenever it renders, nothing is truncated: the footer total is the sum of
+ * exactly the rows above it. A scope beyond the guarded query fan-out renders
+ * unavailable instead of pretending the capped subset is the account total.
  */
 
 /** Portfolios fanned out at most, mirroring the other multi-portfolio widgets. */
@@ -45,6 +45,7 @@ export function CashBalancesWidget({
       queryKey: ['portfolio', portfolio.id, 'cash-sources', false],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         listCashSources(portfolio.id, false, signal),
+      enabled: portfolio.vaultId == null,
       // The page's own staleness for this key — same entry, same rules.
       staleTime: 30_000,
     })),
@@ -57,10 +58,12 @@ export function CashBalancesWidget({
         }))
         .filter((group) => group.sources.length > 0),
       loading: results.some((result) => result.isLoading),
+      unavailable: hasUnsafeAggregateMember(scopedPortfolios, results),
     }),
   });
 
   if (portfoliosLoading || merged.loading) return <SkeletonBlock height={120} />;
+  if (merged.unavailable) return <UnavailableHomeAggregate />;
   if (merged.groups.length === 0) return <Empty title={t('home.widgets.cashBalances.empty')} />;
 
   const total = merged.groups.reduce(

@@ -428,6 +428,138 @@ test('renders the portfolio-list read failure above the still-usable board', asy
   expect(screen.getByRole('button', { name: 'Customize' })).toBeInTheDocument();
 });
 
+test('a vaulted 403 keeps every Home aggregate visibly qualified instead of coercing it to zero', async () => {
+  const vaulted: PortfolioSummary = {
+    ...SAVINGS,
+    vaultId: '00000000-0000-4000-8000-000000000001',
+    vaultAlias: 'Private',
+  };
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, vaulted] });
+  vi.mocked(getPortfolio).mockImplementation(async (portfolioId: string) => {
+    if (portfolioId === vaulted.id) throw new Error('403 VAULTED_PORTFOLIO');
+    return summary(9_000, 1_000, 250);
+  });
+  storeBoard('net-worth', 'today-change');
+
+  renderHome();
+
+  const netWorth = await screen.findByRole('region', { name: 'Net worth' });
+  const today = await screen.findByRole('region', { name: 'Today' });
+  expect(await within(netWorth).findByText(/\+ 1 locked portfolio/)).toBeInTheDocument();
+  expect(await within(today).findByText(/\+ 1 locked portfolio/)).toBeInTheDocument();
+  expect(within(netWorth).getByText('10,000.00 €')).toBeInTheDocument();
+});
+
+test('a scope holding only vaulted portfolios reports unknown, never a 0 balance', async () => {
+  // Reachable since the headline widgets opted into `handlesVaultedPortfolios`:
+  // the scope picker can now land on nothing but sealed vaults. With no readable
+  // member there is no total to qualify, so the only honest answer is
+  // "unavailable" — a 0,00 € hero here would be a confident, invented balance.
+  const vaulted: PortfolioSummary = {
+    ...SAVINGS,
+    vaultId: '00000000-0000-4000-8000-000000000001',
+    vaultAlias: 'Private',
+  };
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [vaulted] });
+  vi.mocked(getPortfolio).mockRejectedValue(new Error('403 VAULTED_PORTFOLIO'));
+  storeBoard('net-worth');
+
+  renderHome();
+
+  const netWorth = await screen.findByRole('region', { name: 'Net worth' });
+  expect(await within(netWorth).findByText("This information isn't available.")).toBeVisible();
+  expect(within(netWorth).queryByText('0.00 €')).not.toBeInTheDocument();
+  expect(within(netWorth).queryByText('0,00 €')).not.toBeInTheDocument();
+});
+
+test('a non-headline aggregate renders unavailable instead of omitting a vaulted error', async () => {
+  const vaulted: PortfolioSummary = {
+    ...SAVINGS,
+    vaultId: '00000000-0000-4000-8000-000000000001',
+    vaultAlias: 'Private',
+  };
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, vaulted] });
+  vi.mocked(getPortfolio).mockImplementation(async (portfolioId: string) => {
+    if (portfolioId === vaulted.id) throw new Error('403 VAULTED_PORTFOLIO');
+    return summary(9_000, 1_000, 250);
+  });
+  storeBoard('liquidity');
+
+  renderHome();
+
+  const liquidity = await screen.findByRole('region', { name: 'Liquidity' });
+  expect(await within(liquidity).findByText("This information isn't available.")).toBeVisible();
+  expect(within(liquidity).queryByText('10.00%')).not.toBeInTheDocument();
+  expect(within(liquidity).queryByText('10,000.00 €')).not.toBeInTheDocument();
+});
+
+test('portfolio share arithmetic waits until every member has loaded', async () => {
+  let finishSavings!: (value: PortfolioResponse) => void;
+  const savingsPending = new Promise<PortfolioResponse>((resolve) => {
+    finishSavings = resolve;
+  });
+  vi.mocked(getPortfolio).mockImplementation((portfolioId: string) =>
+    portfolioId === MAIN.id ? Promise.resolve(summary(9_000, 1_000, 250)) : savingsPending,
+  );
+  storeBoard(['portfolio-cards', { variant: 'table' }]);
+
+  renderHome();
+  const portfolios = await screen.findByRole('region', { name: 'Portfolios' });
+  await vi.waitFor(() => expect(getPortfolio).toHaveBeenCalledTimes(2));
+
+  // A loaded Main row must not temporarily claim 100% while Savings is pending.
+  expect(within(portfolios).queryByRole('table')).not.toBeInTheDocument();
+  expect(within(portfolios).queryByText('100.00%')).not.toBeInTheDocument();
+
+  finishSavings(summary(3_500, 500, -50));
+  expect(await within(portfolios).findByRole('table')).toBeInTheDocument();
+  expect(within(portfolios).queryByText('100.00%')).not.toBeInTheDocument();
+});
+
+test('cash-flow substats wait until every member has loaded', async () => {
+  let finishSavings!: (value: { portfolioId: string; points: never[] }) => void;
+  const savingsPending = new Promise<{ portfolioId: string; points: never[] }>((resolve) => {
+    finishSavings = resolve;
+  });
+  vi.mocked(getCashTrends).mockImplementation((portfolioId) =>
+    portfolioId === MAIN.id
+      ? Promise.resolve({
+          portfolioId,
+          points: [{ month: '2026-07', inflow: 4_000, outflow: 1_000 }],
+        })
+      : savingsPending,
+  );
+  storeBoard('cashflow-chart');
+
+  renderHome();
+  const cashflow = await screen.findByRole('region', { name: 'Cash flow' });
+  await vi.waitFor(() => expect(getCashTrends).toHaveBeenCalledTimes(2));
+
+  expect(within(cashflow).queryByText('4,000.00 €')).not.toBeInTheDocument();
+  finishSavings({ portfolioId: SAVINGS.id, points: [] });
+  expect(await within(cashflow).findByText('4,000.00 €')).toBeInTheDocument();
+});
+
+test('a fan-out cap produces unavailable instead of a bare all-portfolio subtotal', async () => {
+  const many = Array.from(
+    { length: 13 },
+    (_, index): PortfolioSummary => ({
+      ...MAIN,
+      id: `p-${index}`,
+      name: `Portfolio ${index}`,
+      isDefault: index === 0,
+    }),
+  );
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: many });
+  storeBoard('net-worth-history');
+
+  renderHome();
+  const history = await screen.findByRole('region', { name: 'Net worth history' });
+
+  expect(await within(history).findByText("This information isn't available.")).toBeVisible();
+  expect(getPortfolioHistory).toHaveBeenCalledTimes(12);
+});
+
 /** The board as the account's local cache now holds it. */
 function persisted(): HomeConfig {
   const raw = localStorage.getItem(homeCacheKey(ACCOUNT));

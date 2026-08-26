@@ -1,46 +1,87 @@
 import {
+  VAULT_ENTITY_KINDS,
   VAULT_ENTITY_ROW_SCHEMAS,
   type TaxExportLocale,
   type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
 } from '@bettertrack/contracts';
+import {
+  reducePosition,
+  type Transaction as DomainTransaction,
+} from '@bettertrack/domain/holdings';
 import { strToU8, zip } from 'fflate';
 
 import { localizedMessage } from '../../../i18n';
-import type { VaultSyncEngine } from '../sync';
 import { asMoneyFailure, moneyFailure, type VaultMoneyOutcome } from '../engine/errors';
 import {
-  assertVaultSnapshotCurrent,
+  assertMoneySnapshotCurrent,
   liveEntities,
-  validatedVaultSnapshot,
+  validatedMoneySnapshot,
+  type VaultMoneySnapshotAccess,
 } from '../engine/session';
 
-const EXPORT_KINDS = {
-  portfolio: 'portfolios',
-  transaction: 'transactions',
-  dividend: 'dividends',
-  cashSource: 'cashSources',
-  cashMovement: 'cashMovements',
-  portfolioSetting: 'portfolioSettings',
-  taxSetting: 'taxSettings',
-  customAsset: 'customAssets',
-  customAssetValue: 'customAssetPriceHistory',
-  standingOrder: 'standingOrders',
-  expenseCategory: 'expenseCategories',
-  expenseTransaction: 'expenseTransactions',
-  expenseRule: 'expenseRules',
-  expenseBudget: 'expenseBudgets',
-} as const satisfies Partial<Record<VaultEntityKind, string>>;
+type EntityExportClassification =
+  | { disposition: 'export'; dataName: string }
+  | { disposition: 'skip'; table: string; reasonKey: string };
 
-const SKIPPED = [
-  ['import_batches', 'importBatches'],
-  ['import_rows', 'importRows'],
-  ['portfolio_daily_snapshots', 'portfolioSnapshots'],
-  ['portfolio_snapshot_state', 'snapshotState'],
-  ['standing_order_runs', 'standingOrderRuns'],
-  ['expense_budget_fires', 'expenseBudgetFires'],
-] as const;
+/**
+ * Exhaustive by contract: a new vault entity cannot silently disappear from a
+ * user's cleartext exit. Source rows are exported; derived/idempotency rows are
+ * named explicitly in the manifest.
+ */
+const ENTITY_EXPORT_CLASSIFICATION = {
+  portfolio: { disposition: 'export', dataName: 'portfolios' },
+  transaction: { disposition: 'export', dataName: 'transactions' },
+  dividend: { disposition: 'export', dataName: 'dividends' },
+  cashSource: { disposition: 'export', dataName: 'cashSources' },
+  cashMovement: { disposition: 'export', dataName: 'cashMovements' },
+  portfolioSetting: { disposition: 'export', dataName: 'portfolioSettings' },
+  taxSetting: { disposition: 'export', dataName: 'taxSettings' },
+  customAsset: { disposition: 'export', dataName: 'customAssets' },
+  customAssetValue: { disposition: 'export', dataName: 'customAssetPriceHistory' },
+  standingOrder: { disposition: 'export', dataName: 'standingOrders' },
+  standingOrderRun: {
+    disposition: 'skip',
+    table: 'standing_order_runs',
+    reasonKey: 'standingOrderRuns',
+  },
+  importBatch: {
+    disposition: 'skip',
+    table: 'import_batches',
+    reasonKey: 'importBatches',
+  },
+  importRow: { disposition: 'skip', table: 'import_rows', reasonKey: 'importRows' },
+  portfolioDailySnapshot: {
+    disposition: 'skip',
+    table: 'portfolio_daily_snapshots',
+    reasonKey: 'portfolioSnapshots',
+  },
+  portfolioSnapshotState: {
+    disposition: 'skip',
+    table: 'portfolio_snapshot_state',
+    reasonKey: 'snapshotState',
+  },
+  expenseCategory: { disposition: 'export', dataName: 'expenseCategories' },
+  expenseTransaction: { disposition: 'export', dataName: 'expenseTransactions' },
+  expenseRule: { disposition: 'export', dataName: 'expenseRules' },
+  expenseBudget: { disposition: 'export', dataName: 'expenseBudgets' },
+  expenseBudgetFire: {
+    disposition: 'skip',
+    table: 'expense_budget_fires',
+    reasonKey: 'expenseBudgetFires',
+  },
+  cashTag: { disposition: 'export', dataName: 'cashTags' },
+  cashMovementTag: { disposition: 'export', dataName: 'cashMovementTags' },
+  cashBudget: { disposition: 'export', dataName: 'cashBudgets' },
+  cashBudgetFire: {
+    disposition: 'skip',
+    table: 'cash_budget_fires',
+    reasonKey: 'cashBudgetFires',
+  },
+  cashRule: { disposition: 'export', dataName: 'cashRules' },
+  cashRuleTag: { disposition: 'export', dataName: 'cashRuleTags' },
+} as const satisfies Record<VaultEntityKind, EntityExportClassification>;
 
 const FORBIDDEN_KEY =
   /^(?:vaultKeys?|vk|kek|passphrase|password|recovery(?:Key|Kit|Material|Codes?)?|wrappedKeys?|wrappedVk|ciphertext|envelope|vaultVersion|writeId|deviceId|editedBy|deletedAt|mergeLog|sync(?:Metadata|State|Candidate|Version)?|quarantine(?:d|Blob)?|secret)$/i;
@@ -67,18 +108,20 @@ export interface ClientCleartextExportOptions {
 }
 
 /**
- * Build an account-export-compatible archive entirely in browser memory.
+ * Build an account-export-compatible archive entirely in browser memory. E6's
+ * split-doc session makes this a per-vault export; the legacy v1 sync source is
+ * retained so existing account-vault users keep the same exit path.
  * A lock/version race after ZIP creation zeroes the produced buffer before the
  * typed abort is returned.
  */
 export async function createClientCleartextExport(
-  sync: VaultSyncEngine,
+  access: VaultMoneySnapshotAccess,
   options: ClientCleartextExportOptions = {},
 ): Promise<VaultMoneyOutcome<ClientCleartextExport>> {
   let archive: Uint8Array | null = null;
   try {
     options.signal?.throwIfAborted();
-    const snapshot = validatedVaultSnapshot(sync);
+    const snapshot = validatedMoneySnapshot(access);
     const generatedAt = options.generatedAt ?? new Date();
     if (!Number.isFinite(generatedAt.getTime())) {
       throw moneyFailure('VAULT_CORRUPT', 'The export timestamp is invalid.');
@@ -96,10 +139,19 @@ export async function createClientCleartextExport(
       generatedAt: generatedAt.toISOString(),
       entities: counts,
       csv: ['transactions', 'cash-movements', 'holdings'],
-      skippedTables: SKIPPED.map(([table, reasonKey]) => ({
-        table,
-        reason: localizedMessage(locale, `vaultExports.cleartext.skipped.${reasonKey}`),
-      })).sort((left, right) => left.table.localeCompare(right.table)),
+      skippedTables: VAULT_ENTITY_KINDS.flatMap((kind) => {
+        const classification = ENTITY_EXPORT_CLASSIFICATION[kind];
+        if (classification.disposition !== 'skip') return [];
+        return [
+          {
+            table: classification.table,
+            reason: localizedMessage(
+              locale,
+              `vaultExports.cleartext.skipped.${classification.reasonKey}`,
+            ),
+          },
+        ];
+      }).sort((left, right) => left.table.localeCompare(right.table)),
     };
     const files: Record<string, Uint8Array> = {
       'manifest.json': strToU8(JSON.stringify(manifest, null, 2)),
@@ -116,13 +168,13 @@ export async function createClientCleartextExport(
     // This lets a pending click/idle lock run, not only queued microtasks.
     await yieldToBrowserTask();
     options.signal?.throwIfAborted();
-    assertVaultSnapshotCurrent(sync, snapshot);
+    assertMoneySnapshotCurrent(access, snapshot);
     archive = await zipArchive(files, options.signal);
     // The worker callback resumes in a microtask. Yield once more so a lock task
     // queued during compression is observed before any bytes leave this method.
     await yieldToBrowserTask();
     options.signal?.throwIfAborted();
-    assertVaultSnapshotCurrent(sync, snapshot);
+    assertMoneySnapshotCurrent(access, snapshot);
     return {
       ok: true,
       value: {
@@ -185,15 +237,17 @@ function zipArchive(files: Record<string, Uint8Array>, signal?: AbortSignal): Pr
 
 function collectEntities(document: VaultDocument): Record<string, unknown[]> {
   const result: Record<string, unknown[]> = {};
-  for (const [kind, name] of Object.entries(EXPORT_KINDS) as Array<
-    [keyof typeof EXPORT_KINDS, string]
-  >) {
-    result[name] = liveEntities(document, kind).map((entity) => exportRow(kind, entity));
+  for (const kind of VAULT_ENTITY_KINDS) {
+    const classification = ENTITY_EXPORT_CLASSIFICATION[kind];
+    if (classification.disposition !== 'export') continue;
+    result[classification.dataName] = liveEntities(document, kind).map((entity) =>
+      exportRow(kind, entity),
+    );
   }
   return result;
 }
 
-function exportRow(kind: keyof typeof EXPORT_KINDS, entity: VaultEntity): Record<string, unknown> {
+function exportRow(kind: VaultEntityKind, entity: VaultEntity): Record<string, unknown> {
   const parsed = VAULT_ENTITY_ROW_SCHEMAS[kind].parse(entity.data);
   assertNoSensitiveKeys(parsed, `${kind}/${entity.id}`);
   // Drizzle's normal account export preserves PostgreSQL numeric columns as
@@ -215,20 +269,38 @@ function buildCsv(document: VaultDocument): {
     id: entity.id,
     ...VAULT_ENTITY_ROW_SCHEMAS.cashMovement.parse(entity.data),
   }));
-  const holdings = new Map<string, { portfolioId: string; assetId: string; net: number }>();
-  for (const transaction of transactions) {
+  const holdings = new Map<
+    string,
+    { portfolioId: string; assetId: string; transactions: DomainTransaction[] }
+  >();
+  const orderedTransactions = [...transactions].sort(
+    (left, right) =>
+      Date.parse(left.executedAt) - Date.parse(right.executedAt) || left.id.localeCompare(right.id),
+  );
+  for (const transaction of orderedTransactions) {
     const key = `${transaction.portfolioId}:${transaction.assetId}`;
-    const signed =
-      (transaction.side === 'sell' ? -1 : 1) * finiteNumber(transaction.quantity, 'quantity');
+    const domainTransaction: DomainTransaction = {
+      assetId: transaction.assetId,
+      side: transaction.side,
+      quantity: finiteNumber(transaction.quantity, 'quantity'),
+      price: finiteNumber(transaction.price, 'price'),
+      fee: finiteNumber(transaction.fee, 'fee'),
+      executedAt: transaction.executedAt,
+      allowUncovered: transaction.allowUncovered,
+      uncoveredEntryPrice:
+        transaction.uncoveredEntryPrice === null
+          ? null
+          : finiteNumber(transaction.uncoveredEntryPrice, 'uncoveredEntryPrice'),
+    };
     const current = holdings.get(key);
     if (current === undefined) {
       holdings.set(key, {
         portfolioId: transaction.portfolioId,
         assetId: transaction.assetId,
-        net: signed,
+        transactions: [domainTransaction],
       });
     } else {
-      current.net += signed;
+      current.transactions.push(domainTransaction);
     }
   }
   return {
@@ -262,6 +334,7 @@ function buildCsv(document: VaultDocument): {
     holdings: toCsv(
       ['portfolioId', 'assetId', 'netQuantity'],
       [...holdings.values()]
+        .map((row) => ({ ...row, net: reducePosition(row.transactions).quantity }))
         .filter((row) => row.net !== 0)
         .map((row) => [row.portfolioId, row.assetId, row.net]),
     ),
