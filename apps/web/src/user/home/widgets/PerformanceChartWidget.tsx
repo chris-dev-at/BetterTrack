@@ -11,6 +11,7 @@ import type { PriceRange } from '../../../ui/charts';
 import { Empty } from '../../../ui/origin';
 import { widgetVariant } from '../config';
 import { combineSamples, MAX_HISTORY_PORTFOLIOS, normalizeSamples } from './NetWorthHistoryWidget';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -100,7 +101,7 @@ export function PerformanceChartWidget({
     queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
     queryFn: ({ signal }) =>
       getPortfolioHistory(portfolioId!, toHistoryRange(range), false, signal),
-    enabled: !combining && portfolioId !== null,
+    enabled: !combining && portfolioId !== null && scopedPortfolio?.vaultId == null,
     // §6.9 caches the series for an hour server-side; mirror it client-side.
     staleTime: 3_600_000,
   });
@@ -113,12 +114,14 @@ export function PerformanceChartWidget({
       queryKey: ['portfolio', portfolio.id, 'history', toHistoryRange(range)],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         getPortfolioHistory(portfolio.id, toHistoryRange(range), false, signal),
+      enabled: portfolio.vaultId == null,
       staleTime: 3_600_000,
     })),
     combine: (results) => ({
       series: combineSamples(results.map((result) => normalizeSamples(result.data?.points ?? []))),
       loading: results.some((result) => result.isLoading || result.isFetching),
       baseCurrency: results.find((result) => result.data !== undefined)?.data?.baseCurrency,
+      unavailable: hasUnsafeAggregateMember(scopedPortfolios, results),
     }),
   });
 
@@ -145,6 +148,15 @@ export function PerformanceChartWidget({
   // Nothing to draw: no portfolio resolved at all, or none left to combine.
   if (!portfoliosLoading && (combining ? charted.length === 0 : portfolioId === null)) {
     return <Empty title={t('home.widgets.performanceChart.empty')} />;
+  }
+  if (
+    combining
+      ? combined.unavailable
+      : scopedPortfolio?.vaultId != null ||
+        historyQuery.isError ||
+        (historyQuery.isPending && !historyQuery.isFetching)
+  ) {
+    return <UnavailableHomeAggregate />;
   }
 
   const scopeName = combining ? t('home.builder.scopeAll') : (scopedPortfolio?.name ?? '');

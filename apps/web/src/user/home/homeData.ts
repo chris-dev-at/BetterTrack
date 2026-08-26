@@ -3,7 +3,13 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 
 import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
 
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import {
+  composePortfolioFigures,
+  type AdditivePortfolioFigures,
+  type PortfolioFigureCoverage,
+  type QualifiedPortfolioFigure,
+} from '../vault/engine/composition';
 import { SCOPE_ALL, SCOPE_SELECTED, type WidgetScope } from './config';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 
@@ -23,9 +29,10 @@ const PORTFOLIO_STALE_MS = 60_000;
 
 /** The caller's active portfolios — the exact query the switcher and pages use. */
 export function usePortfoliosQuery() {
+  const store = usePortfolioStore();
   return useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: PORTFOLIO_STALE_MS,
   });
 }
@@ -35,32 +42,94 @@ export interface PortfolioRow {
   totals: PortfolioTotals | null;
 }
 
-export interface Rollup {
+interface RollupBase {
   rows: PortfolioRow[];
-  totalValue: number;
-  invested: number;
-  cash: number;
-  dayChange: number;
+  loading: boolean;
+}
+
+export interface ReadyRollup extends RollupBase {
+  status: 'ready';
+  totalValue: QualifiedPortfolioFigure;
+  invested: QualifiedPortfolioFigure;
+  cash: QualifiedPortfolioFigure;
+  dayChange: QualifiedPortfolioFigure;
   /**
    * Day change as a share of the *previous* total value. Computed uniformly for
    * one portfolio and for a roll-up so the figure always describes the number
    * rendered directly above it (net worth, cash included) — the portfolio
    * page's `dayChangePct` answers a different question (market value only).
    */
-  dayChangePct: number | null;
-  loading: boolean;
+  dayChangePct: {
+    valuePct: number | null;
+    coverage: PortfolioFigureCoverage;
+  };
 }
+
+export interface UnavailableRollup extends RollupBase {
+  status: 'unavailable';
+  /** No numeric fallback exists: an errored plain member is unavailable, never zero. */
+  totalValue: null;
+  invested: null;
+  cash: null;
+  dayChange: null;
+  dayChangePct: null;
+  coverage: {
+    kind: 'unavailable';
+    unavailablePortfolioCount: number;
+  };
+}
+
+export type Rollup = ReadyRollup | UnavailableRollup;
+
+export type HomePortfolioRead =
+  | { state: 'loading' }
+  | { state: 'error' }
+  | {
+      state: 'success';
+      /** Provenance is part of the value: an old API-cache hit is not an unlocked vault read. */
+      provenance:
+        | { kind: 'plain' }
+        | {
+            kind: 'vaulted-unlocked';
+            vaultId: string;
+            /** Identity of the authenticated envelope set that produced these totals. */
+            snapshotId: string;
+            /** Synchronous E3/E6 revocation + CAS check at the composition side effect. */
+            isCurrent(): boolean;
+          };
+      totals: PortfolioTotals;
+    };
+
+const HOME_FIGURE_KEYS = [
+  'totalValueEur',
+  'marketValueEur',
+  'investedEur',
+  'unrealizedPnlEur',
+  'dayChangeEur',
+  'cashEur',
+] as const satisfies readonly (keyof AdditivePortfolioFigures)[];
 
 /**
  * One `GET /portfolios/:id` per portfolio, each under the page-level
  * `['portfolio', id]` key. `useQueries` keeps the fan-out declarative and lets
  * React Query dedupe/cancel per portfolio instead of per batch.
+ *
+ * The read goes through the portfolio STORE seam rather than `portfolioApi`
+ * directly (PARANOID-E6 #1416), so a future resolver-backed store can serve a
+ * vaulted portfolio from its decrypted document set without this call site
+ * changing. Until that store exists, a vaulted stub stays DISABLED: the server
+ * cannot read a sealed vault, so the request could only ever 403, and asking is
+ * itself a money read against a portfolio the user sealed. `homePortfolioRead`
+ * classifies a vaulted stub from the stub alone and never consults this result,
+ * so skipping the request costs the rollup nothing — the member still lands in
+ * the composition as `locked` and still carries its qualifier.
  */
 export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
+  const store = usePortfolioStore();
   return useQueries({
     queries: portfolios.map((portfolio) => ({
       queryKey: ['portfolio', portfolio.id],
-      queryFn: ({ signal }: { signal: AbortSignal }) => getPortfolio(portfolio.id, signal),
+      queryFn: ({ signal }: { signal: AbortSignal }) => store.getPortfolio(portfolio.id, signal),
       enabled: !isVaultedPortfolio(portfolio),
       staleTime: PORTFOLIO_STALE_MS,
     })),
@@ -70,34 +139,186 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
 /** Roll the per-portfolio summaries up into the figures every headline widget needs. */
 export function useRollup(portfolios: readonly PortfolioSummary[]): Rollup {
   const results = usePortfolioSummaries(portfolios);
+  return composeHomeRollup(
+    portfolios,
+    results.map((result, index) => homePortfolioRead(portfolios[index]!, result)),
+  );
+}
+
+/**
+ * A vaulted stub cannot trust this query's cached `PortfolioResponse`: the key
+ * may still hold its pre-move plain response while the server refusal is in
+ * flight. Until the E10 per-vault store/CAS owner can brand an authenticated
+ * unlocked result, production Home therefore classifies the stub as locked.
+ */
+export function homePortfolioRead(
+  portfolio: PortfolioSummary,
+  result: {
+    isError: boolean;
+    data?: { totals: PortfolioTotals };
+  },
+): HomePortfolioRead {
+  if (portfolio.vaultId != null) return { state: 'error' };
+  if (result.isError) return { state: 'error' };
+  if (result.data !== undefined) {
+    return { state: 'success', provenance: { kind: 'plain' }, totals: result.data.totals };
+  }
+  return { state: 'loading' };
+}
+
+/**
+ * Safety-critical Home composition boundary.
+ *
+ * A vaulted read failure is a locked member, never a zero-valued visible one.
+ * A plain read failure cannot honestly be described as locked, so the whole
+ * roll-up becomes unavailable and exposes no number at all. Successful values
+ * are merged only through E6's structured composition seam.
+ */
+export function composeHomeRollup(
+  portfolios: readonly PortfolioSummary[],
+  reads: readonly HomePortfolioRead[],
+): Rollup {
   // Derived fresh each render rather than memoized: `useQueries` hands back a
   // new array identity every time anyway, so a memo here would never hit and
   // the arithmetic below is a handful of adds over a handful of portfolios.
+  const normalizedReads = portfolios.map((portfolio, index): HomePortfolioRead => {
+    const read = reads[index] ?? { state: 'loading' };
+    if (read.state !== 'success') return read;
+    if (portfolio.vaultId == null) {
+      return read.provenance.kind === 'plain' ? read : { state: 'error' };
+    }
+    if (
+      read.provenance.kind !== 'vaulted-unlocked' ||
+      read.provenance.vaultId !== portfolio.vaultId ||
+      read.provenance.snapshotId.length === 0
+    ) {
+      return { state: 'error' };
+    }
+    try {
+      return read.provenance.isCurrent() ? read : { state: 'error' };
+    } catch {
+      return { state: 'error' };
+    }
+  });
   const rows = portfolios.map((portfolio, index) => ({
     portfolio,
-    totals: results[index]?.data?.totals ?? null,
+    totals: normalizedReads[index]?.state === 'success' ? normalizedReads[index].totals : null,
   }));
-  const loading = results.some((result) => result.isLoading);
+  const loading = portfolios.some(
+    (_, index) =>
+      normalizedReads[index]?.state !== 'success' && normalizedReads[index]?.state !== 'error',
+  );
+  if (loading) {
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading: true,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: 0 },
+    };
+  }
+  const unavailablePortfolioCount = portfolios.filter(
+    (portfolio, index) => portfolio.vaultId == null && normalizedReads[index]?.state === 'error',
+  ).length;
+  if (unavailablePortfolioCount > 0) {
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount },
+    };
+  }
 
-  const totalValue = sum(rows, (row) => row.totals?.totalValueEur);
-  const invested = sum(rows, (row) => row.totals?.investedEur);
-  const cash = sum(rows, (row) => row.totals?.cashEur);
-  const dayChange = sum(rows, (row) => row.totals?.dayChangeEur);
-  const previous = totalValue - dayChange;
+  const authoritativeRoster = portfolios.map((portfolio) =>
+    portfolio.vaultId == null
+      ? { portfolioId: portfolio.id, source: 'plain' as const, vaultId: null }
+      : { portfolioId: portfolio.id, source: 'vaulted' as const, vaultId: portfolio.vaultId },
+  );
+  const members = portfolios.map((portfolio, index) => {
+    const read = normalizedReads[index];
+    if (read?.state === 'success') {
+      return {
+        state: 'visible' as const,
+        portfolioId: portfolio.id,
+        source: portfolio.vaultId == null ? ('plain' as const) : ('vaulted' as const),
+        vaultId: portfolio.vaultId ?? null,
+        value: additiveFigures(read.totals),
+      };
+    }
+    // Loading rows are not rendered because `loading` keeps the widget on its
+    // skeleton. A settled failure reaches this branch only for a vaulted stub.
+    return {
+      state: 'locked' as const,
+      portfolioId: portfolio.id,
+      vaultId: requireVaultId(portfolio),
+    };
+  });
+  // A qualifier needs something to qualify. When EVERY member is locked there is
+  // no visible value to add, so the composed figures would come back as 0 — not
+  // because the money is zero, but because none of it could be read. Rendering
+  // "0,00 € + 1 locked portfolio" states a balance the client has no basis for,
+  // which is the silent-zero failure the qualifier exists to prevent. A mixed
+  // scope still composes normally: there, the qualifier genuinely qualifies a
+  // real subtotal.
+  if (members.length > 0 && members.every((member) => member.state === 'locked')) {
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: members.length },
+    };
+  }
+
+  const composed = composePortfolioFigures({ authoritativeRoster, members }, HOME_FIGURE_KEYS);
+  const previous = composed.totalValueEur.valueEur - composed.dayChangeEur.valueEur;
 
   return {
+    status: 'ready',
     rows,
-    totalValue,
-    invested,
-    cash,
-    dayChange,
-    dayChangePct: previous > 0 ? (dayChange / previous) * 100 : null,
+    totalValue: composed.totalValueEur,
+    invested: composed.investedEur,
+    cash: composed.cashEur,
+    dayChange: composed.dayChangeEur,
+    dayChangePct: {
+      valuePct: previous > 0 ? (composed.dayChangeEur.valueEur / previous) * 100 : null,
+      coverage: composed.dayChangeEur.coverage,
+    },
     loading,
   };
 }
 
-function sum(rows: readonly PortfolioRow[], pick: (row: PortfolioRow) => number | undefined) {
-  return rows.reduce((total, row) => total + (pick(row) ?? 0), 0);
+function additiveFigures(
+  totals: PortfolioTotals,
+): Pick<AdditivePortfolioFigures, (typeof HOME_FIGURE_KEYS)[number]> {
+  return {
+    totalValueEur: totals.totalValueEur,
+    marketValueEur: totals.marketValueEur,
+    investedEur: totals.investedEur,
+    unrealizedPnlEur: totals.unrealizedPnlEur,
+    dayChangeEur: totals.dayChangeEur,
+    cashEur: totals.cashEur,
+  };
+}
+
+function requireVaultId(portfolio: PortfolioSummary): string {
+  if (portfolio.vaultId != null) return portfolio.vaultId;
+  throw new TypeError(
+    `Unavailable plain portfolio ${portfolio.id} cannot be classified as locked.`,
+  );
 }
 
 /** How a stored scope actually resolved — what the header tag has to state. */
@@ -165,6 +386,30 @@ export function useResolvedScope(
   scopeIds?: readonly string[],
 ): ResolvedScope {
   return useMemo(() => resolveScope(portfolios, scope, scopeIds), [portfolios, scope, scopeIds]);
+}
+
+/**
+ * The portfolios a widget instance is allowed to see, applied BEFORE
+ * {@link resolveWidgetScope} so a vaulted portfolio can never reach a widget
+ * that has no way to account for it (§14, PARANOID-E6 #1416).
+ *
+ * The server cannot read a sealed vault. A widget that simply drops those
+ * members would still render its total with full confidence, and a contribution
+ * that is missing reads to a user as zero — a real balance. So the rule is
+ * inverted from the usual default: a widget sees vaulted portfolios only by
+ * declaring `handlesVaultedPortfolios`, which is a claim that it either
+ * qualifies the total through the composition boundary or fails closed to
+ * "unavailable". Everything else keeps them out of scope.
+ *
+ * Kept here rather than inline in `HomePage` so the rule has exactly one
+ * definition and can be asserted directly.
+ */
+export function portfoliosVisibleToWidget(
+  portfolios: readonly PortfolioSummary[],
+  definition: { handlesVaultedPortfolios?: boolean },
+): readonly PortfolioSummary[] {
+  if (definition.handlesVaultedPortfolios === true) return portfolios;
+  return portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
 }
 
 /**
