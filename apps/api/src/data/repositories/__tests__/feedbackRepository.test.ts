@@ -45,7 +45,7 @@ describe('feedback repository ownership boundary', () => {
         email: 'feedback-unread-tombstone-owner@bt.test',
         username: 'feedbackunreadtombowner',
       });
-      const staff = await harness.seedUser({
+      const staff = await harness.seedAdmin({
         email: 'feedback-unread-tombstone-staff@bt.test',
         username: 'feedbackunreadtombstaff',
       });
@@ -67,9 +67,10 @@ describe('feedback repository ownership boundary', () => {
       await expect(
         repo.createMessageForAdmin(staff.id, tombstoned!.id, 'Unread tombstoned reply.'),
       ).resolves.not.toBeNull();
-      await expect(
-        repo.deleteMine(owner.id, tombstoned!.id, new Date('2026-08-20T12:00:00.000Z')),
-      ).resolves.not.toBeNull();
+      const deletedAt = new Date('2026-08-20T12:00:00.000Z');
+      await expect(repo.deleteMine(owner.id, tombstoned!.id, deletedAt)).resolves.toMatchObject({
+        deletedByUserAt: deletedAt,
+      });
 
       const rows = await repo.listMine(owner.id);
 
@@ -133,7 +134,7 @@ describe('feedback repository ownership boundary', () => {
         email: 'feedback-order-owner@bt.test',
         username: 'feedbackorderowner',
       });
-      const staff = await harness.seedUser({
+      const staff = await harness.seedAdmin({
         email: 'feedback-order-staff@bt.test',
         username: 'feedbackorderstaff',
       });
@@ -209,7 +210,7 @@ describe('feedback repository ownership boundary', () => {
         email: 'feedback-staff-delete-submitter@bt.test',
         username: 'feedbackstaffdeletesub',
       });
-      const staff = await harness.seedUser({
+      const staff = await harness.seedAdmin({
         email: 'feedback-staff-delete-admin@bt.test',
         username: 'feedbackstaffdeleteadm',
       });
