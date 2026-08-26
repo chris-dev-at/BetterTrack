@@ -24,14 +24,57 @@ export interface ParsedCsv {
 
 const DELIMITERS = [';', ',', '\t'] as const;
 
+/**
+ * FIELD START — the rule that decides what a `"` means.
+ *
+ * RFC-4180: a `"` opens a quoted field ONLY at the start of that field, i.e.
+ * immediately after a delimiter or at the start of the record, with nothing but
+ * whitespace padding in between. Anywhere else it is an ordinary character.
+ * Both scanners below (and `table.splitQuotedRecords`) track a `fieldStart`
+ * flag for exactly this, which is why {@link isFieldPadding} is exported: one
+ * definition of what keeps that flag alive, shared across all three (§M4).
+ *
+ * The distinction is not pedantry, it is the difference between reading a file
+ * and destroying it. `27" Monitor` is an inch mark, not an opening quote. When
+ * every `"` was treated as a toggle, two such cells within a 32-line window
+ * merged their two physical rows into ONE record whose cell count still matched
+ * the header — so the width check stayed silent, one booking's amount was
+ * replaced by the next booking's, and the row in between vanished with
+ * `issues: []`. This counter and {@link splitCells} were wrong in exactly the
+ * same way, which is why they agreed and nothing ever looked suspicious.
+ *
+ * Only spaces and tabs count as padding, so `, "ACME, Inc."` still reads as a
+ * quoted field while `27" Monitor` does not. A tab that IS the delimiter is
+ * handled before this is consulted.
+ */
+export function isFieldPadding(ch: string): boolean {
+  return ch === ' ' || ch === '\t';
+}
+
 /** Count occurrences of `delim` in `line`, ignoring quoted stretches. */
 export function countUnquoted(line: string, delim: string): number {
   let count = 0;
   let inQuotes = false;
+  // Nothing but padding has been seen since the current field began.
+  let fieldStart = true;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-    if (ch === '"') inQuotes = !inQuotes;
-    else if (ch === delim && !inQuotes) count++;
+    if (inQuotes) {
+      if (ch !== '"') continue;
+      // `""` is an escaped quote: skip both and stay inside the field.
+      if (line[i + 1] === '"') i++;
+      else inQuotes = false;
+      continue;
+    }
+    if (ch === '"' && fieldStart) {
+      inQuotes = true;
+      fieldStart = false;
+    } else if (ch === delim) {
+      count++;
+      fieldStart = true;
+    } else if (!isFieldPadding(ch!)) {
+      fieldStart = false;
+    }
   }
   return count;
 }
@@ -50,11 +93,21 @@ export function sniffDelimiter(headerLine: string): string {
   return best;
 }
 
-/** Split one record line into cells: RFC-4180 quotes with `""` escapes, trimmed. */
+/**
+ * Split one record into cells: RFC-4180 quotes with `""` escapes, trimmed.
+ *
+ * A `"` is an opening quote only at FIELD START (see {@link isFieldPadding});
+ * anywhere else it is a literal character, so `27" Monitor` stays one cell
+ * reading `27" Monitor` instead of opening a quoted region that swallows the
+ * following delimiters. A `"` after a field's closing quote is likewise literal
+ * rather than re-opening — the field ended, and re-opening is how a malformed
+ * cell used to eat its neighbours.
+ */
 export function splitCells(line: string, delimiter: string): string[] {
   const cells: string[] = [];
   let current = '';
   let inQuotes = false;
+  let fieldStart = true;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (inQuotes) {
@@ -68,13 +121,19 @@ export function splitCells(line: string, delimiter: string): string[] {
       } else {
         current += ch;
       }
-    } else if (ch === '"') {
+    } else if (ch === '"' && fieldStart) {
       inQuotes = true;
+      // Padding before the opening quote is not part of the value; the trim on
+      // push would drop it anyway, and dropping it here keeps `current` honest.
+      current = '';
+      fieldStart = false;
     } else if (ch === delimiter) {
       cells.push(current.trim());
       current = '';
+      fieldStart = true;
     } else {
       current += ch;
+      if (!isFieldPadding(ch!)) fieldStart = false;
     }
   }
   cells.push(current.trim());

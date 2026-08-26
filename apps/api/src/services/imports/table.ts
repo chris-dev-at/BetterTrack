@@ -12,7 +12,14 @@
  * number/date parsing come from `./csv` and are reused, not reimplemented.
  */
 
-import { countUnquoted, parseDay, parseDecimal, splitCells, stripDecimalDecoration } from './csv';
+import {
+  countUnquoted,
+  isFieldPadding,
+  parseDay,
+  parseDecimal,
+  splitCells,
+  stripDecimalDecoration,
+} from './csv';
 
 // --- Hard input caps ---------------------------------------------------------
 
@@ -66,8 +73,16 @@ export type TableIssueKind =
   | 'no-header-row'
   /** A header-like row exists but its column count differs from the data rows'. */
   | 'header-width-mismatch'
-  /** A DATA row whose column count differs from the header's — its cells are misaligned. */
+  /** A DATA row whose cells are genuinely MISALIGNED against the header. */
   | 'row-width-mismatch'
+  /**
+   * The quiet sibling of `row-width-mismatch`: a data row shorter than the
+   * header that only omits TRAILING columns the file itself leaves empty
+   * elsewhere, with every value it does carry still sitting under a label of the
+   * right shape. That is ordinary raggedness, not a money bug, and firing the
+   * loud kind on it trains operators to ignore the loud kind.
+   */
+  | 'trailing-cells-omitted'
   /** A row that totals the ones above it (`Summe;;450,00`) — NOT a booking. */
   | 'summary-row'
   /** Slash dates whose day/month order the data cannot settle (all parts ≤ 12). */
@@ -79,7 +94,16 @@ export type TableIssueKind =
   /** Quote characters do not pair up — cell boundaries may be wrong. */
   | 'unbalanced-quote'
   /** A cell or line far longer than any real field; it was not analyzed. */
-  | 'oversized-cell';
+  | 'oversized-cell'
+  /**
+   * A cell in an unreadable GROUPED notation (`1,250` under `en`, `1.000` under
+   * either) — the parsers refuse it rather than book a value ~1000× off, so the
+   * cell comes back null. Without this kind that refusal was invisible: a
+   * `Quantity` column of `1,250 / 2,750 / 500` reported 0.95 confidence,
+   * `needsReview: false` and `issues: []` while two of its three share counts
+   * silently parsed to null.
+   */
+  | 'ambiguous-grouped-number';
 
 export interface TableIssue {
   kind: TableIssueKind;
@@ -87,8 +111,50 @@ export interface TableIssue {
   line: number;
   /** Index into {@link SniffedTable.rows} when the issue points at one; -1 otherwise. */
   row: number;
+  /**
+   * Index into {@link SniffedTable.headers} (and into each row's cells) when the
+   * issue points at ONE column; -1 otherwise. The column mapper reads this to
+   * force `needsReview` on the affected column.
+   */
+  column: number;
   /** Operator-facing explanation — safe to surface in the import wizard. */
   message: string;
+}
+
+/**
+ * The row-level kinds, i.e. the ones a downstream row classifier must be able to
+ * join to an individual row. Deliberately EXCLUDES `trailing-cells-omitted`:
+ * the whole point of splitting that kind out of `row-width-mismatch` is that it
+ * does not force a human to look at the row, and feeding it into the classifier
+ * (which forces review on any non-empty flag list) would undo the split.
+ */
+const ROW_FLAG_KINDS: ReadonlySet<TableIssueKind> = new Set<TableIssueKind>([
+  'summary-row',
+  'row-width-mismatch',
+  'ambiguous-grouped-number',
+  'oversized-cell',
+]);
+
+/**
+ * Everything the sniff noticed about ONE row, in a shape a row classifier can
+ * join on. The parallel row classifier takes `sniffFlags?: readonly string[]`
+ * per row and forces review when it is non-empty, so {@link RowFlag.flags} is
+ * exactly that array and {@link RowFlag.row} is the index into
+ * {@link SniffedTable.rows} it belongs to.
+ *
+ * Unlike {@link SniffedTable.issues} this list is NEVER capped. The cap on
+ * issues exists so a wholly ragged file cannot drown an operator in thousands
+ * of messages; applying it here would leave rows 26+ of that same file looking
+ * clean to the machine, which is precisely the "confidently wrong" outcome this
+ * module exists to prevent.
+ */
+export interface RowFlag {
+  /** Index into {@link SniffedTable.rows}. */
+  row: number;
+  /** Physical 1-based line the row came from — the same audit trail as `lineNumbers`. */
+  line: number;
+  /** The row-level issue kinds affecting this row, deduped and sorted. */
+  flags: TableIssueKind[];
 }
 
 /**
@@ -118,6 +184,21 @@ export interface SniffedTable {
   defaultCurrency: string;
   /** Everything the sniff could not resolve silently; empty on a clean file. */
   issues: TableIssue[];
+  /**
+   * Per-row findings for a downstream row classifier — one entry per AFFECTED
+   * row, complete (never capped), sorted by row. See {@link RowFlag}. Empty on
+   * a clean file. Join it with {@link sniffFlagsByRow}.
+   */
+  rowFlags: RowFlag[];
+}
+
+/**
+ * Index {@link SniffedTable.rowFlags} by row so a caller iterating rows can look
+ * each one up in O(1) instead of scanning. Rows with nothing to report are
+ * absent, so `map.get(i) ?? []` is the whole join.
+ */
+export function sniffFlagsByRow(table: SniffedTable): Map<number, readonly TableIssueKind[]> {
+  return new Map(table.rowFlags.map((f) => [f.row, f.flags]));
 }
 
 /** Thrown when no sniff front-end can claim the buffer (e.g. an XLSX today). */
@@ -164,10 +245,99 @@ const REPLACEMENT_CHARACTER = '�';
 interface DecodedText {
   text: string;
   encoding: SniffedTable['encoding'];
-  /** True when UTF-8 did not decode and a legacy single-byte encoding was assumed. */
-  assumedLegacy: boolean;
+  /** Bytes that were not valid UTF-8 and were therefore read as Windows-1252. */
+  legacyBytes: number;
+  /** Valid MULTI-BYTE UTF-8 characters — the counter-evidence to those bytes. */
+  utf8NonAscii: number;
   /** True when the decoded text still carries U+FFFD — bytes were genuinely lost. */
   lostCharacters: boolean;
+}
+
+/**
+ * Windows-1252 for one byte, built once from the platform decoder rather than
+ * from a hand-typed table (0x80–0x9F is exactly the range a hand-typed table
+ * gets wrong, and it is the range this repair exists for: 0x92 is `’`).
+ */
+const CP1252_BY_BYTE: readonly string[] = (() => {
+  const decoder = new TextDecoder('windows-1252');
+  const table: string[] = [];
+  for (let byte = 0; byte < 256; byte++) table.push(decoder.decode(Uint8Array.of(byte)));
+  return table;
+})();
+
+/**
+ * Length of the valid UTF-8 sequence starting at `i`, or 0 when the byte cannot
+ * start one. RFC 3629 exactly: overlong forms, UTF-16 surrogates (ED A0–BF) and
+ * anything above U+10FFFF (F5–FF) are NOT valid and must be reported as 0, or
+ * the repair below would hand `TextDecoder` bytes it rejects.
+ */
+function utf8SequenceLength(bytes: Uint8Array, i: number): number {
+  const b0 = bytes[i]!;
+  if (b0 < 0x80) return 1;
+  const cont = (offset: number, lo: number, hi: number): boolean => {
+    const b = bytes[i + offset];
+    return b !== undefined && b >= lo && b <= hi;
+  };
+  if (b0 >= 0xc2 && b0 <= 0xdf) return cont(1, 0x80, 0xbf) ? 2 : 0;
+  if (b0 === 0xe0) return cont(1, 0xa0, 0xbf) && cont(2, 0x80, 0xbf) ? 3 : 0;
+  if (b0 >= 0xe1 && b0 <= 0xec) return cont(1, 0x80, 0xbf) && cont(2, 0x80, 0xbf) ? 3 : 0;
+  if (b0 === 0xed) return cont(1, 0x80, 0x9f) && cont(2, 0x80, 0xbf) ? 3 : 0;
+  if (b0 === 0xee || b0 === 0xef) return cont(1, 0x80, 0xbf) && cont(2, 0x80, 0xbf) ? 3 : 0;
+  if (b0 === 0xf0) {
+    return cont(1, 0x90, 0xbf) && cont(2, 0x80, 0xbf) && cont(3, 0x80, 0xbf) ? 4 : 0;
+  }
+  if (b0 >= 0xf1 && b0 <= 0xf3) {
+    return cont(1, 0x80, 0xbf) && cont(2, 0x80, 0xbf) && cont(3, 0x80, 0xbf) ? 4 : 0;
+  }
+  if (b0 === 0xf4) {
+    return cont(1, 0x80, 0x8f) && cont(2, 0x80, 0xbf) && cont(3, 0x80, 0xbf) ? 4 : 0;
+  }
+  return 0;
+}
+
+/**
+ * Repair a buffer that is not wholly valid UTF-8, PER BYTE: every valid UTF-8
+ * run is decoded as UTF-8 and only the bytes that cannot start or continue a
+ * sequence are read as Windows-1252.
+ *
+ * The whole-buffer re-read this replaces punished a file for one bad byte. A
+ * predominantly-UTF-8 German export carrying a single legacy `0x92` smart quote
+ * in one memo had EVERY multi-byte character re-read as cp1252: `Stück` became
+ * `StÃ¼ck`, `Gebühr` became `GebÃ¼hr`, both matched no alias, both landed in
+ * `unmapped`, and quantity and fee dropped out of `fieldWinners` entirely —
+ * the exact loss the fatal-decode fix existed to prevent, in the opposite
+ * direction. Byte-level repair keeps every valid character AND recovers the
+ * stray one (`0x92` → `’`), so neither direction loses data.
+ */
+function repairMixedEncoding(buffer: Uint8Array): {
+  text: string;
+  legacyBytes: number;
+  utf8NonAscii: number;
+} {
+  // Non-fatal on purpose: every run handed to it is valid by the scanner above,
+  // so the output is identical — but if the scanner were ever wrong, a run
+  // degrades to U+FFFD (which `lostCharacters` reports) instead of throwing.
+  const decoder = new TextDecoder('utf-8');
+  const parts: string[] = [];
+  let runStart = 0;
+  let legacyBytes = 0;
+  let utf8NonAscii = 0;
+  let i = 0;
+  while (i < buffer.length) {
+    const length = utf8SequenceLength(buffer, i);
+    if (length === 0) {
+      if (i > runStart) parts.push(decoder.decode(buffer.subarray(runStart, i)));
+      parts.push(CP1252_BY_BYTE[buffer[i]!]!);
+      legacyBytes += 1;
+      i += 1;
+      runStart = i;
+      continue;
+    }
+    if (length > 1) utf8NonAscii += 1;
+    i += length;
+  }
+  if (i > runStart) parts.push(decoder.decode(buffer.subarray(runStart, i)));
+  return { text: parts.join(''), legacyBytes, utf8NonAscii };
 }
 
 /**
@@ -175,37 +345,43 @@ interface DecodedText {
  * it).
  *
  * A BOM is a DECLARATION and is trusted. Without one, UTF-8 is tried in FATAL
- * mode: the previous non-fatal decode turned every non-UTF-8 byte into U+FFFD
- * and reported the file as clean `utf-8`, so an ISO-8859-1 export — routine for
- * German bank CSVs — arrived with headers `Geb?hr` and `St?ck`, which matched no
- * alias, landed in `unmapped`, and dropped the fee and quantity columns
- * entirely while `issues` stayed empty. On a fatal decode failure the buffer is
- * re-read as Windows-1252 (the practical superset of ISO-8859-1: identical for
- * the umlauts, and it fills in 0x80–0x9F), which recovers those headers exactly.
+ * mode: a non-fatal decode turns every non-UTF-8 byte into U+FFFD and reports
+ * the file as clean `utf-8`, so an ISO-8859-1 export — routine for German bank
+ * CSVs — arrived with headers `Geb?hr` and `St?ck`, which matched no alias,
+ * landed in `unmapped`, and dropped the fee and quantity columns entirely while
+ * `issues` stayed empty.
  *
- * That re-read is an INFERENCE — the byte 0xE4 is `ä` in Windows-1252 and
- * something else in Windows-1250 — so the caller always gets an
- * `encoding-fallback` issue with it. Correct parsing plus a loud flag beats
- * both silent mojibake and a blanket refusal.
+ * When the fatal decode fails, {@link repairMixedEncoding} reads only the
+ * offending BYTES as Windows-1252 (the practical superset of ISO-8859-1:
+ * identical for the umlauts, and it fills in 0x80–0x9F). The two candidate
+ * readings are then SCORED against each other to name the file's encoding:
+ * legacy bytes versus valid multi-byte UTF-8 characters. A genuine cp1252
+ * export has many of the former and none of the latter and is reported as
+ * `windows-1252`; a UTF-8 file with a stray byte is the mirror and stays
+ * `utf-8`. Either way the caller gets an `encoding-fallback` issue, because the
+ * cp1252 reading is an INFERENCE — the byte 0xE4 is `ä` in Windows-1252 and
+ * something else in Windows-1250.
  */
 function decodeText(buffer: Uint8Array): DecodedText {
   const startsWith = (bom: number[]): boolean => bom.every((b, i) => buffer[i] === b);
   const finish = (
     text: string,
     encoding: SniffedTable['encoding'],
-    assumedLegacy: boolean,
+    legacyBytes: number,
+    utf8NonAscii: number,
   ): DecodedText => ({
     text,
     encoding,
-    assumedLegacy,
+    legacyBytes,
+    utf8NonAscii,
     lostCharacters: text.includes(REPLACEMENT_CHARACTER),
   });
 
   if (startsWith(UTF8_BOM)) {
-    return finish(new TextDecoder('utf-8').decode(buffer), 'utf-8', false);
+    return finish(new TextDecoder('utf-8').decode(buffer), 'utf-8', 0, 0);
   }
   if (startsWith(UTF16LE_BOM)) {
-    return finish(new TextDecoder('utf-16le').decode(buffer), 'utf-16le', false);
+    return finish(new TextDecoder('utf-16le').decode(buffer), 'utf-16le', 0, 0);
   }
   if (buffer[0] === 0xfe && buffer[1] === 0xff) {
     throw new UnsupportedFileFormatError(
@@ -214,23 +390,42 @@ function decodeText(buffer: Uint8Array): DecodedText {
     );
   }
   try {
-    return finish(new TextDecoder('utf-8', { fatal: true }).decode(buffer), 'utf-8', false);
+    // Valid-but-unusual UTF-8 (CJK, emoji, combining marks) takes this path and
+    // is never second-guessed.
+    return finish(new TextDecoder('utf-8', { fatal: true }).decode(buffer), 'utf-8', 0, 0);
   } catch {
-    return finish(new TextDecoder('windows-1252').decode(buffer), 'windows-1252', true);
+    const { text, legacyBytes, utf8NonAscii } = repairMixedEncoding(buffer);
+    // Ties go to UTF-8: the fallback is the inference, so it has to WIN the
+    // comparison to be allowed to name the file.
+    const encoding = legacyBytes > utf8NonAscii ? 'windows-1252' : 'utf-8';
+    return finish(text, encoding, legacyBytes, utf8NonAscii);
   }
 }
 
 /** The issue a decode owes the caller, or null when the bytes spoke for themselves. */
 function encodingIssue(decoded: DecodedText): TableIssue | null {
-  if (decoded.assumedLegacy) {
+  if (decoded.legacyBytes > 0 && decoded.encoding === 'windows-1252') {
     return {
       kind: 'encoding-fallback',
       line: -1,
       row: -1,
+      column: -1,
       message:
         'This file is not valid UTF-8, so it was read as Windows-1252 (the usual encoding for ' +
         'German bank exports). Check that accented characters look right — if they do not, ' +
         're-export the file as UTF-8.',
+    };
+  }
+  if (decoded.legacyBytes > 0) {
+    return {
+      kind: 'encoding-fallback',
+      line: -1,
+      row: -1,
+      column: -1,
+      message:
+        `This file is UTF-8 apart from ${decoded.legacyBytes} byte(s), which were read as ` +
+        'Windows-1252 instead (typically a smart quote or a dash pasted in from Word). Every ' +
+        'other character was kept as written — check those spots before importing.',
     };
   }
   if (decoded.lostCharacters) {
@@ -238,6 +433,7 @@ function encodingIssue(decoded: DecodedText): TableIssue | null {
       kind: 'encoding-fallback',
       line: -1,
       row: -1,
+      column: -1,
       message:
         `This file contains characters that could not be decoded (shown as ` +
         `"${REPLACEMENT_CHARACTER}"). Column labels and text carrying them may not be ` +
@@ -424,16 +620,39 @@ export const GERMAN_DAY_SAMPLE = /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[T\s].*)?$/;
  * failure presented as a green light.
  */
 export const GERMAN_SHORT_DAY_SAMPLE = /^(\d{1,2})\.(\d{1,2})\.(\d{2})(?:[T\s].*)?$/;
+/**
+ * `01/15/24` — the two-digit-year slash day, in either component order like its
+ * four-digit sibling {@link SLASH_DAY_SAMPLE}. Without it a file written wholly
+ * in this notation matched NO date sample at all: `detectDateLocale` saw zero
+ * evidence of anything, fell through to its `iso` default, reported
+ * `issues: []`, and then every single date in the file parsed to null.
+ */
+export const SLASH_SHORT_DAY_SAMPLE = /^(\d{1,2})\/(\d{1,2})\/(\d{2})(?:[T\s].*)?$/;
 
 /**
  * Two-digit year → full year. The century is NOT in the file, so this is an
  * inference, not a reading: 00–68 → 2000s, 69–99 → 1900s (the POSIX `%y`
- * pivot). Every file that needs it carries a `two-digit-year` issue, so the
- * guess is always visible rather than baked silently into a booking date.
+ * pivot) — EXCEPT that the result is never allowed to land in the future.
+ *
+ * The bare POSIX pivot maps 26–68 to 2026–2068, so `15.01.30` booked a
+ * transaction four years from now. A portfolio importer cannot survive that: a
+ * future-dated booking sits outside every holdings window, drags the time
+ * series to a date with no prices, and cannot be reconciled against a statement
+ * that has already been issued. Nobody imports a trade that has not happened
+ * yet, so a century that would produce one is the wrong century. The cost is
+ * that 1968-and-earlier is unrepresentable in two digits, which no broker
+ * export needs.
+ *
+ * (Deliberate edge: a settlement date in the first days of NEXT calendar year,
+ * written two-digit, is pushed back a century. It is compared at YEAR
+ * granularity so a date later in the CURRENT year still reads normally, and the
+ * file's `two-digit-year` issue tells the operator the century was chosen for
+ * them either way.)
  */
 function expandTwoDigitYear(yy: string): number {
   const n = Number(yy);
-  return n <= 68 ? 2000 + n : 1900 + n;
+  const pivoted = n <= 68 ? 2000 + n : 1900 + n;
+  return pivoted > new Date().getUTCFullYear() ? pivoted - 100 : pivoted;
 }
 
 /** Parse `DD.MM.YY` at 12:00 UTC, or null when it is not that shape / not a real day. */
@@ -466,6 +685,12 @@ function isRealDay(year: string, month: string, day: string): boolean {
  * a day, so it proves the order; when nothing in the file ever exceeds 12 the
  * order is unknowable and the caller is told (`ambiguous`) instead of the sniff
  * silently defaulting to one hemisphere and shifting bookings by months.
+ *
+ * `twoDigitYear` is a property of the FILE, not of the winning notation, and is
+ * returned from every branch. Pinning it to the German branch alone was a
+ * silent-loss bug: a file mixing `2024-01-15` with `17.01.24` sniffed `iso`
+ * with `issues: []`, and the short date — which the ISO reading cannot
+ * parse — came back null with nothing anywhere saying so.
  */
 function detectDateLocale(cells: string[]): DateLocaleEvidence {
   let iso = 0;
@@ -492,10 +717,15 @@ function detectDateLocale(cells: string[]): DateLocaleEvidence {
       twoDigitYear += 1;
       continue;
     }
-    const match = SLASH_DAY_SAMPLE.exec(cell);
+    const long = SLASH_DAY_SAMPLE.exec(cell);
+    const short = long ? null : SLASH_SHORT_DAY_SAMPLE.exec(cell);
+    const match = long ?? short;
     if (!match) continue;
     slash += 1;
-    const [, first, second, year] = match as unknown as [string, string, string, string];
+    if (short) twoDigitYear += 1;
+    const [, first, second, rawYear] = match as unknown as [string, string, string, string];
+    // The order proof needs a real four-digit year to check the day against.
+    const year = short ? String(expandTwoDigitYear(rawYear)) : rawYear;
     // A component above 12 is a day — but only counts as proof when reading it
     // that way yields a real calendar date (a broken cell must not flip a file).
     if (Number(first) > 12 && Number(second) <= 12 && isRealDay(year, second, first)) {
@@ -505,19 +735,19 @@ function detectDateLocale(cells: string[]): DateLocaleEvidence {
     }
   }
   const short = twoDigitYear > 0;
-  if (iso >= de && iso >= slash) return { locale: 'iso', ambiguous: false, twoDigitYear: false };
+  if (iso >= de && iso >= slash) return { locale: 'iso', ambiguous: false, twoDigitYear: short };
   if (de > slash) return { locale: 'de', ambiguous: false, twoDigitYear: short };
   if (monthFirstProof > 0 && dayFirstProof === 0)
-    return { locale: 'us', ambiguous: false, twoDigitYear: false };
+    return { locale: 'us', ambiguous: false, twoDigitYear: short };
   if (dayFirstProof > 0 && monthFirstProof === 0)
-    return { locale: 'eu-slash', ambiguous: false, twoDigitYear: false };
+    return { locale: 'eu-slash', ambiguous: false, twoDigitYear: short };
   // Either no component ever exceeded 12, or the file contradicts itself. Both
   // are unresolvable here; day-first is the reading of BetterTrack's home
   // market (§14) and the ambiguity flag keeps it out of unattended booking.
   return {
     locale: monthFirstProof > dayFirstProof ? 'us' : 'eu-slash',
     ambiguous: true,
-    twoDigitYear: false,
+    twoDigitYear: short,
   };
 }
 
@@ -537,7 +767,8 @@ export function isCalendarDaySample(cell: string): boolean {
     // Two-digit-year German days are dates too — this is the exclusion that
     // stops `15.01.24` from voting ENGLISH through its `5.01` substring.
     GERMAN_SHORT_DAY_SAMPLE.test(trimmed) ||
-    SLASH_DAY_SAMPLE.test(trimmed)
+    SLASH_DAY_SAMPLE.test(trimmed) ||
+    SLASH_SHORT_DAY_SAMPLE.test(trimmed)
   );
 }
 
@@ -602,6 +833,54 @@ function detectNumberLocale(cells: string[], dateLocale: DateLocale): NumberLoca
   if (de > en) return 'de';
   if (en > de) return 'en';
   return dateLocale === 'de' ? 'de' : 'en';
+}
+
+/** `1,250` / `1.000` / `1.234.567` — grouped digits with NO decimal separator. */
+const GROUPED_INTEGER = /^[+-]?\d{1,3}([.,]\d{3})+$/;
+/** `1,234.56` / `1.234,56` — grouped digits WITH the other separator as decimal. */
+const GROUPED_DECIMAL = /^[+-]?\d{1,3}([.,]\d{3})+[.,]\d+$/;
+
+/**
+ * Is this cell a GROUPED number that the file's notation cannot read?
+ *
+ * `parseLocalizedDecimal` refuses these on purpose — `1,250` is 1250 in English
+ * and 1.25 in German, and guessing books a quantity ~1000× off — but that
+ * refusal used to be completely invisible. A genuine English CSV whose Quantity
+ * column read `1,250 / 2,750 / 500` came back with the column mapped at 0.95
+ * confidence, `needsReview: false`, `unmapped: []` and `issues: []` while two of
+ * its three share counts parsed to null. A caller gating on
+ * `issues.length === 0` got a green light on unreadable share counts.
+ *
+ * Only cells that are unmistakably grouped numbers qualify, so an ordinary
+ * description carrying digits is never flagged, and a calendar day (whose dots
+ * are separators, not grouping) is excluded outright.
+ */
+export function isAmbiguousGroupedNumber(cell: string, locale: NumberLocale): boolean {
+  if (isOversizedCell(cell)) return false;
+  if (isCalendarDaySample(cell)) return false;
+  const bare = stripDecimalDecoration(cell);
+  if (bare === null) return false;
+  if (!GROUPED_INTEGER.test(bare) && !GROUPED_DECIMAL.test(bare)) return false;
+  return parseLocalizedDecimal(cell, locale) === null;
+}
+
+/**
+ * The coarse VALUE SHAPE of a cell, used to tell an ordinary short row (whose
+ * values still sit under labels of the right kind) from a genuinely misaligned
+ * one (whose amount slid into the quantity column). Deliberately locale-blind:
+ * both notations are accepted, because the question here is "is this a number
+ * at all", not "what number is it".
+ */
+type CellShape = 'empty' | 'day' | 'number' | 'text';
+
+function cellShape(cell: string): CellShape {
+  const trimmed = cell.trim();
+  if (trimmed === '') return 'empty';
+  if (isOversizedCell(trimmed)) return 'text';
+  const dateish = trimTrailingPunctuation(trimmed);
+  if (parseDay(dateish) !== null || parseGermanShortDay(dateish) !== null) return 'day';
+  if (parseDecimal(trimmed) !== null || parseEnglishDecimal(trimmed) !== null) return 'number';
+  return 'text';
 }
 
 /**
@@ -753,12 +1032,34 @@ function detectSummaryRows(rows: string[][], lineNumbers: number[]): TableIssue[
       kind: 'summary-row',
       line: lineNumbers[index] ?? -1,
       row: index,
+      column: -1,
       message:
         `Line ${lineNumbers[index] ?? '?'} reads as a "${word}" total of the rows around it ` +
         `instead of booking a transaction — importing it would double-count that amount.`,
     });
   });
   return issues;
+}
+
+/**
+ * Trim a per-row issue list to {@link MAX_ROW_ISSUES}, replacing the tail with
+ * one aggregate line. The MACHINE-facing channel ({@link SniffedTable.rowFlags})
+ * stays complete; only the operator-facing list is bounded, so a wholly ragged
+ * file cannot emit thousands of messages while rows past the cap still carry
+ * their flags.
+ */
+function capRowIssues(issues: TableIssue[], aggregate: (hidden: number) => string): TableIssue[] {
+  if (issues.length <= MAX_ROW_ISSUES) return issues;
+  const hidden = issues.length - MAX_ROW_ISSUES;
+  const kept = issues.slice(0, MAX_ROW_ISSUES);
+  kept.push({
+    kind: issues[0]!.kind,
+    line: -1,
+    row: -1,
+    column: -1,
+    message: aggregate(hidden),
+  });
+  return kept;
 }
 
 /** Non-empty cells of the data rows, capped — sampling, not a full scan contract. */
@@ -781,46 +1082,149 @@ interface RawRecord {
   raw: string;
 }
 
+/** Why a quote-aware read had to be abandoned — each says something DIFFERENT. */
+type RecordSplitFailure =
+  /** A field opened with `"` and the file ended before it closed. */
+  | 'unterminated-quote'
+  /** A quoted field is still open after {@link MAX_RECORD_LINES} physical lines. */
+  | 'record-too-long'
+  /** A field's closing `"` is followed by more text instead of a separator. */
+  | 'quote-not-at-field-end';
+
+interface RecordSplitResult {
+  /** The records, or null when the quoting could not be trusted. */
+  records: RawRecord[] | null;
+  /** Set exactly when `records` is null; `line` points at the culprit. */
+  failure: { reason: RecordSplitFailure; line: number } | null;
+}
+
 /**
  * Split the text into RECORDS, treating a newline inside an open quote as part
- * of the field rather than a record boundary. Returns null when the quoting
- * cannot be trusted, so the caller can fall back to plain physical lines.
+ * of the field rather than a record boundary.
  *
  * Splitting on newlines before any quote tracking is what broke IBKR-style
  * exports with embedded newlines in a description: a quoted two-line
  * description produced a TRUNCATED row (its amount gone) plus a phantom row
  * whose first cell was the tail of the description — with `issues: []`.
  *
- * Two failure modes make the quote-aware reading unusable, and both return
- * null rather than a worse table:
- *  - an unterminated quote at EOF (a stray inch-mark, `27" Monitor`), and
- *  - a record running past {@link MAX_RECORD_LINES}, which is the same stray
- *    quote when a second one later in the file happens to close it — without
- *    this bound one typo would merge thousands of lines into one record.
- * The physical-line reading is then exactly what this module did before, plus
- * an `unbalanced-quote` issue so the reduced confidence is visible.
+ * The scan is RFC-4180, not a quote counter. Counting quotes per line and
+ * flipping state on an odd count destroyed data outright: a stray inch-mark
+ * (`27" Monitor`) is an odd line, so TWO of them within {@link MAX_RECORD_LINES}
+ * merged their two physical rows into ONE record — which still had the header's
+ * cell count, so the row-width check never fired. The first booking took the
+ * second one's amount, the second booking disappeared, and the file reported
+ * `issues: []` at 0.95 confidence. An EVEN number of such lines silently halved
+ * the data every time. A `"` now opens a field only at FIELD START (the same
+ * rule `csv.splitCells` applies, so the two agree by construction), which makes
+ * an inch-mark an ordinary character and leaves the rows untouched.
+ *
+ * Three failure modes make the quote-aware reading unusable, and each returns
+ * its own reason rather than a worse table: an unterminated quote, a record
+ * past the line bound, and a closing quote with text after it (the malformed
+ * shape a stray FIELD-START quote produces). The caller then falls back to the
+ * physical-line reading with an `unbalanced-quote` issue whose message says
+ * which of the three actually happened — the single message this used to emit
+ * told an operator with a long legitimate description that "the quote
+ * characters in this file do not pair up", which was simply false.
+ *
+ * `delimiter` is null on the FIRST pass, where any of the three candidate
+ * separators counts as a field boundary. That pass exists because the delimiter
+ * is sniffed from records and records need the delimiter: sniffing a
+ * provisional delimiter from PHYSICAL lines instead reads a file whose quoted
+ * description spans ten lines as ten one-column rows and then picks a separator
+ * that appears nowhere. The candidate-set reading can only ever MERGE lines
+ * that the true delimiter would not, and a wrong merge changes the record's
+ * width, so it surfaces as `row-width-mismatch` rather than silently. Once the
+ * delimiter is known the caller runs this again WITH it, so the final record
+ * boundaries and `csv.splitCells` agree exactly.
  */
-function splitQuotedRecords(physicalLines: string[]): RawRecord[] | null {
+function splitQuotedRecords(physicalLines: string[], delimiter: string | null): RecordSplitResult {
+  const isBoundary = (ch: string): boolean =>
+    delimiter === null ? (DELIMITERS as readonly string[]).includes(ch) : ch === delimiter;
   const records: RawRecord[] = [];
+  const fail = (reason: RecordSplitFailure, line: number): RecordSplitResult => ({
+    records: null,
+    failure: { reason, line },
+  });
   let pending: string[] = [];
   let startLine = 1;
   let inQuotes = false;
+  // Nothing but padding has been seen since the current field began.
+  let fieldStart = true;
+  // Where the currently OPEN quoted field started, for the failure message.
+  let quoteOpenedOn = -1;
+
   for (let i = 0; i < physicalLines.length; i++) {
     const line = physicalLines[i] ?? '';
     if (pending.length === 0) startLine = i + 1;
     pending.push(line);
-    if (pending.length > MAX_RECORD_LINES) return null;
-    // `""` (an escaped quote) toggles twice and nets out, exactly as
-    // `countUnquoted`/`splitCells` treat it — only an ODD count flips state.
-    let quotes = 0;
-    for (let j = 0; j < line.length; j++) if (line[j] === '"') quotes += 1;
-    if (quotes % 2 === 1) inQuotes = !inQuotes;
+    if (pending.length > MAX_RECORD_LINES) {
+      return fail('record-too-long', quoteOpenedOn > 0 ? quoteOpenedOn : startLine);
+    }
+    for (let j = 0; j < line.length; j++) {
+      const ch = line[j]!;
+      if (inQuotes) {
+        if (ch !== '"') continue;
+        if (line[j + 1] === '"') {
+          j += 1; // an escaped `""` — still inside the field
+          continue;
+        }
+        // RFC-4180: a closing quote is followed by the delimiter or by the end
+        // of the line. Anything else means the quoting is not what it looks
+        // like, and guessing at the field boundaries is how data moves rows.
+        const next = line[j + 1];
+        if (next !== undefined && !isBoundary(next)) {
+          return fail('quote-not-at-field-end', quoteOpenedOn > 0 ? quoteOpenedOn : i + 1);
+        }
+        inQuotes = false;
+        fieldStart = false;
+        continue;
+      }
+      if (ch === '"' && fieldStart) {
+        inQuotes = true;
+        fieldStart = false;
+        quoteOpenedOn = i + 1;
+        continue;
+      }
+      if (isBoundary(ch)) fieldStart = true;
+      else if (!isFieldPadding(ch)) fieldStart = false;
+    }
+    // Still inside a quoted field ⇒ the record continues on the next line.
     if (inQuotes) continue;
     records.push({ line: startLine, raw: pending.join('\n') });
     pending = [];
+    fieldStart = true;
   }
-  // Anything still pending means a quote was opened and never closed.
-  return inQuotes || pending.length > 0 ? null : records;
+  if (inQuotes || pending.length > 0) {
+    return fail('unterminated-quote', quoteOpenedOn > 0 ? quoteOpenedOn : startLine);
+  }
+  return { records, failure: null };
+}
+
+/** The operator-facing text for each way the quote-aware read can fail (S7). */
+function quoteFailureMessage(reason: RecordSplitFailure, line: number): string {
+  const fallback =
+    'Each line was read on its own instead — check that no description was cut short before ' +
+    'importing.';
+  switch (reason) {
+    case 'record-too-long':
+      return (
+        `A quoted field starting on line ${line} is still open ${MAX_RECORD_LINES} lines later, ` +
+        `which is longer than any real description. ${fallback}`
+      );
+    case 'quote-not-at-field-end':
+      return (
+        `A quoted field starting on line ${line} has a closing quote with more text after it ` +
+        `instead of a column separator, so its cell boundaries cannot be trusted. ${fallback}`
+      );
+    case 'unterminated-quote':
+    default:
+      return (
+        `A quoted field starting on line ${line} is never closed — the quote characters in this ` +
+        `file do not pair up, so a quoted field may not end where it looks like it does. ` +
+        `${fallback}`
+      );
+  }
 }
 
 // --- The CSV front-end -------------------------------------------------------
@@ -828,17 +1232,29 @@ function splitQuotedRecords(physicalLines: string[]): RawRecord[] | null {
 function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null {
   const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const physicalLines = clean.split(/\r\n|\r|\n/);
+  const nonBlank = (raw: string): boolean => raw.trim() !== '';
 
-  const quotedRecords = splitQuotedRecords(physicalLines);
-  const unbalancedQuotes = quotedRecords === null;
-  const allRecords: RawRecord[] =
-    quotedRecords ?? physicalLines.map((raw, i) => ({ line: i + 1, raw }));
+  // Records need the delimiter (a `"` opens a field only right after ONE) and
+  // the delimiter is sniffed from records, so this runs in two passes. The
+  // first is delimiter-AGNOSTIC — any candidate separator counts as a field
+  // boundary — purely to assemble the records the sniff is scored on; the
+  // second re-splits with the answer so the final boundaries and
+  // `csv.splitCells` cannot disagree. Deterministic and bounded at two passes.
+  const physical = (): RawRecord[] => physicalLines.map((raw, i) => ({ line: i + 1, raw }));
+  const firstPass = splitQuotedRecords(physicalLines, null);
+  const sniffFrom = (firstPass.records ?? physical()).map((r) => r.raw).filter(nonBlank);
+  if (sniffFrom.length === 0) return null;
+  const delimiter = sniffTableDelimiter(sniffFrom);
+
+  // The first pass owns the verdict on whether the quoting is trustworthy at
+  // all; only when it is does the second pass get to refine the boundaries.
+  const quoted = firstPass.records ? splitQuotedRecords(physicalLines, delimiter) : firstPass;
+  const allRecords: RawRecord[] = quoted.records ?? physical();
 
   // Non-blank records keep their physical numbering; blank separators are skipped.
-  const lines = allRecords.filter(({ raw }) => raw.trim() !== '');
+  const lines = allRecords.filter(({ raw }) => nonBlank(raw));
   if (lines.length === 0) return null;
 
-  const delimiter = sniffTableDelimiter(lines.map((l) => l.raw));
   const split = lines.map((l) => ({
     line: l.line,
     raw: l.raw,
@@ -881,31 +1297,18 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
   });
 
   const issues: TableIssue[] = [];
-  if (unbalancedQuotes) {
+  if (quoted.failure) {
     issues.push({
       kind: 'unbalanced-quote',
-      line: -1,
+      line: quoted.failure.line,
       row: -1,
-      message:
-        'The quote characters in this file do not pair up, so a quoted field may not end where ' +
-        'it looks like it does. Each line was read on its own — check that no description was ' +
-        'cut short before importing.',
+      column: -1,
+      message: quoteFailureMessage(quoted.failure.reason, quoted.failure.line),
     });
   }
-  const oversized = split.filter(
+  const oversizedLines = split.filter(
     ({ raw, cells }) => raw.length > MAX_LINE_CHARS || cells.some(isOversizedCell),
   );
-  if (oversized.length > 0) {
-    issues.push({
-      kind: 'oversized-cell',
-      line: oversized[0]!.line,
-      row: -1,
-      message:
-        `Line ${oversized[0]!.line} carries a field longer than ${MAX_CELL_CHARS} characters ` +
-        `(${oversized.length} line(s) affected). Those fields were kept as-is but not ` +
-        `interpreted as dates, amounts or identifiers — check them before importing.`,
-    });
-  }
   if (!header) {
     // Failing to label the columns means importing NOTHING from this file. The
     // caller must not be able to mistake that for a clean read, so say which of
@@ -918,6 +1321,7 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
         kind: 'header-width-mismatch',
         line: mismatched.line,
         row: -1,
+        column: -1,
         message:
           `The header row on line ${mismatched.line} has ${mismatched.cells.length} column(s) but ` +
           `the data rows have ${modalWidth} — no column can be matched to a label. ` +
@@ -928,6 +1332,7 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
         kind: 'no-header-row',
         line: -1,
         row: -1,
+        column: -1,
         message: 'No row in this file looks like a header — its columns are unlabeled.',
       });
     }
@@ -936,7 +1341,6 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
   const headers = header?.cells ?? [];
   const rows: string[][] = [];
   const lineNumbers: number[] = [];
-  let ragged = 0;
   for (const { line, cells } of split) {
     if (header) {
       // EVERY line above the header is preamble — metadata, not rows — including
@@ -944,50 +1348,34 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
       // which would otherwise ride along as a bookable row. Below the header,
       // keep every line: ragged data rows still belong to the preview.
       if (line <= header.line) continue;
-      // …but a row of a DIFFERENT width than the header is misaligned, and
-      // silence about that is a money bug: a 3-cell row under a 5-cell header
-      // handed the wizard `{quantity: '-80,00'}` — the AMOUNT read as a
-      // quantity of -80 shares — with `issues: []`. Which cells belong to which
-      // label is unknowable here, so the row is kept verbatim and reported;
-      // padding it would just be a different silent guess.
-      if (cells.length !== header.cells.length) {
-        ragged += 1;
-        if (ragged <= MAX_ROW_ISSUES) {
-          issues.push({
-            kind: 'row-width-mismatch',
-            line,
-            row: rows.length,
-            message:
-              `Line ${line} has ${cells.length} column(s) but the header has ` +
-              `${header.cells.length} — its values cannot be matched to labels reliably ` +
-              `(an amount can land in a quantity). Check this row before importing.`,
-          });
-        }
-      }
     } else if (cells.length !== modalWidth) {
       continue;
     }
     rows.push(cells);
     lineNumbers.push(line);
   }
-  if (ragged > MAX_ROW_ISSUES) {
-    issues.push({
-      kind: 'row-width-mismatch',
-      line: -1,
-      row: -1,
-      message:
-        `${ragged - MAX_ROW_ISSUES} further row(s) also differ from the header's ` +
-        `${header?.cells.length ?? 0} column(s).`,
-    });
-  }
+
+  // Row-level findings are collected COMPLETE here and only the operator-facing
+  // `issues` list is capped afterwards — see RowFlag.
+  const rowFlags = new Map<number, Set<TableIssueKind>>();
+  const flagRow = (row: number, kind: TableIssueKind): void => {
+    if (!ROW_FLAG_KINDS.has(kind)) return;
+    const set = rowFlags.get(row);
+    if (set) set.add(kind);
+    else rowFlags.set(row, new Set([kind]));
+  };
+
+  issues.push(...raggedRowIssues(rows, lineNumbers, headers, header !== undefined, flagRow));
 
   const samples = sampleCells(rows);
   const { locale: dateLocale, ambiguous, twoDigitYear } = detectDateLocale(samples);
+  const numberLocale = detectNumberLocale(samples, dateLocale);
   if (ambiguous) {
     issues.push({
       kind: 'ambiguous-date-locale',
       line: header?.line ?? -1,
       row: -1,
+      column: -1,
       message:
         'This file writes dates as DD/MM/YYYY or MM/DD/YYYY and nothing in it settles which — ' +
         'e.g. 01/02/2024 is either 1 February or 2 January. Confirm the date order before importing.',
@@ -998,13 +1386,40 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
       kind: 'two-digit-year',
       line: header?.line ?? -1,
       row: -1,
+      column: -1,
       message:
         'This file writes dates with a two-digit year (e.g. 15.01.24), so the century is not in ' +
-        'the data. Years 00–68 were read as 2000–2068 and 69–99 as 1969–1999 — confirm the ' +
+        'the data. The century was inferred so that no date lands in the future — confirm the ' +
         'years before importing.',
     });
   }
-  issues.push(...detectSummaryRows(rows, lineNumbers));
+  issues.push(...ambiguousNumberIssues(rows, lineNumbers, headers, numberLocale, flagRow));
+
+  const summaries = detectSummaryRows(rows, lineNumbers);
+  for (const issue of summaries) flagRow(issue.row, 'summary-row');
+  issues.push(
+    ...capRowIssues(
+      summaries,
+      (hidden) => `${hidden} further row(s) also read as a total rather than a booking.`,
+    ),
+  );
+
+  if (oversizedLines.length > 0) {
+    const oversizedRows = rows
+      .map((cells, index) => ({ cells, index }))
+      .filter(({ cells }) => cells.some(isOversizedCell));
+    for (const { index } of oversizedRows) flagRow(index, 'oversized-cell');
+    issues.push({
+      kind: 'oversized-cell',
+      line: oversizedLines[0]!.line,
+      row: oversizedRows[0]?.index ?? -1,
+      column: -1,
+      message:
+        `Line ${oversizedLines[0]!.line} carries a field longer than ${MAX_CELL_CHARS} characters ` +
+        `(${oversizedLines.length} line(s) affected). Those fields were kept as-is but not ` +
+        `interpreted as dates, amounts or identifiers — check them before importing.`,
+    });
+  }
 
   return {
     delimiter,
@@ -1015,10 +1430,191 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
     lineNumbers,
     dateLocale,
     dateLocaleAmbiguous: ambiguous,
-    numberLocale: detectNumberLocale(samples, dateLocale),
+    numberLocale,
     defaultCurrency: detectDefaultCurrency(samples),
     issues,
+    rowFlags: [...rowFlags.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([row, flags]) => ({
+        row,
+        line: lineNumbers[row] ?? -1,
+        flags: [...flags].sort(),
+      })),
   };
+}
+
+/** How many full-width rows are sampled to learn a column's value shape (S4). */
+const SHAPE_SAMPLE_ROWS = 200;
+
+/**
+ * Report data rows whose width does not match the header's, splitting the LOUD
+ * misalignment from the harmless raggedness (S4 ruling).
+ *
+ * A row WIDER than the header, or a short row whose values do not line up under
+ * labels of the right kind, is `row-width-mismatch`: which cell belongs to which
+ * label is unknowable, and a 3-cell row under a 5-cell header once handed the
+ * wizard `{quantity: '-80,00'}` — the AMOUNT booked as a quantity of -80
+ * shares — with `issues: []`. Those rows are kept verbatim and reported loudly;
+ * padding them would just be a different silent guess. (The repo's own
+ * `ibkr.csv` has six genuinely misaligned rows and every one of them still lands
+ * here.)
+ *
+ * A row that is merely SHORT gets the quieter `trailing-cells-omitted` kind when
+ * the file itself proves the omission is ordinary, which takes two independent
+ * pieces of evidence:
+ *  1. every missing trailing column is one the file leaves EMPTY in at least one
+ *     of its full-width rows — the column is optional in this export, and
+ *  2. every value the row does carry has the same coarse shape as its column has
+ *     in the full-width rows — nothing slid left into the wrong label.
+ * Both must hold. Requiring (1) is what keeps the measured `-80,00` case loud:
+ * in that file the trailing Kurs/Betrag columns are never empty, so its short
+ * row is not an omission at all.
+ */
+function raggedRowIssues(
+  rows: string[][],
+  lineNumbers: number[],
+  headers: string[],
+  hasHeader: boolean,
+  flagRow: (row: number, kind: TableIssueKind) => void,
+): TableIssue[] {
+  if (!hasHeader) return [];
+  const width = headers.length;
+  const offenders = rows
+    .map((cells, index) => ({ cells, index }))
+    .filter(({ cells }) => cells.length !== width);
+  if (offenders.length === 0) return [];
+
+  const fullWidth = rows.filter((cells) => cells.length === width);
+  // Emptiness is a trim test — cheap enough to look at every full-width row.
+  const optional = Array.from({ length: width }, (_unused, column) =>
+    fullWidth.some((cells) => (cells[column] ?? '').trim() === ''),
+  );
+  // Shape needs real parsing, so it samples (a sampling contract, like sampleCells).
+  const shapeSample = fullWidth.slice(0, SHAPE_SAMPLE_ROWS);
+  const columnShape = Array.from({ length: width }, (_unused, column) => {
+    const freq = new Map<CellShape, number>();
+    for (const cells of shapeSample) {
+      const shape = cellShape(cells[column] ?? '');
+      if (shape === 'empty') continue;
+      freq.set(shape, (freq.get(shape) ?? 0) + 1);
+    }
+    let best: CellShape | null = null;
+    let bestCount = 0;
+    for (const [shape, count] of freq) {
+      if (count > bestCount) {
+        best = shape;
+        bestCount = count;
+      }
+    }
+    return best;
+  });
+
+  const aligns = (cells: string[]): boolean =>
+    cells.every((cell, column) => {
+      const expected = columnShape[column];
+      if (expected === null || expected === undefined) return true;
+      const shape = cellShape(cell);
+      return shape === 'empty' || shape === expected;
+    });
+  const isTrailingOmission = (cells: string[]): boolean => {
+    if (cells.length >= width) return false;
+    for (let column = cells.length; column < width; column++) {
+      if (!optional[column]) return false;
+    }
+    return aligns(cells);
+  };
+
+  const loud: TableIssue[] = [];
+  const quiet: TableIssue[] = [];
+  for (const { cells, index } of offenders) {
+    const line = lineNumbers[index] ?? -1;
+    if (isTrailingOmission(cells)) {
+      quiet.push({
+        kind: 'trailing-cells-omitted',
+        line,
+        row: index,
+        column: -1,
+        message:
+          `Line ${line} stops after ${cells.length} of ${width} column(s). The columns it leaves ` +
+          `out are ones this file leaves empty elsewhere and every value it does carry lines up ` +
+          `under the right label, so it was read as written.`,
+      });
+      continue;
+    }
+    flagRow(index, 'row-width-mismatch');
+    loud.push({
+      kind: 'row-width-mismatch',
+      line,
+      row: index,
+      column: -1,
+      message:
+        `Line ${line} has ${cells.length} column(s) but the header has ${width} — its values ` +
+        `cannot be matched to labels reliably (an amount can land in a quantity). Check this ` +
+        `row before importing.`,
+    });
+  }
+  return [
+    ...capRowIssues(
+      loud,
+      (hidden) => `${hidden} further row(s) also differ from the header's ${width} column(s).`,
+    ),
+    ...capRowIssues(
+      quiet,
+      (hidden) => `${hidden} further row(s) also stop short of the header's ${width} column(s).`,
+    ),
+  ];
+}
+
+/**
+ * Report columns carrying grouped numbers the file's notation cannot read (S3).
+ *
+ * One issue PER COLUMN — the mapper reads `column` off it and forces
+ * `needsReview` on that column, so a caller cannot end up with a confidently
+ * mapped Quantity whose values are null. Every affected ROW is flagged as well,
+ * uncapped, so the row classifier sees them all.
+ */
+function ambiguousNumberIssues(
+  rows: string[][],
+  lineNumbers: number[],
+  headers: string[],
+  locale: NumberLocale,
+  flagRow: (row: number, kind: TableIssueKind) => void,
+): TableIssue[] {
+  // A fold, not `Math.max(...rows.map(…))`: spreading one argument per row
+  // overflows the call stack on a large upload, which is a crash a hostile
+  // file could buy for the price of 100k rows.
+  let width = headers.length;
+  for (const row of rows) if (row.length > width) width = row.length;
+  const issues: TableIssue[] = [];
+  for (let column = 0; column < width; column++) {
+    let count = 0;
+    let firstRow = -1;
+    let sample = '';
+    rows.forEach((cells, index) => {
+      const cell = cells[column] ?? '';
+      if (!isAmbiguousGroupedNumber(cell, locale)) return;
+      count += 1;
+      if (firstRow === -1) {
+        firstRow = index;
+        sample = cell.trim();
+      }
+      flagRow(index, 'ambiguous-grouped-number');
+    });
+    if (count === 0) continue;
+    const label = headers[column]?.trim();
+    issues.push({
+      kind: 'ambiguous-grouped-number',
+      line: lineNumbers[firstRow] ?? -1,
+      row: firstRow,
+      column,
+      message:
+        `Column ${label ? `"${label}"` : column + 1} has ${count} value(s) like "${sample}" whose ` +
+        `grouping this file's number notation cannot resolve — "1,250" is 1250 written the ` +
+        `English way and 1.25 written the German way. Those cells were NOT read as numbers ` +
+        `rather than risk a value 1000× off; confirm the column before importing.`,
+    });
+  }
+  return issues;
 }
 
 const csvTableSniffer: TableSniffer = {
@@ -1148,18 +1744,25 @@ export function parseEnglishDecimal(input: string): number | null {
  * {@link SniffedTable.dateLocaleAmbiguous} is set, the answer was a guess and
  * the row must not be booked unattended.
  *
- * Under `de` the two-digit-year form (`15.01.24`) is read as well, with the
- * century inferred by {@link expandTwoDigitYear}. Refusing it outright would
- * mean every date in such a file coming back null — the failure the sniffer
- * used to hide behind a clean report — so it parses, and the file carries a
- * `two-digit-year` issue saying the century was not in the data.
+ * Under `de` the two-digit-year form (`15.01.24`) is read as well, and under the
+ * slash locales so is `01/15/24`, with the century inferred by
+ * {@link expandTwoDigitYear}. Refusing them outright would mean every date in
+ * such a file coming back null — the failure the sniffer used to hide behind a
+ * clean report — so they parse, and the file carries a `two-digit-year` issue
+ * saying the century was not in the data. The `iso` locale deliberately does
+ * NOT read `15.01.24`: nothing in an ISO file says its dotted dates are
+ * day-first, and a loud null beats a guessed month.
  */
 export function parseLocalizedDay(input: string, locale: DateLocale): Date | null {
   if (input.length > MAX_CELL_CHARS) return null;
   if (locale === 'us' || locale === 'eu-slash') {
-    const match = SLASH_DAY_SAMPLE.exec(input.trim());
+    const trimmed = input.trim();
+    const long = SLASH_DAY_SAMPLE.exec(trimmed);
+    const short = long ? null : SLASH_SHORT_DAY_SAMPLE.exec(trimmed);
+    const match = long ?? short;
     if (!match) return null;
-    const [, first, second, y] = match as unknown as [string, string, string, string];
+    const [, first, second, rawYear] = match as unknown as [string, string, string, string];
+    const y = short ? String(expandTwoDigitYear(rawYear)) : rawYear;
     const [month, day] = locale === 'us' ? [first, second] : [second, first];
     return parseDay(`${y}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
   }

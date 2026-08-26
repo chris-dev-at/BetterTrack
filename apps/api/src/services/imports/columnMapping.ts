@@ -636,6 +636,14 @@ export interface MapColumnsOptions {
    * matter how confidently its header matched.
    */
   dateLocaleAmbiguous?: boolean;
+  /**
+   * Column indexes the sniff reported as `ambiguous-grouped-number`. Their
+   * values do not parse under the file's notation, so however cleanly the
+   * HEADER matched, the column is forced to review — a `Quantity` mapped at
+   * 0.95 with `needsReview: false` whose share counts all come back null is the
+   * exact confidently-wrong answer this module refuses to produce.
+   */
+  ambiguousNumberColumns?: readonly number[];
 }
 
 /**
@@ -781,6 +789,18 @@ export function mapColumns(
     }
   }
 
+  // A column whose grouped numbers the file's notation cannot read is mapped —
+  // the header said what it is — but it is NOT ready to book: its values parse
+  // to null. Silence here was the whole S3 defect.
+  const ambiguousNumberColumns = new Set(options.ambiguousNumberColumns ?? []);
+  if (ambiguousNumberColumns.size > 0) {
+    for (const claim of claims.values()) {
+      if (!ambiguousNumberColumns.has(claim.scored.index)) continue;
+      claim.needsReview = true;
+      claim.scored.reason += ' — ambiguous grouped numbers (1,250 is 1250 or 1.25)';
+    }
+  }
+
   const mappings: ColumnMapping[] = scored.map(({ index }) => {
     const claim = claims.get(index);
     if (!claim) throw new Error(`unassigned claim for header index ${index}`);
@@ -835,6 +855,11 @@ export function mapTableColumns(table: SniffedTable): ColumnMapResult {
   return mapColumns(table.headers, table.rows, {
     numberLocale: table.numberLocale,
     dateLocaleAmbiguous: table.dateLocaleAmbiguous,
+    // The sniff already located these; re-deriving them here would be a second
+    // definition of "unreadable grouping" that could drift from the parser's.
+    ambiguousNumberColumns: table.issues
+      .filter((issue) => issue.kind === 'ambiguous-grouped-number' && issue.column >= 0)
+      .map((issue) => issue.column),
   });
 }
 

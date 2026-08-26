@@ -237,11 +237,7 @@ describe('finding 3 — two-digit-year German dates do not flip the file to `en`
 
     expect(
       table.rows.map((r) => parseLocalizedDay(r[dateIndex]!, table.dateLocale)?.toISOString()),
-    ).toEqual([
-      '2024-01-15T12:00:00.000Z',
-      '2024-01-16T12:00:00.000Z',
-      '2024-01-17T12:00:00.000Z',
-    ]);
+    ).toEqual(['2024-01-15T12:00:00.000Z', '2024-01-16T12:00:00.000Z', '2024-01-17T12:00:00.000Z']);
     expect(
       table.rows.map((r) => parseLocalizedDecimal(r[amountIndex]!, table.numberLocale)),
     ).toEqual([-100, -220, -40]);
@@ -374,15 +370,58 @@ describe('finding 5 — quoted newlines keep one booking in one row', () => {
     expect(table?.issues).toEqual([]);
   });
 
-  it('reports an unbalanced quote count rather than swallowing the rest of the file', () => {
+  it('reads an inch mark as an ordinary character instead of a quote', () => {
+    // CHANGED, AND SAID OUT LOUD — this test used to assert
+    // `issues.some(kind === 'unbalanced-quote')` on this exact file. That
+    // assertion ENCODED THE BUG that finding S1 proved: the sniffer decided
+    // quoting by counting `"` per line and flipping state on an ODD count, so
+    // an inch mark looked like an unterminated quote. Two such lines within
+    // MAX_RECORD_LINES then merged their two physical rows into ONE record that
+    // still matched the header's width — this PR's own row-width check never
+    // fired — and the first booking silently took the second booking's amount
+    // while the second booking vanished, at 0.95 confidence with `issues: []`.
+    //
+    // Under RFC 4180 a `"` only opens a field at FIELD START, so `27" Monitor`
+    // is simply a cell containing an inch mark. There is nothing ambiguous to
+    // report, no fallback is needed, and warning about it would train operators
+    // to ignore the warning on the files where it is real (see the next test).
+    // Coverage is not reduced: the assertion that mattered — both bookings
+    // survive intact — is now checked cell by cell rather than by counting rows.
     const table = sniffTable(
       buf(
-        ['Datum;Beschreibung;Betrag', '15.01.2024;27" Monitor;-505,90', '16.01.2024;Kabel;-9,90']
-          .join('\n'),
+        [
+          'Datum;Beschreibung;Betrag',
+          '15.01.2024;27" Monitor;-505,90',
+          '16.01.2024;Kabel;-9,90',
+        ].join('\n'),
       ),
       'inch.csv',
     );
-    expect(table?.issues.some((i) => i.kind === 'unbalanced-quote')).toBe(true);
+    expect(table?.rows).toEqual([
+      ['15.01.2024', '27" Monitor', '-505,90'],
+      ['16.01.2024', 'Kabel', '-9,90'],
+    ]);
+    expect(table?.lineNumbers).toEqual([2, 3]);
+    expect(table?.issues).toEqual([]);
+  });
+
+  it('still reports a genuinely broken quote rather than trusting it', () => {
+    // The mirror of the test above: here the `"` IS at field start, so it does
+    // open a field — and that field is never closed. The quote-aware reading is
+    // untrustworthy, so the sniff degrades to physical lines and says so.
+    const table = sniffTable(
+      buf(
+        [
+          'Datum;Beschreibung;Betrag',
+          '15.01.2024;"Beispiel ETF;-505,90',
+          '16.01.2024;Kabel;-9,90',
+        ].join('\n'),
+      ),
+      'broken-quote.csv',
+    );
+    const issue = table?.issues.find((i) => i.kind === 'unbalanced-quote');
+    expect(issue).toBeDefined();
+    expect(issue?.line).toBe(2);
     // Degrades to the physical-line reading, which keeps both bookings visible.
     expect(table?.rows).toHaveLength(2);
   });
@@ -414,14 +453,7 @@ describe('finding 6 — a windows-1252 export keeps its umlauts', () => {
     expect(understood).not.toBeNull();
     const { table, mapping } = understood!;
     expect(table.encoding).toBe('windows-1252');
-    expect(table.headers).toEqual([
-      'Datum',
-      'Wertpapier',
-      'Stück',
-      'Kurs',
-      'Gebühr',
-      'Betrag',
-    ]);
+    expect(table.headers).toEqual(['Datum', 'Wertpapier', 'Stück', 'Kurs', 'Gebühr', 'Betrag']);
     expect(mapping.fieldWinners.quantity?.header).toBe('Stück');
     expect(mapping.fieldWinners.fee?.header).toBe('Gebühr');
     expect(mapping.unmapped).toEqual([]);
@@ -489,12 +521,18 @@ describe('finding 7 — a dated Endsaldo row is still a summary row', () => {
     for (const text of ['Saldenmitteilung Gebuehr', 'Summe Sport GmbH', 'Totalise AG']) {
       const table = sniffTable(
         buf(
-          ['Buchtag;Buchungstext;Betrag', '02.01.2024;Einzahlung;500,00', `03.01.2024;${text};-1,00`]
-            .join('\n'),
+          [
+            'Buchtag;Buchungstext;Betrag',
+            '02.01.2024;Einzahlung;500,00',
+            `03.01.2024;${text};-1,00`,
+          ].join('\n'),
         ),
         'genuine.csv',
       );
-      expect(table?.issues.filter((i) => i.kind === 'summary-row'), text).toEqual([]);
+      expect(
+        table?.issues.filter((i) => i.kind === 'summary-row'),
+        text,
+      ).toEqual([]);
     }
   });
 
