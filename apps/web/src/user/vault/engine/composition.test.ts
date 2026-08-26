@@ -477,6 +477,35 @@ describe('cross-portfolio composition', () => {
     expect(result.de?.allowanceUsedEur.valueEur).toBe(0);
     expect(result.de?.allowanceRemainingEur.valueEur).toBe(999.99);
     expect(result.de?.sonstigePotOutEur.valueEur).toBe(0);
+
+    // FINAL-REVIEW F2: in the vector above the sonstige remainder is POSITIVE,
+    // so its pot-out is 0 on the engine's untouched initializer and the floor
+    // is not exercised — the mutation sweep proved that assertion true with or
+    // without it. This second scenario carries a genuine sub-cent SONSTIGE
+    // loss (a crypto sell, no offsetting income), so the raw pot-out is 0.005
+    // and only the presentation floor makes it 0.
+    const sonstigeLoss = composeCountryTaxYear(
+      'DE',
+      2026,
+      testCompositionInput([
+        {
+          state: 'visible',
+          portfolioId: IDS.plain,
+          source: 'plain',
+          vaultId: null,
+          value: taxValue('DE', [
+            report(
+              'DE',
+              otherAsset(),
+              [{ kind: 'sell', id: IDS.subCentLoss, amount: -0.005 }],
+              2026,
+            ),
+          ]),
+        },
+      ]),
+    );
+    expect(sonstigeLoss.de?.sonstigePotOutEur.valueEur).toBe(0);
+    expect(sonstigeLoss.de?.aktienPotOutEur.valueEur).toBe(0);
   });
 
   it('matches the authoritative pooled DE settlement exactly on fractional multi-portfolio streams', () => {
