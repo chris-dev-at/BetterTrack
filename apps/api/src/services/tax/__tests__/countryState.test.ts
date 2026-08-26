@@ -7,36 +7,21 @@ import {
   type DeTaxableEvent,
 } from '../../../domain/tax';
 import {
-  countrySpecificYears,
   deEventsByYear,
-  dePotsInForYear,
-  deTargetForYear,
   deYearStateForYear,
-  fiTargetForYear,
-  isCountrySpecificSell,
   isDeDividend,
   isDeSell,
-  isFiDividend,
-  isFiSell,
   portfolioHasDeRows,
   portfolioHasFiRows,
   rowEngineCountry,
   type DeRowView,
 } from '../countryState';
-import {
-  categoryOfBuilder,
-  divRecord,
-  realizationsBuilder,
-  taxMovement,
-  txRecord,
-  yearOf,
-} from './records';
+import { categoryOfBuilder, divRecord, realizationsBuilder, txRecord, yearOf } from './records';
 
 /**
- * Per-country tax bookkeeping (V5-P4/#635): the ring-fenced DE loss pots, the
- * €1,000 Sparer-Pauschbetrag applied AFTER loss offset, FIFO cost basis, the
- * cross-year pot carry, and the progressive FI target — all derived append-only
- * from rows + recomputed realizations. Cent-exact, deterministic, no network.
+ * Per-country tax bookkeeping (V5-P4/#635): country routing, DE FIFO
+ * realizations, ring-fenced loss pots, and cross-year carry — all cent-exact,
+ * deterministic, and network-free.
  */
 
 const d = (day: string): Date => new Date(`${day}T12:00:00.000Z`);
@@ -70,29 +55,21 @@ describe('rowEngineCountry', () => {
 });
 
 describe('country-specific classification', () => {
-  it('recognises CS sells and routes rows to their engine', () => {
-    expect(isCountrySpecificSell(txRecord({ id: 's', side: 'sell' }))).toBe(true);
-    expect(isCountrySpecificSell(txRecord({ id: 'b', side: 'buy' }))).toBe(false);
-    expect(
-      isCountrySpecificSell(txRecord({ id: 's', side: 'sell', taxMode: 'manual_per_trade' })),
-    ).toBe(false);
-
+  it('routes rows to the retained country engines', () => {
     const deSell = txRecord({ id: 's', side: 'sell', taxCountry: 'DE' });
     const fiSell = txRecord({ id: 's', side: 'sell', taxCountry: 'FI' });
     const atSell = txRecord({ id: 's', side: 'sell', taxCountry: 'AT' });
     expect(isDeSell(deSell)).toBe(true);
     expect(isDeSell(atSell)).toBe(false);
-    expect(isFiSell(fiSell)).toBe(true);
-    expect(isFiSell(deSell)).toBe(false);
 
     const deDiv = divRecord({ id: 'd', grossAmountEur: 1, taxCountry: 'DE' });
     const fiDiv = divRecord({ id: 'd', grossAmountEur: 1, taxCountry: 'FI' });
     expect(isDeDividend(deDiv)).toBe(true);
-    expect(isFiDividend(fiDiv)).toBe(true);
     expect(isDeDividend(fiDiv)).toBe(false);
 
     expect(portfolioHasDeRows([deSell], [])).toBe(true);
     expect(portfolioHasDeRows([atSell], [fiDiv])).toBe(false);
+    expect(portfolioHasFiRows([fiSell], [])).toBe(true);
     expect(portfolioHasFiRows([], [fiDiv])).toBe(true);
     expect(portfolioHasFiRows([deSell], [deDiv])).toBe(false);
   });
@@ -223,7 +200,6 @@ describe('DE year outcome — ring-fence, cross-offset, allowance', () => {
     expect(outcome.sonstigePotOutEur).toBe(0);
     expect(outcome.allowanceUsedEur).toBe(1000);
     expect(outcome.totalTaxEur).toBe(0);
-    expect(deTargetForYear(byYear, 2026)).toBe(0);
   });
 
   it('lets a Sonstige loss offset an Aktien gain, then applies the allowance after', () => {
@@ -276,7 +252,6 @@ describe('DE year outcome — ring-fence, cross-offset, allowance', () => {
     expect(outcome.totalTaxEur).toBe(52.75);
     expect(outcome.aktienPotOutEur).toBe(0);
     expect(outcome.sonstigePotOutEur).toBe(0);
-    expect(deTargetForYear(byYear, 2026)).toBe(52.75);
   });
 
   it('applies the €1,000 allowance to income NET of a same-pot loss (never the gross)', () => {
@@ -365,86 +340,11 @@ describe('DE loss-pot carry across years', () => {
       }),
     ];
     const byYear = deEventsByYear(deView(transactions, [], { stk: 'stock' }));
-    expect(deTargetForYear(byYear, 2024)).toBe(0);
+    expect(deYearStateForYear(byYear, 2024).outcome.totalTaxEur).toBe(0);
     // The €800 loss enters 2025 as its Aktien pot-in.
-    expect(dePotsInForYear(byYear, 2025)).toEqual({ aktienEur: 800, sonstigeEur: 0 });
+    expect(deYearStateForYear(byYear, 2025).potIns).toEqual({ aktienEur: 800, sonstigeEur: 0 });
     // 2,500 − 800 = 1,700; − €1,000 allowance = base 700 → KapESt 175 + Soli 9.62.
-    expect(deTargetForYear(byYear, 2025)).toBe(184.62);
+    expect(deYearStateForYear(byYear, 2025).outcome.totalTaxEur).toBe(184.62);
     expect(deYearStateForYear(byYear, 2025).potIns.aktienEur).toBe(800);
-  });
-});
-
-describe('fiTargetForYear (progressive pääomatulovero)', () => {
-  it('taxes 30 % to €30k and 34 % above, over FIFO gains + dividends', () => {
-    const transactions = [
-      txRecord({
-        id: 'b',
-        side: 'buy',
-        quantity: 1,
-        price: 10_000,
-        taxCountry: 'FI',
-        assetId: 'fx',
-        executedAt: d('2026-01-10'),
-      }),
-      txRecord({
-        id: 's',
-        side: 'sell',
-        quantity: 1,
-        price: 50_000,
-        taxCountry: 'FI',
-        assetId: 'fx',
-        executedAt: d('2026-06-10'),
-      }),
-    ];
-    const fifo = realizationsBuilder(transactions)('fifo');
-    // 40,000 gain → 30 % × 30,000 + 34 % × 10,000 = 12,400.
-    expect(fiTargetForYear(transactions, [], fifo, 2026, yearOf)).toBe(12_400);
-    // A dividend pushes the pool to 41,000 → 9,000 + 34 % × 11,000 = 12,740.
-    const dividends = [
-      divRecord({
-        id: 'dv',
-        grossAmountEur: 1000,
-        taxCountry: 'FI',
-        assetId: 'fx',
-        executedAt: d('2026-07-10'),
-      }),
-    ];
-    expect(fiTargetForYear(transactions, dividends, fifo, 2026, yearOf)).toBe(12_740);
-    // A year with no FI rows contributes nothing.
-    expect(fiTargetForYear(transactions, [], fifo, 2025, yearOf)).toBe(0);
-  });
-});
-
-describe('countrySpecificYears', () => {
-  it('gathers CS sell/dividend years plus unattached tax-correction years, ascending unique', () => {
-    const transactions = [
-      txRecord({ id: 's26', side: 'sell', taxCountry: 'DE', executedAt: d('2026-06-10') }),
-      txRecord({ id: 's24', side: 'sell', taxCountry: 'FI', executedAt: d('2024-06-10') }),
-      // A manual sell is not country-specific.
-      txRecord({
-        id: 'sm',
-        side: 'sell',
-        taxMode: 'manual_per_trade',
-        executedAt: d('2027-06-10'),
-      }),
-    ];
-    const dividends = [
-      divRecord({ id: 'dv', grossAmountEur: 5, taxCountry: 'DE', executedAt: d('2025-06-10') }),
-    ];
-    const movements = [
-      // Unattached correction of a year whose rows are gone.
-      taxMovement({ id: 'm', kind: 'tax_refund', amountEur: 3, taxYear: 2028 }),
-      // Attached movement → not a standalone year.
-      taxMovement({
-        id: 'm2',
-        kind: 'tax_withholding',
-        amountEur: -3,
-        taxYear: 2029,
-        transactionId: 's26',
-      }),
-    ];
-    expect(countrySpecificYears(transactions, dividends, movements, yearOf)).toEqual([
-      2024, 2025, 2026, 2028,
-    ]);
   });
 });
