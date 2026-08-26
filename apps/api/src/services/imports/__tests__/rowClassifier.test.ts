@@ -118,13 +118,43 @@ describe('stage 1 — deterministic structure', () => {
     expect(results[1]!.kind).toBe('withdrawal');
   });
 
-  it('flags a kindHint that contradicts the structural trade reading', async () => {
+  /**
+   * ASSERTION INVERTED — the old one encoded the bug, and said so in its own
+   * comment: "structure wins over the hint". It does not, and this module's
+   * documentation never said it did. The precedence stated at the top of
+   * `rowClassifier.ts` is "the TEXT wins the default kind … while a DECLARED
+   * kindHint outranks both", because the amount SIGN is the weakest link in the
+   * chain — an unsigned `Betrag` column inverts every trade in a file.
+   *
+   * Keeping the sign-inferred direction here inverted the file's own statement
+   * of intent: `Typ=Kauf`, quantity 10, price 220,50, `Betrag` 2205 with no
+   * sign — the exact shape of `george.csv`, a declared type column and no memo —
+   * resolved to `sell`. The declared kind now stands and the conflict is what
+   * costs the confidence.
+   */
+  it('keeps a DECLARED kindHint over a direction the amount sign merely implied', async () => {
     const results = await classifyRows([
       row({ kindHint: 'sell', quantity: 2, price: 10, amount: -20 }),
     ]);
-    expect(results[0]!.kind).toBe('buy'); // structure wins over the hint…
-    expect(results[0]!.needsReview).toBe(true); // …but the conflict is surfaced
+    expect(results[0]!.kind).toBe('sell'); // the declaration outranks the sign…
+    expect(results[0]!.needsReview).toBe(true); // …and the conflict is surfaced
+    expect(results[0]!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
     expect(results[0]!.evidence).toContain('conflicts with kindHint');
+    // The reading it beat is still in the evidence — a reviewer judges the
+    // conflict, they do not just read the winner.
+    expect(results[0]!.evidence).toContain('amount sign ⇒ buy');
+  });
+
+  it('keeps the unsigned-Betrag Kauf a buy instead of inverting it to a sell', async () => {
+    // `george.csv`'s exact shape: a declared `Auftragsart` and an unsigned
+    // amount column. Inverting this books a disposal of a position that was
+    // just bought, with a fabricated realized gain.
+    const [result] = await classifyRows([
+      row({ kindHint: 'Kauf', quantity: 10, price: 220.5, amount: 2205, isin: 'DE0008404005' }),
+    ]);
+    expect(result!.kind).toBe('buy');
+    expect(result!.needsReview).toBe(true);
+    expect(result!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
   });
 
   it('treats a bare signed amount as provisional only (below the bar)', async () => {
@@ -682,6 +712,224 @@ describe('the table does not read a trade verb out of a company name', () => {
 });
 
 /**
+ * C3 — the cost-marker ranking, applied to the wrong kind of row.
+ *
+ * `corroborate` runs the keyword table against DECISIVE stage-1 verdicts, and
+ * the table puts tax and fee ahead of sell and buy on purpose: a row whose only
+ * signal is prose naming a fee is not a trade. Applied to a row that states a
+ * SHARE COUNT and a PRICE, the same rule destroyed the single most common
+ * German broker line there is — nearly every settlement note names its
+ * Provision, Gebühr or Kapitalertragsteuer in the memo. The trade became a fee,
+ * and because `tradeBlocked` was set with it, stage 3 could not put it back.
+ */
+describe('a cost word in a TRADE memo is a line item, not the row’s kind', () => {
+  const TRADE_MEMOS: { what: string; input: ClassifiableRow; kind: ClassifiedKind }[] = [
+    {
+      what: 'Wertpapierkauf … Provision EUR 5,90',
+      input: row({
+        text: 'Wertpapierkauf Allianz SE, Provision EUR 5,90',
+        quantity: 10,
+        price: 220.5,
+        amount: -2210.9,
+        isin: 'DE0008404005',
+      }),
+      kind: 'buy',
+    },
+    {
+      what: 'Kauf 100 Stk BASF, Gebuehren 9,90',
+      input: row({
+        text: 'Kauf 100 Stk BASF, Gebuehren 9,90',
+        quantity: 100,
+        price: 44.2,
+        amount: -4429.9,
+        isin: 'DE000BASF111',
+      }),
+      kind: 'buy',
+    },
+    {
+      what: 'Verkauf 50 Stk SAP, Kapitalertragsteuer EUR 12,34',
+      input: row({
+        text: 'Verkauf 50 Stk SAP, Kapitalertragsteuer EUR 12,34',
+        quantity: 50,
+        price: 140,
+        amount: 6987.66,
+        isin: 'DE0007164600',
+      }),
+      kind: 'sell',
+    },
+  ];
+
+  for (const { what, input, kind } of TRADE_MEMOS) {
+    it(`keeps ${what} a ${kind}`, async () => {
+      const [result] = await classifyRows([input]);
+      // The trade survives — the reviewer's pre-filled default is the booking
+      // that actually happened, not the fee line inside its memo.
+      expect(result!.kind, result!.evidence).toBe(kind);
+      // …and the doubt is real, so it costs the confidence and raises the flag.
+      expect(result!.needsReview).toBe(true);
+      expect(result!.confidence).toBeLessThan(DEFAULT_REVIEW_CONFIDENCE);
+      expect(result!.evidence).toContain('line item of that trade');
+    });
+  }
+
+  it('leaves stage 3 able to reach the row (tradeBlocked is not set)', async () => {
+    // The gate that refuses a model trade label exists for rows naming NO
+    // instrument. This row names 10 shares and an ISIN, so the refusal must not
+    // fire — it was firing, which is why nothing could restore the trade.
+    const { seam } = stubAiSeam(['0=buy']);
+    const [result] = await classifyRows([TRADE_MEMOS[0]!.input], { ai: seam });
+    expect(result!.evidence).not.toContain('refused, the row names no instrument');
+    expect(result!.kind).toBe('buy');
+  });
+
+  it('still reads a fee row that is NOT trade-shaped as a fee', async () => {
+    // The table ordering is untouched: with no share count and no price there is
+    // no trade to be a line item of, and the cost marker still wins outright.
+    expect(await kinds([row({ text: 'Verkaufsprovision Order 4711', amount: -2 })])).toEqual([
+      'fee',
+    ]);
+    expect(await kinds([row({ text: 'KESt aus Verkauf', amount: -8 })])).toEqual(['tax']);
+    // A share COUNT alone is not the trade shape either — the shape is quantity
+    // AND price, the row stating how many units at what each.
+    expect(
+      await kinds([row({ text: 'Depotgebuehr 12 Positionen', quantity: 12, amount: -4.59 })]),
+    ).toEqual(['fee']);
+  });
+
+  it('keeps a DECLARED fee hint a fee even on a trade-shaped row', async () => {
+    // The declared kind still outranks everything: this is a fee row that
+    // happens to carry a per-unit breakdown, and the file says so.
+    const [result] = await classifyRows([
+      row({ kindHint: 'Gebuehr', text: 'Depotgebuehr', quantity: 12, price: 0.4, amount: -4.8 }),
+    ]);
+    expect(result!.kind).toBe('fee');
+    expect(result!.needsReview).toBe(true);
+  });
+});
+
+/**
+ * X2 — the sniffer's per-row doubt has to survive the hand-over. Slice A knows
+ * things about a row that this module cannot see from its content: that it is a
+ * TOTALS line, that a cell was too long to analyse, that the header width did
+ * not match. `31.01.2024;Summe Gutschrift;700,00` sniffs as a `summary-row` and
+ * classified here as `deposit/0.85/needsReview:false` — the file's own subtotal
+ * booked unattended, on top of the rows it sums.
+ */
+describe('sniffer flags force review, whatever the cascade concluded', () => {
+  const TOTALS = { text: 'Summe Gutschrift', amount: 700 } as const;
+
+  it('leaves the verdict alone when no flags are supplied (existing callers)', async () => {
+    const [result] = await classifyRows([row(TOTALS)]);
+    expect(result).toMatchObject({ kind: 'deposit', confidence: 0.85, needsReview: false });
+  });
+
+  it('flags the totals row the sniffer distrusted, and names why', async () => {
+    const [result] = await classifyRows([row({ ...TOTALS, sniffFlags: ['summary-row'] })]);
+    // The kind is not second-guessed — the classifier read the text correctly.
+    expect(result!.kind).toBe('deposit');
+    expect(result!.confidence).toBe(0.85);
+    // …it is simply not allowed to book unattended.
+    expect(result!.needsReview).toBe(true);
+    expect(result!.evidence).toContain('summary-row');
+    expect(result!.evidence).toContain('the sniffer flagged this row');
+  });
+
+  it('is not negotiable by confidence: the bar at zero does not clear it', async () => {
+    const [result] = await classifyRows([row({ ...TOTALS, sniffFlags: ['summary-row'] })], {
+      reviewConfidenceBelow: 0,
+    });
+    expect(result!.needsReview).toBe(true);
+  });
+
+  it('names several flags, and treats an unknown one exactly as loudly', async () => {
+    const [result] = await classifyRows([
+      row({ ...TOTALS, sniffFlags: ['oversized-cell', 'a-flag-this-module-has-never-heard-of'] }),
+    ]);
+    expect(result!.needsReview).toBe(true);
+    expect(result!.evidence).toContain('oversized-cell');
+    expect(result!.evidence).toContain('a-flag-this-module-has-never-heard-of');
+  });
+
+  it('survives stage 3 replacing the verdict wholesale', async () => {
+    // Stage 3 builds a NEW verdict object; the sniffer's doubt is applied after
+    // it, so no future writer can drop it by forgetting to copy a field.
+    const { seam } = stubAiSeam(['0=deposit']);
+    const [result] = await classifyRows(
+      [row({ text: 'Zwischensumme', amount: 700, sniffFlags: ['summary-row'] })],
+      { ai: seam },
+    );
+    expect(result!.stage).toBe('ai');
+    expect(result!.needsReview).toBe(true);
+    expect(result!.evidence).toContain('summary-row');
+  });
+
+  it('an empty flag array is not a flag', async () => {
+    const [result] = await classifyRows([row({ ...TOTALS, sniffFlags: [] })]);
+    expect(result!.needsReview).toBe(false);
+  });
+
+  it('a non-empty array of BLANK flags still stops the row', async () => {
+    // The array being non-empty is the signal. A flag we cannot name is not a
+    // flag we may ignore.
+    const [result] = await classifyRows([row({ ...TOTALS, sniffFlags: ['  ', ''] })]);
+    expect(result!.needsReview).toBe(true);
+    expect(result!.evidence).toContain('unnamed');
+  });
+
+  it('bounds what a flag list can write into the evidence string', async () => {
+    const [result] = await classifyRows([
+      row({
+        ...TOTALS,
+        sniffFlags: [
+          ...Array.from({ length: 40 }, (_, i) => `flag-${i}`),
+          'x'.repeat(5000),
+          'flag-0', // a duplicate collapses
+        ],
+      }),
+    ]);
+    expect(result!.needsReview).toBe(true);
+    expect(result!.evidence.length).toBeLessThan(1000);
+  });
+});
+
+/**
+ * X3 — the sniffer caps its own analysis at 4096 characters per cell and raises
+ * `oversized-cell` past it. This module then interpreted the FULL cell: two
+ * Unicode normalization passes and every RE2 scan over text the sniffer had
+ * already declared out of scope, synchronously, inside a request.
+ */
+describe('the cell cap the sniffer already applied is honoured here too', () => {
+  it('classifies oversized rows without reading past the cap', async () => {
+    const filler = 'Zahlungsverkehr Buchungstext ohne Bedeutung '.repeat(6000); // ~264 000 chars
+    const rows = Array.from({ length: 20 }, () => row({ text: filler, amount: -10 }));
+    const started = Date.now();
+    const results = await classifyRows(rows);
+    const elapsed = Date.now() - started;
+    expect(results).toHaveLength(20);
+    // Measured before the cap: 358 ms of blocked event loop for these exact 20
+    // rows; after: 7 ms. The bound is deliberately loose — this asserts an ORDER
+    // OF MAGNITUDE, not a benchmark, so it cannot flake on a busy machine.
+    expect(elapsed).toBeLessThan(150);
+  });
+
+  it('still reads the kind out of the analysable head of a long cell', async () => {
+    const [result] = await classifyRows([
+      row({ text: `Einzahlung Gehalt ${'x'.repeat(50_000)}`, amount: 2400 }),
+    ]);
+    expect(result).toMatchObject({ kind: 'deposit', confidence: 0.85, needsReview: false });
+  });
+
+  it('caps each cell independently — a huge hint cannot push the text out', async () => {
+    // Capping the JOINED string instead would let one oversized column swallow
+    // the analysable window of the other, which is worse than the cost it saves.
+    const [result] = await classifyRows([
+      row({ kindHint: 'y'.repeat(60_000), text: 'Einzahlung Gehalt', amount: 2400 }),
+    ]);
+    expect(result!.kind).toBe('deposit');
+  });
+});
+
+/**
  * Vocabulary defects. Both are silent-by-default paths that a reviewer sees
  * pre-filled with the wrong answer.
  */
@@ -968,9 +1216,9 @@ describe('stage 3 — batched CHEAP-tier fallback', () => {
     }
   });
 
-  it('marks every AI-derived result for review when the caller distrusts them', async () => {
+  it('marks every AI-derived result for review, with no option to opt out', async () => {
     const { seam } = stubAiSeam(['0=buy\n1=sell\n2=dividend\n3=deposit\n4=withdrawal']);
-    const results = await classifyRows(AMBIGUOUS, { ai: seam, aiLowTrustResults: true });
+    const results = await classifyRows(AMBIGUOUS, { ai: seam });
     for (const result of results) {
       expect(result.stage).toBe('ai');
       expect(result.needsReview).toBe(true);
@@ -1024,29 +1272,45 @@ describe('stage 3 — a model verdict never clears a review flag', () => {
     expect(result!.evidence).toContain('ai ⇒ dividend');
   });
 
-  it('treats aiLowTrustResults as a FLOOR that defaults true, not a toggle', async () => {
+  /**
+   * REPOINTED, not weakened. This used to argue with `aiLowTrustResults`, an
+   * option that was declared in `ClassifyContext`, documented at length as "a
+   * FLOOR that defaults true, not a toggle", and read by NOT ONE line of the
+   * implementation — so the test proved only that an ignored boolean is
+   * ignored. The option is gone (a knob a caller can set that silently does
+   * nothing reads as a protection being enabled, and invites a future change to
+   * wire it up as a real toggle).
+   *
+   * The invariant it was written for is unchanged and now measured against the
+   * knob a caller ACTUALLY has: `reviewConfidenceBelow`. Driven to 0 it disables
+   * the confidence bar entirely — which is the only route by which a caller
+   * could ever have argued a stage-3 row out of review — and the flag still does
+   * not come off.
+   */
+  it('keeps the stage-3 review floor even with the confidence bar driven to zero', async () => {
     const noSignal = row({ text: 'Abschluss' });
     const { seam } = stubAiSeam(['0=buy']);
     expect((await classifyRows([noSignal], { ai: seam }))[0]!.needsReview).toBe(true);
 
-    // Explicitly opting out of wholesale distrust does NOT clear the flag by
-    // itself: nothing deterministic agreed with the model here.
     const { seam: permissive } = stubAiSeam(['0=buy']);
     const [still] = await classifyRows([noSignal], {
       ai: permissive,
-      aiLowTrustResults: false,
+      reviewConfidenceBelow: 0,
     });
     expect(still!.needsReview).toBe(true);
+    expect(still!.stage).toBe('ai');
   });
 
   it('ranks a corroborated verdict higher but still never releases it', async () => {
     const bare = row({ amount: -50 });
     const { seam } = stubAiSeam(['0=withdrawal']);
-    const [corroborated] = await classifyRows([bare], {
-      ai: seam,
-      // Even with wholesale distrust explicitly waived…
-      aiLowTrustResults: false,
-    });
+    // No option is passed, because there is no longer one to pass: the context
+    // carries nothing a caller can set to waive distrust of a model label. (It
+    // used to carry `aiLowTrustResults`, which was never read. Driving
+    // `reviewConfidenceBelow` to 0 instead would not test the floor here — it
+    // would resolve this 0.5 row before stage 3 ever saw it, which is the point
+    // of the `Abschluss` case above.)
+    const [corroborated] = await classifyRows([bare], { ai: seam });
     // …an independently agreeing deterministic reading raises the SCORE…
     expect(corroborated).toMatchObject({
       kind: 'withdrawal',

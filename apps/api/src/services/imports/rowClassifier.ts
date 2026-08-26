@@ -3,6 +3,7 @@ import RE2 from 're2';
 
 import {
   buildRowKindBatchPrompt,
+  capCell,
   parseRowKindBatchReply,
   ROW_CLASSIFY_SYSTEM_PROMPT,
   type AiBatchRow,
@@ -39,6 +40,10 @@ import {
  * or the row is flagged. Where they disagree the TEXT wins the default kind —
  * the amount SIGN is the weakest link in the chain (an unsigned `Betrag` column
  * inverts every trade in a file), while a DECLARED `kindHint` outranks both.
+ * Two exceptions to "the text wins", both of them precision fixes:
+ * a fee/tax word in the memo of a row that states a quantity AND a price is a
+ * line item of that trade rather than the row's kind, and a `sniffFlags` entry
+ * from the sniffer stops the row whatever the two readings agreed on.
  *
  * A second, orthogonal scan runs first: {@link NON_TRADE_MARKERS}. Storno
  * reversals, Depotüberträge, Kapitalmaßnahmen and Vorabpauschalen have trade or
@@ -66,6 +71,27 @@ import {
 export interface ClassifiableRow {
   /** Descriptive free text: memo, booking type, note — whatever Task A kept. */
   text: string | null;
+  /**
+   * Per-row issue kinds the SNIFFER raised for this physical line (`summary-row`,
+   * `oversized-cell`, `header-width-mismatch`, …). Optional so existing callers
+   * are untouched; when it is present and non-empty the row is forced to
+   * `needsReview` and the flags are named in `evidence`.
+   *
+   * This exists because a row the sniffer already distrusted was reaching the
+   * booking queue unattended: `31.01.2024;Summe Gutschrift;700,00` is a TOTALS
+   * line, it sniffs as a `summary-row`, and this cascade — reading only the
+   * text — resolved it to `deposit/0.85/needsReview:false`, i.e. the file's own
+   * subtotal booked as a seventh deposit on top of the six it sums. The
+   * classifier cannot see that from the row's content; the sniffer can, and its
+   * doubt has to survive the hand-over instead of being dropped at the seam.
+   *
+   * Deliberately `string[]` rather than the sniffer's `TableIssueKind` union:
+   * the flag names are DATA joined across a module boundary, and typing this
+   * against the other module's enum would couple two independently-shipping
+   * halves for no safety gain — an unrecognised flag must force review just as
+   * loudly as a known one.
+   */
+  sniffFlags?: readonly string[];
   /**
    * Task A's hint column (`Typ`, `Auftragsart`, `Buchungsart`, `Transaction
    * type`, …). A canonical token — English (`buy`, `sell`, …) OR the German
@@ -118,17 +144,23 @@ export interface ClassifyContext {
   ai?: ImportRowAiSeam;
   aiMaxRowsPerCall?: number;
   aiMaxCalls?: number;
-  /**
-   * Distrust AI-derived kinds wholesale. **Defaults to TRUE and is a FLOOR, not
-   * a toggle**: every stage-3 row is `needsReview`, and setting this to `false`
-   * does not release one. A well-formed reply still fills `kind` and a
-   * deterministic stage agreeing still raises the row's `confidence` — what a
-   * caller can never do is buy its way out of the human decision with a model
-   * call. Turning stage 3 ON must not make the classifier less safe than
-   * leaving it off, and it used to.
-   */
-  aiLowTrustResults?: boolean;
   reviewConfidenceBelow?: number;
+  /*
+   * REMOVED: `aiLowTrustResults?: boolean`.
+   *
+   * It was declared here, documented at length as "a FLOOR that defaults true,
+   * not a toggle", and never read by a single line of the implementation. Once
+   * the standing ruling made every stage-3 row `needsReview` unconditionally
+   * there was no direction left for the option to act in — `true` was the only
+   * behaviour and `false` was silently ignored.
+   *
+   * A boolean on a security-relevant interface that a caller can set and that
+   * does nothing is worse than no boolean: it reads as a protection being
+   * enabled, it invites a future change to wire it up as a real toggle (which
+   * would re-open exactly the hole the floor closed), and it makes the review
+   * guarantee look negotiable when it is not. The guarantee is now stated only
+   * where it is enforced, in `classifyRows`.
+   */
 }
 
 // --- Text normalization ------------------------------------------------------
@@ -158,6 +190,12 @@ function stripDiacritics(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+/**
+ * Normalize ONE already-capped cell. Everything reaching this function comes
+ * through {@link joinHaystack}, which is where {@link capCell} is applied — so
+ * the two Unicode normalization passes and every RE2 scan downstream are
+ * bounded by the sniffer's own analysis window rather than by the file.
+ */
 function toHaystack(raw: string): Haystack {
   // NFC first: a decomposed `a`+U+0308 from the file must still be seen as `ä`
   // by the expansion below, which matches the composed character.
@@ -170,8 +208,20 @@ function toHaystack(raw: string): Haystack {
   };
 }
 
+/**
+ * The single funnel every haystack in this module is built through, and
+ * therefore the single place the cell cap has to hold.
+ *
+ * Each PART is capped independently, exactly as the sniffer caps each cell:
+ * capping the joined string instead would let one oversized `kindHint` push the
+ * row's `text` out of the analysed window entirely, which is a worse bug than
+ * the cost it saves. See {@link capCell} for the measurement.
+ */
 function joinHaystack(parts: readonly (string | null)[]): Haystack {
-  const joined = parts.filter((part) => part !== null).join(' ');
+  const joined = parts
+    .filter((part) => part !== null)
+    .map((part) => capCell(part))
+    .join(' ');
   return joined === '' ? EMPTY_HAYSTACK : toHaystack(joined);
 }
 
@@ -192,16 +242,49 @@ function joinHaystack(parts: readonly (string | null)[]): Haystack {
  *
  * A leading boundary is enough for these: the collisions are all mid-word, and
  * legitimate suffixes (`selling`, `fees`, `charges`, `buyback`) must still hit.
+ *
+ * German compounds are on this list too when the SUFFIX position is where the
+ * collision lives:
+ *
+ * - `ertrag` inside **Übertrag**, **Zinsertrag**, **Vertrag**. Added unanchored
+ *   to the dividend group to fix `Ertragsgutschrift`, it re-created that fix's
+ *   own defect one word over: the dividend group runs before deposit, so
+ *   `Übertrag von Girokonto` +500, `Zinsertrag Tagesgeld` +12,50,
+ *   `Bausparvertrag Einzahlung` +1000 and `Sparvertrag Gutschrift` +250 all
+ *   resolved to `dividend/0.85/needsReview:FALSE` — cash movements booked as
+ *   investment income, unattended, and `Zinsertrag` is the standard German term
+ *   for the interest this module explicitly books as a `deposit`. `\bertrag`
+ *   still catches `Ertrag`, `Ertragsgutschrift` and `Ertragsausschüttung`;
+ *   `Kapitalertrag` is listed in full because the boundary is not there.
+ * - `umtausch` inside **Waehrungsumtausch** / **Devisenumtausch**, routine
+ *   multi-currency cash lines that a corporate-action marker pinned to a human
+ *   decision and blocked from stage 3 entirely.
  */
-const PREFIX_ANCHORED = new Set(['sell', 'buy', 'fee', 'charge', 'disposal']);
+const PREFIX_ANCHORED = new Set(['sell', 'buy', 'fee', 'charge', 'disposal', 'ertrag', 'umtausch']);
 
 /**
  * Terms whose collision starts ON a boundary, so only a FULL word match is
  * safe: `sale` inside **Salesforce** (`Dividende Salesforce Inc` resolved to
  * `sell/0.85/unreviewed` — the same fabricated disposal), `sold` inside
  * **Soldat**. An optional plural keeps `sales` matching.
+ *
+ * The short corporate-action markers belong here for the same reason, and their
+ * failure was worse than a wrong kind: a marker hit pins the row `unknown`,
+ * sub-threshold, `tradeBlocked`, and INELIGIBLE for stage 3, so nothing
+ * downstream can rescue it. Unanchored, `fusion` and `split` matched inside
+ * ordinary security NAMES and destroyed genuine trades that carried a quantity,
+ * a price and an ISIN — `Kauf Diffusion Pharmaceuticals Inc`, `Kauf Infusion
+ * Brands Intl` and `Verkauf Splitit Payments Ltd` all fell from `buy`/`sell` at
+ * 0.95 to `unknown` at 0.4–0.6.
+ *
+ * KNOWN AND ACCEPTED: a security whose name contains the marker as a WHOLE word
+ * (`Fusion Fuel Green PLC`) still trips the marker. Separating "the memo says
+ * Fusion" from "the instrument is called Fusion" needs a name/memo split this
+ * module does not get, and the marker exists precisely because
+ * `Kapitalmaßnahme Fusion` has perfect trade shape. Over-refusing one ticker is
+ * the safe side of that trade; silently booking a corporate action is not.
  */
-const WORD_ANCHORED = new Set(['sale', 'sold']);
+const WORD_ANCHORED = new Set(['sale', 'sold', 'fusion', 'split', 'merger']);
 
 /** The regex source for one human-written term. */
 function alternationSource(term: string): string {
@@ -358,6 +441,20 @@ export const KEYWORD_GROUPS: readonly KeywordGroup[] = [
     'provision',
     'entgelt',
     'commission',
+    // English exports concatenate the cost code into one token, where the
+    // leading boundary `\bfee` needs is not there: `ACCOUNTFEE`, `MGMTFEE`,
+    // `CUSTODYFEE` and `Servicefee` all fell through the fee group and resolved
+    // on the amount sign alone as `withdrawal/0.5`. Enumerated rather than
+    // matched as a `*fee` suffix on purpose — a suffix rule reads the fee back
+    // out of **coffee**, which is the collision `\bfee` was introduced to fix.
+    'accountfee',
+    'managementfee',
+    'mgmtfee',
+    'custodyfee',
+    'servicefee',
+    'platformfee',
+    'transactionfee',
+    'brokeragefee',
     'charge',
     'fee',
   ]),
@@ -373,6 +470,10 @@ export const KEYWORD_GROUPS: readonly KeywordGroup[] = [
   keywordGroup('buy', ['sparplan', 'purchase', 'kauf', 'buy']),
   keywordGroup('dividend', [
     'ertragsgutschrift',
+    // Listed in full because `\bertrag` (see PREFIX_ANCHORED) has no boundary
+    // to hook onto inside `Kapitalertrag`. `Kapitalertragsteuer` is unaffected:
+    // the tax group is scanned first and claims it.
+    'kapitalertrag',
     'ertrag',
     'dividende',
     'dividend',
@@ -388,6 +489,11 @@ export const KEYWORD_GROUPS: readonly KeywordGroup[] = [
     // states that convention explicitly instead of reaching it by accident
     // through the `gutschrift` in `Zinsgutschrift`.
     'zinsgutschrift',
+    // …and `Zinsertrag`, the other standard German term for the same thing, is
+    // named here rather than left to fall through: the dividend group above
+    // used to swallow it whole via an unanchored `ertrag`, booking interest as
+    // investment income at 0.85 unreviewed.
+    'zinsertrag',
     'zinsen',
     'interest',
     'einzahlung',
@@ -486,6 +592,45 @@ function num(value: number | null | undefined): number | null {
 function nonBlank(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed !== undefined && trimmed !== '' ? trimmed : null;
+}
+
+/** {@link capCell}, nullable. */
+function capText(value: string | null): string | null {
+  return value === null ? null : capCell(value);
+}
+
+/** At most this many sniffer flags are named in one row's evidence. */
+const MAX_NAMED_SNIFF_FLAGS = 8;
+/** At most this many characters of ONE flag name reach the evidence string. */
+const MAX_SNIFF_FLAG_CHARS = 64;
+
+/**
+ * The sniffer's doubt about this row, rendered for `evidence` — or null when it
+ * had none. A non-empty `sniffFlags` ALWAYS produces a note (and therefore
+ * always forces review), even if every entry is blank: the array being non-empty
+ * is the signal, and a flag we cannot name is not a flag we may ignore.
+ *
+ * Bounded on purpose. The flag names cross a module boundary and end up in a
+ * string a reviewer reads, so neither their count nor their length is taken on
+ * trust; duplicates collapse.
+ */
+function sniffFlagNote(row: ClassifiableRow): string | null {
+  const flags = row.sniffFlags;
+  if (flags === undefined || flags.length === 0) return null;
+  const named: string[] = [];
+  const seen = new Set<string>();
+  for (const flag of flags) {
+    // The `typeof` guard is not redundant at runtime even though the type says
+    // it is: these values are DATA crossing a module boundary, and this module
+    // promises never to throw on row content.
+    const trimmed = typeof flag === 'string' ? flag.trim().slice(0, MAX_SNIFF_FLAG_CHARS) : '';
+    if (trimmed === '' || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    named.push(trimmed);
+    if (named.length === MAX_NAMED_SNIFF_FLAGS) break;
+  }
+  const detail = named.length > 0 ? named.join(', ') : 'unnamed';
+  return `the sniffer flagged this row (${detail}) — a human decides`;
 }
 
 function hasInstrumentIdentity(row: ClassifiableRow): boolean {
@@ -596,6 +741,14 @@ interface StageDraft {
   decisive?: boolean;
   /** The kind came from a DECLARED hint column, not inferred from an amount sign. */
   declared?: boolean;
+  /**
+   * Stage 1 read a non-zero QUANTITY and a non-zero PRICE on this row, i.e. the
+   * row states how many units at what each. That is the strongest instrument
+   * evidence the file can carry, and it survives into stage 2 because a cost
+   * word in the memo of such a row describes a LINE ITEM of the trade, never
+   * the row's kind — see {@link corroborate}.
+   */
+  tradeShape?: boolean;
 }
 
 /** Everything the cascade knows about one row after the deterministic stages. */
@@ -652,6 +805,7 @@ function classifyByStructure(row: ClassifiableRow, hint: Haystack): StageDraft {
             evidence: `quantity+price ⇒ trade; ${sign !== null ? 'amount' : 'quantity'} sign ⇒ ${direction}`,
             needsReview: false,
             decisive: true,
+            tradeShape: true,
           }
         : {
             kind: 'unknown',
@@ -660,10 +814,11 @@ function classifyByStructure(row: ClassifiableRow, hint: Haystack): StageDraft {
             evidence:
               'quantity+price ⇒ trade, but neither an amount nor a negative quantity signs a direction',
             needsReview: true,
+            tradeShape: true,
           };
 
-    // 2. A canonical kindHint is declared intent — it classifies alone unless it
-    // contradicts the structural trade reading (then structure wins, review).
+    // 2. A canonical kindHint is declared intent — it classifies alone, and it
+    // OUTRANKS a direction the amount sign merely implied.
     if (hintKind !== null) {
       if (draft.kind === 'unknown') {
         draft = {
@@ -675,15 +830,31 @@ function classifyByStructure(row: ClassifiableRow, hint: Haystack): StageDraft {
           hintConsumed: true,
           decisive: true,
           declared: true,
+          tradeShape: draft.tradeShape,
         };
       } else if (draft.kind !== hintKind) {
+        // The DECLARED kind stands and the row is flagged. This branch used to
+        // keep the sign-inferred direction and demote it, which inverted the
+        // file's own statement of intent: `Typ=Kauf` with quantity 10, price
+        // 220,50 and an UNSIGNED `Betrag` of 2205 resolved to `sell` — the exact
+        // shape of `george.csv`, a type column plus no memo, and the exact
+        // inverse of what the column says. It also contradicted this module's
+        // own documented precedence ("the TEXT wins the default kind … while a
+        // DECLARED kindHint outranks both"): the amount SIGN is the weakest link
+        // in the chain, so it may cast doubt on a declaration, never overturn
+        // one.
         draft = {
-          ...draft,
+          kind: hintKind,
           confidence: 0.7,
-          evidence: `${draft.evidence}; conflicts with kindHint "${hintLabel}"`,
+          stage: 'structure',
+          evidence:
+            `${draft.evidence}; conflicts with kindHint "${hintLabel}" — ` +
+            'the declared kind stands, the sign is the weaker signal',
           needsReview: true,
           hintConsumed: true,
-          decisive: false,
+          decisive: true,
+          declared: true,
+          tradeShape: draft.tradeShape,
         };
       } else {
         draft = { ...draft, hintConsumed: true, declared: true };
@@ -841,15 +1012,34 @@ function corroborate(row: ClassifiableRow, draft: StageDraft, prose: Haystack): 
 
   // Disagreement. Keep the DECLARED kind, replace an INFERRED one.
   const keepDeclared = draft.declared === true;
+  // …and keep a structural TRADE, because a fee or a tax named in the memo of a
+  // row that states a share count AND a price is a LINE ITEM of that trade, not
+  // what the row is. Cost markers outrank direction verbs in the table on
+  // purpose, but that ranking is meant for rows whose only signal is prose —
+  // applied to a decisive stage-1 trade it destroyed the standard German broker
+  // line: `Wertpapierkauf Allianz SE, Provision EUR 5,90`, quantity 10, price
+  // 220,50, amount −2210,90, with an ISIN, went from `buy/0.95` to `fee/0.6`,
+  // and because that also set `tradeBlocked` no later stage could put the trade
+  // back. The purchase disappeared and a 2 210,90 fee took its place.
+  //
+  // The doubt is real, though — a fee row and a trade row are not always
+  // distinguishable from here — so the kind survives and the CONFIDENCE pays:
+  // sub-threshold, flagged, with the cost word named for the reviewer.
+  const costWordOnTrade =
+    draft.tradeShape === true && (hit.kind === 'fee' || hit.kind === 'tax') && !keepDeclared;
+  const keepDraftKind = keepDeclared || costWordOnTrade;
+  const why = costWordOnTrade
+    ? `a ${hit.kind} named on a quantity+price trade row is a line item of that trade, not its kind`
+    : keepDeclared
+      ? 'the declared kind stands'
+      : 'the text wins the default';
   return {
-    kind: keepDeclared ? draft.kind : hit.kind,
+    kind: keepDraftKind ? draft.kind : hit.kind,
     confidence: CONFLICTED_CONFIDENCE,
-    stage: keepDeclared ? draft.stage : 'keyword',
-    evidence:
-      `${draft.evidence}; text says ${hit.kind} ("${hit.matched}") — readings disagree, ` +
-      `${keepDeclared ? 'the declared kind stands' : 'the text wins the default'}`,
+    stage: keepDraftKind ? draft.stage : 'keyword',
+    evidence: `${draft.evidence}; text says ${hit.kind} ("${hit.matched}") — readings disagree, ${why}`,
     needsReview: true,
-    tradeBlocked: !keepDeclared && !KEYWORD_TRADE_KINDS.includes(hit.kind),
+    tradeBlocked: !keepDraftKind && !KEYWORD_TRADE_KINDS.includes(hit.kind),
     aiEligible: true,
   };
 }
@@ -972,7 +1162,9 @@ async function classifyBatchWithAi(
 ): Promise<Map<number, RowClassificationAiLabel | null>> {
   const batchRows: AiBatchRow[] = batch.map(({ index, row }) => ({
     index,
-    text: nonBlank(row.text),
+    // Capped here as well as in the haystack: the prompt builder trims to 120
+    // characters, but it should never be handed a megabyte to trim.
+    text: capText(nonBlank(row.text)),
     quantity: num(row.quantity),
     price: num(row.price),
     amount: num(row.amount),
@@ -1033,10 +1225,16 @@ export async function classifyRows(
 
   const verdicts: RowVerdict[] = [];
   const pool: { index: number; row: ClassifiableRow }[] = [];
+  // Held OUTSIDE the verdicts, deliberately: stage 3 REPLACES a verdict object
+  // wholesale, so a field on `RowVerdict` would have to be re-copied by every
+  // future writer to survive. The sniffer's doubt is applied once, at the end,
+  // where nothing can drop it.
+  const sniffNotes: (string | null)[] = [];
 
   for (const [index, row] of rows.entries()) {
     const verdict = classifyDeterministically(row);
     verdicts.push(verdict);
+    sniffNotes.push(sniffFlagNote(row));
     const resolved = verdict.kind !== 'unknown' && verdict.confidence >= threshold;
     if (!resolved && verdict.aiEligible) pool.push({ index, row });
   }
@@ -1119,13 +1317,18 @@ export async function classifyRows(
     // a nominal 0.75 model verdict — below the bar this module documents —
     // clear review flags that stages 1–2 had raised, which made turning the AI
     // fallback ON strictly less safe than leaving it off.
-    const needsReview = verdict.needsReview || verdict.confidence < threshold;
+    //
+    // A sniffer flag is the third, independent reason to stop, and it is not
+    // negotiable by confidence either: the classifier can be entirely right
+    // about WHAT the row says and still be reading a totals line.
+    const sniffNote = sniffNotes[index] ?? null;
+    const needsReview = verdict.needsReview || verdict.confidence < threshold || sniffNote !== null;
     return {
       index,
       kind: verdict.kind,
       confidence: Math.round(Math.min(1, Math.max(0, verdict.confidence)) * 100) / 100,
       stage: verdict.stage,
-      evidence: verdict.evidence,
+      evidence: sniffNote === null ? verdict.evidence : `${verdict.evidence}; ${sniffNote}`,
       needsReview,
     };
   });
