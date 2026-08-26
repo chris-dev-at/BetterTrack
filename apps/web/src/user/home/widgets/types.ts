@@ -85,6 +85,26 @@ export interface WidgetDefinition {
   /** Whether the settings popover offers the portfolio scope picker. */
   supportsScope: boolean;
   /**
+   * Whether this widget can honestly represent a VAULTED portfolio in its scope
+   * (§14, PARANOID-E6 #1416). The server cannot read a sealed vault, so a widget
+   * that simply drops those members would render a confident total that silently
+   * omits them — and a missing contribution reads as zero, which is a balance.
+   *
+   * Opting in is a claim that the widget does one of exactly three things with
+   * a vaulted member: QUALIFIES its total through the composition boundary
+   * (`useRollup` → `PortfolioFigureCoverage`, carrying the "+ N locked
+   * portfolios" qualifier); FAILS CLOSED via `hasUnsafeAggregateMember`,
+   * rendering `UnavailableHomeAggregate` instead of a number; or ITEMISES the
+   * member as its own locked row plus an explicit count, with no scope-spanning
+   * figure a sealed vault could silently shrink. `vaultedScope.test.ts` holds
+   * the opt-in list to these three and fails on a claim without a mechanism.
+   *
+   * Default (absent ⇒ false) keeps vaulted portfolios out of the widget's scope
+   * entirely, which is the safe answer for per-portfolio forms and lists that
+   * have no way to say "and N more I cannot see".
+   */
+  handlesVaultedPortfolios?: boolean;
+  /**
    * Whether "All portfolios" is one of the scope options. False for widgets
    * backed by a per-portfolio endpoint that cannot be honestly aggregated (the
    * value-over-time chart): those always resolve to exactly one portfolio.

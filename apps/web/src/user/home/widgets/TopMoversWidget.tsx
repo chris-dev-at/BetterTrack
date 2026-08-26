@@ -10,6 +10,7 @@ import { Empty, Seg, SkeletonBlock } from '../../../ui/origin';
 import { widgetVariant, type MoverMetric } from '../config';
 import { usePortfolioSummaries } from '../homeData';
 import { mergeHoldings } from '../holdings';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -104,6 +105,9 @@ export function TopMoversWidget({
   const loading = portfoliosLoading || results.some((result) => result.isLoading);
 
   if (loading) return <SkeletonBlock height={150} />;
+  if (hasUnsafeAggregateMember(scopedPortfolios, results)) {
+    return <UnavailableHomeAggregate />;
+  }
 
   const ranked = rank(mergeHoldings(results.map((result) => result.data?.holdings ?? [])), metric);
   if (ranked.length === 0) return <Empty title={t('home.widgets.topMovers.empty')} />;

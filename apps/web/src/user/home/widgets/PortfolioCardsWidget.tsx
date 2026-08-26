@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom';
 import { useQueries } from '@tanstack/react-query';
 
+import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
+
 import { useT } from '../../../i18n';
 import { EM_DASH, formatPercent } from '../../../lib/format';
 import { getPortfolioHistory } from '../../../lib/portfolioApi';
@@ -93,6 +95,33 @@ function MiniSpark({ values, label }: { values: readonly number[]; label: string
   );
 }
 
+/**
+ * The denominator behind the "share" column, or `null` when it cannot be known.
+ *
+ * The share of one portfolio is a ratio against the WHOLE scope, so the
+ * denominator is only honest once every member's value is known. Two members
+ * make it unknowable: a vaulted portfolio, whose value the server can never
+ * read, and a plain portfolio whose read has not produced totals. Treating
+ * either as zero does not merely lose a row — it inflates every other row's
+ * share, which is the silent-zero failure wearing a percent sign (§14, #1416).
+ *
+ * So this returns `null` rather than a best-effort sum, and the column renders
+ * an em dash. An unknown share stays visibly unknown.
+ */
+function shareDenominator(
+  portfolios: readonly PortfolioSummary[],
+  summaries: readonly { data?: { totals: PortfolioTotals } | undefined }[],
+): number | null {
+  let sum = 0;
+  for (const [index, portfolio] of portfolios.entries()) {
+    if (isVaultedPortfolio(portfolio)) return null;
+    const totals = summaries[index]?.data?.totals;
+    if (totals === undefined) return null;
+    sum += totals.totalValueEur;
+  }
+  return sum;
+}
+
 export function PortfolioCardsWidget({
   settings,
   // Aliased: everything below reads "the portfolios this widget shows", which is
@@ -112,7 +141,12 @@ export function PortfolioCardsWidget({
     })),
   });
 
-  if (portfoliosLoading) {
+  const loading =
+    portfoliosLoading ||
+    summaries.some((summary) => summary.isLoading) ||
+    histories.some((history) => history.isLoading);
+
+  if (loading) {
     return (
       <div className="bt-home-pcards">
         <SkeletonBlock height={92} />
@@ -127,10 +161,11 @@ export function PortfolioCardsWidget({
   const lockedFallback = t('vault.lockedStub.fallbackAlias');
 
   if (widgetVariant('portfolio-cards', settings) === 'table') {
-    const totalValue = portfolios.reduce(
-      (sum, _portfolio, index) => sum + (summaries[index]?.data?.totals.totalValueEur ?? 0),
-      0,
-    );
+    // Unlike the headline aggregates, this widget ITEMISES: every locked
+    // portfolio gets its own row and is counted out loud above the table, so a
+    // sealed vault is never a missing contribution here. The one figure that
+    // still spans the whole scope is the share denominator below.
+    const totalValue = shareDenominator(portfolios, summaries);
     return (
       <>
         {lockedCount > 0 ? (
@@ -204,7 +239,7 @@ export function PortfolioCardsWidget({
                     {totals === null ? EM_DASH : <MoneyText amount={totals.dayChangeEur} signed />}
                   </td>
                   <td className="is-num bt-muted">
-                    {totals === null || totalValue <= 0
+                    {totals === null || totalValue === null || totalValue <= 0
                       ? EM_DASH
                       : formatPercent((totals.totalValueEur / totalValue) * 100)}
                   </td>

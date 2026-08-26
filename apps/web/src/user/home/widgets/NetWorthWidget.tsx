@@ -30,29 +30,40 @@ export function NetWorthWidget({ scopedPortfolios, portfoliosLoading }: WidgetPr
     );
   }
 
-  const positive = rollup.dayChange > 0;
-  const negative = rollup.dayChange < 0;
+  if (rollup.status === 'unavailable') {
+    return <p className="bt-soft text-sm">{t('common.unavailable')}</p>;
+  }
+
+  const positive = rollup.dayChange.valueEur > 0;
+  const negative = rollup.dayChange.valueEur < 0;
 
   return (
     <div className="bt-home-hero">
       <p className="bt-hero-value">
-        <MoneyText amount={rollup.totalValue} />
+        <MoneyText amount={rollup.totalValue.valueEur} />
       </p>
       <p
         className={cx('bt-change-pill', positive && 'is-pos', negative && 'is-neg')}
         title={t('home.widgets.netWorth.changeTitle')}
       >
-        <MoneyText amount={rollup.dayChange} signed />
+        <MoneyText amount={rollup.dayChange.valueEur} signed />
         <span aria-hidden="true" className="bt-change-pill__sep">
           |
         </span>
-        <span className="bt-num">{formatSignedPercent(rollup.dayChangePct)}</span>
+        <span className="bt-num">{formatSignedPercent(rollup.dayChangePct.valuePct)}</span>
       </p>
       <p className="bt-meta bt-home-hero__sub">
-        <MoneyText amount={rollup.invested} /> {t('home.widgets.netWorth.investedWord')}
+        <MoneyText amount={rollup.invested.valueEur} /> {t('home.widgets.netWorth.investedWord')}
         <span aria-hidden="true"> · </span>
-        <MoneyText amount={rollup.cash} /> {t('home.widgets.netWorth.cashWord')}
+        <MoneyText amount={rollup.cash.valueEur} /> {t('home.widgets.netWorth.cashWord')}
       </p>
+      {rollup.totalValue.coverage.kind === 'partial' ? (
+        <p className="bt-meta">
+          {t(rollup.totalValue.coverage.qualifier.messageKey, {
+            count: rollup.totalValue.coverage.qualifier.count,
+          })}
+        </p>
+      ) : null}
     </div>
   );
 }
