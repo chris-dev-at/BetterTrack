@@ -76,6 +76,47 @@ describe('checkOpenapiCoverage', () => {
     );
   });
 
+  it('classifies a nested application mount with an explicitly remapped scope pair', () => {
+    const fixturePath = '/api/v1/settings/notifications';
+    const routes = buildRouteTable((ctx) => {
+      const app = createApp(ctx);
+      const router = express.Router();
+      router.get('/probe', (_request, response) => response.sendStatus(204));
+      app.use(fixturePath, router);
+      return app;
+    });
+
+    const coverage = findBearerModulePolicyCoverage(routes);
+
+    expect(coverage.classified).toContain(fixturePath);
+    expect(coverage.unclassified).not.toContain(fixturePath);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('reports a non-top-level policy prefix with the fail-closed diagnostic', () => {
+    expect(() =>
+      assertBearerModulePolicyCoverage(
+        [],
+        [
+          {
+            prefix: '/settings/notifications',
+            kind: 'scope',
+            read: 'notifications:read',
+            write: 'notifications:write',
+          },
+        ],
+      ),
+    ).toThrowError(
+      new Error(
+        [
+          'Bearer module policy coverage failed.',
+          'Bearer module classifications must remain single-segment top-level prefixes:',
+          '  - /api/v1/settings/notifications',
+        ].join('\n'),
+      ),
+    );
+  });
+
   it('reports a mounted route with no matching operation in the spec', () => {
     const doc = getOpenApiDocument();
     const routes = [
