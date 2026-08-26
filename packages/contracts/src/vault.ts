@@ -1222,6 +1222,26 @@ const importBatchRowSchema = z
   })
   .strict();
 
+/**
+ * The `import_rows.candidates` column as it appears inside a vault document.
+ *
+ * Exported ONLY so the API's OpenAPI builder can reach this exact instance:
+ * zod-to-openapi 7.3.x has no `ZodCatch` transformer, and this schema is
+ * reachable from the documented `PortfolioVaultMoveOutRequest` body, so the
+ * generator needs a temporary `type` hint installed on the very instance the
+ * parent object captured (a `.openapi()` clone is never what it walks into).
+ * Same generator gap, same escape hatch as `vaultJsonSchema`'s `ZodLazy`.
+ * Nothing else should import this — parse through the entity schemas.
+ *
+ * See the field's documentation in `importRowRowSchema` for why it degrades.
+ */
+export const vaultImportRowCandidatesSchema = z
+  .array(importRowCandidateSchema)
+  .max(IMPORT_ROW_CANDIDATE_LIMIT)
+  .nullable()
+  .optional()
+  .catch(null);
+
 const importRowRowSchema = z
   .object({
     batchId: uuidSchema,
@@ -1246,18 +1266,34 @@ const importRowRowSchema = z
     resultMessage: z.string().nullable(),
     /**
      * The `import_rows.candidates` column: display-only near-matches for an
-     * unresolved row (§13.4). `.nullable().optional()` for the same reason as
-     * `portfolios.kind` below — restore/disable strict-parses documents written
-     * before this column existed, and those carry no `candidates` key at all;
-     * requiring it would lock every pre-existing vault out. Writers emit the
-     * field explicitly (null when none captured), so new documents never rely
-     * on the optionality.
+     * unresolved row (§13.4). Enrolled because the export-completeness sweep
+     * requires every persisted column to appear in the strict payload.
+     *
+     * UNBREAKABLE BY CONSTRUCTION. `.nullable().optional()` because
+     * restore/disable strict-parses documents written before this column
+     * existed and those carry no `candidates` key at all — requiring it would
+     * lock every pre-existing vault out, the same reason `portfolios.kind`
+     * below is optional. `.catch(null)` because optionality alone is not
+     * enough: this field is a "did you mean" list, and no display-only
+     * suggestion may ever be the reason a user cannot get their portfolio back.
+     * An over-cap array, an unknown inner `type`, an extra key inside a
+     * candidate, or any other malformed shape degrades this ONE field to null
+     * and the entity still parses. The alternative — a strict parse — throws
+     * away a whole portfolio's transactions over a cosmetic suggestion list.
+     *
+     * NOTE FOR WHOEVER LANDS THE E10 WRITER SEAM: nothing in this repo
+     * currently EMITS an `importRow` vault entity. Every `importRow`
+     * touchpoint on both sides (`portfolioVaultRestoreRepository`,
+     * `paranoidRehydrationService`, the web `portfolioRestoreDocument` /
+     * `vaultPortfolioStore`) is a reader. So this field is presently written by
+     * nobody, and the tolerance above is the only thing standing between a
+     * future malformed value and an unrestorable portfolio. When the writer
+     * arrives: it must be a full-row projection, because a HAND-LISTED
+     * assembler that forgets `candidates` drops it silently — `.optional()`
+     * cannot tell "absent because old document" from "absent because the
+     * assembler forgot".
      */
-    candidates: z
-      .array(importRowCandidateSchema)
-      .max(IMPORT_ROW_CANDIDATE_LIMIT)
-      .nullable()
-      .optional(),
+    candidates: vaultImportRowCandidatesSchema,
   })
   .strict();
 

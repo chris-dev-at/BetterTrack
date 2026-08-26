@@ -15,7 +15,10 @@ import type {
 import {
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
+  IMPORT_ROW_CANDIDATE_EXCHANGE_MAX,
   IMPORT_ROW_CANDIDATE_LIMIT,
+  IMPORT_ROW_CANDIDATE_NAME_MAX,
+  IMPORT_ROW_CANDIDATE_SYMBOL_MAX,
   importSourceTag,
 } from '@bettertrack/contracts';
 
@@ -179,37 +182,112 @@ function instrumentLookupAttempts(key: InstrumentIdentity): InstrumentLookupAtte
  * untouched — and surfaced on the preview row as display-only suggestions.
  * A candidate NEVER resolves a row: it cannot flip `unmapped` to `mapped` and
  * can never reach the apply path.
+ *
+ * One LANE per lookup attempt, keyed by the attempt's query string (stable
+ * across every phase that re-runs that attempt: local pass, enrichment
+ * immediate + post-settle, pre-admission re-check, phase-3 sweep). Lanes are
+ * kept apart rather than merged because the finalizer interleaves them — see
+ * {@link finalizeCandidates}. Each lane is an insertion-ordered map of
+ * UPPERCASE symbol -> already-projected candidate, so a lane is internally
+ * de-duplicated and holds the search's own rank order.
  */
-type CandidateSink = Map<string, SearchResultItem>;
+type CandidateSink = Map<string, Map<string, ImportRowCandidate>>;
 
 /**
- * Fold one search result set into the sink. Keyed by uppercase symbol so the
- * symbol/ISIN/name attempts (which overlap heavily) de-duplicate; Map insertion
- * order preserves each result set's own rank order across attempts.
+ * Project a search hit down to the display fields, truncating the three
+ * provider-fed strings to their contract bounds.
+ *
+ * Truncation happens HERE, at capture, and not as schema rejection: a
+ * pathologically long provider `name` is a cosmetic problem, and rejecting the
+ * candidate over it would delete the whole row's suggestion list — punishing
+ * the user for the provider's data. A clipped name still identifies the
+ * instrument. Without this, one 5 MB provider name would be persisted into as
+ * many staged row copies as reference that identity.
  */
-function captureCandidates(sink: CandidateSink, results: readonly SearchResultItem[]): void {
+function toCandidate(item: SearchResultItem): ImportRowCandidate {
+  return {
+    id: item.id,
+    symbol: item.symbol.slice(0, IMPORT_ROW_CANDIDATE_SYMBOL_MAX),
+    name: item.name.slice(0, IMPORT_ROW_CANDIDATE_NAME_MAX),
+    currency: item.currency,
+    exchange:
+      item.exchange === null ? null : item.exchange.slice(0, IMPORT_ROW_CANDIDATE_EXCHANGE_MAX),
+    type: item.type,
+  };
+}
+
+/**
+ * Fold one attempt's result set into that attempt's lane.
+ *
+ * The lane stops at {@link IMPORT_ROW_CANDIDATE_LIMIT} distinct symbols, and
+ * that bound is EXACT, not an approximation: the finalizer's round-robin can
+ * never read rank >= LIMIT from any lane. To reach rank LIMIT in a lane, each
+ * of that lane's LIMIT earlier entries must have been either picked or skipped
+ * as a duplicate of something already picked elsewhere — and because a lane is
+ * internally de-duplicated, those LIMIT entries account for LIMIT distinct
+ * picked symbols, which is the global cap. The loop has already stopped. So
+ * retaining more can change nothing.
+ *
+ * Without the bound, a search returning the full catalog page for each of the
+ * three attempts retained tens of thousands of `SearchResultItem`s per identity
+ * to hand five of them to the UI.
+ */
+function captureCandidates(
+  sink: CandidateSink,
+  attemptQuery: string,
+  results: readonly SearchResultItem[],
+): void {
+  let lane = sink.get(attemptQuery);
+  if (!lane) {
+    lane = new Map<string, ImportRowCandidate>();
+    sink.set(attemptQuery, lane);
+  }
+  if (lane.size >= IMPORT_ROW_CANDIDATE_LIMIT) return;
   for (const item of results) {
     const dedupeKey = item.symbol.toUpperCase();
-    if (!sink.has(dedupeKey)) sink.set(dedupeKey, item);
+    if (lane.has(dedupeKey)) continue;
+    lane.set(dedupeKey, toCandidate(item));
+    if (lane.size >= IMPORT_ROW_CANDIDATE_LIMIT) return;
   }
 }
 
 /**
- * The row-facing suggestion list: first {@link IMPORT_ROW_CANDIDATE_LIMIT} in
- * captured rank order, reduced to what a human needs to choose. No score is
- * invented — nothing here was measured. Null when nothing usable was seen
- * (the contract field stays absent rather than an empty array).
+ * The row-facing suggestion list: {@link IMPORT_ROW_CANDIDATE_LIMIT} entries
+ * INTERLEAVED across the lookup attempts — best hit of each attempt, then
+ * second of each, and so on — de-duplicated by uppercase symbol, first
+ * occurrence in that traversal winning.
+ *
+ * Round-robin rather than attempt-order concatenation because concatenation
+ * STARVES the later attempts: the symbol attempt runs first, and whenever it
+ * returns five or more hits it consumed the entire cap, so the ISIN and name
+ * attempts contributed nothing. For a row that failed to resolve, the name
+ * attempt is frequently the one carrying the suggestion a human actually wants
+ * ("Muster Tech AG Inhaber" resolves against nothing, but its name search finds
+ * "Muster Tech AG") — and that suggestion was being dropped for a fifth
+ * mediocre symbol hit. Interleaving ranks by within-attempt rank first, so an
+ * attempt's top hit always outranks another attempt's second.
+ *
+ * No score is invented — nothing here was measured; the order is the searches'
+ * own. Null when nothing usable was seen (the contract field stays absent
+ * rather than an empty array).
  */
 function finalizeCandidates(sink: CandidateSink): ImportRowCandidate[] | null {
-  const candidates = [...sink.values()].slice(0, IMPORT_ROW_CANDIDATE_LIMIT).map((item) => ({
-    id: item.id,
-    symbol: item.symbol,
-    name: item.name,
-    currency: item.currency,
-    exchange: item.exchange,
-    type: item.type,
-  }));
-  return candidates.length > 0 ? candidates : null;
+  const lanes = [...sink.values()].map((lane) => [...lane]);
+  const deepest = lanes.reduce((max, lane) => Math.max(max, lane.length), 0);
+  const picked: ImportRowCandidate[] = [];
+  const seen = new Set<string>();
+  for (let rank = 0; rank < deepest; rank += 1) {
+    for (const lane of lanes) {
+      if (picked.length >= IMPORT_ROW_CANDIDATE_LIMIT) return picked;
+      const entry = lane[rank];
+      if (!entry) continue;
+      const [dedupeKey, candidate] = entry;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      picked.push(candidate);
+    }
+  }
+  return picked.length > 0 ? picked : null;
 }
 
 /**
@@ -294,7 +372,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   ): Promise<SearchResultItem | null> {
     for (const attempt of instrumentLookupAttempts(key)) {
       const result = await search.search(userId, attempt.query, { allowEnrichment: false });
-      if (candidates) captureCandidates(candidates, result.results);
+      if (candidates) captureCandidates(candidates, attempt.query, result.results);
       const hit = result.results.find(attempt.matches);
       if (hit) return hit;
     }
@@ -320,7 +398,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
       budget.remainingQueries -= 1;
       const result = await search.search(userId, attempt.query);
-      if (candidates) captureCandidates(candidates, result.results);
+      if (candidates) captureCandidates(candidates, attempt.query, result.results);
       const immediateHit = result.results.find(attempt.matches);
       if (immediateHit) return immediateHit;
       if (!result.enriching) continue;
@@ -346,7 +424,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       }
 
       const refreshed = await search.search(userId, attempt.query, { allowEnrichment: false });
-      if (candidates) captureCandidates(candidates, refreshed.results);
+      if (candidates) captureCandidates(candidates, attempt.query, refreshed.results);
       const hit = refreshed.results.find(attempt.matches);
       if (hit) return hit;
     }

@@ -97,18 +97,41 @@ export type ImportRowAsset = z.infer<typeof importRowAssetSchema>;
  * local-catalog search already returned during exact-identity resolution that
  * did NOT match exactly. Purely informational — the row stays `unmapped`,
  * excluded from apply; nothing is ever auto-applied or auto-matched. At most
- * five per row, de-duplicated by symbol, in the search's own rank order.
+ * five per row, de-duplicated by symbol, INTERLEAVED across the lookup attempts
+ * (best hit of each, then second of each, …) so the symbol attempt cannot
+ * starve the ISIN and name attempts out of the list. Order is the searches'
+ * own — no score is computed anywhere, because nothing was measured.
  */
 export const IMPORT_ROW_CANDIDATE_LIMIT = 5;
+
+/**
+ * Length ceilings for the three PROVIDER-FED strings on a candidate.
+ *
+ * `SearchResultItem` bounds exactly the provider strings it already had a
+ * reason to (`providerId` .max(64), `providerRef` .max(128)) and leaves
+ * symbol/name/exchange open, which is tolerable for a transient search
+ * response. A candidate is not transient: it is PERSISTED, once per staged row
+ * referencing that identity, so an unbounded provider `name` is stored as many
+ * times as the file mentions the instrument. These follow that same
+ * provider-fed-string convention, sized to each field's realistic content —
+ * tickers and MICs are short, instrument names are not.
+ *
+ * The API truncates to these at capture time rather than letting the schema
+ * reject: an over-long name is cosmetic, and refusing the candidate would take
+ * the row's whole suggestion list with it.
+ */
+export const IMPORT_ROW_CANDIDATE_SYMBOL_MAX = 32;
+export const IMPORT_ROW_CANDIDATE_NAME_MAX = 256;
+export const IMPORT_ROW_CANDIDATE_EXCHANGE_MAX = 64;
 
 /** A suggested candidate instrument: what a human needs to choose, no more. */
 export const importRowCandidateSchema = z
   .object({
     id: z.string().uuid(),
-    symbol: z.string(),
-    name: z.string(),
+    symbol: z.string().max(IMPORT_ROW_CANDIDATE_SYMBOL_MAX),
+    name: z.string().max(IMPORT_ROW_CANDIDATE_NAME_MAX),
     currency: currencyCodeSchema,
-    exchange: z.string().nullable(),
+    exchange: z.string().max(IMPORT_ROW_CANDIDATE_EXCHANGE_MAX).nullable(),
     type: assetTypeSchema,
   })
   .strict();

@@ -377,6 +377,16 @@ const fixtures: VaultStrictEntity[] = [
       contentHash: 'b'.repeat(64),
       result: 'applied',
       resultMessage: 'booked',
+      candidates: [
+        {
+          id: uuid(40),
+          symbol: 'HOME.VI',
+          name: 'House Holding AG',
+          currency: 'EUR',
+          exchange: 'XWBO',
+          type: 'stock',
+        },
+      ],
     },
   },
   {
@@ -599,6 +609,73 @@ describe('strict vault document v1', () => {
         data: { ...portfolio.data, kind: 'yacht' },
       }).success,
     ).toBe(false);
+  });
+
+  /**
+   * The import-row `candidates` list is a display-only "did you mean" for a row
+   * that never resolved. It is enrolled in the strict payload because the
+   * export-completeness sweep requires every persisted column to be — NOT
+   * because anything depends on its contents. So it degrades instead of
+   * rejecting: no suggestion list may ever be the reason a user cannot get a
+   * portfolio back. Each case below is a document a stricter field would have
+   * refused outright, taking that row's transactions with it.
+   */
+  describe('import-row candidates degrade instead of locking a portfolio out', () => {
+    const importRow = fixtures.find((fixture) => fixture.kind === 'importRow');
+    if (importRow?.kind !== 'importRow') throw new Error('importRow fixture missing');
+    const candidate = importRow.data.candidates?.[0];
+    if (!candidate) throw new Error('importRow fixture carries no candidates');
+
+    const parseWithCandidates = (candidates: unknown) => {
+      const parsed = vaultStrictEntitySchema.parse({
+        ...importRow,
+        data: { ...importRow.data, candidates },
+      });
+      if (parsed.kind !== 'importRow') throw new Error('importRow parse changed kind');
+      return parsed;
+    };
+
+    it('parses a valid list verbatim — the tolerance never touches good data', () => {
+      const parsed = parseWithCandidates(importRow.data.candidates);
+      expect(parsed.data.candidates).toEqual(importRow.data.candidates);
+      // And the whole row is still intact around it.
+      expect(parsed.data.contentHash).toBe(importRow.data.contentHash);
+    });
+
+    it('degrades an OVER-CAP list to null rather than rejecting the row', () => {
+      const overCap = Array.from({ length: 6 }, (_unused, index) => ({
+        ...candidate,
+        id: uuid(50 + index),
+      }));
+      expect(overCap).toHaveLength(6);
+      const parsed = parseWithCandidates(overCap);
+      expect(parsed.data.candidates).toBeNull();
+      expect(parsed.data.rowIndex).toBe(importRow.data.rowIndex);
+    });
+
+    it('degrades an UNKNOWN asset type to null rather than rejecting the row', () => {
+      const parsed = parseWithCandidates([{ ...candidate, type: 'yacht' }]);
+      expect(parsed.data.candidates).toBeNull();
+      expect(parsed.data.quantity).toBe(importRow.data.quantity);
+    });
+
+    it('degrades an EXTRA key inside a candidate to null rather than rejecting the row', () => {
+      const parsed = parseWithCandidates([{ ...candidate, score: 0.91 }]);
+      expect(parsed.data.candidates).toBeNull();
+      expect(parsed.data.assetId).toBe(importRow.data.assetId);
+    });
+
+    it('degrades any other malformed shape to null, and keeps null/absent meaning "none"', () => {
+      for (const malformed of ['not-an-array', 42, {}, [null], [{ id: 'not-a-uuid' }]]) {
+        expect(parseWithCandidates(malformed).data.candidates).toBeNull();
+      }
+      expect(parseWithCandidates(null).data.candidates).toBeNull();
+      // Absent (every document written before the column existed) stays absent.
+      const { candidates: _omitted, ...withoutCandidates } = importRow.data;
+      const parsed = vaultStrictEntitySchema.parse({ ...importRow, data: withoutCandidates });
+      if (parsed.kind !== 'importRow') throw new Error('importRow parse changed kind');
+      expect(parsed.data.candidates).toBeUndefined();
+    });
   });
 
   it('keeps assets.meta.recategorize and every sibling metadata field', () => {
