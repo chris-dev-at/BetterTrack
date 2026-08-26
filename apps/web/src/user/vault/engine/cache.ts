@@ -2,6 +2,7 @@ export interface DerivedCacheKey {
   ownerUserId: string;
   vaultKeyId: string;
   portfolioId: string;
+  snapshotId: string;
   vaultVersion: number;
   writeId: string;
   assetPriceWatermark: string;
@@ -36,6 +37,7 @@ function cacheKey(key: DerivedCacheKey): string {
     key.ownerUserId,
     key.vaultKeyId,
     key.portfolioId,
+    key.snapshotId,
     key.vaultVersion,
     key.writeId,
     key.assetPriceWatermark,

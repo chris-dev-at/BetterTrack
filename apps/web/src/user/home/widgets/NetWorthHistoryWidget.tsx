@@ -9,6 +9,7 @@ import { PriceChart } from '../../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../../ui/charts';
 import { Empty } from '../../../ui/origin';
 import { PERFORMANCE_RANGES, toHistoryRange } from './PerformanceChartWidget';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -126,18 +127,21 @@ export function NetWorthHistoryWidget({
       queryKey: ['portfolio', portfolio.id, 'history', historyRange],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         getPortfolioHistory(portfolio.id, historyRange, false, signal),
+      enabled: portfolio.vaultId == null,
       staleTime: HISTORY_STALE_MS,
     })),
     combine: (results) => ({
       series: combineSamples(results.map((result) => normalizeSamples(result.data?.points ?? []))),
       loading: results.some((result) => result.isLoading || result.isFetching),
       baseCurrency: results.find((result) => result.data !== undefined)?.data?.baseCurrency,
+      unavailable: hasUnsafeAggregateMember(scopedPortfolios, results),
     }),
   });
 
   if (!portfoliosLoading && charted.length === 0) {
     return <Empty title={t('home.widgets.netWorthHistory.empty')} />;
   }
+  if (combined.unavailable) return <UnavailableHomeAggregate />;
 
   return (
     <div className="bt-chart">

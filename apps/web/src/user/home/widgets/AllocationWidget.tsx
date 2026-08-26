@@ -8,6 +8,7 @@ import { Empty, SkeletonBlock } from '../../../ui/origin';
 import { widgetVariant } from '../config';
 import { usePortfolioSummaries } from '../homeData';
 import { mergeHoldings } from '../holdings';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -40,6 +41,9 @@ export function AllocationWidget({
   const loading = portfoliosLoading || results.some((result) => result.isLoading);
 
   if (loading) return <SkeletonBlock height={200} />;
+  if (hasUnsafeAggregateMember(scopedPortfolios, results)) {
+    return <UnavailableHomeAggregate />;
+  }
 
   const holdings = mergeHoldings(results.map((result) => result.data?.holdings ?? []));
   const cash = results.reduce((total, result) => total + (result.data?.totals.cashEur ?? 0), 0);
