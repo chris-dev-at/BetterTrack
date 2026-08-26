@@ -94,7 +94,7 @@ interface AlertFixture {
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 test.describe('PD9 paranoid-mode end-to-end gate', () => {
-  test('normal account remains on the server store after opening the migration wizard with the Drive seam installed', async ({
+  test('normal account remains on the server store after opening the paranoid setup wizard with the Drive seam installed', async ({
     context,
   }, testInfo) => {
     const diagnostics: string[] = [];
@@ -177,7 +177,37 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     try {
       await test.step('[PD9-A1] binding design precondition', async () => {
         await assertPd9DesignPrecondition();
-        expect(PD9_TRACEABILITY).toHaveLength(7);
+        expect(PD9_TRACEABILITY).toEqual([
+          {
+            criterion: 'Design note §16-logged + owner-acked BEFORE code',
+            assertion: '[PD9-A1] binding design precondition',
+          },
+          {
+            criterion: 'Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)',
+            assertion: '[PD9-A2] complete DB cleartext probe',
+          },
+          {
+            criterion:
+              'Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e)',
+            assertion: '[PD9-A3] Drive-only enable and zero active server medium round trip',
+          },
+          {
+            criterion: 'Media switching migrates the blob correctly (test)',
+            assertion: '[PD9-A4] verified media ordering and retained-source failure',
+          },
+          {
+            criterion: 'Social/sharing surfaces are absent for the account (matrix test)',
+            assertion: '[PD9-A5] killed/kept browser route matrix',
+          },
+          {
+            criterion: 'A client computes correct stats from encrypted fixture data (test)',
+            assertion: '[PD9-A6] known custom-asset totals without portfolio API reads',
+          },
+          {
+            criterion: 'Alerts still fire (test)',
+            assertion: '[PD9-A7] real evaluator and notification dispatcher',
+          },
+        ]);
       });
 
       owner = await provisionUserInContext(context, admin, 'pd9vault');
@@ -439,15 +469,10 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           .getByLabel('I want to rehydrate this unlocked vault and disable Paranoid mode.')
           .check();
         await page.getByRole('button', { name: 'Restore normal mode' }).click();
-        // Back-to-normal signal. The old locator watched for `vault.settings.normal`
-        // ("Client-encrypted vault"), the label of the account-level enable row that
-        // the Vaults-v2 panel redesign deleted — the same latent staleness as the
-        // `Set up` → `Open migration` relabel, and it only became reachable once the
-        // seam repair let this block run to its end. The legacy entry replaces it
-        // one-for-one: PrivacyPanel renders it exclusively under
-        // `privacy.privacyMode === 'normal'`, so it appears only after the disable
-        // has actually flipped the account back.
-        await expect(page.getByRole('button', { name: 'Open migration' })).toBeVisible({
+        // Back-to-normal signal. PrivacyPanel renders the setup entry exclusively
+        // under `privacy.privacyMode === 'normal'`, so it appears only after the
+        // disable has actually flipped the account back.
+        await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeVisible({
           timeout: 30_000,
         });
 
@@ -666,7 +691,7 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 }
 
 // Post-PERF1 the vault stack is code-split: `VaultRuntimeProvider` is pulled in
-// only when the privacy panel's legacy entry sets `?enable=1`, so this gesture —
+// only when the privacy panel's setup entry sets `?enable=1`, so this gesture —
 // not a bare page load — is what makes the boundary double observable.
 //
 // This is also where the seam is proven POSITIVELY, and it is what makes the
@@ -677,7 +702,7 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 // that the helper is not a no-op.
 async function openParanoidSetup(page: Page): Promise<void> {
   await page.goto('/control/privacy');
-  await page.getByRole('button', { name: 'Open migration' }).click();
+  await page.getByRole('button', { name: 'Set up', exact: true }).click();
   // Heading FIRST, flag second, so the two failure modes stay distinguishable.
   // On a cold Vite dev server the vault/crypto chunk is the slowest transform in
   // the suite; asserting the flag first would report that slowness as

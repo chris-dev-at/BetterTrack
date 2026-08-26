@@ -13,6 +13,7 @@ import { NEGATIVE, POSITIVE } from '../../../ui/charts/palette';
 import { Empty } from '../../../ui/origin';
 import { widgetVariant } from '../config';
 import { MAX_HISTORY_PORTFOLIOS } from './NetWorthHistoryWidget';
+import { hasUnsafeAggregateMember, UnavailableHomeAggregate } from './aggregateSafety';
 import type { WidgetProps } from './types';
 
 /**
@@ -94,11 +95,13 @@ export function CashflowChartWidget({
     queries: charted.map((portfolio) => ({
       queryKey: cashTrendsQueryKey(portfolio.id, months),
       queryFn: ({ signal }: { signal: AbortSignal }) => getCashTrends(portfolio.id, months, signal),
+      enabled: portfolio.vaultId == null,
       staleTime: 30_000,
     })),
     combine: (results) => ({
       points: combineCashTrends(results.map((result) => result.data?.points ?? [])),
       loading: results.some((result) => result.isLoading || result.isFetching),
+      unavailable: hasUnsafeAggregateMember(scopedPortfolios, results),
     }),
   });
 
@@ -122,6 +125,7 @@ export function CashflowChartWidget({
   if (!portfoliosLoading && charted.length === 0) {
     return <Empty title={t('home.widgets.cashflowChart.empty')} />;
   }
+  if (combined.unavailable) return <UnavailableHomeAggregate />;
 
   return (
     <div>
@@ -146,7 +150,7 @@ export function CashflowChartWidget({
           />
         </div>
       )}
-      {points.length > 0 ? (
+      {!loading && points.length > 0 ? (
         <p className="bt-meta bt-home-substats">
           <MoneyText amount={inflow} /> {t('home.widgets.cashflowChart.incomeWord')}
           <span aria-hidden="true"> · </span>
