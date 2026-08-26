@@ -4049,6 +4049,7 @@
         "errors": {
           "notABettertrackCode": "Dieser QR-Code ist kein BetterTrack-Transfer-Code.",
           "updateRequired": "Dieser Transfer-Code verwendet eine nicht unterstützte Version. Aktualisiere die App und versuche es erneut.",
+          "malformed": "Dieser Transfer-Code ist beschädigt und wurde abgelehnt. Lass ihn dir vom anderen Gerät noch einmal anzeigen.",
           "missingMnemonic": "Der Transfer-Code enthält keine Seed-Phrase und wurde abgelehnt.",
           "missingVaultId": "Der Transfer-Code enthält keine Tresor-ID und wurde abgelehnt.",
           "invalidMnemonic": "Die Seed-Phrase muss aus 12 gültigen englischen BIP39-Wörtern mit gültiger Prüfsumme bestehen.",

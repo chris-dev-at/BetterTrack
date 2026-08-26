@@ -38,6 +38,26 @@ describe('btvault1 payload conformance vectors', () => {
     expect(rejectedOutcome(VECTORS.unknownPrefix.payload)).toBe(VECTORS.unknownPrefix.outcome);
   });
 
+  it.each([
+    ['btvault0:', VECTORS.versionZero],
+    ['btvault01:', VECTORS.versionPaddedOne],
+    ['btvault02:', VECTORS.versionPaddedTwo],
+    ['btvault007:', VECTORS.versionPaddedSeven],
+  ])('treats the non-canonical version token %s as not a BetterTrack code', (_token, vector) => {
+    expect(rejectedOutcome(vector.payload)).toBe(vector.outcome);
+  });
+
+  it('separates the canonical version rule from an integer comparison', () => {
+    // The trap this pins: `Number(version) > 1` reads `btvault02:` as 2 and
+    // sends the user to the app store, while `version !== '1'` reads
+    // `btvault01:` as foreign. Only a shape check first makes the two agree.
+    expect(rejectedOutcome(VECTORS.versionPaddedTwo.payload)).not.toBe('update-required');
+    expect(rejectedOutcome(VECTORS.versionPaddedOne.payload)).toBe(
+      rejectedOutcome(VECTORS.versionZero.payload),
+    );
+    expect(rejectedOutcome(VECTORS.unknownPrefix.payload)).toBe('update-required');
+  });
+
   it('rejects a bare string as not a BetterTrack code', () => {
     expect(rejectedOutcome(VECTORS.bareString.payload)).toBe(VECTORS.bareString.outcome);
   });
@@ -46,9 +66,21 @@ describe('btvault1 payload conformance vectors', () => {
     expect(rejectedOutcome(VECTORS.wifiQr.payload)).toBe(VECTORS.wifiQr.outcome);
   });
 
-  it('rejects a query delimiter ahead of the form-encoded body', () => {
+  it('rejects a query delimiter ahead of the form-encoded body as malformed', () => {
     expect(rejectedOutcome(VECTORS.leadingQuestionMark.payload)).toBe(
       VECTORS.leadingQuestionMark.outcome,
+    );
+  });
+
+  it('reports the same structural outcome for a leading delimiter whichever key leads', () => {
+    // The old `missing-mnemonic` answer was an artifact of `m` being read
+    // first: `?v=…&m=…` would have reported `missing-vault-id` instead. A
+    // structural violation must not depend on key order.
+    expect(rejectedOutcome(VECTORS.leadingQuestionMarkVaultIdFirst.payload)).toBe(
+      VECTORS.leadingQuestionMarkVaultIdFirst.outcome,
+    );
+    expect(rejectedOutcome(VECTORS.leadingQuestionMarkVaultIdFirst.payload)).toBe(
+      rejectedOutcome(VECTORS.leadingQuestionMark.payload),
     );
   });
 
@@ -68,6 +100,58 @@ describe('btvault1 payload conformance vectors', () => {
     expect(parseVaultTransferPayload(VECTORS.paddedName.payload)).toEqual(
       VECTORS.paddedName.expected,
     );
+  });
+
+  it('treats a control-only display hint as absent', () => {
+    // JS `trim()` does NOT strip U+001F, so this is exactly the vector that
+    // would survive as a one-character control name on the web client while
+    // Kotlin's `trim()` dropped it.
+    expect(parseVaultTransferPayload(VECTORS.controlOnlyName.payload)).toEqual(
+      VECTORS.controlOnlyName.expected,
+    );
+  });
+
+  it('treats a byte-order-mark-only display hint as absent', () => {
+    // The mirror case: U+FEFF is neither White_Space nor a C0/C1 control, so
+    // Kotlin's `trim()` keeps it while JS drops it.
+    expect(parseVaultTransferPayload(VECTORS.byteOrderMarkName.payload)).toEqual(
+      VECTORS.byteOrderMarkName.expected,
+    );
+  });
+
+  it('trims surrounding control characters off a display hint', () => {
+    expect(parseVaultTransferPayload(VECTORS.controlPaddedName.payload)).toEqual(
+      VECTORS.controlPaddedName.expected,
+    );
+  });
+
+  it('keeps a control character inside a display hint', () => {
+    // Only the EDGES are trimmed; the wire preserves the decoded value exactly.
+    // (The render sanitizer, not the parser, is what strips interior controls.)
+    const parsed = parseVaultTransferPayload(
+      `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=a%1Fb`,
+    );
+
+    expect(parsed.name).toBe('a\u001Fb');
+  });
+
+  it('trims the display hint before applying the 64-code-point cap', () => {
+    // Cap-then-trim would count the two padding spaces, see 66 code points and
+    // fail the whole transfer with `invalid-name`.
+    expect(parseVaultTransferPayload(VECTORS.paddedMaxLengthName.payload)).toEqual(
+      VECTORS.paddedMaxLengthName.expected,
+    );
+    expect(parseVaultTransferPayload(VECTORS.paddedMaxLengthName.payload).name).toHaveLength(
+      VAULT_TRANSFER_NAME_MAX_CHARS,
+    );
+  });
+
+  it('still rejects a hint that is over the cap after trimming', () => {
+    expect(
+      rejectedOutcome(
+        `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=%20${'a'.repeat(VAULT_TRANSFER_NAME_MAX_CHARS + 1)}%20`,
+      ),
+    ).toBe('invalid-name');
   });
 
   it('preserves a normal display hint through parse unchanged', () => {
