@@ -202,6 +202,7 @@ function session(holdings: Holding[]): VaultMoneySession {
   const derivation: ClientPortfolioDerivation = {
     ownerUserId: USER_ID,
     vaultKeyId: '018f0000-0000-7000-8000-0000000000aa',
+    snapshotId: 'legacy:1:018f0000-0000-7000-8000-0000000000ab',
     portfolioId: PORTFOLIO_ID,
     vaultVersion: 1,
     writeId: '018f0000-0000-7000-8000-0000000000ab',

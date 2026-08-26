@@ -29,7 +29,6 @@ import {
   type MarketFxValue,
 } from '../../../lib/marketDataSource';
 import { isLocalAssetSnapshot } from '../assetSnapshot';
-import type { VaultSyncEngine } from '../sync';
 import { VaultDerivedCache } from './cache';
 import {
   asMoneyFailure,
@@ -45,9 +44,10 @@ import {
 } from './model';
 import { localManualAssetMarket } from './manualAsset';
 import {
-  assertVaultSnapshotCurrent,
-  validatedVaultSnapshot,
+  assertMoneySnapshotCurrent,
+  validatedMoneySnapshot,
   type ValidatedVaultSnapshot,
+  type VaultMoneySnapshotAccess,
 } from './session';
 import type { ClientPortfolioDerivation, ClientPortfolioRange, VaultMoneyEngine } from './types';
 
@@ -93,7 +93,7 @@ export interface PortfolioDerivationEngine {
 }
 
 export function createPortfolioDerivationEngine(
-  sync: VaultSyncEngine,
+  snapshotAccess: VaultMoneySnapshotAccess,
   market: MarketDataSource,
   options: PortfolioEngineOptions = {},
 ): PortfolioDerivationEngine {
@@ -104,7 +104,7 @@ export function createPortfolioDerivationEngine(
     async derivePortfolio(portfolioId, range, signal) {
       try {
         signal?.throwIfAborted();
-        const snapshot = validatedVaultSnapshot(sync);
+        const snapshot = validatedMoneySnapshot(snapshotAccess);
         const model = readPortfolioModel(snapshot.document, portfolioId);
         const today = new Date(now()).toISOString().slice(0, 10);
         const loaded = await loadMarketInputs(snapshot.document, model, today, market, signal);
@@ -122,6 +122,7 @@ export function createPortfolioDerivationEngine(
           ownerUserId: snapshot.ownerUserId,
           vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
+          snapshotId: snapshot.snapshotId,
           vaultVersion: snapshot.vaultVersion,
           writeId: snapshot.writeId,
           assetPriceWatermark: value.assetPriceWatermark,
@@ -130,11 +131,11 @@ export function createPortfolioDerivationEngine(
         };
         const cached = cache.get(key);
         if (cached !== undefined) {
-          assertVaultSnapshotCurrent(sync, snapshot);
+          assertMoneySnapshotCurrent(snapshotAccess, snapshot);
           return { ok: true, value: cached };
         }
 
-        assertVaultSnapshotCurrent(sync, snapshot);
+        assertMoneySnapshotCurrent(snapshotAccess, snapshot);
         cache.set(key, value);
         return { ok: true, value };
       } catch (cause) {
@@ -322,6 +323,7 @@ async function derive(
     ownerUserId: snapshot.ownerUserId,
     vaultKeyId: snapshot.vaultKeyId,
     portfolioId: model.portfolioId,
+    snapshotId: snapshot.snapshotId,
     vaultVersion: snapshot.vaultVersion,
     writeId: snapshot.writeId,
     assetPriceWatermark,

@@ -218,6 +218,28 @@ test('registers status copy for every vault sync state and medium in EN and DE',
   }
 });
 
+test('registers singular and plural locked-portfolio qualifiers in EN and DE', () => {
+  for (const locale of Object.values(LOCALES)) {
+    for (const suffix of ['One', 'Other']) {
+      const key = `vaultComposition.lockedPortfoliosQualifier${suffix}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+
+  expect(localizedMessage('en', 'vaultComposition.lockedPortfoliosQualifierOne')).toBe(
+    '+ {{count}} locked portfolio',
+  );
+  expect(localizedMessage('en', 'vaultComposition.lockedPortfoliosQualifierOther')).toBe(
+    '+ {{count}} locked portfolios',
+  );
+  expect(localizedMessage('de', 'vaultComposition.lockedPortfoliosQualifierOne')).toBe(
+    '+ {{count}} gesperrtes Portfolio',
+  );
+  expect(localizedMessage('de', 'vaultComposition.lockedPortfoliosQualifierOther')).toBe(
+    '+ {{count}} gesperrte Portfolios',
+  );
+});
+
 test('registers backup readiness copy for every contract level and reason in EN and DE', () => {
   // The Overview tile and the Health panel both render
   // `admin.backup.level.<level>` and `admin.backup.reason.<reason>` as template
