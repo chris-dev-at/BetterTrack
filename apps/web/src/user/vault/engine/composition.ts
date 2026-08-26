@@ -200,6 +200,17 @@ interface TaxEvent {
  * Compose AT/DE loss-offset tax across plain server reports and client reports.
  * Event extraction is plumbing; all tax targets, loss pots and allowances are
  * computed by the same `@bettertrack/domain/tax` functions as the server.
+ *
+ * SEMANTICS (T1 ruling, pinned by tests): this is ONE pooled settlement over
+ * the union of every visible portfolio's events — one Sparer-Pauschbetrag for
+ * the person, loss pots chained over the pooled prior-year stream, losses in
+ * one portfolio offsetting gains in another. It answers "what would this look
+ * like as a single combined depot" and therefore intentionally does NOT equal
+ * the sum of the per-portfolio settlements (separate paying agents each apply
+ * their own allowance and never see each other's losses). Precision contract:
+ * settlement consumes the reports' full-precision per-row figures raw; cent
+ * flooring happens only at this module's reported presentation boundary,
+ * mirroring the server report's own quantization.
  */
 export function composeCountryTaxYear(
   country: Extract<TaxCountry, 'AT' | 'DE'>,
@@ -331,13 +342,21 @@ export function composeCountryTaxYear(
     taxTargetEur: qualifyMoney(settlement.heldAfterEur, coverage),
     realizedPnlEur: qualifyMoney(realizedPnlEur, coverage),
     dividendsGrossEur: qualifyMoney(dividendsGrossEur, coverage),
+    // The reported DE block mirrors the server report's presentation boundary
+    // (taxService.deSummaryForYear): allowance and pot figures floor to cents
+    // HERE — after settlement ran on the raw values — so the composed panel
+    // and the portfolio page quantize identically. kapest/soli arrive already
+    // cent-exact from the engine and pass through.
     de: {
-      allowanceUsedEur: qualifyMoney(settlement.yearEnd.allowanceUsedEur, coverage),
-      allowanceRemainingEur: qualifyMoney(settlement.yearEnd.allowanceRemainingEur, coverage),
+      allowanceUsedEur: qualifyMoney(floorCents(settlement.yearEnd.allowanceUsedEur), coverage),
+      allowanceRemainingEur: qualifyMoney(
+        floorCents(settlement.yearEnd.allowanceRemainingEur),
+        coverage,
+      ),
       aktienPotInEur: qualifyMoney(aktienPotInEur, coverage),
-      aktienPotOutEur: qualifyMoney(settlement.yearEnd.aktienPotOutEur, coverage),
+      aktienPotOutEur: qualifyMoney(floorCents(settlement.yearEnd.aktienPotOutEur), coverage),
       sonstigePotInEur: qualifyMoney(sonstigePotInEur, coverage),
-      sonstigePotOutEur: qualifyMoney(settlement.yearEnd.sonstigePotOutEur, coverage),
+      sonstigePotOutEur: qualifyMoney(floorCents(settlement.yearEnd.sonstigePotOutEur), coverage),
       kapestEur: qualifyMoney(settlement.yearEnd.kapestEur, coverage),
       soliEur: qualifyMoney(settlement.yearEnd.soliEur, coverage),
     },
