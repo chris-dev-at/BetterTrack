@@ -37,14 +37,51 @@ const VAULT_JSON_DOCUMENTATION = {
     'against the recursive contract schema.',
 };
 
+// Same generator gap, second instance: 7.3.x has no `ZodCatch` transformer
+// either, and the vault import-row `candidates` field is a `.catch(null)` so a
+// malformed display-only suggestion list can never make a portfolio
+// unrestorable. It is reachable from `PortfolioVaultMoveOutRequest`, so without
+// a hint `/openapi.json` and `/docs` 500 for the whole API.
+const VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION = {
+  type: 'array' as const,
+  nullable: true,
+  items: { type: 'object' as const, additionalProperties: true },
+  description:
+    'Display-only "did you mean" suggestions for an unresolved import row. Tolerant by ' +
+    'design: a value that does not match the strict candidate list is accepted and read ' +
+    'back as null rather than rejecting the row, because a suggestion list must never be ' +
+    'the reason a portfolio cannot be restored.',
+};
+
+/**
+ * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
+ * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
+ * then put the previous values back — so `@bettertrack/contracts` is observably
+ * unmodified before and after, and a second build is still correct rather than
+ * a one-shot. Runtime request validation always uses the untouched schemas.
+ */
+type HintableSchema = { _def: { openapi?: unknown }; openapi: (h: unknown) => HintableSchema };
+
+const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
+  [contracts.vaultJsonSchema as unknown as HintableSchema, VAULT_JSON_DOCUMENTATION],
+  [
+    contracts.vaultImportRowCandidatesSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION,
+  ],
+];
+
 function withVaultJsonDocumentation<T>(generate: () => T): T {
-  const schema = contracts.vaultJsonSchema;
-  const original = schema._def.openapi;
-  schema._def.openapi = schema.openapi(VAULT_JSON_DOCUMENTATION)._def.openapi;
+  const restore = GENERATOR_GAP_HINTS.map(([schema, hint]) => {
+    const original = schema._def.openapi;
+    schema._def.openapi = schema.openapi(hint)._def.openapi;
+    return () => {
+      schema._def.openapi = original;
+    };
+  });
   try {
     return generate();
   } finally {
-    schema._def.openapi = original;
+    for (const undo of restore) undo();
   }
 }
 
