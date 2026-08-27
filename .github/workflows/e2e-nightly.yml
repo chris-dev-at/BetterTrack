@@ -59,7 +59,7 @@ jobs:
       # same variable at config load so local runs are covered too; it is
       # repeated here so a shard stays safe however the runner is invoked.
       # This only stops the TEARDOWN snapshot; the matcher's own snapshot is
-      # stripped in the specs (see e2e/support/e10.ts).
+      # stripped in the specs (see e2e/support/artifactHygiene.ts).
       PLAYWRIGHT_NO_COPY_PROMPT: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

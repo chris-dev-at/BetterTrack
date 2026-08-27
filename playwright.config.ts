@@ -29,8 +29,8 @@ import {
  */
 
 /**
- * SECRET HYGIENE — half one of two (see `e2e/support/e10.ts` "Failure-artifact
- * secret hygiene" for the whole mechanism and the measurements behind it).
+ * SECRET HYGIENE — half one of two (see `e2e/support/artifactHygiene.ts` for the
+ * whole mechanism and the measurements behind it).
  *
  * On a failure Playwright writes `test-results/<test>/error-context.md`, which the
  * nightly uploads for 7 days. That file can carry a full aria snapshot of the

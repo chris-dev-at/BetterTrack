@@ -52,67 +52,11 @@ import type { E2EUser } from './users';
  *    that six-minute flow here would add nightly cost and no assertion.
  *
  * Secrets: these arcs enter real BIP39 phrases and device passwords into the
- * DOM. See "Failure-artifact secret hygiene" immediately below for what protects
- * them and — just as important — what the artifact scan does NOT reach.
+ * DOM. What protects them in a FAILURE artifact — and, just as important, what
+ * the `assertNoPd9Secrets` scan structurally cannot reach — is written up in
+ * `e2e/support/artifactHygiene.ts`. Read that before assuming the scan covers
+ * `error-context.md`; it does not, and it cannot.
  */
-
-/**
- * FAILURE-ARTIFACT SECRET HYGIENE — the mechanism, measured rather than assumed.
- *
- * The obvious protection is `assertNoPd9Secrets`, which every arc runs in its
- * `finally`. Two things it CANNOT do were measured against Playwright 1.61.1,
- * and pretending otherwise is how key material ships to a GitHub artifact:
- *
- *  1. **`error-context.md` is written after the scan.** The runner writes it
- *     from `ArtifactsRecorder` during FIXTURE TEARDOWN — strictly after the test
- *     body's own `finally`, so the scan of `testInfo.outputDir` runs before the
- *     file exists and can never see it.
- *  2. **`testInfo.errors` is EMPTY at scan time.** Measured: a `test.step` whose
- *     locator assertion fails, caught in the body, reports
- *     `testInfo.errors.length === 0` inside that same `finally`. The runner
- *     records the failure only once the test function rejects. So the scan's
- *     coverage of error TEXT is real only for errors pushed before it runs —
- *     never for the body failure that produced the artifact.
- *
- * The artifact is therefore protected by SUPPRESSION, not by the scan, and it
- * takes two switches because Playwright has two independent producers of the
- * aria snapshot that prints input values (`type="password"` included) and the
- * ceremony's twelve rendered words:
- *
- *  - **Teardown fallback** — `ArtifactsRecorder._takePageSnapshot()`, disabled by
- *    `PLAYWRIGHT_NO_COPY_PROMPT`, set at config load in `playwright.config.ts`
- *    and again in `e2e-nightly.yml`. Covers non-matcher failures: a helper
- *    `throw`, a hook error, a test timeout.
- *  - **The matcher itself** — a failing `expect(locator)` carries an aria
- *    snapshot on the thrown error (`matcherResult.ariaSnapshot`), which the
- *    runner copies to `TestError.errorContext` and `buildErrorContext` renders
- *    as a YAML block. Playwright 1.61.1 exposes NO switch for it, so each arc
- *    strips it before rethrowing — {@link withoutMatcherAriaSnapshot}.
- *
- * Measured on a deliberately failing probe (typed device password + a rendered
- * word list), counting cleartext hits in `error-context.md`:
- *
- * | failure kind | neither switch | env var only | env var + strip |
- * | ------------ | -------------- | ------------ | --------------- |
- * | failed matcher | leaks (YAML)  | leaks (YAML) | **clean**       |
- * | plain throw / timeout | leaks (`# Page snapshot`) | **clean** | **clean** |
- *
- * RESIDUAL, stated rather than hidden: `error-context.md` also embeds a ±100
- * line code frame of the spec source, so a failure within 100 lines of the
- * `DEVICE_PASSWORD` literal echoes that literal. It is a constant already
- * committed to this repo — an artifact reader needs repo access anyway — so it
- * discloses nothing new. The RUNTIME secret, the BIP39 phrase the ceremony
- * mints, exists only in the DOM and is fully covered by the two switches above.
- */
-export function withoutMatcherAriaSnapshot(error: unknown): unknown {
-  // Playwright attaches the snapshot to the public `matcherResult` of an expect
-  // failure. Dropping the one field keeps the message, stack and code frame —
-  // the failure stays as debuggable as any non-locator assertion.
-  const matcherResult = (error as { matcherResult?: { ariaSnapshot?: string } } | null | undefined)
-    ?.matcherResult;
-  if (matcherResult?.ariaSnapshot !== undefined) delete matcherResult.ariaSnapshot;
-  return error;
-}
 
 /**
  * Every E10 sub-arc named by the spec line, and where it is discharged.

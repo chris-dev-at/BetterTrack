@@ -12,6 +12,7 @@ import {
   safeDestination,
 } from '../apps/web/src/user/vault/ui/ParanoidSurfaceGate';
 import { newAdminRequestContext } from './support/adminApi';
+import { withoutMatcherAriaSnapshot } from './support/artifactHygiene';
 import { ACCOUNT_PASSWORD } from './support/config';
 import { passwordSignIn } from './support/auth';
 import { expectUserShellReady } from './support/flows';
@@ -30,7 +31,6 @@ import {
   openTransferReceiver,
   submitTransferPayload,
   vaultRow,
-  withoutMatcherAriaSnapshot,
 } from './support/e10';
 import { provisionUser, provisionUserInContext, type E2EUser } from './support/users';
 
@@ -76,7 +76,7 @@ import { provisionUser, provisionUserInContext, type E2EUser } from './support/u
 // `playwright.config.ts` and the nightly) for the teardown snapshot, and
 // `withoutMatcherAriaSnapshot` on every rethrow for the matcher's own. Both
 // halves, the measurements behind them and the one residual channel are written
-// up under "Failure-artifact secret hygiene" in `e2e/support/e10.ts`.
+// up in `e2e/support/artifactHygiene.ts`.
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 /**
@@ -273,7 +273,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -400,7 +400,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -516,7 +516,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -627,7 +627,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -683,7 +683,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -773,7 +773,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -896,7 +896,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -1113,7 +1113,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // Drop the matcher's aria snapshot before the runner turns this into
       // `error-context.md`: it prints input VALUES, this arc types a real device
       // password, and the artifact is uploaded by the nightly. See
-      // `withoutMatcherAriaSnapshot`.
+      // `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {

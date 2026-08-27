@@ -15,6 +15,7 @@ import {
   safeDestination,
 } from '../apps/web/src/user/vault/ui/ParanoidSurfaceGate';
 import { newAdminRequestContext } from './support/adminApi';
+import { withoutMatcherAriaSnapshot } from './support/artifactHygiene';
 import { API_BASE_URL } from './support/config';
 import {
   assertPd9DesignPrecondition,
@@ -147,7 +148,13 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       expect(portfolios.ok(), await portfolios.text()).toBeTruthy();
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`. `assertNoPd9Secrets` cannot cover that file — it is
+      // written in fixture teardown, after the scan — and an aria snapshot
+      // prints input VALUES, including the `fillPd9Secret` passphrase sitting in
+      // the DOM. `PLAYWRIGHT_NO_COPY_PROMPT` does NOT stop this half; only the
+      // strip does. See `e2e/support/artifactHygiene.ts`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -538,7 +545,13 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`. `assertNoPd9Secrets` cannot cover that file — it is
+      // written in fixture teardown, after the scan — and an aria snapshot
+      // prints input VALUES, including the `fillPd9Secret` passphrase sitting in
+      // the DOM. `PLAYWRIGHT_NO_COPY_PROMPT` does NOT stop this half; only the
+      // strip does. See `e2e/support/artifactHygiene.ts`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await Promise.all([admin.dispose(), harness.dispose()]);
@@ -646,6 +659,25 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByText('Advanced', { exact: true }).click();
   await page.getByText('Google Drive only', { exact: true }).click();
+
+  // #1354 moved Drive consent AHEAD of the passphrase: choosing a Drive medium
+  // now preloads GIS and then REQUIRES an explicit authorization gesture, and
+  // step 2's Continue stays disabled until it lands
+  // (`ParanoidEnableWizard.tsx`: `step === 2 && (authorizingDrive ||
+  // (driveSelected && drive == null))`). Clicking Continue straight after the
+  // radio — what this helper did before — waits on a button that can never
+  // enable, so the arc burned its whole 360 s budget on click retries.
+  //
+  // Waiting for the CONNECTED copy rather than just clicking is deliberate:
+  // authorization is asynchronous, and the same button renders "Retry" when
+  // preparation failed, so a blind click could sail past a broken seam and fail
+  // later somewhere unrelated.
+  await page.getByRole('button', { name: 'Connect Google Drive' }).click();
+  await expect(
+    page.getByText('Google Drive is connected and ready for the encrypted copy.'),
+    'the Drive seam must authorize before the wizard offers the passphrase step',
+  ).toBeVisible({ timeout: 30_000 });
+
   await page.getByRole('button', { name: 'Continue' }).click();
   await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
   await fillPd9Secret(page, 'Confirm vault passphrase', 'passphrase');
