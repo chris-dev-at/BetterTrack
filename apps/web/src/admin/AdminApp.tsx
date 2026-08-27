@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 
 import { I18nProvider, useT } from '../i18n';
 import { NotFoundState } from '../ui';
@@ -12,6 +12,7 @@ import { AnnouncementsPage } from './pages/AnnouncementsPage';
 import { AuditPage } from './pages/AuditPage';
 import { EmailPage } from './pages/EmailPage';
 import { FeatureFlagsPage } from './pages/FeatureFlagsPage';
+import { FeedbackPage } from './pages/FeedbackPage';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { HealthPage } from './pages/HealthPage';
 import { InvitesPage } from './pages/InvitesPage';
@@ -19,7 +20,10 @@ import { LoginPage } from './pages/LoginPage';
 import { MonitoringPage } from './pages/MonitoringPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
+import { OverviewPage } from './pages/OverviewPage';
 import { ProblemsPage } from './pages/ProblemsPage';
+import { RegistrationPage } from './pages/RegistrationPage';
+import { SupportPage } from './pages/SupportPage';
 import { UsageAnalyticsPage } from './pages/UsageAnalyticsPage';
 import { SecuritySettingsPage } from './pages/SecuritySettingsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -60,10 +64,16 @@ function AdminShell() {
     <Routes>
       <Route path="login" element={<LoginPage />} />
       <Route element={<AdminLayout />}>
-        <Route index element={<Navigate to="users" replace />} />
+        {/* `/admin` lands on the operator Overview (#1406 W1). Every page path
+            below is unchanged from the pre-W1 console, so bookmarks survive the
+            IA change — only the nav grouping moved. */}
+        <Route index element={<OverviewPage />} />
+        <Route path="support" element={<SupportPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="users/:userId" element={<UserDetailPage />} />
+        <Route path="registration" element={<RegistrationPage />} />
         <Route path="invites" element={<InvitesPage />} />
+        <Route path="feedback" element={<FeedbackPage />} />
         <Route path="oauth-apps" element={<OAuthAppsPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="email" element={<EmailPage />} />
@@ -78,7 +88,7 @@ function AdminShell() {
         <Route path="account-defaults" element={<AccountDefaultsPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />
         <Route path="security" element={<SecuritySettingsPage />} />
-        <Route path="*" element={<NotFoundState homeTo="/admin/users" />} />
+        <Route path="*" element={<NotFoundState homeTo="/admin" />} />
       </Route>
     </Routes>
   );

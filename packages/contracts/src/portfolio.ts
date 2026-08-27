@@ -154,6 +154,18 @@ export const portfolioSummarySchema = z
      */
     kind: portfolioKindSchema.nullable().optional(),
     /**
+     * Per-portfolio vault membership (paranoid E2). A non-null value means this
+     * row is a locked, content-free stub; server-computed portfolio operations
+     * refuse it with `VAULTED_PORTFOLIO`. This is the authoritative new-model
+     * signal — account `privacyMode` is legacy-v1 compatibility only.
+     */
+    vaultId: z.string().uuid().nullable().optional(),
+    /**
+     * Optional cleartext label for a locked stub. It is configuration metadata,
+     * never portfolio content, and is null on every plain portfolio.
+     */
+    vaultAlias: z.string().nullable().optional(),
+    /**
      * MIRRORCHAIN synced-copy badge (V5-P7 M5, design §11): present exactly
      * when this portfolio is a synced copy of an active chain. Absent on every
      * normal portfolio, so pre-M5 clients are unaffected.
@@ -431,40 +443,22 @@ export const portfolioTaxSettingsResponseSchema = z
   .strict();
 export type PortfolioTaxSettingsResponse = z.infer<typeof portfolioTaxSettingsResponseSchema>;
 
-// --- Tax year locking (owner directive 2026-08-07, §16) -----------------------
+// --- Living tax-year documentation (owner directive 2026-08-19, §16) --------
 
-/** Route params for `/settings/taxes/years/:year/(unlock|relock)`. */
-export const taxYearLockParamsSchema = z
-  .object({ year: z.coerce.number().int().min(1900).max(3000) })
-  .strict();
-
-/**
- * `POST /settings/taxes/years/:year/unlock` body — the explicit unlock ritual.
- * Amending a passed tax year is legal reality (AT/DE), but it must never happen
- * casually: the endpoint is cookie-session only (never bearer) and re-verifies
- * the account password before the year opens for amendments.
- */
-export const unlockTaxYearRequestSchema = z
-  .object({ password: z.string().min(1).max(1024) })
-  .strict();
-export type UnlockTaxYearRequest = z.infer<typeof unlockTaxYearRequestSchema>;
-
-/**
- * `GET /settings/taxes/years` (and the unlock/relock responses): the caller's
- * tax-year lock state. Every Vienna year before `currentYear` is LOCKED unless
- * it appears in `unlockedYears` — a year the user explicitly opened for
- * amendments, which stays open until they explicitly re-lock it. The current
- * (open) year is never lockable and never appears here.
- */
-export const taxYearLockStateResponseSchema = z
+/** One account-wide tax-year edit marker. Missing legacy markers stay null. */
+export const taxYearChangeSchema = z
   .object({
-    /** The current Vienna tax year — years before it auto-lock at rollover. */
-    currentYear: z.number().int(),
-    /** Elapsed years explicitly unlocked for amendments, ascending. */
-    unlockedYears: z.array(z.number().int()),
+    year: z.number().int(),
+    lastChangedAt: z.string().datetime().nullable(),
   })
   .strict();
-export type TaxYearLockStateResponse = z.infer<typeof taxYearLockStateResponseSchema>;
+export type TaxYearChange = z.infer<typeof taxYearChangeSchema>;
+
+/** `GET /settings/taxes/years`: living documentation years, newest first. */
+export const taxYearChangesResponseSchema = z
+  .object({ years: z.array(taxYearChangeSchema) })
+  .strict();
+export type TaxYearChangesResponse = z.infer<typeof taxYearChangesResponseSchema>;
 
 /**
  * Reject a manual tax entry that states both an absolute amount and a rate —
@@ -1577,6 +1571,8 @@ export type TaxYearDeSummary = z.infer<typeof taxYearDeSummarySchema>;
 export const taxYearSummarySchema = z
   .object({
     year: z.number().int(),
+    /** Last account mutation affecting this Vienna year; null for untouched legacy data. */
+    lastChangedAt: z.string().datetime().nullable(),
     realizedPnlEur: z.number(),
     dividendsGrossEur: z.number(),
     taxWithheldEur: z.number(),
@@ -1584,18 +1580,6 @@ export const taxYearSummarySchema = z
     taxNetEur: z.number(),
     /** German year-end block (V5-P4) — present exactly when the year has DE-taxed rows. */
     de: taxYearDeSummarySchema.optional(),
-    /**
-     * Tax-year lock state (owner directive 2026-08-07, §16; supersedes the
-     * bare closed-year marker of #635). Present exactly for Vienna years
-     * before the current one: `true` = the year is LOCKED — the API refuses
-     * every mutation dated into it (409 `TAX_YEAR_LOCKED`) until the user
-     * runs the explicit unlock ritual; `false` = the year is elapsed but
-     * UNLOCKED for amendments (backdated entries settle append-only through
-     * the closed-year machinery) until explicitly re-locked. Open years (key
-     * omitted) re-derive live under the portfolio's CURRENT tax settings and
-     * self-heal on every read.
-     */
-    locked: z.boolean().optional(),
   })
   .strict();
 export type TaxYearSummary = z.infer<typeof taxYearSummarySchema>;

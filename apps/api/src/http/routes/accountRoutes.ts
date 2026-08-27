@@ -18,7 +18,11 @@ import {
   PARANOID_TRANSITION_HTTP_ERRORS,
   ParanoidTransitionError,
 } from '../../services/account/paranoidTransitionService';
-import { GLOBAL_JSON_BODY_LIMIT } from '../bodyLimits';
+import {
+  GLOBAL_JSON_BODY_LIMIT,
+  PARANOID_RESTORE_PLAINTEXT_FACTOR,
+  paranoidRestoreJsonLimitBytes,
+} from '../bodyLimits';
 import { clearSessionCookie } from '../cookies';
 import { requireUser } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
@@ -42,9 +46,10 @@ export const PARANOID_DISABLE_HTTP_PATH = '/api/v1/account/paranoid/disable';
  * rides the per-account vault rate schedule, and rehydrating a document of that
  * size already costs strictly more memory than holding its bytes.
  */
-export const PARANOID_RESTORE_PLAINTEXT_FACTOR = 8;
 export const paranoidDisableJsonLimitBytes = (vaultMaxBytes: number): number =>
-  vaultMaxBytes * PARANOID_RESTORE_PLAINTEXT_FACTOR + 64 * 1024;
+  paranoidRestoreJsonLimitBytes(vaultMaxBytes);
+
+export { PARANOID_RESTORE_PLAINTEXT_FACTOR };
 
 /**
  * Bound how long one download may hold the account transition lock. The transfer

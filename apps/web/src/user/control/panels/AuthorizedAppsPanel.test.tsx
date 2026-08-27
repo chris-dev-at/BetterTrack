@@ -26,6 +26,8 @@ const ONE_GRANT: OAuthGrantListResponse = {
       id: '00000000-0000-0000-0000-0000000000dd',
       clientId: 'btc_some_app',
       appName: 'Charting Buddy',
+      firstParty: false,
+      current: false,
       scopes: ['portfolio:read'],
       createdAt: '2026-07-01T08:00:00.000Z',
       lastUsedAt: null,
@@ -38,6 +40,17 @@ const FEEDBACK_GRANT: OAuthGrantListResponse = {
     {
       ...ONE_GRANT.grants[0]!,
       scopes: ['feedback:write'],
+    },
+  ],
+};
+
+const FIRST_PARTY_GRANT: OAuthGrantListResponse = {
+  grants: [
+    {
+      ...ONE_GRANT.grants[0]!,
+      clientId: 'btc_bettertrack_mobile',
+      appName: 'BetterTrackMobile',
+      firstParty: true,
     },
   ],
 };
@@ -79,7 +92,8 @@ describe('AuthorizedAppsPanel', () => {
     const user = userEvent.setup();
     renderPanel();
 
-    const grantRow = (await screen.findByText('Charting Buddy can:')).closest('li')!;
+    const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
+    expect(grantRow).toHaveTextContent('Charting Buddy can:');
     // Scopes render via OAUTH_SCOPE_LABELS, not the raw scope string.
     expect(
       within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
@@ -90,6 +104,36 @@ describe('AuthorizedAppsPanel', () => {
 
     await waitFor(() => expect(revokeOAuthGrant).toHaveBeenCalledWith(ONE_GRANT.grants[0]!.id));
   });
+
+  test.each([
+    [
+      'en',
+      'BetterTrack app',
+      'can:',
+      "Apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
+    ],
+    [
+      'de',
+      'BetterTrack-App',
+      'kann:',
+      'Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App macht ihre Tokens sofort ungültig — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.',
+    ],
+  ])(
+    'badges a first-party grant next to its name in %s',
+    async (locale, badge, canAccess, description) => {
+      vi.mocked(listOAuthGrants).mockResolvedValue(FIRST_PARTY_GRANT);
+      renderPanel(locale);
+
+      const grantRow = (await screen.findByText('BetterTrackMobile')).closest('li')!;
+      const appName = within(grantRow).getByText('BetterTrackMobile');
+      const firstPartyBadge = within(grantRow).getByText(badge);
+      const accessLabel = within(grantRow).getByText(canAccess);
+
+      expect(appName.nextElementSibling).toBe(firstPartyBadge);
+      expect(firstPartyBadge.nextElementSibling).toBe(accessLabel);
+      expect(screen.getByText(description)).toBeInTheDocument();
+    },
+  );
 
   test('localizes feedback grant copy from the stable scope id', async () => {
     vi.mocked(listOAuthGrants).mockResolvedValue(FEEDBACK_GRANT);
@@ -119,7 +163,7 @@ describe('AuthorizedAppsPanel', () => {
     // The grant really carries the scope — it only stops resolving while the
     // account is paranoid — so dropping the line would understate the access
     // the user granted, exactly as `ApiKeysPanel` argues for its chips.
-    const grantRow = (await screen.findByText('Charting Buddy can:')).closest('li')!;
+    const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
     expect(
       within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
     ).toBeInTheDocument();

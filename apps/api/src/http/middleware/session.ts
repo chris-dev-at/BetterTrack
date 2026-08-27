@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 
-import { ADMIN_2FA_SETUP_REQUIRED } from '@bettertrack/contracts';
+import { ADMIN_2FA_SETUP_REQUIRED, AUTH_ERROR_CODES } from '@bettertrack/contracts';
 
 import { adminAccountKind, forbidden, notFound, unauthorized } from '../../errors';
 import type { AppContext } from '../context';
@@ -95,6 +95,13 @@ const isPasswordChangeExempt = (path: string): boolean =>
   PASSWORD_CHANGE_EXEMPT.has(path) || path.startsWith('/auth/invite/');
 
 /**
+ * Whether an API-relative route is subject to the forced-password-change
+ * guard. Kept next to the live middleware so OpenAPI can derive its stable
+ * shared error-code metadata without duplicating the exemption list.
+ */
+export const pathRequiresPasswordChange = (path: string): boolean => !isPasswordChangeExempt(path);
+
+/**
  * Forced password change (§6.1): a user with `mustChangePassword=true` gets
  * `403 PASSWORD_CHANGE_REQUIRED` on every `/api/v1` route except the exempt
  * auth endpoints above. Mounted once, globally — so future routers cannot
@@ -102,12 +109,50 @@ const isPasswordChangeExempt = (path: string): boolean =>
  * strips the `/api/v1` prefix), e.g. `/auth/me`, `/admin/users`.
  */
 export const enforcePasswordChange: RequestHandler = (req, _res, next) => {
-  if (req.authUser?.mustChangePassword && !isPasswordChangeExempt(req.path)) {
-    next(forbidden('Password change required.', 'PASSWORD_CHANGE_REQUIRED'));
+  if (req.authUser?.mustChangePassword && pathRequiresPasswordChange(req.path)) {
+    next(forbidden('Password change required.', AUTH_ERROR_CODES.passwordChangeRequired));
     return;
   }
   next();
 };
+
+/**
+ * The only admin-router operations that admit a first-enrollment session while
+ * the account has no confirmed second factor. Every other `/admin` operation
+ * is behind `requireAdminTwoFactor` and can return
+ * `ADMIN_2FA_SETUP_REQUIRED`.
+ */
+const ADMIN_TWO_FACTOR_BOOTSTRAP_OPERATIONS = [
+  { method: 'get', path: '/security/2fa/status' },
+  { method: 'post', path: '/security/2fa/totp/enroll' },
+  { method: 'post', path: '/security/2fa/totp/confirm' },
+  { method: 'post', path: '/security/2fa/email/start' },
+  { method: 'post', path: '/security/2fa/email/confirm' },
+] as const;
+
+const isAdminTwoFactorBootstrapOperation = (method: string, path: string): boolean =>
+  ADMIN_TWO_FACTOR_BOOTSTRAP_OPERATIONS.some(
+    (operation) => operation.method === method.toLowerCase() && operation.path === path,
+  );
+
+/**
+ * Options for the explicit security-route gates. The routes use this same
+ * operation policy that OpenAPI consults, so a bootstrap change cannot leave
+ * the published error vocabulary behind.
+ */
+export const adminTwoFactorOptionsForRoute = (
+  method: string,
+  path: string,
+): { allowBootstrap?: boolean } =>
+  isAdminTwoFactorBootstrapOperation(method, path) ? { allowBootstrap: true } : {};
+
+/**
+ * Whether a documented API-relative operation can return the mandatory-admin
+ * setup refusal. Non-bootstrap `/admin` routes run behind the shared 2FA gate.
+ */
+export const pathRequiresAdminTwoFactorSetup = (path: string, method: string): boolean =>
+  path.startsWith('/admin/') &&
+  !isAdminTwoFactorBootstrapOperation(method, path.slice('/admin'.length));
 
 /** Admin-only. Non-admins (and anonymous) get a 404 — no route disclosure (§6.12). */
 export const requireAdmin: RequestHandler = (req, _res, next) => {

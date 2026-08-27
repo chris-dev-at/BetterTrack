@@ -29,6 +29,17 @@ function uu(prefix: string): { email: string; username: string } {
   return { email: `${prefix}-m4-${seq}@bettertrack.test`, username: `${prefix}m4${seq}` };
 }
 
+// Deterministic TEST VECTOR ids and verifier-shaped strings are public fixtures,
+// not credentials or production retirement material.
+const VAULTED_SWEEP_TEST_VECTOR = {
+  vaultId: '019c8610-0000-7000-8000-000000000001',
+  headerDocId: '019c8610-0000-7000-8000-000000000002',
+  commonDocId: '019c8610-0000-7000-8000-000000000003',
+  danglingMirrorId: '019c8610-0000-7000-8000-000000000004',
+  retirementProofPublicKey: 'TEST VECTOR mirror sweep public verifier',
+  keyFingerprint: 'TEST-VECTOR-MIRROR-SWEEP-0001',
+} as const;
+
 const repoOf = (h: TestHarness) => createMirrorchainRepository(h.db);
 
 /** Owner O with a converted (empty) chain; returns O + chainId + O's copy id. */
@@ -402,6 +413,72 @@ describe('mirrorchain M4 — repair-sweep queries', () => {
     // Dissolve → the copy becomes a fork (membership no longer active) → excluded.
     await h.ctx.mirror.dissolveChain(owner.id, chainId);
     expect(await repo.listOrphanedSyncedTransactions(500)).toHaveLength(0);
+  });
+
+  it('excludes a stale vaulted member from owner repair and both content-residual scans', async () => {
+    const h = await createTestApp();
+    const repo = repoOf(h);
+    const { owner, chainId } = await ownerChain(h);
+    const manager = await join(h, chainId, 'manager');
+    const asset = await seedAsset(h, 'VAULT-SWEEP.DE');
+
+    await h.db.insert(schema.vaults).values({
+      id: VAULTED_SWEEP_TEST_VECTOR.vaultId,
+      userId: manager.user.id,
+      name: 'TEST VECTOR sweep vault',
+      headerDocId: VAULTED_SWEEP_TEST_VECTOR.headerDocId,
+      commonDocId: VAULTED_SWEEP_TEST_VECTOR.commonDocId,
+      media: ['server'],
+      retirementProofPublicKey: VAULTED_SWEEP_TEST_VECTOR.retirementProofPublicKey,
+      keyFingerprint: VAULTED_SWEEP_TEST_VECTOR.keyFingerprint,
+    });
+    await h.db
+      .update(schema.portfolios)
+      .set({
+        vaultId: VAULTED_SWEEP_TEST_VECTOR.vaultId,
+        vaultAlias: 'TEST VECTOR locked sweep stub',
+      })
+      .where(eq(schema.portfolios.id, manager.portfolioId));
+    await repo.insertMirrorRow({
+      chainId,
+      kind: 'transaction',
+      mirrorId: VAULTED_SWEEP_TEST_VECTOR.danglingMirrorId,
+      portfolioId: manager.portfolioId,
+      localId: VAULTED_SWEEP_TEST_VECTOR.danglingMirrorId,
+      createdBy: null,
+      createdByUsername: 'TEST VECTOR ghost',
+    });
+    await h.db.insert(schema.transactions).values({
+      portfolioId: manager.portfolioId,
+      assetId: asset.id,
+      side: 'buy',
+      quantity: '1',
+      price: '10',
+      executedAt: new Date('2024-01-01T00:00:00.000Z'),
+    });
+
+    // Create an ownerless chain behind the service. The remaining manager is a
+    // stale vaulted member, so succession must not write through that chain.
+    await h.db
+      .update(schema.mirrorChainMembers)
+      .set({ status: 'account_deleted' })
+      .where(
+        and(
+          eq(schema.mirrorChainMembers.chainId, chainId),
+          eq(schema.mirrorChainMembers.userId, owner.id),
+        ),
+      );
+
+    expect(await repo.listOwnerlessActiveChains()).toEqual([]);
+    expect(await repo.listDanglingOriginRows(500)).toEqual([]);
+    expect(await repo.listOrphanedSyncedTransactions(500)).toEqual([]);
+    await expect(h.ctx.mirror.runConsistencySweep()).resolves.toEqual({
+      ownerlessRepaired: [],
+      danglingOriginRows: [],
+      orphanedLocalRows: [],
+    });
+    expect((await repo.getChain(chainId))?.status).toBe('active');
+    expect((await repo.findActiveMembership(chainId, manager.user.id))?.role).toBe('manager');
   });
 });
 

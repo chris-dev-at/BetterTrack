@@ -218,7 +218,7 @@ async function seedUntaxedOpenFixture(
     providerRef: `UNTAXED-${portfolioId}`,
     type: 'stock',
     symbol: 'UNTAXED',
-    name: 'Untaxed open-year fixture',
+    name: 'Untaxed living-year fixture',
     currency: 'EUR',
   });
   await harness.db.insert(schema.transactions).values([
@@ -290,7 +290,7 @@ async function setAtUserDefault(userId: string): Promise<void> {
 }
 
 describe('transaction-bound restored tax replay', () => {
-  it('reconstructs AT, DE, FI, custom, override/default, open-year, and closed state', async () => {
+  it('reconstructs every AT, DE, FI and custom year as living state', async () => {
     const user = await harness.seedUser();
     await setAtUserDefault(user.id);
     const at = await seedEngineFixture(user.id, {
@@ -387,22 +387,16 @@ describe('transaction-bound restored tax replay', () => {
     expect(atState.years).toEqual([
       {
         year: 2025,
-        lifecycle: 'closed',
-        derivation: 'frozen',
-        heldEur: 250,
-        targetEur: 250,
-        frozenTargetEur: 275,
-        lockedResidueEur: -25,
+        derivation: 'live',
+        heldEur: 275,
+        targetEur: 275,
         de: null,
       },
       {
         year: 2026,
-        lifecycle: 'open',
         derivation: 'live',
         heldEur: 302.5,
         targetEur: 302.5,
-        frozenTargetEur: 302.5,
-        lockedResidueEur: null,
         de: null,
       },
     ]);
@@ -413,7 +407,6 @@ describe('transaction-bound restored tax replay', () => {
       derivation: 'live',
       heldEur: 527.5,
       targetEur: 527.5,
-      frozenTargetEur: 527.5,
       de: {
         allowanceUsedEur: 1000,
         allowanceRemainingEur: 0,
@@ -424,12 +417,10 @@ describe('transaction-bound restored tax replay', () => {
     expect(byRegime.get('FI')!.years[0]).toMatchObject({
       heldEur: 300,
       targetEur: 300,
-      frozenTargetEur: 300,
     });
     expect(byRegime.get('custom')!.years[0]).toMatchObject({
       heldEur: 110,
       targetEur: 110,
-      frozenTargetEur: 110,
     });
   });
 

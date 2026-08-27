@@ -58,6 +58,11 @@ const PD9_ALERT_CONVERGENCE_TIMEOUT_MS = 45_000;
 /** Gap between convergence polls; each poll also re-runs the focused evaluation. */
 const PD9_ALERT_POLL_INTERVAL_MS = 1_000;
 
+/**
+ * Frozen traceability for the transition-era account-level gate exercised by
+ * this spec. These assertions do not claim coverage of the replacement
+ * per-vault V5-P13 contract; that mapping belongs to its later E10 gate.
+ */
 export const PD9_TRACEABILITY = [
   {
     criterion: 'Design note §16-logged + owner-acked BEFORE code',
@@ -90,11 +95,26 @@ export const PD9_TRACEABILITY = [
   },
 ] as const;
 
+function sectionBetween(
+  source: string,
+  startMarker: string,
+  endMarker: string,
+  label: string,
+): string {
+  const start = source.indexOf(startMarker);
+  const end = start < 0 ? -1 : source.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0 || end <= start) {
+    throw new Error(`PD9 ${label} boundaries are missing.`);
+  }
+  return source.slice(start, end);
+}
+
 /**
- * Repository precondition for composing/running PD9. The binding note and the
- * project decision log must agree on the current affirmative owner approval
- * and #896's retired-recovery semantics before the destructive browser flow
- * starts. A §15 row without an executable assertion also fails the gate.
+ * Repository precondition for running the transition-era account-level PD9
+ * gate. The binding redesign must be owner-acked, preserve #896's
+ * retired-recovery semantics, and retire the live account-level surface only
+ * after the ruled backup + wipe. It intentionally does not claim coverage of
+ * the replacement per-vault acceptance contract.
  */
 export async function assertPd9DesignPrecondition(): Promise<void> {
   const [document, projectPlan] = await Promise.all([
@@ -102,12 +122,16 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     readFile(join(process.cwd(), 'PROJECTPLAN.md'), 'utf8'),
   ]);
   const normalized = (value: string) => value.replace(/\s+/g, ' ');
-  const status = normalized(document.slice(0, document.indexOf('**The model in one paragraph.**')));
+  const statusEnd = document.indexOf('**Table of contents**');
+  if (statusEnd < 0) {
+    throw new Error('PD9 design status boundary is missing.');
+  }
+  const status = normalized(document.slice(0, statusEnd));
   const approvalEvidence = [
-    '§16-logged 2026-07-21 (issue #651)',
-    'owner-approved before composition',
-    '`v5-p13-pd9-20260724` brief on issue #733',
-    '#654 gate is explicitly superseded and is not approval evidence',
+    '**Status:** ACKED & RULED 2026-08-20',
+    'the five gate questions are answered (§21)',
+    'the owner delegated all further paranoid decisions to the Chief',
+    'implementation issues may be cut from §20',
   ];
   if (approvalEvidence.some((evidence) => !status.includes(evidence))) {
     throw new Error('PD9 design status is missing its current affirmative owner-approval record.');
@@ -119,25 +143,21 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     throw new Error('PD9 design status still relies on the superseded pending-ack gate.');
   }
 
-  const sectionFive = normalized(
-    document.slice(document.indexOf('## 5.'), document.indexOf('## 6.')),
-  );
+  const sectionSeven = normalized(sectionBetween(document, '## 7.', '## 8.', 'design §7'));
   const retirementSemantics = [
-    'active server medium',
     'retired recovery set',
-    'seven-day minimum retention window',
-    'fresh Drive readback',
-    'client-held Ed25519 proof',
-    'a media PATCH or client attestation alone never does',
-    'Total server ciphertext reaches zero only through the separate retention-qualified signed purge gate',
+    'destroyable only through the signed purge gate',
+    'minimum 7-day retention',
+    'fresh other-medium readback',
+    'Ed25519 proof with the private key held inside the encrypted common doc',
+    'The last medium can never be removed',
   ];
   if (
     VAULT_RETIRED_SERVER_MIN_RETENTION_MS !== 7 * 24 * 60 * 60 * 1000 ||
-    retirementSemantics.some((evidence) => !sectionFive.includes(evidence)) ||
-    sectionFive.includes('hard-deletes the blob + its entire bounded history server-side')
+    retirementSemantics.some((evidence) => !sectionSeven.includes(evidence))
   ) {
     throw new Error(
-      'PD9 design §5 does not encode the approved #896 retirement and purge semantics.',
+      'PD9 design §7 does not preserve the approved #896 retirement and purge semantics.',
     );
   }
 
@@ -154,19 +174,37 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     throw new Error('PD9 design §5 reconciliation is missing from PROJECTPLAN §16.');
   }
 
-  const sectionFifteen = document.slice(document.indexOf('## 15.'), document.indexOf('## 16.'));
-  const documented = sectionFifteen
-    .split('\n')
-    .filter(
-      (line) => line.startsWith('| ') && !line.startsWith('| §13.5') && !line.startsWith('| -'),
-    )
-    .map((line) => line.split('|')[1]!.trim());
-  const mapped = PD9_TRACEABILITY.map((row) => row.criterion);
-  if (
-    documented.length !== mapped.length ||
-    documented.some((criterion, index) => criterion !== mapped[index])
-  ) {
-    throw new Error('PD9 traceability no longer maps every design §15 criterion in order.');
+  const currentDecision = [
+    'Paranoid vaults — the five design-gate questions RULED',
+    'transition = (C) backup + wipe',
+    'owner-run verified ciphertext backup',
+    'the in-place conversion wizard (former recommendation A) is never built',
+    'Implementation issues may now be cut from the §20 epics',
+  ];
+  if (currentDecision.some((evidence) => !decisionLog.includes(evidence))) {
+    throw new Error('PD9 current owner ruling is missing from PROJECTPLAN §16.');
+  }
+
+  const sectionSeventeen = normalized(sectionBetween(document, '## 17.', '## 18.', 'design §17'));
+  const transitionSemantics = [
+    'RULED 2026-08-20 (§21 Q3): (C) backup + wipe',
+    'External ciphertext backup first',
+    'Wipe + reset',
+    'the in-place wizard (former recommendation A) is never built',
+    'The account-level surface is deleted in the same arc',
+  ];
+  if (transitionSemantics.some((evidence) => !sectionSeventeen.includes(evidence))) {
+    throw new Error('PD9 design §17 does not preserve the ruled backup-before-wipe transition.');
+  }
+
+  const sectionNineteen = normalized(sectionBetween(document, '## 19.', '## 20.', 'design §19'));
+  const legacyRetirementSemantics = [
+    'Dies at the end of §17 (not before)',
+    'the account-level enable/disable pipeline',
+    'migrations after an owner-authorized external ciphertext backup',
+  ];
+  if (legacyRetirementSemantics.some((evidence) => !sectionNineteen.includes(evidence))) {
+    throw new Error('PD9 design §19 no longer keeps the account-level gate until transition.');
   }
 }
 
@@ -232,6 +270,8 @@ export interface Pd9Harness {
   }): Promise<Pd9PurgeOnlyFixture>;
   purgeOnlyCounts(fixture: Pd9PurgeOnlyFixture): Promise<Record<string, number>>;
   vaultStorage(email: string): Promise<Pd9VaultStorageProbe>;
+  /** Backdate the real retirement row so the browser can exercise purge without a seven-day wait. */
+  makeRetirementPurgeable(email: string): Promise<void>;
   fireAlert(input: { email: string; alertId: string }): Promise<Pd9AlertFireResult>;
   evaluateRestoredCurrentBudget(email: string): Promise<{
     emitted: DispatchableEvent[];
@@ -348,6 +388,16 @@ export function createPd9Harness(): Pd9Harness {
 
     async probeCleartext(scope) {
       const handlers: Record<string, () => Promise<number>> = {
+        // Purge-only API request telemetry can contain portfolio asset UUIDs in
+        // its concrete paths. It never enters the encrypted document, but the
+        // enable sweep destroys it, so PD9 must prove it reaches zero too.
+        api_key_request_log: () =>
+          probe(
+            db
+              .select({ value: count() })
+              .from(schema.apiKeyRequestLog)
+              .where(eq(schema.apiKeyRequestLog.userId, scope.userId)),
+          ),
         assets: () =>
           probe(
             db
@@ -592,6 +642,10 @@ export function createPd9Harness(): Pd9Harness {
             note: null,
             assetId,
             contentHash: 'pd9-applied-import-row',
+            // This row resolves to `assetId`, so it is `mapped` and by
+            // definition carries no "did you mean" suggestions — those exist
+            // only for an identity that never resolved (§13.4).
+            candidates: null,
           },
         ],
       );
@@ -729,6 +783,20 @@ export function createPd9Harness(): Pd9Harness {
         retired: bytesProbe(retired),
         retirements: retirements.length,
       };
+    },
+
+    async makeRetirementPurgeable(email) {
+      const userId = await userIdFor(email);
+      // Seed the retention boundary in the past. This is the deterministic
+      // server-side seam: browser clock overrides cannot satisfy the SQL gate.
+      const updated = await db
+        .update(schema.paranoidVaultRetirements)
+        .set({ retiredAt: new Date('2000-01-01T00:00:00.000Z') })
+        .where(eq(schema.paranoidVaultRetirements.userId, userId))
+        .returning({ userId: schema.paranoidVaultRetirements.userId });
+      if (updated.length !== 1) {
+        throw new Error(`PD9 expected exactly one retirement row for ${email}.`);
+      }
     },
 
     async fireAlert({ email, alertId }) {

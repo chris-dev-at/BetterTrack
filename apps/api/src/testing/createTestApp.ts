@@ -172,6 +172,12 @@ export interface TestHarness {
   app: ReturnType<typeof createApp>;
   ctx: AppContext;
   db: Database;
+  /**
+   * Releases only resources owned by this harness. The real-service Redis
+   * client is process-shared, so disposal is deliberately a no-op in that
+   * mode.
+   */
+  dispose(): Promise<void>;
   seedAdmin(input?: Partial<Omit<SeededAdmin, 'id'>>): Promise<SeededAdmin>;
   seedUser(input?: Partial<Omit<SeededUser, 'id'>>): Promise<SeededUser>;
   /**
@@ -194,6 +200,8 @@ export interface CreateTestAppOptions {
   marketData?: MarketDataService;
   /** Controlled portfolio-service clock (UTC-window boundaries, archive/restore transitions). */
   portfolioNow?: () => number;
+  /** Controlled destructive portfolio-vault transition clock. */
+  portfolioVaultTransitionNow?: () => Date;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
   /**
@@ -227,10 +235,7 @@ export interface CreateTestAppOptions {
    * auto-archive sweep threshold provable deterministically.
    */
   notificationNow?: () => Date;
-  /**
-   * Controlled clock for the tax engine (#635) — the open/closed Vienna-year
-   * boundary derives from it, so tests can advance it across a rollover.
-   */
+  /** Controlled tax-engine clock for deterministic correction timestamps in tests. */
   taxNow?: () => number;
   /**
    * Controlled clock for the expense budget/dashboard engine (§13.5 V5-P9) — the
@@ -281,6 +286,22 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     await redis.flushall();
   }
 
+  // The real Redis client belongs to the worker-level integration harness and
+  // must outlive every individual createTestApp() call. RedisMock, by contrast,
+  // is constructed above for this harness alone and is safe to close here.
+  const releaseOwnedRedis: () => Promise<void> = realRedisUrl
+    ? async () => undefined
+    : async () => {
+        await redis.quit();
+      };
+  let disposed = false;
+
+  async function dispose(): Promise<void> {
+    if (disposed) return;
+    disposed = true;
+    await releaseOwnedRedis();
+  }
+
   const config = loadConfig({ ...BASE_TEST_ENV, ...options.env });
   if (options.rateLimitsEnabled) {
     config.rateLimits.enabled = true;
@@ -294,6 +315,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     emailTransport: options.emailTransport,
     marketData: options.marketData,
     portfolioNow: options.portfolioNow,
+    portfolioVaultTransitionNow: options.portfolioVaultTransitionNow,
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
     passwordHasher: options.passwordHasher ?? testPasswordHasher,
@@ -391,5 +413,5 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     return agent;
   }
 
-  return { app, ctx, db, seedAdmin, seedUser, loginAdmin };
+  return { app, ctx, db, dispose, seedAdmin, seedUser, loginAdmin };
 }

@@ -1,5 +1,7 @@
 import { and, asc, eq } from 'drizzle-orm';
 
+import type { ImportRowCandidate } from '@bettertrack/contracts';
+
 import type { Database } from '../db';
 import { assets, importBatches, importRows } from '../schema';
 import type { ImportBatchRow, NewImportRowRow } from '../schema';
@@ -38,6 +40,12 @@ export interface ImportRowRecord {
   resultMessage: string | null;
   /** Resolved catalog snapshot for display; null while/when unresolved. */
   asset: { id: string; symbol: string; name: string; currency: string } | null;
+  /**
+   * Near-match suggestions for an UNRESOLVED identity (§13.4): ranked hits the
+   * search already returned that did not match exactly. Display only — the row
+   * stays `unmapped` and is never auto-applied. Null when none were captured.
+   */
+  candidates: ImportRowCandidate[] | null;
 }
 
 export interface CreateImportBatchInput {
@@ -66,6 +74,7 @@ export interface StageImportRowInput {
   note: string | null;
   assetId: string | null;
   contentHash: string | null;
+  candidates: ImportRowCandidate[] | null;
 }
 
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
@@ -97,6 +106,7 @@ function toRowRecord(
     result: row.result,
     resultMessage: row.resultMessage,
     asset,
+    candidates: row.candidates ?? null,
   };
 }
 
@@ -156,6 +166,7 @@ export function createImportRepository(db: Database) {
             note: r.note,
             assetId: r.assetId,
             contentHash: r.contentHash,
+            candidates: r.candidates,
           }));
           await tx.insert(importRows).values(values);
         }

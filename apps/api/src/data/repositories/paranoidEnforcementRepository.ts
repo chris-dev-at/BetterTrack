@@ -1,9 +1,20 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { assets, portfolios, users } from '../schema';
+import {
+  assets,
+  cashBudgets,
+  expenseBudgets,
+  importBatches,
+  mirrorChainMembers,
+  portfolioCashMovements,
+  portfolios,
+  standingOrders,
+  transactions,
+  users,
+} from '../schema';
 
 export type LockedPrivacyMode = 'normal' | 'paranoid' | null;
 
@@ -100,15 +111,17 @@ export function withExclusiveParanoidTransitionTestLock<T>(
  * remains compatible with FK checks and non-key account updates performed by
  * the guarded action on another pooled connection.
  *
- * TWO KNOWN LIMITS, both deliberate and both worth reading before trusting a
+ * THREE KNOWN LIMITS, all deliberate and all worth reading before trusting a
  * green suite:
  *
  *  1. Under `NODE_ENV=test` the default (PGlite) harness has ONE physical
  *     connection, so a real `FOR KEY SHARE` would self-deadlock. The
  *     in-process reader/writer emulation above preserves the ORDERING the
- *     regressions assert, but it is NOT the production primitive — only the
- *     integration mode (`TEST_DATABASE_URL`, real Postgres 17) exercises the
- *     row locks themselves.
+ *     regressions assert, but it is NOT the production primitive. Vitest keeps
+ *     `NODE_ENV=test` even with `TEST_DATABASE_URL`, so real Postgres alone does
+ *     not change this branch. The dedicated `paranoidPrivacyLocks.test.ts`
+ *     integration suite explicitly selects the production branch and is the
+ *     only test suite that exercises the row locks themselves.
  *  2. In production the guarded action runs inside this open transaction, and
  *     several callers perform provider I/O within it (alert quote reads, the
  *     earnings calendar across a whole watchlist, the per-user reminder scan).
@@ -188,20 +201,46 @@ export function withFreshLockedPrivacyModes<T>(
   return heldPrivacyModes.run(new Map(), () => withLockedPrivacyModes(db, userIds, run));
 }
 
+/**
+ * Hold the account's exclusive transition lock across recovery work executed on
+ * another database/Redis/provider stack. The held-mode context makes nested
+ * ordinary service guards re-entrant; callers still need an explicit
+ * transition-authorized seam for per-portfolio guards while `vault_id` is set.
+ */
+export function withExclusiveLockedPrivacyMode<T>(
+  db: Database,
+  userId: string,
+  run: (privacyMode: LockedPrivacyMode) => Promise<T>,
+): Promise<T> {
+  const runWithMode = (privacyMode: LockedPrivacyMode) =>
+    heldPrivacyModes.run(new Map([[userId, privacyMode]]), () => run(privacyMode));
+  if (process.env.NODE_ENV === 'test') {
+    return testLocksFor(db).exclusive(userId, async () => {
+      const [row] = await db
+        .select({ privacyMode: users.privacyMode })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      return runWithMode(row?.privacyMode ?? null);
+    });
+  }
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ privacyMode: users.privacyMode })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for('update');
+    return runWithMode(row?.privacyMode ?? null);
+  });
+}
+
 export interface ParanoidOwnedSubject {
   /** False means the id no longer resolves; privacy guards treat that fail-closed. */
   exists: boolean;
   /** Null is valid only for a global market asset. */
   userId: string | null;
-  /**
-   * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): non-null when the subject is a
-   * portfolio that lives in a vault. The guard treats such a portfolio exactly
-   * as it treats a paranoid ACCOUNT for the portfolio-scoped capabilities — the
-   * cleartext rows are gone either way, so every server-side feature that reads
-   * them must refuse. Always null for an asset subject (assets are user-owned,
-   * never portfolio-owned).
-   */
-  vaultId?: string | null;
+  /** Non-null only for a locked per-portfolio vault stub. */
+  vaultId: string | null;
 }
 
 /**
@@ -219,6 +258,187 @@ export function createParanoidEnforcementRepository(db: Database) {
       return row
         ? { exists: true, userId: row.userId, vaultId: row.vaultId }
         : { exists: false, userId: null, vaultId: null };
+    },
+
+    /**
+     * Owner-scoped vault membership lookup for request/service guards. A foreign
+     * id deliberately returns `false`, so the underlying operation retains its
+     * ordinary owner-scoped 404 instead of becoming a vault-membership oracle.
+     */
+    async isOwnedPortfolioVaulted(userId: string, portfolioId: string): Promise<boolean> {
+      const [row] = await db
+        .select({ id: portfolios.id })
+        .from(portfolios)
+        .where(
+          and(
+            eq(portfolios.id, portfolioId),
+            eq(portfolios.userId, userId),
+            isNotNull(portfolios.vaultId),
+          ),
+        )
+        .limit(1);
+      return row !== undefined;
+    },
+
+    /**
+     * Conservative quote-capture seam: an asset quote carries no portfolio id,
+     * so any vault on the account makes its causal portfolio unknowable.
+     */
+    async userOwnsVaultedPortfolio(userId: string): Promise<boolean> {
+      const [row] = await db
+        .select({ id: portfolios.id })
+        .from(portfolios)
+        .where(and(eq(portfolios.userId, userId), isNotNull(portfolios.vaultId)))
+        .limit(1);
+      return row !== undefined;
+    },
+
+    /**
+     * Resolve an import's destination without touching staged plaintext. The
+     * owner predicate preserves the ordinary opaque IMPORT_NOT_FOUND result for
+     * a foreign batch while allowing the service proxy to refuse a locked stub
+     * before `getBatch` materializes any rows.
+     */
+    async importBatchPortfolio(userId: string, batchId: string): Promise<ParanoidOwnedSubject> {
+      const [row] = await db
+        .select({ userId: portfolios.userId, vaultId: portfolios.vaultId })
+        .from(importBatches)
+        .innerJoin(portfolios, eq(importBatches.portfolioId, portfolios.id))
+        .where(and(eq(importBatches.id, batchId), eq(importBatches.ownerId, userId)))
+        .limit(1);
+      return row
+        ? { exists: true, userId: row.userId, vaultId: row.vaultId }
+        : { exists: false, userId: null, vaultId: null };
+    },
+
+    async standingOrderPortfolio(
+      userId: string,
+      standingOrderId: string,
+    ): Promise<ParanoidOwnedSubject> {
+      const [row] = await db
+        .select({ userId: portfolios.userId, vaultId: portfolios.vaultId })
+        .from(standingOrders)
+        .innerJoin(portfolios, eq(standingOrders.portfolioId, portfolios.id))
+        .where(and(eq(standingOrders.id, standingOrderId), eq(standingOrders.userId, userId)))
+        .limit(1);
+      return row
+        ? { exists: true, userId: row.userId, vaultId: row.vaultId }
+        : { exists: false, userId: null, vaultId: null };
+    },
+
+    async cashBudgetPortfolio(userId: string, budgetId: string): Promise<ParanoidOwnedSubject> {
+      const [row] = await db
+        .select({ userId: portfolios.userId, vaultId: portfolios.vaultId })
+        .from(cashBudgets)
+        .innerJoin(portfolios, eq(cashBudgets.portfolioId, portfolios.id))
+        .where(and(eq(cashBudgets.id, budgetId), eq(portfolios.userId, userId)))
+        .limit(1);
+      return row
+        ? { exists: true, userId: row.userId, vaultId: row.vaultId }
+        : { exists: false, userId: null, vaultId: null };
+    },
+
+    async cashMovementPortfolio(userId: string, movementId: string): Promise<ParanoidOwnedSubject> {
+      const [row] = await db
+        .select({ userId: portfolios.userId, vaultId: portfolios.vaultId })
+        .from(portfolioCashMovements)
+        .innerJoin(portfolios, eq(portfolioCashMovements.portfolioId, portfolios.id))
+        .where(and(eq(portfolioCashMovements.id, movementId), eq(portfolios.userId, userId)))
+        .limit(1);
+      return row
+        ? { exists: true, userId: row.userId, vaultId: row.vaultId }
+        : { exists: false, userId: null, vaultId: null };
+    },
+
+    /**
+     * Resolve the portfolio represented by each relevant mirror-event
+     * principal. Prefer that principal's active membership; after leave,
+     * removal, or dissolution, use only their latest ended membership. This
+     * deliberately excludes unrelated historical members/forks while keeping
+     * queued lifecycle events attributable after their membership tombstone.
+     */
+    async mirrorMemberPortfolios(chainId: string, principalUserIds: readonly string[]) {
+      const userIds = [...new Set(principalUserIds)];
+      if (userIds.length === 0) return [];
+      const rows = await db
+        .select({
+          memberUserId: mirrorChainMembers.userId,
+          memberPortfolioId: mirrorChainMembers.portfolioId,
+          memberStatus: mirrorChainMembers.status,
+          memberJoinedAt: mirrorChainMembers.joinedAt,
+          memberEndedAt: mirrorChainMembers.endedAt,
+          resolvedPortfolioId: portfolios.id,
+          portfolioUserId: portfolios.userId,
+          portfolioVaultId: portfolios.vaultId,
+        })
+        .from(mirrorChainMembers)
+        .leftJoin(portfolios, eq(mirrorChainMembers.portfolioId, portfolios.id))
+        .where(
+          and(eq(mirrorChainMembers.chainId, chainId), inArray(mirrorChainMembers.userId, userIds)),
+        );
+
+      const currentByUser = new Map<string, (typeof rows)[number]>();
+      for (const row of rows) {
+        if (!row.memberUserId) continue;
+        const current = currentByUser.get(row.memberUserId);
+        const rowIsActive = row.memberStatus === 'active';
+        const currentIsActive = current?.memberStatus === 'active';
+        const rowTimestamp = (row.memberEndedAt ?? row.memberJoinedAt).getTime();
+        const currentTimestamp = current
+          ? (current.memberEndedAt ?? current.memberJoinedAt).getTime()
+          : Number.NEGATIVE_INFINITY;
+        if (
+          !current ||
+          (rowIsActive && !currentIsActive) ||
+          (rowIsActive === currentIsActive && rowTimestamp > currentTimestamp)
+        ) {
+          currentByUser.set(row.memberUserId, row);
+        }
+      }
+
+      return [...currentByUser.values()].map((row) => ({
+        memberUserId: row.memberUserId!,
+        memberPortfolioId: row.memberPortfolioId,
+        portfolio:
+          row.resolvedPortfolioId === null
+            ? { exists: false, userId: null, vaultId: null }
+            : {
+                exists: true,
+                userId: row.portfolioUserId,
+                vaultId: row.portfolioVaultId,
+              },
+      }));
+    },
+
+    /** A dividend event is safe when the recipient still holds the asset in a plain sibling. */
+    async userHasPlainHolding(userId: string, assetId: string): Promise<boolean> {
+      const signedQuantity = sql<number>`sum(case when ${transactions.side} = 'buy' then ${transactions.quantity} else -${transactions.quantity} end)`;
+      const [row] = await db
+        .select({ assetId: transactions.assetId })
+        .from(transactions)
+        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
+        .where(
+          and(
+            eq(portfolios.userId, userId),
+            eq(transactions.assetId, assetId),
+            isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
+          ),
+        )
+        .groupBy(transactions.assetId)
+        .having(gt(signedQuantity, sql`0`))
+        .limit(1);
+      return row !== undefined;
+    },
+
+    /** Pre-cash-fusion budget events are account-common and remain deliverable. */
+    async legacyExpenseBudgetExists(userId: string, budgetId: string): Promise<boolean> {
+      const [row] = await db
+        .select({ id: expenseBudgets.id })
+        .from(expenseBudgets)
+        .where(and(eq(expenseBudgets.id, budgetId), eq(expenseBudgets.userId, userId)))
+        .limit(1);
+      return row !== undefined;
     },
 
     async assetOwner(assetId: string): Promise<ParanoidOwnedSubject> {

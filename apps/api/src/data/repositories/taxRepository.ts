@@ -1,8 +1,8 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { newId } from '../ids';
-import { dividends, portfolioCashMovements, taxYearUnlocks, userTaxSettings } from '../schema';
+import { dividends, portfolioCashMovements, taxYearChanges, userTaxSettings } from '../schema';
 import type { CashMovementRow, DividendRow, UserTaxSettingsRow } from '../schema';
 import {
   insertCashMovementsInTransaction,
@@ -74,6 +74,11 @@ export interface NewDividend {
   source?: string;
 }
 
+export interface TaxYearChangeRecord {
+  year: number;
+  lastChangedAt: Date | null;
+}
+
 function toRecord(row: DividendRow): DividendRecord {
   return {
     id: row.id,
@@ -142,37 +147,95 @@ export function createTaxRepository(db: Database) {
       return toSettingsRecord(row);
     },
 
+    /** Persisted change markers only; callers with their own year set map misses to null. */
+    async listTaxYearChanges(userId: string): Promise<TaxYearChangeRecord[]> {
+      const rows = await db
+        .select({ year: taxYearChanges.year, lastChangedAt: taxYearChanges.lastChangedAt })
+        .from(taxYearChanges)
+        .where(eq(taxYearChanges.userId, userId))
+        .orderBy(taxYearChanges.year);
+      return rows;
+    },
+
     /**
-     * The user's explicitly-unlocked tax years, ascending (tax year locking,
-     * §16 2026-08-07). LOCKED is the absence of a row for an elapsed year —
-     * the service derives it against the clock, so rollover needs no job.
+     * Account-wide documentation list. Source rows that predate the marker
+     * feature remain visible with `lastChangedAt: null`; explicit tax-year
+     * corrections use their attributed year instead of their posting date.
+     * Locked-stub source rows are excluded from the server aggregate.
      */
-    async listUnlockedTaxYears(userId: string): Promise<number[]> {
-      const rows = await db
-        .select({ year: taxYearUnlocks.year })
-        .from(taxYearUnlocks)
-        .where(eq(taxYearUnlocks.userId, userId))
-        .orderBy(taxYearUnlocks.year);
-      return rows.map((r) => r.year);
-    },
-
-    /** Open one year for amendments; idempotent (returns whether it was locked). */
-    async unlockTaxYear(userId: string, year: number): Promise<boolean> {
-      const rows = await db
-        .insert(taxYearUnlocks)
-        .values({ userId, year })
-        .onConflictDoNothing()
-        .returning({ year: taxYearUnlocks.year });
-      return rows.length > 0;
-    },
-
-    /** Re-lock one year; idempotent (returns whether it was unlocked). */
-    async relockTaxYear(userId: string, year: number): Promise<boolean> {
-      const rows = await db
-        .delete(taxYearUnlocks)
-        .where(and(eq(taxYearUnlocks.userId, userId), eq(taxYearUnlocks.year, year)))
-        .returning({ year: taxYearUnlocks.year });
-      return rows.length > 0;
+    async listTaxYearDocumentation(userId: string): Promise<TaxYearChangeRecord[]> {
+      const result = (await db.execute(sql`
+        WITH source_years AS (
+          SELECT
+            EXTRACT(YEAR FROM t.executed_at AT TIME ZONE 'Europe/Vienna')::integer AS year,
+            p.vault_id
+          FROM transactions t
+          JOIN portfolios p ON p.id = t.portfolio_id
+          WHERE p.user_id = ${userId}
+          UNION ALL
+          SELECT
+            EXTRACT(YEAR FROM d.executed_at AT TIME ZONE 'Europe/Vienna')::integer AS year,
+            p.vault_id
+          FROM dividends d
+          JOIN portfolios p ON p.id = d.portfolio_id
+          WHERE p.user_id = ${userId}
+          UNION ALL
+          SELECT
+            COALESCE(
+              m.tax_year,
+              EXTRACT(YEAR FROM m.executed_at AT TIME ZONE 'Europe/Vienna')::integer
+            ) AS year,
+            p.vault_id
+          FROM portfolio_cash_movements m
+          JOIN portfolios p ON p.id = m.portfolio_id
+          WHERE p.user_id = ${userId}
+        ),
+        years AS (
+          SELECT source.year
+          FROM source_years source
+          WHERE source.vault_id IS NULL
+          UNION
+          SELECT c.year
+          FROM tax_year_changes c
+          WHERE c.user_id = ${userId}
+            -- The marker is account-wide and has no portfolio FK. Suppress it
+            -- only when current source evidence makes it vaulted-only; marker-
+            -- only years (for deleted plain rows) retain their living-history
+            -- contract. Move-in must retire vault-only markers as it purges the
+            -- final source evidence.
+            AND NOT (
+              EXISTS (
+                SELECT 1
+                FROM source_years vaulted
+                WHERE vaulted.year = c.year
+                  AND vaulted.vault_id IS NOT NULL
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM source_years plain
+                WHERE plain.year = c.year
+                  AND plain.vault_id IS NULL
+              )
+            )
+        )
+        SELECT years.year, changes.last_changed_at AS "lastChangedAt"
+        FROM years
+        LEFT JOIN tax_year_changes changes
+          ON changes.user_id = ${userId} AND changes.year = years.year
+        ORDER BY years.year DESC
+      `)) as unknown as
+        | { rows?: Array<{ year: number | string; lastChangedAt: Date | string | null }> }
+        | Array<{ year: number | string; lastChangedAt: Date | string | null }>;
+      const rows = Array.isArray(result) ? result : (result.rows ?? []);
+      return rows.map((row) => ({
+        year: Number(row.year),
+        lastChangedAt:
+          row.lastChangedAt === null
+            ? null
+            : row.lastChangedAt instanceof Date
+              ? row.lastChangedAt
+              : new Date(row.lastChangedAt),
+      }));
     },
 
     /**

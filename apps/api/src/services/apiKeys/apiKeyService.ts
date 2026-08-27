@@ -17,6 +17,7 @@ import {
 import type { ApiKeyRepository } from '../../data/repositories/apiKeyRepository';
 import type { ApiKeyRequestLogRepository } from '../../data/repositories/apiKeyRequestLogRepository';
 import type { ApiKeyTierRepository } from '../../data/repositories/apiKeyTierRepository';
+import { stripPortfolioRequestAttribution } from '../../data/repositories/portfolioRequestAttribution';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { ApiKeyRequestLogRow, ApiKeyRow, ApiKeyTierRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
@@ -90,6 +91,7 @@ export interface ApiKeyService {
   /**
    * Capture one bearer request into the bounded per-key request log. Best-effort
    * and PII-scrubbed — a write failure is swallowed (never affects the request).
+   * The repository suppresses capture while paranoid mode is active.
    */
   recordRequest(input: {
     keyId: string;
@@ -97,6 +99,9 @@ export interface ApiKeyService {
     method: string;
     path: string;
     status: number;
+    /** In-memory enforcement attribution; never persisted as a separate field. */
+    targetPortfolioId?: string | null;
+    suppressIfAnyVault?: boolean;
   }): Promise<void>;
 
   // -- Admin governance (§13.5 V5-P10, issue 2/2) --
@@ -154,7 +159,8 @@ const toAdminKey = (row: ApiKeyRow & { tierName: string | null }): AdminApiKey =
 const toLogEntry = (row: ApiKeyRequestLogRow): ApiKeyAuditResponse['entries'][number] => ({
   id: row.id,
   method: row.method,
-  path: row.path,
+  // Portfolio attribution is an internal purge/probe marker, never API wire data.
+  path: stripPortfolioRequestAttribution(row.path),
   status: row.status,
   createdAt: row.createdAt.toISOString(),
 });
@@ -333,7 +339,15 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
-    async recordRequest({ keyId, userId, method, path, status }) {
+    async recordRequest({
+      keyId,
+      userId,
+      method,
+      path,
+      status,
+      targetPortfolioId,
+      suppressIfAnyVault,
+    }) {
       // Best-effort: the audit trail must NEVER add a failure mode to request
       // handling, so a write failure is caught and logged, not propagated.
       try {
@@ -345,6 +359,8 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
           // observability scrubber conventions before it is persisted.
           path: redactString(path),
           status,
+          targetPortfolioId,
+          suppressIfAnyVault,
         });
       } catch (err) {
         logger.warn({ err, keyId }, 'api-key request-log capture failed (swallowed)');

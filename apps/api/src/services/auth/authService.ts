@@ -11,6 +11,7 @@ import {
   type RegisterRequest,
   type RegistrationMode,
   type RememberedDeviceResponse,
+  type RememberedDeviceSummary,
   type SessionInfoResponse,
   type SessionSummary,
   type TwoFactorChannel,
@@ -57,12 +58,10 @@ import {
   PIN_QUICK_AUTH_WINDOW_SECONDS,
   pinQuickAuthMarkerKey,
   PIN_TOKEN_ACCOUNT_NAMESPACE,
-  rememberedDeviceKey,
-  rememberedDevicesForUserKey,
-  REMEMBERED_DEVICE_TTL_SECONDS,
   TWO_FACTOR_ACCOUNT_NAMESPACE,
   type RememberableUser,
 } from './loginThrottle';
+import { createRememberedDeviceStore } from './rememberedDeviceStore';
 import type { TwoFactorService } from './twoFactorService';
 
 export interface AuthServiceDeps {
@@ -298,6 +297,20 @@ export interface AuthService {
    */
   forgetDevice(deviceId: string | null, ip?: string | null): Promise<void>;
   /**
+   * List the caller's live remembered-device bindings as non-secret display
+   * records. Ownership is resolved inside the Redis store from this user id;
+   * the raw cookie ids never leave that boundary.
+   */
+  listRememberedDevices(userId: string): Promise<RememberedDeviceSummary[]>;
+  /**
+   * Idempotently revoke one caller-owned binding by its stable public handle.
+   * Unknown, expired, foreign and already-revoked handles are indistinguishable
+   * no-op successes at HTTP level.
+   */
+  revokeRememberedDevice(userId: string, handle: string, ip?: string | null): Promise<void>;
+  /** Revoke and individually audit every live remembered binding of the caller. */
+  revokeAllRememberedDevices(userId: string, ip?: string | null): Promise<void>;
+  /**
    * Record that first-run setup is done for this account — finished or dismissed
    * (§6.12). Set-once and idempotent: replaying it never moves the stored
    * timestamp, so a double-clicked "Do this later" is harmless.
@@ -453,13 +466,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     PIN_TOKEN_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+  const rememberedDevices = createRememberedDeviceStore(redis);
 
   async function clearRememberedDeviceState(userId: string, deviceId: string): Promise<void> {
-    await redis
-      .multi()
-      .del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId))
-      .srem(rememberedDevicesForUserKey(userId), deviceId)
-      .exec();
+    await rememberedDevices.clearForUser(userId, deviceId);
   }
 
   /**
@@ -1566,7 +1576,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const unknownDevice = () =>
         unauthorized('This device is not remembered.', 'REMEMBER_DEVICE_UNKNOWN');
       if (!deviceId) throw unknownDevice();
-      const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
+      const boundUserId = await rememberedDevices.ownerOf(deviceId);
       if (!boundUserId) throw unknownDevice();
 
       const boundUser = await userRepo.findById(boundUserId);
@@ -1580,12 +1590,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Make pre-retention bindings enumerable and keep both server-side keys
       // aligned with the browser cookie, whose lifetime slides after a
       // successful quick re-auth.
-      await redis
-        .multi()
-        .sadd(rememberedDevicesForUserKey(boundUser.id), deviceId)
-        .expire(rememberedDevicesForUserKey(boundUser.id), REMEMBERED_DEVICE_TTL_SECONDS)
-        .expire(rememberedDeviceKey(deviceId), REMEMBERED_DEVICE_TTL_SECONDS)
-        .exec();
+      await rememberedDevices.refreshForUser(boundUser.id, deviceId);
       const user = await revalidateRememberedDeviceUser(boundUser.id, deviceId);
       if (!user) throw unknownDevice();
 
@@ -1597,6 +1602,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         const windowOpen = await redis.get(pinQuickAuthMarkerKey(deviceId));
         if (!windowOpen) return { status: 'pin_required' };
         const signedIn = await mintQuickAuthSession(user, ip);
+        await rememberedDevices.touchLastSeen(deviceId);
         return { status: 'authenticated', user: signedIn.user, sessionId: signedIn.sessionId };
       }
 
@@ -1635,6 +1641,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         meta: { via: 'quick_auth' },
       });
       const signedIn = await mintQuickAuthSession(user, ip);
+      await rememberedDevices.touchLastSeen(deviceId);
       return { status: 'authenticated', user: signedIn.user, sessionId: signedIn.sessionId };
     },
 
@@ -1652,12 +1659,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // This preserves long-lived account memory while bounding abandoned
       // server state and making every live binding enumerable for deletion.
       const deviceId = generateToken().token;
-      await redis
-        .multi()
-        .set(rememberedDeviceKey(deviceId), initialUser.id, 'EX', REMEMBERED_DEVICE_TTL_SECONDS)
-        .sadd(rememberedDevicesForUserKey(initialUser.id), deviceId)
-        .expire(rememberedDevicesForUserKey(initialUser.id), REMEMBERED_DEVICE_TTL_SECONDS)
-        .exec();
+      await rememberedDevices.createForUser(initialUser.id, deviceId);
       const user = await revalidateRememberedDeviceUser(initialUser.id, deviceId);
       if (!user) throw unauthorized();
       await audit.record({
@@ -1677,7 +1679,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
     async forgetDevice(deviceId, ip) {
       if (!deviceId) return;
-      const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
+      const boundUserId = await rememberedDevices.ownerOf(deviceId);
       if (boundUserId) {
         await clearRememberedDeviceState(boundUserId, deviceId);
         await audit.record({
@@ -1688,7 +1690,41 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           ip,
         });
       } else {
-        await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+        await rememberedDevices.clearOrphan(deviceId);
+      }
+    },
+
+    listRememberedDevices(userId) {
+      return rememberedDevices.listForUser(userId);
+    },
+
+    async revokeRememberedDevice(userId, handle, ip) {
+      const revoked = await rememberedDevices.revokeForUser(userId, handle);
+      if (!revoked) return;
+      await audit.record({
+        actorId: userId,
+        action: AuditAction.RememberedDeviceForgotten,
+        targetType: 'user',
+        targetId: userId,
+        ip,
+        meta: { via: 'management', handle },
+      });
+    },
+
+    async revokeAllRememberedDevices(userId, ip) {
+      const revokedHandles: string[] = [];
+      await rememberedDevices.revokeAllForUser(userId, (handle) => revokedHandles.push(handle));
+      // One audit row per binding, not one aggregate row: each revoked device is
+      // a distinct security action even though the public response is minimal.
+      for (const handle of revokedHandles) {
+        await audit.record({
+          actorId: userId,
+          action: AuditAction.RememberedDeviceForgotten,
+          targetType: 'user',
+          targetId: userId,
+          ip,
+          meta: { via: 'management_all', handle },
+        });
       }
     },
 

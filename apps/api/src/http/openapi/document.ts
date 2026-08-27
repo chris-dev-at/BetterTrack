@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
 import { openApiPathTemplateAcceptsBearer } from '../middleware/bearerAuth';
+import { pathRequiresAdminTwoFactorSetup, pathRequiresPasswordChange } from '../middleware/session';
 
 // zod-to-openapi augments the shared zod prototype with `.openapi()`, which the
 // registry uses to attach `$ref` ids. There is a single zod instance in the
@@ -36,14 +37,51 @@ const VAULT_JSON_DOCUMENTATION = {
     'against the recursive contract schema.',
 };
 
+// Same generator gap, second instance: 7.3.x has no `ZodCatch` transformer
+// either, and the vault import-row `candidates` field is a `.catch(null)` so a
+// malformed display-only suggestion list can never make a portfolio
+// unrestorable. It is reachable from `PortfolioVaultMoveOutRequest`, so without
+// a hint `/openapi.json` and `/docs` 500 for the whole API.
+const VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION = {
+  type: 'array' as const,
+  nullable: true,
+  items: { type: 'object' as const, additionalProperties: true },
+  description:
+    'Display-only "did you mean" suggestions for an unresolved import row. Tolerant by ' +
+    'design: a value that does not match the strict candidate list is accepted and read ' +
+    'back as null rather than rejecting the row, because a suggestion list must never be ' +
+    'the reason a portfolio cannot be restored.',
+};
+
+/**
+ * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
+ * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
+ * then put the previous values back — so `@bettertrack/contracts` is observably
+ * unmodified before and after, and a second build is still correct rather than
+ * a one-shot. Runtime request validation always uses the untouched schemas.
+ */
+type HintableSchema = { _def: { openapi?: unknown }; openapi: (h: unknown) => HintableSchema };
+
+const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
+  [contracts.vaultJsonSchema as unknown as HintableSchema, VAULT_JSON_DOCUMENTATION],
+  [
+    contracts.vaultImportRowCandidatesSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION,
+  ],
+];
+
 function withVaultJsonDocumentation<T>(generate: () => T): T {
-  const schema = contracts.vaultJsonSchema;
-  const original = schema._def.openapi;
-  schema._def.openapi = schema.openapi(VAULT_JSON_DOCUMENTATION)._def.openapi;
+  const restore = GENERATOR_GAP_HINTS.map(([schema, hint]) => {
+    const original = schema._def.openapi;
+    schema._def.openapi = schema.openapi(hint)._def.openapi;
+    return () => {
+      schema._def.openapi = original;
+    };
+  });
   try {
     return generate();
   } finally {
-    schema._def.openapi = original;
+    for (const undo of restore) undo();
   }
 }
 
@@ -74,25 +112,8 @@ const componentSchemas = {
   ReadinessResponse: contracts.readinessResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
-  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3)
+  /** Generic session step-up (`POST /auth/reauth`). */
   ReauthRequest: contracts.reauthRequestSchema,
-  Vault: contracts.vaultSchema,
-  VaultListResponse: contracts.vaultListResponseSchema,
-  VaultSyncListResponse: contracts.vaultSyncListResponseSchema,
-  CreateVaultRequest: contracts.createVaultRequestSchema,
-  UpdateVaultRequest: contracts.updateVaultRequestSchema,
-  VaultCreateResponse: contracts.vaultCreateResponseSchema,
-  VaultDocMetadata: contracts.vaultDocMetadataSchema,
-  VaultJoinRequest: contracts.vaultJoinRequestSchema,
-  VaultJoinResponse: contracts.vaultJoinResponseSchema,
-  VaultLeaveRequest: contracts.vaultLeaveRequestSchema,
-  VaultLeaveResponse: contracts.vaultLeaveResponseSchema,
-  VaultMigrationState: contracts.vaultMigrationStateSchema,
-  VaultMigrationClaimRequest: contracts.vaultMigrationClaimRequestSchema,
-  VaultMigrationFlipRequest: contracts.vaultMigrationFlipRequestSchema,
-  VaultVersionConflictResponse: contracts.vaultVersionConflictResponseSchema,
-  PortfolioVaultState: contracts.portfolioVaultStateSchema,
-  SetPortfolioAliasRequest: contracts.setPortfolioAliasRequestSchema,
   ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
   ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
   ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
@@ -108,11 +129,45 @@ const componentSchemas = {
   RetiredServerPurgeRequest: contracts.retiredServerPurgeRequestSchema,
   RetiredServerPurgeResponse: contracts.retiredServerPurgeResponseSchema,
 
+  // Per-vault blind blob store (paranoid E1 #1411)
+  VaultConfig: contracts.vaultConfigSchema,
+  VaultListResponse: contracts.vaultListResponseSchema,
+  CreateVaultRequest: contracts.createVaultRequestSchema,
+  CreateVaultResponse: contracts.createVaultResponseSchema,
+  PatchVaultRequest: contracts.patchVaultRequestSchema,
+  PatchVaultResponse: contracts.patchVaultResponseSchema,
+  DeleteVaultRequest: contracts.deleteVaultRequestSchema,
+  DeleteVaultResponse: contracts.deleteVaultResponseSchema,
+  PerVaultMediaStateResponse: contracts.perVaultMediaStateResponseSchema,
+  PerVaultMediaTransitionRequest: contracts.perVaultMediaTransitionRequestSchema,
+  PerVaultMediaTransitionResponse: contracts.perVaultMediaTransitionResponseSchema,
+  PerVaultServerCandidateMetadata: contracts.perVaultServerCandidateMetadataSchema,
+  PerVaultRetiredServerPurgeChallengeRequest:
+    contracts.perVaultRetiredServerPurgeChallengeRequestSchema,
+  PerVaultRetiredServerPurgeChallengeResponse:
+    contracts.perVaultRetiredServerPurgeChallengeResponseSchema,
+  PerVaultRetiredServerPurgeRequest: contracts.perVaultRetiredServerPurgeRequestSchema,
+  PerVaultRetiredServerPurgeResponse: contracts.perVaultRetiredServerPurgeResponseSchema,
+  DriveConnection: contracts.driveConnectionSchema,
+  DriveConnectionListResponse: contracts.driveConnectionListResponseSchema,
+  CreateDriveConnectionRequest: contracts.createDriveConnectionRequestSchema,
+  CreateDriveConnectionResponse: contracts.createDriveConnectionResponseSchema,
+
+  // Per-portfolio move pipeline (paranoid E4 #1414)
+  PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
+  PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
+  PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
+  PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
+  PortfolioVaultMoveOutChallengeResponse: contracts.portfolioVaultMoveOutChallengeResponseSchema,
+  PortfolioVaultMoveOutRequest: contracts.portfolioVaultMoveOutRequestSchema,
+  PortfolioVaultMoveOutResponse: contracts.portfolioVaultMoveOutResponseSchema,
+
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
   RegisterRequest: contracts.registerRequestSchema,
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
   GoogleLinkStatusResponse: contracts.googleLinkStatusResponseSchema,
+  GoogleMobileLinkStartResponse: contracts.googleMobileLinkStartResponseSchema,
   GoogleUnlinkRequest: contracts.googleUnlinkRequestSchema,
   GoogleRegisterTicketResponse: contracts.googleRegisterTicketResponseSchema,
   GoogleRegisterRequest: contracts.googleRegisterRequestSchema,
@@ -125,6 +180,8 @@ const componentSchemas = {
   PinQuickAuthRequest: contracts.pinQuickAuthRequestSchema,
   PinQuickAuthResponse: contracts.pinQuickAuthResponseSchema,
   RememberedDeviceResponse: contracts.rememberedDeviceResponseSchema,
+  RememberedDeviceSummary: contracts.rememberedDeviceSummarySchema,
+  RememberedDeviceListResponse: contracts.rememberedDeviceListResponseSchema,
   SetPinRequest: contracts.setPinRequestSchema,
   SetPinLockRequest: contracts.setPinLockRequestSchema,
   TwoFactorEnrollResponse: contracts.twoFactorEnrollResponseSchema,
@@ -176,6 +233,7 @@ const componentSchemas = {
   CreateInviteResponse: contracts.createInviteResponseSchema,
   AdminStats: contracts.adminStatsSchema,
   AdminHealthResponse: contracts.adminHealthResponseSchema,
+  AdminBackupStatusResponse: contracts.adminBackupStatusResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -295,9 +353,7 @@ const componentSchemas = {
   TaxSettingsResponse: contracts.taxSettingsResponseSchema,
   UpdateTaxSettingsRequest: contracts.updateTaxSettingsRequestSchema,
   PortfolioTaxSettingsResponse: contracts.portfolioTaxSettingsResponseSchema,
-  // Tax year locking (§16 2026-08-07)
-  UnlockTaxYearRequest: contracts.unlockTaxYearRequestSchema,
-  TaxYearLockStateResponse: contracts.taxYearLockStateResponseSchema,
+  TaxYearChangesResponse: contracts.taxYearChangesResponseSchema,
   CreateDividendRequest: contracts.createDividendRequestSchema,
   CreateDividendResponse: contracts.createDividendResponseSchema,
   DividendListResponse: contracts.dividendListResponseSchema,
@@ -339,6 +395,17 @@ const componentSchemas = {
   // Authenticated in-app feedback (#1315)
   CreateFeedbackRequest: contracts.createFeedbackRequestSchema,
   CreateFeedbackResponse: contracts.createFeedbackResponseSchema,
+  MyFeedbackResponse: contracts.myFeedbackResponseSchema,
+  FeedbackThreadResponse: contracts.feedbackThreadResponseSchema,
+  SendFeedbackMessageRequest: contracts.sendFeedbackMessageRequestSchema,
+  SendFeedbackMessageResponse: contracts.sendFeedbackMessageResponseSchema,
+  AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
+  UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
+  UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
+  UpdateFeedbackArchiveRequest: contracts.updateFeedbackArchiveRequestSchema,
+  UpdateFeedbackArchiveResponse: contracts.updateFeedbackArchiveResponseSchema,
+  UpdateFeedbackRequest: contracts.updateFeedbackRequestSchema,
+  UpdateFeedbackResponse: contracts.updateFeedbackResponseSchema,
 
   // Broker CSV imports (§13.4 V4-P8)
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
@@ -573,7 +640,6 @@ registry.registerComponent('securitySchemes', BEARER_SECURITY, {
 
 // `userId` param is defined inline in socialRoutes (not exported from contracts).
 const userIdParamSchema = z.object({ userId: z.string().uuid() }).strict();
-
 // Idempotency-Key request header (§13.4 V4-P2a, #417), documented on the covered
 // portfolio mutation endpoints. Optional (opt-in) — a request without it behaves
 // exactly as before. Header name + semantics come from `@bettertrack/contracts`.
@@ -582,6 +648,63 @@ const idempotencyKeyHeaders = z.object({
     description:
       'Optional idempotency key (a UUID). The first request under this key runs the mutation and its response is stored per user for ≥ 48 h; a duplicate replays that exact response instead of repeating the side effect. Reusing the key with a different request body is rejected (409 IDEMPOTENCY_KEY_MISMATCH); a non-UUID value is 400 IDEMPOTENCY_KEY_INVALID.',
     example: '018f9a1e-7c3d-7b2a-9e10-2b6f4c1d8a55',
+  }),
+});
+
+// Per-doc CAS/readback headers (E1 #1411). These are machine-readable rather
+// than prose-only so generated clients can actually perform the blind-store
+// protocol without guessing header names or response metadata.
+const perVaultConditionalReadHeaders = z.object({
+  'If-None-Match': z.string().optional().openapi({
+    description:
+      'Optional strong document ETag such as `"7"`; a match returns 304 without ciphertext.',
+    example: '"7"',
+  }),
+});
+const perVaultCasWriteHeaders = z.object({
+  'If-Match': z.string().optional().openapi({
+    description:
+      'Strong ETag of the current document version for replacement, for example `"7"`. Send exactly one CAS precondition.',
+    example: '"7"',
+  }),
+  'If-None-Match': z.literal('*').optional().openapi({
+    description: 'Send `*` only for first creation. Send exactly one of If-None-Match or If-Match.',
+  }),
+});
+const perVaultEtagResponseHeaders = z.object({
+  ETag: z.string().openapi({
+    description: 'Strong ETag carrying this document’s integer CAS version.',
+    example: '"7"',
+  }),
+});
+const perVaultHistoryResponseHeaders = perVaultEtagResponseHeaders.extend({
+  [contracts.VAULT_HISTORY_CREATED_AT_HEADER]: z.string().datetime().openapi({
+    description: 'When this ciphertext version entered bounded server history.',
+  }),
+  [contracts.VAULT_HISTORY_SIZE_BYTES_HEADER]: z.string().openapi({
+    description: 'Opaque envelope byte length as a base-10 integer.',
+    example: '4096',
+  }),
+  [contracts.VAULT_HISTORY_MEDIUM_HEADER]: z.literal('server').openapi({
+    description: 'Storage medium holding this retained ciphertext.',
+  }),
+});
+const perVaultCandidateReadbackResponseHeaders = perVaultEtagResponseHeaders.extend({
+  [contracts.VAULT_SERVER_CANDIDATE_ID_HEADER]: z.string().uuid().openapi({
+    description: 'Identity of the inactive candidate that was read back.',
+  }),
+  [contracts.VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER]: z.string().datetime().openapi({
+    description: 'Expiry of this inactive candidate and its readback receipt.',
+  }),
+  [contracts.VAULT_SERVER_CANDIDATE_READBACK_HEADER]: z.string().openapi({
+    description:
+      'Opaque short-lived receipt supplied in the matching full-set media-transition attestation.',
+  }),
+});
+const noStoreResponseHeaders = z.object({
+  'Cache-Control': z.literal('no-store').openapi({
+    description:
+      'Sensitive transition/capture responses are never stored by browsers or intermediary caches.',
   }),
 });
 
@@ -600,6 +723,8 @@ interface EndpointDef {
   params?: z.AnyZodObject;
   query?: z.AnyZodObject;
   body?: z.ZodTypeAny;
+  /** Additional request headers derived into OpenAPI parameters. */
+  requestHeaders?: z.AnyZodObject;
   /**
    * Request body media type; defaults to JSON. The CSV upload (§13.4 V4-P8) is
    * the one `multipart/form-data` endpoint — its file part is described in its
@@ -609,8 +734,19 @@ interface EndpointDef {
   status: number;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
+  /** Headers present on the success response, including empty 204 responses. */
+  responseHeaders?: z.AnyZodObject;
+  /** Apply Cache-Control: no-store to every documented response for this operation. */
+  noStore?: boolean;
+  /** Stable non-validation error statuses emitted by this operation. */
+  errorResponses?: Readonly<Record<number, string>>;
   /** Contract body returned with HTTP 503 by readiness-style public probes. */
   unavailableResponse?: z.ZodTypeAny;
+  /**
+   * Stable `ApiError.error.code` values emitted by this operation beyond the
+   * shared authentication-state and admin-step-up guards.
+   */
+  errorCodes?: readonly string[];
   /**
    * Success response media type; defaults to JSON. Paranoid-vault ciphertext
    * reads use `application/octet-stream` and describe their opaque bodies with a
@@ -917,6 +1053,31 @@ const endpoints: EndpointDef[] = [
     response: R.OkResponse,
   },
   {
+    method: 'get',
+    path: '/auth/remembered-devices',
+    tag: 'Auth',
+    summary: 'List the caller’s live remembered-device bindings by safe management handle.',
+    status: 200,
+    response: R.RememberedDeviceListResponse,
+  },
+  {
+    method: 'delete',
+    path: '/auth/remembered-devices/{handle}',
+    tag: 'Auth',
+    summary: 'Idempotently revoke one remembered-device binding by its safe handle.',
+    params: contracts.rememberedDeviceHandleParamSchema,
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
+    method: 'delete',
+    path: '/auth/remembered-devices',
+    tag: 'Auth',
+    summary: 'Forget every remembered-device binding owned by the caller.',
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
     method: 'post',
     path: '/auth/2fa/enroll',
     tag: 'Auth',
@@ -1143,6 +1304,25 @@ const endpoints: EndpointDef[] = [
       code: z.string().optional(),
       error: z.string().optional(),
     }),
+    status: 302,
+  },
+  {
+    method: 'post',
+    path: '/auth/google/link/start',
+    tag: 'Auth',
+    summary:
+      'Mint a short-lived, hashed, one-time Google LINK ticket bound to the authenticated account and return its authorization URL. Bearers require account:security; no redirect target is accepted. 404 when Google is not configured.',
+    status: 200,
+    response: R.GoogleMobileLinkStartResponse,
+  },
+  {
+    method: 'get',
+    path: '/auth/google/link/callback',
+    tag: 'Auth',
+    summary:
+      'Public Google return leg for a native LINK ticket. Atomically consumes state, links only the server-bound account, never mints a session, and redirects only to BetterTrackMobile’s registered deep link with stable success/error parameters. 404 when Google is not configured.',
+    public: true,
+    query: contracts.googleMobileLinkCallbackQuerySchema,
     status: 302,
   },
   {
@@ -1507,6 +1687,15 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/admin/ops/backup-status',
+    tag: 'Admin',
+    summary:
+      'Backup and restore-drill readiness, projected read-only from the scheduler status file.',
+    status: 200,
+    response: R.AdminBackupStatusResponse,
+  },
+  {
+    method: 'get',
     path: '/admin/settings',
     tag: 'Admin',
     summary: 'Global app settings (registration mode + beta toggle).',
@@ -1723,6 +1912,55 @@ const endpoints: EndpointDef[] = [
     params: contracts.idParamSchema,
     status: 200,
     response: R.Problem,
+  },
+  {
+    method: 'get',
+    path: '/admin/feedback',
+    tag: 'Admin',
+    summary: 'Category-priority inbox for authenticated web and native feedback.',
+    query: contracts.adminFeedbackListQuerySchema,
+    status: 200,
+    response: R.AdminFeedbackListResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/feedback/{id}',
+    tag: 'Admin',
+    summary: 'Update one feedback submission lifecycle status or workspace archive state.',
+    errorCodes: contracts.FEEDBACK_STATUS_ERROR_CODES,
+    params: contracts.idParamSchema,
+    body: R.UpdateFeedbackRequest,
+    status: 200,
+    response: R.UpdateFeedbackResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/feedback/{id}/messages',
+    tag: 'Admin',
+    summary: 'Read one submission’s admin ↔ submitter support thread.',
+    params: contracts.idParamSchema,
+    query: contracts.feedbackThreadQuerySchema,
+    status: 200,
+    response: R.FeedbackThreadResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/feedback/{id}/messages',
+    tag: 'Admin',
+    summary: 'Reply to a feedback submission as the authenticated admin.',
+    params: contracts.idParamSchema,
+    body: R.SendFeedbackMessageRequest,
+    status: 201,
+    response: R.SendFeedbackMessageResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/feedback/{id}/read',
+    tag: 'Admin',
+    summary: 'Mark one feedback support thread read for the admin side.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',
@@ -2646,15 +2884,61 @@ const endpoints: EndpointDef[] = [
     response: R.IdeaResponse,
   },
 
-  // Feedback (#1315) — one authenticated, create-only queue for every client
+  // Feedback (#1315/#1338) — capture plus caller-owned lifecycle read-back
+  {
+    method: 'get',
+    path: '/feedback/mine',
+    tag: 'Feedback',
+    summary: 'List the caller’s own feedback submissions and their lifecycle status.',
+    status: 200,
+    response: R.MyFeedbackResponse,
+  },
+  {
+    method: 'delete',
+    path: '/feedback/{id}',
+    tag: 'Feedback',
+    summary: 'Hide one caller-owned submission while retaining an admin-visible tombstone.',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
   {
     method: 'post',
     path: '/feedback',
     tag: 'Feedback',
     summary: 'Submit a feature request, bug report, or other feedback.',
+    errorCodes: contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
     body: R.CreateFeedbackRequest,
     status: 201,
     response: R.CreateFeedbackResponse,
+  },
+  {
+    method: 'get',
+    path: '/feedback/{id}/messages',
+    tag: 'Feedback',
+    summary: 'Read a newest-first page of the caller-owned submission thread.',
+    params: contracts.idParamSchema,
+    query: contracts.feedbackThreadQuerySchema,
+    status: 200,
+    response: R.FeedbackThreadResponse,
+  },
+  {
+    method: 'post',
+    path: '/feedback/{id}/messages',
+    tag: 'Feedback',
+    summary: 'Post a text reply to the caller-owned submission thread.',
+    params: contracts.idParamSchema,
+    body: R.SendFeedbackMessageRequest,
+    status: 201,
+    response: R.SendFeedbackMessageResponse,
+  },
+  {
+    method: 'post',
+    path: '/feedback/{id}/read',
+    tag: 'Feedback',
+    summary: 'Mark the caller-owned support thread read for the submitter side.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
 
   // Standing orders (§13.5 V5-P6b)
@@ -4092,42 +4376,20 @@ const endpoints: EndpointDef[] = [
     method: 'patch',
     path: '/settings/taxes',
     tag: 'Settings',
-    summary: 'Switch the tax mode; applies forward only (§16).',
+    summary: 'Switch the tax mode for the living tax documentation (§16).',
     body: R.UpdateTaxSettingsRequest,
     status: 200,
     response: R.TaxSettingsResponse,
   },
 
-  // Tax year locking (§16 2026-08-07) — session-only (never reachable by a
-  // bearer token): elapsed years auto-lock; the unlock ritual re-verifies the
-  // account password and opens ONE named year for amendments until re-locked.
+  // Living tax-year documentation (§16 2026-08-19).
   {
     method: 'get',
     path: '/settings/taxes/years',
     tag: 'Settings',
-    summary: 'The caller’s tax-year lock state: current year + explicitly-unlocked years.',
+    summary: 'The caller’s account-wide tax-year last-change markers.',
     status: 200,
-    response: R.TaxYearLockStateResponse,
-  },
-  {
-    method: 'post',
-    path: '/settings/taxes/years/{year}/unlock',
-    tag: 'Settings',
-    summary:
-      'Unlock one elapsed tax year for amendments (password re-auth; audited; stays open until re-locked).',
-    params: contracts.taxYearLockParamsSchema,
-    body: R.UnlockTaxYearRequest,
-    status: 200,
-    response: R.TaxYearLockStateResponse,
-  },
-  {
-    method: 'post',
-    path: '/settings/taxes/years/{year}/relock',
-    tag: 'Settings',
-    summary: 'Re-lock a previously unlocked tax year (audited; idempotent).',
-    params: contracts.taxYearLockParamsSchema,
-    status: 200,
-    response: R.TaxYearLockStateResponse,
+    response: R.TaxYearChangesResponse,
   },
 
   // Personal API keys (§6.13, V2-P12) — session-only (never reachable by a key).
@@ -4189,6 +4451,8 @@ const endpoints: EndpointDef[] = [
     path: '/settings/oauth-grants',
     tag: 'Settings',
     summary: 'List the apps the caller has authorized (active grants).',
+    description:
+      'Cookie sessions are supported. Bearer access requires an official first-party OAuth client holding account:security; third-party OAuth tokens and personal API keys are refused.',
     status: 200,
     response: R.OAuthGrantListResponse,
   },
@@ -4197,6 +4461,8 @@ const endpoints: EndpointDef[] = [
     path: '/settings/oauth-grants/{id}',
     tag: 'Settings',
     summary: 'Revoke an authorized app; kills its access + refresh tokens instantly.',
+    description:
+      'Cookie sessions are supported. Bearer access requires an official first-party OAuth client holding account:security; third-party OAuth tokens and personal API keys are refused.',
     params: contracts.idParamSchema,
     status: 204,
   },
@@ -4307,7 +4573,320 @@ const endpoints: EndpointDef[] = [
     response: R.OAuthTokenResponse,
   },
 
-  // Paranoid vault (§13.5 V5-P13 arc b) — the BLIND server blob store.
+  // Separately-authenticated browser-only Google Drive identities (E5 #1415).
+  {
+    method: 'get',
+    path: '/drive-connections',
+    tag: 'Vault',
+    summary: 'List the caller’s separately authenticated Google Drive identities.',
+    description:
+      'Identity/config only: the response and backing table contain no Google access token, refresh token, or Drive file id.',
+    status: 200,
+    response: R.DriveConnectionListResponse,
+  },
+  {
+    method: 'post',
+    path: '/drive-connections',
+    tag: 'Vault',
+    summary: 'Register the Drive identity captured client-side after fresh Google consent.',
+    description:
+      'The strict body accepts only googleSub, email, and displayName. Google tokens stay in browser memory and never cross this endpoint. Create-or-refresh: re-consenting an already registered account upserts onto the same connection id and also answers 201; the audit trail distinguishes drive_connection.created from drive_connection.refreshed.',
+    body: R.CreateDriveConnectionRequest,
+    status: 201,
+    response: R.CreateDriveConnectionResponse,
+  },
+  {
+    method: 'patch',
+    path: '/drive-connections/{connectionId}/verified',
+    tag: 'Vault',
+    summary: 'Touch lastVerifiedAt after a browser directly verifies Drive access.',
+    description:
+      'Takes no request body; a non-empty body is refused, so no method of this module can carry a Google token.',
+    params: contracts.driveConnectionIdParamSchema,
+    status: 200,
+    response: R.CreateDriveConnectionResponse,
+  },
+  {
+    method: 'delete',
+    path: '/drive-connections/{connectionId}',
+    tag: 'Vault',
+    summary: 'Disconnect one caller-owned Drive identity without deleting the user’s Drive files.',
+    description:
+      'Refuses while a vault is bound unless acknowledgeBound=true. Explicit acknowledgement may detach only vaults that hold a VERIFIED server copy: media must contain server AND mediaAttestedAt must be set, because a selected-but-never-attested server medium is a declaration, not a copy. Anything else — a Drive-only vault, or a server+drive vault whose full doc set has never attested — is refused as the last medium (PROJECTPLAN §16, 2026-08-21 and 2026-08-22). Takes no request body; a non-empty body is refused.',
+    params: contracts.driveConnectionIdParamSchema,
+    query: contracts.driveConnectionDisconnectQuerySchema,
+    status: 204,
+  },
+
+  // Per-vault paranoid storage (E1 #1411) — config plus the BLIND per-doc store.
+  {
+    method: 'get',
+    path: '/vaults',
+    tag: 'Vault',
+    summary: 'List the caller’s cleartext vault storage configurations.',
+    status: 200,
+    response: R.VaultListResponse,
+  },
+  {
+    method: 'post',
+    path: '/vaults',
+    tag: 'Vault',
+    summary:
+      'Create a vault configuration with client-minted singleton doc ids and an immutable retirement verifier.',
+    body: R.CreateVaultRequest,
+    status: 201,
+    response: R.CreateVaultResponse,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary: 'Read one caller-owned vault configuration; another owner’s id is not found.',
+    params: contracts.vaultIdParamSchema,
+    status: 200,
+    response: R.CreateVaultResponse,
+  },
+  {
+    method: 'patch',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary: 'Rename one caller-owned vault without changing its media transition state.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PatchVaultRequest,
+    status: 200,
+    response: R.PatchVaultResponse,
+  },
+  {
+    method: 'delete',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary:
+      'Delete an unreferenced vault only after in-request password, TOTP, or recovery-code step-up.',
+    description:
+      'Available to an owning session or a bearer holding account:security. The same in-body step-up applies to both. Deletion refuses while a portfolio references the vault or while its signed-purge retirement gate remains live.',
+    params: contracts.vaultIdParamSchema,
+    body: R.DeleteVaultRequest,
+    status: 200,
+    response: R.DeleteVaultResponse,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/docs/{docId}',
+    tag: 'Vault',
+    summary:
+      'Read one caller-owned opaque vault document byte-for-byte with its per-document ETag.',
+    description:
+      'The server reads only the six cleartext addressing/idempotency header fields and never parses the encrypted payload.',
+    params: contracts.vaultDocParamsSchema,
+    requestHeaders: perVaultConditionalReadHeaders,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque envelope-v2 document bytes (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+    responseHeaders: perVaultEtagResponseHeaders,
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/docs/{docId}',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap one opaque vault document using If-None-Match: * or If-Match: "<version>".',
+    description:
+      'A stale or missing precondition returns 412 or 428 without mutation. Per-kind byte caps return 413. Replaying the same (vaultId, docId, writeId) at the current docVersion is a no-op.',
+    params: contracts.vaultDocParamsSchema,
+    requestHeaders: perVaultCasWriteHeaders,
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque envelope-v2 document bytes (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 204,
+    responseHeaders: perVaultEtagResponseHeaders,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/docs/{docId}/history',
+    tag: 'Vault',
+    summary: 'List retained ciphertext-history metadata for one caller-owned vault document.',
+    params: contracts.vaultDocParamsSchema,
+    query: contracts.vaultHistoryListQuerySchema,
+    status: 200,
+    response: R.VaultHistoryListResponse,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/docs/{docId}/history/{version}',
+    tag: 'Vault',
+    summary: 'Read one retained historical vault document as byte-identical opaque ciphertext.',
+    params: contracts.vaultDocHistoryVersionParamSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque historical envelope-v2 document bytes.',
+    }),
+    responseContentType: 'application/octet-stream',
+    responseHeaders: perVaultHistoryResponseHeaders,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/media',
+    tag: 'Vault',
+    summary:
+      'Read one vault’s durable media selection, attestation, candidate and retirement metadata.',
+    params: contracts.vaultIdParamSchema,
+    status: 200,
+    response: R.PerVaultMediaStateResponse,
+  },
+  {
+    method: 'patch',
+    path: '/vaults/{vaultId}/media',
+    tag: 'Vault',
+    summary:
+      'Commit one verified full-document-set media transition; removing server retires bytes instead of purging them.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PerVaultMediaTransitionRequest,
+    status: 200,
+    response: R.PerVaultMediaTransitionResponse,
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}',
+    tag: 'Vault',
+    summary:
+      'Stage one opaque server candidate inside a client-chosen full-document-set transition.',
+    params: contracts.perVaultServerCandidateStageParamsSchema,
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque inactive envelope-v2 candidate bytes.',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: R.PerVaultServerCandidateMetadata,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/media/server-candidate/{candidateId}',
+    tag: 'Vault',
+    summary:
+      'Read back one caller-owned inactive server candidate and receive its verification receipt.',
+    params: contracts.perVaultServerCandidateReadParamsSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque inactive envelope-v2 candidate bytes.',
+    }),
+    responseContentType: 'application/octet-stream',
+    responseHeaders: perVaultCandidateReadbackResponseHeaders,
+  },
+  {
+    method: 'post',
+    path: '/vaults/{vaultId}/media/retired/purge/challenge',
+    tag: 'Vault',
+    summary:
+      'Issue a short-lived challenge bound to one retirement generation and version-set hash.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PerVaultRetiredServerPurgeChallengeRequest,
+    status: 200,
+    response: R.PerVaultRetiredServerPurgeChallengeResponse,
+  },
+  {
+    method: 'post',
+    path: '/vaults/{vaultId}/media/retired/purge',
+    tag: 'Vault',
+    summary:
+      'Purge a retained server set only after the retention floor and a valid Ed25519 transcript proof.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PerVaultRetiredServerPurgeRequest,
+    status: 200,
+    response: R.PerVaultRetiredServerPurgeResponse,
+  },
+
+  // Per-portfolio capture + destructive move pipeline (E4 #1414).
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/revision',
+    tag: 'Vault',
+    summary: 'Read the opaque portfolio capture-to-commit CAS revision.',
+    description:
+      'Available to an owning session or a bearer holding account:security. Read this no-store token before and after capture; the client accepts the capture only when both values match. The digest covers the target portfolio’s restorable cleartext rows and contains no portfolio content.',
+    params: contracts.portfolioIdParamSchema,
+    status: 200,
+    response: R.PortfolioVaultRevisionResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is already vaulted or cannot currently be captured.',
+      429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault/move-in',
+    tag: 'Vault',
+    summary: 'Commit a verified encrypted capture and hard-delete its server cleartext.',
+    description:
+      'DESTRUCTIVE: available to an owning session or a bearer holding account:security, with the same password/TOTP/recovery-code step-up in the request body. The in-body credential replaces CSRF + same-origin on the bearer path. The commit rechecks media, document-set and portfolio-revision CAS facts before one atomic purge; every refusal leaves cleartext untouched. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    body: R.PortfolioVaultMoveInRequest,
+    status: 200,
+    response: R.PortfolioVaultMoveInResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio or target vault is absent or not owned.',
+      409: 'The portfolio is already vaulted, a transition/precondition conflicts, media are not verified, or the encrypted document set is stale.',
+      412: 'The capture revision or encrypted portfolio document version is stale; nothing was purged.',
+      429: 'Step-up verification or the dedicated move-in transition throttle was exceeded.',
+    },
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault/move-out/challenge',
+    tag: 'Vault',
+    summary: 'Issue a graph-bound challenge for the unlocked-client move-out proof.',
+    description:
+      'Available to an owning session or a bearer holding account:security. The unlocked client hashes its canonical strict restore graph and exact opened document-version set. The server CAS-checks that set against the locked current ciphertext roster before returning a challenge; the client signs the transcript with the Ed25519 private key carried only inside the encrypted common document. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    body: R.PortfolioVaultMoveOutChallengeRequest,
+    status: 200,
+    response: R.PortfolioVaultMoveOutChallengeResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The vaulted portfolio or vault is absent or not owned.',
+      409: 'The portfolio is not in the requested vault lifecycle.',
+      412: 'The encrypted document set changed after the client opened it.',
+      429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault/move-out',
+    tag: 'Vault',
+    summary: 'Restore one unlocked vault portfolio under the same UUID.',
+    description:
+      'WARNING: the portfolio becomes server-readable again. This operation is available only from an unlocked phrase-holding client, which supplies the strict restore document and a signed current encrypted-document-set CAS, and to an owning session or bearer holding account:security with the same in-body password/TOTP/recovery-code step-up. The in-body credential replaces CSRF + same-origin on the bearer path. Validation, fork-provenance proof and option-B solvency run before any restore write; responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    body: R.PortfolioVaultMoveOutRequest,
+    status: 200,
+    response: R.PortfolioVaultMoveOutResponse,
+    noStore: true,
+    errorResponses: {
+      400: 'The request or strict restore graph is invalid, insolvent, or fails retained fork-provenance validation.',
+      404: 'The vaulted portfolio or vault is absent or not owned.',
+      409: 'The portfolio is not vaulted, media are not verified, or another transition/history write conflicts.',
+      412: 'The encrypted document set changed or the graph-bound phrase-possession proof is invalid.',
+      413: 'The decrypted restore document exceeds the bounded portfolio restore payload ceiling.',
+      429: 'Step-up verification or the dedicated move-out transition throttle was exceeded.',
+    },
+  },
+
+  // Legacy account-singleton paranoid vault — kept unchanged through E9.
   {
     method: 'get',
     path: '/vault/history',
@@ -4431,10 +5010,6 @@ const endpoints: EndpointDef[] = [
     status: 204,
   },
 
-  // ── Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) ────────────────────────────
-  // The multi-vault surface beside the account-singleton routes above. CRUD and
-  // the two per-portfolio transitions are session-only; the `{vaultId}`-scoped
-  // documents accept the same `vault:sync` bearer exception under If-Match CAS.
   {
     method: 'post',
     path: '/auth/reauth',
@@ -4444,233 +5019,76 @@ const endpoints: EndpointDef[] = [
     body: contracts.reauthRequestSchema,
     status: 204,
   },
-  {
-    method: 'get',
-    path: '/vaults',
-    tag: 'Vault',
-    summary:
-      'List the caller’s vaults. A cookie session receives the full DTO (name, backends, portfolio count, timestamps); a `vault:sync` bearer receives the narrow sync projection — ids, names and backends only.',
-    status: 200,
-    response: contracts.vaultListResponseSchema,
-  },
-  {
-    method: 'post',
-    path: '/vaults',
-    tag: 'Vault',
-    summary:
-      'Create a vault from a CLIENT-BUILT header. The server stores the ciphertext blindly at version 1 and never parses it; a drive-only vault supplies no header at all. 409 VAULT_NAME_TAKEN on a duplicate name, 413 VAULT_DOC_TOO_LARGE above the 1 MiB header cap. Owning browser session only.',
-    body: contracts.createVaultRequestSchema,
-    status: 201,
-    response: contracts.vaultCreateResponseSchema,
-  },
-  {
-    method: 'patch',
-    path: '/vaults/{vaultId}',
-    tag: 'Vault',
-    summary:
-      'Rename a vault and/or change its storage backend set. 404 VAULT_NOT_FOUND for a foreign or unknown id, 409 VAULT_NAME_TAKEN on a duplicate name. Owning browser session only.',
-    params: z.object({ vaultId: z.string().uuid() }),
-    body: contracts.updateVaultRequestSchema,
-    status: 200,
-    response: contracts.vaultSchema,
-  },
-  {
-    method: 'delete',
-    path: '/vaults/{vaultId}',
-    tag: 'Vault',
-    summary:
-      'Delete an EMPTY vault and its header. 409 VAULT_NOT_EMPTY while any portfolio still belongs to it or any portfolio document survives; 404 VAULT_NOT_FOUND otherwise. Owning browser session only.',
-    params: z.object({ vaultId: z.string().uuid() }),
-    status: 204,
-  },
-  {
-    method: 'get',
-    path: '/vaults/{vaultId}/header',
-    tag: 'Vault',
-    summary:
-      'Read a vault’s opaque header document with an ETag of its version. 304 when If-None-Match already holds it; 404 VAULT_NOT_FOUND / VAULT_DOC_NOT_FOUND otherwise. Never decrypted or parsed server-side.',
-    params: z.object({ vaultId: z.string().uuid() }),
-    status: 200,
-    response: z.string().openapi({
-      type: 'string',
-      format: 'binary',
-      description: 'Opaque vault header ciphertext (never interpreted server-side).',
-    }),
-    responseContentType: 'application/octet-stream',
-  },
-  {
-    method: 'put',
-    path: '/vaults/{vaultId}/header',
-    tag: 'Vault',
-    summary:
-      'Compare-and-swap write of a vault’s header. `If-None-Match: *` creates it; `If-Match: "<version>"` replaces the matching version. A stale or missing precondition returns 412 VAULT_VERSION_CONFLICT / 428 and never overwrites newer ciphertext; above 1 MiB it is 413 VAULT_DOC_TOO_LARGE.',
-    params: z.object({ vaultId: z.string().uuid() }),
-    body: z.string().openapi({
-      type: 'string',
-      format: 'binary',
-      description: 'Opaque vault header ciphertext (never interpreted server-side).',
-    }),
-    bodyContentType: 'application/octet-stream',
-    status: 200,
-    response: contracts.vaultDocMetadataSchema,
-  },
-  {
-    method: 'get',
-    path: '/vaults/{vaultId}/portfolios/{portfolioId}',
-    tag: 'Vault',
-    summary:
-      'Read one vaulted portfolio’s opaque document with an ETag of its version. Each portfolio blob is versioned independently, so two devices editing two portfolios of one vault never conflict.',
-    params: z.object({ vaultId: z.string().uuid(), portfolioId: z.string().uuid() }),
-    status: 200,
-    response: z.string().openapi({
-      type: 'string',
-      format: 'binary',
-      description: 'Opaque vaulted-portfolio ciphertext (never interpreted server-side).',
-    }),
-    responseContentType: 'application/octet-stream',
-  },
-  {
-    method: 'put',
-    path: '/vaults/{vaultId}/portfolios/{portfolioId}',
-    tag: 'Vault',
-    summary:
-      'Compare-and-swap write of one vaulted portfolio’s document, with the same precondition rules as the header. The portfolio must already belong to this vault — a blob can never be minted for an unrelated portfolio id. Cap 8 MiB.',
-    params: z.object({ vaultId: z.string().uuid(), portfolioId: z.string().uuid() }),
-    body: z.string().openapi({
-      type: 'string',
-      format: 'binary',
-      description: 'Opaque vaulted-portfolio ciphertext (never interpreted server-side).',
-    }),
-    bodyContentType: 'application/octet-stream',
-    status: 200,
-    response: contracts.vaultDocMetadataSchema,
-  },
-  {
-    method: 'get',
-    path: '/vaults/{vaultId}/common',
-    tag: 'Vault',
-    summary:
-      'Read a vault’s opaque `common` document — the account/vault-scoped entity kinds (custom assets, tags, rules, budgets, tax settings), namespaced per vault. Independently CAS-versioned. Cap 4 MiB.',
-    params: z.object({ vaultId: z.string().uuid() }),
-    status: 200,
-    response: z.string().openapi({
-      type: 'string',
-      format: 'binary',
-      description: 'Opaque vault common-document ciphertext (never interpreted server-side).',
-    }),
-    responseContentType: 'application/octet-stream',
-  },
-  {
-    method: 'put',
-    path: '/vaults/{vaultId}/common',
-    tag: 'Vault',
-    summary:
-      'Compare-and-swap write of a vault’s `common` document, with the same precondition rules as the header. Cap 4 MiB; a 412 carries the server’s `currentVersion` at the top level of the body.',
-    params: z.object({ vaultId: z.string().uuid() }),
-    body: z.string().openapi({
-      type: 'string',
-      format: 'binary',
-      description: 'Opaque vault common-document ciphertext (never interpreted server-side).',
-    }),
-    bodyContentType: 'application/octet-stream',
-    status: 200,
-    response: contracts.vaultDocMetadataSchema,
-  },
-  {
-    method: 'get',
-    path: '/vaults/migration',
-    tag: 'Vault',
-    summary:
-      'Read the v1 → v2 migration state of the legacy account vault: whether one exists, who holds the claim and until when, and the successor vault once the flip has committed. Owning browser session only.',
-    status: 200,
-    response: contracts.vaultMigrationStateSchema,
-  },
-  {
-    method: 'post',
-    path: '/vaults/migration/claim',
-    tag: 'Vault',
-    summary:
-      'Claim the v1 → v2 migration for 15 minutes. One compare-and-swap decides the winner; a losing client gets 409 VAULT_MIGRATION_CLAIMED with the live claim so it can wait. Re-claiming with the same nonce resumes a crashed migration. Owning browser session only.',
-    body: contracts.vaultMigrationClaimRequestSchema,
-    status: 200,
-    response: contracts.vaultMigrationStateSchema,
-  },
-  {
-    method: 'post',
-    path: '/vaults/migration/renew',
-    tag: 'Vault',
-    summary:
-      'Extend a LIVE claim held by this same nonce. A lapsed or foreign claim is 409 VAULT_MIGRATION_CLAIMED — the holder must claim again, where it may legitimately lose. Owning browser session only.',
-    body: contracts.vaultMigrationClaimRequestSchema,
-    status: 200,
-    response: contracts.vaultMigrationStateSchema,
-  },
-  {
-    method: 'post',
-    path: '/vaults/migration/flip',
-    tag: 'Vault',
-    summary:
-      'The COMMIT POINT: one compare-and-swap sets `migratedTo` on the legacy vault, after which it is a read-only tombstone and the named v2 vault is authoritative. Requires a live claim for this nonce (else 409 VAULT_MIGRATION_INCOMPLETE) and a v2 vault owned by this account. Owning browser session only.',
-    body: contracts.vaultMigrationFlipRequestSchema,
-    status: 200,
-    response: contracts.vaultMigrationStateSchema,
-  },
-  {
-    method: 'post',
-    path: '/portfolios/{portfolioId}/vault',
-    tag: 'Vault',
-    summary:
-      'JOIN — move a portfolio into a vault. One transaction stores the client-encrypted blob, hard-deletes every cleartext row of that portfolio and sets its vault membership; nothing commits unless all three do. 409 on an already-vaulted portfolio or an active mirrorchain membership. Owning browser session only.',
-    params: z.object({ portfolioId: z.string().uuid() }),
-    body: contracts.vaultJoinRequestSchema,
-    status: 200,
-    response: contracts.vaultJoinResponseSchema,
-  },
-  {
-    method: 'patch',
-    path: '/portfolios/{portfolioId}/alias',
-    tag: 'Vault',
-    summary:
-      'Set (or clear, with null) the cleartext display alias of a VAULTED portfolio — what a locked row renders, since a locked vault cannot be decrypted. Writes only this column: `visibility` stays unreachable while vaulted, which is why the ordinary rename route is killed and this one exists. 409 on a normal portfolio (rename it on the portfolio route). Owning browser session only.',
-    params: z.object({ portfolioId: z.string().uuid() }),
-    body: contracts.setPortfolioAliasRequestSchema,
-    status: 200,
-    response: contracts.portfolioVaultStateSchema,
-  },
-  {
-    method: 'delete',
-    path: '/portfolios/{portfolioId}/vault',
-    tag: 'Vault',
-    summary:
-      'LEAVE — move a portfolio back out of its vault. The client posts the decrypted rows; one transaction repopulates them, clears the membership and retires the ciphertext. Re-sending after a committed leave is acknowledged idempotently. Owning browser session only.',
-    params: z.object({ portfolioId: z.string().uuid() }),
-    body: contracts.vaultLeaveRequestSchema,
-    status: 200,
-    response: contracts.vaultLeaveResponseSchema,
-  },
 ];
 
 const jsonContent = (schema: z.ZodTypeAny) => ({ 'application/json': { schema } });
-const errorResponse = (description: string) => ({
+const errorResponse = (description: string, headers?: z.AnyZodObject) => ({
   description,
+  ...(headers ? { headers } : {}),
   content: jsonContent(R.ApiError),
 });
 
+function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
+  return [
+    ...(endpoint.public ? [] : [contracts.AUTH_ERROR_CODES.unauthenticated]),
+    ...(!endpoint.public && pathRequiresPasswordChange(endpoint.path)
+      ? [contracts.AUTH_ERROR_CODES.passwordChangeRequired]
+      : []),
+    ...(pathRequiresAdminTwoFactorSetup(endpoint.path, endpoint.method)
+      ? [contracts.ADMIN_2FA_SETUP_REQUIRED]
+      : []),
+    ...(endpoint.errorCodes ?? []),
+  ].filter((code, index, all) => all.indexOf(code) === index);
+}
+
+/**
+ * zod-to-openapi v7 preserves operation metadata but drops specification
+ * extensions from response configs. Apply the operation-level extension to its
+ * generated output instead, leaving the wire `ApiError` schema unchanged.
+ */
+function addErrorCodeExtensions<T extends { paths: Record<string, unknown> }>(document: T): T {
+  for (const endpoint of endpoints) {
+    const errorCodes = errorCodesForEndpoint(endpoint);
+    if (errorCodes.length === 0) continue;
+
+    const pathItem = document.paths[endpoint.path] as Record<string, unknown> | undefined;
+    const operation = pathItem?.[endpoint.method] as Record<string, unknown> | undefined;
+    if (!operation) {
+      // The same endpoint table registers the operation above. A mismatch would
+      // make this published vocabulary incomplete, so fail fast during document
+      // generation instead of serving misleading API metadata.
+      throw new Error(
+        `OpenAPI operation missing while adding error-code metadata: ${endpoint.method.toUpperCase()} ${endpoint.path}`,
+      );
+    }
+    operation['x-error-codes'] = errorCodes;
+  }
+  return document;
+}
+
 for (const ep of endpoints) {
   const responses: Record<string, ResponseConfig> = {};
+  const responseHeaders = ep.noStore
+    ? ep.responseHeaders
+      ? noStoreResponseHeaders.merge(ep.responseHeaders)
+      : noStoreResponseHeaders
+    : ep.responseHeaders;
+  const successHeaders = responseHeaders ? { headers: responseHeaders } : {};
+  const errorHeaders = ep.noStore ? noStoreResponseHeaders : undefined;
   responses[ep.status] = ep.response
     ? {
         description: 'Success.',
+        ...successHeaders,
         content: ep.responseContentType
           ? { [ep.responseContentType]: { schema: ep.response } }
           : jsonContent(ep.response),
       }
-    : { description: 'No content.' };
+    : { description: 'No content.', ...successHeaders };
   if (ep.body || ep.query || ep.params) {
-    responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).');
+    responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).', errorHeaders);
   }
   if (!ep.public) {
-    responses['401'] = errorResponse('Authentication required.');
+    responses['401'] = errorResponse('Authentication required.', errorHeaders);
   }
   if (ep.unavailableResponse) {
     responses['503'] = {
@@ -4683,10 +5101,14 @@ for (const ep of endpoints) {
   if (ep.idempotent) {
     responses['409'] = errorResponse(
       'Idempotency-Key conflict (IDEMPOTENCY_KEY_MISMATCH / IDEMPOTENCY_IN_PROGRESS).',
+      errorHeaders,
     );
   }
+  for (const [status, description] of Object.entries(ep.errorResponses ?? {})) {
+    responses[status] = errorResponse(description, errorHeaders);
+  }
   // Shared error envelope `{ error: { code, message, details? } }` (§8).
-  responses['default'] = errorResponse('Error envelope.');
+  responses['default'] = errorResponse('Error envelope.', errorHeaders);
 
   // Auth requirement per route (#361): public routes need none; every guarded
   // route accepts the session cookie, and those the bearer middleware admits
@@ -4700,6 +5122,10 @@ for (const ep of endpoints) {
     : openApiPathTemplateAcceptsBearer(ep.path, ep.method)
       ? [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }]
       : [{ [SESSION_SECURITY]: [] }];
+  const requestHeaders =
+    ep.idempotent && ep.requestHeaders
+      ? idempotencyKeyHeaders.merge(ep.requestHeaders)
+      : (ep.requestHeaders ?? (ep.idempotent ? idempotencyKeyHeaders : undefined));
 
   registry.registerPath({
     method: ep.method,
@@ -4711,7 +5137,7 @@ for (const ep of endpoints) {
     request: {
       ...(ep.params ? { params: ep.params } : {}),
       ...(ep.query ? { query: ep.query } : {}),
-      ...(ep.idempotent ? { headers: idempotencyKeyHeaders } : {}),
+      ...(requestHeaders ? { headers: requestHeaders } : {}),
       ...(ep.body
         ? {
             body: {
@@ -4738,6 +5164,8 @@ export const OPENAPI_ENDPOINT_COUNT = endpoints.length;
  */
 export const INTEGRATION_GUIDE = [
   '## Integrate with BetterTrack',
+  '',
+  '`x-error-codes` is an additive list of stable, module-owned `ApiError.error.code` values, not an exhaustive refusal vocabulary.',
   '',
   'Third-party apps get delegated, scoped, **revocable** access to a user’s',
   'BetterTrack workspace via OAuth 2.0 (authorization code + PKCE) — the user',
@@ -4835,22 +5263,26 @@ export function buildOpenApiDocument() {
 
 function generateOpenApiDocument() {
   const generator = new OpenApiGeneratorV3(registry.definitions);
-  return generator.generateDocument({
-    openapi: '3.0.3',
-    info: {
-      title: 'BetterTrack API',
-      version: API_VERSION,
-      description:
-        'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
-        'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
-        'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
-        'access token (§6.13) — unless marked public.\n\n' +
-        INTEGRATION_GUIDE,
-    },
-    servers: [{ url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' }],
-    // Either scheme authenticates a request; API-key scopes further gate access.
-    security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
-  });
+  return addErrorCodeExtensions(
+    generator.generateDocument({
+      openapi: '3.0.3',
+      info: {
+        title: 'BetterTrack API',
+        version: API_VERSION,
+        description:
+          'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
+          'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
+          'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
+          'access token (§6.13) — unless marked public.\n\n' +
+          INTEGRATION_GUIDE,
+      },
+      servers: [
+        { url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' },
+      ],
+      // Either scheme authenticates a request; API-key scopes further gate access.
+      security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
+    }),
+  );
 }
 
 let cached: ReturnType<typeof buildOpenApiDocument> | null = null;

@@ -1,8 +1,12 @@
+import express from 'express';
 import { describe, expect, it } from 'vitest';
 
+import { createApp } from '../app';
 import {
+  assertBearerModulePolicyCoverage,
   buildRouteTable,
   checkCoverage,
+  findBearerModulePolicyCoverage,
   findPhantomRoutes,
   findUndocumentedRoutes,
 } from '../scripts/checkOpenapiCoverage';
@@ -19,9 +23,98 @@ describe('checkOpenapiCoverage', () => {
 
     expect(result.missing).toEqual([]);
     expect(result.phantom).toEqual([]);
+    expect(result.bearerModules.ok).toBe(true);
     expect(result.ok).toBe(true);
     expect(result.mountedCount).toBeGreaterThan(0);
     expect(result.documentedCount).toBeGreaterThan(0);
+  });
+
+  it('classifies the real mounted API module set exactly in both directions', () => {
+    const coverage = findBearerModulePolicyCoverage(buildRouteTable());
+
+    expect(coverage.unclassified).toEqual([]);
+    expect(coverage.unmountedPolicies).toEqual([]);
+    expect(coverage.duplicatePolicies).toEqual([]);
+    expect(coverage.invalidPolicyPrefixes).toEqual([]);
+    expect(coverage.mounted).toContain('/api/v1/settings/webhooks');
+    expect(coverage.mounted).toContain('/api/v1/vaults');
+    expect(coverage.classified).toEqual(coverage.mounted);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('names a newly mounted API module that has no bearer classification', () => {
+    const fixturePath = '/api/v1/bearer-policy-fixture';
+    const routes = buildRouteTable((ctx) => {
+      const app = createApp(ctx);
+      const router = express.Router();
+      router.get('/probe', (_request, response) => response.sendStatus(204));
+      app.use(fixturePath, router);
+      return app;
+    });
+
+    expect(() => assertBearerModulePolicyCoverage(routes)).toThrow(fixturePath);
+  });
+
+  it('names a nested application mount that only inherits its parent bearer policy', () => {
+    const fixturePath = '/api/v1/settings/foo';
+    const routes = buildRouteTable((ctx) => {
+      const app = createApp(ctx);
+      const router = express.Router();
+      router.get('/probe', (_request, response) => response.sendStatus(204));
+      app.use(fixturePath, router);
+      return app;
+    });
+
+    expect(() => assertBearerModulePolicyCoverage(routes)).toThrowError(
+      new Error(
+        [
+          'Bearer module policy coverage failed.',
+          'Mounted API modules without an explicit bearer classification:',
+          `  - ${fixturePath}`,
+        ].join('\n'),
+      ),
+    );
+  });
+
+  it('classifies a nested application mount with an explicitly remapped scope pair', () => {
+    const fixturePath = '/api/v1/settings/notifications';
+    const routes = buildRouteTable((ctx) => {
+      const app = createApp(ctx);
+      const router = express.Router();
+      router.get('/probe', (_request, response) => response.sendStatus(204));
+      app.use(fixturePath, router);
+      return app;
+    });
+
+    const coverage = findBearerModulePolicyCoverage(routes);
+
+    expect(coverage.classified).toContain(fixturePath);
+    expect(coverage.unclassified).not.toContain(fixturePath);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('reports a non-top-level policy prefix with the fail-closed diagnostic', () => {
+    expect(() =>
+      assertBearerModulePolicyCoverage(
+        [],
+        [
+          {
+            prefix: '/settings/notifications',
+            kind: 'scope',
+            read: 'notifications:read',
+            write: 'notifications:write',
+          },
+        ],
+      ),
+    ).toThrowError(
+      new Error(
+        [
+          'Bearer module policy coverage failed.',
+          'Bearer module classifications must remain single-segment top-level prefixes:',
+          '  - /api/v1/settings/notifications',
+        ].join('\n'),
+      ),
+    );
   });
 
   it('reports a mounted route with no matching operation in the spec', () => {

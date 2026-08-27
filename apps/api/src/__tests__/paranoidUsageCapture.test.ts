@@ -90,7 +90,12 @@ describe('usage capture never records a paranoid account', () => {
    * never reached the middleware produces.
    */
   it('DOES record the asset roster for a normal account (the leak, reproduced)', async () => {
-    const h = await createTestApp({ marketData: createStubMarketData({ quote: cachedQuote }) });
+    const h = await createTestApp({
+      marketData: createStubMarketData({
+        quote: cachedQuote,
+        history: () => ({ value: [], stale: false, asOf: Date.parse('2026-06-20T10:00:00.000Z') }),
+      }),
+    });
     const user = await h.seedUser({ email: 'normal@test.dev', username: 'normal_usage' });
     const aapl = await seedGlobalAsset(h, 'AAPL');
     const msft = await seedGlobalAsset(h, 'MSFT');
@@ -159,6 +164,66 @@ describe('usage capture never records a paranoid account', () => {
     expect(await usageRowsFor(h, user.id)).toEqual([]);
   });
 
+  it('captures a plain sibling but suppresses its locked stub and unattributed market reads', async () => {
+    const h = await createTestApp({
+      marketData: createStubMarketData({
+        quote: cachedQuote,
+        history: () => ({ value: [], stale: false, asOf: Date.parse('2026-06-20T10:00:00.000Z') }),
+      }),
+    });
+    const user = await h.seedUser({
+      email: 'portfolio-vault@test.dev',
+      username: 'portfolio_vault',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const plainId = await h.ctx.portfolio.getDefaultPortfolioId(user.id);
+
+    // TEST VECTOR: identity-only vault/stub ids carry no key material or
+    // portfolio content. The unlocked sibling is the same account's control.
+    const vaultId = '018f0000-0000-7000-8000-000000000410';
+    const lockedId = '018f0000-0000-7000-8000-000000000411';
+    await h.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: user.id,
+      name: 'Usage boundary',
+      headerDocId: '018f0000-0000-7000-8000-000000000412',
+      commonDocId: '018f0000-0000-7000-8000-000000000413',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'deterministic-test-vector-public-proof',
+      keyFingerprint: 'deterministic-test-vector-fingerprint',
+    });
+    await h.db.insert(schema.portfolios).values({
+      id: lockedId,
+      userId: user.id,
+      name: 'Locked stub',
+      vaultId,
+    });
+    const asset = await seedGlobalAsset(h, 'VLTQ');
+
+    // Remove login/setup traffic so each resulting row has one cause.
+    await h.ctx.usageAnalytics.flush();
+    await h.db.delete(schema.usageEvents).where(eq(schema.usageEvents.userId, user.id));
+
+    const plain = await agent.get(`/api/v1/portfolios/${plainId}`);
+    expect(plain.status).toBe(200);
+    const locked = await agent.get(`/api/v1/portfolios/${lockedId}`);
+    expect(locked.status).toBe(403);
+    expect(locked.body.error.code).toBe('VAULTED_PORTFOLIO');
+    // These client-engine reads do not say which portfolio caused them. Any
+    // vault on the account makes recording the asset id unsafe even though the
+    // market-data surfaces remain usable.
+    expect((await agent.get(`/api/v1/assets/${asset.id}/quote`)).status).toBe(200);
+    expect((await agent.get(`/api/v1/assets/${asset.id}/daily-closes`)).status).toBe(200);
+    expect((await agent.get(`/api/v1/assets/${asset.id}/history?range=1M`)).status).toBe(200);
+    await h.ctx.usageAnalytics.flush();
+
+    const rows = await usageRowsFor(h, user.id);
+    expect(
+      rows.map((row) => ({ feature: row.feature, assetId: row.assetId, hits: row.hits })),
+    ).toEqual([{ feature: 'portfolio', assetId: '', hits: 1 }]);
+  });
+
   /**
    * The enable RACE. Capture buffers in memory and flushes on a timer, so
    * signals taken while the account was still `normal` can land AFTER the enable
@@ -178,6 +243,59 @@ describe('usage capture never records a paranoid account', () => {
     expect(await usageRowsFor(h, user.id)).toEqual([]);
   });
 
+  it('re-checks buffered portfolio attribution after move-in without dropping a plain sibling', async () => {
+    const h = await createTestApp();
+    const user = await h.seedUser({ email: 'movein-race@test.dev', username: 'movein_race' });
+    const movingId = await h.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const sibling = await h.ctx.portfolio.createPortfolio(user.id, { name: 'Plain sibling' });
+
+    // These signals are buffered while both portfolios are plain. The quote is
+    // deliberately unattributed, matching the client engine's market-data read.
+    h.ctx.usageAnalytics.capture({
+      userId: user.id,
+      feature: 'portfolio',
+      targetPortfolioId: movingId,
+    });
+    h.ctx.usageAnalytics.capture({
+      userId: user.id,
+      feature: 'portfolio',
+      targetPortfolioId: sibling.id,
+    });
+    h.ctx.usageAnalytics.capture({
+      userId: user.id,
+      feature: 'assets',
+      assetId: 'buffered-held-asset',
+      suppressIfAnyVault: true,
+    });
+
+    // TEST VECTOR: identity/config-only vault metadata; no key material or
+    // portfolio content. E4 performs this attach and purge atomically under the
+    // same account lock that the usage write boundary takes in shared mode.
+    const vaultId = '018f0000-0000-7000-8000-000000000420';
+    await h.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: user.id,
+      name: 'Buffered capture boundary',
+      headerDocId: '018f0000-0000-7000-8000-000000000421',
+      commonDocId: '018f0000-0000-7000-8000-000000000422',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'deterministic-buffered-public-proof',
+      keyFingerprint: 'deterministic-buffered-fingerprint',
+    });
+    await h.db.update(schema.portfolios).set({ vaultId }).where(eq(schema.portfolios.id, movingId));
+
+    await h.ctx.usageAnalytics.flush();
+
+    expect(
+      (await usageRowsFor(h, user.id)).map((row) => ({
+        feature: row.feature,
+        assetId: row.assetId,
+        hits: row.hits,
+      })),
+    ).toEqual([{ feature: 'portfolio', assetId: '', hits: 1 }]);
+  });
+
   /**
    * …and the interleaving the case above CANNOT see. Enable flips `privacy_mode`
    * in its LAST statement but takes `FOR UPDATE` on the row in its FIRST, so an
@@ -189,9 +307,10 @@ describe('usage capture never records a paranoid account', () => {
    * The fix is to take the same `FOR KEY SHARE` lock every other guarded action
    * takes and to hold it ACROSS the insert. What this asserts is exactly that
    * ordering: while a transition holds the exclusive lock, the flush cannot
-   * complete. (Per `withLockedPrivacyModes`' documented limit 1, the default
-   * PGlite harness emulates the locks in-process — the ordering is real here,
-   * the row-level primitive itself only under `TEST_DATABASE_URL`.)
+   * complete. (Per `withLockedPrivacyModes`' documented limit 1, this unit
+   * suite uses the in-process emulation even when the harness points at
+   * `TEST_DATABASE_URL`; `paranoidPrivacyLocks.test.ts` explicitly selects the
+   * production branch for the real row-lock counterpart.)
    */
   it('cannot write while an enable transaction holds the account lock', async () => {
     const h = await createTestApp();

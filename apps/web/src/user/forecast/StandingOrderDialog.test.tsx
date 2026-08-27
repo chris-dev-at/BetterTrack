@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
 
+import { ApiError } from '../../lib/apiClient';
+
 vi.mock('../../lib/standingOrdersApi', () => ({
   STANDING_ORDERS_QUERY_KEY: ['standingOrders'],
   createStandingOrder: vi.fn(),
@@ -64,6 +66,15 @@ function renderDialog(props: Partial<React.ComponentProps<typeof StandingOrderDi
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+// Deterministic TEST VECTOR: server-authored English must never be the rendered
+// copy for the stable vaulted-portfolio boundary.
+const vaultedRejection = () =>
+  new ApiError(
+    403,
+    'VAULTED_PORTFOLIO',
+    'SERVER ENGLISH TEST VECTOR must never reach localized UI',
+  );
 
 describe('StandingOrderDialog — create', () => {
   test('buy-asset requires an asset before submit', async () => {
@@ -152,6 +163,23 @@ describe('StandingOrderDialog — create', () => {
     expect(await screen.findByText('Enter an amount greater than zero.')).toBeInTheDocument();
     expect(standingOrdersApi.createStandingOrder).not.toHaveBeenCalled();
   });
+
+  test('localizes a vaulted portfolio refusal while creating', async () => {
+    vi.mocked(standingOrdersApi.createStandingOrder).mockRejectedValue(vaultedRejection());
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('button', { name: 'Add cash' }));
+    await user.type(screen.getByLabelText('Amount (€)'), '10');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(
+      await screen.findByText(
+        'This feature is unavailable for a locked vault portfolio. Choose a plain portfolio instead.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/SERVER ENGLISH TEST VECTOR/)).not.toBeInTheDocument();
+  });
 });
 
 describe('StandingOrderDialog — edit', () => {
@@ -204,5 +232,20 @@ describe('StandingOrderDialog — edit', () => {
         endDate: null,
       }),
     );
+  });
+
+  test('localizes a vaulted portfolio refusal while editing', async () => {
+    vi.mocked(standingOrdersApi.updateStandingOrder).mockRejectedValue(vaultedRejection());
+    const user = userEvent.setup();
+    renderDialog({ existing: EXISTING });
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(
+      await screen.findByText(
+        'This feature is unavailable for a locked vault portfolio. Choose a plain portfolio instead.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/SERVER ENGLISH TEST VECTOR/)).not.toBeInTheDocument();
   });
 });

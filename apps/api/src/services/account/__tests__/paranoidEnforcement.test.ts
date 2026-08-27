@@ -39,6 +39,7 @@ import {
   assertParanoidJobBindings,
   bindParanoidJob,
   createParanoidUserJobFilter,
+  VAULTED_PORTFOLIO_JOB_IDEMPOTENCY_KEYS,
   type JobDefinition,
 } from '../../../jobs';
 import { createAlertsEvaluateJob } from '../../../jobs/definitions/alertsJob';
@@ -50,7 +51,7 @@ import {
   sampleEarningsEvents,
 } from '../../../testing/marketDataStubs';
 import {
-  isParanoidKilledScope,
+  isLegacyParanoidRefusedScope,
   isParanoidKilledWebhookEvent,
   isParanoidOwnedSubjectBlocked,
   paranoidClassificationsForRoute,
@@ -336,7 +337,9 @@ describe('paranoid kill registry', () => {
       expect(classification.reason, `${scope} rationale must stay on one line`).not.toMatch(
         /[\r\n]/,
       );
-      expect(isParanoidKilledScope(scope), scope).toBe(classification.disposition === 'killed');
+      expect(isLegacyParanoidRefusedScope(scope), scope).toBe(
+        classification.disposition === 'killed',
+      );
     }
   });
 
@@ -387,14 +390,33 @@ describe('paranoid kill registry', () => {
                 : [user.username, 'portfolio', portfolio!.id]
             : binding.subject === 'userIdField'
               ? [{ userId: user.id }]
-              : binding.subject === 'paranoidWebhookSubjects'
-                ? [{ type: 'portfolio.changed', userId: user.id }]
-                : binding.subject === 'portfolioIdFirst' ||
-                    binding.subject === 'portfolioIdFirstAllowMissing'
-                  ? [portfolio!.id]
-                  : binding.subject === 'assetIdFirst'
-                    ? [asset!.id]
-                    : [user.id];
+              : binding.subject === 'portfolioIdSecond' ||
+                  binding.subject === 'optionalPortfolioIdSecond'
+                ? [user.id, portfolio!.id]
+                : binding.subject === 'portfolioIdFieldSecond'
+                  ? [user.id, { portfolioId: portfolio!.id }]
+                  : binding.subject === 'userAndPortfolioIdFields'
+                    ? [{ userId: user.id, portfolioId: portfolio!.id }]
+                    : binding.subject === 'importBatchIdSecond'
+                      ? [user.id, 'missing-import-batch']
+                      : binding.subject === 'portfolioAudienceTarget'
+                        ? [user.id, 'portfolio', portfolio!.id]
+                        : binding.subject === 'optionalPortfolioIdOptionSecond'
+                          ? [user.id, { portfolioId: portfolio!.id }]
+                          : binding.subject === 'standingOrderIdSecond'
+                            ? [user.id, 'missing-standing-order']
+                            : binding.subject === 'cashBudgetIdSecond'
+                              ? [user.id, 'missing-cash-budget']
+                              : binding.subject === 'cashMovementIdSecond'
+                                ? [user.id, 'missing-cash-movement']
+                                : binding.subject === 'paranoidWebhookSubjects'
+                                  ? [{ type: 'portfolio.changed', userId: user.id }]
+                                  : binding.subject === 'portfolioIdFirst' ||
+                                      binding.subject === 'portfolioIdFirstAllowMissing'
+                                    ? [portfolio!.id]
+                                    : binding.subject === 'assetIdFirst'
+                                      ? [asset!.id]
+                                      : [user.id];
         const call = Promise.resolve().then(() => Reflect.apply(executable!, service, args));
         if (binding.subject === 'intrinsic') {
           await expect(call, `${binding.service}.${method}`).rejects.toMatchObject({
@@ -544,6 +566,11 @@ describe('paranoid kill registry', () => {
   it('classifies every queue and requires an executable binding for every killed job', async () => {
     expect(PARANOID_JOB_POLICIES.map((entry) => entry.surface.name).sort()).toEqual(
       [...ALL_QUEUE_NAMES].sort(),
+    );
+    expect(Object.keys(VAULTED_PORTFOLIO_JOB_IDEMPOTENCY_KEYS).sort()).toEqual(
+      PARANOID_JOB_POLICIES.filter((entry) => entry.policy.capability !== null)
+        .map((entry) => entry.surface.name)
+        .sort(),
     );
 
     const alwaysParanoid = {

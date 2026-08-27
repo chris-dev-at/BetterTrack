@@ -29,7 +29,7 @@ import type { AppContext } from '../context';
  * synchronous provider refresh whose market timestamp is within the four-day
  * booking ceiling (`STANDING_ORDER_MAX_QUOTE_AGE_MS`); the transaction is
  * dated at the scan instant — never the quote's — so a pre-open scan cannot
- * write into an earlier, possibly locked (#1168) tax year, while the quote's
+ * write into an earlier tax year (#1168), while the quote's
  * actual `asOf` is recorded on the order's `lastRunAt`. A US asset scanned
  * before its open therefore honestly reports the prior session's close there.
  * Cash rows carry the scan timestamp throughout.

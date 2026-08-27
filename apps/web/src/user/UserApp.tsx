@@ -8,7 +8,6 @@ import { RealtimeProvider } from '../lib/realtime';
 import { NotFoundState } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
-import { VaultsProvider } from './vault/v2/ui/VaultsProvider';
 import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
@@ -212,9 +211,6 @@ const ParkedPage = lazy(() =>
 const VaultAccountRoot = lazy(() =>
   import('./vault/VaultAccountRoot').then((m) => ({ default: m.VaultAccountRoot })),
 );
-const VaultHowItWorksPage = lazy(() =>
-  import('./vault/v2/ui/VaultHowItWorksPage').then((m) => ({ default: m.VaultHowItWorksPage })),
-);
 
 /**
  * Legacy-path redirect that preserves the query string (the active portfolio
@@ -319,13 +315,19 @@ function UserShell() {
    */
   const control = matchControlPanel(location.pathname);
   const background = useRef<Location>(CONTROL_COLD_BACKGROUND);
+  const hasBackground = useRef(false);
   // Only a page an authenticated session is actually looking at can be the page
   // behind the popup: anything rendered while the session is still resolving is
   // a gate on its way somewhere else.
   if (status === 'authenticated' && control === null && !isTransientLocation(location.pathname)) {
     background.current = location;
+    hasBackground.current = true;
   }
   const pageLocation = control === null ? location : background.current;
+  // A cold control deep link still paints Home as a safe visual backdrop, but
+  // feedback diagnostics must describe the URL the user actually opened. Once
+  // the shell has seen a real page, that page remains the report's origin.
+  const overlayScreen = hasBackground.current ? href(background.current) : href(location);
 
   if (status === 'loading') return <Splash />;
   if (status === 'session-unavailable') {
@@ -362,7 +364,11 @@ function UserShell() {
             </div>
           }
         >
-          <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
+          <ControlCenterOverlay
+            closeTo={href(background.current)}
+            panel={control.panel}
+            screen={overlayScreen}
+          />
         </Suspense>
       ) : null}
     </>
@@ -631,9 +637,6 @@ function UserRoutes({ location }: { location: Location }) {
               element={<LegacyRedirect to="/workbench/ideas" withSplat />}
             />
             <Route path="forecast" element={<LegacyRedirect to="/workbench/forecasts" />} />
-            {/* Vaults v2 explainer (docs/VAULTS_V2_DESIGN.md §4). Deliberately
-                reachable in every privacy mode: a locked user needs it most. */}
-            <Route path="vault/how-it-works" element={<VaultHowItWorksPage />} />
             <Route path="expenses/*" element={<LegacyRedirect to="/portfolio/cash" withSplat />} />
             <Route path="social" element={<LegacyRedirect to="/people" />} />
             <Route path="social/friends" element={<LegacyRedirect to="/people" />} />
@@ -811,15 +814,10 @@ export function UserApp() {
             <RateLimitToastBridge />
             <Suspense fallback={<Splash />}>
               <AccountModeRoot>
-                {/* Vaults v2: mounted once, above the router, because the
-                    in-memory keyring must survive navigation — rebuilding it
-                    would silently relock every vault. */}
-                <VaultsProvider>
-                  <RealtimeRoot>
-                    <AnnouncementBannerRoot />
-                    <UserShell />
-                  </RealtimeRoot>
-                </VaultsProvider>
+                <RealtimeRoot>
+                  <AnnouncementBannerRoot />
+                  <UserShell />
+                </RealtimeRoot>
               </AccountModeRoot>
             </Suspense>
           </AuthProvider>

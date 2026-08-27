@@ -148,7 +148,6 @@ const AUTHENTICATED_CORE_ROUTES = [
   '/people/approvals',
   '/ask',
   '/review',
-  '/vault/how-it-works',
   '/control/data',
   '/developer',
   '/developer/mcp',
@@ -170,6 +169,7 @@ const CONTROL_CORE_ROUTES = [
   '/control/defaults',
   '/control/notifications',
   '/control/notification-log',
+  '/control/feedback',
   '/control/privacy',
   '/control/connections',
   '/control/api',
@@ -1030,6 +1030,15 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     justification: 'Covers a Dialog portalled above the already-open Control Center dialog.',
   },
   {
+    label: 'feedback composer sheet',
+    sources: ['apps/web/src/user/components/FeedbackDialog.tsx'],
+    route: '/control/feedback',
+    action: { kind: 'click', selector: '.bt-cc__content .bt-btn--primary' },
+    expectedSelector: '.bt-dialog__panel--phone-sheet',
+    justification:
+      'Covers the feedback-specific category, subject, message and submission controls above the Control Center.',
+  },
+  {
     label: 'global create menu',
     sources: ['apps/web/src/user/components/OriginShell.tsx'],
     route: '/portfolio',
@@ -1143,53 +1152,18 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'Menu contents depend on each configurable widget kind and layout state; the widget-builder e2e flow owns that state matrix.',
   },
   {
+    surface: 'VaultTransferQr sender screen',
+    sources: ['apps/web/src/user/vault/ui/VaultTransferQr.tsx'],
+    routes: ['/control/privacy'],
+    justification:
+      'Opening it requires a locally stored live seed-phrase session and deliberately reveals the master secret; the E10 mocked-camera transfer flow owns that secret lifecycle.',
+  },
+  {
     surface: 'VaultSyncChip status dialog',
     sources: ['apps/web/src/user/vault/ui/VaultSyncChip.tsx'],
     routes: ['/'],
     justification:
       'The chip exists only after entering and unlocking paranoid mode with a configured data home; paranoid Drive round-trip e2e owns that state.',
-  },
-  {
-    surface: 'create-vault wizard',
-    sources: ['apps/web/src/user/vault/v2/ui/CreateVaultWizard.tsx'],
-    routes: ['/portfolio/settings'],
-    justification:
-      'Its four steps mint twelve recovery words shown exactly once and create a real vault server-side; vault v2 e2e owns that key ceremony.',
-  },
-  {
-    surface: 'move-into-vault dialog',
-    sources: ['apps/web/src/user/vault/v2/ui/MoveIntoVaultDialog.tsx'],
-    routes: ['/portfolio/settings'],
-    justification:
-      'It refuses to start without an unlocked target vault and irreversibly purges the portfolio server-side inside the join transaction; vault v2 e2e owns it.',
-  },
-  {
-    surface: 'move-out-of-vault dialog',
-    sources: ['apps/web/src/user/vault/v2/ui/MoveOutOfVaultDialog.tsx'],
-    routes: ['/portfolio/settings'],
-    justification:
-      'It requires an already vaulted portfolio and makes it server-readable again under a persisted restore id; vault v2 leave e2e owns that receipt.',
-  },
-  {
-    surface: 'vault QR import dialog',
-    sources: ['apps/web/src/user/vault/v2/ui/VaultQrImportDialog.tsx'],
-    routes: ['/portfolio/settings'],
-    justification:
-      'The receiving half of the QR handoff is not mounted by any route yet, and its scan/paste path needs a second device; vault v2 e2e owns it.',
-  },
-  {
-    surface: 'vault QR share dialog',
-    sources: ['apps/web/src/user/vault/v2/ui/VaultQrShareDialog.tsx'],
-    routes: ['/portfolio/settings'],
-    justification:
-      'It requires an unlocked vault plus a server-verified account password and the whole handoff expires after 120 seconds; vault v2 e2e owns that window.',
-  },
-  {
-    surface: 'vault unlock dialog',
-    sources: ['apps/web/src/user/vault/v2/ui/VaultUnlockDialog.tsx'],
-    routes: ['/portfolio/settings'],
-    justification:
-      'It only appears for a locked vault and takes either the device-wrapped passphrase or the twelve words; vault v2 unlock e2e owns that state.',
   },
   {
     surface: 'portfolio-switcher selection popover',
@@ -1281,13 +1255,6 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
     routes: ['/portfolio/cash/accounts'],
     justification:
       'It writes a reconciliation movement to a selected source; cash-source e2e owns the resulting balance history.',
-  },
-  {
-    surface: 'tax-year unlock dialog',
-    sources: ['apps/web/src/user/portfolio/TaxReportPage.tsx'],
-    routes: ['/portfolio/tax'],
-    justification:
-      'It only opens for a year that has locked after year end, and confirming re-authenticates with the account password; tax-lock e2e owns that ritual.',
   },
   {
     surface: 'manual value-point editor',

@@ -62,18 +62,47 @@ mounted files immediately without a reload. Update legal files only in the
 landing tree, then use the render commands above and the updater checks before
 deployment.
 
+## Google sign-in and account linking
+
+When `BT_GOOGLE_CLIENT_ID` and `BT_GOOGLE_CLIENT_SECRET` enable Google sign-in,
+register both API callbacks as authorized redirect URIs on that Google Cloud OAuth
+Web application credential:
+
+- `${apiOrigin}/api/v1/auth/google/callback`
+- `${apiOrigin}/api/v1/auth/google/link/callback`
+
+The second URI is required for the native Google account-linking flow. Here,
+`${apiOrigin}` is the deployment's effective API origin (the explicit
+`BT_API_ORIGIN` value or the origin derived from its topology settings).
+
 ## Browser Google Drive runtime configuration
 
 Set `BT_GOOGLE_DRIVE_CLIENT_ID` in the deployment env to the public client id of
 a Google Cloud OAuth **Web application** credential whose authorized JavaScript
-origin is the BetterTrack user-app origin. BetterTrack requests only
-`https://www.googleapis.com/auth/drive.appdata`. Leaving the value blank hides
-the Google Drive card entirely.
+origin is the BetterTrack user-app origin. Enable the Google Drive API for that
+project. BetterTrack requests exactly
+`https://www.googleapis.com/auth/drive.file`: it creates a visible
+**BetterTrack Vaults** folder and can access only the files it created through
+that grant, never unrelated Drive files. Users may authenticate Drive separately
+from their BetterTrack Google sign-in and may register multiple Drive accounts;
+each connection gets its own browser-memory GIS token and Google login hint.
+Leaving the value blank hides new Drive connection controls unless Drive is
+already a selected vault medium.
+
+File and folder discovery uses opaque digest `appProperties` plus cached Drive
+ids, not display names. Users may rename or move the folder and encrypted files
+without breaking synchronization. Two BetterTrack accounts may intentionally
+use the same physical Google Drive; their owner/account/vault/document digests
+keep namespaces disjoint.
 
 The client id is public by design; do not put a client secret, access token, or
 refresh token in this variable. The OAuth flow remains browser-only through
 Google Identity Services: the BetterTrack API receives no Drive token, file id,
 or proxied Drive request.
+
+Production had no stranded hidden-folder data when this scope changed: the prod
+host had never set `BT_GOOGLE_DRIVE_CLIENT_ID`, so `/config.js` exposed an empty
+`googleDriveClientId` and the GIS Drive client could not initialize.
 
 After changing the value, recreate only the `web` container with the same base
 and topology Compose files used by the deployment (for example, append
@@ -81,7 +110,8 @@ and topology Compose files used by the deployment (for example, append
 This regenerates `/config.js` at container start without rebuilding the image.
 Fetch the user origin's `/config.js` and confirm its `googleDriveClientId`; set
 the variable blank and recreate `web` again to remove the value and hide the
-card.
+card, unless Drive is already a selected vault medium or the image was built
+with the legacy `VITE_GOOGLE_DRIVE_CLIENT_ID` fallback.
 
 ## Deployment-host log and image retention
 

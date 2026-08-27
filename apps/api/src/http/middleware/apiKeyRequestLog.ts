@@ -1,13 +1,18 @@
 import type { RequestHandler } from 'express';
 
 import type { ApiKeyService } from '../../services/apiKeys/apiKeyService';
+import {
+  isVaultSensitiveUnattributedAssetRead,
+  vaultedPortfolioTargetForRequest,
+} from '../../services/account/vaultedPortfolioEnforcement';
 
 /**
  * Per-key request-log capture (§13.5 V5-P10, issue 2/2). Plain middleware — it
- * adds NO route. For a personal-API-key request it folds one bounded audit line
- * (method, mount-relative path, response status) into the request log on
- * `finish`, so even a denied (403/429) request is recorded. Cookie sessions and
- * OAuth grants are ignored (OAuth carries its own audit).
+ * adds NO route. For a normal account's personal-API-key request it folds one
+ * bounded audit line (method, mount-relative path, response status) into the
+ * request log on `finish`, so even a denied (403/429) request is recorded.
+ * Paranoid capture is suppressed at the locked repository boundary. Cookie
+ * sessions and OAuth grants are ignored (OAuth carries its own audit).
  *
  * Capture is fire-and-forget and best-effort: `recordRequest` scrubs the path
  * and swallows any write failure, so the audit trail can NEVER add a failure
@@ -23,8 +28,25 @@ export function createApiKeyRequestLogMiddleware(apiKeys: ApiKeyService): Reques
       // (`/api/v1` stripped) and stable for the matched request.
       const method = req.method;
       const path = req.path;
+      const target = vaultedPortfolioTargetForRequest({
+        method,
+        path: req.originalUrl,
+        params: req.params,
+        query: req.query,
+        body: req.body,
+        valid: req.valid,
+      });
+      const suppressIfAnyVault = isVaultSensitiveUnattributedAssetRead(method, req.originalUrl);
       res.on('finish', () => {
-        void apiKeys.recordRequest({ keyId, userId, method, path, status: res.statusCode });
+        void apiKeys.recordRequest({
+          keyId,
+          userId,
+          method,
+          path,
+          status: res.statusCode,
+          targetPortfolioId: target?.portfolioId,
+          suppressIfAnyVault,
+        });
       });
     }
     next();

@@ -388,6 +388,17 @@ describe('paranoid enforcement completeness', () => {
     );
   });
 
+  it('classifies the per-vault E1 route and context service as kept opaque storage', () => {
+    const vaultRoutes = mountedRouteSurfaces().filter(
+      (route) => route.path === '/vaults' || route.path.startsWith('/vaults/'),
+    );
+    const vaultContext = contextSurfaces.filter((surface) => surface.service === 'vaults');
+
+    expect(vaultRoutes.length).toBeGreaterThan(0);
+    expect(vaultContext.length).toBeGreaterThan(0);
+    expect(classificationProblems([...vaultRoutes, ...vaultContext])).toEqual([]);
+  });
+
   it('discovers a directly callable context field as its own entry point', () => {
     const directSurface = accountContextServiceSurfaces({
       contextPath: COMPLETENESS_TEST_PATH,

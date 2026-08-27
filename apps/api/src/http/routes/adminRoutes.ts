@@ -56,8 +56,10 @@ import type { AppContext } from '../context';
 import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { registerAdminApiKeyRoutes } from './adminApiKeyRoutes';
+import { registerAdminFeedbackRoutes } from './adminFeedbackRoutes';
 import { registerAdminProblemsRoutes } from './adminProblemsRoutes';
 import { registerAdminMonitoringRoutes } from './adminMonitoringRoutes';
+import { registerAdminOpsRoutes } from './adminOpsRoutes';
 import {
   registerAdminSecurityRoutes,
   registerAdminSessionPolicyRoutes,
@@ -113,6 +115,10 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // errors/failed jobs/provider failures with a resolve flow. Registered flat.
   registerAdminProblemsRoutes(router, ctx);
 
+  // Authenticated web + native submissions converge in one category-priority
+  // owner inbox. Registered flat behind the existing admin + 2FA gates.
+  registerAdminFeedbackRoutes(router, ctx, limiters);
+
   // Admin monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19):
   // Grafana/Prometheus reachability status + the external-access runtime
   // kill-switch. The heavier Grafana reverse proxy is mounted at the app root
@@ -122,6 +128,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // API-key governance (§13.5 V5-P10, issue 2/2): admin-configurable rate tiers
   // + per-key request-log audit view. Registered flat like the surfaces above.
   registerAdminApiKeyRoutes(router, ctx);
+
+  // Operator reads for the Overview cockpit (#1406 W1): backup / restore-drill
+  // readiness projected off the scheduler's status file. Read-only, registered
+  // flat like the surfaces above.
+  registerAdminOpsRoutes(router, ctx);
 
   // First-party usage analytics (§13.5 V5-P2 arc (b)): DAU/WAU/MAU, feature
   // counters, top assets and the registration funnel — computed from our own

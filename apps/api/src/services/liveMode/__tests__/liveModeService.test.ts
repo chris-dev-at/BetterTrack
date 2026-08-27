@@ -6,6 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Logger } from '../../../logger';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createLiveModeService, type LiveModeService } from '../liveModeService';
+import {
+  fenceRetiredLiveAssets,
+  liveAssetRetirementStateKey,
+  readLiveAssetRetirementGeneration,
+  releaseRetiredLiveAssets,
+} from '../retirementFence';
 import { createLiveRingBuffer, liveRingKey } from '../ringBuffer';
 
 const ASSET_ID = '018f6f00-0000-7000-8000-00000000000a';
@@ -50,11 +56,13 @@ function makeService(
     instanceId?: string;
     now?: () => number;
   } = {},
+  reconcileRetirement?: (assetId: string) => Promise<void>,
 ) {
   const service = createLiveModeService({
     marketData: stub,
     redis,
     logger: noopLogger,
+    reconcileRetirement,
     options: { intervalMs: 20, maxIntervalMs: 160, ...options },
   });
   services.push(service);
@@ -67,12 +75,12 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     const stub = createStubMarketData({ poll: () => quoteResult(price++) });
     const { service } = makeService(stub);
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
 
     // Two more viewers arrive: same loop, only the counter moves.
-    service.watch(ASSET_ID, REF);
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     expect(service.watcherCount(ASSET_ID)).toBe(3);
 
     const before = stub.calls.poll;
@@ -92,7 +100,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     service.onFrame((f) => seenA.push(f.price));
     service.onFrame((f) => seenB.push(f.price));
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(seenA.length).toBeGreaterThanOrEqual(2));
     expect(seenB).toEqual(seenA); // every subscriber gets every frame
 
@@ -127,7 +135,7 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     });
     const { service } = makeService(stub);
     await redis.set(liveRingKey(ASSET_ID), 'retained-private-frame');
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await pollStarted;
 
     let retired = false;
@@ -146,11 +154,71 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     expect(stub.calls.poll).toBe(callsAfterRetirement);
   });
 
+  it('TEST VECTOR: rejects an old poll generation across a fast close and reopen', async () => {
+    let releasePoll!: () => void;
+    let markStarted!: () => void;
+    const pollStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const pollReleased = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    const stub = createStubMarketData({
+      poll: async () => {
+        markStarted();
+        await pollReleased;
+        return quoteResult(100);
+      },
+    });
+    const { service } = makeService(stub);
+    const frames: number[] = [];
+    service.onFrame((frame) => frames.push(frame.price));
+
+    await expect(service.watch(ASSET_ID, REF)).resolves.toEqual({ retirementEpoch: 0 });
+    await pollStarted;
+    await fenceRetiredLiveAssets(redis, [ASSET_ID]);
+    expect(await readLiveAssetRetirementGeneration(redis, ASSET_ID)).toEqual({
+      epoch: 1,
+      open: false,
+    });
+    expect(liveAssetRetirementStateKey(ASSET_ID)).not.toContain(ASSET_ID);
+    await releaseRetiredLiveAssets(redis, [ASSET_ID]);
+    releasePoll();
+
+    await vi.waitFor(() => expect(service.watcherCount(ASSET_ID)).toBe(0));
+    expect(frames).toEqual([]);
+    expect(await redis.get(liveRingKey(ASSET_ID))).toBeNull();
+    await expect(service.watch(ASSET_ID, REF)).resolves.toEqual({ retirementEpoch: 1 });
+  });
+
+  it('repairs a crash-orphaned precommit fence before admitting the next watch', async () => {
+    await fenceRetiredLiveAssets(redis, [ASSET_ID]);
+    const reconcileRetirement = vi.fn(async (assetId: string) => {
+      // Production performs this release only after an account-locked database
+      // read proves no committed lifecycle still owns the retirement.
+      await releaseRetiredLiveAssets(redis, [assetId]);
+    });
+    const { service } = makeService(undefined, {}, reconcileRetirement);
+
+    await expect(service.watch(ASSET_ID, REF)).resolves.toEqual({ retirementEpoch: 1 });
+    expect(reconcileRetirement).toHaveBeenCalledOnce();
+    expect(reconcileRetirement).toHaveBeenCalledWith(ASSET_ID);
+  });
+
+  it('keeps a committed retirement closed after durable reconciliation', async () => {
+    await fenceRetiredLiveAssets(redis, [ASSET_ID]);
+    const reconcileRetirement = vi.fn(async () => undefined);
+    const { service } = makeService(undefined, {}, reconcileRetirement);
+
+    await expect(service.watch(ASSET_ID, REF)).resolves.toBeNull();
+    expect(reconcileRetirement).toHaveBeenCalledOnce();
+  });
+
   it('auto-stops when the last watcher leaves: upstream calls cease (§6.3)', async () => {
     const { service, stub } = makeService();
 
-    service.watch(ASSET_ID, REF);
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
 
     service.unwatch(ASSET_ID);
@@ -170,13 +238,13 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
   it('a returning watcher after idle starts a fresh loop', async () => {
     const { service, stub } = makeService();
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
     service.unwatch(ASSET_ID);
     await new Promise((resolve) => setTimeout(resolve, 60));
     const cold = stub.calls.poll;
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThan(cold));
     expect(service.watcherCount(ASSET_ID)).toBe(1);
   });
@@ -199,9 +267,9 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
       instanceId: 'api-process-b',
     });
 
-    first.watch(ASSET_ID, REF, 40, false);
+    await first.watch(ASSET_ID, REF, 40, false);
     await vi.waitFor(() => expect(firstStub.calls.poll).toBeGreaterThanOrEqual(2));
-    second.watch(ASSET_ID, REF, 20, true);
+    await second.watch(ASSET_ID, REF, 20, true);
 
     // The follower contributes its finer cadence through Redis, but never
     // starts a second provider loop while process A owns the lease.
@@ -237,9 +305,9 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
       instanceId: 'takeover-api-process',
     });
 
-    first.watch(ASSET_ID, REF, 120, false);
+    await first.watch(ASSET_ID, REF, 120, false);
     await vi.waitFor(() => expect(firstStub.calls.poll).toBe(1));
-    second.watch(ASSET_ID, REF, 20, true);
+    await second.watch(ASSET_ID, REF, 20, true);
 
     // Process A does not reconcile again before its lease expires. Process B
     // reaps it and starts polling; A's already-scheduled 120 ms tick then wakes
@@ -264,7 +332,7 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     });
     const { service } = makeService(stub, { intervalMs: 20, maxIntervalMs: 160 });
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20);
 
@@ -289,7 +357,7 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     const frames: unknown[] = [];
     service.onFrame((f) => frames.push(f));
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(2));
     expect(frames).toEqual([]);
     expect(await service.backfill(ASSET_ID, REF, '12h')).toEqual([]);
@@ -304,7 +372,7 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     const frames: unknown[] = [];
     service.onFrame((f) => frames.push(f));
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(2));
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20); // never stretched
   });
@@ -314,12 +382,12 @@ describe('liveModeService — finest ACTIVE rate (#372)', () => {
   it('the shared loop polls at the minimum requested rate — never a common divisor', async () => {
     const { service } = makeService();
 
-    service.watch(ASSET_ID, REF, 60);
+    await service.watch(ASSET_ID, REF, 60);
     expect(service.pollIntervalMs(ASSET_ID)).toBe(60);
 
     // A 40 ms viewer joins the 60 ms loop: cadence = min(60, 40) = 40 — were a
     // GCD used, 60 + 40 would poll every 20 ms, faster than anyone asked for.
-    service.watch(ASSET_ID, REF, 40);
+    await service.watch(ASSET_ID, REF, 40);
     expect(service.pollIntervalMs(ASSET_ID)).toBe(40);
     expect(service.watcherCount(ASSET_ID)).toBe(2);
 
@@ -342,12 +410,12 @@ describe('liveModeService — finest ACTIVE rate (#372)', () => {
 
     // A slow viewer alone: after the immediate first tick the next poll sits
     // half a second out.
-    service.watch(ASSET_ID, REF, 500);
+    await service.watch(ASSET_ID, REF, 500);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
 
     // A 20 ms viewer joins — the pending tick must be pulled forward, not sit
     // out the remaining ~480 ms.
-    service.watch(ASSET_ID, REF, 20);
+    await service.watch(ASSET_ID, REF, 20);
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(4));
   });
@@ -363,8 +431,8 @@ describe('liveModeService — finest ACTIVE rate (#372)', () => {
     });
     const { service } = makeService(stub);
 
-    service.watch(ASSET_ID, REF, 20);
-    service.watch(ASSET_ID, REF, 80);
+    await service.watch(ASSET_ID, REF, 20);
+    await service.watch(ASSET_ID, REF, 80);
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThanOrEqual(1));
     expect(service.pollIntervalMs(ASSET_ID)).toBe(20);
 
@@ -393,7 +461,10 @@ describe('liveModeService — history-stitched backfill (#372)', () => {
     close,
   });
   const seedRing = async (...frames: ReturnType<typeof ringFrame>[]) => {
-    const ring = createLiveRingBuffer(redis, { capacity: 100, retentionMs: 86_400_000 });
+    const ring = createLiveRingBuffer(redis, {
+      capacity: 100,
+      retentionMs: 86_400_000,
+    });
     for (const frame of frames) await ring.append(frame);
   };
 
@@ -483,7 +554,7 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     const frames: string[] = [];
     service.onFrame((f) => frames.push(f.marketState ?? 'none'));
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
     expect(frames[0]).toBe('closed');
   });
@@ -494,7 +565,7 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     const seen: Array<string | null | undefined> = [];
     service.onFrame((f) => seen.push(f.marketState));
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
     expect(seen[0]).toBeNull();
   });
@@ -509,7 +580,7 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     const states: Array<string | null | undefined> = [];
     service.onFrame((f) => states.push(f.marketState));
 
-    service.watch(ASSET_ID, REF);
+    await service.watch(ASSET_ID, REF);
     await vi.waitFor(() => expect(states.length).toBeGreaterThanOrEqual(2));
     // The closed state still fans out to live viewers (drives the badge)…
     expect(states.every((s) => s === 'closed')).toBe(true);
@@ -559,57 +630,43 @@ describe('liveRingBuffer', () => {
     at: new Date(atMs).toISOString(),
   });
 
-  it('appends, trims, and refreshes retention in one Redis pipeline', async () => {
-    const pipeline = {
-      rpush: vi.fn(),
-      ltrim: vi.fn(),
-      pexpire: vi.fn(),
-      exec: vi.fn().mockResolvedValue([
-        [null, 1],
-        [null, 'OK'],
-        [null, 1],
-      ]),
-    };
-    pipeline.rpush.mockReturnValue(pipeline);
-    pipeline.ltrim.mockReturnValue(pipeline);
-    pipeline.pexpire.mockReturnValue(pipeline);
-    const redisPipeline = vi.fn(() => pipeline);
-    const pipelineRedis = { pipeline: redisPipeline } as unknown as Redis;
+  it('checks the retirement generation and appends/trims/expires in one Lua call', async () => {
+    const evalScript = vi.fn().mockResolvedValue(1);
+    const pipelineRedis = { eval: evalScript } as unknown as Redis;
     const retentionMs = 60_000;
     const capacity = 3;
     const appended = frame(Date.parse('2026-07-08T10:00:00.000Z'), 100);
 
-    await createLiveRingBuffer(pipelineRedis, { capacity, retentionMs }).append(appended);
+    await expect(
+      createLiveRingBuffer(pipelineRedis, {
+        capacity,
+        retentionMs,
+      }).append(appended),
+    ).resolves.toBe(true);
 
     const key = liveRingKey(ASSET_ID);
-    expect(redisPipeline).toHaveBeenCalledOnce();
-    expect(pipeline.rpush).toHaveBeenCalledWith(key, JSON.stringify(appended));
-    expect(pipeline.ltrim).toHaveBeenCalledWith(key, -capacity, -1);
-    expect(pipeline.pexpire).toHaveBeenCalledWith(key, retentionMs);
-    expect(pipeline.exec).toHaveBeenCalledOnce();
+    expect(evalScript).toHaveBeenCalledOnce();
+    expect(evalScript.mock.calls[0]).toEqual([
+      expect.stringContaining("redis.call('RPUSH'"),
+      2,
+      key,
+      expect.stringMatching(/^bt:live:retirement:/),
+      JSON.stringify(appended),
+      capacity,
+      retentionMs,
+      0,
+    ]);
   });
 
-  it('rejects when a resolved pipeline result contains a command error', async () => {
-    const commandError = new Error('LTRIM failed');
-    const rpush = vi.fn();
-    const ltrim = vi.fn();
-    const pexpire = vi.fn();
-    const exec = vi.fn().mockResolvedValue([
-      [null, 1],
-      [commandError, null],
-      [null, 1],
-    ]);
-    const pipeline = {
-      rpush,
-      ltrim,
-      pexpire,
-      exec,
-    };
-    rpush.mockReturnValue(pipeline);
-    ltrim.mockReturnValue(pipeline);
-    pexpire.mockReturnValue(pipeline);
-    const pipelineRedis = { pipeline: () => pipeline } as unknown as Redis;
-    const ring = createLiveRingBuffer(pipelineRedis, { capacity: 3, retentionMs: 60_000 });
+  it('rejects when the atomic append/fence proof fails', async () => {
+    const commandError = new Error('EVAL failed');
+    const pipelineRedis = {
+      eval: vi.fn().mockRejectedValue(commandError),
+    } as unknown as Redis;
+    const ring = createLiveRingBuffer(pipelineRedis, {
+      capacity: 3,
+      retentionMs: 60_000,
+    });
 
     await expect(ring.append(frame(Date.parse('2026-07-08T10:00:00.000Z'), 100))).rejects.toBe(
       commandError,
@@ -617,7 +674,10 @@ describe('liveRingBuffer', () => {
   });
 
   it('trims to capacity, keeps the newest frames, filters by window start', async () => {
-    const ring = createLiveRingBuffer(redis, { capacity: 3, retentionMs: 60_000 });
+    const ring = createLiveRingBuffer(redis, {
+      capacity: 3,
+      retentionMs: 60_000,
+    });
     const t0 = Date.parse('2026-07-08T10:00:00.000Z');
     for (let i = 0; i < 5; i++) await ring.append(frame(t0 + i * 1000, 100 + i));
 
@@ -629,7 +689,10 @@ describe('liveRingBuffer', () => {
   });
 
   it('skips corrupt entries instead of failing the backfill', async () => {
-    const ring = createLiveRingBuffer(redis, { capacity: 10, retentionMs: 60_000 });
+    const ring = createLiveRingBuffer(redis, {
+      capacity: 10,
+      retentionMs: 60_000,
+    });
     await ring.append(frame(Date.now(), 100));
     await redis.rpush(liveRingKey(ASSET_ID), 'not-json');
     await ring.append(frame(Date.now(), 101));

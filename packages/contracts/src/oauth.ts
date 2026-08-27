@@ -64,8 +64,9 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'mirrorchain:write': 'Accept or decline group invitations and leave group portfolios',
   // #1043 — one inherently read-write scope; transitions remain browser-session-only.
   'vault:sync': 'Synchronize your client-encrypted vault across your devices',
-  // #1315 — authenticated, text-only feedback submission; no read-back surface.
+  // #1315/#1338 — authenticated feedback capture plus caller-owned status history.
   'feedback:write': 'Send feedback, feature requests and bug reports on your behalf',
+  'feedback:read': 'View your feedback submissions and their status',
 };
 
 // ── Redirect URI validation ─────────────────────────────────────────────────
@@ -217,6 +218,8 @@ export const oauthGrantSummarySchema = z
     id: z.string().uuid(),
     clientId: z.string(),
     appName: z.string(),
+    firstParty: z.boolean(),
+    current: z.boolean(),
     scopes: z.array(apiKeyScopeSchema),
     createdAt: z.string(),
     lastUsedAt: z.string().nullable(),

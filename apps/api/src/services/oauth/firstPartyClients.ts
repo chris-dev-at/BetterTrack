@@ -26,6 +26,16 @@ export interface FirstPartyClientDefinition {
   scopeCeiling: readonly ApiKeyScope[];
 }
 
+/** Stable public identifier shipped by the official native client. */
+export const BETTERTRACK_MOBILE_CLIENT_ID = 'btc_IbT1mzw_7kBiPHPkGfaE0Q';
+
+/**
+ * Native return target for the bearer-started Google LINK ceremony (#1328).
+ * It is registered additively beside the ordinary OAuth authorization-code
+ * callback and is never accepted from a request at runtime.
+ */
+export const BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI = 'bettertrack://oauth/google-link';
+
 /**
  * The official first-party apps, seeded on every deploy (see
  * {@link seedFirstPartyClients}).
@@ -42,16 +52,16 @@ export interface FirstPartyClientDefinition {
  */
 export const FIRST_PARTY_CLIENTS: readonly FirstPartyClientDefinition[] = [
   {
-    clientId: 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+    clientId: BETTERTRACK_MOBILE_CLIENT_ID,
     name: 'BetterTrackMobile',
-    redirectUris: ['bettertrack://oauth/callback'],
+    redirectUris: ['bettertrack://oauth/callback', BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI],
     public: true,
-    // Full platform ceiling (all 20 scopes today) — mobile is the trusted
+    // Full platform ceiling — mobile is the trusted
     // first-party surface. Listed in the canonical API_KEY_SCOPES order; adding a
     // new scope here is a deliberate widening a future seed will reassert. The
     // seed unions (never narrows) and re-runs on every deploy, so appending the
-    // #1315 feedback scope here keeps fresh installs aligned with the additive
-    // migration that widens existing mobile clients.
+    // feedback scopes here keeps fresh installs aligned with the additive
+    // migrations that widen existing mobile clients.
     scopeCeiling: [
       'portfolio:read',
       'portfolio:write',
@@ -73,6 +83,7 @@ export const FIRST_PARTY_CLIENTS: readonly FirstPartyClientDefinition[] = [
       'mirrorchain:write',
       'vault:sync',
       'feedback:write',
+      'feedback:read',
     ],
   },
 ];
@@ -116,8 +127,10 @@ function unionPreservingOrder<T>(existing: readonly T[], additions: readonly T[]
  *    so an admin's manually-added extra scope or redirect URI is preserved (it is
  *    in `existing`, so the union keeps it) and a scope the admin removed but which
  *    is still in the ceiling is re-asserted. The `client_id`, secret, name and the
- *    public flag are never touched. When nothing is missing the row is left
- *    exactly as-is (a true no-op).
+ *    public flag are never touched. When nothing is missing the CLIENT row is
+ *    left exactly as-is, while active grants are still checked and unioned to the
+ *    ceiling. Revoked grants and every client outside this definition list are
+ *    untouched.
  *
  * Wired into the boot-time seed (`scripts/seed.ts`) alongside the first-admin
  * seed, so a fresh install has the mobile OAuth client without any manual admin
@@ -125,9 +138,10 @@ function unionPreservingOrder<T>(existing: readonly T[], additions: readonly T[]
  */
 export async function seedFirstPartyClients(
   repo: OAuthRepository,
+  definitions: readonly FirstPartyClientDefinition[] = FIRST_PARTY_CLIENTS,
 ): Promise<FirstPartyClientSeedResult[]> {
   const results: FirstPartyClientSeedResult[] = [];
-  for (const def of FIRST_PARTY_CLIENTS) {
+  for (const def of definitions) {
     // Defense in depth: a malformed redirect URI in a definition is a code bug —
     // fail loudly at seed time rather than persist an unusable client.
     for (const uri of def.redirectUris) {
@@ -165,23 +179,15 @@ export async function seedFirstPartyClients(
     const changed =
       mergedScopes.length !== existing.scopes.length ||
       mergedUris.length !== existing.redirectUris.length;
-    if (!changed) {
-      results.push({
-        clientId: def.clientId,
-        action: 'unchanged',
-        scopes: existing.scopes as ApiKeyScope[],
-        redirectUris: existing.redirectUris,
-      });
-      continue;
-    }
-
+    // Run even when the client row itself is already current: an older active
+    // grant can still predate the latest first-party product scope addition.
     const row = await repo.reconcileFirstPartyClient(existing.id, {
       scopes: mergedScopes,
       redirectUris: mergedUris,
     });
     results.push({
       clientId: def.clientId,
-      action: 'converged',
+      action: changed ? 'converged' : 'unchanged',
       scopes: (row?.scopes ?? mergedScopes) as ApiKeyScope[],
       redirectUris: row?.redirectUris ?? mergedUris,
     });

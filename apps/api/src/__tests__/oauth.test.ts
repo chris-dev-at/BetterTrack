@@ -10,7 +10,9 @@ import {
   OAUTH_CLIENT_ID_PREFIX,
   OAUTH_CLIENT_SECRET_PREFIX,
   OAUTH_REFRESH_TOKEN_PREFIX,
+  apiErrorSchema,
   createOAuthClientResponseSchema,
+  createFeedbackResponseSchema,
   oauthAuthorizationDetailsResponseSchema,
   oauthClientSummarySchema,
   oauthDenyResponseSchema,
@@ -34,6 +36,11 @@ import {
   type OAuthLogoFetcher,
   type OAuthLogoTransport,
 } from '../services/oauth/oauthLogo';
+import {
+  BETTERTRACK_MOBILE_CLIENT_ID,
+  FIRST_PARTY_CLIENTS,
+  seedFirstPartyClients,
+} from '../services/oauth/firstPartyClients';
 import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -374,7 +381,7 @@ describe('OAuth client registration', () => {
     const grants = await repo.listGrantsForUser(stored!.userId!);
     expect(grants[0]!.client).not.toHaveProperty('logoBytes');
     const bearerRow = await repo.findAccessTokenByHash(hashToken(access));
-    expect(bearerRow!.client).toEqual({ scopes: ['portfolio:read'] });
+    expect(bearerRow!.client).toEqual({ scopes: ['portfolio:read'], isFirstParty: false });
   });
 
   it('keeps registration working, retains the server-only source and returns the placeholder state when logo fetch fails', async () => {
@@ -947,6 +954,90 @@ describe('grant revocation', () => {
     // The suspension observes the completed grant before re-enable, so this
     // pre-suspension exchange cannot leave a live bearer credential behind.
     expect(await harness.ctx.oauth.authenticateToken(tokens.access_token)).toBeNull();
+  });
+});
+
+describe('first-party grant scope healing (#1393)', () => {
+  it('widens the live grant, keeps the old access snapshot narrow, and heals on refresh', async () => {
+    const repo = createOAuthRepository(harness.db);
+    await seedFirstPartyClients(repo);
+    const mobile = FIRST_PARTY_CLIENTS.find(
+      (client) => client.clientId === BETTERTRACK_MOBILE_CLIENT_ID,
+    )!;
+    const user = await harness.seedUser({
+      email: 'first-party-feedback-heal@bt.test',
+      username: 'fpfeedbackheal',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const original = await consentAndToken(
+      agent,
+      mobile.clientId,
+      'portfolio:read',
+      mobile.redirectUris[0],
+    );
+
+    const [beforeGrant] = await harness.db
+      .select()
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.userId, user.id));
+    expect(beforeGrant?.scopes).toEqual(['portfolio:read']);
+
+    const beforeWidening = await request(harness.app)
+      .post('/api/v1/feedback')
+      .set(...bearer(original.access))
+      .send({ category: 'other', message: 'Before first-party reconcile' });
+    expect(beforeWidening.status).toBe(403);
+    expect(apiErrorSchema.parse(beforeWidening.body).error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const [seeded] = await seedFirstPartyClients(repo);
+    expect(seeded?.action).toBe('unchanged');
+    const [widenedGrant] = await harness.db
+      .select()
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.userId, user.id));
+    expect(widenedGrant?.scopes).toContain('feedback:write');
+
+    const oldSnapshot = await request(harness.app)
+      .post('/api/v1/feedback')
+      .set(...bearer(original.access))
+      .send({ category: 'other', message: 'Old access token stays immutable' });
+    expect(oldSnapshot.status).toBe(403);
+    expect(apiErrorSchema.parse(oldSnapshot.body).error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const refreshResponse = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: original.refresh,
+      client_id: mobile.clientId,
+    });
+    expect(refreshResponse.status).toBe(200);
+    const refreshed = oauthTokenResponseSchema.parse(refreshResponse.body);
+    expect(refreshed.scope.split(' ')).toContain('feedback:write');
+
+    const healed = await request(harness.app)
+      .post('/api/v1/feedback')
+      .set(...bearer(refreshed.access_token))
+      .send({ category: 'other', message: 'No re-login and no re-consent' });
+    expect(healed.status).toBe(201);
+    createFeedbackResponseSchema.parse(healed.body);
+  });
+
+  it('keeps a third-party bearer narrow and names feedback:write in the refusal', async () => {
+    const { agent, clientId } = await registerClient({
+      public: true,
+      scopes: ['portfolio:read', 'feedback:write'],
+    });
+    const tokens = await consentAndToken(agent, clientId, 'portfolio:read');
+
+    await seedFirstPartyClients(createOAuthRepository(harness.db));
+
+    const denied = await request(harness.app)
+      .post('/api/v1/feedback')
+      .set(...bearer(tokens.access))
+      .send({ category: 'other', message: 'Third-party consent stays narrow' });
+    expect(denied.status).toBe(403);
+    const error = apiErrorSchema.parse(denied.body).error;
+    expect(error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(error.message).toContain('feedback:write');
   });
 });
 

@@ -15,6 +15,7 @@ import * as schema from '../data/schema';
 import {
   pinQuickAuthMarkerKey,
   rememberedDeviceKey,
+  rememberedDeviceMetadataKey,
   rememberedDevicesForUserKey,
 } from '../services/auth/loginThrottle';
 import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
@@ -334,6 +335,8 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     expect(await harness.ctx.redis.get(rememberedDeviceKey(first.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(rememberedDeviceKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(rememberedDeviceKey(legacyDeviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceMetadataKey(first.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceMetadataKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(first.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(legacyDeviceId))).toBeNull();
@@ -428,6 +431,95 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
         .select()
         .from(schema.paranoidVaultHistory)
         .where(eq(schema.paranoidVaultHistory.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('cascades the per-portfolio vault surface: config, docs, history, retirement, Drive registry (E0 #1410, §18)', async () => {
+    const user = await seedPerson('vaulted_delete');
+    const [connection] = await harness.db
+      .insert(schema.driveConnections)
+      .values({ userId: user.id, googleSub: 'sub-doomed', email: 'y@gmail.com' })
+      .returning();
+    const [vault] = await harness.db
+      .insert(schema.vaults)
+      .values({
+        userId: user.id,
+        name: 'Doomed vault',
+        headerDocId: '018f6a3e-aaaa-7000-8000-000000000001',
+        commonDocId: '018f6a3e-aaaa-7000-8000-000000000002',
+        media: ['server', 'drive'],
+        driveConnectionId: connection!.id,
+        // Deterministic TEST VECTORS, not secrets: the canonical Ed25519
+        // DER-SPKI prefix padded to shape + a fixed 16-char fingerprint
+        // (mirrors vaultsSchema.test.ts).
+        retirementProofPublicKey: 'MCowBQYDK2VwAyEA' + 'A'.repeat(27) + '=',
+        keyFingerprint: 'Abcdef0123456789',
+      })
+      .returning();
+    const [portfolio] = await harness.db
+      .insert(schema.portfolios)
+      .values({ userId: user.id, name: 'Vaulted', vaultId: vault!.id, vaultAlias: 'Locked' })
+      .returning();
+    const blob = Buffer.from('doc-ciphertext');
+    const docId = '018f6a3e-aaaa-7000-8000-000000000001';
+    const docRow = {
+      vaultId: vault!.id,
+      version: 1,
+      formatVersion: 2,
+      sizeBytes: blob.byteLength,
+      blob,
+    };
+    await harness.db.insert(schema.vaultBlobs).values([
+      { ...docRow, docId, docKind: 'header' },
+      { ...docRow, docId: '018f6a3e-aaaa-7000-8000-000000000002', docKind: 'common' },
+      {
+        ...docRow,
+        docId: portfolio!.id,
+        docKind: 'portfolio',
+        portfolioId: portfolio!.id,
+      },
+    ]);
+    await harness.db.insert(schema.vaultBlobHistory).values({ ...docRow, docId, version: 1 });
+    await harness.db.insert(schema.vaultServerCandidates).values({
+      ...docRow,
+      docId,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await harness.db.insert(schema.vaultRetirements).values({
+      vaultId: vault!.id,
+      retirementProofPublicKey: 'MCowBQYDK2VwAyEA' + 'A'.repeat(27) + '=',
+    });
+    await harness.db.insert(schema.vaultRetired).values({
+      ...docRow,
+      docId,
+      createdAt: new Date(),
+    });
+
+    const response = await deleteAccount(user.agent, {
+      confirmUsername: user.username,
+      password: user.password,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    // Everything died with the account — including the vault-keyed tables that
+    // carry no direct users(id) FK (they cascade through `vaults`), and the
+    // locked stub with its `NO ACTION` FKs (both sides fall in one statement).
+    for (const table of [
+      schema.vaults,
+      schema.vaultBlobs,
+      schema.vaultBlobHistory,
+      schema.vaultServerCandidates,
+      schema.vaultRetirements,
+      schema.vaultRetired,
+      schema.driveConnections,
+    ]) {
+      expect(await harness.db.select().from(table), `${String(table)} not swept`).toEqual([]);
+    }
+    expect(
+      await harness.db
+        .select()
+        .from(schema.portfolios)
+        .where(eq(schema.portfolios.id, portfolio!.id)),
     ).toEqual([]);
   });
 

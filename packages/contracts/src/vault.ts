@@ -4,7 +4,9 @@ import { MAX_PASSWORD_LENGTH } from './auth';
 import { cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
+  IMPORT_ROW_CANDIDATE_LIMIT,
   importBatchStatusSchema,
+  importRowCandidateSchema,
   importRowFlagSchema,
   importRowKindSchema,
   importRowResultSchema,
@@ -365,7 +367,6 @@ export const PARANOID_CLIENT_ROUTE_DECISIONS: readonly ParanoidClientRouteDecisi
     serverRoutes: [
       { capability: 'portfolioServer', match: 'exact', path: '/settings/taxes' },
       { capability: 'portfolioServer', match: 'exact', path: '/settings/taxes/years' },
-      { capability: 'portfolioServer', match: 'prefix', path: '/settings/taxes/years/' },
     ],
     clientRoutes: [
       { match: 'prefix', path: '/portfolio/tax/print', destination: '/portfolio/tax' },
@@ -420,7 +421,7 @@ export const PARANOID_CLIENT_ROUTE_DECISIONS: readonly ParanoidClientRouteDecisi
 
 /**
  * A storage medium a blob syncs to (`§4`). `server` = the BetterTrack blind
- * store; `drive` = the user's Google Drive appdata folder. Both are blind
+ * store; `drive` = the user's visible BetterTrack Vaults folder. Both are blind
  * compare-and-swap blob stores; the client picks a non-empty subset.
  */
 export const VAULT_MEDIA = ['server', 'drive'] as const;
@@ -1025,26 +1026,34 @@ const portfolioRowSchema = z
      */
     kind: portfolioKindSchema.nullable().optional(),
     /**
-     * Vaults v2 (`docs/VAULTS_V2_DESIGN.md`): which v2 vault this portfolio
-     * belongs to, or null. ADDITIVE within v1 and `.default(null)`, exactly like
-     * `mirrorProvenance` and `cashMovement.dedupHash` — a document written
-     * before Vaults v2 has no such key, and absent means the same as null.
+     * `vaultId` re-gained a server column with the E0 per-portfolio vaults
+     * keystone (#1410 — `portfolios.vault_id`, always NULL in any portfolio
+     * this ACCOUNT-level document can carry: a per-portfolio-vaulted portfolio
+     * is a content-free locked stub with nothing left to capture, and the two
+     * paranoid systems are mutually exclusive per account until E9 retires
+     * this one). `alias` remains VESTIGIAL: its v2 column was dropped by PR
+     * #1392 and its E0 successor is deliberately named `vault_alias` /
+     * `vaultAlias` (below) so the retired name stays retired.
      *
-     * It has to round-trip: an account-level paranoid enable purges the
-     * `portfolios` row itself, so a portfolio that lived in a v2 vault would
-     * come back from disable as an ordinary cleartext portfolio while its
-     * ciphertext still sat in `vault_docs` — the row and its documents would
-     * disagree about whether it is paranoid at all.
+     * Both keep `.default(null)` because this object is `.strict()` and
+     * describes the CLIENT-ENCRYPTED v1 document: every paranoid document
+     * written while v2 existed carries both keys (zod's `.default(null)`
+     * filled them in on parse and the client re-serialized what it parsed), so
+     * dropping either would make those documents fail validation — a paranoid
+     * account whose vault silently stops opening, with no server-side copy to
+     * fall back on. Nothing reads them. Do not repurpose `alias`; a future
+     * format version can drop it behind a document migration in
+     * `migrateVaultDocument`.
      */
     vaultId: uuidSchema.nullable().default(null),
-    /**
-     * Vaults v2 (§4): the cleartext display alias of a vaulted portfolio.
-     * ADDITIVE within v1 and `.default(null)`, for the same reason as `vaultId`
-     * above — and it round-trips for the same reason too: an account-level
-     * enable purges the `portfolios` row, and a locked row that came back
-     * without its alias would render under a name the user had renamed away.
-     */
     alias: z.string().nullable().default(null),
+    /**
+     * The E0 locked-stub label column (`portfolios.vault_alias`, #1410).
+     * Always NULL here for the same mutual-exclusion reason as `vaultId`;
+     * `.default(null)` keeps every document written before the column existed
+     * parseable (the `kind` / `dedupHash` precedent).
+     */
+    vaultAlias: z.string().nullable().default(null),
   })
   .strict();
 
@@ -1213,6 +1222,26 @@ const importBatchRowSchema = z
   })
   .strict();
 
+/**
+ * The `import_rows.candidates` column as it appears inside a vault document.
+ *
+ * Exported ONLY so the API's OpenAPI builder can reach this exact instance:
+ * zod-to-openapi 7.3.x has no `ZodCatch` transformer, and this schema is
+ * reachable from the documented `PortfolioVaultMoveOutRequest` body, so the
+ * generator needs a temporary `type` hint installed on the very instance the
+ * parent object captured (a `.openapi()` clone is never what it walks into).
+ * Same generator gap, same escape hatch as `vaultJsonSchema`'s `ZodLazy`.
+ * Nothing else should import this — parse through the entity schemas.
+ *
+ * See the field's documentation in `importRowRowSchema` for why it degrades.
+ */
+export const vaultImportRowCandidatesSchema = z
+  .array(importRowCandidateSchema)
+  .max(IMPORT_ROW_CANDIDATE_LIMIT)
+  .nullable()
+  .optional()
+  .catch(null);
+
 const importRowRowSchema = z
   .object({
     batchId: uuidSchema,
@@ -1235,6 +1264,36 @@ const importRowRowSchema = z
     contentHash: z.string().nullable(),
     result: importRowResultSchema.nullable(),
     resultMessage: z.string().nullable(),
+    /**
+     * The `import_rows.candidates` column: display-only near-matches for an
+     * unresolved row (§13.4). Enrolled because the export-completeness sweep
+     * requires every persisted column to appear in the strict payload.
+     *
+     * UNBREAKABLE BY CONSTRUCTION. `.nullable().optional()` because
+     * restore/disable strict-parses documents written before this column
+     * existed and those carry no `candidates` key at all — requiring it would
+     * lock every pre-existing vault out, the same reason `portfolios.kind`
+     * below is optional. `.catch(null)` because optionality alone is not
+     * enough: this field is a "did you mean" list, and no display-only
+     * suggestion may ever be the reason a user cannot get their portfolio back.
+     * An over-cap array, an unknown inner `type`, an extra key inside a
+     * candidate, or any other malformed shape degrades this ONE field to null
+     * and the entity still parses. The alternative — a strict parse — throws
+     * away a whole portfolio's transactions over a cosmetic suggestion list.
+     *
+     * NOTE FOR WHOEVER LANDS THE E10 WRITER SEAM: nothing in this repo
+     * currently EMITS an `importRow` vault entity. Every `importRow`
+     * touchpoint on both sides (`portfolioVaultRestoreRepository`,
+     * `paranoidRehydrationService`, the web `portfolioRestoreDocument` /
+     * `vaultPortfolioStore`) is a reader. So this field is presently written by
+     * nobody, and the tolerance above is the only thing standing between a
+     * future malformed value and an unrestorable portfolio. When the writer
+     * arrives: it must be a full-row projection, because a HAND-LISTED
+     * assembler that forgets `candidates` drops it silently — `.optional()`
+     * cannot tell "absent because old document" from "absent because the
+     * assembler forgot".
+     */
+    candidates: vaultImportRowCandidatesSchema,
   })
   .strict();
 

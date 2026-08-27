@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
 import { useT } from '../../../i18n';
 import { usePrivacyMode } from '../../vault/usePrivacyMode';
@@ -7,18 +7,16 @@ import { useOptionalVaultRuntime } from '../../vault/VaultRuntimeContext';
 import { Alert } from '../../components/ui';
 import { Button, SkeletonBlock, Switch } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
-import { VAULT_HOW_IT_WORKS_PATH } from '../../vault/v2/ui/routes';
 import { VAULT_ENABLE_PARAM } from '../matchControlPanel';
 import { PanelGroup, PanelHead, Row } from './panelKit';
 
 export type Notice = { tone: 'error' | 'success' | 'info'; key: string } | null;
 
 /**
- * Both vault halves are their own chunks. Everything above them in this file
- * is plain account preference, so a normal-mode account opening Privacy — the
- * only place discreet mode lives — downloads none of the client-encryption
- * stack; the wizard arrives with the deliberate setup gesture, the management
- * section only for an account that is already paranoid (#1089).
+ * Vault surfaces remain separate chunks. A normal-mode account opening Privacy
+ * loads only the compact E7 transfer entry in addition to plain preferences;
+ * the legacy account-vault wizard still arrives only with the setup gesture and
+ * its management section only for an account that is already paranoid (#1089).
  */
 const ParanoidEnableWizard = lazy(() =>
   import('../../vault/ui/ParanoidEnableWizard').then((module) => ({
@@ -28,16 +26,23 @@ const ParanoidEnableWizard = lazy(() =>
 const PrivacyVaultSection = lazy(() =>
   import('./PrivacyVaultSection').then((module) => ({ default: module.PrivacyVaultSection })),
 );
+const VaultManager = lazy(() =>
+  import('../../vault/ui/VaultManager').then((module) => ({ default: module.VaultManager })),
+);
+const VaultTransferActions = lazy(() =>
+  import('./VaultTransferActions').then((module) => ({ default: module.VaultTransferActions })),
+);
 
 /**
  * Control Center → Privacy: the compact entry point for both privacy modes.
  *
  * Discreet mode is a plain account preference, so the panel must render for a
- * normal account with NO vault runtime above it — it reads the runtime
- * optionally and every vault surface below is gated on it. `AccountModeRoot`
- * mounts that runtime for a paranoid account, and for a normal account only
- * once the user asks for the setup wizard (`?enable=1`), which is why the
- * wizard's open/closed state lives in the URL rather than in `useState`.
+ * normal account with NO legacy vault runtime above it. The per-vault transfer
+ * surface falls back to its endpoint-wide runtime; account-level surfaces stay
+ * gated on the optional legacy runtime. `AccountModeRoot` mounts that runtime
+ * for a paranoid account, and for a normal account only once the user asks for
+ * the setup wizard (`?enable=1`), which is why the wizard's open/closed state
+ * lives in the URL rather than in `useState`.
  */
 export function PrivacyPanel() {
   const t = useT();
@@ -78,7 +83,22 @@ export function PrivacyPanel() {
         </Row>
       </PanelGroup>
 
+      <Suspense fallback={<SkeletonBlock height={180} />}>
+        <VaultManager />
+      </Suspense>
+
       {notice ? <Alert tone={notice.tone}>{t(notice.key)}</Alert> : null}
+
+      {/* E7 is per-vault and account-mode independent. Keeping this above the
+          legacy v1 mode split makes receive reachable on a fresh endpoint;
+          when the old runtime exists, its endpoint-wide session owns it. */}
+      <Suspense fallback={<SkeletonBlock height={72} />}>
+        <VaultTransferActions
+          accountId={user?.id ?? null}
+          onNotice={setNotice}
+          runtime={runtime?.transfer}
+        />
+      </Suspense>
 
       {privacy.privacyMode === 'normal' ? (
         // `runtime == null` while the enable request is still pulling the vault
@@ -104,29 +124,20 @@ export function PrivacyPanel() {
         ) : (
           <PanelGroup label={t('vault.settings.title')}>
             {/*
-              Vaults v2 (docs/VAULTS_V2_DESIGN.md §4): paranoid mode is chosen
-              PER PORTFOLIO now, so this panel no longer owns an account-level
-              enable wizard. It signposts the per-portfolio flow and keeps one
-              entry point for accounts still on the legacy account-wide vault.
+              The ONE paranoid entry point (owner ruling 2026-08-19, PROJECTPLAN
+              §16). The per-portfolio "vaults v2" surface that used to signpost
+              from here is gone, so this row owns the account-level V5-P13 setup
+              wizard again — it is the only way into paranoid mode and must not
+              be removed without replacing it.
             */}
-            <Row hint={t('vault.v2.control.pointerHint')} label={t('vault.v2.control.pointer')}>
-              <Link className="bt-btn bt-btn--sm" to="/portfolio/settings">
-                {t('vault.v2.control.pointerAction')}
-              </Link>
-            </Row>
-            <Row hint={t('vault.v2.control.explainerHint')} label={t('vault.v2.explainerLink')}>
-              <Link className="bt-btn bt-btn--sm" to={VAULT_HOW_IT_WORKS_PATH}>
-                {t('vault.v2.control.open')}
-              </Link>
-            </Row>
-            <Row hint={t('vault.v2.control.legacyHint')} label={t('vault.v2.control.legacy')}>
+            <Row hint={t('vault.settings.normalHint')} label={t('vault.settings.normal')}>
               <Button
                 aria-busy={wizard}
                 disabled={wizard}
                 onClick={() => setWizard(true)}
                 size="sm"
               >
-                {wizard ? t('common.loading') : t('vault.v2.control.legacyAction')}
+                {wizard ? t('common.loading') : t('vault.settings.enable')}
               </Button>
             </Row>
           </PanelGroup>

@@ -202,25 +202,36 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
-import { createReauthService, type ReauthService } from '../services/auth/reauthService';
-import { createVaultMigrationRepository } from '../data/repositories/vaultMigrationRepository';
+import { createVaultBlobRepository } from '../data/repositories/vaultBlobRepository';
 import { createVaultRepository } from '../data/repositories/vaultRepository';
-import { createVaultService, type VaultService } from '../services/vault/vaultService';
+import { createDriveConnectionRepository } from '../data/repositories/driveConnectionRepository';
+import { createReauthService, type ReauthService } from '../services/auth/reauthService';
 import {
   createParanoidEnforcementRepository,
+  withExclusiveLockedPrivacyMode,
   withFreshLockedPrivacyModes,
   withLockedPrivacyModes,
 } from '../data/repositories/paranoidEnforcementRepository';
+import { portfolioVaultLiveRetirementOwner } from '../data/repositories/portfolioVaultLiveRetirementRepository';
 import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
 import { createParanoidDiscardReauth } from '../services/account/paranoidDiscardReauth';
+import { createVaultService, type VaultService } from '../services/account/vaultService';
+import {
+  createDriveConnectionService,
+  type DriveConnectionService,
+} from '../services/account/driveConnectionService';
 import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import {
   createParanoidTransitionService,
   type ParanoidTransitionService,
 } from '../services/account/paranoidTransitionService';
+import {
+  createPortfolioVaultTransitionService,
+  type PortfolioVaultTransitionService,
+} from '../services/account/portfolioVaultTransitionService';
 import {
   createParanoidModeGuard,
   guardRegisteredServices,
@@ -228,6 +239,10 @@ import {
   runIfParanoidOwnedSubjectAllowed,
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
+import {
+  createVaultedPortfolioGuard,
+  type VaultedPortfolioGuard,
+} from '../services/account/vaultedPortfolioEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
@@ -289,8 +304,11 @@ import { createPortfolioSnapshotRepository } from '../data/repositories/portfoli
 import {
   createLiveModeService,
   createLiveRingBuffer,
+  fenceRetiredLiveAssets,
   LIVE_POLL_INTERVAL_MS,
   LIVE_RING_RETENTION_MS,
+  reconcilePortfolioVaultLiveAssetRetirements,
+  releaseRetiredLiveAssets,
   type LiveModeService,
   type LiveModeServiceOptions,
 } from '../services/liveMode';
@@ -302,10 +320,6 @@ import { createSessionService } from '../services/sessions/sessionService';
 import { createSocialService, type SocialService } from '../services/social/socialService';
 import { createCommentService, type CommentService } from '../services/social/commentService';
 import { createTaxService, type TaxService } from '../services/tax/taxService';
-import {
-  createTaxYearLockService,
-  type TaxYearLockService,
-} from '../services/tax/taxYearLockService';
 import {
   createWorkboardService,
   type WorkboardService,
@@ -330,7 +344,7 @@ export interface AppContext {
   apiKeys: ApiKeyService;
   /** OAuth 2.0 provider — app registration, authorize/consent, token exchange, grants (§6.13, V2-P12). */
   oauth: OAuthService;
-  /** Authenticated in-app feedback submission into the owner-visible queue (#1315). */
+  /** Authenticated feedback capture plus the owner-only admin triage queue. */
   feedback: FeedbackService;
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
@@ -363,12 +377,6 @@ export interface AppContext {
   snapshots: PortfolioSnapshotService;
   /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
   tax: TaxService;
-  /**
-   * Tax year locking (§16 2026-08-07): lock state + the session-only,
-   * password-re-authenticated unlock/relock ritual. The mutation gates run
-   * inside the tax/portfolio services; routes only expose the ritual.
-   */
-  taxYearLock: TaxYearLockService;
   /**
    * MIRRORCHAIN replication core (§13.5 V5-P7 M2, design §§1–3): the write-path
    * seam for synced copies — op append under the chain lock, origin apply,
@@ -405,22 +413,24 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
-  /**
-   * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) — multi-vault CRUD, the blind
-   * per-vault document store, and the per-portfolio join/leave transitions.
-   * Ownership scoping lives in its repository, never in a controller.
-   */
+  /** Per-vault config, blind per-doc CAS store, media retirement, and signed purge (E1). */
   vaults: VaultService;
+  /** Browser-only Google Drive identity registry; stores config, never Drive capability. */
+  driveConnections: DriveConnectionService;
   /**
    * Generic session step-up (`POST /auth/reauth`). The missing primitive for
-   * sensitive acts that happen entirely client-side — the Vaults v2 QR handoff
-   * has no destructive endpoint of its own to hang a re-auth on.
+   * sensitive acts that happen entirely client-side and so have no destructive
+   * endpoint of their own to hang a re-authentication on.
    */
   reauth: ReauthService;
   /** Public account-locked paranoid enable/disable orchestrator (§7). */
   paranoidTransitions: ParanoidTransitionService;
+  /** Per-portfolio capture, destructive move-in, and strict same-UUID move-out (E4). */
+  portfolioVaultTransitions: PortfolioVaultTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
   paranoidGuard: ParanoidModeGuard;
+  /** Stable owner-scoped guard for a portfolio whose server row is a locked stub. */
+  vaultedPortfolioGuard: VaultedPortfolioGuard;
   /** Outbound webhook subscriptions — CRUD + one-time signing secret + delivery log (§13.5 V5-P10). */
   webhooks: WebhookService;
   /**
@@ -602,6 +612,8 @@ export interface BuildContextDeps {
   marketData?: MarketDataService;
   /** Test seam: controlled portfolio-service clock for UTC-window boundary tests. */
   portfolioNow?: () => number;
+  /** Test seam: controlled destructive portfolio-vault transition clock. */
+  portfolioVaultTransitionNow?: () => Date;
   /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
   backfill?: BackfillScheduler;
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
@@ -690,11 +702,27 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const userRepo = createUserRepository(db);
   const privacyLockDb = deps.lockDb ?? db;
+  const paranoidSubjects = createParanoidEnforcementRepository(db);
   const paranoidGuard = createParanoidModeGuard({
     privacyModeFor: async (userId) => (await userRepo.findById(userId))?.privacyMode ?? null,
     withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(privacyLockDb, userIds, run),
   });
-  const paranoidSubjects = createParanoidEnforcementRepository(db);
+  const vaultedPortfolioGuard = createVaultedPortfolioGuard({
+    portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+    withLockedPortfolioSubject: async (portfolioId, action) => {
+      const candidate = await paranoidSubjects.portfolioOwner(portfolioId);
+      if (!candidate.exists || candidate.userId === null) return action(candidate);
+      return withLockedPrivacyModes(privacyLockDb, [candidate.userId], async () => {
+        const fresh = await paranoidSubjects.portfolioOwner(portfolioId);
+        return action(
+          fresh.exists && fresh.userId === candidate.userId
+            ? fresh
+            : { exists: false, userId: null, vaultId: null },
+        );
+      });
+    },
+    userOwnsVaultedPortfolio: (userId) => paranoidSubjects.userOwnsVaultedPortfolio(userId),
+  });
   const inviteRepo = createInviteRepository(db);
   const registrationTokenRepo = createRegistrationTokenRepository(db);
   const registrationRequestRepo = createRegistrationRequestRepository(db);
@@ -720,7 +748,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     ephemeralIdleMs: config.cookie.ephemeralIdleMs,
     ephemeralCapMs: config.cookie.ephemeralCapMs,
   });
-  const audit = createAuditService(auditRepo);
+  const audit = createAuditService(auditRepo, (userId, run) =>
+    withFreshLockedPrivacyModes(privacyLockDb, [userId], (modes) => run(modes.get(userId) ?? null)),
+  );
 
   // Typed domain event bus (§9, §4.5) — ephemeral cross-process fan-out for
   // realtime signals. It is built before credential services so lifecycle
@@ -751,7 +781,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const apiKeys = createApiKeyService({
     repo: createApiKeyRepository(db),
     tierRepo: createApiKeyTierRepository(db),
-    requestLogRepo: createApiKeyRequestLogRepository(db),
+    requestLogRepo: createApiKeyRequestLogRepository(db, privacyLockDb),
     userRepo,
     events,
     audit,
@@ -981,19 +1011,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     proofSecret: config.sessionSecrets[0],
   });
 
-  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Independent of the account-level
-  // vault above: different tables, its own CAS, no header inspection at all.
   const reauth = createReauthService({
     config,
     redis,
     userRepo,
     passwordHasher,
-    audit,
-  });
-
-  const vaultsService = createVaultService({
-    vaults: createVaultRepository(db),
-    migrations: createVaultMigrationRepository(db),
     audit,
   });
 
@@ -1031,6 +1053,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     enqueue: webhookDeliveryEnqueue,
     logger,
     paranoid: paranoidGuard,
+    vaultedPortfolio: {
+      portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+      standingOrderPortfolio: (userId, standingOrderId) =>
+        paranoidSubjects.standingOrderPortfolio(userId, standingOrderId),
+      cashBudgetPortfolio: (userId, budgetId) =>
+        paranoidSubjects.cashBudgetPortfolio(userId, budgetId),
+      legacyExpenseBudgetExists: (userId, budgetId) =>
+        paranoidSubjects.legacyExpenseBudgetExists(userId, budgetId),
+      userHasPlainHolding: (userId, assetId) =>
+        paranoidSubjects.userHasPlainHolding(userId, assetId),
+      mirrorMemberPortfolios: (chainId, principalUserIds) =>
+        paranoidSubjects.mirrorMemberPortfolios(chainId, principalUserIds),
+    },
   });
 
   // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
@@ -1297,17 +1332,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashMovementRepo,
     marketData,
     currencyService: currency,
-    // Vaults v2 (§3): a VAULTED portfolio is as unreadable to the snapshot
-    // engine as a paranoid account's is — its ledger rows were purged at join.
     isParanoidPortfolio: async (portfolioId) =>
       isParanoidOwnedSubjectBlocked(
         await paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
-        'portfolioJobs',
       ),
     runIfAllowedPortfolio: async (portfolioId, action) =>
       runIfParanoidOwnedSubjectAllowed(
-        await paranoidSubjects.portfolioOwner(portfolioId),
+        () => paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
         'portfolioJobs',
         action,
@@ -1321,22 +1353,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       : {}),
     logger,
   });
+  // Transition-only snapshot seam. Move-out clears the E2 vault membership in
+  // its restore transaction, then rebuilds derived rows from a durable retry
+  // plan. This instance is private and is called only while the finalizer owns
+  // the account's exclusive privacy lock.
+  const portfolioVaultFinalizationSnapshots = createPortfolioSnapshotService({
+    snapshotRepo: createPortfolioSnapshotRepository(db),
+    portfolioRepo,
+    transactionRepo,
+    cashMovementRepo,
+    marketData,
+    currencyService: currency,
+    logger,
+  });
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
-  // Tax year locking (§16 2026-08-07): the API-layer lock policy the tax and
-  // portfolio mutation paths gate through, plus the session-only unlock
-  // ritual. Shares the tax engine's clock seam so the lock boundary and the
-  // open/closed derivation boundary can never disagree.
-  const taxYearLock = createTaxYearLockService({
-    config,
-    redis,
-    taxRepo,
-    userRepo,
-    passwordHasher,
-    audit,
-    now: deps.taxNow,
-  });
   const tax = createTaxService({
     taxRepo,
     portfolioSettingsRepo,
@@ -1346,7 +1378,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolioRepo,
     currencyService: currency,
     snapshots,
-    yearLock: taxYearLock,
     logger,
     now: deps.taxNow,
     paranoid: paranoidGuard,
@@ -1391,7 +1422,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     snapshots,
     taxService: tax,
     standingOrders,
-    yearLock: taxYearLock,
     friendshipRepo,
     audience,
     profile: profileRepo,
@@ -1405,6 +1435,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: customAssetRepo,
     portfolio,
     snapshots,
+    vaultedPortfolio: vaultedPortfolioGuard,
   });
 
   // MIRRORCHAIN replication core (§13.5 V5-P7 M2): built on top of the plain
@@ -1513,10 +1544,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
   });
 
-  // One create-only queue for web + native feedback (#1315). User identity is
-  // supplied by the authenticated route; the service never accepts anonymous
-  // submissions and exposes no user read-back surface.
-  const feedback = createFeedbackService({ repo: createFeedbackRepository(db) });
+  // One queue for web + native feedback. User identity is supplied by the
+  // authenticated capture route; only the admin router exposes read/mutations.
+  const feedback = createFeedbackService({ repo: createFeedbackRepository(db), notify, audit });
 
   // Broker CSV imports (§13.4 V4-P8): staged upload → preview → apply. Staging
   // has its own tables; every APPLY write routes through the portfolio/tax
@@ -1623,6 +1653,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
     userRepo,
     paranoid: paranoidGuard,
+    vaultedPortfolio: vaultedPortfolioGuard,
   });
 
   // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
@@ -1640,6 +1671,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     events,
     notify,
     logger,
+    paranoid: paranoidGuard,
+    vaultedPortfolio: {
+      portfolioSubject: (portfolioId) => paranoidSubjects.portfolioOwner(portfolioId),
+      runOwnedPortfolioAllowed: (userId, portfolioId, action) =>
+        vaultedPortfolioGuard.runOwnedPortfolioAllowed(userId, portfolioId, action),
+    },
   });
 
   // Notification read/mark-read, archive/delete + push registrations (§6.10,
@@ -1786,7 +1823,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
   // store for the reusable idempotency middleware on the portfolio mutation routes.
-  const idempotency = createIdempotencyKeyRepository(db);
+  const idempotency = createIdempotencyKeyRepository(db, privacyLockDb);
 
   // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
@@ -1799,6 +1836,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     redis,
     logger,
+    reconcileRetirement: async (assetId) => {
+      const ownerId = await portfolioVaultLiveRetirementOwner(db, assetId);
+      if (ownerId === null) {
+        await releaseRetiredLiveAssets(redis, [assetId]);
+        return;
+      }
+      await reconcilePortfolioVaultLiveAssetRetirements({
+        db,
+        lockDb: privacyLockDb,
+        redis,
+        userId: ownerId,
+        assetIds: [assetId],
+      });
+    },
     options: deps.liveModeOptions,
   });
 
@@ -1903,7 +1954,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       };
     },
     canViewPortfolio: async (userId, portfolioId) => {
-      if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
+      const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
+      if (owned) return owned.vaultId === null;
       // Friend-share access goes through the SAME single enforcement layer the
       // HTTP shared-view uses (§13.3 V3-P5), recomputed at join time (§6.9).
       return Boolean(await audience.authorizePortfolioRead(userId, portfolioId));
@@ -1923,7 +1975,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
         ownerId: string | null;
       } | null = null;
       const allowed = await runIfParanoidOwnedSubjectAllowed(
-        { exists: true, userId: row.ownerId },
+        () => paranoidSubjects.assetOwner(assetId),
         paranoidGuard,
         'portfolioServer',
         async () => {
@@ -1942,18 +1994,33 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     presence,
   });
 
+  const discardReauth = createParanoidDiscardReauth({
+    config,
+    redis,
+    userRepo,
+    passwordHasher,
+    twoFactor,
+    audit,
+  });
+  const vaultsService = createVaultService({
+    configs: createVaultRepository(db),
+    blobs: createVaultBlobRepository(db),
+    docMaxBytes: config.vault.docMaxBytes,
+    retention: config.vault.history,
+    proofSecret: config.sessionSecrets[0],
+    audit,
+    deleteReauth: discardReauth,
+  });
+  const driveConnectionsService = createDriveConnectionService(
+    createDriveConnectionRepository(db),
+    audit,
+  );
+
   const paranoidTransitions = createParanoidTransitionService({
     db,
     vaults: paranoidVaultRepository,
     // The §3 destruction exit re-authenticates like `DELETE /account`.
-    discardReauth: createParanoidDiscardReauth({
-      config,
-      redis,
-      userRepo,
-      passwordHasher,
-      twoFactor,
-      audit,
-    }),
+    discardReauth,
     // Admin metadata locks on the dedicated pool and reads on the main one, the
     // same split every other privacy-lock call site uses.
     lockDb: privacyLockDb,
@@ -1980,6 +2047,87 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       for (const restoredPortfolio of restoredPortfolios) {
         await snapshots.recompute(restoredPortfolio.id);
       }
+    },
+  });
+  const portfolioVaultTransitions = createPortfolioVaultTransitionService({
+    db,
+    reauth: discardReauth,
+    audit,
+    proofSecret: config.sessionSecrets[0]!,
+    history: config.vault.history,
+    now: deps.portfolioVaultTransitionNow,
+    toCashEur: (amount, sourceCurrency, day) =>
+      currency.convert(amount, sourceCurrency, 'EUR', { date: day }),
+    beforeMoveInCommit: async (userId, _portfolioId, plan) => {
+      // The prospective ciphertext and all database preconditions have already
+      // been verified under the exclusive account lock. Retire process/Redis
+      // derivatives now, before the transaction executes its first cleartext
+      // delete. Every operation is safe to repeat after an ambiguous outcome.
+      await fenceRetiredLiveAssets(redis, plan.customAssetIds);
+      try {
+        await realtime.invalidateOwnedLiveMode(userId, plan.customAssetIds);
+        await liveMode.retireAssets(plan.customAssetIds);
+        await marketData.settled();
+        await Promise.all([
+          purgeManualAssetCaches(redis, plan.customAssetIds),
+          purgeBacktestCaches(redis, userId),
+        ]);
+      } catch (error) {
+        await releaseRetiredLiveAssets(redis, plan.customAssetIds).catch(() => undefined);
+        throw error;
+      }
+      return {
+        // The transaction may reject after an outcome-ambiguous COMMIT. A fresh
+        // account lock makes the durable re-read + Redis release indivisible
+        // with respect to a later transition: a committed stub remains fenced,
+        // while an ordinary rollback restores full live functionality.
+        rollback: async () => {
+          await reconcilePortfolioVaultLiveAssetRetirements({
+            db,
+            lockDb: privacyLockDb,
+            redis,
+            userId,
+            assetIds: plan.customAssetIds,
+          });
+        },
+      };
+    },
+    withFinalizationLock: (userId, run) =>
+      withExclusiveLockedPrivacyMode(privacyLockDb, userId, run),
+    // Membership has already cleared atomically. This phase therefore touches
+    // only repeatable derived state and is recoverable without re-killing E2.
+    runPostCommit: async (userId, portfolioId, plan) => {
+      await realtime.invalidateOwnedLiveMode(userId, plan.customAssetIds);
+      await liveMode.retireAssets(plan.customAssetIds);
+      await marketData.settled();
+      await Promise.all([
+        purgeManualAssetCaches(redis, plan.customAssetIds),
+        purgeBacktestCaches(redis, userId),
+      ]);
+      const affectedPortfolios = new Set([portfolioId]);
+      for (const assetId of plan.customAssetIds) {
+        const references =
+          await portfolioVaultFinalizationSnapshots.resolveAssetReferences(assetId);
+        await portfolioVaultFinalizationSnapshots.invalidateForAsset(assetId);
+        for (const reference of references) affectedPortfolios.add(reference.portfolioId);
+      }
+      for (const affectedPortfolioId of [...affectedPortfolios].sort()) {
+        await portfolioVaultFinalizationSnapshots.recompute(affectedPortfolioId);
+      }
+    },
+    // The durable marker remains only as a retry cursor while these externally
+    // visible, idempotent effects land; it is not an enforcement signal.
+    runAfterMoveOutUnlock: async (userId, portfolioId, plan) => {
+      await cashBudgets.evaluateRequired(userId, portfolioId);
+      await events.publish({
+        type: 'portfolio.changed',
+        userId,
+        portfolioId,
+        occurredAt: plan.completedAt,
+      });
+      // Re-enable polling before clearing the marker. A failed clear simply
+      // repeats this idempotent release on recovery.
+      await releaseRetiredLiveAssets(redis, plan.customAssetIds);
     },
   });
 
@@ -2015,7 +2163,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       portfolioMarketIntel,
       marketIntel,
       tax,
-      taxYearLock,
       expenses,
       expenseBudgets,
       aiFeatures,
@@ -2032,6 +2179,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     },
     paranoidGuard,
     paranoidSubjects,
+    vaultedPortfolioGuard,
   );
 
   return {
@@ -2056,7 +2204,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio: guarded.portfolio,
     snapshots: guarded.snapshots,
     tax: guarded.tax,
-    taxYearLock: guarded.taxYearLock,
     mirror: guarded.mirror,
     customAssets: guarded.customAssets,
     conglomerate: guarded.conglomerate,
@@ -2070,10 +2217,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashTags: guarded.cashTags,
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
-    reauth,
     vaults: vaultsService,
+    driveConnections: driveConnectionsService,
+    reauth,
     paranoidTransitions,
+    portfolioVaultTransitions,
     paranoidGuard,
+    vaultedPortfolioGuard,
     webhooks,
     webhookBridge: guarded.webhookBridge,
     analytics: guarded.analytics,

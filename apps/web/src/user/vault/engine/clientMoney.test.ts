@@ -1,21 +1,6 @@
 import { webcrypto } from 'node:crypto';
 
 import {
-  cashBalancesBySource,
-  externalCashFlowsForTwr,
-  netWorthSeries,
-  type SourcedCashMovement,
-} from '@bettertrack/domain/cashLedger';
-import {
-  costBasisOverTime,
-  deriveHoldings,
-  netFlowsOverTime,
-  timeWeightedReturn,
-  valueOverTime,
-  type Transaction,
-} from '@bettertrack/domain/holdings';
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
-import {
   initialCustomCarry,
   settleAtYear,
   settleCustomYear,
@@ -33,6 +18,7 @@ import {
   createClientMoneyMarket,
   createMutableTestSync,
   decryptClientMoneyFixture,
+  expectedClientMoneyFixtureDerivation,
   withMalformedTaxSetting,
   withTaxSettings,
 } from './clientMoney.testSupport';
@@ -55,12 +41,13 @@ describe('paranoid client money engine', () => {
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    const expected = await expectedFixtureDerivation();
+    const expected = await expectedClientMoneyFixtureDerivation();
     expect(outcome.value.ownerUserId).toBe(CLIENT_MONEY_IDS.user);
     expect(outcome.value.vaultKeyId).toBe(fixture.header.keyId);
     expect(outcome.value.vaultVersion).toBe(11);
     expect(outcome.value.writeId).toBe(fixture.header.writeId);
     expect(outcome.value.holdings).toEqual(expected.holdings);
+    expect(expected.cashBalances).toEqual([1020]);
     expect(outcome.value.cashSources).toEqual([
       { sourceId: CLIENT_MONEY_IDS.cashSource, name: 'Main', balanceEur: 1020 },
     ]);
@@ -328,10 +315,13 @@ describe('paranoid client money engine', () => {
         computedTaxTargetEur: 0,
         report: {
           summary: { taxNetEur: 0 },
-          positions: [{ realizedPnlEur: 37 }],
         },
       },
     });
+    if (!untaxed.ok) return;
+    // Living-year semantics apply the active `none` regime to the whole year;
+    // its moving-average basis includes the additional pre-sell buy.
+    expect(untaxed.value.report.positions[0]?.realizedPnlEur).toBeCloseTo(3.833333333333343);
 
     const ratchetParams = {
       ratePct: 20,
@@ -1251,139 +1241,6 @@ describe('paranoid client money engine', () => {
     });
   });
 });
-
-async function expectedFixtureDerivation() {
-  const transactions: Array<Transaction & { id: string }> = [
-    {
-      id: '018f0000-0000-7000-8000-000000000110',
-      assetId: CLIENT_MONEY_IDS.eurAsset,
-      side: 'buy',
-      quantity: 10,
-      price: 100,
-      fee: 5,
-      executedAt: '2026-07-20T10:00:00.000Z',
-    },
-    {
-      id: '018f0000-0000-7000-8000-000000000111',
-      assetId: CLIENT_MONEY_IDS.usdAsset,
-      side: 'buy',
-      quantity: 5,
-      price: 40,
-      fee: 1,
-      executedAt: '2026-07-20T10:00:00.000Z',
-    },
-    {
-      id: '018f0000-0000-7000-8000-000000000112',
-      assetId: CLIENT_MONEY_IDS.eurAsset,
-      side: 'sell',
-      quantity: 2,
-      price: 120,
-      fee: 2,
-      executedAt: '2026-07-24T15:00:00.000Z',
-    },
-  ];
-  const prices = [
-    {
-      assetId: CLIENT_MONEY_IDS.eurAsset,
-      currency: 'EUR',
-      prices: [100, 105, 110, 115, 120, 125, 128, 130].map((close, index) => ({
-        date: `2026-07-${String(index + 20).padStart(2, '0')}`,
-        close,
-      })),
-    },
-    {
-      assetId: CLIENT_MONEY_IDS.usdAsset,
-      currency: 'USD',
-      prices: [40, 41, 42, 43, 44, 45, 46, 50].map((close, index) => ({
-        date: `2026-07-${String(index + 20).padStart(2, '0')}`,
-        close,
-      })),
-    },
-  ];
-  const converter = {
-    async toBase(amount: number, currency: string) {
-      return amount * (currency === 'USD' ? 0.9 : 1);
-    },
-  };
-  const holdings = await deriveHoldings(
-    transactions,
-    [
-      {
-        assetId: CLIENT_MONEY_IDS.eurAsset,
-        currency: 'EUR',
-        quote: { price: 130, prevClose: 128 },
-      },
-      {
-        assetId: CLIENT_MONEY_IDS.usdAsset,
-        currency: 'USD',
-        quote: { price: 50, prevClose: 46 },
-      },
-    ],
-    converter,
-  );
-  const movements: SourcedCashMovement[] = [
-    {
-      sourceId: CLIENT_MONEY_IDS.cashSource,
-      kind: 'deposit',
-      amountEur: 1000,
-      occurredAt: '2026-07-19T08:00:00.000Z',
-    },
-    {
-      sourceId: CLIENT_MONEY_IDS.cashSource,
-      kind: 'dividend',
-      amountEur: 30,
-      occurredAt: '2026-07-25T12:00:00.000Z',
-    },
-    {
-      sourceId: CLIENT_MONEY_IDS.cashSource,
-      kind: 'tax_withholding',
-      amountEur: -10,
-      occurredAt: '2026-07-26T12:00:00.000Z',
-    },
-  ];
-  const values = await valueOverTime({
-    transactions,
-    assets: prices,
-    today: '2026-07-27',
-    converter,
-  });
-  const costs = await costBasisOverTime({
-    transactions,
-    assets: prices,
-    today: '2026-07-27',
-    converter,
-  });
-  const worth = netWorthSeries({ holdingsValues: values, movements, today: '2026-07-27' });
-  const flows = [
-    ...(await netFlowsOverTime({
-      transactions,
-      currencyByAsset: new Map([
-        [CLIENT_MONEY_IDS.eurAsset, 'EUR'],
-        [CLIENT_MONEY_IDS.usdAsset, 'USD'],
-      ]),
-      converter,
-    })),
-    ...externalCashFlowsForTwr(movements),
-  ];
-  const twr = new Map(timeWeightedReturn(worth, flows).map((point) => [point.date, point.pct]));
-  const holdingValues = new Map(values.map((point) => [point.date, point.valueEur]));
-  const costValues = new Map(costs.map((point) => [point.date, point.costBasisEur]));
-  expect([...cashBalancesBySource(movements).values()]).toEqual([1020]);
-  return {
-    holdings,
-    stats: computeSeriesStats(worth.map((point) => ({ date: point.date, value: point.valueEur }))),
-    series: worth.map((point) => {
-      const costBasisEur = costValues.get(point.date) ?? 0;
-      return {
-        date: point.date,
-        valueEur: point.valueEur,
-        costBasisEur,
-        pnlEur: (holdingValues.get(point.date) ?? 0) - costBasisEur,
-        twrPct: twr.get(point.date) ?? 0,
-      };
-    }),
-  };
-}
 
 function withAdditionalTransaction(
   document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document'],

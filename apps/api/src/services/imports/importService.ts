@@ -6,6 +6,7 @@ import type {
   ImportBrokerListResponse,
   ImportPreviewResponse,
   ImportRow,
+  ImportRowCandidate,
   ImportRowOutcome,
   ImportRowResult,
   SearchResultItem,
@@ -14,6 +15,10 @@ import type {
 import {
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
+  IMPORT_ROW_CANDIDATE_EXCHANGE_MAX,
+  IMPORT_ROW_CANDIDATE_LIMIT,
+  IMPORT_ROW_CANDIDATE_NAME_MAX,
+  IMPORT_ROW_CANDIDATE_SYMBOL_MAX,
   importSourceTag,
 } from '@bettertrack/contracts';
 
@@ -171,6 +176,121 @@ function instrumentLookupAttempts(key: InstrumentIdentity): InstrumentLookupAtte
 }
 
 /**
+ * Near-matches for ONE unresolved identity (§13.4): the ranked hits the search
+ * already returned while looking for an exact identity match. Captured at zero
+ * extra cost — no additional query is spent and the enrichment budgets are
+ * untouched — and surfaced on the preview row as display-only suggestions.
+ * A candidate NEVER resolves a row: it cannot flip `unmapped` to `mapped` and
+ * can never reach the apply path.
+ *
+ * One LANE per lookup attempt, keyed by the attempt's query string (stable
+ * across every phase that re-runs that attempt: local pass, enrichment
+ * immediate + post-settle, pre-admission re-check, phase-3 sweep). Lanes are
+ * kept apart rather than merged because the finalizer interleaves them — see
+ * {@link finalizeCandidates}. Each lane is an insertion-ordered map of
+ * UPPERCASE symbol -> already-projected candidate, so a lane is internally
+ * de-duplicated and holds the search's own rank order.
+ */
+type CandidateSink = Map<string, Map<string, ImportRowCandidate>>;
+
+/**
+ * Project a search hit down to the display fields, truncating the three
+ * provider-fed strings to their contract bounds.
+ *
+ * Truncation happens HERE, at capture, and not as schema rejection: a
+ * pathologically long provider `name` is a cosmetic problem, and rejecting the
+ * candidate over it would delete the whole row's suggestion list — punishing
+ * the user for the provider's data. A clipped name still identifies the
+ * instrument. Without this, one 5 MB provider name would be persisted into as
+ * many staged row copies as reference that identity.
+ */
+function toCandidate(item: SearchResultItem): ImportRowCandidate {
+  return {
+    id: item.id,
+    symbol: item.symbol.slice(0, IMPORT_ROW_CANDIDATE_SYMBOL_MAX),
+    name: item.name.slice(0, IMPORT_ROW_CANDIDATE_NAME_MAX),
+    currency: item.currency,
+    exchange:
+      item.exchange === null ? null : item.exchange.slice(0, IMPORT_ROW_CANDIDATE_EXCHANGE_MAX),
+    type: item.type,
+  };
+}
+
+/**
+ * Fold one attempt's result set into that attempt's lane.
+ *
+ * The lane stops at {@link IMPORT_ROW_CANDIDATE_LIMIT} distinct symbols, and
+ * that bound is EXACT, not an approximation: the finalizer's round-robin can
+ * never read rank >= LIMIT from any lane. To reach rank LIMIT in a lane, each
+ * of that lane's LIMIT earlier entries must have been either picked or skipped
+ * as a duplicate of something already picked elsewhere — and because a lane is
+ * internally de-duplicated, those LIMIT entries account for LIMIT distinct
+ * picked symbols, which is the global cap. The loop has already stopped. So
+ * retaining more can change nothing.
+ *
+ * Without the bound, a search returning the full catalog page for each of the
+ * three attempts retained tens of thousands of `SearchResultItem`s per identity
+ * to hand five of them to the UI.
+ */
+function captureCandidates(
+  sink: CandidateSink,
+  attemptQuery: string,
+  results: readonly SearchResultItem[],
+): void {
+  let lane = sink.get(attemptQuery);
+  if (!lane) {
+    lane = new Map<string, ImportRowCandidate>();
+    sink.set(attemptQuery, lane);
+  }
+  if (lane.size >= IMPORT_ROW_CANDIDATE_LIMIT) return;
+  for (const item of results) {
+    const dedupeKey = item.symbol.toUpperCase();
+    if (lane.has(dedupeKey)) continue;
+    lane.set(dedupeKey, toCandidate(item));
+    if (lane.size >= IMPORT_ROW_CANDIDATE_LIMIT) return;
+  }
+}
+
+/**
+ * The row-facing suggestion list: {@link IMPORT_ROW_CANDIDATE_LIMIT} entries
+ * INTERLEAVED across the lookup attempts — best hit of each attempt, then
+ * second of each, and so on — de-duplicated by uppercase symbol, first
+ * occurrence in that traversal winning.
+ *
+ * Round-robin rather than attempt-order concatenation because concatenation
+ * STARVES the later attempts: the symbol attempt runs first, and whenever it
+ * returns five or more hits it consumed the entire cap, so the ISIN and name
+ * attempts contributed nothing. For a row that failed to resolve, the name
+ * attempt is frequently the one carrying the suggestion a human actually wants
+ * ("Muster Tech AG Inhaber" resolves against nothing, but its name search finds
+ * "Muster Tech AG") — and that suggestion was being dropped for a fifth
+ * mediocre symbol hit. Interleaving ranks by within-attempt rank first, so an
+ * attempt's top hit always outranks another attempt's second.
+ *
+ * No score is invented — nothing here was measured; the order is the searches'
+ * own. Null when nothing usable was seen (the contract field stays absent
+ * rather than an empty array).
+ */
+function finalizeCandidates(sink: CandidateSink): ImportRowCandidate[] | null {
+  const lanes = [...sink.values()].map((lane) => [...lane]);
+  const deepest = lanes.reduce((max, lane) => Math.max(max, lane.length), 0);
+  const picked: ImportRowCandidate[] = [];
+  const seen = new Set<string>();
+  for (let rank = 0; rank < deepest; rank += 1) {
+    for (const lane of lanes) {
+      if (picked.length >= IMPORT_ROW_CANDIDATE_LIMIT) return picked;
+      const entry = lane[rank];
+      if (!entry) continue;
+      const [dedupeKey, candidate] = entry;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      picked.push(candidate);
+    }
+  }
+  return picked.length > 0 ? picked : null;
+}
+
+/**
  * The COMPLETE staging boundary. Every normalized field a mapper emits is
  * persisted verbatim into a constrained `import_rows` column — `char(3)`
  * currency, `numeric(20,8)` quantity, `numeric(20,6)` price/fee/amount — and
@@ -239,13 +359,20 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     if (!owned) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
   }
 
-  /** Resolve an identity only from Postgres; this path can never start provider work. */
+  /**
+   * Resolve an identity only from Postgres; this path can never start provider
+   * work. When `candidates` is given, every non-matching hit of each attempt's
+   * result set is kept for the unresolved-row suggestions — the results were
+   * already fetched, so this reads nothing extra.
+   */
   async function resolveInstrumentLocally(
     userId: string,
     key: InstrumentIdentity,
+    candidates?: CandidateSink,
   ): Promise<SearchResultItem | null> {
     for (const attempt of instrumentLookupAttempts(key)) {
       const result = await search.search(userId, attempt.query, { allowEnrichment: false });
+      if (candidates) captureCandidates(candidates, attempt.query, result.results);
       const hit = result.results.find(attempt.matches);
       if (hit) return hit;
     }
@@ -257,17 +384,21 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * ceilings. The query slot is spent before search because that call may launch
    * fire-and-forget provider work. A settled retry is catalog-only, so neither
    * retries nor exhausted imports can silently enqueue more upstream searches.
+   * Candidate capture rides on the results each attempt already receives (the
+   * immediate set and the post-settle refresh) — no extra slot, ever.
    */
   async function enrichInstrument(
     userId: string,
     key: InstrumentIdentity,
     budget: EnrichmentBudget,
+    candidates?: CandidateSink,
   ): Promise<SearchResultItem | null> {
     for (const attempt of instrumentLookupAttempts(key)) {
       if (budget.remainingQueries <= 0 || budget.remainingWaitMs <= 0) return null;
 
       budget.remainingQueries -= 1;
       const result = await search.search(userId, attempt.query);
+      if (candidates) captureCandidates(candidates, attempt.query, result.results);
       const immediateHit = result.results.find(attempt.matches);
       if (immediateHit) return immediateHit;
       if (!result.enriching) continue;
@@ -293,6 +424,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       }
 
       const refreshed = await search.search(userId, attempt.query, { allowEnrichment: false });
+      if (candidates) captureCandidates(candidates, attempt.query, refreshed.results);
       const hit = refreshed.results.find(attempt.matches);
       if (hit) return hit;
     }
@@ -402,6 +534,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       asset: row.asset,
       result: row.result,
       resultMessage: row.resultMessage,
+      ...(row.candidates && row.candidates.length > 0 ? { candidates: row.candidates } : {}),
     };
   }
 
@@ -468,11 +601,16 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       // for every identity that never gets its own admission. Hence phase 3.
 
       // Phase 1 — the complete local pass, before any provider work is admitted,
-      // so an already-catalogued instrument never depends on the budget.
+      // so an already-catalogued instrument never depends on the budget. Each
+      // identity also gets a candidate sink fed from the results every attempt
+      // returns — used only if the identity never resolves.
       const resolutions = new Map<string, SearchResultItem | null>();
+      const candidateSinks = new Map<string, CandidateSink>();
       const unresolved: Array<[key: string, row: NormalizedImportRow]> = [];
       for (const [key, row] of instruments) {
-        const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+        const sink: CandidateSink = new Map();
+        candidateSinks.set(key, sink);
+        const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row, sink));
         resolutions.set(key, local);
         if (local === null) unresolved.push([key, row]);
       }
@@ -490,7 +628,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         // A sibling admission may already have upserted this identity. Re-reading
         // is catalog-only, so it costs no slot and keeps one for a genuine miss.
         if (enrichmentStarted) {
-          const appeared = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          const appeared = await resolutionQueue.run(() =>
+            resolveInstrumentLocally(userId, row, candidateSinks.get(key)),
+          );
           if (appeared !== null) {
             resolutions.set(key, appeared);
             continue;
@@ -498,7 +638,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }
         enrichmentStarted = true;
         const enriched = await resolutionQueue.run(() =>
-          enrichInstrument(userId, row, enrichmentBudget),
+          enrichInstrument(userId, row, enrichmentBudget, candidateSinks.get(key)),
         );
         if (enriched !== null) resolutions.set(key, enriched);
       }
@@ -512,9 +652,22 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       if (enrichmentStarted) {
         for (const [key, row] of unresolved) {
           if (resolutions.get(key) !== null) continue;
-          const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          const local = await resolutionQueue.run(() =>
+            resolveInstrumentLocally(userId, row, candidateSinks.get(key)),
+          );
           if (local !== null) resolutions.set(key, local);
         }
+      }
+
+      // Suggestion lists for the identities that never resolved, from the
+      // results the resolution attempts already fetched. Resolved identities
+      // discard their sink — suggestions exist only where the row stays
+      // `unmapped`.
+      const candidateLists = new Map<string, ImportRowCandidate[]>();
+      for (const [key] of unresolved) {
+        if (resolutions.get(key) !== null) continue;
+        const list = finalizeCandidates(candidateSinks.get(key) ?? new Map());
+        if (list !== null) candidateLists.set(key, list);
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);
@@ -540,6 +693,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             note: null,
             assetId: null,
             contentHash: null,
+            candidates: null,
           };
         }
 
@@ -550,12 +704,17 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
         let flag: StageImportRowInput['flag'] = 'mapped';
         let message: string | null = null;
+        let candidates: ImportRowCandidate[] | null = null;
         if (needsInstrument(row.kind) && !asset) {
+          // The row stays `unmapped` and excluded from apply; the captured
+          // near-matches ride along as INFORMATION for a human decision, never
+          // as one (§13.4: never silently guessed).
           flag = 'unmapped';
           const identity = row.isin ?? row.symbol ?? row.name ?? '(unknown)';
           message =
             `Instrument "${identity}" was not found in the asset catalog — ` +
             'search for it under Assets first, then re-upload.';
+          candidates = (rawKey ? candidateLists.get(rawKey) : undefined) ?? null;
         } else if ((row.kind === 'buy' || row.kind === 'sell') && asset) {
           if (asset.currency !== row.currency) {
             flag = 'error';
@@ -599,6 +758,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           note: row.note,
           assetId: asset?.id ?? null,
           contentHash: hash,
+          candidates,
         };
       });
 

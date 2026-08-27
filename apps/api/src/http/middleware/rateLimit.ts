@@ -13,16 +13,22 @@ const keyByUserOrIp = (req: Request): string => req.authUser?.id ?? req.ip ?? 'u
 
 export interface RateLimiters {
   login: RequestHandler;
+  /** Public native Google LINK callbacks, isolated from the shared login-IP budget. */
+  googleLinkCallback: RequestHandler;
   general: RequestHandler;
   /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
   apiKey: RequestHandler;
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
-  /** Authenticated feedback submissions, per user (#1315). */
+  /** Authenticated feedback capture, per author. */
   feedback: RequestHandler;
+  /** Support-thread replies, per author — independent of the capture budget. */
+  feedbackThread: RequestHandler;
   /** Paranoid vault writes, per user (§13.5 V5-P13). */
   vault: RequestHandler;
+  /** Paranoid vault reads, per user, isolated from the write counter/cooldown. */
+  vaultRead: RequestHandler;
 }
 
 /**
@@ -36,8 +42,19 @@ export interface RateLimiters {
  * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const { enabled, general, generalBurst, search, social, feedback, vault, loginIp, apiKey } =
-    ctx.config.rateLimits;
+  const {
+    enabled,
+    general,
+    generalBurst,
+    search,
+    social,
+    feedback,
+    feedbackThread,
+    vault,
+    vaultRead,
+    loginIp,
+    apiKey,
+  } = ctx.config.rateLimits;
 
   /**
    * Guard a request against one or more limiters sharing a key. Each is consumed
@@ -107,6 +124,11 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   };
 
   const loginLimiter = createProgressiveLimiter(ctx.redis, 'login_ip', loginIp);
+  const googleLinkCallbackLimiter = createProgressiveLimiter(
+    ctx.redis,
+    'google_link_callback_ip',
+    loginIp,
+  );
   const generalLimiter = createProgressiveLimiter(ctx.redis, 'general', general);
   // Short-window burst dimension (owner report #202): a page-reload flood fires
   // far more requests in a few seconds than the 15-min steady-state allowance can
@@ -117,10 +139,17 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
   const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
+  const feedbackThreadLimiter = createProgressiveLimiter(
+    ctx.redis,
+    'feedback_thread',
+    feedbackThread,
+  );
   const vaultLimiter = createProgressiveLimiter(ctx.redis, 'vault', vault);
+  const vaultReadLimiter = createProgressiveLimiter(ctx.redis, 'vault_read', vaultRead);
 
   return {
     login: guard([loginLimiter], keyByIp),
+    googleLinkCallback: guard([googleLinkCallbackLimiter], keyByIp),
     general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
     apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
@@ -129,11 +158,18 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     search: guard([searchLimiter], keyByUserOrIp),
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
-    // Text-only feedback is create-only and deliberately small-volume: five
-    // accepted attempts per user/hour before the standard progressive 429.
+    // Text-only feedback creation is deliberately small-volume: five accepted
+    // POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),
+    // Support-thread replies, per author — its own namespace and counter, so a
+    // spent capture allowance never closes a live conversation (and an owner
+    // working through the inbox is never throttled by the anti-spam budget).
+    feedbackThread: guard([feedbackThreadLimiter], keyByUserOrIp),
     // Paranoid vault writes, per user — a modest dedicated write budget (§13.5
     // V5-P13, design §4).
     vault: guard([vaultLimiter], keyByUserOrIp),
+    // Vault reads have an independent, larger sync budget. Their counter and
+    // cooldown never consume or inherit state from the write namespace.
+    vaultRead: guard([vaultReadLimiter], keyByUserOrIp),
   };
 }

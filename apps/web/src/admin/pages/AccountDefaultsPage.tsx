@@ -50,6 +50,8 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
     'alert.triggered': t('admin.accountDefaults.types.alertTriggered'),
     'earnings.reminder': t('admin.accountDefaults.types.earningsReminder'),
     'chat.message': t('admin.accountDefaults.types.chatMessage'),
+    'feedback.status_changed': t('admin.accountDefaults.types.feedbackStatusChanged'),
+    'feedback.reply_created': t('admin.accountDefaults.types.feedbackReplyCreated'),
     'dividend.event': t('admin.accountDefaults.types.dividendEvent'),
     'budget.exceeded': t('admin.accountDefaults.types.budgetExceeded'),
     'standing_order.skipped': t('admin.accountDefaults.types.standingOrderSkipped'),

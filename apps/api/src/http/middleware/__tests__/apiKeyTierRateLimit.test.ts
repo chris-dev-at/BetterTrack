@@ -26,7 +26,9 @@ const ctx = (): AppContext => {
       search: base,
       social: base,
       feedback: base,
+      feedbackThread: base,
       vault: base,
+      vaultRead: base,
       apiKey: base,
       loginIp: base,
       loginAccount: base,
@@ -55,6 +57,7 @@ const runOnce = (
 const personal = (id: string, limit: number, windowSec = 60): Request['apiKey'] => ({
   id,
   kind: 'personal',
+  firstParty: false,
   scopes: ['portfolio:read'],
   securityGeneration: 0,
   rateLimit: { limit, windowSec },
@@ -115,6 +118,7 @@ describe('per-key rate tier enforcement (§13.5 V5-P10, issue 2/2)', () => {
     const untiered: Request['apiKey'] = {
       id: 'grant-x',
       kind: 'oauth',
+      firstParty: false,
       scopes: [],
       securityGeneration: 0,
     };

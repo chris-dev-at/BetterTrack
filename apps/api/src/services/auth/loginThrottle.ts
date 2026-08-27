@@ -14,6 +14,15 @@ import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 
 /**
+ * Per-account issuance budget for bearer-started Google LINK tickets (#1328).
+ * The public callback is independently protected by a dedicated per-IP HTTP rail
+ * on the login schedule; this namespace prevents a distributed caller from
+ * minting ceremonies for one compromised account without consuming the normal
+ * login failure budget.
+ */
+export const GOOGLE_LINK_ACCOUNT_NAMESPACE = 'google_link_account';
+
+/**
  * Per-account wrong-second-factor throttle for login and session-authenticated
  * TOTP re-auth (§6.1, §10, §13.2 V2-P5). Independent of the password-failure
  * counter above and of the per-IP request limiter the HTTP middleware keeps: a
@@ -92,14 +101,15 @@ export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
 export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
 
 /**
- * Per-account brute-force throttle for the tax-year unlock re-auth (§16
- * 2026-08-07). Opening a locked tax year for amendments re-verifies the
- * account password; wrong attempts accrue here — independent of the login/2FA
- * counters and the per-IP limiter — so the unlock endpoint is never a
- * lighter-weight password oracle than login. Reuses the `loginAccount`
- * schedule like every sibling re-auth.
+ * Per-account brute-force throttle for the in-request vault deletion step-up
+ * (paranoid design §15). It is deliberately independent of login, account
+ * deletion, generic re-auth, and the v1 lost-key discard counter.
  */
-export const ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE = 'account_tax_year_unlock_account';
+export const ACCOUNT_VAULT_DELETE_NAMESPACE = 'account_vault_delete_account';
+
+/** Independent §15 brute-force budgets for the two E4 data-home transitions. */
+export const PORTFOLIO_VAULT_MOVE_IN_NAMESPACE = 'portfolio_vault_move_in_account';
+export const PORTFOLIO_VAULT_MOVE_OUT_NAMESPACE = 'portfolio_vault_move_out_account';
 
 /**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
@@ -129,6 +139,13 @@ export const rememberedDeviceKey = (deviceId: string) =>
 
 /** Reverse index that lets account deletion enumerate every remembered device. */
 export const rememberedDevicesForUserKey = (userId: string) => `remember_dev_user:${userId}`;
+
+/**
+ * Display-only creation/last-seen metadata for remembered-device management.
+ * Keyed by the raw server-side id, expires with the binding, and is deleted by
+ * every binding-retirement path. It never contains the id itself.
+ */
+export const rememberedDeviceMetadataKey = (deviceId: string) => `remember_dev_meta:${deviceId}`;
 
 /** Matches the fixed 400-day lifetime of the signed `bt_rdid` browser cookie. */
 export const REMEMBERED_DEVICE_TTL_SECONDS = 400 * 24 * 60 * 60;
@@ -183,7 +200,11 @@ async function deleteRememberedDeviceIds(
   for (const batch of rememberedDeviceBatches([...deviceIds])) {
     const transaction = redis.multi();
     for (const deviceId of batch) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      transaction.del(
+        rememberedDeviceKey(deviceId),
+        rememberedDeviceMetadataKey(deviceId),
+        pinQuickAuthMarkerKey(deviceId),
+      );
     }
     await transaction.exec();
   }
@@ -297,7 +318,11 @@ async function retireRememberedBindings(
   for (const batch of rememberedDeviceBatches(bindings)) {
     const transaction = redis.multi();
     for (const { deviceId, userId } of batch) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      transaction.del(
+        rememberedDeviceKey(deviceId),
+        rememberedDeviceMetadataKey(deviceId),
+        pinQuickAuthMarkerKey(deviceId),
+      );
       transaction.srem(rememberedDevicesForUserKey(userId), deviceId);
     }
     await transaction.exec();

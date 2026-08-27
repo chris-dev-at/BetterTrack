@@ -24,14 +24,57 @@ export interface ParsedCsv {
 
 const DELIMITERS = [';', ',', '\t'] as const;
 
+/**
+ * FIELD START — the rule that decides what a `"` means.
+ *
+ * RFC-4180: a `"` opens a quoted field ONLY at the start of that field, i.e.
+ * immediately after a delimiter or at the start of the record, with nothing but
+ * whitespace padding in between. Anywhere else it is an ordinary character.
+ * Both scanners below (and `table.splitQuotedRecords`) track a `fieldStart`
+ * flag for exactly this, which is why {@link isFieldPadding} is exported: one
+ * definition of what keeps that flag alive, shared across all three (§M4).
+ *
+ * The distinction is not pedantry, it is the difference between reading a file
+ * and destroying it. `27" Monitor` is an inch mark, not an opening quote. When
+ * every `"` was treated as a toggle, two such cells within a 32-line window
+ * merged their two physical rows into ONE record whose cell count still matched
+ * the header — so the width check stayed silent, one booking's amount was
+ * replaced by the next booking's, and the row in between vanished with
+ * `issues: []`. This counter and {@link splitCells} were wrong in exactly the
+ * same way, which is why they agreed and nothing ever looked suspicious.
+ *
+ * Only spaces and tabs count as padding, so `, "ACME, Inc."` still reads as a
+ * quoted field while `27" Monitor` does not. A tab that IS the delimiter is
+ * handled before this is consulted.
+ */
+export function isFieldPadding(ch: string): boolean {
+  return ch === ' ' || ch === '\t';
+}
+
 /** Count occurrences of `delim` in `line`, ignoring quoted stretches. */
-function countUnquoted(line: string, delim: string): number {
+export function countUnquoted(line: string, delim: string): number {
   let count = 0;
   let inQuotes = false;
+  // Nothing but padding has been seen since the current field began.
+  let fieldStart = true;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-    if (ch === '"') inQuotes = !inQuotes;
-    else if (ch === delim && !inQuotes) count++;
+    if (inQuotes) {
+      if (ch !== '"') continue;
+      // `""` is an escaped quote: skip both and stay inside the field.
+      if (line[i + 1] === '"') i++;
+      else inQuotes = false;
+      continue;
+    }
+    if (ch === '"' && fieldStart) {
+      inQuotes = true;
+      fieldStart = false;
+    } else if (ch === delim) {
+      count++;
+      fieldStart = true;
+    } else if (!isFieldPadding(ch!)) {
+      fieldStart = false;
+    }
   }
   return count;
 }
@@ -50,11 +93,21 @@ export function sniffDelimiter(headerLine: string): string {
   return best;
 }
 
-/** Split one record line into cells: RFC-4180 quotes with `""` escapes, trimmed. */
+/**
+ * Split one record into cells: RFC-4180 quotes with `""` escapes, trimmed.
+ *
+ * A `"` is an opening quote only at FIELD START (see {@link isFieldPadding});
+ * anywhere else it is a literal character, so `27" Monitor` stays one cell
+ * reading `27" Monitor` instead of opening a quoted region that swallows the
+ * following delimiters. A `"` after a field's closing quote is likewise literal
+ * rather than re-opening — the field ended, and re-opening is how a malformed
+ * cell used to eat its neighbours.
+ */
 export function splitCells(line: string, delimiter: string): string[] {
   const cells: string[] = [];
   let current = '';
   let inQuotes = false;
+  let fieldStart = true;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (inQuotes) {
@@ -68,13 +121,19 @@ export function splitCells(line: string, delimiter: string): string[] {
       } else {
         current += ch;
       }
-    } else if (ch === '"') {
+    } else if (ch === '"' && fieldStart) {
       inQuotes = true;
+      // Padding before the opening quote is not part of the value; the trim on
+      // push would drop it anyway, and dropping it here keeps `current` honest.
+      current = '';
+      fieldStart = false;
     } else if (ch === delimiter) {
       cells.push(current.trim());
       current = '';
+      fieldStart = true;
     } else {
       current += ch;
+      if (!isFieldPadding(ch!)) fieldStart = false;
     }
   }
   cells.push(current.trim());
@@ -113,16 +172,19 @@ export function parseCsv(text: string): ParsedCsv {
 }
 
 /**
- * Parse a broker-notation decimal. Handles German (`1.234,56` — comma decimal,
- * dot/space thousands) and plain (`1234.56`) notation in one pass: when a comma
- * is present it is the decimal separator and dots/spaces are grouping; without
- * one, a dot is the decimal separator. Currency letters/symbols and sign
- * prefixes survive (`-751,00 EUR` → -751). Returns null when nothing numeric
- * remains — or when the notation is AMBIGUOUS: `1.000` with no decimal comma is
- * German grouping (1000) or a plain decimal (1.0), and guessing wrong books a
- * quantity ~1000× off. Refusing costs one reported row; guessing costs money.
+ * Strip a decimal cell's DECORATION — currency symbols, ISO letters, spaces —
+ * down to the digits, separators and sign that decide its value. Returns null
+ * when the cell is not a decorated number at all.
+ *
+ * This is the SINGLE definition of "what is left once the currency comes off"
+ * (§M4). It exists as its own export because `table.parseLocalizedDecimal`'s
+ * cross-notation guard has to inspect exactly this string: the guard used to
+ * test the RAW cell, so `'1,234.56 EUR'` slipped past it and was then booked as
+ * 1.23456 — a thousandth of the real amount. Any future change to the
+ * decoration rules must move both the parse and the guard together, which one
+ * shared function makes unavoidable.
  */
-export function parseDecimal(input: string): number | null {
+export function stripDecimalDecoration(input: string): string | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
   // A parenthesized number is an accounting NEGATIVE — stripping the parens
@@ -135,8 +197,25 @@ export function parseDecimal(input: string): number | null {
   const core = /\d[\s\S]*\d/.exec(trimmed)?.[0] ?? '';
   if (/[^0-9.,\s']/.test(core)) return null;
   // Keep digits, separators and the leading sign; drop currency symbols/letters.
-  let cleaned = trimmed.replace(/[^0-9.,\-+]/g, '');
+  const cleaned = trimmed.replace(/[^0-9.,\-+]/g, '');
   if (cleaned === '' || cleaned === '-' || cleaned === '+') return null;
+  return cleaned;
+}
+
+/**
+ * Parse a broker-notation decimal. Handles German (`1.234,56` — comma decimal,
+ * dot/space thousands) and plain (`1234.56`) notation in one pass: when a comma
+ * is present it is the decimal separator and dots/spaces are grouping; without
+ * one, a dot is the decimal separator. Currency letters/symbols and sign
+ * prefixes survive (`-751,00 EUR` → -751) — see {@link stripDecimalDecoration}.
+ * Returns null when nothing numeric remains — or when the notation is
+ * AMBIGUOUS: `1.000` with no decimal comma is German grouping (1000) or a plain
+ * decimal (1.0), and guessing wrong books a quantity ~1000× off. Refusing costs
+ * one reported row; guessing costs money.
+ */
+export function parseDecimal(input: string): number | null {
+  let cleaned = stripDecimalDecoration(input);
+  if (cleaned === null) return null;
   // The sign is only meaningful leading; a trailing one ("751,00-", an
   // SAP-style export form) silently dropped would flip a booking's direction.
   const sign = cleaned.startsWith('-') ? -1 : 1;

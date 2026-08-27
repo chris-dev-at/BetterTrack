@@ -14,7 +14,6 @@ import { Alert, cx } from '../components/ui';
 import { ConvertChainDialog, MemberSheet, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import { PortfolioTaxSection } from './PortfolioTaxSection';
-import { PortfolioVaultSection } from '../vault/v2/ui/PortfolioVaultSection';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   promotedDefaultName,
@@ -23,7 +22,9 @@ import {
 } from './PortfolioSwitcher';
 import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portfolioKinds';
 import { usePortfolioStore } from './PortfolioStoreProvider';
+import { isVaultedPortfolio } from './lockedPortfolio';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { PortfolioVaultSection } from '../vault/ui/PortfolioVaultSection';
 
 /**
  * Portfolio settings — the Settings tab of the portfolio workspace
@@ -82,7 +83,9 @@ export function PortfolioSettingsPage() {
     queryFn: ({ signal }) => store.listPortfolios(signal, true),
     staleTime: 60_000,
   });
-  const archived = (archivedQuery.data?.portfolios ?? []).filter((p) => p.archivedAt !== null);
+  const archived = (archivedQuery.data?.portfolios ?? []).filter(
+    (portfolio) => portfolio.archivedAt !== null && !isVaultedPortfolio(portfolio),
+  );
 
   // Seed the rename field from the resolved portfolio, and re-seed whenever the
   // active portfolio changes — but never clobber an edit in progress.
@@ -266,11 +269,6 @@ export function PortfolioSettingsPage() {
         <PortfolioTaxSection portfolioId={portfolio.id} />
       </section>
 
-      {/* ── Vault / Paranoid mode (docs/VAULTS_V2_DESIGN.md §4) ──────────
-          Owner order: ALWAYS visible, on every portfolio, so the feature is
-          discoverable rather than buried in the Control Center. */}
-      <PortfolioVaultSection portfolioId={portfolio.id} portfolioName={portfolio.name} />
-
       {/* ── Group portfolio (MIRRORCHAIN) ───────────────────────────────── */}
       <NormalModeOnly>
         <section aria-label={t('portfolio.settings.groupHeading')} className="bt-section">
@@ -297,6 +295,9 @@ export function PortfolioSettingsPage() {
           )}
         </section>
       </NormalModeOnly>
+
+      {/* ── Private vault (§9 move-in) ──────────────────────────────────── */}
+      <PortfolioVaultSection onMoved={refetchLists} portfolio={portfolio} />
 
       {/* ── Archived ────────────────────────────────────────────────────── */}
       <section aria-label={t('portfolio.switcher.archivedDialogTitle')} className="bt-section">
@@ -427,7 +428,11 @@ export function PortfolioSettingsPage() {
           }}
           onConfirm={() => deleteMutation.mutate(confirmDelete.id)}
           portfolio={confirmDelete}
-          promotedDefault={promotedDefaultName(portfolios, confirmDelete)}
+          promotedDefault={promotedDefaultName(
+            portfolios,
+            confirmDelete,
+            t('vault.lockedStub.fallbackAlias'),
+          )}
           submitting={deleteMutation.isPending}
         />
       ) : null}

@@ -3,6 +3,29 @@ import { createPublicKey } from 'node:crypto';
 import express, { Router, type RequestHandler } from 'express';
 
 import {
+  createVaultRequestSchema,
+  createVaultResponseSchema,
+  createDriveConnectionRequestSchema,
+  createDriveConnectionResponseSchema,
+  deleteVaultRequestSchema,
+  deleteVaultResponseSchema,
+  driveConnectionDisconnectQuerySchema,
+  driveConnectionEmptyBodySchema,
+  driveConnectionIdParamSchema,
+  driveConnectionListResponseSchema,
+  patchVaultRequestSchema,
+  patchVaultResponseSchema,
+  perVaultMediaStateResponseSchema,
+  perVaultMediaTransitionRequestSchema,
+  perVaultMediaTransitionResponseSchema,
+  perVaultRetiredServerPurgeChallengeRequestSchema,
+  perVaultRetiredServerPurgeChallengeResponseSchema,
+  perVaultRetiredServerPurgeRequestSchema,
+  perVaultRetiredServerPurgeResponseSchema,
+  perVaultServerCandidateMetadataSchema,
+  perVaultServerCandidateReadParamsSchema,
+  perVaultServerCandidateStageParamsSchema,
+  PER_VAULT_ERROR_CODES,
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionRequestSchema,
   paranoidMediaTransitionResponseSchema,
@@ -15,7 +38,6 @@ import {
   retiredServerPurgeResponseSchema,
   scopeSatisfies,
   VAULT_CONTENT_TYPE,
-  VAULT2_ERROR_CODES,
   VAULT_ERROR_CODES,
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
@@ -25,22 +47,50 @@ import {
   VAULT_SERVER_CANDIDATE_ID_HEADER,
   VAULT_SERVER_CANDIDATE_READBACK_HEADER,
   vaultEtag,
+  vaultDocHistoryVersionParamSchema,
+  vaultDocParamsSchema,
+  vaultIdParamSchema,
+  vaultListResponseSchema,
   vaultHistoryListResponseSchema,
   vaultHistoryListQuerySchema,
   vaultHistoryVersionParamSchema,
   vaultRetirementProofPublicKeySchema,
   type ParanoidMediaTransitionRequest,
+  type CreateVaultRequest,
+  type CreateDriveConnectionRequest,
+  type DriveConnectionDisconnectQuery,
+  type DriveConnectionIdParam,
+  type DeleteVaultRequest,
+  type PatchVaultRequest,
+  type PerVaultMediaTransitionRequest,
+  type PerVaultRetiredServerPurgeChallengeRequest,
+  type PerVaultRetiredServerPurgeRequest,
+  type PerVaultServerCandidateReadParams,
+  type PerVaultServerCandidateStageParams,
   type ParanoidServerCandidateParam,
   type RetiredServerPurgeChallengeRequest,
   type RetiredServerPurgeRequest,
   type VaultHistoryListQuery,
   type VaultHistoryVersionParam,
+  type VaultDocHistoryVersionParam,
+  type VaultDocParams,
+  type VaultIdParam,
 } from '@bettertrack/contracts';
 
 import { ApiError, EnvelopeApiError, forbidden, notFound } from '../../errors';
+import {
+  isLegacyParanoidRefusedScope,
+  PARANOID_MODE_ERROR_CODE,
+} from '../../services/account/paranoidEnforcement';
 
 import type { AppContext } from '../context';
-import { VAULT_SYNC_SCOPE, vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  VAULT_SYNC_SCOPE,
+  recordBearerScopeDenied,
+  vaultAccountSecurityRouteAcceptsBearer,
+  vaultSyncRouteAcceptsBearer,
+} from '../middleware/bearerAuth';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -528,21 +578,713 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           throw serverMediumInactive(
             'The server vault medium is inactive; stage and promote a candidate instead.',
           );
-        // Vaults v2 (design r2 §11): this account flipped to a v2 vault, so the
-        // legacy row is a READ-ONLY tombstone. Reads still serve (recovery, and
-        // a client that has not noticed the flip); a write would fork the
-        // account's truth across two authoritative stores.
-        case 'migrated_tombstone':
-          throw new ApiError(
-            409,
-            VAULT2_ERROR_CODES.migrationIncomplete,
-            'This account has migrated to a v2 vault; the legacy vault is read-only.',
-          );
         case 'proof_key_conflict':
           throw new ApiError(
             409,
             VAULT_ERROR_CODES.retirementConflict,
             'The retirement proof key is immutable once server bytes are active.',
+          );
+      }
+    },
+  );
+
+  return router;
+}
+
+const perVaultPreconditionRequired = (): ApiError =>
+  new ApiError(
+    428,
+    PER_VAULT_ERROR_CODES.preconditionRequired,
+    'A document write requires If-Match or If-None-Match: *.',
+  );
+
+const perVaultPreconditionFailed = (currentVersion: number | null): ApiError =>
+  new EnvelopeApiError(
+    412,
+    PER_VAULT_ERROR_CODES.preconditionFailed,
+    'The document precondition did not match its current version.',
+    { currentVersion },
+  );
+
+const perVaultNotFound = (): ApiError =>
+  notFound('Vault or vault document not found.', PER_VAULT_ERROR_CODES.notFound);
+
+const perVaultRawBody = (ctx: AppContext): RequestHandler => {
+  const limit = Math.max(...Object.values(ctx.config.vault.docMaxBytes));
+  const parser = express.raw({ type: () => true, limit });
+  return (req, res, next) => {
+    parser(req, res, (error?: unknown) => {
+      if ((error as { type?: unknown } | undefined)?.type === 'entity.too.large') {
+        next(
+          new ApiError(
+            413,
+            PER_VAULT_ERROR_CODES.tooLarge,
+            'The vault document exceeds the configured size cap.',
+          ),
+        );
+        return;
+      }
+      next(error);
+    });
+  };
+};
+
+/** Defense-in-depth mirror of the exact global `/vaults` bearer policy. */
+function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
+  // Named independently of the factory: the production-route census pins the
+  // opaque mount by handler name as well as by its `/vaults` mount point.
+  return function requireCookieSessionOrPerVaultAccess(req, _res, next) {
+    if (!req.apiKey && req.sessionId) {
+      next();
+      return;
+    }
+    if (!req.apiKey) {
+      next(
+        forbidden(
+          'This vault endpoint is available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    // Match the global bearer guard's user/admin boundary even if this router
+    // is remounted without that guard: a bearer-backed admin principal learns
+    // nothing about the user vault surface.
+    if (req.authUser?.role === 'admin') {
+      next(notFound());
+      return;
+    }
+
+    const path = `/vaults${req.path === '/' || req.path === '' ? '' : req.path}`;
+    const requiredScope = vaultSyncRouteAcceptsBearer(req.method, path)
+      ? VAULT_SYNC_SCOPE
+      : vaultAccountSecurityRouteAcceptsBearer(req.method, path)
+        ? ACCOUNT_SECURITY_SCOPE
+        : null;
+    if (requiredScope === null) {
+      next(
+        forbidden(
+          'This vault endpoint is available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    if (req.authUser?.privacyMode === 'paranoid' && isLegacyParanoidRefusedScope(requiredScope)) {
+      next(
+        forbidden(
+          'This API scope is unavailable while paranoid mode is active.',
+          PARANOID_MODE_ERROR_CODE,
+        ),
+      );
+      return;
+    }
+    if (!scopeSatisfies(req.apiKey.scopes, requiredScope)) {
+      recordBearerScopeDenied(ctx, req, requiredScope, path).then(
+        () =>
+          next(
+            forbidden(
+              `API key is missing the required scope "${requiredScope}".`,
+              'INSUFFICIENT_SCOPE',
+            ),
+          ),
+        next,
+      );
+      return;
+    }
+    next();
+  };
+}
+
+export { buildCookieSessionOrPerVaultAccess as requireCookieSessionOrPerVaultAccess };
+
+/**
+ * Separately-authenticated Google Drive identities (E5). The global bearer
+ * policy classifies this whole module session-only; this local check preserves
+ * that boundary if the router is ever mounted elsewhere in a test or refactor.
+ */
+export function createDriveConnectionsRouter(ctx: AppContext, limiters: RateLimiters): Router {
+  const router = Router();
+
+  router.use(requireUser, (req, _res, next) => {
+    if (req.apiKey) {
+      next(
+        forbidden(
+          'Drive connections are available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    next();
+  });
+  router.use((req, res, next) => {
+    const limiter = req.method === 'GET' ? limiters.vaultRead : limiters.vault;
+    limiter(req, res, next);
+  });
+
+  router.get('/', async (req, res) => {
+    const connections = await ctx.driveConnections.list(req.authUser!.id);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(driveConnectionListResponseSchema.parse({ connections }));
+  });
+
+  router.post('/', validateBody(createDriveConnectionRequestSchema), async (req, res) => {
+    const { connection } = await ctx.driveConnections.create(
+      req.authUser!.id,
+      req.valid?.body as CreateDriveConnectionRequest,
+      req.ip,
+    );
+    res.setHeader('Cache-Control', 'private, no-store');
+    // Create-or-refresh: re-consenting a known Google account upserts onto the
+    // same row and answers 201 as well (the documented status). The audit trail
+    // is where the two are told apart — `drive_connection.created` vs
+    // `drive_connection.refreshed`.
+    res.status(201).json(createDriveConnectionResponseSchema.parse({ connection }));
+  });
+
+  router.patch(
+    '/:connectionId/verified',
+    validateParams(driveConnectionIdParamSchema),
+    // Bodyless by contract. Without this the method would accept — and act on —
+    // an arbitrary JSON body, including a Google-token-shaped one, which is
+    // exactly the shape this module must never take on ANY of its routes.
+    validateBody(driveConnectionEmptyBodySchema),
+    async (req, res) => {
+      const { connectionId } = req.valid?.params as DriveConnectionIdParam;
+      const connection = await ctx.driveConnections.touch(req.authUser!.id, connectionId);
+      if (!connection) throw notFound('Drive connection not found.', 'DRIVE_CONNECTION_NOT_FOUND');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.json(createDriveConnectionResponseSchema.parse({ connection }));
+    },
+  );
+
+  router.delete(
+    '/:connectionId',
+    validateParams(driveConnectionIdParamSchema),
+    // The published contract's query schema is `.strict()`; parsing it with the
+    // same schema (instead of reading one field by hand) keeps route and
+    // OpenAPI on one definition and refuses an unknown parameter.
+    validateQuery(driveConnectionDisconnectQuerySchema),
+    validateBody(driveConnectionEmptyBodySchema),
+    async (req, res) => {
+      const { acknowledgeBound } = req.valid?.query as DriveConnectionDisconnectQuery;
+      const { connectionId } = req.valid?.params as DriveConnectionIdParam;
+      const result = await ctx.driveConnections.delete(
+        req.authUser!.id,
+        connectionId,
+        acknowledgeBound === 'true',
+        req.ip,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.status(204).end();
+          return;
+        case 'not_found':
+          throw notFound('Drive connection not found.', 'DRIVE_CONNECTION_NOT_FOUND');
+        case 'bound':
+          throw new ApiError(
+            409,
+            'DRIVE_CONNECTION_BOUND',
+            'Move every bound vault to another Drive connection before disconnecting, or explicitly acknowledge loss of reach.',
+            { vaults: result.vaults },
+          );
+        case 'last_medium':
+          throw new ApiError(
+            409,
+            'DRIVE_CONNECTION_LAST_MEDIUM',
+            'This Drive connection holds the only verified copy of a bound vault. Selecting the server medium is not enough: that vault must first hold a verified server copy (a completed full-doc-set attestation), or move to another Drive connection, before this connection can be removed.',
+            { vaults: result.vaults },
+          );
+      }
+    },
+  );
+
+  return router;
+}
+
+/** Parallel per-vault E1 surface. The legacy `/vault` router above is unchanged. */
+export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Router {
+  const router = Router();
+  const parseRawDocument = perVaultRawBody(ctx);
+
+  router.use(requireUser, buildCookieSessionOrPerVaultAccess(ctx));
+  router.use((req, res, next) => {
+    const limiter =
+      req.method === 'GET' || req.method === 'HEAD' ? limiters.vaultRead : limiters.vault;
+    limiter(req, res, next);
+  });
+
+  router.get('/', async (req, res) => {
+    const vaults = await ctx.vaults.list(req.authUser!.id);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(vaultListResponseSchema.parse({ vaults }));
+  });
+
+  router.post('/', validateBody(createVaultRequestSchema), async (req, res) => {
+    const result = await ctx.vaults.create(
+      req.authUser!.id,
+      req.valid?.body as CreateVaultRequest,
+      req.ip,
+    );
+    switch (result.status) {
+      case 'ok':
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.status(201).json(createVaultResponseSchema.parse({ vault: result.vault }));
+        return;
+      case 'name_taken':
+        throw new ApiError(
+          409,
+          PER_VAULT_ERROR_CODES.nameConflict,
+          'A vault with that name exists.',
+        );
+      case 'drive_not_found':
+        throw new ApiError(
+          409,
+          PER_VAULT_ERROR_CODES.driveBindingInvalid,
+          'The selected Drive connection is not available to this account.',
+        );
+      case 'reserved_medium':
+        throw new ApiError(
+          400,
+          PER_VAULT_ERROR_CODES.reservedMedium,
+          'The local vault medium is reserved and is not supported by this server.',
+        );
+      case 'portfolio_binding_mismatch':
+        throw new ApiError(
+          409,
+          PER_VAULT_ERROR_CODES.portfolioBindingMismatch,
+          'Vault singleton document ids cannot collide with an owned portfolio id.',
+        );
+    }
+  });
+
+  router.get('/:vaultId', validateParams(vaultIdParamSchema), async (req, res) => {
+    const { vaultId } = req.valid?.params as VaultIdParam;
+    const vault = await ctx.vaults.get(req.authUser!.id, vaultId);
+    if (!vault) throw perVaultNotFound();
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(createVaultResponseSchema.parse({ vault }));
+  });
+
+  router.patch(
+    '/:vaultId',
+    validateParams(vaultIdParamSchema),
+    validateBody(patchVaultRequestSchema),
+    async (req, res) => {
+      const { vaultId } = req.valid?.params as VaultIdParam;
+      const result = await ctx.vaults.patch(
+        req.authUser!.id,
+        vaultId,
+        req.valid?.body as PatchVaultRequest,
+        req.ip,
+      );
+      if (result.status === 'not_found') throw perVaultNotFound();
+      if (result.status === 'name_taken') {
+        throw new ApiError(
+          409,
+          PER_VAULT_ERROR_CODES.nameConflict,
+          'A vault with that name exists.',
+        );
+      }
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.json(patchVaultResponseSchema.parse({ vault: result.vault }));
+    },
+  );
+
+  router.delete(
+    '/:vaultId',
+    validateParams(vaultIdParamSchema),
+    validateBody(deleteVaultRequestSchema),
+    async (req, res) => {
+      const { vaultId } = req.valid?.params as VaultIdParam;
+      const result = await ctx.vaults.delete({
+        userId: req.authUser!.id,
+        vaultId,
+        body: req.valid?.body as DeleteVaultRequest,
+        ip: req.ip,
+      });
+      switch (result.status) {
+        case 'ok':
+          res.json(deleteVaultResponseSchema.parse({ ok: true }));
+          return;
+        case 'not_found':
+          throw perVaultNotFound();
+        case 'referenced':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.deleteReferenced,
+            'Move every portfolio out of this vault before deleting it.',
+          );
+        case 'retirement_pending':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.deleteRetirementPending,
+            'The retired server set must pass the signed purge gate before deletion.',
+          );
+      }
+    },
+  );
+
+  router.get('/:vaultId/docs/:docId', validateParams(vaultDocParamsSchema), async (req, res) => {
+    const { vaultId, docId } = req.valid?.params as VaultDocParams;
+    const result = await ctx.vaults.readDoc(req.authUser!.id, vaultId, docId);
+    if (result.status === 'not_found') throw perVaultNotFound();
+    if (result.status === 'medium_inactive') {
+      throw new ApiError(
+        409,
+        PER_VAULT_ERROR_CODES.mediaStateConflict,
+        'The server medium is not active for this vault.',
+      );
+    }
+    res.setHeader('ETag', vaultEtag(result.row.version));
+    res.setHeader('Cache-Control', 'private, no-store');
+    const validator = parseVaultEtag(req.headers['if-none-match'] as string | undefined);
+    if (validator === result.row.version) {
+      res.status(304).end();
+      return;
+    }
+    res.setHeader('Content-Type', VAULT_CONTENT_TYPE);
+    res.status(200).send(result.row.blob);
+  });
+
+  router.put(
+    '/:vaultId/docs/:docId',
+    validateParams(vaultDocParamsSchema),
+    parseRawDocument,
+    async (req, res) => {
+      const { vaultId, docId } = req.valid?.params as VaultDocParams;
+      const blob = requireRawEnvelope(req);
+      const ifNoneMatch = (req.headers['if-none-match'] as string | undefined)?.trim();
+      const ifMatch = req.headers['if-match'] as string | undefined;
+      let expectedVersion: number | null;
+      if (ifNoneMatch === '*') expectedVersion = null;
+      else if (ifMatch !== undefined) {
+        const parsed = parseVaultEtag(ifMatch);
+        if (parsed === null || parsed < 1) throw perVaultPreconditionFailed(null);
+        expectedVersion = parsed;
+      } else throw perVaultPreconditionRequired();
+
+      const result = await ctx.vaults.putDoc({
+        userId: req.authUser!.id,
+        vaultId,
+        docId,
+        expectedVersion,
+        blob,
+      });
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('ETag', vaultEtag(result.row.version));
+          res.status(204).end();
+          return;
+        case 'not_found':
+          throw perVaultNotFound();
+        case 'portfolio_binding_mismatch':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.portfolioBindingMismatch,
+            'A portfolio document id must equal an owned locked stub in this vault.',
+          );
+        case 'doc_kind_mismatch':
+          throw new ApiError(
+            400,
+            PER_VAULT_ERROR_CODES.docKindMismatch,
+            'The envelope document kind does not match its registered address.',
+          );
+        case 'precondition_failed':
+          throw perVaultPreconditionFailed(result.currentVersion);
+        case 'medium_inactive':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.mediaStateConflict,
+            'The server medium is not active for this vault.',
+          );
+        case 'too_large':
+          throw new ApiError(
+            413,
+            PER_VAULT_ERROR_CODES.tooLarge,
+            'The vault document exceeds its configured kind cap.',
+          );
+        case 'malformed':
+          throw new ApiError(400, PER_VAULT_ERROR_CODES.malformed, result.reason);
+        case 'address_mismatch':
+          throw new ApiError(
+            400,
+            PER_VAULT_ERROR_CODES.docAddressMismatch,
+            'The envelope vaultId/docId does not match the request path.',
+          );
+      }
+    },
+  );
+
+  router.get(
+    '/:vaultId/docs/:docId/history',
+    validateParams(vaultDocParamsSchema),
+    validateQuery(vaultHistoryListQuerySchema),
+    async (req, res) => {
+      const { vaultId, docId } = req.valid?.params as VaultDocParams;
+      const result = await ctx.vaults.listHistory(
+        req.authUser!.id,
+        vaultId,
+        docId,
+        req.valid?.query as VaultHistoryListQuery,
+      );
+      if (result.status === 'not_found') throw perVaultNotFound();
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.json(vaultHistoryListResponseSchema.parse(result.page));
+    },
+  );
+
+  router.get(
+    '/:vaultId/docs/:docId/history/:version',
+    validateParams(vaultDocHistoryVersionParamSchema),
+    async (req, res) => {
+      const { vaultId, docId, version } = req.valid?.params as VaultDocHistoryVersionParam;
+      const result = await ctx.vaults.getHistory(req.authUser!.id, vaultId, docId, version);
+      if (result.status === 'not_found') throw perVaultNotFound();
+      res.setHeader('ETag', vaultEtag(result.value.version));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Content-Type', VAULT_CONTENT_TYPE);
+      res.setHeader(VAULT_HISTORY_CREATED_AT_HEADER, result.value.createdAt.toISOString());
+      res.setHeader(VAULT_HISTORY_SIZE_BYTES_HEADER, String(result.value.sizeBytes));
+      res.setHeader(VAULT_HISTORY_MEDIUM_HEADER, 'server');
+      res.status(200).send(result.value.blob);
+    },
+  );
+
+  router.get('/:vaultId/media', validateParams(vaultIdParamSchema), async (req, res) => {
+    const { vaultId } = req.valid?.params as VaultIdParam;
+    const state = await ctx.vaults.getMediaState(req.authUser!.id, vaultId);
+    if (!state) throw perVaultNotFound();
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(perVaultMediaStateResponseSchema.parse(state));
+  });
+
+  router.patch(
+    '/:vaultId/media',
+    validateParams(vaultIdParamSchema),
+    validateBody(perVaultMediaTransitionRequestSchema),
+    async (req, res) => {
+      const { vaultId } = req.valid?.params as VaultIdParam;
+      const result = await ctx.vaults.transitionMedia(
+        req.authUser!.id,
+        vaultId,
+        req.valid?.body as PerVaultMediaTransitionRequest,
+        req.ip,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(perVaultMediaTransitionResponseSchema.parse(result.state));
+          return;
+        case 'not_found':
+          throw perVaultNotFound();
+        case 'reserved_medium':
+          throw new ApiError(400, PER_VAULT_ERROR_CODES.reservedMedium, 'Local media is reserved.');
+        case 'state_conflict':
+        case 'drive_not_found':
+          throw new ApiError(
+            409,
+            result.status === 'drive_not_found'
+              ? PER_VAULT_ERROR_CODES.driveBindingInvalid
+              : PER_VAULT_ERROR_CODES.mediaStateConflict,
+            'The media state or Drive binding changed before this transition committed.',
+          );
+        case 'partial_set':
+          throw new ApiError(
+            412,
+            PER_VAULT_ERROR_CODES.mediaPartialSet,
+            'Every live vault document must be verified in one transition batch.',
+          );
+        case 'verification_failed':
+          throw new ApiError(
+            412,
+            PER_VAULT_ERROR_CODES.mediaVerificationFailed,
+            'The full-document-set readback is absent, stale, or invalid.',
+          );
+        case 'retirement_conflict':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.retirementConflict,
+            'Retained server bytes conflict with this media transition.',
+          );
+        case 'retirement_pending':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.deleteRetirementPending,
+            'The retired server set must pass the signed purge gate before server is re-added.',
+          );
+      }
+    },
+  );
+
+  router.put(
+    '/:vaultId/media/server-candidate/:transitionId/docs/:docId',
+    validateParams(perVaultServerCandidateStageParamsSchema),
+    parseRawDocument,
+    async (req, res) => {
+      const { vaultId, transitionId, docId } = req.valid
+        ?.params as PerVaultServerCandidateStageParams;
+      const result = await ctx.vaults.stageServerCandidate({
+        userId: req.authUser!.id,
+        vaultId,
+        transitionId,
+        docId,
+        blob: requireRawEnvelope(req),
+      });
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(perVaultServerCandidateMetadataSchema.parse(result.candidate));
+          return;
+        case 'not_found':
+          throw perVaultNotFound();
+        case 'portfolio_binding_mismatch':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.portfolioBindingMismatch,
+            'A portfolio document id must equal an owned locked stub in this vault.',
+          );
+        case 'doc_kind_mismatch':
+          throw new ApiError(400, PER_VAULT_ERROR_CODES.docKindMismatch, 'Document kind mismatch.');
+        case 'state_conflict':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.mediaStateConflict,
+            'Candidates can be staged only for a Drive-only vault.',
+          );
+        case 'too_large':
+          throw new ApiError(
+            413,
+            PER_VAULT_ERROR_CODES.tooLarge,
+            'Candidate exceeds its kind cap.',
+          );
+        case 'malformed':
+          throw new ApiError(400, PER_VAULT_ERROR_CODES.malformed, result.reason);
+        case 'address_mismatch':
+          throw new ApiError(
+            400,
+            PER_VAULT_ERROR_CODES.docAddressMismatch,
+            'The envelope vaultId/docId does not match the request path.',
+          );
+      }
+    },
+  );
+
+  router.get(
+    '/:vaultId/media/server-candidate/:candidateId',
+    validateParams(perVaultServerCandidateReadParamsSchema),
+    async (req, res) => {
+      const { vaultId, candidateId } = req.valid?.params as PerVaultServerCandidateReadParams;
+      const candidate = await ctx.vaults.getServerCandidate(req.authUser!.id, vaultId, candidateId);
+      if (!candidate) {
+        throw notFound(
+          'No active server candidate found.',
+          PER_VAULT_ERROR_CODES.serverCandidateNotFound,
+        );
+      }
+      const readback = ctx.vaults.issueCandidateReadback(req.authUser!.id, vaultId, candidate);
+      if (!readback) {
+        throw new ApiError(
+          409,
+          PER_VAULT_ERROR_CODES.retirementProofInvalid,
+          'Candidate proof issuance is unavailable.',
+        );
+      }
+      res.setHeader('ETag', vaultEtag(candidate.version));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Content-Type', VAULT_CONTENT_TYPE);
+      res.setHeader(VAULT_SERVER_CANDIDATE_ID_HEADER, candidate.id);
+      res.setHeader(VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER, candidate.expiresAt.toISOString());
+      res.setHeader(VAULT_SERVER_CANDIDATE_READBACK_HEADER, readback);
+      res.status(200).send(candidate.blob);
+    },
+  );
+
+  router.post(
+    '/:vaultId/media/retired/purge/challenge',
+    validateParams(vaultIdParamSchema),
+    validateBody(perVaultRetiredServerPurgeChallengeRequestSchema),
+    async (req, res) => {
+      const { vaultId } = req.valid?.params as VaultIdParam;
+      const result = await ctx.vaults.prepareRetiredPurge(
+        req.authUser!.id,
+        vaultId,
+        req.valid?.body as PerVaultRetiredServerPurgeChallengeRequest,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(perVaultRetiredServerPurgeChallengeResponseSchema.parse(result.challenge));
+          return;
+        case 'not_found':
+          throw perVaultNotFound();
+        case 'state_conflict':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.mediaStateConflict,
+            'The retirement generation or version-set hash is stale.',
+          );
+        case 'proof_unavailable':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.retirementProofInvalid,
+            'Retirement proof issuance is unavailable.',
+          );
+      }
+    },
+  );
+
+  router.post(
+    '/:vaultId/media/retired/purge',
+    validateParams(vaultIdParamSchema),
+    validateBody(perVaultRetiredServerPurgeRequestSchema),
+    async (req, res) => {
+      const { vaultId } = req.valid?.params as VaultIdParam;
+      const result = await ctx.vaults.purgeRetired(
+        req.authUser!.id,
+        vaultId,
+        req.valid?.body as PerVaultRetiredServerPurgeRequest,
+        req.ip,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(
+            perVaultRetiredServerPurgeResponseSchema.parse({
+              purged: true,
+              vaultId,
+              generation: (req.valid?.body as PerVaultRetiredServerPurgeRequest).generation,
+              versionSetHash: (req.valid?.body as PerVaultRetiredServerPurgeRequest).versionSetHash,
+            }),
+          );
+          return;
+        case 'not_found':
+          throw perVaultNotFound();
+        case 'state_conflict':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.mediaStateConflict,
+            'The retirement set or server-medium state is no longer current.',
+          );
+        case 'partial_set':
+          throw new ApiError(
+            412,
+            PER_VAULT_ERROR_CODES.mediaPartialSet,
+            'Fresh other-medium readback must cover the complete current doc roster.',
+          );
+        case 'retention_pending':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.retirementRetention,
+            'The retired server recovery window has not elapsed.',
+            { purgeAfter: result.purgeAfter.toISOString() },
+          );
+        case 'proof_invalid':
+          throw new ApiError(
+            412,
+            PER_VAULT_ERROR_CODES.retirementProofInvalid,
+            'The purge proof is malformed, forged, expired, or stale.',
           );
       }
     },

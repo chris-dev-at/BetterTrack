@@ -7,6 +7,12 @@ import type { Redis } from 'ioredis';
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
 import type { AppContext } from '../http/context';
+import {
+  MODULE_POLICIES,
+  resolveBearerPolicyClassification,
+  type BearerModulePolicy,
+  type ResolvedBearerPolicyClassification,
+} from '../http/middleware/bearerAuth';
 import { getOpenApiDocument } from '../http/openapi';
 import { createLogger } from '../logger';
 
@@ -26,6 +32,8 @@ export interface MountedRoute {
   readonly kind: 'route';
   method: string;
   path: string;
+  /** Literal top-level `app.use` path that owns this surface, when present. */
+  readonly applicationMountPath?: string;
 }
 
 /**
@@ -36,6 +44,8 @@ export interface MountedRoute {
 export interface AllMethodsMountedRoute {
   readonly kind: 'all-methods-route';
   readonly path: string;
+  /** Literal top-level `app.use` path that owns this surface, when present. */
+  readonly applicationMountPath?: string;
 }
 
 /**
@@ -50,6 +60,8 @@ export interface OpaqueMountedSurface {
   readonly handler: string;
   /** One-based occurrence among handlers with the same mounted path and name. */
   readonly occurrence: number;
+  /** Literal top-level `app.use` path that owns this surface, when present. */
+  readonly applicationMountPath?: string;
 }
 
 export type MountedSurface = MountedRoute | AllMethodsMountedRoute | OpaqueMountedSurface;
@@ -68,8 +80,25 @@ export interface CoverageResult {
   missing: string[];
   /** `"METHOD /path"` entries documented but not actually mounted (phantom endpoints). */
   phantom: string[];
+  bearerModules: BearerModulePolicyCoverage;
   mountedCount: number;
   documentedCount: number;
+}
+
+export interface BearerModulePolicyCoverage {
+  ok: boolean;
+  /** Top-level API modules and direct nested application mounts discovered from Express. */
+  mounted: string[];
+  /** Mounts with a top-level row, a closed parent, or a distinct resolved-policy identity. */
+  classified: string[];
+  /** Nested mounts that silently inherit a bearer-capable parent's resolved policy. */
+  unclassified: string[];
+  /** Bearer policies whose module is no longer mounted. */
+  unmountedPolicies: string[];
+  /** Repeated policy prefixes, which would make resolver order significant. */
+  duplicatePolicies: string[];
+  /** Policy prefixes that violate the required single-segment top-level shape. */
+  invalidPolicyPrefixes: string[];
 }
 
 /**
@@ -84,6 +113,20 @@ const API_PREFIX = '/api/v1';
 /** The HTTP methods a path item's operations can be keyed by (per {@link EndpointDef}). */
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
 const EXPRESS_HTTP_METHODS = METHODS.map((method) => method.toLowerCase());
+
+function sortedUnique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function duplicates(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) repeated.add(value);
+    seen.add(value);
+  }
+  return [...repeated].sort();
+}
 
 function toOpenApiPath(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -120,6 +163,7 @@ function buildInertContext(): AppContext {
     logger: createLogger(config),
     events: inertService('events'),
     paranoidGuard: inertService('paranoidGuard'),
+    vaultedPortfolioGuard: inertService('vaultedPortfolioGuard'),
     auth: inertService('auth'),
     google: inertService('google'),
     twoFactor: inertService('twoFactor'),
@@ -138,7 +182,6 @@ function buildInertContext(): AppContext {
     portfolio: inertService('portfolio'),
     snapshots: inertService('snapshots'),
     tax: inertService('tax'),
-    taxYearLock: inertService('taxYearLock'),
     mirror: inertService('mirror'),
     customAssets: inertService('customAssets'),
     conglomerate: inertService('conglomerate'),
@@ -153,8 +196,10 @@ function buildInertContext(): AppContext {
     cashBudgets: inertService('cashBudgets'),
     paranoidVault: inertService('paranoidVault'),
     vaults: inertService('vaults'),
+    driveConnections: inertService('driveConnections'),
     reauth: inertService('reauth'),
     paranoidTransitions: inertService('paranoidTransitions'),
+    portfolioVaultTransitions: inertService('portfolioVaultTransitions'),
     webhooks: inertService('webhooks'),
     webhookBridge: inertService('webhookBridge'),
     analytics: inertService('analytics'),
@@ -241,6 +286,7 @@ function collectRouterRoutes(
   out: MountedSurface[],
   recordedUseMounts: WeakMap<object, RecordedUseMount>,
   opaqueOccurrences: Map<string, number>,
+  applicationMountPath?: string,
 ): void {
   for (const layer of stack) {
     if (layer.route) {
@@ -255,7 +301,11 @@ function collectRouterRoutes(
       for (const path of routePaths) {
         const mountedPath = joinMountedPath(base, path);
         if (handlesAllMethods) {
-          out.push({ kind: 'all-methods-route', path: mountedPath });
+          out.push({
+            kind: 'all-methods-route',
+            path: mountedPath,
+            ...(applicationMountPath === undefined ? {} : { applicationMountPath }),
+          });
           continue;
         }
         for (const method of methods) {
@@ -263,6 +313,7 @@ function collectRouterRoutes(
             kind: 'route',
             method: method.toUpperCase(),
             path: mountedPath,
+            ...(applicationMountPath === undefined ? {} : { applicationMountPath }),
           });
         }
       }
@@ -281,6 +332,7 @@ function collectRouterRoutes(
 
     for (const path of mount.paths) {
       const mountedPath = joinMountedPath(base, path);
+      const owningApplicationMountPath = base === '' ? mountedPath : applicationMountPath;
       if (layer.handle?.stack && Array.isArray(layer.handle.stack)) {
         collectRouterRoutes(
           layer.handle.stack,
@@ -288,6 +340,7 @@ function collectRouterRoutes(
           out,
           recordedUseMounts,
           opaqueOccurrences,
+          owningApplicationMountPath,
         );
       } else {
         const handler = handlerName(layer.handle);
@@ -299,6 +352,9 @@ function collectRouterRoutes(
           path: mountedPath,
           handler,
           occurrence,
+          ...(owningApplicationMountPath === undefined
+            ? {}
+            : { applicationMountPath: owningApplicationMountPath }),
         });
       }
     }
@@ -396,6 +452,158 @@ export function buildRouteTable(
   return surfaces;
 }
 
+/**
+ * API module mounts derived from the real route wiring. Every mounted surface
+ * kind contributes its top-level module. Direct application mounts below that
+ * module also retain their exact `app.use` path, so a new
+ * `/api/v1/<module>/<submodule>` mount cannot disappear into its parent row.
+ * Router-level sub-mounts such as `settingsRouter.use('/foo', ...)` stay inside
+ * the parent's policy by design; only application-level mounts are classified.
+ */
+export function mountedApiModulePaths(surfaces: readonly MountedSurface[]): string[] {
+  const modulePrefix = `${API_PREFIX}/`;
+  return sortedUnique(
+    surfaces.flatMap((surface) => {
+      if (!surface.path.startsWith(modulePrefix)) return [];
+      const segment = surface.path.slice(modulePrefix.length).split('/', 1)[0];
+      if (!segment) return [];
+
+      const paths = [`${modulePrefix}${segment}`];
+      const applicationMountPath = surface.applicationMountPath;
+      if (
+        applicationMountPath?.startsWith(modulePrefix) &&
+        applicationMountPath.slice(modulePrefix.length).split('/').filter(Boolean).length > 1
+      ) {
+        paths.push(applicationMountPath);
+      }
+      return paths;
+    }),
+  );
+}
+
+function isTopLevelApiModulePath(path: string): boolean {
+  const modulePrefix = `${API_PREFIX}/`;
+  return (
+    path.startsWith(modulePrefix) &&
+    path.slice(modulePrefix.length).split('/').filter(Boolean).length === 1
+  );
+}
+
+/**
+ * `MODULE_POLICIES` deliberately remains a single-segment table so
+ * `unmountedPolicies` stays a symmetric top-level mount check. A direct nested
+ * `app.use` is classified when its parent rejects bearer credentials or when
+ * its resolved policy identity differs from its parent. A same-policy
+ * sub-router below a bearer-capable parent belongs inside that parent router
+ * instead of silently inheriting through application wiring.
+ */
+function nestedMountIsBearerClassified(path: string): boolean {
+  const modulePrefix = `${API_PREFIX}/`;
+  const relativePath = path.slice(API_PREFIX.length);
+  const parentSegment = path.slice(modulePrefix.length).split('/', 1)[0];
+  if (!parentSegment) return false;
+  const parentPath = `/${parentSegment}`;
+  const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+  const policies = methods.map((method) => ({
+    parent: resolveBearerPolicyClassification(parentPath, method),
+    nested: resolveBearerPolicyClassification(relativePath, method),
+  }));
+  const parentAcceptsBearer = policies.some(({ parent }) => policyAcceptsBearer(parent));
+
+  if (!parentAcceptsBearer) return true;
+
+  return policies.some(({ parent, nested }) => !samePolicyClassification(parent, nested));
+}
+
+function policyAcceptsBearer(policy: ResolvedBearerPolicyClassification): boolean {
+  return policy.kind === 'allow' || policy.kind === 'scope';
+}
+
+function samePolicyClassification(
+  left: ResolvedBearerPolicyClassification,
+  right: ResolvedBearerPolicyClassification,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind !== 'scope' || right.kind !== 'scope') return true;
+  return left.read === right.read && left.write === right.write;
+}
+
+/** Compare actual API module wiring with the sole runtime bearer policy table. */
+export function findBearerModulePolicyCoverage(
+  surfaces: readonly MountedSurface[],
+  policies: readonly BearerModulePolicy[] = MODULE_POLICIES,
+): BearerModulePolicyCoverage {
+  const mounted = mountedApiModulePaths(surfaces);
+  const policyPaths = policies.map((policy) => `${API_PREFIX}${policy.prefix}`);
+  const invalidPolicyPrefixes = sortedUnique(
+    policyPaths.filter((path) => !isTopLevelApiModulePath(path)),
+  );
+  const topLevelPolicyPaths = policyPaths.filter(isTopLevelApiModulePath);
+  const explicitlyClassifiedNestedMounts = mounted.filter(
+    (path) => !isTopLevelApiModulePath(path) && nestedMountIsBearerClassified(path),
+  );
+  const classified = sortedUnique([...topLevelPolicyPaths, ...explicitlyClassifiedNestedMounts]);
+  const mountedSet = new Set(mounted);
+  const classifiedSet = new Set(classified);
+  const unclassified = mounted.filter((path) => !classifiedSet.has(path));
+  const unmountedPolicies = sortedUnique(
+    topLevelPolicyPaths.filter((path) => !mountedSet.has(path)),
+  );
+  const duplicatePolicies = duplicates(policyPaths);
+
+  return {
+    ok:
+      unclassified.length === 0 &&
+      unmountedPolicies.length === 0 &&
+      duplicatePolicies.length === 0 &&
+      invalidPolicyPrefixes.length === 0,
+    mounted,
+    classified,
+    unclassified,
+    unmountedPolicies,
+    duplicatePolicies,
+    invalidPolicyPrefixes,
+  };
+}
+
+function bearerModulePolicyCoverageMessage(coverage: BearerModulePolicyCoverage): string {
+  const problems = ['Bearer module policy coverage failed.'];
+  if (coverage.unclassified.length > 0) {
+    problems.push(
+      'Mounted API modules without an explicit bearer classification:',
+      ...coverage.unclassified.map((path) => `  - ${path}`),
+    );
+  }
+  if (coverage.unmountedPolicies.length > 0) {
+    problems.push(
+      'Bearer classifications without a mounted API module:',
+      ...coverage.unmountedPolicies.map((path) => `  - ${path}`),
+    );
+  }
+  if (coverage.duplicatePolicies.length > 0) {
+    problems.push(
+      'Duplicate bearer module classifications:',
+      ...coverage.duplicatePolicies.map((path) => `  - ${path}`),
+    );
+  }
+  if (coverage.invalidPolicyPrefixes.length > 0) {
+    problems.push(
+      'Bearer module classifications must remain single-segment top-level prefixes:',
+      ...coverage.invalidPolicyPrefixes.map((path) => `  - ${path}`),
+    );
+  }
+  return problems.join('\n');
+}
+
+/** Fail closed with mount-path diagnostics suitable for CI output. */
+export function assertBearerModulePolicyCoverage(
+  surfaces: readonly MountedSurface[],
+  policies: readonly BearerModulePolicy[] = MODULE_POLICIES,
+): void {
+  const coverage = findBearerModulePolicyCoverage(surfaces, policies);
+  if (!coverage.ok) throw new Error(bearerModulePolicyCoverageMessage(coverage));
+}
+
 /** Mounted routes with no matching operation in the OpenAPI document, as `"METHOD /path"`. */
 export function findUndocumentedRoutes(
   surfaces: readonly MountedSurface[],
@@ -452,11 +660,13 @@ export function checkCoverage(): CoverageResult {
   const doc = getOpenApiDocument() as unknown as OpenApiDocumentLike;
   const missing = findUndocumentedRoutes(mounted, doc);
   const phantom = findPhantomRoutes(mounted, doc);
+  const bearerModules = findBearerModulePolicyCoverage(mounted);
 
   return {
-    ok: missing.length === 0 && phantom.length === 0,
+    ok: missing.length === 0 && phantom.length === 0 && bearerModules.ok,
     missing,
     phantom,
+    bearerModules,
     mountedCount: mounted.filter((surface) => surface.kind === 'route').length,
     documentedCount: Object.keys(doc.paths).length,
   };
@@ -486,12 +696,16 @@ function main(): void {
           'each from the `endpoints` table in apps/api/src/http/openapi/document.ts or mount it.',
       );
     }
+    if (!result.bearerModules.ok) {
+      console.error(bearerModulePolicyCoverageMessage(result.bearerModules));
+    }
     process.exitCode = 1;
     return;
   }
   console.log(
     `OpenAPI coverage OK — ${result.mountedCount} mounted routes all documented ` +
-      `(${result.documentedCount} paths in the spec).`,
+      `(${result.documentedCount} paths in the spec); bearer policies cover all ` +
+      `${result.bearerModules.mounted.length} API modules.`,
   );
 }
 

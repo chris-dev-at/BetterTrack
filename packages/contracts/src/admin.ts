@@ -444,6 +444,12 @@ export const adminStatsSchema = z.object({
   activeUserCount: z.number().int(),
   disabledUserCount: z.number().int(),
   pendingInviteCount: z.number().int(),
+  /**
+   * Pending approval-queue applications (#1406 W1). A COUNT, deliberately: the
+   * operator Overview only needs the number for its attention row, and reading
+   * `.length` off the unbounded list read would have grown with the queue.
+   */
+  pendingRegistrationCount: z.number().int(),
 });
 export type AdminStats = z.infer<typeof adminStatsSchema>;
 
@@ -818,3 +824,107 @@ export const updateAnnouncementRequestSchema = z
     { message: 'Provide at least one field to update.' },
   );
 export type UpdateAnnouncementRequest = z.infer<typeof updateAnnouncementRequestSchema>;
+
+// ── Backup / restore-drill readiness (#1406 W1) ──────────────────────────────
+// The production stack's `backup-scheduler` writes a machine-readable status
+// file after every dump, offsite upload, restore drill and healthcheck (see
+// docs/ops.md, "Local schedule, status, and health"). `GET /admin/ops/backup-status`
+// is a READ-ONLY projection of that file for the operator Overview: it starts
+// nothing, retries nothing, and carries no artifact paths, checksums or remote
+// credentials — only freshness, outcome tags and the documented thresholds.
+
+/** Age limits the deploy documents (docs/ops.md): 26 h dump, 35 d restore drill. */
+export const BACKUP_FRESHNESS_MAX_HOURS = 26;
+export const BACKUP_RESTORE_DRILL_MAX_DAYS = 35;
+
+/**
+ * Operator verdict for the readiness tile:
+ *  - `ok` — a recent dump AND a recent restore drill.
+ *  - `warn` — the recovery point is fresh but its proof is not (missing or stale
+ *    restore drill, or a failed offsite upload): recovery is untested, not lost.
+ *  - `critical` — no fresh recovery point, or the scheduler's own healthcheck
+ *    reports a stale/failed dump.
+ *  - `unknown` — no status file is wired into this deployment.
+ */
+export const ADMIN_BACKUP_STATUS_LEVELS = ['ok', 'warn', 'critical', 'unknown'] as const;
+export const adminBackupStatusLevelSchema = z.enum(ADMIN_BACKUP_STATUS_LEVELS);
+export type AdminBackupStatusLevel = z.infer<typeof adminBackupStatusLevelSchema>;
+
+/** Why the verdict is what it is — a coarse, secret-free tag the UI localizes. */
+export const ADMIN_BACKUP_STATUS_REASONS = [
+  'not_configured',
+  /**
+   * A path IS configured but the API cannot read it — the mount is missing, or
+   * the file's mode/owner locks the unprivileged api user out. Kept distinct from
+   * `not_configured` because the two need opposite actions: one is "this deploy
+   * has no backup sidecar", the other is "your backup evidence exists and you
+   * cannot see it", which must never read as benign.
+   */
+  'permission_denied',
+  'unreadable',
+  'backup_missing',
+  'backup_stale',
+  /** Recorded success lies in the future — the evidence cannot be trusted. */
+  'clock_skew',
+  'restore_missing',
+  'restore_stale',
+  'offsite_failed',
+  'scheduler_unhealthy',
+  'healthy',
+] as const;
+export const adminBackupStatusReasonSchema = z.enum(ADMIN_BACKUP_STATUS_REASONS);
+export type AdminBackupStatusReason = z.infer<typeof adminBackupStatusReasonSchema>;
+
+/** A short outcome tag copied verbatim from the status file, or null when absent. */
+const backupOutcomeTagSchema = z.string().max(48).nullable();
+
+export const adminBackupStatusResponseSchema = z
+  .object({
+    /**
+     * False when this deployment wires no status file (local dev, or a stack
+     * without the backup sidecar). The tile then reads "not configured" — never
+     * an error, and never a claim that backups are missing.
+     */
+    configured: z.boolean(),
+    level: adminBackupStatusLevelSchema,
+    reason: adminBackupStatusReasonSchema,
+    /** When the API read the file. */
+    checkedAt: z.string().datetime(),
+    backup: z
+      .object({
+        lastSuccessAt: z.string().datetime().nullable(),
+        ageSeconds: z.number().int().nonnegative().nullable(),
+        lastAttemptOutcome: backupOutcomeTagSchema,
+        artifactBytes: z.number().int().nonnegative().nullable(),
+        maxAgeSeconds: z.number().int().positive(),
+      })
+      .strict(),
+    restore: z
+      .object({
+        lastSuccessAt: z.string().datetime().nullable(),
+        ageSeconds: z.number().int().nonnegative().nullable(),
+        lastOutcome: backupOutcomeTagSchema,
+        maxAgeSeconds: z.number().int().positive(),
+      })
+      .strict(),
+    offsite: z
+      .object({
+        outcome: backupOutcomeTagSchema,
+        uploadedCount: z.number().int().nonnegative().nullable(),
+      })
+      .strict(),
+    /**
+     * The scheduler's own last healthcheck verdict. Authoritative when present:
+     * it is evaluated against that deployment's configured thresholds, which an
+     * operator may have tuned away from the documented defaults above.
+     */
+    scheduler: z
+      .object({
+        outcome: backupOutcomeTagSchema,
+        reason: backupOutcomeTagSchema,
+        checkedAt: z.string().datetime().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type AdminBackupStatusResponse = z.infer<typeof adminBackupStatusResponseSchema>;

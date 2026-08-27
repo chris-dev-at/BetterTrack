@@ -1,6 +1,8 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
+
+import { isValidRedirectUri } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
 import type { IdentityRepository } from '../../data/repositories/identityRepository';
@@ -16,6 +18,7 @@ import {
   badRequest,
   conflict,
   forbidden,
+  tooManyRequests,
   unauthorized,
 } from '../../errors';
 import type { Logger } from '../../logger';
@@ -24,10 +27,17 @@ import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
+import {
+  BETTERTRACK_MOBILE_CLIENT_ID,
+  BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
+  FIRST_PARTY_CLIENTS,
+} from '../oauth/firstPartyClients';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
+import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SessionService } from '../sessions/sessionService';
 import type { GoogleClaims, GoogleTokenVerifier } from './googleVerifier';
+import { GOOGLE_LINK_ACCOUNT_NAMESPACE } from './loginThrottle';
 
 /** The one federated provider today (§13.4 V4-P4b). Stored on every identity row. */
 export const GOOGLE_PROVIDER = 'google';
@@ -39,6 +49,26 @@ const STATE_TTL_SECONDS = 10 * 60;
 const stateKey = (state: string) => `google_oauth_state:${state}`;
 /** Google's real production authorize endpoint — the default when no override is set. */
 export const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+
+/** Short lifetime for the server-bound native Google LINK ticket. */
+export const GOOGLE_MOBILE_LINK_TICKET_TTL_SECONDS = 10 * 60;
+const MOBILE_LINK_HANDLE_BYTES = 24;
+const MOBILE_LINK_SECRET_BYTES = 32;
+const MOBILE_LINK_HANDLE_LENGTH = Math.ceil((MOBILE_LINK_HANDLE_BYTES * 4) / 3);
+const MOBILE_LINK_SECRET_LENGTH = Math.ceil((MOBILE_LINK_SECRET_BYTES * 4) / 3);
+const MOBILE_LINK_STATE = new RegExp(
+  `^[A-Za-z0-9_-]{${MOBILE_LINK_HANDLE_LENGTH}}\\.[A-Za-z0-9_-]{${MOBILE_LINK_SECRET_LENGTH}}$`,
+);
+const mobileLinkTicketKey = (handle: string) => `google_mobile_link_ticket:${hashToken(handle)}`;
+
+/** Atomic Redis consume: exactly one concurrent callback can obtain the record. */
+const CONSUME_MOBILE_LINK_TICKET_SCRIPT = `
+local value = redis.call('GET', KEYS[1])
+if value then
+  redis.call('DEL', KEYS[1])
+end
+return value
+`;
 
 // A brand-new Google identity no longer instant-registers at the callback (owner
 // order 2026-07-16). The verified claims are parked in this single-use ticket for
@@ -64,10 +94,27 @@ interface StateContext {
   linkUserId?: string;
 }
 
+/** Hashed-at-rest native LINK ticket; neither raw state component is persisted. */
+interface MobileLinkTicketRecord {
+  userId: string;
+  secretHash: string;
+  redirectUri: string;
+  expiresAt: string;
+}
+
 export interface StartInput {
   /** When set, this is a LINK flow for the already-signed-in user (from Settings). */
   linkUserId?: string | null;
 }
+
+export interface MobileLinkStartResult {
+  authorizationUrl: string;
+  expiresAt: string;
+}
+
+export type MobileLinkCallbackResult =
+  | { status: 'linked'; redirectUri: string }
+  | { status: 'error'; code: string; redirectUri: string };
 
 /**
  * Outcome of the Google callback, shaped so the (redirect-only) route can decide
@@ -149,6 +196,31 @@ export interface GoogleAuthService {
    * callback then requires both to match (login-CSRF defence).
    */
   buildAuthorizeUrl(input: StartInput): Promise<{ url: string; state: string }>;
+  /**
+   * Mint the server-bound, hashed one-time ticket used by the native Google LINK
+   * ceremony. The caller supplies no account selector and no redirect target.
+   */
+  startMobileLink(userId: string, ip?: string | null): Promise<MobileLinkStartResult>;
+  /**
+   * Resolve the guarded native target and audit a callback query that failed
+   * contract validation before ticket handling could begin.
+   */
+  handleMalformedMobileLinkCallback(ip?: string | null): Promise<{
+    code: string;
+    redirectUri: string;
+  }>;
+  /**
+   * Consume a native LINK ticket, verify Google's code and link only the user id
+   * carried by that server record. This path never creates a BetterTrack session.
+   */
+  handleMobileLinkCallback(input: {
+    state?: string;
+    code?: string;
+    providerError?: string;
+    /** Presence alone is tampering: redirect targets are never request-driven. */
+    suppliedRedirectUri?: unknown;
+    ip?: string | null;
+  }): Promise<MobileLinkCallbackResult>;
   /** Validate `state`, verify the code, and resolve to sign-in / link / register. */
   handleCallback(input: {
     state?: string;
@@ -207,11 +279,91 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
 
   /** The server-side callback the code is redirected to — identical on both legs. */
   const redirectUri = () => `${config.topology.apiOrigin}/api/v1/auth/google/callback`;
+  /** Separate Google return leg for native LINK; the web cookie callback is untouched. */
+  const mobileLinkCallbackUri = () =>
+    `${config.topology.apiOrigin}/api/v1/auth/google/link/callback`;
 
   // The authorize endpoint the browser is bounced to. The real Google URL unless
   // a test-only override is configured (env `BT_GOOGLE_AUTHORIZE_ENDPOINT`, threaded
   // via config.google.authorizeEndpoint) — the e2e fake IdP points this at itself.
   const authorizeEndpoint = config.google.authorizeEndpoint ?? GOOGLE_AUTHORIZE_ENDPOINT;
+
+  const mobileLinkThrottle = createProgressiveLimiter(
+    redis,
+    GOOGLE_LINK_ACCOUNT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
+
+  /**
+   * Resolve the one native target exclusively from the code-defined first-party
+   * registration. Any drift fails closed before a Location header is emitted.
+   */
+  function registeredMobileLinkRedirectUri(): string {
+    const mobile = FIRST_PARTY_CLIENTS.find(
+      (client) => client.clientId === BETTERTRACK_MOBILE_CLIENT_ID,
+    );
+    const uri = BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI;
+    if (!mobile?.redirectUris.includes(uri) || !isValidRedirectUri(uri)) {
+      throw new Error('BetterTrackMobile Google link redirect is not registered');
+    }
+    return uri;
+  }
+
+  /** Constant-time comparison for fixed-size SHA-256 hex digests. */
+  function safeHashEqual(left: string, right: string): boolean {
+    if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) return false;
+    const leftBytes = Buffer.from(left, 'hex');
+    const rightBytes = Buffer.from(right, 'hex');
+    return timingSafeEqual(leftBytes, rightBytes);
+  }
+
+  function parseMobileLinkState(state: string | undefined): {
+    handle: string;
+    secret: string;
+  } | null {
+    if (!state || !MOBILE_LINK_STATE.test(state)) return null;
+    const separator = state.indexOf('.');
+    return { handle: state.slice(0, separator), secret: state.slice(separator + 1) };
+  }
+
+  function parseMobileLinkTicket(raw: string | null): MobileLinkTicketRecord | null {
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as Partial<MobileLinkTicketRecord>;
+      if (
+        typeof value.userId !== 'string' ||
+        typeof value.secretHash !== 'string' ||
+        typeof value.redirectUri !== 'string' ||
+        typeof value.expiresAt !== 'string'
+      ) {
+        return null;
+      }
+      return value as MobileLinkTicketRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  function mobileLinkTicketIsLive(ticket: MobileLinkTicketRecord): boolean {
+    const expiresAt = Date.parse(ticket.expiresAt);
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+  }
+
+  async function auditMobileLinkFailure(input: {
+    userId?: string | null;
+    ip?: string | null;
+    reason: string;
+  }): Promise<void> {
+    await audit.record({
+      actorId: input.userId ?? null,
+      action: AuditAction.ExternalIdentityLinkFailed,
+      ...(input.userId
+        ? { targetType: 'user', targetId: input.userId }
+        : { targetType: 'google_link' }),
+      ip: input.ip ?? null,
+      meta: { reason: input.reason, via: 'mobile_ticket' },
+    });
+  }
 
   /**
    * Mint a session on the SAME path a password login takes (§13.4 V4-P4b
@@ -299,6 +451,109 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       state,
     });
     return { url: `${authorizeEndpoint}?${params.toString()}`, state };
+  }
+
+  async function startMobileLink(
+    userId: string,
+    ip?: string | null,
+  ): Promise<MobileLinkStartResult> {
+    const throttle = await mobileLinkThrottle.consume(userId);
+    if (!throttle.allowed) {
+      await auditMobileLinkFailure({ userId, ip, reason: 'rate_limited' });
+      throw tooManyRequests(
+        throttle.retryAfterSec,
+        'Too many Google link attempts. Please wait and retry.',
+      );
+    }
+
+    const redirectUri = registeredMobileLinkRedirectUri();
+    const expiresAt = new Date(Date.now() + GOOGLE_MOBILE_LINK_TICKET_TTL_SECONDS * 1000);
+    let state: string | null = null;
+
+    // The handle is already 192 random bits, so a collision is fantastically
+    // unlikely; NX still makes overwrite impossible even under a broken RNG.
+    for (let attempt = 0; attempt < 3 && !state; attempt += 1) {
+      const handle = randomBytes(MOBILE_LINK_HANDLE_BYTES).toString('base64url');
+      const secret = randomBytes(MOBILE_LINK_SECRET_BYTES).toString('base64url');
+      const record: MobileLinkTicketRecord = {
+        userId,
+        secretHash: hashToken(secret),
+        redirectUri,
+        expiresAt: expiresAt.toISOString(),
+      };
+      const stored = await redis.set(
+        mobileLinkTicketKey(handle),
+        JSON.stringify(record),
+        'EX',
+        GOOGLE_MOBILE_LINK_TICKET_TTL_SECONDS,
+        'NX',
+      );
+      if (stored === 'OK') state = `${handle}.${secret}`;
+    }
+    if (!state) throw new Error('Could not allocate a unique Google link ticket');
+
+    const params = new URLSearchParams({
+      client_id: config.google.clientId ?? '',
+      redirect_uri: mobileLinkCallbackUri(),
+      response_type: 'code',
+      scope: 'openid email profile',
+      state,
+    });
+    await audit.record({
+      actorId: userId,
+      action: AuditAction.ExternalIdentityLinkStarted,
+      targetType: 'user',
+      targetId: userId,
+      ip: ip ?? null,
+      meta: { provider: GOOGLE_PROVIDER, via: 'mobile_ticket' },
+    });
+    return {
+      authorizationUrl: `${authorizeEndpoint}?${params.toString()}`,
+      expiresAt: expiresAt.toISOString(),
+    };
+  }
+
+  async function handleMalformedMobileLinkCallback(ip?: string | null) {
+    const redirectUri = registeredMobileLinkRedirectUri();
+    await auditMobileLinkFailure({ ip, reason: 'malformed_query' });
+    return { code: 'GOOGLE_STATE_INVALID', redirectUri };
+  }
+
+  /**
+   * Verify first without mutation so a wrong secret cannot burn a ticket, then
+   * atomically GET+DEL and verify the consumed record again. Two valid callbacks
+   * may pass the first read, but only one can obtain the record from the script.
+   */
+  async function consumeMobileLinkTicket(
+    state: string | undefined,
+  ): Promise<MobileLinkTicketRecord | null> {
+    const parsedState = parseMobileLinkState(state);
+    if (!parsedState) return null;
+    const key = mobileLinkTicketKey(parsedState.handle);
+    const presentedHash = hashToken(parsedState.secret);
+    const peeked = parseMobileLinkTicket(await redis.get(key));
+    if (
+      !peeked ||
+      !safeHashEqual(peeked.secretHash, presentedHash) ||
+      peeked.redirectUri !== registeredMobileLinkRedirectUri() ||
+      !mobileLinkTicketIsLive(peeked)
+    ) {
+      return null;
+    }
+
+    const consumedRaw = (await redis.eval(CONSUME_MOBILE_LINK_TICKET_SCRIPT, 1, key)) as
+      | string
+      | null;
+    const consumed = parseMobileLinkTicket(consumedRaw);
+    if (
+      !consumed ||
+      !safeHashEqual(consumed.secretHash, presentedHash) ||
+      consumed.redirectUri !== registeredMobileLinkRedirectUri() ||
+      !mobileLinkTicketIsLive(consumed)
+    ) {
+      return null;
+    }
+    return consumed;
   }
 
   /**
@@ -542,6 +797,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     linkUserId: string,
     claims: GoogleClaims,
     ip?: string | null,
+    via: 'settings' | 'mobile_ticket' = 'settings',
   ): Promise<GoogleCallbackResult> {
     const user = await userRepo.findById(linkUserId);
     if (!user || user.status !== 'active') {
@@ -592,15 +848,81 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       targetType: 'user',
       targetId: linkUserId,
       ip,
-      meta: { provider: GOOGLE_PROVIDER, via: 'settings' },
+      meta: { provider: GOOGLE_PROVIDER, via },
     });
     return { status: 'linked', userId: linkUserId };
+  }
+
+  async function handleMobileLinkCallback(input: {
+    state?: string;
+    code?: string;
+    providerError?: string;
+    suppliedRedirectUri?: unknown;
+    ip?: string | null;
+  }): Promise<MobileLinkCallbackResult> {
+    // The final target is code-defined and allowlisted even when state is
+    // missing/forged, so failure feedback can always return safely to the phone.
+    const redirectUri = registeredMobileLinkRedirectUri();
+    const ticket = await consumeMobileLinkTicket(input.state);
+    if (!ticket) {
+      await auditMobileLinkFailure({ ip: input.ip, reason: 'invalid_state' });
+      return { status: 'error', code: 'GOOGLE_STATE_INVALID', redirectUri };
+    }
+
+    const fail = async (code: string, reason = code): Promise<MobileLinkCallbackResult> => {
+      await auditMobileLinkFailure({ userId: ticket.userId, ip: input.ip, reason });
+      return { status: 'error', code, redirectUri };
+    };
+
+    // A redirect target is never part of this contract. Refuse even the
+    // allowlisted spelling rather than create a reflection seam that could drift.
+    if (input.suppliedRedirectUri !== undefined) {
+      return fail('GOOGLE_STATE_INVALID', 'redirect_uri_supplied');
+    }
+    if (input.providerError) return fail('GOOGLE_FAILED', 'provider_error');
+
+    try {
+      if (!input.code) throw badRequest('Google verification failed.', 'GOOGLE_VERIFY_FAILED');
+      let claims: GoogleClaims;
+      try {
+        claims = await verifier.exchangeAndVerify({
+          code: input.code,
+          redirectUri: mobileLinkCallbackUri(),
+        });
+      } catch (err) {
+        logger.warn({ err }, 'mobile google-link id-token verification failed');
+        throw badRequest('Google verification failed.', 'GOOGLE_VERIFY_FAILED');
+      }
+      await linkToUser(ticket.userId, claims, input.ip, 'mobile_ticket');
+      await mobileLinkThrottle.reset(ticket.userId);
+      await audit.record({
+        actorId: ticket.userId,
+        action: AuditAction.ExternalIdentityLinkSucceeded,
+        targetType: 'user',
+        targetId: ticket.userId,
+        ip: input.ip ?? null,
+        meta: { provider: GOOGLE_PROVIDER, via: 'mobile_ticket' },
+      });
+      return { status: 'linked', redirectUri };
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : 'GOOGLE_FAILED';
+      if (!(err instanceof ApiError)) {
+        logger.error({ err }, 'mobile google-link callback failed unexpectedly');
+      }
+      return fail(code);
+    }
   }
 
   return {
     isEnabled: () => config.google.enabled,
 
     buildAuthorizeUrl,
+
+    startMobileLink,
+
+    handleMalformedMobileLinkCallback,
+
+    handleMobileLinkCallback,
 
     async handleCallback({ state, cookieState, code, ip }) {
       // Enforce `state` FIRST (§13.4 V4-P4b acceptance): a missing/mismatched

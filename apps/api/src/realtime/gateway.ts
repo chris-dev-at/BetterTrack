@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 
 import cookieParser from 'cookie-parser';
@@ -290,8 +290,12 @@ export interface RealtimeGateway {
    * connected Engine.IO clients, or 0 when the gateway is disabled/unattached.
    */
   connectionCount(): number;
-  /** Drop this user's retained refs to account-owned assets before mode enable. */
-  invalidateOwnedLiveMode(userId: string): Promise<void>;
+  /**
+   * Drop this user's retained refs to account-owned assets. An exact list keeps
+   * unrelated portfolio watches alive; omitted preserves v1's account-wide
+   * paranoid-enable behavior.
+   */
+  invalidateOwnedLiveMode(userId: string, assetIds?: readonly string[]): Promise<void>;
   /** Disconnect all clients, drop bus subscriptions, close the socket server. */
   close(): Promise<void>;
 }
@@ -307,6 +311,19 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   const allowedOrigins = new Set(corsOrigins);
   const admission =
     deps.realtimeAdmission ?? createRealtimeAdmission(deps.redis, deps.realtimeAdmissionOptions);
+  // Admission never needs to reverse this identifier: it only compares keys
+  // and counts distinct assets. Key every account's id from first write so a
+  // later paranoid transition has no raw Redis key/AOF history to erase, while
+  // normal and paranoid viewers still coalesce onto the same global identity.
+  // Rotating the first SESSION_SECRET during a rolling restart temporarily lets
+  // one asset occupy two global members while sharedGlobalAsset can return false
+  // across secret generations. Both effects self-heal when the old lease expires,
+  // so the inconsistency lasts at most one admission lease TTL.
+  const admissionAssetId = (assetId: string): string =>
+    `opaque:${createHmac('sha256', config.sessionSecrets[0]!)
+      .update('bettertrack:realtime-watch\0')
+      .update(assetId)
+      .digest('base64url')}`;
   const admissionLeaseTtlMs =
     deps.realtimeAdmissionOptions?.leaseTtlMs ?? REALTIME_ADMISSION_LEASE_TTL_MS;
   const admissionNow = deps.realtimeAdmissionOptions?.now ?? Date.now;
@@ -660,8 +677,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    */
   type LiveWatchEntry = {
     rateMs: number | undefined;
+    /** Durable E4 generation held by this exact loop registration. */
+    retirementEpoch: number;
     /** Null for global market assets; set for account-owned custom assets. */
     ownerId: string | null;
+    /** Keyed/opaque Redis admission identity; never a catalog asset id. */
+    admissionAssetId: string;
     leaseId: string;
     userId: string;
     expiresAtMs: number;
@@ -760,16 +781,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     // release, and duplicate cleanup paths become exact no-ops.
     watched.delete(assetId);
     try {
-      deps.liveMode?.unwatch(assetId, entry.rateMs);
+      deps.liveMode?.unwatch(assetId, entry.rateMs, entry.retirementEpoch);
     } finally {
       try {
         await admission.releaseWatch({
           leaseId: entry.leaseId,
           userId: entry.userId,
-          assetId,
+          assetId: entry.admissionAssetId,
         });
       } catch (err) {
-        logger.warn({ err, assetId }, 'realtime watch lease release failed');
+        logger.warn({ err, userId: entry.userId }, 'realtime watch lease release failed');
       }
     }
     if (leaveRoom && !socket.disconnected) {
@@ -820,7 +841,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             admission.renewWatch({
               leaseId: entry.leaseId,
               userId: lease.userId,
-              assetId,
+              assetId: entry.admissionAssetId,
             }),
           );
           // An intentional unwatch may have completed while Redis renewed.
@@ -1102,6 +1123,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     // the shared loop nor the backfill.
     await withAccountPrivacyLock(principal.userId, async () => {
       const { assetId, window } = parsed.data;
+      // The server must still address the requested market asset to provide
+      // Live Mode, but Redis admission state never persists the catalog id. A
+      // keyed digest preserves cross-process distinct-asset accounting without
+      // making UUIDs recoverable from Redis/AOF.
+      const redisAssetId = admissionAssetId(assetId);
       const resolved = await deps
         .resolveWatchableAsset(principal.userId, assetId)
         .catch(() => null);
@@ -1132,10 +1158,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           admitted = await admission.acquireWatch({
             leaseId,
             userId: principal.userId,
-            assetId,
+            assetId: redisAssetId,
           });
         } catch (err) {
-          logger.warn({ err, userId: principal.userId, assetId }, 'live watch admission failed');
+          logger.warn({ err, userId: principal.userId }, 'live watch admission failed');
           respond({ ok: false, error: 'UNAVAILABLE' });
           return;
         }
@@ -1145,74 +1171,102 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         }
         if (admissionNow() >= leaseExpiresAtMs - admissionDeadlineSlackMs) {
           await admission
-            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .releaseWatch({
+              leaseId,
+              userId: principal.userId,
+              assetId: redisAssetId,
+            })
             .catch(() => undefined);
           respond({ ok: false, error: 'UNAVAILABLE' });
           return;
         }
         if (socket.disconnected) {
           await admission
-            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .releaseWatch({
+              leaseId,
+              userId: principal.userId,
+              assetId: redisAssetId,
+            })
             .catch(() => undefined);
           respond({ ok: false, error: 'GONE' });
           return;
         }
         try {
-          if (!liveMode.watch(assetId, resolved.ref, rateMs, admitted.sharedGlobalAsset)) {
+          const registration = await liveMode.watch(
+            assetId,
+            resolved.ref,
+            rateMs,
+            admitted.sharedGlobalAsset,
+          );
+          if (!registration) {
             await admission
-              .releaseWatch({ leaseId, userId: principal.userId, assetId })
+              .releaseWatch({
+                leaseId,
+                userId: principal.userId,
+                assetId: redisAssetId,
+              })
               .catch(() => undefined);
             respond({ ok: false, error: 'LIVE_START_FAILED' });
             return;
           }
+          entry = {
+            rateMs,
+            retirementEpoch: registration.retirementEpoch,
+            ownerId: resolved.ownerId,
+            admissionAssetId: redisAssetId,
+            leaseId,
+            userId: principal.userId,
+            expiresAtMs: leaseExpiresAtMs,
+          };
         } catch (err) {
           await admission
-            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .releaseWatch({
+              leaseId,
+              userId: principal.userId,
+              assetId: redisAssetId,
+            })
             .catch(() => undefined);
-          logger.warn({ err, userId: principal.userId, assetId }, 'live loop start failed');
+          logger.warn({ err, userId: principal.userId }, 'live loop start failed');
           respond({ ok: false, error: 'LIVE_START_FAILED' });
           return;
         }
-        entry = {
-          rateMs,
-          ownerId: resolved.ownerId,
-          leaseId,
-          userId: principal.userId,
-          expiresAtMs: leaseExpiresAtMs,
-        };
+        if (!entry) throw new Error('live loop registration disappeared');
         watched.set(assetId, entry);
         startedHere = true;
         try {
           await socket.join(assetRoom(assetId));
         } catch (err) {
           await releaseLiveWatch(socket, assetId, entry, false);
-          logger.warn({ err, userId: principal.userId, assetId }, 'live room join failed');
+          logger.warn({ err, userId: principal.userId }, 'live room join failed');
           respond({ ok: false, error: 'LIVE_START_FAILED' });
           return;
         }
       } else {
-        if (entry.rateMs !== rateMs) {
-          if (!liveMode.watch(assetId, resolved.ref, rateMs)) {
-            respond({ ok: false, error: 'LIVE_START_FAILED' });
-            return;
-          }
-          liveMode.unwatch(assetId, entry.rateMs);
-          entry.rateMs = rateMs;
+        const registration = await liveMode.watch(assetId, resolved.ref, rateMs, false, {
+          intervalMs: entry.rateMs,
+          retirementEpoch: entry.retirementEpoch,
+        });
+        if (!registration) {
+          await releaseLiveWatch(socket, assetId, entry, true);
+          respond({ ok: false, error: 'LIVE_START_FAILED' });
+          return;
         }
+        entry.rateMs = rateMs;
+        entry.retirementEpoch = registration.retirementEpoch;
         // Provenance can only have narrowed under this lock; record what the
         // fresh resolve says so the per-frame recheck compares like for like.
         entry.ownerId = resolved.ownerId;
       }
       let frames: Awaited<ReturnType<LiveModeService['backfill']>>;
       try {
-        frames = await liveMode.backfill(assetId, resolved.ref, window);
+        frames = await liveMode.backfill(assetId, resolved.ref, window, entry.retirementEpoch);
       } catch (err) {
         // A first watch is transactional through backfill: it cannot leave a
         // provider loop or Redis capacity behind when startup fails.
         if (startedHere && watched.get(assetId) === entry) {
           await releaseLiveWatch(socket, assetId, entry, true);
         }
-        logger.warn({ err, userId: principal.userId, assetId }, 'live backfill failed');
+        logger.warn({ err, userId: principal.userId }, 'live backfill failed');
         respond({ ok: false, error: 'LIVE_START_FAILED' });
         return;
       }
@@ -1663,7 +1717,22 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
       if (channel === LIVE_LOOP_COORDINATION_CHANNEL) {
         const message = realtimeLiveUnwatchRequestSchema.safeParse(parsed);
-        if (message.success) deps.liveMode?.reconcile(message.data.assetId);
+        if (message.success) {
+          deps.liveMode?.reconcile(message.data.assetId);
+          if ((parsed as { retired?: unknown }).retired === true) {
+            const retirements = [...server.sockets.sockets.values()]
+              .filter((socket) => liveAssetsOf(socket).has(message.data.assetId))
+              .map((socket) =>
+                enqueueLiveOp(socket, async () => {
+                  const entry = liveAssetsOf(socket).get(message.data.assetId);
+                  if (entry) {
+                    await releaseLiveWatch(socket, message.data.assetId, entry, true);
+                  }
+                }),
+              );
+            void Promise.allSettled(retirements);
+          }
+        }
       }
     };
     subscriber.on('message', onMessage);
@@ -1964,14 +2033,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return io?.engine?.clientsCount ?? 0;
     },
 
-    async invalidateOwnedLiveMode(userId): Promise<void> {
+    async invalidateOwnedLiveMode(userId, assetIds): Promise<void> {
       if (!io) return;
+      const exactAssetIds = assetIds === undefined ? null : new Set(assetIds);
+      if (exactAssetIds?.size === 0) return;
       const sockets = [...io.sockets.sockets.values()].filter(
         (socket) => principalOf(socket)?.userId === userId,
       );
       for (const socket of sockets) {
         const ownedEntries = [...liveAssetsOf(socket)].filter(
-          ([, entry]) => entry.ownerId === userId,
+          ([assetId, entry]) =>
+            entry.ownerId === userId && (exactAssetIds === null || exactAssetIds.has(assetId)),
         );
         for (const [assetId, entry] of ownedEntries) {
           await releaseLiveWatch(socket, assetId, entry, true);

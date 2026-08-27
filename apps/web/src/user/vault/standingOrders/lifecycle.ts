@@ -91,8 +91,9 @@ export function createStandingOrderMaterializationLifecycle(
     for (const listener of listeners) {
       try {
         listener();
-      } catch {
+      } catch (error) {
         // An observer cannot turn a completed materialization into a failed run.
+        console.error('Failed to notify standing-order materialization observer.', error);
       }
     }
   }

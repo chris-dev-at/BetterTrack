@@ -1,8 +1,10 @@
 import {
   adminApiKeyListResponseSchema,
+  adminFeedbackListResponseSchema,
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
+  adminBackupStatusResponseSchema,
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
   adminStatsSchema,
@@ -29,6 +31,7 @@ import {
   okResponseSchema,
   problemSchema,
   problemListResponseSchema,
+  updateFeedbackStatusResponseSchema,
   monitoringStatusResponseSchema,
   aiSettingsResponseSchema,
   aiTestConnectionResponseSchema,
@@ -43,7 +46,10 @@ import {
   twoFactorMethodEnabledResponseSchema,
   twoFactorRecoveryCodesResponseSchema,
   versionResponseSchema,
+  type AdminBackupStatusResponse,
   type AdminHealthResponse,
+  type AdminFeedbackListResponse,
+  type AdminFeedbackListQuery,
   type AdminInviteListResponse,
   type AdminStats,
   type AdminTwoFactorEmailStartRequest,
@@ -74,6 +80,8 @@ import {
   type ProblemKind,
   type ProblemListResponse,
   type ProblemStatus,
+  type UpdateFeedbackStatusRequest,
+  type UpdateFeedbackStatusResponse,
   type MonitoringStatusResponse,
   type AiSettingsResponse,
   type AiTestConnectionRequest,
@@ -365,6 +373,35 @@ export async function reopenProblem(id: string): Promise<Problem> {
   return problemSchema.parse(data);
 }
 
+// --- Admin: feedback inbox -------------------------------------------------
+
+export async function listAdminFeedback(
+  params: Partial<AdminFeedbackListQuery> = {},
+  signal?: AbortSignal,
+): Promise<AdminFeedbackListResponse> {
+  const data = await apiRequest<unknown>('/admin/feedback', {
+    query: {
+      category: params.category,
+      sort: params.sort,
+      page: params.page,
+      limit: params.limit,
+    },
+    signal,
+  });
+  return adminFeedbackListResponseSchema.parse(data);
+}
+
+export async function updateFeedbackStatus(
+  id: string,
+  body: UpdateFeedbackStatusRequest,
+): Promise<UpdateFeedbackStatusResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, {
+    method: 'PATCH',
+    body,
+  });
+  return updateFeedbackStatusResponseSchema.parse(data);
+}
+
 // --- Admin: Usage analytics (§13.5 V5-P2 arc (b), first-party only) --------
 
 export async function getUsageAnalytics(signal?: AbortSignal): Promise<UsageAnalyticsResponse> {
@@ -491,6 +528,16 @@ export async function getAccountDefaults(signal?: AbortSignal): Promise<AccountD
 export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthResponse> {
   const data = await apiRequest<unknown>('/admin/health', { signal });
   return adminHealthResponseSchema.parse(data);
+}
+
+/**
+ * Backup / restore-drill readiness (#1406 W1). Read-only, and deliberately
+ * forgiving: a deployment without the backup sidecar answers `configured: false`
+ * rather than failing, so the Overview tile reads "not configured" locally.
+ */
+export async function getBackupStatus(signal?: AbortSignal): Promise<AdminBackupStatusResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/backup-status', { signal });
+  return adminBackupStatusResponseSchema.parse(data);
 }
 
 export async function updateAccountDefaults(

@@ -2,10 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { and, desc, eq } from 'drizzle-orm';
 import request from 'supertest';
-import type { Application } from 'express';
+import type { Application, Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  API_KEY_SCOPES,
   alertListResponseSchema,
   alertSchema,
   cashBudgetResponseSchema,
@@ -30,9 +31,17 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
-import { pathAcceptsBearer } from '../http/middleware/bearerAuth';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  passkeyManagementRouteAcceptsBearer,
+  pathAcceptsBearer,
+  taxYearDocumentationRouteAcceptsBearer,
+} from '../http/middleware/bearerAuth';
+import { requireCookieSessionOrTaxYearDocumentationBearer } from '../http/routes/settingsRoutes';
+import { ACCOUNT_PASSKEY_NAMESPACE } from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -114,9 +123,14 @@ function pkce(): { verifier: string; challenge: string } {
 }
 
 /** Seed a fresh user, register a public PKCE client they own, and mint a delegated token. */
-async function mintOAuthToken(
-  scopes: string[],
-): Promise<{ token: string; userId: string; grantId: string; clientRowId: string; email: string }> {
+async function mintOAuthToken(scopes: string[]): Promise<{
+  token: string;
+  userId: string;
+  grantId: string;
+  clientRowId: string;
+  email: string;
+  password: string;
+}> {
   const user = await seedFreshUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
   const reg = await agent
@@ -174,10 +188,129 @@ async function mintOAuthToken(
     .orderBy(desc(schema.oauthGrants.createdAt));
   expect(grantRows).toHaveLength(1);
   const grant = grantRows[0]!;
-  return { token, userId: user.id, grantId: grant.id, clientRowId, email: user.email };
+  return {
+    token,
+    userId: user.id,
+    grantId: grant.id,
+    clientRowId,
+    email: user.email,
+    password: user.password,
+  };
 }
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+type AccountSecurityRoute = {
+  name: string;
+  method: 'get' | 'post' | 'patch' | 'delete';
+  path: string;
+  body?: Record<string, unknown>;
+};
+
+const ACCOUNT_SECURITY_WIDENED_ROUTES: readonly AccountSecurityRoute[] = [
+  { name: 'passkey list', method: 'get', path: '/auth/passkeys' },
+  {
+    name: 'passkey rename',
+    method: 'patch',
+    path: `/auth/passkeys/${MISSING_ID}`,
+    body: { name: 'Phone' },
+  },
+  {
+    name: 'passkey delete',
+    method: 'delete',
+    path: `/auth/passkeys/${MISSING_ID}`,
+    body: { password: 'irrelevant-before-scope-check' },
+  },
+  { name: 'tax-year documentation', method: 'get', path: '/settings/taxes/years' },
+  { name: 'first-run completion', method: 'post', path: '/auth/first-run/complete' },
+] as const;
+
+function callAccountSecurityRoute(token: string, row: AccountSecurityRoute) {
+  const url = `/api/v1${row.path}`;
+  const base = request(harness.app);
+  const started =
+    row.method === 'get'
+      ? base.get(url)
+      : row.method === 'post'
+        ? base.post(url)
+        : row.method === 'delete'
+          ? base.delete(url)
+          : base.patch(url);
+  const withAuth = started.set(bearer(token));
+  return row.body ? withAuth.send(row.body) : withAuth;
+}
+
+async function seedManagedPasskeys(userId: string) {
+  const suffix = uniq();
+  return harness.db
+    .insert(schema.passkeys)
+    .values([
+      {
+        userId,
+        name: 'Rename me',
+        credentialId: `credential-rename-${suffix}`,
+        publicKey: 'AQID',
+        counter: 0,
+        transports: null,
+      },
+      {
+        userId,
+        name: 'Delete me',
+        credentialId: `credential-delete-${suffix}`,
+        publicKey: 'AQID',
+        counter: 0,
+        transports: null,
+      },
+    ])
+    .returning();
+}
+
+async function exerciseWidenedAccountSecuritySurface(input: {
+  token: string;
+  userId: string;
+  password: string;
+}) {
+  const [renameTarget, deleteTarget] = await seedManagedPasskeys(input.userId);
+  const responses: request.Response[] = [];
+
+  const listed = await request(harness.app).get('/api/v1/auth/passkeys').set(bearer(input.token));
+  expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+  expect(listed.body.passkeys).toHaveLength(2);
+  responses.push(listed);
+
+  const renamed = await request(harness.app)
+    .patch(`/api/v1/auth/passkeys/${renameTarget!.id}`)
+    .set(bearer(input.token))
+    .send({ name: 'Native phone' });
+  expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+  expect(renamed.body.name).toBe('Native phone');
+  responses.push(renamed);
+
+  const deleted = await request(harness.app)
+    .delete(`/api/v1/auth/passkeys/${deleteTarget!.id}`)
+    .set(bearer(input.token))
+    .send({ password: input.password });
+  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+  expect(deleted.body).toEqual({ ok: true });
+  responses.push(deleted);
+
+  const documentation = await request(harness.app)
+    .get('/api/v1/settings/taxes/years')
+    .set(bearer(input.token));
+  expect(documentation.status, JSON.stringify(documentation.body)).toBe(200);
+  expect(documentation.body).toEqual({ years: [] });
+  responses.push(documentation);
+
+  const completed = await request(harness.app)
+    .post('/api/v1/auth/first-run/complete')
+    .set(bearer(input.token));
+  expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+  expect(meResponseSchema.parse(completed.body).firstRunCompletedAt).not.toBeNull();
+  responses.push(completed);
+
+  // Bearer management never mints or refreshes a browser session.
+  for (const response of responses) expect(response.headers['set-cookie']).toBeUndefined();
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -302,6 +435,46 @@ describe('#361 route × scope matrix', () => {
       scope: 'alerts:write',
       body: { assetId: MISSING_ID, kind: 'price_above', threshold: 100 },
     },
+    // #1338: feedback read-back must resolve through MODULE_POLICIES instead of
+    // the session-only API_KEY_FORBIDDEN fallback; capture remains a write.
+    {
+      name: 'own feedback status history',
+      method: 'get',
+      path: '/feedback/mine',
+      scope: 'feedback:read',
+    },
+    {
+      name: 'feedback submission',
+      method: 'post',
+      path: '/feedback',
+      scope: 'feedback:write',
+      body: { category: 'other', message: 'Bearer matrix feedback' },
+    },
+    {
+      name: 'own feedback deletion',
+      method: 'delete',
+      path: `/feedback/${MISSING_ID}`,
+      scope: 'feedback:write',
+    },
+    {
+      name: 'feedback thread',
+      method: 'get',
+      path: `/feedback/${MISSING_ID}/messages`,
+      scope: 'feedback:read',
+    },
+    {
+      name: 'feedback thread reply',
+      method: 'post',
+      path: `/feedback/${MISSING_ID}/messages`,
+      scope: 'feedback:write',
+      body: { body: 'Bearer matrix reply' },
+    },
+    {
+      name: 'feedback thread mark-read',
+      method: 'post',
+      path: `/feedback/${MISSING_ID}/read`,
+      scope: 'feedback:write',
+    },
     { name: '2fa status', method: 'get', path: '/auth/2fa/status', scope: 'account:security' },
     { name: 'sessions list', method: 'get', path: '/auth/sessions', scope: 'account:security' },
     {
@@ -391,6 +564,268 @@ describe('#361 route × scope matrix', () => {
       .send({ identifier: email, password: newPassword });
     expect(fresh.status).toBe(200);
     expect(meResponseSchema.safeParse(fresh.body).success).toBe(true);
+  });
+});
+
+describe('[PARANOID-E2] bearer scope authorization precedes vault membership', () => {
+  it('audits INSUFFICIENT_SCOPE without disclosing the owned locked stub', async () => {
+    const unscoped = await mintKey(['market:read']);
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(unscoped.userId);
+
+    // Deterministic TEST VECTOR: public identity/config fixtures only; none of
+    // these values is a credential or portfolio-content payload.
+    const vaultId = '019c8190-0000-7000-8000-000000000301';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: unscoped.userId,
+      name: 'Scope-order test vault',
+      headerDocId: '019c8190-0000-7000-8000-000000000302',
+      commonDocId: '019c8190-0000-7000-8000-000000000303',
+      media: ['server'],
+      driveConnectionId: null,
+      retirementProofPublicKey: 'scope-order-test-vector-public-proof',
+      keyFingerprint: 'scope-order-test-vector-fingerprint',
+    });
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId, vaultAlias: 'Locked scope-order stub' })
+      .where(eq(schema.portfolios.id, portfolioId));
+
+    const denied = await request(harness.app)
+      .get(`/api/v1/portfolios/${portfolioId}`)
+      .set(bearer(unscoped.token));
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(JSON.stringify(denied.body)).not.toContain('VAULTED_PORTFOLIO');
+
+    const denials = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.targetId, unscoped.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denials).toHaveLength(1);
+    expect(denials[0]?.meta).toMatchObject({
+      requiredScope: 'portfolio:read',
+      method: 'GET',
+      path: `/portfolios/${portfolioId}`,
+    });
+
+    const scoped = await harness.ctx.apiKeys.create({
+      userId: unscoped.userId,
+      name: 'scoped vault probe',
+      scopes: ['portfolio:read'],
+    });
+    const boundary = await request(harness.app)
+      .get(`/api/v1/portfolios/${portfolioId}`)
+      .set(bearer(scoped.token));
+    expect(boundary.status).toBe(403);
+    expect(boundary.body.error.code).toBe('VAULTED_PORTFOLIO');
+  });
+});
+
+describe('#1324 account:security parity for native account state', () => {
+  it.each(['personal', 'oauth'] as const)(
+    'serves all seven widened routes to a scoped %s bearer',
+    async (kind) => {
+      const principal =
+        kind === 'personal'
+          ? await mintKey([ACCOUNT_SECURITY_SCOPE])
+          : await mintOAuthToken([ACCOUNT_SECURITY_SCOPE]);
+      expect(principal.token.startsWith(kind === 'personal' ? 'btk_' : 'bto_')).toBe(true);
+
+      await exerciseWidenedAccountSecuritySurface(principal);
+    },
+  );
+
+  it.each(ACCOUNT_SECURITY_WIDENED_ROUTES)(
+    'returns scope-evaluation 403 without account:security: $name',
+    async (row) => {
+      const { token } = await mintKey(['market:read']);
+      const res = await callAccountSecurityRoute(token, row);
+
+      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+      expect(res.body.error.message).toContain(ACCOUNT_SECURITY_SCOPE);
+    },
+  );
+
+  it('keeps passkey bearer admission method-aware and default-closed', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    for (const [method, path] of [
+      ['GET', '/auth/passkeys'],
+      ['PATCH', `/auth/passkeys/${id}`],
+      ['DELETE', `/auth/passkeys/${id}`],
+    ] as const) {
+      expect(passkeyManagementRouteAcceptsBearer(method, path), `${method} ${path}`).toBe(true);
+      expect(pathAcceptsBearer(path, method), `${method} ${path}`).toBe(true);
+    }
+
+    for (const path of [
+      '/auth/passkeys/register/options',
+      '/auth/passkeys/register/verify',
+      '/auth/passkeys/login/options',
+      '/auth/passkeys/login/verify',
+      '/auth/passkeys/export',
+    ]) {
+      expect(pathAcceptsBearer(path, 'POST'), `POST ${path}`).toBe(false);
+    }
+    expect(pathAcceptsBearer(`/auth/passkeys/${id}`, 'POST')).toBe(false);
+    expect(pathAcceptsBearer('/auth/passkeys/not-a-uuid', 'PATCH')).toBe(false);
+    expect(pathAcceptsBearer('/auth/first-run/complete', 'POST')).toBe(true);
+    expect(pathAcceptsBearer('/auth/first-run/complete', 'GET')).toBe(false);
+  });
+
+  it('keeps the tax-year documentation guard read-only and scope-aware', () => {
+    const invoke = (scopes: string[], method: string, path: string) => {
+      const next = vi.fn();
+      requireCookieSessionOrTaxYearDocumentationBearer(
+        {
+          apiKey: {
+            id: 'bypassed-policy-key',
+            scopes,
+            kind: 'personal',
+            securityGeneration: 0,
+          },
+          method,
+          path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      return next;
+    };
+
+    const wrongScope = invoke(['market:read'], 'GET', '/taxes/years');
+    expect(wrongScope.mock.calls[0]![0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+
+    const unknownRoute = invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/export');
+    expect(unknownRoute.mock.calls[0]![0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+
+    expect(invoke([ACCOUNT_SECURITY_SCOPE], 'GET', '/taxes/years')).toHaveBeenCalledWith();
+    expect(
+      invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/change'),
+    ).not.toHaveBeenCalledWith();
+    expect(
+      taxYearDocumentationRouteAcceptsBearer('POST', '/settings/taxes/years/2025/change'),
+    ).toBe(false);
+  });
+
+  it('keeps bearer passkey deletion on the shared contract, audit and account throttle', async () => {
+    const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    const [passkey] = await seedManagedPasskeys(principal.userId);
+    const path = `/api/v1/auth/passkeys/${passkey!.id}`;
+
+    const missingReauth = await request(harness.app)
+      .delete(path)
+      .set(bearer(principal.token))
+      .send({});
+    expect(missingReauth.status).toBe(400);
+    expect(missingReauth.body.error.code).toBe('VALIDATION_ERROR');
+    const limiter = progressiveKeys(ACCOUNT_PASSKEY_NAMESPACE, principal.userId);
+    expect(await harness.ctx.redis.get(limiter.count)).toBeNull();
+
+    const bearerWrong = await request(harness.app)
+      .delete(path)
+      .set(bearer(principal.token))
+      .send({ password: 'wrong-bearer-password' });
+    expect(bearerWrong.status).toBe(401);
+    expect(bearerWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.redis.get(limiter.count)).toBe('1');
+
+    const cookie = await loginAgent(harness.app, principal.email, principal.password);
+    const cookieWrong = await cookie
+      .delete(path)
+      .set(...XRW)
+      .send({ password: 'wrong-cookie-password' });
+    expect(cookieWrong.status).toBe(401);
+    expect(cookieWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.redis.get(limiter.count)).toBe('2');
+
+    const audits = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, principal.userId),
+          eq(schema.auditLog.action, 'passkey.manage_reauth_fail'),
+        ),
+      );
+    expect(audits).toHaveLength(2);
+    expect(audits.map((row) => (row.meta as { kind?: string }).kind)).toEqual([
+      'password',
+      'password',
+    ]);
+  });
+
+  it('404s an admin-kind bearer on every widened user route', async () => {
+    const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    await harness.db
+      .update(schema.users)
+      .set({ role: 'admin' })
+      .where(eq(schema.users.id, principal.userId));
+
+    for (const row of ACCOUNT_SECURITY_WIDENED_ROUTES) {
+      const res = await callAccountSecurityRoute(principal.token, row);
+      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    }
+  });
+
+  it('reuses the existing account scope without widening scope or first-party registries', () => {
+    const preexistingScopes = [
+      'portfolio:read',
+      'portfolio:write',
+      'workboard:read',
+      'workboard:write',
+      'market:read',
+      'social:read',
+      'social:write',
+      'notifications:read',
+      'notifications:write',
+      'chat:read',
+      'chat:write',
+      'account:security',
+      'alerts:read',
+      'alerts:write',
+      'cash:read',
+      'cash:write',
+      'mirrorchain:read',
+      'mirrorchain:write',
+      'vault:sync',
+      'feedback:write',
+      'feedback:read',
+    ];
+    expect(API_KEY_SCOPES).toEqual(preexistingScopes);
+    const mobile = FIRST_PARTY_CLIENTS.find((client) => client.name === 'BetterTrackMobile');
+    expect(mobile?.scopeCeiling).toEqual(preexistingScopes);
+  });
+});
+
+describe('#1328 bearer-started Google LINK policy', () => {
+  it('scope-evaluates the one new bearer route and keeps the legacy start closed', async () => {
+    const { token } = await mintKey(['market:read']);
+    const denied = await request(harness.app)
+      .post('/api/v1/auth/google/link/start')
+      .set(bearer(token));
+
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(denied.body.error.message).toContain(ACCOUNT_SECURITY_SCOPE);
+    expect(pathAcceptsBearer('/auth/google/link/start', 'POST')).toBe(true);
+    expect(pathAcceptsBearer('/auth/google/link/start', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/auth/google/start', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/auth/google/callback', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/auth/google/link/callback', 'GET')).toBe(false);
   });
 });
 

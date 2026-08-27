@@ -1,1051 +1,1017 @@
-# PARANOID MODE — client-encrypted privacy mode design note (V5-P13, arc b)
+# PARANOID VAULTS — per-portfolio client-encrypted privacy (V5-P13 arc b, redefined 2026-08-19)
 
-**Status:** binding design, §16-logged 2026-07-21 (issue #651). The
-implementation was **owner-approved before composition** under the 2026-07-24
-briefs, culminating in the owner-authored `v5-p13-pd9-20260724` brief on issue
-#733. That issue's 2026-07-28 owner audit also directs this note to adopt #896's
-retired-recovery semantics; the amendment is recorded in PROJECTPLAN §16. The
-older #654 gate is explicitly superseded and is not approval evidence. The
-implementation issues in §14 build against this text; every "planner-defined"
-point in the §13.5 spec row is decided here. Deviations found during
-implementation go back through §16.
+**Status:** ACKED & RULED 2026-08-20 — the five gate questions are answered
+(§21) and the owner delegated all further paranoid decisions to the Chief;
+implementation issues may be cut from §20. This note is the complete rewrite of the
+paranoid design under the owner's **final, total redefinition of 2026-08-19**
+(§2 below, verbatim — the binding text). It supersedes the account-level model
+of the 2026-07-21 #651 note that previously lived at this path, the 2026-07-17
+account-level clarification in §13.5, and — where anything differs — the
+2026-08-12 per-portfolio spec on #665 (whose aligned parts it absorbs: per-vault
+12-word seed phrases, one device password per endpoint, protection levels, QR
+handoff, the UX charter). The one-implementation ruling recorded in §16 on
+2026-08-19 (PR #1392) stands: this redesign REPLACES the account-level model
+inside the single paranoid implementation — it is not a second variant, and the
+torn-down per-portfolio "vaults v2" surface is not resurrected (its data is
+quarantined as `zz_vault_v2_backup_*`; no port function). Implementation issues
+are composed ONLY after the owner acks this note; deviations found during
+implementation go back through PROJECTPLAN §16.
 
-**The model in one paragraph.** A paranoid account's portfolio data lives in
-ONE client-side encrypted **vault**: the client (web/PWA) holds the cleartext
-in memory after local decryption, does all money math itself with the **same
-audited domain code the server uses** (extracted to a shared package — never
-reimplemented), and persists only ciphertext — a single versioned **blob** —
-to the storage media the user picked: the BetterTrack server, the user's
-Google Drive, both, or **Drive-only** (zero cleartext portfolio rows and no
-active server-medium copy). A retired encrypted recovery copy can remain until
-the separate signed purge in §5. The server keeps running everything that never
-reads the portfolio — identity, auth, friends, chat, price alerts,
-notifications, market data — and for the vault it is a **blind blob store with
-compare-and-swap**, exactly as blind as Drive. The key never leaves the user's
-devices; there is no escrow, no reset, no support backdoor: **lost key ⇒ lost
-data, by design.** Day to day the app looks and feels like normal mode — same
-pages, same components — because every portfolio-touching client feature reads
-through one seam (`PortfolioStore`) with a vault-backed implementation behind
-it.
+**Table of contents**
 
-Glossary: _vault_ = the user's full portfolio dataset as one logical document;
-_blob_ / _envelope_ = one encrypted serialization of the vault (header +
-ciphertext); _medium_ = a place a blob syncs to (server / Drive); _media set_
-= the user's chosen media (non-empty subset); _data home_ = a client-side
-adapter that reads/writes one medium; _VK_ = vault key (the 256-bit content
-key); _KEK_ = passphrase-derived key that wraps the VK; _recovery kit_ = the
-downloadable raw-VK file; _purge sweep_ = the enable-time hard-delete of all
-server-side portfolio rows; _rehydration_ = the disable-time re-creation of
-server rows from the decrypted vault.
+1. The model in one paragraph + glossary
+2. The owner's 2026-08-19 ruling (verbatim, binding)
+3. Vault model & server data model
+4. Seed phrase → keys (BIP39, derivation, rotation)
+5. Blob format + versioning (envelope v2, the per-vault doc set)
+6. Sync, CAS and the merge protocol
+7. Per-vault media switching, retirement, signed purge
+8. Google Drive — separate authentication, multi-connection, collision-safe namespace
+9. Portfolio move-in
+10. Portfolio move-out (the designed exit)
+11. The per-portfolio feature-kill matrix + the full-functionality proof
+12. Device custody — password, plain storage, lockout
+13. QR seed-phrase transfer
+14. Client engine & cross-portfolio composition
+15. Step-up re-auth on destructive operations (#1326 carry-over)
+16. Recovery semantics — lost phrase = lost vault
+17. Transition plan for live account-level paranoid accounts
+18. Interplay: exports, deletion, admin, mirrorchain, autonomy seams
+19. What changes and what dies in the live codebase
+20. Build decomposition (epics, ordered)
+21. Ruled — the five gate decisions (2026-08-20)
+22. Constraints & non-goals
 
 ---
 
-## 1. The vault — what moves client-side
+## 1. The model in one paragraph + glossary
 
-Design choice — the boundary is **"does the row contain portfolio/money
-content?"**, decided mechanically per table, not per feature. The
-export manifest already forces every schema table through a completeness-
-tested classification (`EXPORT_TABLE_CLASSIFICATION` over `schemaTableNames`,
-`apps/api/src/services/export/manifest.ts`); paranoid adds a parallel binding
-axis in the same file and style:
+An account owns **N paranoid vaults**. A vault is a **storage config** — where
+its encrypted bytes live: the BetterTrack server, a **separately authenticated
+Google Drive connection**, or both (a phone-local-only medium is explicitly
+reserved for a future version, never silently promised). Each vault is
+encrypted client-side and opens **only with its own 12-word seed phrase**, like
+a crypto wallet: no escrow, no reset, no support path — lost phrase means that
+vault's data is cryptographically gone, while every other vault and the rest of
+the account are untouched. **Portfolios move INTO a vault**: the move-in
+hard-deletes the portfolio's server cleartext and re-homes it into the vault's
+encrypted document set, so only end devices holding the phrase can read it;
+move-out (from an unlocked device) rehydrates it back. Server features die
+**per vaulted portfolio only** — sharing, public-profile inclusion,
+server-computed stats, server jobs, imports, portfolio-scoped API access to
+that portfolio — while every non-vaulted portfolio of the same account keeps
+FULL functionality, proven by a registry-driven matrix test. On a device, a
+stored seed phrase is protected by a **device password** that is never cached
+across sessions, or — behind a strong warning — stored plain ("encrypted and
+unreadable for BetterTrack" is then the whole promise). A QR flow hands the
+phrase to the phone. The client does all money math for vaulted portfolios with
+the **same audited domain code the server uses** (`packages/domain` — never
+reimplemented), reading through the `PortfolioStore` seam, so day to day a
+vaulted portfolio looks like a normal one on an unlocked device.
+
+Glossary: _vault_ = one storage config + one seed phrase + the encrypted
+document set of its member portfolios; _doc_ = one encrypted blob of a vault's
+doc set (header / common / one per portfolio); _medium_ = a place docs sync to
+(server / a Drive connection); _Drive connection_ = one separately-OAuth'd
+Google account usable as a medium, N per BetterTrack account; _move-in /
+move-out_ = a portfolio entering/leaving a vault; _endpoint_ = one installed
+client (a browser profile, the phone app); _endpoint keystore_ = the
+device-local store of seed phrases; _device password_ = the per-endpoint
+password wrapping stored phrases; _K_c_ = a vault's random 256-bit content key;
+_locked stub_ = the content-free server row a vaulted portfolio keeps.
+
+## 2. The owner's 2026-08-19 ruling (verbatim, binding)
+
+> "there are paranoid vaults on your account. these are just configs on how to
+> save something. so a vault has the config to save stuff on better track or on
+> google drive or on both or on other storage media. and the vault is encrypted
+> on that media and only accessable via a 12 word seed phrase like a crypto
+> wallet. then the portfolios you have can be moved into a vault thereby
+> deleting them as a public portfolio and moving them into the vault so only
+> end devices with the 12 word seed phrase can read it. then also for phone
+> there is the option to only store the portfolio on the phone and no google
+> drive or bettertrack (but leave that out for now this will come in future
+> versions) and to secure on the devices there will be a password which will
+> encrypt your 12 word seed phrase locally so if your end device gets
+> compromised you still have some security. and the password never gets cached
+> across sessions. and then there is also the risky option of just storing the
+> 12 word seedphrase plain on the end device which you will be warned is way
+> less secure but also possible if you just want it to be encrypted and
+> unreadable for bettertrack. the features (for example share and all other
+> features the server is needed for) are only deactivated for the portfolio
+> inside of the vault, and full functionality will still be there for all other
+> portfolios. thats how the paranoid mode should work and no other way. thats
+> exactly how i want it and any other (if described otherwise in any other
+> document) gets rewritten. and also to quickly share the 12 word seedphrase to
+> your phone there is the option of a QR code scan that instantly transmits the
+> 12 word seedphrase. and also i am not sure if the google drive stuff works.
+> can you make it so google drive has to be authenticated seperately? so you
+> could hypothetically have your account be bound to GMAIL X but connect
+> GoogleDrive from accoutn Y and use accoutn Y and maybe connect Google Account
+> Z and move another vault into Google Account Z? and maybe 2 users will use
+> the same google drive to backup there so make sure there is no collisions
+> there."
+
+Every section below is this text made implementable. Where the live codebase
+or any earlier document disagrees, the document is wrong and §19 names what
+gets rewritten.
+
+## 3. Vault model & server data model
+
+**A vault is account config, so its config rows live on the server** — the
+ruling's own words ("paranoid vaults on your account… just configs on how to
+save something"). Knowing THAT a vault exists, where it stores, and WHICH
+portfolios are inside is required to enforce §11 and to render locked stubs; it
+is not portfolio content. What the server can never do is read a doc.
+
+New tables (fresh append-only migrations; the quarantined v2 names `vaults`/
+`vault_docs` are free again after the #1392 backup ceremony destroys the
+`zz_vault_v2_backup_*` set, but nothing here depends on that ceremony):
+
+- **`vaults`** — `id` (uuidv7), `user_id` (FK, cascade), `name` (user-visible
+  label, cleartext by design — it is config, and the UI needs it while locked),
+  `media` (text[] ⊆ {`server`,`drive`}, non-empty — the `local` value is
+  RESERVED in the contract enum but rejected by the server until the future
+  version ships), `drive_connection_id` (nullable FK → `drive_connections`,
+  required iff `drive ∈ media`, enforced by a CHECK),
+  `retirement_proof_public_key` (the per-vault Ed25519 purge verifier, §7 —
+  same semantics as today's `paranoid_vaults.retirement_proof_public_key`),
+  `key_fingerprint` (a non-secret HKDF-derived verification tag of K_c, §4 —
+  lets a client confirm "these words open THIS vault" before destructive
+  steps), `created_at`, `updated_at`.
+- **`vault_blobs`** — `(vault_id, doc_id)` PK, `doc_kind`
+  (`header`|`common`|`portfolio`), `portfolio_id` (nullable, set iff
+  `portfolio`), `version` (monotonic CAS token per doc), `format_version`,
+  `size_bytes`, `blob` (bytea, never interpreted past the envelope header).
+  Size caps per kind (header 1 MiB, common 4 MiB, portfolio 8 MiB — env-tunable
+  like today's `BT_VAULT_MAX_BYTES`).
+- **`vault_blob_history`**, **`vault_server_candidates`**,
+  **`vault_retirements`**, **`vault_retired`** — today's account-singleton
+  machinery (`paranoid_vault_history`, `paranoid_vault_server_candidates`,
+  `paranoid_vault_retirements`, `paranoid_vault_retired`,
+  `apps/api/src/data/schema.ts:3711–3830`) re-keyed to `(vault_id, doc_id)`.
+  Bounded history (last 10 versions / 30 days, env-tunable) stays the
+  bad-write safety net; the retirement set + signed purge gate (§7) carry over
+  per vault.
+- **`drive_connections`** — §8.
+- **`portfolios.vault_id`** (nullable FK → `vaults`) + **`portfolios.vault_alias`**
+  (the locked-row display label; the true name travels inside the ciphertext).
+  `vault_id IS NULL` ⇒ normal portfolio, today's behavior byte-for-byte;
+  `vault_id IS NOT NULL` ⇒ the locked stub: zero content rows (probed), only
+  identity + alias + vault membership. PR #1392 dropped the v2 columns of the
+  same intent; these are re-introduced fresh, with the stub row's purpose being
+  (a) enforcement keying, (b) same-UUID move-out, (c) rendering "N locked
+  portfolios" and the unlock affordance.
+
+**Routes** (all under the existing `/api/v1` surface; exact naming
+composer-refined, shapes binding):
+
+- `GET/POST /vaults`, `PATCH/DELETE /vaults/:vaultId` — config CRUD. DELETE
+  refuses while any portfolio references the vault.
+- `GET/PUT /vaults/:vaultId/docs/:docId` — the blind blob store with ETag /
+  `If-Match` CAS, exactly today's `GET/PUT /vault` contract per doc
+  (`apps/api/src/http/routes/vaultRoutes.ts:464–520`).
+- `GET /vaults/:vaultId/docs/:docId/history[/:version]` — restore picker reads.
+- `PATCH /vaults/:vaultId/media`, server-candidate staging, retirement
+  challenge/purge — §7, re-keyed from today's `/vault/media*` family.
+- `POST /portfolios/:id/vault/move-in`, `POST /portfolios/:id/vault/move-out` —
+  §9/§10, step-up-gated (§15).
+- `GET /portfolios/:id/vault/revision` — the per-portfolio capture token (§9).
+
+**What is deliberately NOT a server fact:** seed phrases, the endpoint
+keystore, the device password, unlock state, and which endpoints hold which
+phrases. There is no server table for endpoint custody, ever.
+
+`users.privacy_mode` and the account-level media columns
+(`paranoid_media_set`, `paranoid_drive_attested_version`,
+`users_paranoid_media_state` CHECK — `schema.ts:205–253`) retire at the end of
+the §17 transition; until then they keep serving the live accounts.
+
+## 4. Seed phrase → keys (BIP39, derivation, rotation)
+
+**BIP39 is adopted as the standard.** 12 words from the English wordlist =
+128-bit entropy + 4-bit checksum. It is boring, ubiquitous, checksum-validated
+at entry (typo detection), has excellent test vectors, and matches the owner's
+"like a crypto wallet" framing exactly. Words are generated client-side from
+CSPRNG entropy at vault creation and NEVER leave the device except via the §13
+QR flow or the user's own pen.
+
+**Derivation chain (binding — boring, standard primitives only):**
 
 ```
-PARANOID_TABLE_CLASSIFICATION: Record<tableName, 'vault' | 'server' | 'purge'>
+mnemonic (12 words)
+  → BIP39 seed          PBKDF2-HMAC-SHA512(mnemonic, "mnemonic", 2048) — the standard, empty passphrase
+  → K_wrap              HKDF-SHA256(seed, info = "bettertrack-vault-wrap-v1:" + vaultId)
+  → K_c                 unwrap keySlots[0] (AES-256-GCM wrap of the random content key)
+  → docs                AES-256-GCM per doc, full serialized header as AAD
+key_fingerprint = base64url(HKDF-SHA256(K_c, info = "bettertrack-vault-fingerprint-v1"))[0..16]
 ```
 
-with the same "every table must be classified, CI fails otherwise" test. The
-**enable-time purge sweep (§7) and the zero-cleartext probe iterate the
-`vault` ∪ `purge` set; disable rehydration iterates the `vault` set** — so a
-future table (e.g. the V5-P9 expense tables) cannot silently leak: adding it to
-the schema forces the author to classify it, and classifying it `vault`
-automatically enrolls it in purge + probe + rehydration. This is the rule that
-keeps the "zero portfolio rows server-side" guarantee durable as the schema
-grows.
+**Binding `seed-v1` key-slot wire contract for E7 phone unwrap:** wrap the
+random 32-byte `K_c` with AES-256-GCM under `K_wrap`, using a fresh 12-byte IV
+and UTF-8 AAD exactly `bettertrack-vault-key-slot-v1:${vaultId}:${keyId}`.
+`wrappedKc` is unpadded base64url of
+`IV || ciphertext || 16-byte GCM tag` (WebCrypto's ciphertext result already
+contains the appended tag); E7 MUST consume this layout byte-for-byte and fail
+closed on malformed length or authentication.
 
-**The third value, `purge`** (added 2026-08-18, §16; PR #1344): server-side rows
-that are **not the client's to hold, but that must not EXIST for a paranoid
-account** — derived telemetry or operational state whose columns are
-portfolio-identifying. Destroyed and zero-probed at enable exactly like `vault`,
-but deliberately never captured into the encrypted document, never restored on
-disable, and forbidden by test from appearing in `VAULT_TABLE_ENTITY_KINDS` or
-taking a rehydration policy.
+Notes, each deliberate:
 
-It exists because neither other value fits such a table. `vault` is not
-available: every `vault` table — including the `purge-only` ones — is enrolled in
-the strict v1 client document contract and must carry each of its Drizzle columns
-in a payload schema, so classifying telemetry `vault` would mean a cross-client
-blob-format change to ship rows nobody wants back. `server` is not available
-either: it means _kept_, and these rows are deleted.
+- No Argon2id on the mnemonic: KDF stretching defends low-entropy human
+  secrets; a 128-bit random mnemonic needs none, and the standard BIP39 PBKDF2
+  step keeps us vector-compatible with every BIP39 tool. Argon2id remains
+  exactly where a human secret exists — the §12 device password (the server's
+  own cost family: m = 64 MiB, t = 3, p = 1, WASM as today).
+- HKDF already exists in the client (`apps/web/src/user/vault/hkdf.ts`);
+  AES-256-GCM via WebCrypto as today (`apps/web/src/user/vault/crypto.ts`). No
+  new primitives anywhere.
+- **`keySlots[]` indirection stays** (v1's `wrappedKeys` pattern,
+  header-carried): the content key K_c is random, wrapped by K_wrap. That is
+  what makes §4-rotation and any far-future sharing possible without
+  re-issuing words.
+- The seed phrase is per vault. Two vaults never share key material; the
+  `vaultId` in the HKDF info string domain-separates even a re-used mnemonic
+  (which the UI never offers).
+- **Rotation:** post-compromise, the client can re-encrypt a vault under fresh
+  words (new mnemonic → new K_wrap → new K_c → full doc-set re-encrypt +
+  verified round trips + history invalidation) — offered in vault settings,
+  never forced. There is no "change phrase but keep K_c" path: if the words
+  leaked, K_c must go too.
+- The v1 recovery kit (raw-VK download) is RETIRED. The ruling makes the
+  phrase the sole credential ("only accessable via a 12 word seed phrase");
+  the write-it-down ceremony (§9 of the UX epic) replaces the kit. One
+  credential, one mental model.
 
-`purge` is deliberately the narrowest of the three, because it is the only value
-that permits "destroyed but never captured" — which is also a green way to stop
-capturing an existing `vault` table. It therefore carries two guardrails the
-other values already have in some form: a **mandatory non-empty reason** per
-table (`PARANOID_PURGE_REASONS`, mirroring `skipped(reason)` on the export axis)
-and a **pinned membership roster** in `paranoidClassification.test.ts`, so a
-second member cannot join without a reviewer editing that list on purpose. Its
-only member today is `usage_events`.
+## 5. Blob format + versioning (envelope v2, the per-vault doc set)
 
-**`vault`-classified (client-only, encrypted; hard-deleted server-side at
-enable):** portfolios and all their content — transactions, dividends, cash
-sources + cash movements, per-portfolio settings (tax country/mode, default
-pay-from source, sort/archive state), tax records/settlement rows (client-
-recomputed anyway, §10), custom assets + value points (the user's house/car
-ARE portfolio data), standing-order definitions (§8 item 9), import batches/
-rows, snapshot + snapshot-state rows (derived data — purged, never rebuilt
-server-side), and — binding forward — the V5-P9 expense tables (expenses,
-categories, rules, budgets) when they land.
+**One envelope format for every medium**, evolved from the shipped `BTVAULT1`
+(`packages/contracts/src/vault.ts`, `apps/web/src/user/vault/envelope.ts`) —
+what it got right is kept verbatim: magic + 4-byte header length + cleartext
+JSON header + ciphertext; the **full serialized header bound as AES-GCM AAD**
+so any header tamper (version rollback included) fails decryption; deflate
+compression before encryption; strict fail-closed versioning.
 
-**`server`-classified (kept, unchanged):** identity + auth (email, password
-hash, 2FA, passkeys, PIN, sessions, remembered devices), profile (username,
-curated icon), friendships + chat, notification prefs/matrix/digest/quiet
-hours + the notification inbox, price alerts (§9), watchlists, conglomerates +
-ideas + backtest configs (hypothetical baskets — interest, not holdings; their
-_sharing_ dies, §8), API keys/OAuth grants (portfolio scopes refuse, §8),
-announcements, feature flags, audit log, the `usage_daily` analytics rollup
-(keyed `(day, feature)` across all accounts — no user id, no asset id), and the
-vault blob rows themselves (ciphertext + version metadata only).
-
-**`purge`-classified (destroyed at enable, never captured):** `usage_events`.
-It was listed here as a kept "usage-analytics counter" until 2026-08-18, and
-that was a leak, not a simplification: the table folds one row per
-`(user, feature, asset, day)`, and a paranoid client values its portfolio
-locally — one `GET /assets/:id/quote` per holding, every day — so its
-`feature='assets'` rows recorded the account's complete **holdings roster**,
-keyed to its user id, daily. Capture is now suppressed for paranoid accounts at
-both the request middleware and the write boundary, and the enable transaction
-destroys the history a converting account brings with it. Per-user analytics for
-such an account simply end at the moment it turns paranoid.
-
-`asset_identities` is the content-free server-side integrity seam between those
-two sets. It stores exactly one opaque asset UUID plus a nullable opaque account
-UUID claim (`NULL` for global catalog assets), and no name, symbol, provider,
-category, price/value, portfolio relation, or other vault-derived field. The
-claim is the authorization boundary for same-UUID restore; UUID secrecy is not.
-The three kept consumers (`workboard_items`,
-`conglomerate_positions`, and `alerts`) reference that key instead of the
-content-bearing `assets` row. Paranoid purge may therefore detach a user's
-custom `assets` row without rewriting or invalidating kept rows; strict
-rehydration inserts the same UUID and reconnects them only for the claimed
-account. Every retained identity must have either a live custom-asset fact or an
-explicit tombstone in the restore document; tombstones retire the identity and
-its kept references through the normal database cascade before the restore
-source is cleared. Ordinary asset and account deletion still remove the identity
-and cascade all consumers through database lifecycle triggers. The identity
-table is explicitly server-classified and skipped by account export because it
-contains no asset content; the completeness tests bind both decisions.
-
-**The document's asset bucket is wider than the vault classification, and the
-restore boundary narrows it back.** A client that computes valuations locally
-(§10) must be able to name and price every asset a holding references, so the
-vault document's `customAsset` bucket doubles as the client's LOCAL ASSET
-TABLE: it also snapshots the market-catalog assets — under the same global
-UUID, with the catalog `providerId`/`providerRef` the §11 autonomy seam will
-need — because the client engine resolves every transaction, dividend and
-standing order through that bucket. Those snapshots are **not** vault data: the
-global `assets` row is `server`-classified, survives the enable purge untouched,
-and rehydration re-resolves it from the database. They are therefore dropped
-again on the way back (`toStrictRestoreDocument`), and the server refuses a
-restore document that carries one: every `customAsset` entity it receives —
-tombstones included — must be this account's own manual asset
-(`providerId: 'manual'`, `providerRef` = the entity id, `ownerId` = the
-account), which is also exactly the set the retained-identity check requires the
-document to account for. Binding: the two derivable identity fields are
-restated from the entity id at that boundary, never passed through, so a stale
-or third-party-written value cannot block the account's only non-destructive
-exit.
-
-The account itself gains `users.privacy_mode` enum `normal | paranoid`
-(default `normal`) plus the media-set record (§5) — account metadata, present
-even in Drive-only mode (knowing THAT a user is paranoid is not portfolio
-data; it is required to enforce §8).
-
-## 2. Blob format + versioning
-
-One file format for every medium, `packages/contracts/src/vault.ts` is its
-single source of truth (zod schemas; client-validated — the server never
-parses past the header it needs for CAS):
-
-**Envelope bytes:** ASCII magic `BTVAULT1` · 4-byte big-endian header length ·
-UTF-8 JSON header · ciphertext.
-
-**Header (cleartext, and it must stay free of portfolio information — it
-carries only counters, ids and crypto parameters):**
+**Envelope v2 header** (cleartext; counters, ids and crypto parameters only —
+never portfolio information):
 
 ```
-{
-  formatVersion: 1,              // envelope layout
-  cipher: 'A256GCM',
-  iv: <base64, 96-bit, fresh CSPRNG per write>,
-  keyId: <uuid of the active VK>,
-  wrappedKeys: [{ keyId, kdf: { alg: 'argon2id', m: 65536, t: 3, p: 1,
-                  salt }, wrappedVk }],
-  vaultVersion: <int, monotonic — the CAS token>,
-  schemaVersion: 1,              // payload document version
-  deviceId: <uuid of the writing device>,
-  writeId: <uuid per write>,
-  writtenAt: <ISO instant>
-}
+{ formatVersion: 2, cipher: 'A256GCM', iv, keyId,
+  keySlots: [{ keyId, slot: 'seed-v1', wrappedKc }],
+  vaultId, docId, docKind: 'header' | 'common' | 'portfolio',
+  accountBinding: <base64url sha256("bettertrack-vault-owner-v1:" + accountId)>,
+  docVersion: <int, monotonic — the per-doc CAS token>,
+  schemaVersion, deviceId, writeId, writtenAt }
 ```
 
-**Payload (AES-256-GCM ciphertext; the full header bytes are bound as GCM
-additional authenticated data**, so any header tampering — including edits to
-`vaultVersion` or the wrapped keys — fails decryption): deflate-compressed
-JSON of the **vault document** — every `vault`-classified entity, each with
-its uuidv7 `id`, a per-entity monotonic `rev` (bumped on every edit), an
-`editedAt` instant + editing `deviceId`, and tombstones (`deletedAt`) kept
-≥ 180 days so §4 merges stay correct across long-offline devices. A small
-`mergeLog` (last 20 merge records) rides in the payload for diagnostics.
-
-**Versioning rules (binding):** `formatVersion` governs the envelope,
-`schemaVersion` the document. Clients migrate older documents forward with
-pure `v(n)→v(n+1)` functions on load and write back at the current version. A
-client that meets a NEWER version than it knows goes **read-only with an
-"update the app" notice — never destructive, never "best effort" parsing**.
-Size: ciphertext capped at 16 MiB (server-enforced on its medium,
-env-tunable) — personal-finance scale (the mirrorchain sizing argument) keeps
-real vaults far below this.
-
-**Crypto choices, binding:** WebCrypto AES-256-GCM for content (native on
-every target platform incl. iOS PWA); Argon2id via WASM for the KEK (m = 64
-MiB, t = 3, p = 1 — the server's own argon2id cost family); VK wrap =
-AES-256-GCM under the KEK with its own IV. No hand-rolled primitives
-anywhere; test vectors + tamper tests are part of PD4 (§14).
-
-## 3. Key derivation, custody, recovery
-
-- **VK** — 256-bit CSPRNG, generated client-side at enable. It encrypts every
-  blob and **never leaves a device unwrapped**: not to the BetterTrack server,
-  not to Drive, not into exports, not into logs.
-- **Vault passphrase** — a NEW secret, deliberately distinct from the login
-  password: the login password transits to the server for argon2id
-  verification, so it can never double as client-side key material. The enable
-  flow says this in one plain sentence and applies the normal password-policy
-  strength check locally. KEK = Argon2id(passphrase, salt); the KEK wraps the
-  VK; `wrappedKeys` lives in the envelope header — **any medium's blob + the
-  passphrase is a complete recovery path on a fresh device** (pull → unwrap →
-  decrypt). **COD 2026-07-24:** the exact complete serialized header remains
-  AES-GCM AAD, so a passphrase change derives a fresh KEK/salt, re-wraps the
-  same VK, and re-encrypts the unchanged document under that VK with a fresh
-  content IV. Ciphertext identity is intentionally dropped; document identity
-  is preserved. VK rotation (post-compromise) = full re-encrypt under a new VK +
-  `keyId`, offered in settings but never forced.
-- **Recovery kit** — at enable the client generates and **forces the download**
-  of `bettertrack-recovery-kit.txt`: the raw VK (base64), the `keyId`, the
-  format version, and plain instructions. Kit + any blob = recovery without
-  the passphrase. The wizard requires the explicit "I have stored my recovery
-  kit safely" confirmation before proceeding.
-- **Device custody** — after unlock the VK is cached per device (IndexedDB,
-  non-extractable `CryptoKey` where the platform allows) behind an optional
-  "keep unlocked on this device". "Lock vault" is always one click; auto-lock
-  follows the existing PIN idle-lock minutes when the user has PIN lock on
-  (one mental model, no second timer setting — anti-bloat).
-- **Recovery semantics — recorded verbatim and binding: lost key ⇒ lost data,
-  by design.** If the passphrase, the recovery kit and every unlocked device
-  are all gone, the vault is cryptographically unrecoverable. BetterTrack
-  stores no escrow, has no reset path, and support cannot help. The only
-  server-side "recovery" is destruction: a **"start fresh"** flow wipes the
-  blob (and the user re-enters data, staying paranoid, or disables into an
-  empty normal account). The enable flow makes the user acknowledge exactly
-  this (§13) at the friction ladder's strong rung.
-
-## 4. Sync media + the CAS/merge protocol
-
-**Media set** ⊆ {`server`, `drive`}, non-empty, user-switchable (§5). The
-§13.5 wording maps to: server = {server}, Drive-only = {drive}, both =
-{server, drive}. Every device additionally keeps a **local encrypted cache**
-of the last blob (IndexedDB/OPFS) for offline reads and writes — a cache, not
-a medium (it syncs, it is not chosen).
-
-**Both media are blind blob stores with compare-and-swap:**
-
-- **Server medium:** `GET /api/v1/vault` (ciphertext + `ETag: <vaultVersion>`)
-  and `PUT /api/v1/vault` with `If-Match: <vaultVersion>` → `412` on mismatch,
-  atomically under the vault row's lock. The server reads nothing but the
-  header's `vaultVersion` (+ size cap); ciphertext is a bytea it can never
-  interpret. The server keeps a **bounded ciphertext history** (last 10
-  versions or 30 days, env-tunable) with a restore picker in the client — the
-  corruption/bad-write safety net. Vault PUTs ride a modest dedicated rate
-  limit (env-tunable) like every other write family.
-- **Drive medium (§6):** one file in `appDataFolder` with
-  `appProperties: { vaultVersion, formatVersion }`. Drive offers no true CAS;
-  the client approximates it (read `appProperties` + `headRevisionId`, then
-  update) and accepts the small TOCTOU window because Drive-mode writers are
-  exclusively the same user's own devices and §4's merge repairs any race.
-  Drive's native revisions are the history net on that medium.
-
-**Write path:** local commit (optimistic UI) → encrypt full vault (version =
-last seen + 1) → CAS-push to the **primary** medium → replicate the identical
-bytes to the secondary. **Primary = server whenever the media set contains
-it** (it has real CAS), else Drive. On startup/reconnect the client reads all
-media + the local cache, takes the highest `vaultVersion`, and merges if it
-finds divergence.
-
-**Conflict rule (binding — the multi-device case, e.g. phone edited offline
-while the desktop kept writing):** on CAS failure or a divergent pull, merge
-at **entity granularity, never field granularity** (a transaction is atomic;
-a field merge could mint a financial row nobody ever reviewed — the
-mirrorchain §3 rationale verbatim):
-
-1. Per entity `id`: higher `rev` wins; equal `rev` → later `editedAt` wins;
-   still equal → lexicographically higher writing `deviceId` (total
-   determinism — two clients merging the same pair always agree).
-2. Tombstone vs concurrent edit: **the edit wins** — a resurrected row the
-   user can re-delete beats silently vanished money data.
-3. Merged `vaultVersion` = max(parents) + 1; the merge is recorded in the
-   payload `mergeLog`; the merged blob CAS-pushes normally (a lost race just
-   re-merges — the rules are commutative and idempotent by construction).
-
-Whole-blob fallback (unreadable/corrupt candidate): the readable blob with
-the highest version wins; the corrupt bytes are kept locally for the restore
-picker, never silently discarded.
-
-### 4.1 Native-client bearer sync exception (owner mandate 2026-08-04)
-
-Everything above §4.1 — media, CAS, the binding conflict rule — is the storage
-protocol and applies identically to every writer. This subsection adds only who
-may authenticate to it.
-
-The native mobile client may carry the single combined OAuth/API-key scope
-**`vault:sync`**. Sync is inherently read-write, so this is deliberately not a
-synthetic read/write pair. Its bearer surface is exact and default-closed:
-
-- `GET /api/v1/vault` and `PUT /api/v1/vault` (the existing ETag/
-  `If-Match`/`If-None-Match` CAS contract);
-- `GET /api/v1/vault/media` (state metadata only, never blob bytes); and
-- `GET /api/v1/vault/history` plus
-  `GET /api/v1/vault/history/:version` for conflict/restore UX.
-
-The exception changes authentication reachability, not the storage protocol.
-Bearer PUT uses the same per-user vault limiter and byte cap as the browser
-session path. The server still reads only the cleartext `BTVAULT1` header needed
-to validate the envelope/version; ciphertext remains opaque and is returned
-byte-identically.
-
-**Binding — the retirement proof verifier is not part of sync.** The second
-cleartext header a session PUT may carry
-(`X-BetterTrack-Vault-Retirement-Proof-Public-Key`, §5/§7's immutable purge
-verifier) is **ignored on the bearer path**: a bearer write always resolves it to
-`null`, which neither pins a key when it creates the row nor enrols one on a
-keyless vault's next CAS write. Otherwise a `vault:sync` token — including one
-granted on an account that has not enabled paranoid mode, where a create is not
-short-circuited by `medium_inactive` — could pin a generated verifier the account
-owner does not hold and can never override, locking the owning browser out of
-enrolment (`proof_key_conflict`) and out of retired-server purge. Enrolling the
-verifier stays an owning-browser-session act on a vault a bearer created too.
-
-Everything that changes privacy mode or storage disposition remains owning-
-browser-session-only even when a token carries `vault:sync`: all
-`/account/paranoid/*` endpoints (enable, disable, fork provenance and normal-
-revision capture), `PATCH /vault/media`, server-candidate staging/read-back, and
-retired-server purge/challenge. Native clients need the encrypted bytes to keep
-a paranoid account usable; they do not need authority to perform destructive or
-recovery-media transitions. The paranoid bearer kill rail therefore explicitly
-keeps `vault:sync` while continuing to refuse portfolio/tax/import scopes with
-`PARANOID_MODE`.
-
-## 5. Media-set switching + blob migration
-
-Client-driven, **migrate-then-drop, verified before destructive** — binding
-sequence for every switch:
-
-1. **Add a medium:** write the current blob there → **verified round trip**
-   (read back, decrypt, compare `writeId`/hash) → `PATCH
-/api/v1/account/paranoid/media` records the new set. Only then is the
-   medium live.
-2. **Remove a medium:** allowed only while at least one OTHER medium holds a
-   verified-fresh copy (same round-trip check, re-run now). Removing `server`
-   ⇒ the PATCH transaction atomically removes the blob + bounded history from
-   the **active server medium** and moves those ciphertext versions into the
-   **retired recovery set**. Drive-only begins immediately — active server blob
-   and history reads are empty — while the recoverable ciphertext stays behind
-   a separately authenticated signed purge gate for its seven-day minimum
-   retention window. Only that later gate (matching the retired version, a
-   fresh Drive readback, the server challenge, and client-held Ed25519 proof)
-   destroys the retired bytes; a media PATCH or client attestation alone never
-   does. Removing `drive` ⇒ the client best-effort deletes the Drive file (and
-   tells the user if it could not; the leftover is their own ciphertext in
-   their own Drive).
-3. The last medium can never be removed (media set non-empty; the server
-   validates the PATCH, the UI never offers it).
-
-The §13.5 "media switching migrates the blob correctly" test follows the
-shipped #896 sequence literally: enable on Drive → add server through an
-inactive candidate (round trip verified) → force a Drive verification failure
-and prove the active server source is retained → retry removal → probe zero
-active/history server bytes plus the recoverable retired set → app fully
-functional. Total server ciphertext reaches zero only through the separate
-retention-qualified signed purge gate.
-
-## 6. The Google Drive medium (end-user OAuth)
-
-- **Scope: `https://www.googleapis.com/auth/drive.appdata` ONLY** — the
-  hidden per-app data folder. BetterTrack can never see or touch the user's
-  real Drive files; the vault file is invisible clutter-free storage that
-  Google surfaces under "manage app data". Least privilege is binding; no
-  broader Drive scope is ever requested.
-- **The OAuth flow is entirely client-side** (Google Identity Services token
-  client, SPA client id, env-provided like the existing Google-login client
-  id): access tokens are minted in the browser, live only in memory/session,
-  and are **never sent to, stored by, or refreshable by the BetterTrack
-  server. There is no server-side Drive integration at all — no tokens, no
-  file ids, no proxy endpoints.** Consequence, and the binding Drive-only
-  guarantee: the server holds zero cleartext portfolio rows and zero active
-  server-medium ciphertext, and has zero _capability_ to fetch the Drive copy.
-  A separately gated retired recovery set can remain as described in §5; it is
-  opaque ciphertext that only the client-held key can decrypt. Per-user consent
-  is end-user OAuth (issue-confirmed: not owner setup); the only owner-provided
-  item is the SPA client id env var.
-- **Connections hub (V5-P0c):** the Drive connection renders as a Connections
-  card (status, connect, disconnect) — state is client-attested metadata (the
-  server only knows `drive ∈ mediaSet`). Disconnect = remove the medium per
-  §5.
-- **Token lifetime honesty:** GIS access tokens live ~1 h and re-minting can
-  require a user gesture. Sync therefore runs during active sessions; offline
-  or token-expired writes land in the local cache and push on the next
-  unlock/gesture. The sync chip (§13) surfaces "sign in to Google to sync"
-  when Drive is unreachable — never a silent stall.
-- The autonomy consequence: because the Drive data home runs fully
-  client-side, a Drive-only paranoid client already works with the
-  BetterTrack server doing nothing but auth + market data — the §11 seams are
-  real from day one.
-
-## 7. Enable / disable transitions
-
-**Enable (existing account) — the wizard (§13), then one server call:**
-
-1. Client-side: review the §8 kill list; choose media; create the passphrase;
-   download the recovery kit; give the §3 lost-key acknowledgment.
-2. Client reads the **capture revision token** (below), pulls the account's
-   full portfolio dataset through the existing read APIs, re-reads the token
-   and accepts the pair only if it did not move (below); then encrypts, writes
-   the blob to every chosen medium, and runs the §5 verified round trip on
-   each.
-3. `POST /api/v1/account/paranoid/enable` — body
-   `{ mediaSet, vaultVersion, normalDataRevision }`; the
-   server, in one transaction: re-verifies preconditions, flips
-   `privacy_mode`, runs the **purge sweep** (hard-deletes every
-   `vault`-classified row keyed to the user — mechanically the V4-P2c
-   deletion-sweep pattern, scoped to the §1 classification), revokes every
-   share/audience/follow of the user's items (portfolio, watchlist,
-   conglomerate, idea), deletes the user's authored comments/reactions,
-   disables the public profile, and activates §8 enforcement. From the next
-   request the account is paranoid.
-
-**Preconditions (server-checked, refused with a clear error):** no active
-mirrorchain membership (leave-with-fork first — the mirrorchain note §14 owns
-the other side of this boundary); no in-flight import batch or export job.
-**Ordering guarantee:** the purge runs only after the media writes are
-verified — for a media set containing `server` the server verifies its own
-blob row exists at `vaultVersion`; for Drive-only the client's attestation is
-accepted (it is the user's own data, their own attestation, seconds after
-they wrote it — and the wizard's round trip already proved the read path).
-Enable is one-way destructive on the server by design; the vault holds
-everything from step 2.
-
-**The capture↔commit CAS (PROJECTPLAN.md §16, 2026-08-01).** Step 2 is
-entirely lock-free and takes seconds to minutes, while the account lock does
-not exist until step 3 — so a write landing in between (a second session, or
-the daily standing-order worker booking a period) is absent from the encrypted
-document and is nonetheless hard-deleted by the purge, and disable restores
-from the document ALONE. The capture therefore opens with
-`GET /api/v1/account/paranoid/normal-revision`, **before its first row read**:
-an opaque content digest over exactly the restore-classified §1 tables of this
-account, derived from the same scope the purge and the zero-cleartext probe
-use. Enable re-derives it inside the locked transaction, after the
-preconditions and before the first destructive statement, and refuses the whole
-transition with `409 NORMAL_DATA_CHANGED` — nothing deleted — when it
-disagrees. The field is required, not optional: an absent token would silently
-skip the guard on the one transition that cannot be undone. It is skipped only
-on the idempotent-retry branch of §7's "never destroys gated state" rule, where
-the vault rows are already gone and the original token could never match again.
-
-**The capture validates before it accepts — because its own reads write.**
-Reading the token first is necessary but not sufficient. Several of step 2's
-GETs mutate tables the token hashes: `/portfolios` materializes "Main",
-`…/cash` materializes its main source, `/expenses/categories` seeds the default
-categories, `/cash/tags` seeds the app-owned system tags, and the tax-report
-reads run the #635 self-heal, which **inserts the open years' correction cash
-movements**. The last one is not merely noisy: the ledger read happens
-concurrently with the tax-year list and strictly before the per-year reports,
-so a correction posted by those reads is missing from the document's own `cash`
-array. A single-pass capture is therefore not just revision-stale, it is
-**incomplete** — and the purge would hard-delete a money row no copy carries.
-So the capture reads the token, builds the document, re-reads the token, and
-accepts the pair only when the two agree; on a mismatch it discards the
-document whole and rebuilds once. That converges, because every write it
-provokes is one-shot (the seeds insert only into an empty table, and the
-reconciler posts nothing once the year's correction delta is zero). If the
-second pass also moves, the capture fails with its own error rather than
-shipping a document it cannot vouch for — never the newest token with an older
-document, which is exactly the "CAS passes, rows missing" outcome the token
-exists to prevent.
-
-**What step 2 must read (beyond the user-visible surfaces).** The document also
-carries the `standing_order_runs` ledger under its real row ids. That ledger —
-not an order's `last_period_key` watermark — is the authoritative exactly-once
-record: a claim is written before booking and deliberately left behind when
-booking fails, so the watermark cannot express a claimed-but-unbooked period.
-Losing such a claim across enable→disable lets the scheduler re-book a period
-that was intentionally tombstoned, i.e. book the same money twice.
-
-**New accounts:** the same wizard minus step 2's migration (empty vault) —
-the fast path; paranoid can be enabled any time from Settings → Privacy, not
-at registration (keeps registration modes untouched).
-
-**Disable (paranoid → normal):** requires an unlocked vault + explicit
-confirm. The client streams the decrypted vault to
-`POST /api/v1/account/paranoid/disable` as a **rehydration** — rows re-created
-through the normal services in dependency order (portfolios → cash sources →
-transactions → dividends → movements → standing orders → expenses →
-per-portfolio settings), with server-side tax/snapshots re-deriving through
-the normal engines (the vault's derived rows are not trusted, the engines
-are). In one account-locked database transaction the restore rows are written,
-the mode flips back, and the server blob + history are deleted; any failure
-rolls all three back together. Authoritative tax state is replayed through the
-normal engine inside that transaction without historical side effects; only
-after commit does the deterministic plan rebuild snapshots and invalidate
-derived account/portfolio/expense/order/tax consumers. The client then wipes
-its Drive file (best-effort) + local caches. Other devices notice the mode flip
-on next sync and drop their vaults. Disable is idempotent-resumable: a crashed
-rehydration can re-run (rows are re-created under fresh ids only after a full
-wipe of the partial batch — no half-hydrated ghosts).
-
-**Disable payload ceiling.** Disable is the only exit, so its request-body bound
-is sized from the PLAINTEXT it carries, not from `BT_VAULT_MAX_BYTES`: the
-envelope is deflate-compressed before encryption, so the restore JSON is always
-at least as large as the stored blob and usually several-fold larger. The route
-allows `BT_VAULT_MAX_BYTES × 8 + 64 KiB`
-(`PARANOID_RESTORE_PLAINTEXT_FACTOR`) — with the 16 MiB default, a practical
-plaintext ceiling of ~128 MiB. A document that both fits the storage bound
-compressed and exceeds that expanded would be un-disable-able, which is why the
-factor is deliberately generous rather than 1:1.
-
-Enable is likewise one account-locked database transaction: media and
-preconditions are re-read under the lock before sharing is revoked, every
-vault-classified row is purged, and the mode is committed. Broad inbound friend
-audiences use mode-dependent exclusion rows during revocation so an implicit
-`all_friends`/friend-side `public_link` grant cannot silently reappear after
-disable; a later deliberate owner audience edit clears that exclusion.
-
-**The idempotent enable retry never destroys gated state.** A repeat call whose
-media evidence matches the account's committed state is acknowledged with
-`idempotent: true` and re-runs only operations that are already true (the
-cleartext purge, revocation, derived-state retirement). It specifically does NOT
-clear `paranoid_vault_server_candidates`, `paranoid_vault_retired` or
-`paranoid_vault_retirements`, which a fresh `normal → paranoid` transition does
-clear because they cannot exist yet. On an established account those rows are
-the §5 retirement recovery set, destroyable only through the signed purge gate
-(matching retired version + Ed25519 retirement proof + the minimum retention
-window); a replayed enable satisfies none of those checks, and an account that
-retired the server medium passes the retry's "no active server ciphertext"
-test precisely because its recovery ciphertext lives outside the active
-medium.
-
-Revocation of INBOUND shares is permanent and one-directional: the account's
-membership rows in other users' audiences and friend groups are deleted, and
-disable restores none of them — each owner re-adds the account deliberately.
-Keeping a restore list would mean holding the very social graph the mode exists
-to remove, server-side, for the whole paranoid period. Logged as a plan
-deviation in PROJECTPLAN.md §16 (2026-07-30), owner ack pending.
-
-## 7.1 Severed-fork MIRRORCHAIN provenance (encrypted, versioned)
-
-**The problem.** Leaving a chain with a fork (mirrorchain design §6) keeps rows the
-chain force-applied to that copy. Replica apply deliberately waives the ordinary
-solvency gate (`force: true`), because copy-local tax movements skew a source, so
-a reachable fork ledger can carry a **negative prefix** no normal write path would
-accept. Rehydration must preserve exactly those rows — and only those.
-
-The identity that proves a row came from the chain lives in `mirror_rows`
-(logical `mirror_id` ↔ copy-local `local_id`), and that table dies with the copy:
-enable deletes the portfolio, so the map cascades away. The append-only oplog
-keeps only the LOGICAL id, while the encrypted document keeps only the LOCAL id.
-`local_id = mirror_id` holds at the origin _until_ a sanctioned financial
-correction (delete + re-create + repoint, mirrorchain §2) replaces the local row —
-after that the equality is false, and inferring the association from row values is
-ambiguous. So the map itself must be captured while it still exists.
-
-**Representation.** `vaultMirrorProvenanceSchema` (`packages/contracts/src/vault.ts`):
-`{ chainId, membershipId, kind, mirrorId, portfolioId, localId }`, carried as the
-additive `mirrorProvenance` array on vault document v1/v2 and on the strict restore
-document. `membershipId` is the caller's OWN ended `mirror_chain_members` row:
-**re-joining is a normal flow**, so one chain can hold two retained forks, each
-with its own copy of the same logical entity and its own (higher) watermark. The
-tombstone identity is the minimum needed to prove an older fork against the
-membership that actually kept it — and to keep the two copies' entries from
-colliding as a "duplicate logical identity". It is not a `mirror_rows` column, so
-it is declared in `VAULT_MIRROR_PROVENANCE_PROOF_FIELDS` and the completeness gate
-subtracts it before comparing columns. It is `.default([])`, so a document written before this section parses
-unchanged and means "no severed fork" — no already-written `schemaVersion` is
-reinterpreted, and an unsupported (higher) version still fails closed. The two
-`mirror_rows` attribution columns are deliberately dropped
-(`VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS`): they are a co-member's identity, the
-vault must not carry it, and restore-time validation never needs it. That is also
-why `mirror_rows` is NOT vault-classified and is never re-inserted on disable —
-restoring it would require exactly the identity we refuse to carry, and the fork
-is un-synced by definition.
-
-**Capture** — `GET /account/paranoid/fork-provenance`: the caller's own
-`mirror_rows`, joined to the ENDED membership that owns each copy
-(`(chain_id, portfolio_id)` selects exactly one membership per account, because a
-re-join mints a fresh copy rather than reviving the fork's). Active memberships
-never match — they block enable anyway and would be live chain data — and no other
-user's row is reachable, because the read is scoped by portfolio ownership.
-
-The client calls it from `captureForkProvenanceIntoVault`
-(`apps/web/src/user/vault/mirrorProvenance.ts`), and **every unlocked session runs
-that fold** (`media/runtime.ts`, beside the retirement-proof material). That is
-what guarantees the map is inside the ciphertext BEFORE `enable()` purges
-`mirror_rows`, without the wizard having to remember a step: the fold is a
-union-and-prune, so it is idempotent and a second session cannot duplicate or drop
-an identity. Once paranoid mode is on, the read is empty and the fold no-ops (no
-vault version is spent). A capture read that cannot be REACHED is skipped and
-retried on the next unlock — an unreachable API must not block unlocking an
-already-encrypted vault (Drive-only can be readable while the API is not) — but a
-read that succeeded and produced new provenance must land durably, or unlock
-fails: a fork whose identities never reached the ciphertext could not be restored.
-
-**Merge / migration.** Provenance is content-addressed, not entity-atomic: the
-CAS merge takes the deterministic UNION keyed by `(kind, membershipId, mirrorId)`,
-and dominance requires the winner to already contain every entry of the loser, so a
-merge can never silently drop it. Two entries claiming one logical identity with
-different `localId`s, or one `localId` under two logical identities, are a
-malformed document (fail closed) rather than a resolvable conflict.
-
-**Pruning is part of the document lifecycle, not a one-off step.** An entry may
-only name a row the document still keeps live; the server rejects one that names no
-restored row, which would otherwise leave the account unable to disable paranoid
-mode at all. So `pruneForkProvenance` runs in three places: inside the CAS merge
-(against the MERGED entities, so a row one side deleted takes its provenance with
-it instead of the union resurrecting it), in `encryptCandidate` — the single funnel
-every committed or published document passes through, so a plain local deletion
-prunes on the very next write — and in the disable carriage. Dominance prunes BOTH
-sides before comparing, so a stale entry the loser still carries cannot force a
-divergent merge on every reconcile. An ABSENT `mirrorProvenance` key stays absent
-throughout (absent and `[]` mean the same thing), so re-encrypting a fork-free
-vault keeps emitting byte-identical plaintext.
-
-**Purge.** Enable purges the copy; `mirror_rows` cascades with the portfolio and
-the account keeps ZERO cleartext alias rows — including Drive-only, which gains no
-new server-side table, fingerprint, or portfolio-derived metadata. What survives
-is chain-level and already retained by mirrorchain §2/§6: the append-only oplog
-and the membership tombstone (with its `applied_seq` watermark). Those are the
-proof surface; the user's own map is the encrypted half.
-
-**Disable-time validation** (all of it BEFORE the mutation transaction opens):
-
-1. Each entry resolves to a live document entity of the mapped kind and to that
-   entity's portfolio, and the entries are unique by logical identity AND by local
-   id — a duplicate is rejected, never merged.
-2. Entries are grouped by `membershipId`, and that membership must be one the
-   caller provably holds and that has ENDED — an unknown membership, another
-   account's, or a still-active one is rejected — and its `chain_id` must equal the
-   entry's. One membership names exactly one copy: a second `portfolioId` under one
-   membership, or two memberships claiming one copy, is rejected.
-3. The entity's authoritative op is the highest-seq op ≤ **that membership's**
-   `applied_seq` (never a later copy's). Absent (no op for the logical id),
-   beyond-watermark, wrong-kind (an op class that cannot produce that row kind) and
-   stale (the authoritative op is a delete) are all rejected. A `cash.transfer` op
-   speaks for BOTH minted leg ids, one of which is not its own `mirror_id` column.
-4. **The restored row must be the full-state result of that op** (mirrorchain §3:
-   the highest-seq op ≤ the watermark IS the entity's state), compared at the
-   persisted column's own scale so `2.9` and `2.90000000` agree:
-   - an external cash movement — append-only on every copy, so its state is the
-     op's for good — binds `kind`, source, **`amountEur` through the write path's
-     own `floorCents`**, `executedAt`, the transfer counterpart source, and the
-     absence of a transaction/dividend/tax link. A genuine withdrawal therefore
-     cannot authenticate a larger one;
-   - a dividend (no in-place update surface exists) binds asset, gross amount,
-     `executedAt` and cash source;
-   - a transaction that carries a linked movement binds side, quantity, price, fee,
-     `executedAt`, the uncovered pair and (from its create op) the asset. That is
-     sound precisely because such a row refuses an in-place financial edit
-     (`TRANSACTION_CASH_LINKED` / `TRANSACTION_TAXED`) and the sanctioned correction
-     re-creates it under a NEW local id — so a row whose financials diverged can no
-     longer be the row the entry names. A chain transaction with NO linked movement
-     needs no waiver and stays locally editable, so nothing is bound and nothing is
-     authenticated for it. Notes stay unbound (editable, and they cannot change a
-     ledger outcome), as do a `cash_source`'s own columns (rename/archive/restore
-     remain available locally after the fork).
-   - **Derived legs keep the frozen-amount rule.** A buy/sell cash leg's amount and
-     a tax movement's amount are copy-derived, not op fields: the leg is the write
-     path's `floorCents` of the (now op-bound) cost/proceeds through that moment's
-     FX, and a tax movement is this copy's own regime output. Re-deriving them would
-     require an FX history the server no longer has, so `validateGraph` binds each to
-     the row it belongs to (frozen tax amount, dividend gross, transfer pairing)
-     exactly as it does outside a fork.
-5. **Cash intent is bound to the op, never to a client tag.** A `buy` leg requires
-   a buy op with `payFromCash: true`; a `sell_proceeds` leg requires a sell op with
-   `addProceedsToCash: true`; the movement's source must equal the local source the
-   op's `cashSourceMirrorId` resolves to (a `cash_source` entry of the SAME copy, or
-   the copy's Main when null); and the row's write-path tag must be
-   `sync:mirrorchain` or the entity's create-op `originSource` (a correction keeps
-   the corrected row's tag). Errors name the exact field and value.
-6. Only then is the solvency waiver granted, and it follows the authenticated
-   MOVEMENTS — never their source. Replica apply force-applied exactly the chain's
-   own writes, so an OUTFLOW may leave its source negative only when it is one of
-   them: its own proven `cash_movement`, or a leg of a proven transaction/dividend.
-   An inflow is never gated by any write path, so it may leave an already-negative
-   source negative — that is the reachable recovery prefix — while every
-   unauthenticated outflow stays exact, including one that follows a genuine chain
-   movement on the same source (the normal `withdrawCash` rule refuses it whatever
-   the prefix already is). The former `source === 'sync:mirrorchain'` test is gone:
-   it was a client-authored string that waived overdraw for a whole source on
-   request.
-
-Reading the chain tables outside the restore transaction is sound: the oplog is
-append-only, ops ≤ the watermark are immutable, and an ended membership cannot
-reactivate without leaving paranoid mode first (re-joining is a normal-mode write).
-
-**Successful rehydration and cleanup.** The provenance is proof material only: no
-row is derived from it, `mirror_rows` is not re-created, and the restored fork
-stays un-synced exactly as it was before enable. The document — provenance
-included — is discarded with the vault once disable commits; the decrypted disable
-request lives only for the already-approved request lifetime. The strict payload it
-travels in is produced by `strictVaultDocumentForDisable`
-(`apps/web/src/user/vault/paranoidDisable.ts`), which is also where the last prune
-runs.
-
-## 8. The feature-kill list (exact, binding)
-
-Everything that depends on the server reading the portfolio is **absent by
-design** — enforced server-side (a single guard driven by one registry,
-mounted on route groups + the money-path services, answering
-`403 PARANOID_MODE`) and hidden client-side (surfaces absent, not greyed
-walls — anti-bloat). The matrix test iterates the registry × route table.
-
-Killed for paranoid accounts:
-
-1. **Public profile** — the page serves the existing no-leak not-found state;
-   the setting is forced off at enable.
-2. **All outbound sharing** — portfolio/watchlist/conglomerate/idea shares,
-   share links, audiences (incl. friend groups as audiences of their items),
-   "my shared items". Existing shares are revoked at enable (§7).
-3. **All inbound sharing** — shares/follows targeting a paranoid account are
-   refused server-side and the shared-with-me surfaces are absent. The social
-   sharing surfaces are gone in BOTH directions: one crisp promise, one crisp
-   matrix test. (Friendships and chat REMAIN — they carry no portfolio data
-   and killing them would gut usability for nothing; §16 records this as the
-   deliberate reading of "social/sharing surfaces".)
-4. **Comments + reactions** (they exist only on shared items) — cannot author;
-   previously authored ones are deleted at enable, one-way.
-5. **Mirrorchain** — cannot create, join, or be invited (mirrorchain note §14
-   records the same constraint from the other side); enable requires zero
-   active memberships (§7).
-6. **Every server-computed portfolio read** — summary/series/snapshot
-   endpoints, analytics deep-dive, Live-Mode portfolio frames, projected
-   portfolio dividend income, the portfolio news digest (asset-level news on
-   asset pages stays), backtest **of a real portfolio** (conglomerate/
-   hypothetical-basket backtests stay — public prices + user weights, no
-   portfolio read), AI insights (P12 reads the portfolio; the NL conglomerate
-   builder stays), the server tax engine + server tax report export. Client
-   equivalents own all of it (§10).
-7. **Broker/bank CSV imports** (V4-P8 and V5-P9's import arc) — server-side
-   parsing of money data; absent. Manual entry stays; a client-side import
-   engine is a v6 candidate (§16 non-goals), not silently promised.
-8. **Portfolio-scoped API access** — bearer/OAuth scopes touching portfolio,
-   tax or import data refuse with `PARANOID_MODE`; other scopes work.
-   The combined `vault:sync` scope is the deliberate exception described in
-   §4.1: it moves only opaque ciphertext and exposes no portfolio cleartext.
-   Webhooks (V5-P10) never fire portfolio-content events for these accounts
-   (there are none server-side to fire).
-9. **Standing-order server execution** — definitions move into the vault; the
-   client materializes due rows on unlock/app-open, catch-up style, with
-   **deterministic ids** (UUIDv5-style hash of `(orderId, dueDate)`) so two
-   devices catching up independently produce identical rows and §4's merge
-   dedupes them. `standing-order` source tags render as today.
-10. **Server portfolio jobs & offsite backup of portfolio rows** — snapshot
-    jobs, dividend/earnings scans keyed to holdings, etc. skip paranoid
-    accounts (their input tables are empty by §7); the V4 offsite backup
-    carries only ciphertext for them.
-11. **The expense-tracking SURFACES (V5-P9) — absent for now, and this is a
-    recorded deviation, not a design intent.** Every `/expenses/*` route is
-    already refused under the `portfolioServer` capability (the enforcement
-    registry, PD3b), so the pages that read them are hidden rather than left to
-    401 into an empty shell: `/portfolio/cash-flow` and its transactions,
-    budgets, categories and rules tabs are killed paths for a paranoid account.
-    The DATA is not killed — §1 classifies the expense tables as `vault` and
-    the enable migration carries every category, transaction, rule and budget
-    into the blob, so the whole area returns intact on disable. What is missing
-    is the client-side re-derivation of those five pages against the vault
-    store; it is v6 follow-up work and is logged in PROJECTPLAN §16
-    (2026-07-31) alongside the home board (item 13) and the contribution
-    column (item 12).
-12. **Series that need per-asset history — answered with the portfolio's own
-    NET-WORTH curve, and labelled as such.** The client engine derives one
-    value series per portfolio (holdings + cash, `netWorthSeries`); it has no
-    equivalent of the server's `getAssetValueSeries`, which is what the
-    analytics endpoint sums over the _visible_ assets (holdings only). Two
-    surfaces read that quantity, and each answers with the client curve rather
-    than with a relabelled approximation of the server's:
-    - **Analytics** — the primary curve and its stats are the net-worth series.
-      The per-asset/group visibility filters are NOT offered here, so the
-      difference cannot show up as a filter that silently does nothing; the
-      period-contribution column is dropped for the same reason (item 11's
-      §16 row).
-    - **Forecast** — the prefilled "historical average return" samples the same
-      curve, so idle cash damps it relative to a normal account's figure. It is
-      an editable starting point, and the projection's starting value is a
-      net-worth figure too, so the two agree with each other.
-      Normal accounts are untouched by both: they keep reading
-      `analytics/…/series`, unchanged.
-13. **The Home widget board — replaced by the portfolio page, and this is a
-    recorded deviation too.** Every widget under
-    `apps/web/src/user/home/widgets/` reads `portfolioApi` directly instead of
-    the `PortfolioStore` seam (§10), so a paranoid board would mix server reads
-    into an encrypted account. `/` therefore renders `<PortfolioPage />` while the mode is
-    paranoid. The board's saved configuration is not touched — it lives in
-    `localStorage`, never in the vault or on the server — so it comes back
-    exactly as it was on disable. Porting the widgets to the store seam is the
-    v6 follow-up; it is logged in PROJECTPLAN §16 (2026-07-31) with items 11
-    and 12.
-
-Kept, unchanged (the "fully functional" half): the full auth stack (password,
-2FA, passkeys, PIN, sessions, admin-independent), friendships + chat +
-profile icons, price alerts (§9) + the whole notification stack (matrix,
-digest, quiet hours), watchlists (private), conglomerates/ideas + hypothetical
-backtests (private), asset search/detail + asset-level market intel,
-calculators (client-side already), Forecast (client-side already —
-`apps/web/src/user/forecast/` is the precedent), discreet mode (composes:
-discreet hides amounts the client just computed), i18n, announcements,
-account export + deletion (§12).
-
-**Kept ≠ reachable while LOCKED.** The unlock gate replaces the whole
-authenticated subtree — exactly like the PIN gate it is modelled on — so every
-kept surface above is reachable only _after_ the vault opens on that device.
-That is deliberate (a gate that let arbitrary routes through would have to
-reason about which of them can touch the store) and it costs one real
-affordance: **`/oauth/authorize`**. A paranoid account with a locked vault must
-unlock before it can grant an app even a scope §8 keeps, such as
-`market:read`; once mounted, the consent page's own `portfolioScopeBlocked`
-refusal still applies to the portfolio-scoped half. The single exception is
-**`/account/delete`**, served directly from the locked branch (§12 names it
-kept, it is the stable public URL the store listing points at, and it reads no
-money data), so the gate is never a dead end. PD9 asserts both halves: consent
-behind the gate, deletion in front of it.
-
-## 9. Server-side price alerts with zero portfolio exposure
-
-Alert rules are asset-price predicates — all six §14 kinds (`price_above`,
-`price_below`, the `pct_*` movement kinds) store `(assetId, kind, threshold,
-refPrice)` and nothing else (`packages/contracts/src/alerts.ts`). That is
-public-market-data territory: **no quantities, no holdings, no portfolio
-reference**. So for paranoid accounts alert rules stay ordinary server rows,
-the evaluator and cooldown/lock machinery run untouched, and delivery rides
-the normal notification matrix — the §13.5 "alerts still fire" criterion is
-satisfied by the existing pipeline with zero paranoid-specific code.
-
-Binding forward rule: any FUTURE alert kind whose predicate reads portfolio
-state (e.g. "portfolio down X% today") is **vault-scoped and client-evaluated**
-for paranoid accounts — the server evaluator stays price-only for them.
-Honest residual, recorded: the alert list (like quote fetches, §11) reveals
-which assets the user watches — an interest signal, not portfolio content;
-accepted under the owner's "my data stays with just me" framing, which is
-about the portfolio.
-
-## 10. Client-side valuation / stats architecture
-
-**Binding decision: the pure domain layer becomes isomorphic — physically
-extracted to `packages/domain` (`@bettertrack/domain`).** `holdings.ts`,
-`cashLedger.ts`, `tax.ts`, `seriesStats.ts`, `settingsScope.ts` and their test
-suites move to the package; `apps/api/src/domain/*` become thin re-export
-shims so server imports don't churn. The web client imports the **same
-audited money math** — money math is NEVER reimplemented client-side (review-
-blocking rule). The domain layer already imports nothing but types (the
-standing architecture rule), so the extraction is mechanical, and parity
-between server and client computation holds **by construction**, not by
-maintenance.
-
-On top of it a client engine (`apps/web/src/user/vault/engine/`) derives, from
-vault entities + the `MarketDataSource` seam (§11): current holdings +
-valuation, daily value/cost/P&L series (provider daily closes + the domain
-carry-forward; the "today" point from live quotes), TWR, allocation,
-cash-source balances, and per-year tax reports (the user's tax mode/country
-live in the vault; AT/DE/custom parameter sets compute through the shared
-`tax.ts` exactly as the server would). Derived series are cached in the local
-cache keyed by `(vaultVersion, assetPriceWatermark, range)` — a vault edit
-bumps the version, so invalidation is trivial and local; there is no client
-clone of the #553 snapshot machinery (personal-finance scale, the mirrorchain
-sizing argument, makes on-device recompute cheap).
-
-The §13.5 "client computes correct stats from encrypted fixture data" test:
-decrypt a fixture blob (fixed VK) + fixture price history → engine output
-equals the server engine's output for the identical cleartext fixture,
-number for number.
-
-## 11. Autonomy-prep seams (architecture-binding beyond paranoid)
-
-Owner 2026-07-17: clients must be structured to one day run fully autonomous
-from BetterTrack servers. Three client-side interfaces are **binding
-architecture from this note on** — every v5+ client feature that touches
-portfolio data or market data goes through them (review criterion, both
-apps):
-
-1. **`PortfolioStore`** — the single read/write surface for portfolio data.
-   Implementations: `apiPortfolioStore` (normal accounts — wraps today's
-   endpoints/TanStack Query usage; introduced as a wrapper, not a rewrite of
-   every page at once: pages migrate onto the store as PD5/PD8 touch them,
-   new features start on it) and `vaultPortfolioStore` (paranoid — decrypted
-   in-memory state + the §4 sync engine).
-2. **`DataHome`** — blob persistence: `read()`, `write(envelope,
-{ ifVersion })` (CAS), `info()`. Implementations: `serverBlobDataHome`,
-   `driveDataHome`, `localDataHome` (the device cache — and the seam through
-   which a future fully-local, server-less medium arrives).
-3. **`MarketDataSource`** — `quote()`, `history()`, `search()`, `fx()`. The
-   v5 implementation is the BetterTrack API (public market data; asset-level
-   requests are an interest signal, not portfolio content — recorded,
-   accepted). A Yahoo-direct client implementation is the distant-future
-   autonomy piece: the interface is binding now, the implementation is
-   explicitly NOT built in v5 (§16 non-goals).
-
-Data home = local + market data = direct is exactly the server-less end
-state; paranoid Drive-only mode already exercises seams 1–3 with the server
-reduced to auth + quotes, which is why this arc is the right place to cut
-them.
-
-## 12. Interplay: exports, account deletion, admin
-
-- **Account export (V4-P6):** for a paranoid account the zip contains the
-  `server`-classified data as today plus — when the media set includes
-  `server` — the current **ciphertext blob** and its manifest entry; never
-  cleartext portfolio data, never key material. Separately, a **client-side
-  cleartext export** (JSON + CSV zip, built in the browser from the decrypted
-  vault, same entity shapes as the server export) hangs off the same export
-  UI — the user can always take their own data out.
-- **Account deletion (V4-P2c):** pipeline unchanged; the paranoid delta is
-  that the sweep also deletes the vault blob + history rows. When deletion
-  runs from an unlocked device the client offers to delete the Drive file
-  first; otherwise the ciphertext remains in the user's own Drive as their
-  own property (harmless by construction) — the deletion confirm says so, and
-  that app access is revocable at Google's security settings.
-- **Admin:** the user page shows the mode badge, media set, blob
-  size/version/updatedAt and history count — there are no portfolio numbers
-  to show, which IS the feature. Admin can delete the account and tune the
-  size cap/rate env knobs; admin can NOT reset the passphrase, recover or
-  wipe-and-keep-paranoid on the user's behalf (no custody — "start fresh" is
-  a user-initiated flow). Problems page: vault endpoint errors capture
-  PII-scrubbed as usual; ciphertext and headers are never logged. Usage
-  analytics count paranoid accounts in DAU/WAU/MAU and feature counters as
-  today (first-party counters carry no portfolio values).
-
-## 13. UX (the high-usability mandate, anti-bloat-compliant)
-
-- **Enable wizard** (Settings → Privacy → "Paranoid mode"): four plain-
-  language steps — (1) what changes (the §8 kill list, compact); (2) where
-  your encrypted data lives — default **server** ("encrypted on BetterTrack;
-  only you can read it" — the simplest mental model), "also keep a copy in my
-  Google Drive" as a checkbox, **Drive-only behind one "advanced" disclosure**
-  ("no active BetterTrack copy; an encrypted recovery copy stays retained until
-  I explicitly delete it after the safety window"); (3) passphrase + forced
-  recovery-kit download + the strong-rung acknowledgment: "If I lose my vault
-  passphrase and my recovery kit, my data is gone forever. BetterTrack cannot
-  recover it."; (4) migration progress → done. Three clicks on the main path;
-  no expert corner.
-- **Unlock:** a vault gate visually analogous to the PIN gate (passphrase
-  field, "keep unlocked on this device", lock action in the profile menu;
-  auto-lock per §3). After unlock the app IS the normal app — same pages,
-  same components, reading through the store seam.
-- **Sync status:** one small shield chip in the header — synced ✓ / syncing /
-  offline / needs attention (e.g. "sign in to Google to sync", restore
-  picker) with last-write time and per-medium state in its popover. That chip
-  is the entire day-to-day paranoid surface.
-- **Killed surfaces are absent, not tombstoned** — no grey walls of disabled
-  buttons (anti-bloat); Settings → Privacy shows the compact "what's off"
-  summary for reference.
-- Mobile/PWA (P13b): identical flows; the local cache makes offline-first
-  natural. Every new user-facing string ships EN + DE keys (binding i18n
-  rule).
-
-## 14. Implementation decomposition (ordered; for the composer)
-
-Composed ONLY after the owner acks this note (the filed `awaiting-owner` gate
-issue).
-
-1. **PD1 — `@bettertrack/domain` extraction** (`diff:hard`): move the §10
-   pure modules + test suites to `packages/domain`, re-export shims in
-   `apps/api/src/domain/*`, zero behavior change; CI proves api + web both
-   consume it. (Module moves — flagged for the map regen.)
-2. **PD2 — Vault contracts + server vault store + account mode**
-   (`diff:intermediate`): `packages/contracts/src/vault.ts` (envelope header,
-   vault document v1, media set, DTOs), `paranoid_vaults` (+ bounded history)
-   schema + migration, `users.privacy_mode`, GET/PUT ETag CAS endpoints +
-   size cap + rate limit, the `PARANOID_TABLE_CLASSIFICATION` axis + its
-   completeness test.
-3. **PD3 — Enable/disable pipeline + enforcement matrix** (`diff:hard`,
-   security), delivered across one reviewed seam: **PD3a** defines the strict
-   restore document, media metadata, and transaction-bound rehydration
-   primitive; **PD3b** owns both public transition routes, the account-locked
-   purge orchestrator, the §8 registry enforcement, share/comment revocation,
-   admin fields, and export/deletion interplay (§12). The public enable route
-   does not ship without the complete disable route. Probe + kill-matrix tests
-   land with PD3b.
-4. **PD4 — Client crypto core + key custody** (`diff:max`, keystone):
-   envelope encode/decode, AES-GCM + AAD, Argon2id KDF (WASM), VK
-   wrap/unwrap + passphrase change + rotation, recovery kit, device key
-   cache, lock/unlock. Test vectors incl. tamper + rollback cases.
-5. **PD5 — Sync engine + data homes + the store seam** (`diff:max`,
-   keystone): `DataHome` + server/local adapters, CAS push/pull, the §4
-   entity merge, corruption/restore picker, `PortfolioStore` +
-   `vaultPortfolioStore` + the `apiPortfolioStore` wrapper. Merge-matrix
-   tests (offline-fork worked cases).
-6. **PD6 — Drive data home + Connections card + media switching**
-   (`diff:hard`): GIS token client, appdata adapter, §5 migrate-then-drop,
-   Drive-only PATCH semantics (active-copy retirement + signed purge gate),
-   sync-chip Drive states.
-7. **PD7 — Client valuation/stats/tax engine + client exports** (`diff:max`,
-   money): the §10 engine on the shared domain, client tax reports +
-   CSV/PDF, client cleartext export, standing-order client materialization
-   (deterministic ids). Parity fixture tests vs the server engine.
-8. **PD8 — Enable/disable UX + day-to-day surfaces** (`diff:hard`): the §13
-   wizard, unlock gate, sync chip, killed-surface sweep, Settings → Privacy,
-   EN + DE strings.
-9. **PD9 — e2e + gate** (`diff:intermediate`): the §15 scenarios as
-   Playwright specs (Drive mocked at the data-home boundary; the Drive-only
-   round trip is the headline spec), joining the V5-P14 suite. Include the §8
-   locked-reachability pair: `/oauth/authorize` sits behind the unlock gate,
-   `/account/delete` in front of it.
-
-Order: PD1 ∥ PD2 first; PD3 after PD2; PD4 → PD5 after PD2; PD6/PD7 after
-PD5; PD8 after PD5 (PD3's server enforcement can land in parallel with
-PD4–PD7); PD9 last.
-
-## 15. Done-when traceability
-
-| §13.5 "done when" criterion                                                                       | Decided by                                                  |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Design note §16-logged + owner-acked BEFORE code                                                  | Status + PROJECTPLAN §16 + owner-approved #733 brief        |
-| Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)                           | §1 (classification), §7 (purge sweep), §8 (enforcement)     |
-| Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e) | §5 (removal semantics), §6 (guarantee), §8 (kept list), §10 |
-| Media switching migrates the blob correctly (test)                                                | §5 (migrate-then-drop, verbatim sequence)                   |
-| Social/sharing surfaces are absent for the account (matrix test)                                  | §8 (kill list items 1–5 + registry-driven matrix test)      |
-| A client computes correct stats from encrypted fixture data (test)                                | §10 (shared domain + engine + the parity test)              |
-| Alerts still fire (test)                                                                          | §9 (price-only rules on the untouched pipeline)             |
-
-## 16. Constraints & non-goals
-
-- **No key escrow, ever** — no owner/admin/support recovery path exists or
-  will be added; "start fresh" (destructive) is the only server-side answer
-  to a lost key. Lost key ⇒ lost data, by design.
-- **Blob granularity is the v5 sync unit** — no per-entity server sync, no
-  server-visible oplog (that would leak structure); entity granularity exists
-  only inside the encrypted payload for §4 merges.
-- **No client-side broker/bank import in v5** (§8 item 7) — a v6 candidate,
-  not a silent promise. Native-app product work remains outside this v5 design;
-  §4.1 provides only the owner-mandated sync seam the mobile client requires.
-- **Yahoo-direct client market data is interface-only in v5** (§11); the
-  local (fully server-less) data home likewise arrives through the `DataHome`
-  seam later — v5 ships server/Drive/local-cache.
-- **Metadata honesty, recorded:** the server still sees that the account
-  exists and is paranoid, login/session activity, the media set, blob sizes/
-  versions/timestamps, alert rules and watchlists (asset-level interest), and
-  market-data request patterns. None of it is portfolio content; the owner's
-  mandate ("my data stays with just me") is about the portfolio, and this
-  note keeps every portfolio byte client-encrypted.
-- **Friendships + chat stay** (server-side, cleartext as today) — they carry
-  no portfolio data; the §8 matrix defines "social/sharing surfaces" as the
-  sharing-coupled set. Owner can veto at ack.
-- **Mirrorchain × paranoid:** mutually exclusive by design — recorded here
-  (§7 precondition, §8 item 5) and in `docs/mirrorchain-design.md` §14.
-- Vault size cap 16 MiB, server history depth 10/30 days, rate limits — all
-  env-tunable ops knobs, not product surface.
+`vaultId` + `docId` + `accountBinding` in the AAD are the anti-swap guarantee
+§8 relies on: a doc copied between vaults, accounts or Drive folders fails
+decryption even before any namespace check.
+
+**The doc set of a vault:**
+
+- **`header` doc** — vault metadata under encryption: true vault name, member
+  portfolio roster (ids + display names), keySlots echo, creation record.
+  Small, rewritten rarely.
+- **`common` doc** — account-scoped material the vault's portfolios reference:
+  the custom-asset bucket (the client's local asset table — same
+  snapshot/tombstone/strict-restore-narrowing semantics as v1 §1, including
+  the `asset_identities` claim seam), severed-fork mirrorchain provenance for
+  member portfolios (v1 §7.1 discipline, unchanged), the retirement-proof
+  Ed25519 private key, mergeLog.
+- **`portfolio` doc, one per member portfolio** — every `vault`-classified row
+  of that portfolio: transactions, dividends, cash sources + movements,
+  per-portfolio settings, tax settlement rows, standing-order definitions +
+  the `standing_order_runs` ledger (the exactly-once record — v1 §7's "what
+  step 2 must read" carries over per portfolio), import batches/rows,
+  expense rows scoped to it. Snapshots stay derived-and-purged, never carried.
+
+Per-doc granularity is what makes move-in/move-out incremental (one portfolio
+doc appears/disappears; the header roster and common doc fold), keeps size caps
+honest, and lets two devices editing two different portfolios not conflict at
+all.
+
+**Payload document rules carried verbatim from v1 §2/§4:** uuidv7 entity ids,
+per-entity monotonic `rev` + `editedAt` + writing `deviceId`, tombstones kept
+≥ 180 days, pure `v(n)→v(n+1)` schema migrations on load, NEWER-version docs go
+read-only with an "update the app" notice — never best-effort parsed. The
+per-table completeness discipline stays: every Drizzle table classifies into
+`vault` | `server` | `purge` (`PARANOID_TABLE_CLASSIFICATION`,
+`apps/api/src/services/export/manifest.ts:413`), CI fails on an unclassified
+table, and the classification now additionally names the **doc bucket**
+(portfolio-scoped → portfolio doc; account-scoped-but-vault-referenced →
+common doc). `PARANOID_PURGED_TABLE_NAMES` (`manifest.ts:674`) and the
+`purge`-reason roster (`PARANOID_PURGE_REASONS`, pinned membership in
+`paranoidClassification.test.ts`) survive re-keyed to the portfolio scope —
+`usage_events` capture suppression now keys on "does the request target a
+vaulted portfolio / does the account own any vault" for asset-quote reads by
+the client engine (the #1344 holdings-roster leak must not reopen per
+portfolio).
+
+## 6. Sync, CAS and the merge protocol
+
+v1 §4 is the storage protocol and carries over **per doc**:
+
+- **Server medium:** ETag/`If-Match` CAS per `(vaultId, docId)`, atomic under
+  the vault row's lock, 412 on mismatch, bounded history, dedicated
+  `limiters.vault` rate family, server reads nothing past the envelope header.
+- **Drive medium:** per-doc file (§8 naming), `appProperties` carry
+  `{docVersion, formatVersion, ownerDigest, vaultDigest, docKind}`; CAS
+  approximated via appProperties + `headRevisionId` with the accepted TOCTOU
+  window (writers are one user's own devices; the merge repairs races). Drive
+  native revisions are that medium's history net.
+- **Local cache:** per-endpoint encrypted cache of last-known docs
+  (IndexedDB/OPFS) — a cache, not a medium; the future phone-local-only medium
+  arrives through the `DataHome` seam (§18), not by promoting this cache.
+- **Write path:** local commit → encrypt affected docs (docVersion + 1) → CAS
+  to primary (server when present, else Drive) → replicate identical bytes to
+  the secondary.
+- **Conflict rule (binding, unchanged):** entity granularity, never field
+  granularity; higher `rev` wins → later `editedAt` → lexicographically higher
+  `deviceId`; tombstone vs concurrent edit → the edit wins; merged docVersion =
+  max(parents) + 1; commutative + idempotent; corrupt candidates kept for the
+  restore picker, never silently discarded. Fork provenance merges by
+  content-addressed union with the v1 §7.1 prune-in-three-places lifecycle.
+- **`vault:sync` bearer exception** (v1 §4.1, owner mandate 2026-08-04)
+  carries over re-keyed: opaque per-doc GET/PUT + media/history reads for the
+  native client; destructive and recovery-media transitions stay off the plain
+  bearer path except as §15 explicitly gates them; the retirement-proof header
+  stays ignored-on-bearer so a token can never pin a verifier.
+
+## 7. Per-vault media switching, retirement, signed purge
+
+v1 §5 verbatim, re-keyed per vault — this machinery shipped, survived a COD
+reconciliation (#895/#896) and is kept because it is right:
+
+1. **Add a medium:** write the full doc set there → verified round trip (read
+   back, decrypt, compare writeId/hash per doc) → `PATCH /vaults/:id/media`
+   records the set. Adding `server` goes through staged server candidates
+   (today's `PUT /vault/media/server-candidate` flow, per vault).
+2. **Remove a medium:** only while another medium holds a verified-fresh copy.
+   Removing `server` atomically moves the vault's blobs + history into the
+   retired recovery set (`vault_retired`), destroyable only through the signed
+   purge gate: minimum 7-day retention, fresh other-medium readback, server
+   challenge, **Ed25519 proof with the private key held inside the encrypted
+   common doc** — possession of the vault's key, not of a session. Removing
+   `drive` best-effort deletes the Drive files and says so when it could not
+   (the leftover is the user's own ciphertext in their own Drive).
+3. The last medium can never be removed.
+
+Changing a vault's **Drive connection** (Y → Z) is a media migration with the
+same discipline, and it starts one step earlier than a byte copy (E5): the
+header doc's §8 `driveConnection` identity echo is first rewritten to Z through
+the NORMAL replicated write path — every active medium, server included — and
+only then is the (now Z-naming) doc set written to Z's namespace, verified,
+the binding PATCHed, and Y best-effort deleted. A byte-only copy would leave
+the encrypted header naming Y, so words + the right Google login would no
+longer discover the vault after the move; and for a replicated vault the
+server's per-doc attestation rows would disagree with the new Drive bytes,
+which is exactly what `PATCH /vaults/:vaultId/media` verifies. Source and
+target connection must differ — a same-connection "move" resolves both homes to
+one object, so the copy is skipped as already-equal and the cleanup would then
+delete the only copy while reporting success.
+
+## 8. Google Drive — separate authentication, multi-connection, collision-safe namespace
+
+**Drive is authenticated separately from the login identity, by construction.**
+A **Drive connection** is its own end-user OAuth consent to whichever Google
+account the user picks in Google's own chooser — completely decoupled from how
+they log in to BetterTrack (password, or Google login as GMAIL X). Login with
+X, back up to Drive Y, put another vault on Drive Z: supported natively.
+
+**Ground truth first, because the owner asked "does the Drive stuff work":**
+the shipped transport (`apps/web/src/user/vault/drive/gisTokenClient.ts`,
+`driveDataHome.ts`) is real, tested, browser-only code requesting exactly one
+Drive scope (`DRIVE_FILE_SCOPE`, `gisTokenClient.ts:2`) — up to E5 that scope
+was `https://www.googleapis.com/auth/drive.appdata`; E5 moved it to
+`https://www.googleapis.com/auth/drive.file` per the §21 Q5 ruling recorded
+below, and no other scope is ever requested — but it has NEVER run on production: prod's web
+runtime config serves `googleDriveClientId: ""` because
+`BT_GOOGLE_DRIVE_CLIENT_ID` was never set on the host (docs/ops.md, "Browser
+Google Drive runtime configuration"). So no live user has ever written a Drive
+byte; what v2 CLAIMED was a Drive path never existed at all (PR #1392). The
+redesign builds on the real transport and is free to change its storage plane
+with zero user migration.
+
+- **Connection identity — where it lives and how it persists.** GIS mints
+  ephemeral access tokens with no durable notion of "connection Y vs Z", so
+  the client captures the identity at connect time: after the first consent it
+  calls Drive `about.get(fields=user)` with the fresh token and records the
+  Google account's stable subject id + email. The authoritative registry is
+  the server-side **`drive_connections`** table — `id`, `user_id`,
+  `google_sub` (UNIQUE per user), `email`, `display_name`, `created_at`,
+  `last_verified_at`; **no tokens, no refresh tokens, no file ids — ever.**
+  It is account CONFIG under the ruling's own definition (§3): it lets the UI
+  list connections, lets a vault bind to one (`vaults.drive_connection_id`),
+  and tells a fresh signed-in device WHICH Google account to ask for. For the
+  autonomy principle the same identity is ALSO echoed inside the encrypted
+  vault header doc, and a device with only the words + the right Google login
+  can discover its docs by query (below) — the server registry is convenience
+  and config, never a decryption or discovery prerequisite. Two different
+  BetterTrack users may hold connections to the same `google_sub` — the
+  shared-physical-Drive case, allowed.
+- **Token model — client-side only, unchanged in kind from v1 §6:** GIS token
+  client, SPA client id from env, tokens minted in the browser **per
+  connection** with `login_hint` = the connection's **email**, ~1 h
+  lifetime, memory-only, never sent to or stored by the server, no server
+  proxy endpoints. (E5 correction: GIS documents `hint`/`login_hint` as an
+  email address or an ID-token `sub`. What the registry stores as `google_sub`
+  is Drive's `about.get` `user.permissionId` — an opaque Permission-resource
+  id that Google does not document as a hint value, so it is kept for the
+  post-consent principal check and the email is the hint.) Consequence (the binding Drive-only guarantee, carried
+  over): for a Drive-only vault the server holds zero cleartext, zero active
+  ciphertext, and zero CAPABILITY to fetch the Drive copy. Refresh = GIS
+  re-mint (silent while the Google session lives, a user gesture otherwise).
+  **Every re-mint repeats `about.get` and compares its `permissionId` with the
+  connection's stored `google_sub`; a chooser switch fails closed as the
+  distinct `identity-mismatch` state before the new token can reach storage.**
+  The sync indicator (§14) surfaces "sign in to Google (Y) to sync" — never a
+  silent stall.
+- **Scope RULED (2026-08-20, §21 Q5) — move from `drive.appdata` to
+  `drive.file` with a visible "BetterTrack Vaults" folder.** The hidden `appDataFolder` is
+  namespaced per (Google account × OAuth client), NOT per BetterTrack user —
+  today two BetterTrack users backing up to the same Google account, or one
+  user with several vaults, share one invisible namespace. That is workable
+  (the naming scheme below isolates them regardless of scope), but `appdata`
+  fails the owner's mental model twice: the user can never SEE that the backup
+  exists ("i am not sure if the google drive stuff works" — a visible file is
+  the proof), and the bytes are reachable only through our OAuth client,
+  which fights the autonomy principle. Under **`drive.file`** the app touches
+  ONLY files it created (still least-privilege — it can never read the user's
+  other Drive content), the vault docs sit in a visible folder the user can
+  eyeball and even hand-download (ciphertext + their words = a recovery path
+  needing nothing from us), and rename/move by the user is harmless because
+  lookups go by cached fileId + `appProperties` query, never by name. Risks
+  named honestly: the user can delete the visible files (their own backup,
+  their own act — the sync indicator flags "Drive copy missing", Drive trash
+  holds 30 days) and co-users of a shared Google account see the folder
+  (they share the whole Drive anyway; names carry no PII, below). Since
+  production never had a working Drive path, the scope switch costs zero
+  migration — the one moment this is free. Owner call recorded in §21.
+- **Revocation:** the user can revoke at Google's security settings at any
+  time (the app detects `invalid_grant`-class failures and flags the
+  connection); in-app **disconnect** refuses while any vault is bound to the
+  connection unless the vault first migrates off it (§7) — or, behind an
+  explicit acknowledgment, the user accepts that the app loses reach to that
+  copy (the files remain their property in their Drive). **A Drive-ONLY vault
+  is the one case the acknowledgment cannot cover** (E5, PROJECTPLAN §16
+  2026-08-21): dropping its last medium would leave the empty media set the
+  `vaults_media_state` CHECK rejects, and the only copy of every doc behind a
+  binding that no longer exists — the refusal (`DRIVE_CONNECTION_LAST_MEDIUM`)
+  is decided before the acknowledgment is read, so the owner is never offered
+  a loss of reach that was never on the table. Add and attest the server
+  medium first, then disconnect.
+- **Collision-safe namespace (two users, one physical Drive):** whatever the
+  scope, both users' files can share one container (appdata: one hidden
+  folder per Google account × client; drive.file: one visible folder), so the
+  naming + ownership discipline is the isolation, never the folder:
+
+  ```
+  name = "bettertrack-vault-" + base64url(sha256(
+           "bettertrack-drive-vault-v2:" + accountId + ":" + vaultId + ":" + docId
+         )) + ".btenc"
+  appProperties = { ownerDigest: sha256("bettertrack-drive-owner-v1:" + accountId),
+                    vaultDigest, docKind, docVersion, formatVersion }
+  ```
+
+  - **Cannot clobber:** names are digests over (account, vault, doc) — two
+    users' names never collide; a client lists/queries by its own
+    `ownerDigest` `appProperties` filter (rename/move-proof) and NEVER writes
+    a file whose `ownerDigest` is not its own (checked before every update);
+    concurrent creates dedupe by re-querying before first write.
+  - **The visible folder is reconciled, not assumed unique (E5):** lookup-
+    then-create is not atomic on Drive, so two devices — or two per-document
+    homes starting together — can both create one. Every creator re-lists
+    afterwards, adopts the same deterministic winner (lowest folder id) and
+    discards the folder it created if it lost and is still empty. Objects are
+    always found by `appProperties`, never by parent, so even a stray folder
+    never hides a doc.
+  - **Cannot read each other:** contents are AEAD ciphertext under different
+    K_c; and even a maliciously renamed/copied file fails decryption because
+    `accountBinding`/`vaultId`/`docId` sit in the AAD (§5). Names and
+    appProperties are digests — no emails, no vault names, no portfolio hints
+    in anything a co-user of the Drive could see.
+  - **Bounded paged lookup (E5 follow-up):** `docId` remains out of
+    `appProperties`, so all documents with the same (`ownerDigest`,
+    `vaultDigest`, `docKind`) share one list address. The chosen resolution is
+    pagination, not a new `docDigest` object-format field: the client reads
+    100 objects per Drive page and supports at most **1,000 candidate objects
+    per address** (therefore up to 1,000 portfolio documents for the usual
+    portfolio address). It reads every page before declaring a document
+    absent; a repeated page token or an address above the supported ceiling
+    fails closed. This removes the former 100-object cliff while bounding the
+    request/download work a shared Drive can impose.
+  - **Residual shared-Drive denial of service (accepted, manual remedy):** a
+    co-tenant of the same physical Drive can create an app-owned file carrying
+    another user's `ownerDigest`/`vaultDigest`/`docKind` and a copied plaintext
+    header with a higher `docVersion`. AEAD still prevents the co-tenant from
+    reading or clobbering the real document, so the confidentiality/integrity
+    property above holds, but the forged higher-version candidate can wedge
+    that address. This design **does not claim DoS resistance against a
+    co-tenant of the same Drive**. The manual remedy is to remove the forged
+    candidate from the visible **BetterTrack Vaults** folder (or Drive trash)
+    and retry sync.
+  - This extends the shipped derivation
+    (`driveDataHome.ts#driveVaultFileName`,
+    `sha256("bettertrack-drive-vault-account-v1:" + accountId)`) from
+    account-singleton to per-doc; the platform-blessed mobile contract
+    (§16 row 2026-08-04, PLATFORM_ASKS reply #41) gets a v2 addendum on the
+    board when the epic lands.
+
+## 9. Portfolio move-in
+
+Move-in = capture → encrypt → verify → destructive commit, generalizing the
+shipped enable pipeline (`paranoidTransitionService`,
+`apps/api/src/http/routes/accountRoutes.ts:141–226`) from account scope to
+portfolio scope. The v1 capture discipline carries over because every piece of
+it exists for a reason that is still true:
+
+1. **Preconditions** (server-checked, clear errors): the target vault exists,
+   its media are verified-live, the portfolio has no active mirrorchain
+   membership (leave-with-fork first; `docs/mirrorchain-design.md` §14 keeps
+   the other side), no in-flight import batch or export job touches it.
+2. **Capture with a portfolio-scoped CAS token:**
+   `GET /portfolios/:id/vault/revision` — an opaque content digest over
+   exactly the portfolio's restorable `vault`-classified rows (the
+   `computeNormalDataRevision` machinery re-scoped; `purge`-only tables
+   excluded for the same spurious-conflict reason recorded in
+   `manifest.ts:679–687`). The client reads the token FIRST, pulls the
+   portfolio's dataset through the existing read APIs, re-reads the token, and
+   accepts only when the pair agrees — the v1 "capture validates before it
+   accepts" rule, because capture reads still write (tax self-heal, seeded
+   defaults). One rebuild on mismatch; fail with its own error if it moves
+   again.
+3. **Encrypt + verify:** the portfolio doc is written to every vault medium,
+   the common doc folds in the portfolio's custom-asset snapshots and fork
+   provenance, the header roster gains the portfolio — each write CAS'd and
+   round-trip verified (§7 rule 1).
+4. **Destructive commit:** `POST /portfolios/:id/vault/move-in` with body
+   `{ vaultId, docVersion, portfolioDataRevision, stepUp }` (§15). One
+   account-locked transaction: re-verify preconditions + the revision token →
+   hard-delete every `vault`-classified row keyed to the portfolio
+   (`PARANOID_PURGED_TABLE_NAMES` re-keyed; mechanically the V4-P2c sweep
+   pattern) → destroy its `purge`-classified rows → revoke every share /
+   audience entry / public-profile inclusion OF THAT PORTFOLIO → set
+   `vault_id` + `vault_alias` on the stub → zero-cleartext probe over the
+   classified set. Idempotent retry per the v1 "never destroys gated state"
+   rule.
+
+**What happens to each attached thing, explicitly:**
+
+| Thing                                                                   | On move-in                                                                                                                                          |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transactions, dividends, cash sources + movements, history              | Into the portfolio doc; server rows hard-deleted; client engine re-derives all series                                                               |
+| Snapshots / derived rows                                                | Purged, never carried (re-derived on move-out)                                                                                                      |
+| Tax settlement rows for the portfolio                                   | Into the doc; cross-portfolio tax composes per §14                                                                                                  |
+| Standing orders + run ledger                                            | Into the doc; client materializes due rows with deterministic UUIDv5 occurrence ids (v1 §8 item 9)                                                  |
+| Existing shares / audiences / public-profile inclusion of the portfolio | Revoked permanently; NOT restored on move-out (the v1 #730/#992 rule, now portfolio-scoped)                                                         |
+| Price alerts                                                            | Untouched — asset-level rows, zero portfolio reference (v1 §9); nothing to kill                                                                     |
+| Conglomerates / workboard                                               | Untouched — hypothetical baskets reference `asset_identities`, not portfolios; custom-asset identity claims survive via the v1 tombstone/claim seam |
+| Home board widgets scoped to it                                         | Render through the `PortfolioStore` seam: live when the vault is unlocked, a locked-state tile with the unlock affordance otherwise                 |
+| Imports in flight                                                       | Precondition-blocked; historical import batches ride the doc                                                                                        |
+
+## 10. Portfolio move-out (the designed exit)
+
+"Deleting them as a public portfolio" makes move-in reversible **only via a
+device holding the phrase** — so the exit is designed exactly there. From an
+unlocked endpoint: `POST /portfolios/:id/vault/move-out` streams the strict
+restore document for that portfolio (the `toStrictRestoreDocument` /
+`strictVaultDocumentForDisable` discipline per portfolio: catalog-asset
+snapshots dropped and re-resolved, own-manual-asset restatement, retained
+identities accounted for, fork-provenance validation per v1 §7.1, solvency
+validation per the #865 option-B rule), plus the §15 step-up. One
+account-locked transaction: rows re-created through the normal services in
+dependency order **under the SAME portfolio UUID** (the stub row is the
+identity anchor), `vault_id`/`vault_alias` cleared, the portfolio doc removed
+from the server medium (into bounded history, ordinary retention), the header
+roster updated; after commit the deterministic plan rebuilds snapshots and
+invalidates derived consumers. The client then tombstones the portfolio doc in
+the vault, syncs, and best-effort deletes the doc's Drive file. Payload ceiling
+per the v1 factor rule (`PARANOID_RESTORE_PLAINTEXT_FACTOR`). Idempotent-
+resumable exactly like today's disable. Shares are not restored; the vault
+itself keeps existing (possibly empty).
+
+Move-out is also the account's escape hatch: unlike v1's all-or-nothing
+disable, a user can exit one portfolio while others stay vaulted.
+
+## 11. The per-portfolio feature-kill matrix + the full-functionality proof
+
+**The account keeps everything.** Profile, friends, chat, comments/reactions,
+watchlists, conglomerates + backtests, alerts, notifications, API keys/OAuth
+grants, imports, mirrorchain, expense tracking, the Home board — and the FULL
+feature set of every non-vaulted portfolio, including sharing them and reading
+them over bearer scopes. The account-wide kill rail dies: the `PARANOID_MODE`
+account guard, the bearer scope kill in
+`apps/api/src/http/middleware/bearerAuth.ts:758`, `MeResponse.privacyMode` as a
+mode signal (#1052/#1055 — replaced by `vaultId` on portfolio rows + a narrow
+`GET /vaults` projection), and the account-keyed halves of the enforcement
+registry (`apps/api/src/services/account/paranoidEnforcement.ts`). This
+permanently fixes the class of bug where owning any vault killed cash-on-mobile
+for the whole account.
+
+**Killed for a VAULTED portfolio** (each enforced server-side at the portfolio
+boundary with one stable error code, e.g. `VAULTED_PORTFOLIO`; hidden
+client-side as absent affordances on that portfolio; every row covered by the
+registry-driven matrix test):
+
+1. Sharing/public: cannot be shared, added to any audience, or included in the
+   public profile; existing grants revoked at move-in (§9).
+2. Every server-computed portfolio read: summary/series/snapshots, analytics,
+   Live-Mode frames, projected dividend income, portfolio news digest,
+   real-portfolio backtest, AI insights over it, the server tax engine for it.
+   The client engine owns all of it (§14).
+3. Server jobs: snapshot jobs, dividend/earnings scans keyed to its holdings,
+   standing-order server execution — skip it (its input tables are empty; the
+   probe keeps that true).
+4. Imports targeting it server-side.
+5. Portfolio-scoped API access to it: a bearer or session request addressing
+   the vaulted portfolio gets the portfolio-scoped refusal; **the scope itself
+   stays valid account-wide.** `vault:sync` remains the deliberate ciphertext
+   path.
+6. Mirrorchain: cannot create/join/be invited while vaulted; mutual exclusion
+   is now portfolio-scoped.
+7. Webhooks: no portfolio-content events for it (there is nothing server-side
+   to fire).
+
+**Proof strategy (the acceptance backbone):**
+
+- **Registry re-key:** the shipped enforcement inventory + completeness
+  harness (`paranoidEnforcement.ts`,
+  `paranoidEnforcementCompleteness.test.ts` — every mounted route, callable
+  context method and registered job must carry exactly one policy) survives
+  re-keyed portfolio-first. The kill matrix is derived from the registry, not
+  hand-listed twice.
+- **Zero-cleartext probe per portfolio:** after move-in, iterate
+  `PARANOID_PURGED_TABLE_NAMES` and prove zero rows keyed to the portfolio.
+- **Full-functionality regression, the headline test:** an account owning a
+  vaulted portfolio exercises the COMPLETE feature surface against a plain
+  portfolio — sharing it, server stats, bearer `cash:write`, imports, a
+  mirrorchain membership, expense pages — byte-identical to a vault-free
+  account (matrix + e2e). Plus: `usage_events` capture suppressed only for
+  vaulted-portfolio-driven reads.
+- **Discreet mode is untouched** — it composes (hides amounts the client just
+  computed) and is not part of this arc's diff.
+
+## 12. Device custody — password, plain storage, lockout
+
+**The endpoint keystore** (IndexedDB / platform storage; no server table):
+per stored phrase an entry `{ vaultId, custody: 'wrapped' | 'plain', payload }`.
+
+- **Wrapped (default):** ONE device password per endpoint (the 2026-08-12
+  spec's correction survives: never per-vault passwords). Argon2id(password,
+  per-endpoint salt; m = 64 MiB, t = 3, p = 1) → K_dev; each stored mnemonic
+  entropy is AES-256-GCM-wrapped under K_dev; a wrap-check value verifies
+  entry. Entering it once per session unlocks ALL wrapped phrases on that
+  endpoint.
+- **"Never cached across sessions" — the precise meaning (binding):** the
+  password and K_dev exist only in volatile process memory. They are never
+  written to IndexedDB, localStorage, sessionStorage, cookies, service-worker
+  caches, or any log. A **session** ends at: tab/app close (memory dies with
+  the process), an explicit "Lock vaults" action, or the existing PIN
+  idle-lock timer when the user has PIN lock on (one timer, one mental model —
+  no second setting). After any of these, the next vault read prompts again.
+  There is NO "keep unlocked on this device" checkbox for wrapped custody —
+  v1's persisted-VK convenience (`custody.ts` keep-unlocked) is deliberately
+  retired; the convenience path is plain custody, below. Unlocked K_c keys are
+  likewise memory-only and die with the session.
+- **Plain (the warned option):** the mnemonic entropy sits unwrapped in the
+  keystore; the vault opens without any prompt. Choosing it requires the
+  friction ladder's strong rung — an explicit acknowledgment that a
+  compromised end device exposes the phrase outright, and that the protection
+  is then ONLY "encrypted and unreadable for BetterTrack". Default is always
+  wrapped; the toggle is per stored phrase, changeable both ways (re-wrap
+  prompts for the password). On platforms with native custody (Android
+  Keystore / iOS keychain) "plain" still means "not protected by the device
+  password" — the platform baseline applies underneath.
+- **Wrong password / lockout UX:** verification is local (wrap-check). Failures
+  escalate a client-side delay (5 wrong → 30 s, doubling, capped at 5 min) —
+  there is no server lockout because the server is not involved. The prompt
+  always offers "Forgot the password?" → **keystore reset**: wipes the stored
+  phrases on THIS endpoint only, loses NO data (the phrases re-enter by typing
+  or §13 QR from another device), and says exactly that in one sentence.
+- Vault states on an endpoint and their affordances (binding — a state without
+  a next action is a design bug; the recorded v2 anti-pattern was a locked
+  vault with no unlock path): stored+wrapped → "Unlock" (password);
+  stored+plain → opens silently; not-on-this-endpoint → "Enter words / Scan QR
+  from another device". Every surface that renders a vault or locked stub
+  carries its state's action inline.
+
+## 13. QR seed-phrase transfer
+
+The owner wants a scan that instantly moves the phrase to the phone — designed
+safely, not refused:
+
+**Sender (the device holding the phrase):** Vault settings → "Show transfer
+QR". Requires a live unlock AND, for wrapped custody, a fresh password entry
+(≤ 60 s old) — the QR displays the master secret, so showing it is itself a
+step-up act. The QR is rendered full-screen with: an explicit banner ("Anyone
+who captures this code owns this vault — no screenshots, no screen sharing,
+mind who can see your screen"), a 60-second auto-expiry that blanks the code
+(manual re-show), no clipboard path, no network transmission of any kind
+(display→camera is the whole channel), and nothing logged or persisted. The
+native apps additionally set the platform secure-screen flag (FLAG_SECURE /
+iOS capture detection) on both the show and scan screens — recorded as a
+mobile-board contract item.
+
+**Payload format (binding — the ONE spec the web renderer and the phone
+scanner are both built against; requested by the mobile dev 2026-08-19):**
+
+```
+btvault1:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprint>]
+```
+
+- **Version = the scheme prefix.** `btvault1:` is the version marker. An
+  unknown prefix (`btvault2:`, anything else) is REJECTED with an "update the
+  app" notice — never best-effort parsed; within `btvault1:` unknown query
+  keys are IGNORED (additive extension), and a missing required key is a
+  reject. Deliberately `scheme:query`, no `//` authority — platform URL
+  parsers disagree about custom-scheme authorities, so everything after the
+  first `:` is parsed as one `application/x-www-form-urlencoded` query
+  string, which every platform parses identically.
+- **`m` (required):** the 12 BIP39 English-wordlist words themselves —
+  lowercase, NFKD, single-space separated, percent-encoded (spaces become
+  `%20` or `+`). Words, not entropy bytes and not wordlist indices: the BIP39
+  checksum already rides IN the words (the last word carries the 4 checksum
+  bits), so the scanner validates integrity against the standard wordlist
+  with zero extra fields; words are what the user wrote down, so a generic QR
+  reader shows a human-recoverable payload (worst case: type the words); and
+  there is no entropy-encoding/endianness/checksum-recompute step where two
+  implementations can silently diverge — which is the whole two-guesses risk
+  this spec exists to remove.
+- **`v` (required):** the vault UUID (lowercase hyphenated).
+- **`n` (optional):** display-name hint, percent-encoded, ≤ 64 chars.
+- **`f` (optional, recommended):** the vault's `key_fingerprint` (§4,
+  base64url) so the receiver can pre-check the words against the intended
+  vault before any network fetch.
+- **QR encoding:** byte mode, UTF-8, error-correction level M. The payload is
+  ~150–220 chars — a comfortably scannable version-7-ish code.
+
+**Receiver (the phone):** camera scan → prefix check → BIP39 checksum
+validation of `m` → the vault id/name hint pre-fills → custody choice
+(wrapped default — set/enter the device password; plain behind the §12
+warning) → **verified open**: the client fetches the vault header doc from
+any reachable medium and proves the words decrypt it (`f`/key_fingerprint
+match first when present) BEFORE saving to the keystore, so a mis-scan can
+never store dead words.
+
+Manual word entry remains the fallback everywhere the QR is offered.
+
+## 14. Client engine & cross-portfolio composition
+
+- The pure domain layer stays isomorphic in `packages/domain`
+  (`@bettertrack/domain`) — money math is NEVER reimplemented client-side
+  (review-blocking rule, unchanged). The shipped client engine
+  (`apps/web/src/user/vault/engine/`, `vaultPortfolioStore.ts`) re-homes from
+  the account singleton onto per-vault portfolio docs: holdings + valuation,
+  daily value/cost/P&L series with domain carry-forward, TWR
+  (`vaultClientTwrParity.test.ts` stays the parity harness), allocation, cash
+  balances, per-year tax through the shared `tax.ts`.
+- **Cross-portfolio composition (mixed accounts are the norm):** every
+  cross-portfolio quantity is a client-side merge of server-computed plain
+  figures and client-computed vaulted figures, merged at the figure level the
+  domain engine defines — never by re-implementing offset rules in view code.
+  AT/DE cross-portfolio tax (Verlustausgleich spans portfolios) composes this
+  way; the year-lock ritual (2026-08-07 §16 row) applies identically.
+- **Locked honesty:** while any involved vault is locked, aggregate views
+  (dashboard net worth, combined reports, tax composition) render
+  **sum-of-visible plus a mandatory lock qualifier** ("+ N locked
+  portfolios") — never a bare total, never a silently-partial figure.
+- `PortfolioStore` resolves per portfolio: `apiPortfolioStore` for plain rows,
+  `vaultPortfolioStore` for vaulted ones — same pages, same components, which
+  is why an unlocked vaulted portfolio is indistinguishable day-to-day.
+- **The sync-status indicator is an explicit KEEPER — look unchanged, data
+  source generalized.** Owner, verbatim (2026-08-19): "i like the 'synched' UI
+  up top with the current paranoid mode. its really cool design stuff." That
+  is `VaultSyncChip` (`apps/web/src/user/vault/ui/VaultSyncChip.tsx`, mounted
+  in the header shell `apps/web/src/user/components/OriginShell.tsx`, fed by
+  `projectVaultMediaSyncStatus` in `apps/web/src/user/vault/media/status.ts`).
+  Its visual design is NOT redesigned. What generalizes is the projection
+  beneath it: with N vaults on different media the chip renders one
+  **aggregate state** — `all synced ✓` / `syncing` / `locked (N)` /
+  `attention: <vault name>` — computed as the worst state across vaults
+  (attention > syncing > locked > synced), and its existing popover gains one
+  row per vault (per-vault state, per-medium detail, last-write time, and the
+  state's §12 affordance inline: unlock, sign in to Google (Y), open restore
+  picker). One chip, never one chip per vault (anti-bloat).
+
+## 15. Step-up re-auth on destructive operations (#1326 carry-over)
+
+Issue #1326 (closed 2026-08-19 as overtaken by this redesign) researched the
+pattern; it carries over as the binding gate on every destructive or
+data-writing transition, because the threat is identical — a stolen token or
+riding session must not be an erasure primitive:
+
+- **Gated operations:** portfolio move-in (destroys cleartext), portfolio
+  move-out (writes a caller-authored document), vault deletion, Drive
+  disconnect-with-loss acknowledgment, §17 conversion commit. The retired-set
+  purge keeps its STRONGER gate (server challenge + Ed25519 proof from inside
+  the vault) — no password check bolted on.
+- **The credential rides IN the request body** — password, or a fresh TOTP
+  `code`, or a `recoveryCode`; at least one required via schema `.refine`,
+  mirroring `deleteAccountRequestSchema` / `passkeyDeleteRequestSchema`
+  (`packages/contracts/src/auth.ts:675–687`, `:779–788`). Verified inside the
+  same account lock as the transition (no check-then-act race); failure rides
+  the progressive per-account throttle + an audit record with generic error
+  text (`accountDeletionService.ts:103–120` is the model). The in-body
+  credential is what replaces CSRF + same-origin on the bearer path — say so
+  in the code comment.
+- **Both paths, same rule:** the web wizard sends it too; a bearer path is
+  never stricter or looser than the browser path. Bearer reachability of the
+  transitions follows the owner's 2026-08-17 shared-control-layer ruling under
+  `account:security`, default-closed via the method-aware allowlist machinery,
+  with the #1326 acceptance battery (wrong-credential = nothing purged,
+  INSUFFICIENT_SCOPE naming the scope, unknown-future-route canary) inherited
+  as this arc's tests.
+
+## 16. Recovery semantics — lost phrase = lost vault
+
+**Recorded verbatim and binding: a vault's 12 words are the ONLY way in.** If
+every copy of the phrase is gone — no endpoint keystore holds it, no paper, no
+other device to QR from — that vault's data is cryptographically unrecoverable.
+BetterTrack stores no escrow, has no reset path, and support cannot help; admin
+cannot help (§18). The only server-side "recovery" is destruction: a
+**"start fresh"** flow deletes the vault's blobs (through the §7 gates where
+retirement applies) and frees its locked stubs for deletion — it never
+recreates data. The creation ceremony makes the user acknowledge exactly this
+once, compactly, and the phrase-issuance step verifies one randomly chosen
+word as the write-down check (§21 Q2 ruling; §20 E8). Contrast, always stated
+beside it: a
+forgotten **device password** loses nothing (§12 keystore reset); a lost
+**phone** loses nothing while another copy of the phrase exists. Per-vault
+blast radius is the design's mercy: one lost phrase never touches the other
+vaults or the account.
+
+## 17. Transition plan for live account-level paranoid accounts
+
+**RULED 2026-08-20 (§21 Q3): (C) backup + wipe.** The owner chose the cheap
+path over a lossless conversion; the in-place wizard (former recommendation A)
+is never built. The plan:
+
+1. **External ciphertext backup first** — the PR #1392 ops pattern
+   (`scripts/ops/export-vault-v2-backup.mjs` is the verified-dump precedent):
+   dump every `paranoid_vaults` account blob + bounded history to a verified
+   archive on the prod host, offsite copy confirmed, THEN any destructive
+   step. The owner runs/authorizes the backup, exactly as with the v2
+   teardown.
+2. **Wipe + reset**: one migration retires the account-level rows (quarantined
+   behind the backup, `zz_`-prefix pattern), flips affected accounts'
+   `privacy_mode` to `normal`, and clears the account-kill state. Those
+   accounts come back feature-complete and empty of previously vaulted
+   content; the legacy passphrase and recovery kit die with the wipe.
+3. **Notice**: affected accounts get a one-time in-app notice at next login —
+   "Paranoid mode has a new shape; the old paranoid data was retired with the
+   old system" — with the create-a-vault CTA. No conversion ceremony, no
+   legacy passphrase prompt.
+4. **The account-level surface is deleted in the same arc** (§19) — the
+   one-implementation rule holds with zero unconverted-account bookkeeping.
+
+**Evidence this is safe** (kept from the analysis): every live paranoid
+account is server-media-only in practice. Google Drive never worked on
+production — `BT_GOOGLE_DRIVE_CLIENT_ID` was never set on the prod host, so
+the web runtime config served `googleDriveClientId: ""` and the GIS client
+could not even initialize (docs/ops.md, "Browser Google Drive runtime
+configuration"; §8) — so no Drive-only data exists to strand. The wipe
+migration still verifies actual `paranoid_media_set` values rather than
+assuming.
+
+**Alternatives, listed and not built:** (A) in-place re-encryption ceremony at
+next unlocked login — fully designed in this note's git history (PR #1401
+draft revisions); revive it only if a real, non-test paranoid population ever
+needs a lossless path. (B) rehydrate-first — rejected outright: it parks the
+user's portfolio in server cleartext mid-flight, exactly the betrayal a
+paranoid user opted out of.
+
+## 18. Interplay: exports, deletion, admin, mirrorchain, autonomy seams
+
+- **Account export:** the zip carries `server`-classified data plus — for
+  vaults whose media include `server` — the ciphertext docs and manifest
+  entries; never cleartext vaulted content, never key material (phrases and
+  the endpoint keystore never export). The client-side cleartext export of an
+  unlocked vault's portfolios stays the user's own exit (v1 §12 semantics).
+- **Account deletion (V4-P2c):** the sweep deletes `vaults`, `vault_blobs`,
+  history/retirement rows and `drive_connections`; Drive files get best-effort
+  client deletion when the deletion runs from a reachable device, otherwise
+  they remain the user's own ciphertext in their own Drive (the confirm says
+  so, and app access is revocable at Google).
+- **Admin:** per-user view shows vault count, per-vault media + doc
+  sizes/versions/timestamps, legacy-wiped marker (§17 — the account went
+  through the backup+wipe), Drive-connection count — no portfolio numbers to
+  show, which is the feature. Admin can never reset a phrase or device
+  password, never read a doc, never restore wiped data.
+- **Mirrorchain:** mutual exclusion is portfolio-scoped (§9 precondition, §11
+  item 6); severed-fork provenance rides the owning vault's common doc with
+  the v1 §7.1 capture/merge/prune/validate discipline intact.
+- **Autonomy seams (binding beyond paranoid, unchanged):** `PortfolioStore`,
+  `DataHome`, `MarketDataSource` stay the three binding interfaces; the future
+  phone-local-only medium (the ruling's "leave that out for now") arrives as a
+  `localDataHome`-backed medium through the same seam — reserved in the
+  contract enum, rejected by the server, designed nowhere else yet.
+
+## 19. What changes and what dies in the live codebase
+
+**Stays (proven substrate, re-keyed not rewritten):** the envelope crypto +
+AAD discipline (`envelope.ts`, `crypto.ts`, `hkdf.ts`), the CAS/merge engine
+(`merge.ts`, `sync.ts`), the media runtime + retirement/signed-purge machinery
+(`media/`, per vault), the Drive transport + GIS client (`drive/` — the
+storage plane re-plumbs per §8's scope recommendation, the transport survives),
+the sync-status indicator (`VaultSyncChip.tsx` — look unchanged, projection
+generalized per §14), the client
+engine + store seam (`engine/`, `vaultPortfolioStore.ts`), `packages/domain`,
+the classification axes + completeness tests (`manifest.ts`,
+`paranoidClassification.test.ts`, `completeness.test.ts`), the enforcement
+inventory harness (`paranoidEnforcement.ts` + completeness test), the
+`asset_identities` seam, `limiters.vault`, the `vault:sync` scope. **Discreet
+mode: untouched.**
+
+**Dies at the end of §17 (not before):** the account-level enable/disable
+pipeline (`paranoidTransitionService`, `POST /account/paranoid/enable|disable`,
+`fork-provenance`, `normal-revision` — `accountRoutes.ts:141–226`), the
+four-media account-singleton document and its store (`paranoid_vaults`,
+`paranoid_vault_history`, `paranoid_enable_transitions`,
+`paranoid_vault_server_candidates`, `paranoid_vault_retirements`,
+`paranoid_vault_retired`, `paranoid_rehydration_receipts`; `GET/PUT /vault` and
+the `/vault/media*` account family), `users.privacy_mode` + the paranoid media
+columns + CHECK (`schema.ts:205–253`), the account-wide `PARANOID_MODE` kill
+rail in `bearerAuth.ts`, `MeResponse.privacyMode` as a mode signal, the v1
+unlock gate that replaced the whole authenticated subtree (per-portfolio
+locking needs no app-wide gate), the account-level wizard + recovery-kit flow,
+and v1's persisted-VK "keep unlocked" custody. Drops ship as append-only
+migrations after an owner-authorized external ciphertext backup for any
+straggler accounts (§17).
+
+**Rewritten:** this note (done), PROJECTPLAN §13.5 V5-P13 arc (b) (same PR),
+`docs/mirrorchain-design.md` §14 wording account→portfolio (in the E2 epic),
+the mobile PLATFORM_ASKS Drive-naming contract (§8, when E5 lands).
+
+## 20. Build decomposition (epics, ordered — contract-form issues cut from these after ack)
+
+| #   | Epic                                            | Scope sketch                                                                                                                                                                                                                                                                                                                                                                  | Rough size / tier                  |
+| --- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| E0  | **Contracts + schema**                          | `vaults`, `vault_blobs` (+history/candidates/retirement re-key), `drive_connections`, `portfolios.vault_id`/`vault_alias`, envelope v2 + doc-set zod contracts, classification axis gains the doc bucket, per-portfolio revision token contract                                                                                                                               | L, T1 (schema + contract keystone) |
+| E1  | **Per-vault blind store**                       | Vault CRUD routes, per-doc GET/PUT CAS + history, size caps per kind, `vault:sync` re-key, OpenAPI                                                                                                                                                                                                                                                                            | M, T2                              |
+| E2  | **Per-portfolio enforcement + account un-kill** | Registry re-key portfolio-first, `VAULTED_PORTFOLIO` guard, bearer un-kill (delete account rail), matrix + probe + full-functionality regression, mirrorchain exclusion re-scope                                                                                                                                                                                              | L, T1 (security boundary)          |
+| E3  | **Client key core**                             | BIP39 gen/validate, derivation chain (§4), keySlots, key_fingerprint, endpoint keystore + device password custody + plain-custody warning + lockout/reset (§12); test vectors incl. tamper/rollback                                                                                                                                                                           | L, T1 (keystone crypto)            |
+| E4  | **Move-in / move-out pipeline**                 | Per-portfolio capture token + double-read capture, purge sweep + share revocation + stub, strict per-portfolio restore + solvency + fork-provenance validation, §15 step-up on both, idempotent retry semantics                                                                                                                                                               | XL, T1 (the destructive core)      |
+| E5  | **Drive multi-connection**                      | `drive_connections` CRUD + UI, per-connection GIS with login_hint, per-vault binding + connection migration, §8 namespace + ownerDigest discipline, revocation/disconnect flows, mobile contract addendum                                                                                                                                                                     | L, T2                              |
+| E6  | **Client engine re-home + composition**         | Store resolution per portfolio, engine on portfolio docs, cross-portfolio tax/aggregate composition + lock qualifiers, standing-order client materialization, client cleartext export per vault                                                                                                                                                                               | XL, T1 (money)                     |
+| E7  | **QR transfer**                                 | The §13 `btvault1:` payload spec verbatim (web renderer + phone scanner against ONE spec); sender step-up + expiring full-screen QR, receiver scan → checksum → verified open → custody choice, secure-screen flags contract for native                                                                                                                                       | M, T2                              |
+| E8  | **Web UX**                                      | Vault manager (create ceremony: name → media/connection → 12 words + ONE-word verify + lost-phrase ack + custody, §21 Q2), locked stubs + state→affordance invariant everywhere, the `VaultSyncChip` per-vault generalization (§14 — aggregate state + per-vault popover rows, visual design untouched, owner keeper), move-in/out wizards, Settings → Privacy rewrite, EN+DE | L, T2 (flagship UX, owner-eye)     |
+| E9  | **Transition + v1 retirement**                  | §17 as ruled (C): owner-run verified ciphertext backup (export-script pattern) → wipe/reset migration (privacy_mode→normal, account-kill cleared, rows quarantined) → one-time fresh-start notice, then the §19 deletion train (append-only drops)                                                                                                                            | M, T2 with T1 review on the wipe   |
+| E10 | **e2e + gate**                                  | Playwright: full create→move-in→lock→unlock→move-out arc; Drive-only vault round trip; two-users-one-Drive isolation; mixed-account full-functionality sweep; QR handoff (mocked camera); wrong-password lockout; fresh-start notice after the §17 wipe; joins the V5-P14 suite                                                                                               | M, T3/T2                           |
+
+Ordering: E0 first; E1+E3 parallel after E0; E2 after E1; E4 after E1+E3; E5
+after E1; E6 after E4; E7 after E3; E8 after E4 (wizards) with early shell
+work parallel; E9 after E4+E6+E8; E10 last. Every epic: suite green, EN+DE,
+append-only migrations, OpenAPI/route-census regeneration where touched.
+
+## 21. Ruled — the five gate decisions (2026-08-20)
+
+Asked and answered in chat on 2026-08-20. The owner answered Q1–Q4 and
+delegated everything further to the Chief ("you are now responsible for all
+following decisions"), who ruled Q5. Binding:
+
+1. **Move-out: ALLOWED.** §10 stands exactly as designed — unlocked device,
+   loud "becomes server-readable again" warning, restore as a normal server
+   portfolio.
+2. **Creation ceremony: middle ground** (owner verbatim: "validate only one
+   word. no 20 years waiting and lots of friction"). Issuance shows the 12
+   words, then verifies exactly ONE randomly chosen word plus one compact
+   lost-phrase-means-lost-data acknowledgment. No multi-word drills, no
+   added waiting.
+3. **Transition: (C) backup + wipe.** §17 is rewritten accordingly; the
+   in-place conversion wizard (former recommendation A) is never built.
+4. **Vault names: cleartext, stated calmly.** Names and locked-stub aliases
+   stay server-visible config (§3). The paranoid explainer communicates it as
+   a plain fact among the feature points — "encrypted: everything inside the
+   portfolio; not encrypted: the vault's name and storage config; features
+   X/Y keep working" — no alarm banners, no bloat (owner wording).
+5. **Drive: `drive.file` with the visible "BetterTrack Vaults" folder**
+   (Chief's delegated ruling). §8's recommendation is adopted; the hidden
+   app-data folder retires. Zero migration cost — Drive never worked on prod.
+
+## 22. Constraints & non-goals
+
+- **No key escrow, ever.** No owner/admin/support recovery; lost phrase ⇒ lost
+  vault, by design (§16).
+- **No server-held Drive tokens, ever** — one rule for every vault kind; the
+  Drive-only "zero capability" guarantee depends on it (§8).
+- **Local-only (phone-only) storage is reserved, not built** — contract enum
+  value exists, server rejects it, no flows designed (the ruling's "leave that
+  out for now").
+- **Doc granularity is the sync unit** — no per-entity server sync, no
+  server-visible oplog; entity granularity exists only inside the encrypted
+  payload for merges.
+- **No client-side broker/bank import for vaulted portfolios in this arc** —
+  manual entry works; a client import engine stays a later candidate, not a
+  silent promise.
+- **Encrypted-vault SHARING is far future** — `keySlots[]` keeps it possible;
+  no flows are designed now.
+- **Metadata honesty, recorded:** the server still sees that vaults exist,
+  their names (ruled cleartext, §21 Q4), media configs, Drive-connection identities
+  (email/sub — config, not content), locked-stub portfolio ids + aliases, doc
+  sizes/versions/timestamps, login/session activity, alert rules and
+  watchlists (asset-level interest), and market-data request patterns. None of
+  it is portfolio content; every portfolio byte inside a vault is
+  client-encrypted.
+- **Discreet mode** is a separate arc and is untouched by this redesign.
+- Size caps, history depth, retention windows, rate limits — env-tunable ops
+  knobs, not product surface.

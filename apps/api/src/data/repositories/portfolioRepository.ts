@@ -41,6 +41,10 @@ export interface PortfolioSummaryRow {
   archivedAt: string | null;
   /** Purpose category ("Icon"), or null when the user never chose (board #69). */
   kind: PortfolioKind | null;
+  /** Non-null means this is a content-free locked vault stub (paranoid E2). */
+  vaultId: string | null;
+  /** Cleartext locked-stub label; null on plain portfolios. */
+  vaultAlias: string | null;
 }
 
 /** The default portfolio's canonical name (§5.5). */
@@ -69,6 +73,8 @@ function toSummary(
     defaultPayFromCash: boolean;
     archivedAt: Date | string | null;
     kind: string | null;
+    vaultId: string | null;
+    vaultAlias: string | null;
   },
   isDefault: boolean,
 ): PortfolioSummaryRow {
@@ -81,6 +87,8 @@ function toSummary(
     defaultPayFromCash: row.defaultPayFromCash,
     archivedAt: row.archivedAt ? new Date(row.archivedAt).toISOString() : null,
     kind: toKind(row.kind),
+    vaultId: row.vaultId,
+    vaultAlias: row.vaultAlias,
   };
 }
 
@@ -93,6 +101,8 @@ const summaryColumns = {
   defaultPayFromCash: portfolios.defaultPayFromCash,
   archivedAt: portfolios.archivedAt,
   kind: portfolios.kind,
+  vaultId: portfolios.vaultId,
+  vaultAlias: portfolios.vaultAlias,
 } as const;
 
 /**

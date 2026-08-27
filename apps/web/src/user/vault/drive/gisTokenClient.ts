@@ -1,5 +1,5 @@
 /** The only Google Drive permission BetterTrack may ever request. */
-export const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 const GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
 const TOKEN_EXPIRY_SKEW_MS = 30_000;
@@ -8,7 +8,9 @@ export type DriveAuthorizationState =
   | 'consent-required'
   | 'connected'
   | 'token-expired'
-  | 'gesture-required';
+  | 'gesture-required'
+  | 'revoked'
+  | 'identity-mismatch';
 
 export type DriveAccessTokenResult =
   | { status: 'ok'; accessToken: string; expiresAt: number }
@@ -37,12 +39,28 @@ export interface GoogleOauth2 {
     client_id: string;
     scope: string;
     include_granted_scopes: boolean;
+    /** GIS calls the OAuth `login_hint` parameter `hint`. */
+    hint?: string;
+    /** Kept explicit as well so the requested principal is auditably pinned. */
+    login_hint?: string;
     callback: (response: GoogleTokenResponse) => void;
     error_callback?: (error: { type?: string; message?: string }) => void;
   }): GoogleTokenClient;
 }
 
-export interface GoogleDriveTokenClientOptions {
+export interface DriveTokenClientIdentity {
+  /**
+   * Value handed to GIS as `hint`/`login_hint`. Google documents that parameter
+   * as an EMAIL ADDRESS or an ID-token `sub` — pass the connection's email; an
+   * opaque Drive `permissionId` is not a documented hint and can be dropped
+   * silently, landing the user in the account chooser.
+   */
+  loginHint?: string;
+  /** Human-readable identity used only in actionable local error copy. */
+  identityLabel?: string;
+}
+
+export interface GoogleDriveTokenClientOptions extends DriveTokenClientIdentity {
   clientId: string;
   loadOauth2?: () => Promise<GoogleOauth2>;
   now?: () => number;
@@ -54,17 +72,34 @@ export interface GoogleDriveTokenClient {
   getAccessToken(): DriveAccessTokenResult;
   /** Observe authorization transitions, including browser-memory token expiry. */
   subscribe(listener: () => void): () => void;
-  /** Load GIS before an authorization control becomes available. */
+  /**
+   * Load GIS before an authorization control becomes available, so `authorize()`
+   * can reach Google's popup synchronously from the click. A control that owns
+   * an authorization button MUST await this and stay disabled until it settles.
+   */
   prepare(): Promise<void>;
-  /** Must be called from a user gesture after `prepare()`. Tokens remain only in this closure. */
+  /**
+   * Must be called from a user gesture. After `prepare()` the popup opens
+   * synchronously; without it the GIS load is awaited first and the browser may
+   * block the popup. Tokens remain only in this closure.
+   */
   authorize(): Promise<DriveAccessTokenResult>;
+  /**
+   * Pin this client to a resolved connection identity WITHOUT discarding the
+   * capability it already holds. The registry mints a token before the row (and
+   * therefore the email) exists; re-creating the client afterwards would throw
+   * the fresh consent away, and leaving it unpinned makes every re-mint of that
+   * page session hint-less and its copy generic.
+   */
+  identify(identity: DriveTokenClientIdentity): void;
   /** Drop the in-memory capability immediately. */
   clear(): void;
   markExpired(): void;
+  markRevoked(): void;
 }
 
 /**
- * Google Identity Services token client for Drive appdata. It deliberately has
+ * Google Identity Services token client for one Drive connection. It deliberately has
  * no storage adapter: access tokens and expiry live only in this closure and
  * are never serialized, logged, analyzed, or sent to the BetterTrack API.
  */
@@ -73,6 +108,8 @@ export function createGoogleDriveTokenClient(
 ): GoogleDriveTokenClient {
   const now = options.now ?? Date.now;
   const loadOauth2 = options.loadOauth2 ?? loadGoogleOauth2;
+  let loginHint = trimmed(options.loginHint);
+  let identityLabel = trimmed(options.identityLabel);
   let state: DriveAuthorizationState = 'consent-required';
   let token: { accessToken: string; expiresAt: number } | null = null;
   let oauth2: GoogleOauth2 | null = null;
@@ -131,7 +168,9 @@ export function createGoogleDriveTokenClient(
       message:
         state === 'consent-required'
           ? 'Google Drive consent is required.'
-          : 'Sign in to Google to continue Drive synchronization.',
+          : identityLabel
+            ? `Sign in to Google (${identityLabel}) to sync.`
+            : 'Sign in to Google to continue Drive synchronization.',
     };
   }
 
@@ -169,10 +208,12 @@ export function createGoogleDriveTokenClient(
 
     token = null;
     clearExpiryTimer();
-    const nextState =
-      response.error === 'access_denied' || response.error === 'consent_required'
-        ? 'consent-required'
-        : 'gesture-required';
+    const nextState: Exclude<DriveAuthorizationState, 'connected' | 'token-expired'> =
+      response.error === 'invalid_grant' || response.error === 'invalid_token'
+        ? 'revoked'
+        : response.error === 'access_denied' || response.error === 'consent_required'
+          ? 'consent-required'
+          : 'gesture-required';
     replaceState(nextState);
     finish(generation, {
       status: nextState,
@@ -180,7 +221,11 @@ export function createGoogleDriveTokenClient(
         response.error_description ??
         (nextState === 'consent-required'
           ? 'Google Drive consent is required.'
-          : 'A user gesture is required to sign in to Google Drive.'),
+          : nextState === 'revoked'
+            ? identityLabel
+              ? `Sign in to Google (${identityLabel}) to sync.`
+              : 'The Google Drive connection was revoked. Sign in again to sync.'
+            : 'A user gesture is required to sign in to Google Drive.'),
     });
   }
 
@@ -211,28 +256,32 @@ export function createGoogleDriveTokenClient(
     return oauth2ClientPromise;
   }
 
-  function requestAuthorization(readyOauth2: GoogleOauth2): Promise<DriveAccessTokenResult> {
+  function beginAuthorization(): { generation: number; promise: Promise<DriveAccessTokenResult> } {
     const generation = ++authorizationGeneration;
     let resolvePending!: (result: DriveAccessTokenResult) => void;
     const promise = new Promise<DriveAccessTokenResult>((resolve) => {
       resolvePending = resolve;
     });
     pending = { generation, promise, resolve: resolvePending };
+    return { generation, promise };
+  }
 
+  function openPopup(readyOauth2: GoogleOauth2, generation: number): void {
     try {
       const client: GoogleTokenClient = readyOauth2.initTokenClient({
         client_id: options.clientId,
-        scope: DRIVE_APPDATA_SCOPE,
+        scope: DRIVE_FILE_SCOPE,
         include_granted_scopes: false,
+        ...(loginHint ? { hint: loginHint, login_hint: loginHint } : {}),
         callback: (response) => handleResponse(generation, response),
         error_callback: (error) => handlePopupError(generation, error),
       });
-      // This call deliberately remains synchronous with the button gesture.
-      // `prepare()` has already finished loading GIS, so no await can lose the
-      // browser's transient user activation before Google opens its popup.
+      // After `prepare()` this call is reached synchronously from the button
+      // gesture, so no await can lose the browser's transient user activation
+      // before Google opens its popup.
       client.requestAccessToken({
-        prompt: state === 'consent-required' ? 'consent' : '',
-        scope: DRIVE_APPDATA_SCOPE,
+        prompt: state === 'consent-required' || state === 'revoked' ? 'consent' : '',
+        scope: DRIVE_FILE_SCOPE,
         include_granted_scopes: false,
       });
     } catch (cause) {
@@ -245,6 +294,11 @@ export function createGoogleDriveTokenClient(
         });
       }
     }
+  }
+
+  function requestAuthorization(readyOauth2: GoogleOauth2): Promise<DriveAccessTokenResult> {
+    const { generation, promise } = beginAuthorization();
+    openPopup(readyOauth2, generation);
     return promise;
   }
 
@@ -267,17 +321,47 @@ export function createGoogleDriveTokenClient(
       const existing = currentToken();
       if (existing.status === 'ok') return Promise.resolve(existing);
       if (pending) return pending.promise;
-      if (oauth2 == null) {
-        // Begin loading for a later, explicit gesture, but never defer the
-        // popup itself until after that load event. A caller that exposes an
-        // authorization control must await `prepare()` before enabling it.
-        void prepare().catch(() => undefined);
-        return Promise.resolve({
-          status: 'gesture-required',
-          message: 'Google sign-in is still loading. Try again once it is ready.',
-        });
-      }
-      return requestAuthorization(oauth2);
+      if (oauth2 != null) return requestAuthorization(oauth2);
+
+      // Fallback for a caller that never called `prepare()`. Awaiting the GIS
+      // script here can outlive the browser's transient user activation and get
+      // the popup blocked — which is exactly why every control that OWNS an
+      // authorization button prepares first and stays disabled until ready
+      // (#1337). It is kept because the E5 per-connection registry mints a
+      // fresh client per identity at gesture time; refusing to open the popup
+      // here would turn its first click into a silent no-op instead of the
+      // occasionally-blocked popup it has always been.
+      const { generation, promise } = beginAuthorization();
+      void prepare().then(
+        () => {
+          if (pending?.generation !== generation) return;
+          if (oauth2 == null) {
+            replaceState('gesture-required');
+            finish(generation, {
+              status: 'gesture-required',
+              message: 'Google sign-in could not be loaded. Try again.',
+            });
+            return;
+          }
+          openPopup(oauth2, generation);
+        },
+        () => {
+          if (pending?.generation !== generation) return;
+          replaceState('gesture-required');
+          finish(generation, {
+            status: 'gesture-required',
+            message: 'Google sign-in could not be loaded. Try again.',
+          });
+        },
+      );
+      return promise;
+    },
+
+    identify(identity) {
+      const hint = trimmed(identity.loginHint);
+      const label = trimmed(identity.identityLabel);
+      if (hint) loginHint = hint;
+      if (label) identityLabel = label;
     },
 
     clear() {
@@ -297,7 +381,24 @@ export function createGoogleDriveTokenClient(
       });
       expireToken();
     },
+
+    markRevoked() {
+      cancelPending({
+        status: 'revoked',
+        message: identityLabel
+          ? `Sign in to Google (${identityLabel}) to sync.`
+          : 'The Google Drive connection was revoked. Sign in again to sync.',
+      });
+      token = null;
+      clearExpiryTimer();
+      replaceState('revoked');
+    },
   };
+}
+
+function trimmed(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  return text && text.length > 0 ? text : undefined;
 }
 
 let oauth2Promise: Promise<GoogleOauth2> | null = null;

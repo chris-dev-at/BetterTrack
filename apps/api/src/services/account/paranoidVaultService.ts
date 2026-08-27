@@ -68,8 +68,6 @@ export type ParanoidVaultPutResult =
   | { status: 'too_large'; sizeBytes: number; maxBytes: number }
   | { status: 'malformed'; reason: string }
   | { status: 'medium_inactive' }
-  /** Vaults v2 (r2 §11): this account flipped to a v2 vault; legacy is read-only. */
-  | { status: 'migrated_tombstone' }
   | { status: 'proof_key_conflict' };
 
 export type RetiredPurgeChallengeResult =
@@ -275,6 +273,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
     async purgeRetired(userId, input) {
       if (input.observedVersion < input.retiredVersion) return { status: 'proof_invalid' };
       const retirement = await deps.vaults.getRetirementState(userId);
+      // Keep `paranoidVaultRepository.purgeRetired`'s replay guard unreachable: HTTP replays stay not_found here.
       if (!retirement) return { status: 'not_found' };
       if (retirement.retiredVersion !== input.retiredVersion) return { status: 'state_conflict' };
       if (

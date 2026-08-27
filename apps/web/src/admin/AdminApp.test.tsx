@@ -47,6 +47,7 @@ const stats: AdminStats = {
   activeUserCount: 1,
   disabledUserCount: 0,
   pendingInviteCount: 0,
+  pendingRegistrationCount: 0,
 };
 
 /** An enrolled admin: the mandatory-2FA setup gate is satisfied (#400). */
@@ -122,6 +123,18 @@ test('authenticated admins reach the guarded users page', async () => {
   renderAt('/admin/users');
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+});
+
+test('authenticated admins reach the guarded feedback inbox', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(admin);
+  vi.mocked(api.listAdminFeedback).mockResolvedValue({
+    submissions: [],
+    pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+  });
+
+  renderAt('/admin/feedback');
+
+  expect(await screen.findByText('No feedback yet.')).toBeInTheDocument();
 });
 
 test('the admin language control persists across an admin remount', async () => {
@@ -285,10 +298,8 @@ test('an unknown authenticated admin path renders a not-found state without navi
   expect(await screen.findByText('Page not found')).toBeInTheDocument();
   expect(screen.getByText('/admin/blabla', { selector: 'code' })).toBeInTheDocument();
   expect(screen.getByRole('navigation', { name: 'Admin console' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute(
-    'href',
-    '/admin/users',
-  );
+  // "Back to start" is the operator Overview since the #1406 W1 IA landed.
+  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute('href', '/admin');
   expect(screen.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
 
   const pathname = screen.getByTestId('location').textContent;

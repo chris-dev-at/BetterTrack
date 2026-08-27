@@ -10,7 +10,9 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  *   enqueued by the bridge. BullMQ provides the retry/backoff: a still-retryable
  *   failure throws so the queue re-runs it with exponential backoff; the
  *   dispatcher owns the terminal outcome (log row + auto-disable streak). Runs at
- *   {@link WEBHOOK_DELIVER_ATTEMPTS} attempts.
+ *   {@link WEBHOOK_DELIVER_ATTEMPTS} attempts. Idempotency key:
+ *   `(subscription_id, delivery_id)`; `delivery_id` is deterministically derived
+ *   from the logical event and is also the delivery-log primary key.
  * - `webhooks.deliveryCleanup` — a daily sweep that prunes delivery-log rows
  *   older than {@link WEBHOOK_DELIVERY_RETENTION_DAYS}, keeping the per-
  *   subscription log bounded (the `exportJobs` cleanup pattern).

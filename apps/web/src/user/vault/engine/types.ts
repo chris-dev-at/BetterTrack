@@ -35,6 +35,7 @@ export interface ClientPortfolioDerivation {
   ownerUserId: string;
   vaultKeyId: string;
   portfolioId: string;
+  snapshotId: string;
   vaultVersion: number;
   writeId: string;
   assetPriceWatermark: string;
@@ -56,6 +57,7 @@ export interface ClientTaxReport {
   ownerUserId: string;
   vaultKeyId: string;
   portfolioId: string;
+  snapshotId: string;
   report: TaxYearReportResponse;
   computedTaxTargetEur: number;
   vaultVersion: number;

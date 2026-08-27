@@ -64,7 +64,10 @@ export type OAuthClientLookupRow = Pick<
   | 'isFirstParty'
 > & { hasLogo: boolean };
 
-export type OAuthGrantClientRow = Pick<OAuthClientRow, 'clientId' | 'name' | 'scopes'>;
+export type OAuthGrantClientRow = Pick<
+  OAuthClientRow,
+  'clientId' | 'name' | 'scopes' | 'isFirstParty'
+>;
 
 const oauthClientListSelection = {
   id: oauthClients.id,
@@ -89,6 +92,22 @@ const oauthClientLookupSelection = {
   isFirstParty: oauthClients.isFirstParty,
   hasLogo: sql<boolean>`${oauthClients.logoBytes} IS NOT NULL`,
 } as const;
+
+function unionPreservingOrder(existing: readonly string[], additions: readonly string[]): string[] {
+  const merged = [...existing];
+  const seen = new Set(existing);
+  for (const item of additions) {
+    if (!seen.has(item)) {
+      seen.add(item);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
 
 export interface CreateOAuthAuthCodeInput {
   codeHash: string;
@@ -322,25 +341,71 @@ export function createOAuthRepository(db: Database) {
     },
 
     /**
-     * Boot-seed only (#395): converge a first-party client's allowed-scope ceiling
-     * and redirect URIs to the caller-supplied sets. The caller
-     * ({@link seedFirstPartyClients}) always passes the additive UNION of the
-     * stored values with the code-defined definition, so this never narrows an
-     * admin's manual additions. Scoped to `is_first_party` so it can never rewrite
-     * a user-owned app; the `client_id`, secret, name and public flag are
-     * deliberately not settable here. Returns the updated row, or undefined when
-     * the id isn't a first-party app.
+     * Boot-seed only (#395, #1393): converge a first-party client's allowed-scope
+     * ceiling and redirect URIs to the caller-supplied sets, then union that
+     * ceiling into every active grant for the client in the same transaction.
+     * The caller ({@link seedFirstPartyClients}) always passes the additive UNION
+     * of the stored values with the code-defined definition, so neither the client
+     * nor its live grants are narrowed. Revoked grants are deliberately immutable.
+     * The first-party predicate keeps user-owned apps outside this product-owned
+     * reconciliation boundary; `client_id`, secret, name and public flag are not
+     * settable here. Returns the current row, or undefined when the id isn't a
+     * first-party app.
+     *
+     * IDEMPOTENCY KEY: `(oauth_clients.id, oauth_grants.id)` under a union that
+     * is its own fixpoint — once a grant holds the ceiling the length guard
+     * short-circuits it, so a replay (every boot runs this) performs zero writes
+     * and the stored scope arrays keep their existing order. Both the client row
+     * and the active grants are taken `FOR UPDATE` in a single transaction, with
+     * the grants locked in `id` order so two concurrent reconciles cannot
+     * deadlock; `revoked_at IS NULL` is re-asserted in the grant UPDATE so a
+     * grant revoked mid-transaction is never resurrected into a wider scope set.
      */
     async reconcileFirstPartyClient(
       id: string,
       input: { scopes: string[]; redirectUris: string[] },
     ): Promise<OAuthClientRow | undefined> {
-      const [row] = await db
-        .update(oauthClients)
-        .set({ scopes: input.scopes, redirectUris: input.redirectUris })
-        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
-        .returning();
-      return row;
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [stored] = await executor
+          .select()
+          .from(oauthClients)
+          .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+          .limit(1)
+          .for('update');
+        if (!stored) return undefined;
+
+        let client = stored;
+        if (
+          !arraysEqual(stored.scopes, input.scopes) ||
+          !arraysEqual(stored.redirectUris, input.redirectUris)
+        ) {
+          const [updated] = await executor
+            .update(oauthClients)
+            .set({ scopes: input.scopes, redirectUris: input.redirectUris })
+            .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+            .returning();
+          if (!updated) throw new Error('Failed to reconcile first-party OAuth client');
+          client = updated;
+        }
+
+        const activeGrants = await executor
+          .select({ id: oauthGrants.id, scopes: oauthGrants.scopes })
+          .from(oauthGrants)
+          .where(and(eq(oauthGrants.clientId, stored.id), isNull(oauthGrants.revokedAt)))
+          .orderBy(oauthGrants.id)
+          .for('update');
+        for (const grant of activeGrants) {
+          const scopes = unionPreservingOrder(grant.scopes, input.scopes);
+          if (scopes.length === grant.scopes.length) continue;
+          await executor
+            .update(oauthGrants)
+            .set({ scopes })
+            .where(and(eq(oauthGrants.id, grant.id), isNull(oauthGrants.revokedAt)));
+        }
+
+        return client;
+      });
     },
 
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
@@ -411,6 +476,7 @@ export function createOAuthRepository(db: Database) {
             clientId: oauthClients.clientId,
             name: oauthClients.name,
             scopes: oauthClients.scopes,
+            isFirstParty: oauthClients.isFirstParty,
           },
         })
         .from(oauthGrants)
@@ -530,7 +596,7 @@ export function createOAuthRepository(db: Database) {
           token: OAuthAccessTokenRow;
           grant: OAuthGrantRow;
           user: UserRow;
-          client: Pick<OAuthClientRow, 'scopes'>;
+          client: Pick<OAuthClientRow, 'scopes' | 'isFirstParty'>;
         }
       | undefined
     > {
@@ -539,7 +605,10 @@ export function createOAuthRepository(db: Database) {
           token: oauthAccessTokens,
           grant: oauthGrants,
           user: users,
-          client: { scopes: oauthClients.scopes },
+          client: {
+            scopes: oauthClients.scopes,
+            isFirstParty: oauthClients.isFirstParty,
+          },
         })
         .from(oauthAccessTokens)
         .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))

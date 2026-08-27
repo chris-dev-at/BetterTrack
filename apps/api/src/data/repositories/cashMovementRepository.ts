@@ -126,7 +126,7 @@ type CashMovementUpdatePatch = {
 /**
  * Serialize per-portfolio mutations whose correctness depends on one coherent
  * active ledger/portfolio boundary. Cash-ledger mutations use it for the
- * solvency gate and open-year tax reconciler; archive transitions use it to
+ * solvency gate and live tax reconciler; archive transitions use it to
  * close that same boundary against standing-order writes.
  *
  * Keying is deliberately per portfolio: PostgreSQL's one-int advisory-lock

@@ -6,6 +6,7 @@ import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
+import { portfolioDisplayName } from '../portfolio/lockedPortfolio';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
@@ -19,7 +20,12 @@ import {
   setWidgetSize,
   type WidgetType,
 } from './config';
-import { resolveWidgetScope, usePortfoliosQuery, type ResolvedScope } from './homeData';
+import {
+  portfoliosVisibleToWidget,
+  resolveWidgetScope,
+  usePortfoliosQuery,
+  type ResolvedScope,
+} from './homeData';
 import { useHomeBoard } from './homeSync';
 import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
@@ -104,12 +110,12 @@ function sameAxes(a: readonly PlacementAxis[], b: readonly PlacementAxis[]): boo
 }
 
 /**
- * The widget board, except on a paranoid account: its widgets read
- * `portfolioApi` directly instead of the store seam, so they would mix server
- * reads into an encrypted account. `/` then renders the portfolio page and the
- * saved board (localStorage — never vault or server data) comes back untouched
- * on disable. Recorded as kill-list item 13 in docs/paranoid-design.md §8 and
- * in PROJECTPLAN §16 (2026-07-31, issue #729).
+ * The widget board, except on a legacy account-wide paranoid account. `/` then
+ * renders the portfolio page and the saved board (localStorage — never vault or
+ * server data) comes back untouched on disable. Mixed per-portfolio vault
+ * accounts remain on the board; its headline reads now go through the portfolio
+ * store and E6's qualified composition boundary, so a vaulted server refusal can
+ * never become an unlabelled zero contribution.
  */
 export function HomePage() {
   const privacyMode = useResolvedPrivacyMode();
@@ -265,9 +271,18 @@ function HomeBoard() {
    * without opening the settings.
    */
   function scopeTag(scope: ResolvedScope): ScopeTag | null {
-    if (scope.mode === 'single') return { label: scope.single?.name ?? '', detail: null };
+    if (scope.mode === 'single') {
+      return {
+        label: scope.single
+          ? portfolioDisplayName(scope.single, t('vault.lockedStub.fallbackAlias'))
+          : '',
+        detail: null,
+      };
+    }
     if (scope.mode !== 'subset') return null;
-    const names = scope.portfolios.map((portfolio) => portfolio.name).join(', ');
+    const names = scope.portfolios
+      .map((portfolio) => portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias')))
+      .join(', ');
     return {
       label: t('home.builder.scopeCount', { count: scope.portfolios.length }),
       detail: names,
@@ -326,7 +341,8 @@ function HomeBoard() {
         <div className={cx('bt-home-grid', editing && 'is-editing')} ref={gridRef}>
           {config.widgets.map((widget, index) => {
             const definition = widgetDefinition(widget.type);
-            const scope = resolveWidgetScope(portfolios, widget.settings, {
+            const availablePortfolios = portfoliosVisibleToWidget(portfolios, definition);
+            const scope = resolveWidgetScope(availablePortfolios, widget.settings, {
               supportsScope: definition.supportsScope,
               allowsAll: definition.scopeAllowsAll !== false,
             });
@@ -359,13 +375,13 @@ function HomeBoard() {
                 onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
                 placeAfter={isLast ? target(config.widgets.length) : null}
                 placeBefore={target(index)}
-                portfolios={portfolios}
+                portfolios={availablePortfolios}
                 scopeTag={scopeTag(scope)}
                 widget={widget}
               >
                 <Component
                   onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
-                  portfolios={portfolios}
+                  portfolios={availablePortfolios}
                   portfoliosLoading={portfoliosQuery.isLoading}
                   scopedPortfolio={scope.single}
                   scopedPortfolios={scope.portfolios}

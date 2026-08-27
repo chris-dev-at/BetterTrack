@@ -188,7 +188,7 @@ describe('FI mode: progressive capital-income tax (#635)', () => {
     });
 
     // Year totals: realized 35,000 + 2,000 − 1,200 = 35,800; dividends 1,000;
-    // net = 30 % × 30,000 + 34 % × 6,800 = 11,312. No DE block, not locked.
+    // net = 30 % × 30,000 + 34 % × 6,800 = 11,312. No DE block.
     const years = await yearSummaries(agent, pid);
     expect(years).toHaveLength(1);
     expect(years[0]).toMatchObject({
@@ -200,10 +200,9 @@ describe('FI mode: progressive capital-income tax (#635)', () => {
       taxNetEur: 11_312,
     });
     expect(years[0]!.de).toBeUndefined();
-    expect(years[0]!.locked).toBeUndefined();
   });
 
-  it('switching AT→FI re-derives the open year progressively (#635 live model)', async () => {
+  it('switching AT→FI re-derives the year progressively', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);

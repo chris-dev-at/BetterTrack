@@ -58,6 +58,10 @@ function setup({
     markExpired: vi.fn(() => {
       state = 'token-expired';
     }),
+    markRevoked: vi.fn(() => {
+      state = 'revoked';
+    }),
+    identify: vi.fn(),
   };
   const switcher: VaultMediaSwitcher = {
     add: vi.fn(

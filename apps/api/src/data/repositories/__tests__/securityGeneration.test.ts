@@ -14,7 +14,7 @@ describe('account security generation repositories (#888)', () => {
   });
 
   afterEach(async () => {
-    await harness.ctx.redis.quit?.();
+    await harness.dispose();
   });
 
   it('starts safely at zero and changes role in the same row update as the increment', async () => {

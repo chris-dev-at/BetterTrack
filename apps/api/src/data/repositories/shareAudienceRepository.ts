@@ -34,6 +34,9 @@ import {
  * `subject_id` is polymorphic (a portfolio / conglomerate / watchlist id, no
  * FK), so the authorization queries INNER JOIN the concrete subject table: a
  * deleted or archived subject is unreadable even if a stale audience row lingers.
+ * A portfolio locked into a vault is equally unreadable here: every portfolio
+ * discovery/authorization query requires `vault_id IS NULL`, so stale grants
+ * and public-link tokens remain opaque while E4 performs their durable revoke.
  */
 
 /** Public-safe owner identity returned by every authorization query (§6.9). */
@@ -175,6 +178,7 @@ export function createShareAudienceRepository(db: Database) {
           and(
             eq(portfolios.id, portfolioId),
             isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
             audienceGrants(viewerId),
           ),
         )
@@ -283,7 +287,13 @@ export function createShareAudienceRepository(db: Database) {
             and(eq(shareAudiences.kind, 'portfolio'), eq(shareAudiences.subjectId, portfolios.id)),
           )
           .innerJoin(friendships, friendshipWith(viewerId, portfolios.userId))
-          .where(and(isNull(portfolios.archivedAt), audienceGrants(viewerId))),
+          .where(
+            and(
+              isNull(portfolios.archivedAt),
+              isNull(portfolios.vaultId),
+              audienceGrants(viewerId),
+            ),
+          ),
         db
           .selectDistinct({ ownerId: conglomerates.ownerId })
           .from(conglomerates)
@@ -350,6 +360,7 @@ export function createShareAudienceRepository(db: Database) {
         .where(
           and(
             isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
             audienceGrants(viewerId),
             ownerIds ? inArray(portfolios.userId, [...ownerIds]) : undefined,
           ),
@@ -478,7 +489,13 @@ export function createShareAudienceRepository(db: Database) {
             eq(shareAudiences.audience, 'public_link'),
           ),
         )
-        .where(and(eq(portfolios.userId, ownerId), isNull(portfolios.archivedAt)))
+        .where(
+          and(
+            eq(portfolios.userId, ownerId),
+            isNull(portfolios.archivedAt),
+            isNull(portfolios.vaultId),
+          ),
+        )
         .orderBy(asc(portfolios.name));
     },
 
@@ -565,6 +582,7 @@ export function createShareAudienceRepository(db: Database) {
               eq(portfolios.id, subjectId),
               eq(portfolios.userId, ownerId),
               isNull(portfolios.archivedAt),
+              isNull(portfolios.vaultId),
             ),
           )
           .limit(1);
@@ -637,7 +655,13 @@ export function createShareAudienceRepository(db: Database) {
             shareAudiences,
             and(eq(shareAudiences.subjectId, portfolios.id), publicAudience),
           )
-          .where(and(eq(portfolios.id, subjectId), isNull(portfolios.archivedAt)))
+          .where(
+            and(
+              eq(portfolios.id, subjectId),
+              isNull(portfolios.archivedAt),
+              isNull(portfolios.vaultId),
+            ),
+          )
           .limit(1);
         return row;
       }
@@ -730,7 +754,13 @@ export function createShareAudienceRepository(db: Database) {
         const [row] = await db
           .select({ name: portfolios.name })
           .from(portfolios)
-          .where(and(eq(portfolios.id, subjectId), isNull(portfolios.archivedAt)))
+          .where(
+            and(
+              eq(portfolios.id, subjectId),
+              isNull(portfolios.archivedAt),
+              isNull(portfolios.vaultId),
+            ),
+          )
           .limit(1);
         return row;
       }
@@ -803,7 +833,13 @@ export function createShareAudienceRepository(db: Database) {
         const [row] = await db
           .select({ id: portfolios.id })
           .from(portfolios)
-          .where(and(eq(portfolios.id, subjectId), eq(portfolios.userId, ownerId)))
+          .where(
+            and(
+              eq(portfolios.id, subjectId),
+              eq(portfolios.userId, ownerId),
+              isNull(portfolios.vaultId),
+            ),
+          )
           .limit(1);
         return row !== undefined;
       }

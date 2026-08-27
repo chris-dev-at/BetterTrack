@@ -44,18 +44,24 @@ import { createMarketIntelRouter } from './http/routes/marketIntelRoutes';
 import { createMirrorchainRouter } from './http/routes/mirrorchainRoutes';
 import { createNotificationsRouter } from './http/routes/notificationsRoutes';
 import { createOAuthPublicRouter, createOAuthRouter } from './http/routes/oauthRoutes';
-import { createPortfolioRouter } from './http/routes/portfolioRoutes';
+import {
+  createPortfolioRouter,
+  isPortfolioVaultMoveOutHttpPath,
+} from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
 import { createStandingOrdersRouter } from './http/routes/standingOrdersRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
-import { createVaultRouter } from './http/routes/vaultRoutes';
-import { createVaultsRouter, VAULTS_CREATE_HTTP_PATH } from './http/routes/vaultsRoutes';
-import { createVaultedPortfolioRouteGuard } from './services/vault/vaultedPortfolioGuard';
+import {
+  createDriveConnectionsRouter,
+  createVaultRouter,
+  createVaultsRouter,
+} from './http/routes/vaultRoutes';
 import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
 import { createParanoidRouteGuard } from './services/account/paranoidEnforcement';
+import { createVaultedPortfolioRouteGuard } from './services/account/vaultedPortfolioEnforcement';
 
 // Side-effect import: augments Express's Request type (req.authUser, etc.).
 import './http/types';
@@ -89,27 +95,17 @@ export function createApp(ctx: AppContext) {
   app.use((req, res, next) => {
     // The decrypted restore is a deflate-expanded multiple of the bounded
     // encrypted envelope (see `PARANOID_RESTORE_PLAINTEXT_FACTOR`).
-    // Defer that one parser to the route, after authentication + its vault rate
-    // limiter; every other JSON request keeps the 100 KiB global bound. The
-    // route re-applies this same bound for any caller that is not paranoid, so
-    // the deferral widens nothing for an account with nothing to restore.
+    // Defer restore parsers to their routes, after authentication + the vault
+    // rate limiter; every other JSON request keeps the 100 KiB global bound.
+    // The account-disable route re-applies this same bound for callers that are
+    // not paranoid, so the deferral widens nothing with nothing to restore.
     // Express routes case-insensitively by default, so match the same way —
     // otherwise `/Disable` reaches the handler under the 100 KiB bound and 413s.
     const path = req.path.toLowerCase();
     if (
-      req.method === 'POST' &&
-      (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)
-    ) {
-      next();
-      return;
-    }
-    // Vaults v2 create carries the client-built header inline as base64, and the
-    // header cap is 1 MiB — which base64 inflates past the 100 KiB global bound.
-    // Same deferral pattern, same reason: the route re-applies a bound derived
-    // from the header cap itself, so nothing else widens.
-    if (
-      req.method === 'POST' &&
-      (path === VAULTS_CREATE_HTTP_PATH || path === `${VAULTS_CREATE_HTTP_PATH}/`)
+      (req.method === 'POST' &&
+        (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)) ||
+      isPortfolioVaultMoveOutHttpPath(req.method, path)
     ) {
       next();
       return;
@@ -139,10 +135,12 @@ export function createApp(ctx: AppContext) {
 
   // Order: bearer (API-key) auth → cookie session → general rate limit (per
   // user) → per-key rate limit (bearer only) → CSRF guard (skipped for bearer)
-  // → forced-password-change guard → API-key scope enforcement. Bearer runs
-  // first so a `Authorization: Bearer btk_…` request resolves its principal and
-  // the cookie path stands down; the scope guard runs last so it sees the
-  // resolved principal and covers every /api/v1 router by default (§6.13).
+  // → forced-password-change guard → legacy paranoid guard → API-key scope
+  // enforcement → resource-sensitive vaulted-portfolio guard. Bearer runs first
+  // so a `Authorization: Bearer btk_…` request resolves its principal and the
+  // cookie path stands down. Scope authorization precedes vault lookup so an
+  // under-scoped bearer gets its audited refusal without learning target state;
+  // cookie sessions pass the scope no-op and still reach the portfolio guard.
   app.use('/api/v1', loadBearerAuth(ctx));
   // Per-key request-log audit capture (§13.5 V5-P10, issue 2/2): registers a
   // `finish` hook for personal-API-key requests HERE — right after the principal
@@ -177,23 +175,13 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
   app.use('/api/v1', createParanoidRouteGuard());
-  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the PORTFOLIO-scoped counterpart
-  // of the rail above. Mounted immediately after it, for the same reason and
-  // with the same error code — a vaulted portfolio's cleartext was purged at
-  // join time, so every server-side surface that names it must refuse.
-  app.use(
-    '/api/v1',
-    createVaultedPortfolioRouteGuard({
-      isPortfolioVaulted: (userId, portfolioId) =>
-        ctx.vaults.isPortfolioVaulted(userId, portfolioId),
-    }),
-  );
   app.use('/api/v1', enforceApiKeyScope(ctx));
+  app.use('/api/v1', createVaultedPortfolioRouteGuard(ctx.vaultedPortfolioGuard));
 
   // First-party usage capture (§13.5 V5-P2 arc (b)): folds one in-memory signal
   // per authenticated request on `finish` (no route, no third-party tracker).
   // Mounted after the auth chain so `req.authUser` is resolved for the capture.
-  app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics));
+  app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics, ctx.vaultedPortfolioGuard));
 
   // SPA-bootstrap advertisement of the effective runtime feature flags (§13.5
   // V5-P2 arc (c)): the client reads this to hide any killed surface. Read-only
@@ -224,7 +212,7 @@ export function createApp(ctx: AppContext) {
   // the service (returns the "unconfigured" shape), so the router is always
   // mounted — off ⇒ 200 with `available: false`, never a 404.
   app.use('/api/v1/assets', createMarketIntelRouter(ctx));
-  app.use('/api/v1/portfolios', createPortfolioRouter(ctx));
+  app.use('/api/v1/portfolios', createPortfolioRouter(ctx, limiters));
   app.use('/api/v1/standing-orders', createStandingOrdersRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
@@ -260,11 +248,8 @@ export function createApp(ctx: AppContext) {
   // client-encrypted vault (§13.5 V5-P13 arc b). Opaque GET/PUT with ETag CAS,
   // a size cap and a dedicated per-user write limiter.
   app.use('/api/v1/vault', createVaultRouter(ctx, limiters));
-  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) — the multi-vault surface beside
-  // the legacy account-singleton routes above, which keep serving unchanged for
-  // the migration window. Vault CRUD is session-only; the `{vaultId}`-scoped
-  // header/portfolio documents accept the same `vault:sync` bearer exception.
   app.use('/api/v1/vaults', createVaultsRouter(ctx, limiters));
+  app.use('/api/v1/drive-connections', createDriveConnectionsRouter(ctx, limiters));
   // Session-authenticated OAuth consent endpoints (authorize + authorization-
   // details). The public /oauth/token router above already handled its path.
   app.use('/api/v1/oauth', createOAuthRouter(ctx));

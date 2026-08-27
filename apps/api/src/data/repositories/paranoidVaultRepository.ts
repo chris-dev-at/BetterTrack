@@ -151,8 +151,6 @@ export type ParanoidVaultCasResult =
   | { status: 'ok'; version: number; updatedAt: Date }
   | { status: 'precondition_failed'; currentVersion: number | null }
   | { status: 'medium_inactive' }
-  /** Vaults v2 (r2 §11): this account flipped to a v2 vault; legacy is read-only. */
-  | { status: 'migrated_tombstone' }
   | { status: 'proof_key_conflict' };
 
 export interface ParanoidVaultHistoryListInput {
@@ -600,18 +598,6 @@ export function createParanoidVaultRepository(
         retirementProofPublicKey = null,
       } = input;
       return db.transaction(async (tx) => {
-        // Vaults v2 migration commit point (design r2 §11), checked FIRST: once
-        // `migrated_to` is set the legacy vault is a READ-ONLY TOMBSTONE, and
-        // that is true regardless of the account's mode or media selection — a
-        // write would fork the account's truth across two authoritative stores.
-        // The flag is terminal and never cleared, so an unlocked read of it
-        // cannot go stale in the direction that matters.
-        const [migrated] = await tx
-          .select({ migratedTo: paranoidVaults.migratedTo })
-          .from(paranoidVaults)
-          .where(eq(paranoidVaults.userId, userId));
-        if (migrated?.migratedTo) return { status: 'migrated_tombstone' } as const;
-
         const [owner] = await tx
           .select({ privacyMode: users.privacyMode, mediaSet: users.paranoidMediaSet })
           .from(users)
@@ -643,11 +629,6 @@ export function createParanoidVaultRepository(
           .from(paranoidVaults)
           .where(eq(paranoidVaults.userId, userId))
           .for('update');
-
-        // Re-checked under the row lock: the early probe above answers the
-        // common case without waiting, this one closes the race with a flip
-        // that commits between the two reads.
-        if (current?.migratedTo) return { status: 'migrated_tombstone' } as const;
 
         if (expectedVersion === null) {
           if (current) return { status: 'precondition_failed', currentVersion: current.version };
@@ -1146,7 +1127,33 @@ export function createParanoidVaultRepository(
           candidate ?? null,
           retirement ?? null,
         );
-        if (!retirement) return { status: 'not_found' } as const;
+        if (!retirement) {
+          // `(userId, retiredVersion)` is the retirement purge's natural
+          // idempotency key. Once that row is gone, the surviving Drive
+          // attestation lets an exact/older replay converge as a clean no-op;
+          // a future version or any remaining server medium is still unknown.
+          // The postcondition is asserted, not inferred: this reads the retired
+          // set under the same lock rather than deducing emptiness from the
+          // media columns.
+          const [remainingRetired] = await tx
+            .select({ version: paranoidVaultRetired.version })
+            .from(paranoidVaultRetired)
+            .where(eq(paranoidVaultRetired.userId, input.userId))
+            .limit(1);
+          const alreadyPurged =
+            !remainingRetired &&
+            !selection.mediaSet.includes('server') &&
+            !active &&
+            !candidate &&
+            selection.driveAttestedVersion !== null &&
+            input.retiredVersion <= selection.driveAttestedVersion;
+          if (!alreadyPurged) return { status: 'not_found' } as const;
+          // `ok` is the answer to a verified proof on every path, replay
+          // included — the same defence-in-depth guard the destructive path
+          // below carries behind the `proofVerified: true` literal marker.
+          if (!input.proofVerified) return { status: 'proof_required' } as const;
+          return { status: 'ok' } as const;
+        }
         // A staged candidate is still server-held ciphertext. Do not report a
         // successful retirement purge unless this transaction leaves no server
         // bytes behind; preserving the candidate lets its owner either promote

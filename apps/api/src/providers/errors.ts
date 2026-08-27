@@ -25,23 +25,61 @@ export class AssetNotFoundError extends Error {
   }
 }
 
+type YahooEnvelopeStatus = 404 | 429;
+
+const YAHOO_ENVELOPE_ERROR_NAMES: Record<YahooEnvelopeStatus, string> = {
+  404: 'NotFoundError',
+  429: 'TooManyRequestsError',
+};
+
+const YAHOO_ENVELOPE_ERROR_MESSAGES: Record<YahooEnvelopeStatus, ReadonlySet<string>> = {
+  404: new Set(['No data found, symbol may be delisted']),
+  429: new Set(['Too Many Requests']),
+};
+
+// Every entry must remain ^…$-anchored — see the rationale in the doc block below.
+const YAHOO_ENVELOPE_ERROR_PATTERNS: Partial<Record<YahooEnvelopeStatus, readonly RegExp[]>> = {
+  404: [/^Quote not found for ticker symbol: .+$/],
+};
+
+/**
+ * `yahoo-finance2` checks Yahoo's JSON error envelope before `response.ok`.
+ * That path derives a class name from the envelope's string `code`, but v4
+ * falls back to a plain `Error` for names it does not export and never copies
+ * the numeric HTTP status onto the error. Keep these fallbacks deliberately
+ * narrow: the derived Yahoo name (or plain fallback) must be paired with one
+ * of Yahoo's known status descriptions. `yahoo-finance2` throws the envelope's
+ * `description` as the message, never its `code`, so bare `'Not Found'` is
+ * deliberately absent as unattested. Every `YAHOO_ENVELOPE_ERROR_PATTERNS`
+ * entry must remain start- and end-anchored (`^…$`) because a match feeds the
+ * negative cache.
+ */
+function isYahooEnvelopeStatusError(err: unknown, status: YahooEnvelopeStatus): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name !== 'Error' && err.name !== YAHOO_ENVELOPE_ERROR_NAMES[status]) return false;
+  return (
+    YAHOO_ENVELOPE_ERROR_MESSAGES[status].has(err.message) ||
+    YAHOO_ENVELOPE_ERROR_PATTERNS[status]?.some((pattern) => pattern.test(err.message)) === true
+  );
+}
+
 /**
  * True for errors that mean "this asset does not exist upstream": our own
- * {@link AssetNotFoundError} or a `yahoo-finance2` HTTPError with numeric
- * `code === 404`. Deliberately never matches `ApiError` (its `code` is a
- * string) — local providers' not-founds (e.g. a manual asset the user is about
- * to create) must not be negative-cached.
+ * {@link AssetNotFoundError}, a `yahoo-finance2` HTTPError with numeric
+ * `code === 404`, or its JSON-envelope equivalent. Deliberately never matches
+ * `ApiError` (its `code` is a string) — local providers' not-founds (e.g. a
+ * manual asset the user is about to create) must not be negative-cached.
  */
 export function isNotFoundError(err: unknown): boolean {
   if (err instanceof AssetNotFoundError) return true;
   const code = (err as { code?: unknown } | null | undefined)?.code;
-  return code === 404;
+  return code === 404 || isYahooEnvelopeStatusError(err, 404);
 }
 
-/** True for an upstream rate-limit response (`yahoo-finance2` HTTPError, code 429). */
+/** True for a Yahoo numeric HTTPError or JSON-envelope rate-limit response. */
 export function isRateLimitError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null | undefined)?.code;
-  return code === 429;
+  return code === 429 || isYahooEnvelopeStatusError(err, 429);
 }
 
 /**

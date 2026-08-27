@@ -16,6 +16,7 @@ import {
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
   createWebhookSubscriptionResponseSchema,
+  isParanoidKilledWebhookEventType,
   webhookDeliveryListResponseSchema,
   webhookSubscriptionListResponseSchema,
 } from '@bettertrack/contracts';
@@ -513,6 +514,53 @@ describe('signed delivery', () => {
     );
   });
 
+  it('drops a stale queued portfolio delivery after its target moves into a vault', async () => {
+    const delivered: string[] = [];
+    const checkedSubjects: string[][] = [];
+    const definition = {
+      name: 'webhooks.deliver',
+      async handler(job) {
+        delivered.push(job.data.event.type);
+      },
+    } as JobDefinition<'webhooks.deliver'>;
+    const guarded = bindParanoidJob(definition, {
+      mode: 'event',
+      isEventAllowed: async (event) => event.type !== 'standing_order.skipped',
+      runIfAllowed: async (userIds, action) => {
+        checkedSubjects.push([...userIds]);
+        await action();
+        return true;
+      },
+    });
+    const event: DomainEvent = {
+      // TEST VECTOR: this is an actually subscribable payload whose portfolio
+      // must be re-attributed from standingOrderId after the account lock.
+      type: 'standing_order.skipped',
+      userId: 'normal-owner',
+      standingOrderId: '018f1412-0000-7000-8000-000000000101',
+      periodKey: '2026-08-21',
+      outcome: 'deferred',
+      orderLabel: 'TEST VECTOR order',
+      occurredAt: '2026-08-21T10:00:00.000Z',
+    };
+
+    await guarded.handler(
+      {
+        data: {
+          subscriptionId: 'subscription-stale-vault',
+          deliveryId: 'delivery-stale-vault',
+          event,
+        },
+      } as never,
+      { logger: harness.ctx.logger } as never,
+    );
+
+    expect(delivered).toEqual([]);
+    // The vault re-check runs inside the subject-locked action; a pre-lock check
+    // would leave a move-in race between admission and external delivery.
+    expect(checkedSubjects).toEqual([['normal-owner']]);
+  });
+
   it('checks mirror recipient, actor, owner, and affected subjects before webhook enqueue', async () => {
     const recipient = await createSubscription([...MIRROR_WEBHOOK_TYPES]);
     const actor = await harness.seedUser({
@@ -929,9 +977,22 @@ describe('subscribable catalog', () => {
     );
     expect(killedByRegistry).toHaveLength(18);
     expect([...PARANOID_KILLED_WEBHOOK_EVENT_TYPES].sort()).toEqual([...killedByRegistry].sort());
+    expect(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS['feedback.status_changed'].disposition).toBe(
+      'allowed',
+    );
+    expect(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS['feedback.reply_created'].disposition).toBe(
+      'allowed',
+    );
     // `portfolio.changed` is killed by the registry but is not subscribable, so
     // the contracts list is a strict subset of the registry union by design.
     expect(isParanoidKilledWebhookEvent({ type: 'portfolio.changed' } as DomainEvent)).toBe(true);
     expect(WEBHOOK_EVENT_TYPES as readonly string[]).not.toContain('portfolio.changed');
+  });
+
+  it('returns false for a webhook event type outside the current catalog', () => {
+    expect(isParanoidKilledWebhookEventType('future.unknown')).toBe(false);
+    expect(isParanoidKilledWebhookEventType('constructor')).toBe(false);
+    expect(isParanoidKilledWebhookEventType('toString')).toBe(false);
+    expect(isParanoidKilledWebhookEventType('__proto__')).toBe(false);
   });
 });

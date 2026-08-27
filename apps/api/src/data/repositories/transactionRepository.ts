@@ -555,7 +555,7 @@ export function createTransactionRepository(db: Database) {
 
     /**
      * Delete a transaction and append its tax corrections as one unit. The
-     * cash-ledger advisory lock comes first, matching open-year reconciliation;
+     * cash-ledger advisory lock comes first, matching live tax reconciliation;
      * a failure after the parent delete therefore rolls the cascade and every
      * correction back without introducing a lock-order inversion.
      */

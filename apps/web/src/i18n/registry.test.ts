@@ -1,11 +1,23 @@
 import { describe, expect, test } from 'vitest';
 
-import { NOTIFICATION_MESSAGE_KEYS, VAULT_MEDIA } from '@bettertrack/contracts';
+import {
+  ADMIN_BACKUP_STATUS_LEVELS,
+  ADMIN_BACKUP_STATUS_REASONS,
+  FEEDBACK_STATUSES,
+  NOTIFICATION_MESSAGE_KEYS,
+  VAULT_MEDIA,
+} from '@bettertrack/contracts';
 
 import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
-import { VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
+import { VAULT_AGGREGATE_SYNC_STATES, VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
+import {
+  VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES,
+  VaultTransferPayloadError,
+} from '../user/vault/qr/payload';
 import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
+import { payloadErrorKey } from '../user/vault/ui/VaultReceivePhrase';
+import { VAULT_STATE_AFFORDANCES } from '../user/vault/vaultStateAffordance';
 import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
 
@@ -51,6 +63,25 @@ test('registers every not-found string in EN and DE', () => {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
     }
   }
+});
+
+test('registers the submitter-facing helpdesk flow labels in EN and DE', () => {
+  for (const locale of Object.values(LOCALES)) {
+    for (const status of FEEDBACK_STATUSES) {
+      const key = `feedback.status.${status}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const key of ['feedback.status.comingIn', 'feedback.status.declinedWithReason']) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+
+  expect(localizedMessage('en', 'feedback.status.new')).toBe('Sent');
+  expect(localizedMessage('en', 'feedback.status.triaged')).toBe('Read / in review');
+  expect(localizedMessage('en', 'feedback.status.working_on_it')).toBe('In progress');
+  expect(localizedMessage('en', 'feedback.status.saved_as_future_idea')).toBe(
+    'On the waiting list',
+  );
 });
 
 test('registers title/body copy for every dispatcher notification message key', () => {
@@ -107,6 +138,30 @@ test('registers copy for every vault portfolio-store error code in EN and DE', (
   }
 });
 
+test('registers copy for every btvault transfer payload outcome in EN and DE', () => {
+  // The scanner's only channel to the user is `payloadErrorKey`, and the
+  // outcome vocabulary is a frozen cross-client contract — adding a member
+  // (`malformed`, #1508) must not be able to land without its copy. Read each
+  // catalog DIRECTLY rather than through `localizedMessage`: that resolver
+  // falls back to EN, so an outcome missing only its DE entry would still
+  // return a real sentence and pass. A key typo'd onto a *different* real key
+  // resolves in both catalogs, so the uniqueness assertion is what catches it.
+  const catalogs = Object.values(LOCALES).map((l) => [l.code, flatten(l.messages)] as const);
+  expect(catalogs.map(([code]) => code)).toEqual(expect.arrayContaining(['en', 'de']));
+
+  const keys = VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES.map((outcome) => {
+    const key = payloadErrorKey(new VaultTransferPayloadError(outcome));
+    for (const [code, flat] of catalogs) {
+      const value = flat.get(key);
+      expect(typeof value, `${code}: ${outcome} -> ${key} does not resolve`).toBe('string');
+      expect(value, `${code}: ${outcome} -> ${key} is blank`).not.toBe('');
+    }
+    return key;
+  });
+
+  expect(new Set(keys).size, `two outcomes share a key: ${keys.join(', ')}`).toBe(keys.length);
+});
+
 test('registers progress + error copy for every paranoid enable stage in EN and DE', () => {
   // `ParanoidEnableWizard` builds both keys with a template literal, so a stage
   // missing from BOTH catalogs is parity-clean and still paints its raw
@@ -121,6 +176,37 @@ test('registers progress + error copy for every paranoid enable stage in EN and 
   }
 });
 
+test('registers the portfolio move wizard and its server-readable warning in EN and DE', () => {
+  const keys = [
+    'vault.portfolioMove.stepUpHint',
+    'vault.portfolioMove.moveIn.title',
+    'vault.portfolioMove.moveIn.warning',
+    'vault.portfolioMove.moveIn.action',
+    'vault.portfolioMove.moveIn.working',
+    'vault.portfolioMove.moveIn.done',
+    'vault.portfolioMove.moveIn.error',
+    'vault.portfolioMove.moveOut.title',
+    'vault.portfolioMove.moveOut.unlockRequired',
+    'vault.portfolioMove.moveOut.warning',
+    'vault.portfolioMove.moveOut.confirm',
+    'vault.portfolioMove.moveOut.action',
+    'vault.portfolioMove.moveOut.working',
+    'vault.portfolioMove.moveOut.done',
+    'vault.portfolioMove.moveOut.error',
+  ];
+  for (const locale of Object.values(LOCALES)) {
+    for (const key of keys) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+  expect(localizedMessage('en', 'vault.portfolioMove.moveOut.warning')).toContain(
+    'server-readable again',
+  );
+  expect(localizedMessage('de', 'vault.portfolioMove.moveOut.warning')).toContain(
+    'für den BetterTrack-Server wieder lesbar',
+  );
+});
+
 test('registers status copy for every vault sync state and medium in EN and DE', () => {
   // Same blind spot as the enable stages: `VaultSyncChip` renders
   // `vault.sync.status.<state>` and `vault.sync.medium.<medium>` as template
@@ -133,6 +219,81 @@ test('registers status copy for every vault sync state and medium in EN and DE',
     }
     for (const medium of VAULT_MEDIA) {
       const key = `vault.sync.medium.${medium}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const state of VAULT_AGGREGATE_SYNC_STATES) {
+      for (const key of [
+        `vault.sync.aggregate.${state}`,
+        `vault.sync.aggregate.row.${state}`,
+        `vault.sync.aggregate.rowState.${state}`,
+      ]) {
+        expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+      }
+    }
+    for (const affordance of Object.values(VAULT_STATE_AFFORDANCES)) {
+      for (const key of [affordance.labelKey, affordance.stateKey]) {
+        expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+      }
+    }
+    for (const key of [
+      'vault.sync.aggregate.lockedOne',
+      'vault.sync.aggregate.signInGoogle',
+      'vault.sync.aggregate.openRestore',
+      'vault.manager.action.scanQr',
+      'vault.manager.access.restore',
+    ]) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+});
+
+test('registers singular and plural locked-portfolio qualifiers in EN and DE', () => {
+  for (const locale of Object.values(LOCALES)) {
+    for (const suffix of ['One', 'Other']) {
+      const key = `vaultComposition.lockedPortfoliosQualifier${suffix}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+
+  expect(localizedMessage('en', 'vaultComposition.lockedPortfoliosQualifierOne')).toBe(
+    '+ {{count}} locked portfolio',
+  );
+  expect(localizedMessage('en', 'vaultComposition.lockedPortfoliosQualifierOther')).toBe(
+    '+ {{count}} locked portfolios',
+  );
+  expect(localizedMessage('de', 'vaultComposition.lockedPortfoliosQualifierOne')).toBe(
+    '+ {{count}} gesperrtes Portfolio',
+  );
+  expect(localizedMessage('de', 'vaultComposition.lockedPortfoliosQualifierOther')).toBe(
+    '+ {{count}} gesperrte Portfolios',
+  );
+});
+
+test('registers backup readiness copy for every contract level and reason in EN and DE', () => {
+  // The Overview tile and the Health panel both render
+  // `admin.backup.level.<level>` and `admin.backup.reason.<reason>` as template
+  // literals off the contract enums, so a member missing from BOTH catalogs is
+  // parity-clean and would paint its raw dot-path at exactly the moment an
+  // operator is trying to find out whether the backups are alive. Iterate the
+  // contract tuples so the API's vocabulary and the catalogs stay bound.
+  for (const locale of Object.values(LOCALES)) {
+    for (const level of ADMIN_BACKUP_STATUS_LEVELS) {
+      const key = `admin.backup.level.${level}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const reason of ADMIN_BACKUP_STATUS_REASONS) {
+      const key = `admin.backup.reason.${reason}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+});
+
+test('registers a localized unit for every duration magnitude in EN and DE', () => {
+  // `formatDuration` picks one of these by magnitude; a missing member would
+  // paint a dot-path where an uptime or a backup age belongs.
+  for (const locale of Object.values(LOCALES)) {
+    for (const unit of ['dayHour', 'hourMinute', 'minuteSecond', 'second']) {
+      const key = `admin.common.duration.${unit}`;
       expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
     }
   }

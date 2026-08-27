@@ -1030,10 +1030,9 @@ describe('standing orders — provider failure on a buy', () => {
       startDate: '2027-01-01',
     });
     // Jan 1, 07:00 Europe/Vienna — before any exchange opens, so the provider
-    // still reports Dec 31's close. The engine writes via the repositories and
-    // never traverses the tax-year unlock ritual, so the money row must stay in
-    // the CURRENT (2027) Vienna tax year — never the auto-locked (#1168) 2026
-    // one; the prior-year close is record-only on `lastRunAt`.
+    // still reports Dec 31's close. The engine books at scan time, so the money
+    // row stays in the current (2027) Vienna tax year (#1168); the prior-year
+    // quote time is record-only on `lastRunAt`.
     quote.asOf = '2026-12-31T21:00:00.000Z';
 
     expect(await run('2027-01-01T06:00:00Z')).toMatchObject({

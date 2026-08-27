@@ -5,6 +5,7 @@ import {
   request as newRequestContext,
   test,
   type APIResponse,
+  type Locator,
   type Page,
   type TestInfo,
 } from '@playwright/test';
@@ -93,7 +94,7 @@ interface AlertFixture {
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 test.describe('PD9 paranoid-mode end-to-end gate', () => {
-  test('normal account remains on the server store after opening the migration wizard with the Drive seam installed', async ({
+  test('normal account remains on the server store after opening the paranoid setup wizard with the Drive seam installed', async ({
     context,
   }, testInfo) => {
     const diagnostics: string[] = [];
@@ -176,7 +177,37 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     try {
       await test.step('[PD9-A1] binding design precondition', async () => {
         await assertPd9DesignPrecondition();
-        expect(PD9_TRACEABILITY).toHaveLength(7);
+        expect(PD9_TRACEABILITY).toEqual([
+          {
+            criterion: 'Design note §16-logged + owner-acked BEFORE code',
+            assertion: '[PD9-A1] binding design precondition',
+          },
+          {
+            criterion: 'Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)',
+            assertion: '[PD9-A2] complete DB cleartext probe',
+          },
+          {
+            criterion:
+              'Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e)',
+            assertion: '[PD9-A3] Drive-only enable and zero active server medium round trip',
+          },
+          {
+            criterion: 'Media switching migrates the blob correctly (test)',
+            assertion: '[PD9-A4] verified media ordering and retained-source failure',
+          },
+          {
+            criterion: 'Social/sharing surfaces are absent for the account (matrix test)',
+            assertion: '[PD9-A5] killed/kept browser route matrix',
+          },
+          {
+            criterion: 'A client computes correct stats from encrypted fixture data (test)',
+            assertion: '[PD9-A6] known custom-asset totals without portfolio API reads',
+          },
+          {
+            criterion: 'Alerts still fire (test)',
+            assertion: '[PD9-A7] real evaluator and notification dispatcher',
+          },
+        ]);
       });
 
       owner = await provisionUserInContext(context, admin, 'pd9vault');
@@ -392,6 +423,45 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         sensitive.push(...(await pd9CiphertextCanaries(page)));
       });
 
+      await test.step('explicitly purges the elapsed retained server recovery copy', async () => {
+        await harness.makeRetirementPurgeable(owner!.email);
+        // Refetch the server-authored purgeAfter timestamp. A browser-only
+        // clock override cannot make the repository retention gate elapse.
+        // The account gate seeds this query from its short-lived local mode
+        // cache after reload, so wait for the first authoritative GET rather
+        // than sampling that intentionally stale bootstrap value.
+        const refreshedMedia = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'GET' &&
+            new URL(response.url()).pathname === '/api/v1/vault/media' &&
+            response.ok(),
+          { timeout: 30_000 },
+        );
+        await page.reload();
+        // The reload drops the in-memory vault key, so the global gate — not the
+        // panel's inline form — is the deterministic way back in, and it leaves
+        // the runtime's Drive connection installed. One flow, no branch.
+        await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
+        await page.getByRole('button', { name: 'Unlock vault' }).click();
+        await navigateInApp(page, '/control/connections');
+        await refreshedMedia;
+        await openVaultStorage(page);
+
+        await expect(page.getByText('Retained server recovery copy', { exact: true })).toBeVisible({
+          timeout: 30_000,
+        });
+        const retiredFold = await openFold(page, 'Retained server recovery copy');
+        const purge = page.getByRole('button', { name: 'Delete retained server copy' });
+        await expect(purge).toBeEnabled();
+        await purge.click();
+
+        await expect(
+          page.getByText('The retained server recovery copy was deleted.', { exact: true }),
+        ).toBeVisible();
+        await expect(retiredFold).toHaveCount(0);
+        expect(await harness.vaultStorage(owner!.email)).toEqual(emptyVaultStorage());
+      });
+
       await test.step('disable rehydrates restorable rows and drops purge-only history', async () => {
         await navigateInApp(page, '/control/privacy');
         await page.getByText('Disable Paranoid mode', { exact: true }).click();
@@ -399,15 +469,10 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           .getByLabel('I want to rehydrate this unlocked vault and disable Paranoid mode.')
           .check();
         await page.getByRole('button', { name: 'Restore normal mode' }).click();
-        // Back-to-normal signal. The old locator watched for `vault.settings.normal`
-        // ("Client-encrypted vault"), the label of the account-level enable row that
-        // the Vaults-v2 panel redesign deleted — the same latent staleness as the
-        // `Set up` → `Open migration` relabel, and it only became reachable once the
-        // seam repair let this block run to its end. The legacy entry replaces it
-        // one-for-one: PrivacyPanel renders it exclusively under
-        // `privacy.privacyMode === 'normal'`, so it appears only after the disable
-        // has actually flipped the account back.
-        await expect(page.getByRole('button', { name: 'Open migration' })).toBeVisible({
+        // Back-to-normal signal. PrivacyPanel renders the setup entry exclusively
+        // under `privacy.privacyMode === 'normal'`, so it appears only after the
+        // disable has actually flipped the account back.
+        await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeVisible({
           timeout: 30_000,
         });
 
@@ -626,7 +691,7 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 }
 
 // Post-PERF1 the vault stack is code-split: `VaultRuntimeProvider` is pulled in
-// only when the privacy panel's legacy entry sets `?enable=1`, so this gesture —
+// only when the privacy panel's setup entry sets `?enable=1`, so this gesture —
 // not a bare page load — is what makes the boundary double observable.
 //
 // This is also where the seam is proven POSITIVELY, and it is what makes the
@@ -637,7 +702,7 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 // that the helper is not a no-op.
 async function openParanoidSetup(page: Page): Promise<void> {
   await page.goto('/control/privacy');
-  await page.getByRole('button', { name: 'Open migration' }).click();
+  await page.getByRole('button', { name: 'Set up', exact: true }).click();
   // Heading FIRST, flag second, so the two failure modes stay distinguishable.
   // On a cold Vite dev server the vault/crypto chunk is the slowest transform in
   // the suite; asserting the flag first would report that slowness as
@@ -743,12 +808,19 @@ async function lockVault(page: Page): Promise<void> {
   await expect(page.getByText('Unlock your vault', { exact: true })).toBeVisible();
 }
 
-async function openVaultStorage(page: Page): Promise<void> {
-  const fold = page.getByText('Vault storage copies', { exact: true });
+/** Open one `PanelFold` by its summary text, whatever state it was left in. */
+async function openFold(page: Page, summaryText: string): Promise<Locator> {
+  const fold = page.getByText(summaryText, { exact: true });
+  await expect(fold).toBeVisible();
   const open = await fold.evaluate(
     (summary) => (summary.parentElement as HTMLDetailsElement | null)?.open === true,
   );
   if (!open) await fold.click();
+  return fold;
+}
+
+async function openVaultStorage(page: Page): Promise<void> {
+  await openFold(page, 'Vault storage copies');
 }
 
 async function expectRedirect(page: Page, from: string, to: string): Promise<void> {

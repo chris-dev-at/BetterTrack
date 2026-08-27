@@ -277,8 +277,12 @@ function strictPortfolioEntity(row: typeof portfolios.$inferSelect) {
     visibility: row.visibility,
     sortOrder: row.sortOrder,
     defaultPayFromCash: row.defaultPayFromCash,
-    vaultId: row.vaultId,
-    alias: row.alias,
+    // Vestigial vault-v2 document fields (PROJECTPLAN §16, 2026-08-19): the
+    // columns are gone, the `.strict()` document keeps the keys for backward
+    // compatibility, so a freshly captured entity always writes them as null.
+    vaultId: null,
+    alias: null,
+    vaultAlias: null,
     archivedAt: row.archivedAt?.toISOString() ?? null,
   });
 }
@@ -606,6 +610,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
 
           vaultId: null,
           alias: null,
+          vaultAlias: null,
           archivedAt: null,
         }),
         entity(ASSET_ID, 'customAsset', {
@@ -2180,6 +2185,7 @@ describe('paranoid rehydration service', () => {
 
         vaultId: null,
         alias: null,
+        vaultAlias: null,
         archivedAt: null,
       }),
     );
@@ -2467,6 +2473,7 @@ describe('paranoid rehydration service', () => {
 
         vaultId: null,
         alias: null,
+        vaultAlias: null,
         archivedAt: editedAt,
       }),
     );
@@ -2637,6 +2644,7 @@ describe('paranoid rehydration service', () => {
 
         vaultId: null,
         alias: null,
+        vaultAlias: null,
         archivedAt: null,
       }),
       entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
@@ -4037,6 +4045,7 @@ describe('paranoid rehydration service', () => {
 
         vaultId: null,
         alias: null,
+        vaultAlias: null,
         archivedAt: null,
       }),
       entity(SECOND_CASH_SOURCE_ID, 'cashSource', {

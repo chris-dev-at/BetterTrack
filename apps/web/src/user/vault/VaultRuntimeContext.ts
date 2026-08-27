@@ -7,6 +7,7 @@ import type { DriveConnectionController } from './media/driveConnection';
 import type { VaultDriveSyncCoordinator } from './media/runtime';
 import type { RecoveryKitDownload } from './recovery';
 import type { VaultSyncState } from './sync';
+import type { VaultTransferRuntime } from './qr/runtime';
 
 export interface VaultDriveUnlockOptions {
   /** Mint/reuse a browser-memory Drive token during this user gesture. */
@@ -19,6 +20,8 @@ export interface VaultDriveUnlockOptions {
 
 export interface VaultRuntime {
   readonly core: VaultLockCore;
+  /** Endpoint-wide per-vault key session; owned by the live app runtime. */
+  readonly transfer: VaultTransferRuntime;
   readonly connection: DriveConnectionController | null;
   /** The unlocked session's PD5 sync seam — null while locked. */
   readonly sync: VaultDriveSyncCoordinator | null;

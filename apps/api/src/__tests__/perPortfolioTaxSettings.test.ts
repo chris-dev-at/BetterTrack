@@ -267,7 +267,7 @@ describe('Per-portfolio tax settings scoping (#636)', () => {
     expect((await clearOverride(bobAgent, alicePid)).status).toBe(404);
   });
 
-  it('a per-portfolio override write reconciles the open year immediately (#635)', async () => {
+  it('a per-portfolio override write reconciles the documented year immediately', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
@@ -303,7 +303,7 @@ describe('Per-portfolio tax settings scoping (#636)', () => {
       ).status,
     ).toBe(201);
 
-    // The override WRITE itself heals the open year — no report read needed:
+    // The override write itself heals the year — no report read needed:
     // 27.5 % × 450 = 123.75 posts as an unattached correction.
     const res = await putOverride(agent, pid, { mode: 'country_specific', country: 'AT' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);

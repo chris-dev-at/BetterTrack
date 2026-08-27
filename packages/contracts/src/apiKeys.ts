@@ -31,7 +31,8 @@ export const API_KEY_TOKEN_PREFIX = 'btk_';
  * `mirrorchain:*` gates the deliberately limited group-portfolio participation
  * surface (#1042), `vault:sync` is the single read-write capability for the
  * deliberately narrow native-client paranoid-vault sync exception (#1043), and
- * `feedback:write` admits authenticated feedback submissions (#1315).
+ * `feedback:write` admits authenticated feedback submissions (#1315), while
+ * `feedback:read` admits the caller-owned status history added by #1338.
  */
 export const API_KEY_SCOPES = [
   'portfolio:read',
@@ -63,9 +64,11 @@ export const API_KEY_SCOPES = [
   // #1043 addition — opaque paranoid-vault sync is inherently read-write, so
   // this is one combined scope rather than an artificial read/write pair.
   'vault:sync',
-  // #1315 addition — feedback is create-only in v1 (no /feedback/mine), so a
-  // standalone write scope is more honest than inventing an unreadable pair.
+  // #1315 addition — authenticated feedback capture.
   'feedback:write',
+  // #1338 addition — caller-owned status read-back. Appended after the already
+  // shipped write scope; the derived implication map makes write imply read.
+  'feedback:read',
 ] as const;
 
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);

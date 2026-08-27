@@ -1,4 +1,4 @@
-import { Router, type RequestHandler } from 'express';
+import { json, Router, type RequestHandler } from 'express';
 
 import {
   cashEntryRequestSchema,
@@ -17,6 +17,9 @@ import {
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
   portfolioListQuerySchema,
+  portfolioVaultMoveInRequestSchema,
+  portfolioVaultMoveOutChallengeRequestSchema,
+  portfolioVaultMoveOutRequestSchema,
   portfolioCashMovementParamsSchema,
   portfolioTransactionParamsSchema,
   setCashBalanceRequestSchema,
@@ -27,13 +30,8 @@ import {
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
   updateTaxSettingsRequestSchema,
-  portfolioVaultStateSchema,
-  setPortfolioAliasRequestSchema,
   updateTransactionRequestSchema,
-  vaultJoinRequestSchema,
-  vaultJoinResponseSchema,
-  vaultLeaveRequestSchema,
-  vaultLeaveResponseSchema,
+  scopeSatisfies,
   type CashEntryRequest,
   type CashMovementsQuery,
   type CashPreviewRequest,
@@ -48,6 +46,9 @@ import {
   type MirrorGuardRequest,
   type PortfolioHistoryQuery,
   type PortfolioListQuery,
+  type PortfolioVaultMoveInRequest,
+  type PortfolioVaultMoveOutChallengeRequest,
+  type PortfolioVaultMoveOutRequest,
   type PortfolioMutationResponse,
   type SetCashBalanceRequest,
   type UpdateCashMovementRequest,
@@ -58,19 +59,79 @@ import {
   type UpdatePortfolioRequest,
   type UpdatePortfolioResponse,
   type UpdateTaxSettingsRequest,
-  type SetPortfolioAliasRequest,
   type UpdateTransactionRequest,
-  type VaultJoinRequest,
-  type VaultLeaveRequest,
 } from '@bettertrack/contracts';
 
-import { forbidden } from '../../errors';
+import { ApiError, forbidden, notFound } from '../../errors';
+import {
+  PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS,
+  PortfolioVaultTransitionError,
+} from '../../services/account/portfolioVaultTransitionService';
 import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/tax/taxReportCsv';
+import { paranoidRestoreJsonLimitBytes } from '../bodyLimits';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  portfolioVaultAccountSecurityRouteAcceptsBearer,
+  recordBearerScopeDenied,
+} from '../middleware/bearerAuth';
 import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
+import type { RateLimiters } from '../middleware/rateLimit';
 import type { AppContext } from '../context';
+
+const UUID_PATH_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const PORTFOLIO_VAULT_MOVE_OUT_HTTP_PATH = new RegExp(
+  `^/api/v1/portfolios/${UUID_PATH_SEGMENT}/vault/move-out/?$`,
+  'i',
+);
+const PORTFOLIO_VAULT_TRANSITION_ROUTER_PATH = new RegExp(
+  `^/${UUID_PATH_SEGMENT}/vault/(revision|move-in|move-out(?:/challenge)?)/?$`,
+  'i',
+);
+
+/** App-level parser deferral must match exactly the mounted large restore route. */
+export function isPortfolioVaultMoveOutHttpPath(method: string, path: string): boolean {
+  return method.toUpperCase() === 'POST' && PORTFOLIO_VAULT_MOVE_OUT_HTTP_PATH.test(path);
+}
+
+function requirePortfolioVaultTransitionBearerAccess(ctx: AppContext): RequestHandler {
+  return function requirePortfolioVaultTransitionBearerAccess(req, _res, next) {
+    if (!req.apiKey) {
+      next();
+      return;
+    }
+    if (req.authUser?.role === 'admin') {
+      next(notFound());
+      return;
+    }
+    const path = `/portfolios${req.path}`;
+    if (!portfolioVaultAccountSecurityRouteAcceptsBearer(req.method, path)) {
+      next(
+        forbidden(
+          'This portfolio-vault endpoint is available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    if (!scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE)) {
+      recordBearerScopeDenied(ctx, req, ACCOUNT_SECURITY_SCOPE, path).then(
+        () =>
+          next(
+            forbidden(
+              `API key is missing the required scope "${ACCOUNT_SECURITY_SCOPE}".`,
+              'INSUFFICIENT_SCOPE',
+            ),
+          ),
+        next,
+      );
+      return;
+    }
+    next();
+  };
+}
 
 /**
  * Portfolio + transaction endpoints (PROJECTPLAN.md §6.8, §7.2, §8). Every route
@@ -87,9 +148,18 @@ import type { AppContext } from '../context';
  * (rename/visibility/archive of the portfolio itself, tax settings) never
  * route through the chain (design §1 copy-scoped list).
  */
-export function createPortfolioRouter(ctx: AppContext): Router {
+export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
+  // Stamp the transition boundary before authentication so even a rejected
+  // session/bearer response cannot be cached. Route-local copies below keep
+  // the invariant obvious at each successful handler as well.
+  router.use((req, res, next) => {
+    if (PORTFOLIO_VAULT_TRANSITION_ROUTER_PATH.test(req.path)) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+    next();
+  });
   router.use(requireUser);
 
   // Idempotency (§13.4 V4-P2a, #417): the opt-in `Idempotency-Key` middleware,
@@ -97,6 +167,112 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   // deposit/withdraw/transfer/set-balance). Built once; a request without the
   // header passes straight through.
   const idempotency = createIdempotency(ctx);
+  const transitionBearerAccess = requirePortfolioVaultTransitionBearerAccess(ctx);
+  const noStore: RequestHandler = (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  };
+  const runPortfolioVaultTransition = async <T>(action: () => Promise<T>): Promise<T> => {
+    try {
+      return await action();
+    } catch (error) {
+      if (!(error instanceof PortfolioVaultTransitionError)) throw error;
+      const mapped = PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS[error.code];
+      throw new ApiError(mapped.status, mapped.code, error.message);
+    }
+  };
+
+  // GET intentionally opens/renews a bounded prospective-ciphertext window.
+  // It carries no portfolio content and uses the vault mutation budget because
+  // it is the first step of the destructive capture protocol.
+  router.get(
+    '/:portfolioId/vault/revision',
+    noStore,
+    transitionBearerAccess,
+    limiters.vault,
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      res.json(
+        await runPortfolioVaultTransition(() =>
+          ctx.portfolioVaultTransitions.revision(req.authUser!.id, portfolioId),
+        ),
+      );
+    },
+  );
+
+  router.post(
+    '/:portfolioId/vault/move-in',
+    noStore,
+    transitionBearerAccess,
+    limiters.vault,
+    validateParams(portfolioIdParamSchema),
+    validateBody(portfolioVaultMoveInRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as PortfolioVaultMoveInRequest;
+      res.json(
+        await runPortfolioVaultTransition(() =>
+          ctx.portfolioVaultTransitions.moveIn(req.authUser!.id, portfolioId, body, {
+            ip: req.ip,
+          }),
+        ),
+      );
+    },
+  );
+
+  const moveOutJson = json({
+    limit: paranoidRestoreJsonLimitBytes(ctx.config.vault.docMaxBytes.portfolio),
+  });
+  const parseMoveOutBody: RequestHandler = (req, res, next) => {
+    moveOutJson(req, res, (error?: unknown) => {
+      if ((error as { type?: string } | undefined)?.type === 'entity.too.large') {
+        next(new ApiError(413, 'PAYLOAD_TOO_LARGE', 'The restore document exceeds the size cap.'));
+        return;
+      }
+      next(error);
+    });
+  };
+  router.post(
+    '/:portfolioId/vault/move-out/challenge',
+    noStore,
+    transitionBearerAccess,
+    limiters.vault,
+    validateParams(portfolioIdParamSchema),
+    validateBody(portfolioVaultMoveOutChallengeRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as PortfolioVaultMoveOutChallengeRequest;
+      res.json(
+        await runPortfolioVaultTransition(() =>
+          ctx.portfolioVaultTransitions.moveOutChallenge(req.authUser!.id, portfolioId, body),
+        ),
+      );
+    },
+  );
+
+  router.post(
+    '/:portfolioId/vault/move-out',
+    noStore,
+    transitionBearerAccess,
+    limiters.vault,
+    validateParams(portfolioIdParamSchema),
+    parseMoveOutBody,
+    validateBody(portfolioVaultMoveOutRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as PortfolioVaultMoveOutRequest;
+      // This same in-body credential is mandatory for cookie and bearer calls;
+      // on the bearer rail it replaces CSRF + same-origin as the live-user proof.
+      res.json(
+        await runPortfolioVaultTransition(() =>
+          ctx.portfolioVaultTransitions.moveOut(req.authUser!.id, portfolioId, body, {
+            ip: req.ip,
+          }),
+        ),
+      );
+    },
+  );
 
   // GET /portfolios?includeArchived= — the user's portfolios (active by default,
   // §6.8; archived rows included only when asked, §13.2 V2-P8). Enriched with
@@ -715,78 +891,6 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId, { baseSeq });
       res.status(204).send();
     }),
-  );
-
-  // ── Vaults v2 transitions (`docs/VAULTS_V2_DESIGN.md` §3) ─────────────────
-  // Both are OWNING-BROWSER-SESSION only. `bearerAuth.resolvePolicy` pins them
-  // ahead of the `/portfolios` module row, and the router-local guard below
-  // repeats the decision so a policy-table regression alone cannot expose
-  // either. Join hard-deletes this portfolio's cleartext; leave writes a
-  // caller-authored document back into the account. Neither may ride a token.
-  const requireOwnerBrowserSessionForVault: RequestHandler = (req, _res, next) => {
-    if (req.apiKey) {
-      next(forbidden('This endpoint is not accessible with an API key.', 'API_KEY_FORBIDDEN'));
-      return;
-    }
-    next();
-  };
-
-  // POST /portfolios/:portfolioId/vault — JOIN. One transaction: store the
-  // client-encrypted blob, purge this portfolio's cleartext rows, set vault_id.
-  router.post(
-    '/:portfolioId/vault',
-    requireOwnerBrowserSessionForVault,
-    validateParams(portfolioIdParamSchema),
-    validateBody(vaultJoinRequestSchema),
-    async (req, res) => {
-      const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const result = await ctx.vaults.join(
-        req.authUser!.id,
-        portfolioId,
-        req.valid?.body as VaultJoinRequest,
-        req.ip ?? null,
-      );
-      res.status(200).json(vaultJoinResponseSchema.parse(result));
-    },
-  );
-
-  // PATCH /portfolios/:portfolioId/alias — the split-out rename for a VAULTED
-  // portfolio. The ordinary rename route also carries `visibility`, and sharing
-  // a vaulted portfolio must stay unreachable, so that whole route is killed
-  // while vaulted; this one writes the cleartext alias column and nothing else.
-  // A normal portfolio is refused (409) — its rename stays where it always was.
-  router.patch(
-    '/:portfolioId/alias',
-    requireOwnerBrowserSessionForVault,
-    validateParams(portfolioIdParamSchema),
-    validateBody(setPortfolioAliasRequestSchema),
-    async (req, res) => {
-      const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { alias } = req.valid?.body as SetPortfolioAliasRequest;
-      const state = await ctx.vaults.setAlias(req.authUser!.id, portfolioId, alias, req.ip ?? null);
-      res.json(portfolioVaultStateSchema.parse(state));
-    },
-  );
-
-  // DELETE /portfolios/:portfolioId/vault — LEAVE. The reverse, equally atomic:
-  // repopulate from the posted plaintext rows, clear vault_id, retire the blob.
-  // A DELETE with a body is deliberate — it mirrors the account-level disable,
-  // where the restore document IS the request.
-  router.delete(
-    '/:portfolioId/vault',
-    requireOwnerBrowserSessionForVault,
-    validateParams(portfolioIdParamSchema),
-    validateBody(vaultLeaveRequestSchema),
-    async (req, res) => {
-      const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const result = await ctx.vaults.leave(
-        req.authUser!.id,
-        portfolioId,
-        req.valid?.body as VaultLeaveRequest,
-        req.ip ?? null,
-      );
-      res.status(200).json(vaultLeaveResponseSchema.parse(result));
-    },
   );
 
   return router;

@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contracts';
+import { createVaultTransferRuntime } from '../../vault/qr/runtime';
 
 const toggleDiscreetMode = vi.fn(async () => undefined);
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
@@ -30,7 +31,11 @@ vi.mock('../../vault/usePrivacyMode', () => ({
   }),
 }));
 /** `null` = no vault providers above the panel, which is a normal account. */
-let vaultRuntime: object | null = {};
+const transferRuntime = createVaultTransferRuntime({
+  bindLockSignal: false,
+  requestJson: vi.fn(async () => ({ vaults: [] })),
+});
+let vaultRuntime: object | null = { transfer: transferRuntime };
 vi.mock('../../vault/VaultRuntimeContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../vault/VaultRuntimeContext')>()),
   useOptionalVaultRuntime: () => vaultRuntime,
@@ -77,6 +82,9 @@ vi.mock('../../vault/ui/ParanoidEnableWizard', async (importOriginal) => {
       enableStub ? enableStub(props) : <actual.ParanoidEnableWizard {...props} />,
   };
 });
+vi.mock('../../vault/ui/VaultManager', () => ({
+  VaultManager: () => <section aria-label="Vaults">Vault manager</section>,
+}));
 const RECEIPT: Parameters<ParanoidEnableWizardProps['onEnabled']>[0] = {
   mode: 'paranoid',
   mediaSet: ['server'],
@@ -111,7 +119,7 @@ beforeEach(() => {
   privacyMode = 'normal';
   mediaState = null;
   syncStatus = null;
-  vaultRuntime = {};
+  vaultRuntime = { transfer: transferRuntime };
   auth.user = { id: USER_ID, username: 'jane', discreetMode: false };
   toggleDiscreetMode.mockImplementation(async () => undefined);
 });
@@ -149,46 +157,38 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).not.toBeChecked();
   });
 
-  test('renders for a normal account with no vault runtime above it', () => {
-    // Vaults v2 (docs/VAULTS_V2_DESIGN.md §4): the account-level enable wizard
-    // is gone from this panel. What remains is discreet mode, a pointer into
-    // the per-portfolio flow, the explainer, and the legacy migration entry.
+  test('keeps the per-vault receive entry reachable for a normal account without the legacy runtime', async () => {
+    // E7 is account-mode independent: a fresh endpoint must be able to receive
+    // a per-vault phrase before any legacy account-level runtime is unlocked.
     vaultRuntime = null;
 
     renderPanel();
 
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open portfolio settings' })).toHaveAttribute(
-      'href',
-      '/portfolio/settings',
-    );
-    expect(screen.getByRole('link', { name: 'Read' })).toHaveAttribute(
-      'href',
-      '/vault/how-it-works',
-    );
-    expect(screen.getByRole('button', { name: 'Open migration' })).toBeInTheDocument();
-    // The old account-level CTA must not survive anywhere in the panel.
-    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
+    expect(await screen.findByText('Transfer between devices')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open portfolio settings' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Read' })).not.toBeInTheDocument();
   });
 
-  test('the legacy-migration request rides in the URL, so the gate above can act on it', async () => {
+  test('the setup request rides in the URL, so the gate above can act on it', async () => {
     // `AccountModeRoot` mounts the vault providers from this param and replaces
     // the subtree doing it — local `useState` would not survive that.
     vaultRuntime = null;
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(screen.getByRole('button', { name: 'Open migration' }));
+    await user.click(screen.getByRole('button', { name: 'Set up' }));
 
     expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy?enable=1');
   });
 
-  test('opens the legacy migration wizard with the compact killed-surface review', async () => {
+  test('opens the paranoid setup wizard with the compact killed-surface review', async () => {
     const user = userEvent.setup();
     renderPanel();
 
     expect(screen.getByRole('heading', { name: /Paranoid mode/i })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Open migration' }));
+    await user.click(screen.getByRole('button', { name: 'Set up' }));
 
     // The wizard is its own chunk (#1089), so it arrives a tick later.
     expect(await screen.findByRole('heading', { name: 'What changes' })).toBeInTheDocument();
@@ -233,6 +233,7 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
   });
 
   test('keeps paranoid management compact while exposing storage, security, and destructive flows', async () => {
+    const user = userEvent.setup();
     privacyMode = 'paranoid';
     mediaState = {
       mediaSet: ['server', 'drive'],
@@ -250,11 +251,13 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     );
     expect(screen.getByText('What’s off in Paranoid mode')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+    await user.click(screen.getByText('Transfer between devices'));
+    expect(screen.getByRole('button', { name: 'Receive transferred vault' })).toBeInTheDocument();
     expect(screen.getByText('Change vault passphrase')).toBeInTheDocument();
     expect(screen.getByText('Rotate vault key')).toBeInTheDocument();
     expect(screen.getByText('Start fresh')).toBeInTheDocument();
     expect(screen.getByText('Disable Paranoid mode')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Open migration' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
   });
 
   test('disable stays closed while the vault sync is split — the other branch would be lost', async () => {

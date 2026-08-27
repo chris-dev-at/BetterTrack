@@ -1,4 +1,10 @@
-import { PARANOID_REHYDRATION_HANDLERS, type VaultEntityKind } from '@bettertrack/contracts';
+import {
+  PARANOID_REHYDRATION_HANDLERS,
+  VAULT_ENTITY_DOC_BUCKETS,
+  VAULT_TABLE_ENTITY_KINDS,
+  type VaultDocBucket,
+  type VaultEntityKind,
+} from '@bettertrack/contracts';
 import { getTableName, is } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 
@@ -43,8 +49,10 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   notifications: exported('notifications'),
   notification_settings: exported('notificationSettings'),
   // User-authored product feedback and the bounded diagnostics they chose to
-  // submit are part of their account data, even though v1 has no read-back API.
+  // submit are part of their account data; caller-owned lifecycle read-back
+  // deliberately omits those diagnostics, while the full export preserves them.
   feedback: exported('feedback'),
+  feedback_messages: exported('feedbackMessages'),
   conglomerates: exported('conglomerates'),
   conglomerate_positions: exported('conglomeratePositions'),
   share_links: exported('conglomerateShareLinks'),
@@ -59,9 +67,8 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // tax choices, exported alongside the user-level default.
   portfolio_settings: exported('portfolioSettings'),
   user_tax_settings: exported('taxSettings'),
-  // Tax year locking (§16 2026-08-07): the user's explicitly-unlocked elapsed
-  // years — part of their tax record's posture, so it travels with the export.
-  tax_year_unlocks: exported('taxYearUnlocks'),
+  // The durable last-edit marker is part of the user's living tax record.
+  tax_year_changes: exported('taxYearChanges'),
   friend_requests: exported('friendRequests'),
   friendships: exported('friendships'),
   user_follows: exported('userFollows'),
@@ -297,20 +304,33 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
-  // Vaults v2 (docs/VAULTS_V2_DESIGN.md §3). Same reasoning as the v1 rows
-  // above: `vault_docs` is opaque ciphertext + CAS metadata and `vaults` is the
-  // container's cleartext name/backend selection, which is routing metadata
-  // rather than portfolio content. Neither belongs in a cleartext export —
-  // exporting a vault's ciphertext without its passphrase would be noise, and
-  // the user already holds the only copy that can open it.
+  // V5-P13 arc b, the PER-PORTFOLIO vault model (docs/paranoid-design.md §3/§8,
+  // epic E0 #1410): raw table rows stay out of the general collector. E1's
+  // dedicated `vaults` export section carries the safe { vaultId, media }
+  // projection plus current ciphertext for vaults whose media include server.
   vaults: skipped(
-    'Vaults v2 container metadata (name + storage backends) — routing metadata for client-encrypted documents, not portfolio content.',
+    'Per-portfolio vault raw config rows (V5-P13 arc b) are skipped here; E1 exports the safe { vaultId, media } projection through the dedicated vaults manifest section.',
   ),
-  vault_docs: skipped(
-    'Vaults v2 document ciphertext — an opaque encrypted blob + CAS/version metadata the server can never decrypt.',
+  vault_blobs: skipped(
+    'Per-portfolio vault raw blob rows (V5-P13 arc b) are skipped here; E1 exports current server-backed opaque ciphertext through the dedicated vaults manifest section.',
   ),
-  vault_leave_receipts: skipped(
-    'Vaults v2 leave idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
+  vault_blob_history: skipped(
+    'Per-portfolio vault bounded ciphertext history (V5-P13 arc b) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
+  ),
+  vault_server_candidates: skipped(
+    'Per-portfolio vault inactive server candidates (V5-P13 arc b) — short-lived opaque ciphertext staged only for a verified media transition.',
+  ),
+  vault_retirements: skipped(
+    'Per-portfolio vault retirement proof and retention bookkeeping (V5-P13 arc b) — non-portfolio transition metadata.',
+  ),
+  vault_retired: skipped(
+    'Per-portfolio vault recoverable retired ciphertext (V5-P13 arc b) — opaque copies retained only until a client-proved purge.',
+  ),
+  drive_connections: skipped(
+    'Separately authenticated Google Drive connection registry (V5-P13 arc b §8) — identity config only (sub/email/display name), never tokens or file ids; config export lands with a later export sweep.',
+  ),
+  portfolio_vault_transition_states: skipped(
+    'Per-portfolio vault capture state and idempotency receipts (E4) — content-free internal transition metadata, never portfolio data.',
   ),
 };
 
@@ -410,6 +430,12 @@ const purgeOnly = (): ParanoidRehydrationPolicy => ({ kind: 'purge-only' });
  * `paranoidClassification.test.ts` on purpose.
  */
 export const PARANOID_PURGE_REASONS: Record<string, string> = {
+  api_key_request_log:
+    'Operational API-key telemetry whose concrete paths can contain portfolio ' +
+    'asset UUIDs. Historical rows are destroyed at enable and future paranoid ' +
+    'request-log capture is suppressed at its locked write boundary. Not `vault` — request ' +
+    'telemetry is not client data and must never enter the encrypted document. ' +
+    'Not `server` — that means kept.',
   usage_events:
     'Operator telemetry whose columns are portfolio-identifying: one row per ' +
     '(user, feature, asset, day), and a paranoid client prices every holding ' +
@@ -466,7 +492,10 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   asset_identities: 'server',
   api_keys: 'server',
   api_key_tiers: 'server',
-  api_key_request_log: 'server',
+  // Concrete bearer paths can be `/assets/<uuid>/quote`, tied directly to the
+  // key owner. Future paranoid writes are suppressed at the locked repository
+  // boundary; historical rows are purge-only telemetry, never vault content.
+  api_key_request_log: 'purge',
   external_identities: 'server',
   oauth_clients: 'server',
   oauth_grants: 'server',
@@ -481,11 +510,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   passkeys: 'server',
   device_tokens: 'server',
   push_subscriptions: 'server',
-  // Tax year locking (§16 2026-08-07): account-level lock POLICY, not money
-  // content — rows carry only year numbers (like the security posture rows
-  // above), so a paranoid account keeps them server-side; the mode's tax
-  // surface itself is killed for paranoid accounts by the route/service rules.
-  tax_year_unlocks: 'server',
+  // Account-level server-mode tax-documentation metadata. The surface is
+  // killed for paranoid accounts with the rest of server tax reporting.
+  tax_year_changes: 'server',
 
   // ── server: operational / global records (kept) ────────────────────────────
   audit_log: 'server',
@@ -556,6 +583,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // Voluntary feedback and bounded client diagnostics contain no portfolio or
   // money data, so paranoid accounts keep (and can export) these rows normally.
   feedback: 'server',
+  feedback_messages: 'server',
   // Friendships + chat REMAIN — they carry no portfolio data (§8, §16).
   friend_requests: 'server',
   friendships: 'server',
@@ -606,15 +634,19 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   paranoid_enable_transitions: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
-  // Vaults v2 (docs/VAULTS_V2_DESIGN.md §3). Server-classified for the same
-  // reason as the v1 vault rows: they hold ciphertext and routing metadata, and
-  // they must SURVIVE an account-level paranoid enable rather than be purged by
-  // it — a v2 vault is a data home, not data to destroy.
+  // The PER-PORTFOLIO vault surface (V5-P13 arc b, E0 #1410): config rows +
+  // opaque ciphertext + Drive-connection identities — all `server` for the same
+  // reason the v1 rows above are: knowing THAT a vault exists, where it stores
+  // and which portfolios are inside is account config the server must keep to
+  // enforce §11 and render locked stubs; none of it is portfolio content.
   vaults: 'server',
-  vault_docs: 'server',
-  // The leave receipt is transition bookkeeping, exactly like PD3a's rehydration
-  // receipt above: server-classified so it is neither purged nor carried.
-  vault_leave_receipts: 'server',
+  vault_blobs: 'server',
+  vault_blob_history: 'server',
+  vault_server_candidates: 'server',
+  vault_retirements: 'server',
+  vault_retired: 'server',
+  drive_connections: 'server',
+  portfolio_vault_transition_states: 'server',
 };
 
 /**
@@ -671,6 +703,31 @@ export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
   .filter(([, c]) => c === 'vault')
   .map(([table]) => table)
   .sort();
+
+/**
+ * THE DOC-BUCKET AXIS of the per-portfolio vault model (docs/paranoid-design.md
+ * §5, epic E0 #1410): which encrypted doc carries each `vault`-classified
+ * table — `portfolio` (the member portfolio's own doc) or `common` (the
+ * vault-wide account-scoped doc). Decided mechanically by the row's actual
+ * scoping column: portfolio-scoped ⇒ `portfolio`, account-scoped-but-vault-
+ * referenced ⇒ `common`.
+ *
+ * DERIVED, never hand-listed twice: table → entity kind is the existing
+ * `VAULT_TABLE_ENTITY_KINDS` enrollment (whose completeness against the
+ * `vault` classification is already CI-gated), and entity kind → bucket is the
+ * contracts' `VAULT_ENTITY_DOC_BUCKETS`, a typed `Record` over the FULL kind
+ * enum — so a future vault table cannot exist without a doc bucket: skipping
+ * the enrollment fails the existing completeness test, and skipping the bucket
+ * fails the contracts typecheck. The classification test additionally asserts
+ * the exhaustiveness at runtime (every `vault` table has exactly one bucket;
+ * no other table has one).
+ */
+export const PARANOID_VAULT_DOC_BUCKETS: Record<string, VaultDocBucket> = Object.fromEntries(
+  Object.entries(VAULT_TABLE_ENTITY_KINDS).map(([table, kind]) => [
+    table,
+    VAULT_ENTITY_DOC_BUCKETS[kind],
+  ]),
+);
 
 /** The `purge`-classified table names — destroyed at enable, never captured. */
 export const PARANOID_PURGE_ONLY_TABLE_NAMES: readonly string[] = Object.entries(

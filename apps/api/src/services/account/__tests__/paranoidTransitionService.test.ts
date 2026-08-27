@@ -15,6 +15,7 @@ import {
 import { withParanoidTransitionTransaction } from '../../../data/repositories/paranoidTransitionRepository';
 import { createShareAudienceRepository } from '../../../data/repositories/shareAudienceRepository';
 import {
+  apiKeyRequestLog,
   assetIdentities,
   assets,
   auditLog,
@@ -235,6 +236,7 @@ function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): Paranoi
 
             vaultId: null,
             alias: null,
+            vaultAlias: null,
             archivedAt: null,
           },
         },
@@ -298,6 +300,7 @@ function cashRestoreRequest(userId: string, movementId: string): ParanoidDisable
 
           vaultId: null,
           alias: null,
+          vaultAlias: null,
           archivedAt: null,
         }),
         // The seeded custom asset's opaque identity survives the purge, so the
@@ -539,21 +542,63 @@ describe('paranoid public transitions', () => {
   });
 
   /**
-   * Enabling the mode has to erase the PAST leak too, not only stop the future
-   * one. `usage_events` folded one row per (user, feature, asset, day), so an
-   * account converting today arrives carrying a day-by-day history of the asset
-   * roster it used to hold — captured from the ordinary asset reads any normal
-   * account makes. The `purge`-classified sweep destroys it inside the same
-   * transaction that flips the flag; the zero-probe that follows would abort the
-   * enable if anything survived.
+   * Enabling the mode has to erase PAST leaks too, not only stop future writes.
+   * `usage_events` carries the daily asset roster and `api_key_request_log`
+   * carries concrete bearer paths, so both are purge-only telemetry. Denied-read
+   * audit rows remain as a security trail but lose their path. Every mutation is
+   * inside the mode-flip transaction and scoped to the converting user.
    */
-  it('purges the pre-existing usage_events roster history at enable', async () => {
+  it('purges historical identifier telemetry and leaves other users untouched at enable', async () => {
     const user = await harness.seedUser();
     const bystander = await harness.seedUser({
       email: 'bystander@test.dev',
       username: 'bystander',
     });
     await seedNormalGraph(user);
+
+    const [{ key: userKey }, { key: bystanderKey }] = await Promise.all([
+      harness.ctx.apiKeys.create({
+        userId: user.id,
+        name: 'converting account',
+        scopes: ['market:read'],
+      }),
+      harness.ctx.apiKeys.create({
+        userId: bystander.id,
+        name: 'bystander account',
+        scopes: ['market:read'],
+      }),
+    ]);
+    const resourcePath = `/assets/${ASSET_ID}/quote`;
+    await Promise.all([
+      harness.ctx.apiKeys.recordRequest({
+        keyId: userKey.id,
+        userId: user.id,
+        method: 'GET',
+        path: resourcePath,
+        status: 200,
+      }),
+      harness.ctx.apiKeys.recordRequest({
+        keyId: bystanderKey.id,
+        userId: bystander.id,
+        method: 'GET',
+        path: resourcePath,
+        status: 200,
+      }),
+      harness.ctx.apiKeys.recordScopeDenied({
+        userId: user.id,
+        keyId: userKey.id,
+        requiredScope: 'market:read',
+        method: 'GET',
+        path: resourcePath,
+      }),
+      harness.ctx.apiKeys.recordScopeDenied({
+        userId: bystander.id,
+        keyId: bystanderKey.id,
+        requiredScope: 'market:read',
+        method: 'GET',
+        path: resourcePath,
+      }),
+    ]);
 
     const today = new Date().toISOString().slice(0, 10);
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
@@ -583,6 +628,27 @@ describe('paranoid public transitions', () => {
     expect(
       await harness.db.select().from(usageEvents).where(eq(usageEvents.userId, bystander.id)),
     ).toHaveLength(1);
+    expect(
+      await harness.db.select().from(apiKeyRequestLog).where(eq(apiKeyRequestLog.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(apiKeyRequestLog)
+        .where(eq(apiKeyRequestLog.userId, bystander.id)),
+    ).toHaveLength(1);
+
+    const [userDenial] = await harness.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actorId, user.id), eq(auditLog.action, 'api_key.scope_denied')));
+    const [bystanderDenial] = await harness.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actorId, bystander.id), eq(auditLog.action, 'api_key.scope_denied')));
+    expect(userDenial?.meta).not.toHaveProperty('path');
+    expect(JSON.stringify(userDenial)).not.toContain(ASSET_ID);
+    expect(bystanderDenial?.meta).toMatchObject({ path: resourcePath });
   });
 
   it('requires CSRF and strict supported media evidence', async () => {

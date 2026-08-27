@@ -353,6 +353,38 @@ function copyCases(userId: string): CopyCase[] {
     });
   }
 
+  const feedbackStatusVariants = [
+    ['new', 'feedbackStatusNew'],
+    ['triaged', 'feedbackStatusTriaged'],
+    ['working_on_it', 'feedbackStatusWorkingOnIt'],
+    ['saved_as_future_idea', 'feedbackStatusSavedAsFutureIdea'],
+    ['declined', 'feedbackStatusDeclined'],
+    ['shipped', 'feedbackStatusShipped'],
+  ] as const;
+  for (const [status, key] of feedbackStatusVariants) {
+    cases.push({
+      key,
+      event: {
+        type: 'feedback.status_changed',
+        userId,
+        feedbackId: `feedback-${status}`,
+        status,
+        lastStatusChangeAt: OCCURRED_AT,
+        occurredAt: OCCURRED_AT,
+      },
+    });
+  }
+  cases.push({
+    key: 'feedbackReplyCreated',
+    event: {
+      type: 'feedback.reply_created',
+      userId,
+      feedbackId: 'feedback-reply',
+      messageId: 'feedback-message-1',
+      occurredAt: OCCURRED_AT,
+    },
+  });
+
   return cases;
 }
 
@@ -479,7 +511,7 @@ describe('dispatcher notification localization (#1138)', () => {
   });
 
   it('keeps the server catalog byte-identical to the web inbox catalog', () => {
-    // The same 56 pairs are maintained twice: here for the persisted fallback,
+    // The same pairs are maintained twice: here for the persisted fallback,
     // push, digest and email bodies, and in the SPA catalogs for live inbox
     // re-rendering. Nothing but this assertion binds them, and a one-sided edit
     // would make the bell disagree with the push for the SAME event with
