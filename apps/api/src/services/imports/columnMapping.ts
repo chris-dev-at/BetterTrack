@@ -349,10 +349,7 @@ function trimHeaderEdges(header: string): string {
  * mixed-sign shape, and the amount column then went unmapped entirely.
  */
 function normalizeHeader(header: string): string {
-  return trimHeaderEdges(header.toLowerCase())
-    .replace(/[()]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return trimHeaderEdges(header.toLowerCase()).replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** ä→a ö→o ü→u ß→ss (+ strip remaining diacritics). */
