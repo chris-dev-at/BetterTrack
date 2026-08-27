@@ -27,6 +27,40 @@ import {
  * real api + web dev servers against Postgres/Redis (see README "End-to-end
  * (Playwright)").
  */
+
+/**
+ * SECRET HYGIENE — half one of two (see `e2e/support/artifactHygiene.ts` for the
+ * whole mechanism and the measurements behind it).
+ *
+ * On a failure Playwright writes `test-results/<test>/error-context.md`, which the
+ * nightly uploads for 7 days. That file can carry a full aria snapshot of the
+ * page, and an aria snapshot prints input VALUES in cleartext — `type="password"`
+ * included. The paranoid specs type real device passwords and render real BIP39
+ * phrases, so an unlucky flake would ship key material to a GitHub artifact.
+ *
+ * There are TWO producers of that snapshot, and this switch only stops one:
+ *
+ *  1. `ArtifactsRecorder._takePageSnapshot()` (fixture TEARDOWN) — returns early
+ *     when `PLAYWRIGHT_NO_COPY_PROMPT` is set. That is this assignment. It fires
+ *     for non-matcher failures: a helper `throw`, a hook error, a test timeout.
+ *  2. The expect matcher itself, which attaches an aria snapshot to the thrown
+ *     error (`error.matcherResult.ariaSnapshot` → `TestError.errorContext`).
+ *     NO environment switch exists for it in Playwright 1.61.1; the secret-
+ *     bearing specs strip it before rethrowing — see `withoutMatcherAriaSnapshot`.
+ *
+ * Assigned here rather than only in the workflow so it covers local runs too;
+ * the config is loaded in every worker process, so the assignment reaches the
+ * process that writes the file. The nightly also exports it, for a shard whose
+ * runner is invoked some other way.
+ *
+ * TRADE-OFF, stated plainly: this is process-global. EVERY spec in this repo
+ * loses the "Page snapshot" section of its failure context, which is a genuine
+ * debugging aid. Error text, call log and code frame are unaffected, and traces
+ * (`trace: 'retain-on-failure'`) still carry full DOM snapshots for every spec
+ * that has not turned tracing off. The paranoid specs turn tracing off, which is
+ * exactly why they need this.
+ */
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 const apiEnv = {
   ...process.env,
   NODE_ENV: 'development',

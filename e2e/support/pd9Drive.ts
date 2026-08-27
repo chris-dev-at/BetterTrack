@@ -358,12 +358,47 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
       },
     };
 
-    let authorization: 'consent-required' | 'connected' | 'token-expired' = 'consent-required';
+    // The full `DriveAuthorizationState` union, not the three states this double
+    // happened to need on the day it was written — see `prepare()` below for why
+    // a partial surface here is expensive.
+    let authorization:
+      | 'consent-required'
+      | 'connected'
+      | 'token-expired'
+      | 'gesture-required'
+      | 'revoked'
+      | 'identity-mismatch' = 'consent-required';
     const listeners = new Set<() => void>();
     const notify = () => listeners.forEach((listener) => listener());
     const tokens = {
       get state() {
         return authorization;
+      },
+      /**
+       * REQUIRED since #1354, and its absence is expensive to diagnose.
+       *
+       * The enable wizard now preloads GIS before it offers its authorization
+       * button (`runtime.prepareDriveStorage()` → `tokenClient.prepare()`) and
+       * keeps step 2's Continue disabled until that settles. A double without
+       * this method makes the call reject, `prepareDrive()` lands in its catch,
+       * `drivePreparation` becomes `'failed'`, and Continue is disabled forever —
+       * which surfaces as a six-minute test timeout on a click that retries
+       * thousands of times, not as a readable failure.
+       *
+       * This double has no GIS to load, so preparation is immediate.
+       *
+       * Note this object is built inside `addInitScript` and assigned to an
+       * `unknown`-typed global, so TypeScript CANNOT check it against
+       * `GoogleDriveTokenClient`. Implementing the whole interface — including
+       * the two below, which nothing here calls yet — is the only thing that
+       * stops the next method added to that contract from reappearing as a
+       * mysteriously disabled button.
+       */
+      async prepare() {},
+      identify() {},
+      markRevoked() {
+        authorization = 'revoked';
+        notify();
       },
       getAccessToken() {
         return authorization === 'connected'
