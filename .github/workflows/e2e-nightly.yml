@@ -16,10 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # The current suite has 71 shared tests plus six mobile-gate tests that run
-    # only in the phone project: 148 project tests, or 37 per shard. Eleven of
+    # The current suite has 72 shared tests plus six mobile-gate tests that run
+    # only in the phone project: 150 project tests, or ~38 per shard. Eleven of
     # the phone-project entries are E10's desktop-only vault arcs, which skip
-    # immediately there and cost a shard nothing.
+    # immediately there and cost a shard nothing; E10's twelfth ([E10-A0], the
+    # arc-inventory guard) needs no browser and runs in both projects.
     # The 60-minute soft test limit leaves ten minutes before the job deadline
     # for Playwright to flush its blob report and for artifact uploads.
     # A GitHub job timeout cancels the runner before those cleanup steps can run.
@@ -51,6 +52,15 @@ jobs:
       E2E_DATABASE_URL: postgres://bt:bt@localhost:5432/bettertrack_e2e
       E2E_REDIS_URL: redis://localhost:6379
       PLAYWRIGHT_SHARD: ${{ matrix.shard }}
+      # Keep the page aria snapshot out of `error-context.md`. This job uploads
+      # `test-results/` and `blob-report/` for 7 days, and an aria snapshot
+      # prints input VALUES in cleartext — the paranoid specs type real device
+      # passwords and render real BIP39 phrases. `playwright.config.ts` sets the
+      # same variable at config load so local runs are covered too; it is
+      # repeated here so a shard stays safe however the runner is invoked.
+      # This only stops the TEARDOWN snapshot; the matcher's own snapshot is
+      # stripped in the specs (see e2e/support/e10.ts).
+      PLAYWRIGHT_NO_COPY_PROMPT: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

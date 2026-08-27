@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
@@ -29,6 +30,7 @@ import {
   openTransferReceiver,
   submitTransferPayload,
   vaultRow,
+  withoutMatcherAriaSnapshot,
 } from './support/e10';
 import { provisionUser, provisionUserInContext, type E2EUser } from './support/users';
 
@@ -52,8 +54,10 @@ import { provisionUser, provisionUserInContext, type E2EUser } from './support/u
  *     engine re-home, #1416): `resolvePortfolioVaultMoveCapture()` returns
  *     `null` on `main`, so no capture exists to encrypt a portfolio document or
  *     sign E4's move-out challenge, and BOTH wizards refuse before their
- *     destructive request. That refusal — the destructive commit staying
- *     blocked behind a named precondition — is asserted in [E10-A6].
+ *     destructive request. [E10-A6] asserts that refusal on the MOVE-IN wizard,
+ *     which is the only one reachable: move-out needs a portfolio that is
+ *     already in a vault, and the only way to put one there is the move-in this
+ *     same precondition blocks. Its request listener watches both paths.
  *
  * Everything else the line names runs for real here.
  *
@@ -63,8 +67,16 @@ import { provisionUser, provisionUserInContext, type E2EUser } from './support/u
  */
 
 // Real BIP39 phrases and real device passwords enter the DOM in every test
-// below. Keep secret-bearing recorder formats off, then enforce that with the
-// artifact scan each test runs in its `finally`.
+// below, so every secret-bearing recorder format is off.
+//
+// The scan each arc runs in its `finally` is NOT what keeps them out of the
+// failure artifact — `error-context.md` is written later, in fixture teardown,
+// and `testInfo.errors` is still empty when the scan runs. What keeps them out
+// is suppression, in two halves: `PLAYWRIGHT_NO_COPY_PROMPT` (set in
+// `playwright.config.ts` and the nightly) for the teardown snapshot, and
+// `withoutMatcherAriaSnapshot` on every rethrow for the matcher's own. Both
+// halves, the measurements behind them and the one residual channel are written
+// up under "Failure-artifact secret hygiene" in `e2e/support/e10.ts`.
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 /**
@@ -106,6 +118,21 @@ function collectSanitizedDiagnostics(page: Page, sink: string[]): void {
   });
 }
 
+/**
+ * The conformance fixture's REJECT half, selected by shape rather than by a
+ * hand-kept list: an entry carries `outcome` only if it is meant to be refused.
+ * [E10-A7] indexes with this, so promoting one of its vectors to an accept
+ * vector stops the spec from compiling instead of quietly leaving it asserting a
+ * refusal message that can no longer appear.
+ */
+type VaultTransferRejectVectorName = {
+  [Name in keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS]: (typeof VAULT_TRANSFER_CONFORMANCE_VECTORS)[Name] extends {
+    outcome: string;
+  }
+    ? Name
+    : never;
+}[keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS];
+
 /** The phone project has its own permanent suite; these are desktop arcs. */
 function skipOnPhone(testInfo: { project: { name: string } }): void {
   test.skip(
@@ -115,6 +142,46 @@ function skipOnPhone(testInfo: { project: { name: string } }): void {
 }
 
 test.describe('PARANOID E10 per-vault gate', () => {
+  /**
+   * The inventory guard, deliberately its OWN test rather than a step inside
+   * [E10-A1].
+   *
+   * As a step it was self-defeating: the failure mode it exists to catch is an
+   * arc quietly disappearing from this file, and a commit that deleted [E10-A1]
+   * would have deleted the guard along with it — leaving the count unchecked and
+   * the suite green. Standing alone, it survives the deletion of any arc.
+   *
+   * It also cross-checks each table entry against a real test title in this
+   * file, so the table cannot go on naming an assertion that no longer exists.
+   * No browser, no fixtures: it runs in both projects for the price of a file
+   * read.
+   */
+  // Playwright requires the first argument to be an object destructuring
+  // pattern; this test genuinely needs no fixture, hence the empty one.
+  // eslint-disable-next-line no-empty-pattern
+  test('[E10-A0] the E10 arc inventory stays complete', async ({}, testInfo) => {
+    // The spec line names seven sub-arcs; a dropped one is the whole point.
+    expect(E10_TRACEABILITY).toHaveLength(7);
+
+    const source = await readFile(testInfo.file, 'utf8');
+    const titles = [...source.matchAll(/^\s*test(?:\.fixme)?\(\s*'([^']+)'/gmu)].map(
+      (match) => match[1]!,
+    );
+    // Sanity on the extractor itself: a regex that silently matched nothing
+    // would make every assertion below vacuous.
+    expect(titles.length, 'the title extractor must find this file’s tests').toBeGreaterThanOrEqual(
+      E10_TRACEABILITY.length,
+    );
+    for (const entry of E10_TRACEABILITY) {
+      // A prefix, not equality: the blocked arcs' titles carry a trailing
+      // "(blocked: …)" that names the epic, which the table does not repeat.
+      expect(
+        titles.filter((title) => title.startsWith(entry.assertion)),
+        `"${entry.arc}" names an assertion that is not a test in this file: ${entry.assertion}`,
+      ).toHaveLength(1);
+    }
+  });
+
   test('[E10-A1] vault ceremony, endpoint lock and unlock', async ({
     browser,
     context,
@@ -131,12 +198,6 @@ test.describe('PARANOID E10 per-vault gate', () => {
     let bodyFailure: unknown;
 
     try {
-      await test.step('the E10 arc inventory stays complete', () => {
-        // A sub-arc silently dropped from this spec is the failure mode the
-        // traceability table exists to catch — the spec line names seven.
-        expect(E10_TRACEABILITY).toHaveLength(7);
-      });
-
       owner = await provisionUserInContext(context, admin, 'e10arc');
       const { page } = owner;
       collectSanitizedDiagnostics(page, diagnostics);
@@ -209,7 +270,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -249,8 +314,24 @@ test.describe('PARANOID E10 per-vault gate', () => {
       await lockVaultsByReload(page);
       await expectVaultState(page, name, 'Locked on this device');
 
+      await test.step('POSITIVE CONTROL: the correct password opens it right now', async () => {
+        // Without this, the six refusals below discriminate nothing: a typo in
+        // DEVICE_PASSWORD, a broken fill, or an unlock surface that refuses
+        // everything would produce exactly the same six refusals and the same
+        // green run. Establishing the open FIRST is what turns them into
+        // evidence about the lockout rather than about the harness.
+        const section = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
+        await expect(section).toBeHidden({ timeout: 60_000 });
+        await expectVaultState(page, name, 'Ready on this device');
+        // Re-lock, so the ladder below starts from the same state it did before.
+        await lockVaultsByReload(page);
+        await expectVaultState(page, name, 'Locked on this device');
+      });
+
       // E3's ladder: failures 1-4 refuse without a delay, the 5th arms the
-      // 30 s lockout (`keystore/core.ts` LOCKOUT_FIRST_FAILURE = 5).
+      // 30 s lockout (`keystore/core.ts` LOCKOUT_FIRST_FAILURE = 5). The
+      // successful open above resets the failure counter, so the ladder starts
+      // from zero exactly as it would on a fresh endpoint.
       await test.step('four refusals never open the vault', async () => {
         for (let attempt = 1; attempt <= 4; attempt += 1) {
           const section = await attemptUnlock(page, created.vaultId, WRONG_DEVICE_PASSWORD);
@@ -316,7 +397,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -359,7 +444,16 @@ test.describe('PARANOID E10 per-vault gate', () => {
         expect(((await me.json()) as { privacyMode?: string }).privacyMode).toBe('normal');
       });
 
-      await test.step('every surface paranoid mode would kill still answers', async () => {
+      await test.step('every surface paranoid mode would kill is shell-ready and off the fallback', async () => {
+        // WHAT THIS CHECKS, precisely: for each path the product itself calls
+        // killable, the page reaches its shell landmark and does NOT land on the
+        // paranoid fallback. That is a REACHABILITY sweep. It is not the spec
+        // line's "full-functionality sweep" — no feature on any of these pages
+        // is exercised, and this step would not notice one that rendered its
+        // shell and then failed. The honest scope is recorded against the arc in
+        // `E10_TRACEABILITY`; do not let this step's name drift back up to the
+        // spec line's wording.
+        //
         // The sweep is defined by the PRODUCT's own kill list rather than by a
         // hand-picked page list: `isParanoidKilledPath` is the predicate
         // `ParanoidSurfaceGate` redirects on, and `paranoid.spec.ts` proves each
@@ -419,7 +513,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -526,7 +624,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -578,7 +680,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       await expect(ceremony.getByRole('button', { name: 'Continue', exact: true })).toBeEnabled();
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -664,7 +770,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -742,13 +852,40 @@ test.describe('PARANOID E10 per-vault gate', () => {
           }),
           'the capture precondition must be stated, not hidden',
         ).toBeVisible();
-        await expect(
-          wizard.getByRole('button', { name: 'Move into vault', exact: true }),
-        ).toBeDisabled();
+
+        // ATTEMPT THE COMMIT, do not merely look at it.
+        //
+        // As a plain `toBeDisabled()` this arc never tried to move anything, so
+        // the request listener above could not have fired under any behaviour
+        // and `destructive` was decorative — it would read empty on a build that
+        // had lost the precondition entirely.
+        //
+        // Click-if-enabled / assert-disabled-otherwise fixes that. On `main` the
+        // else branch runs and asserts the refusal. On the regression this arc
+        // exists to catch — a build where the capture precondition stops
+        // disabling the commit — the button IS enabled, the click really
+        // happens, the client really issues `POST …/vault/move-in`, and the
+        // listener is what catches it. Force-clicking the disabled button
+        // instead would prove nothing: browsers do not dispatch click events on
+        // a disabled control, so it is a no-op by construction.
+        const commit = wizard.getByRole('button', { name: 'Move into vault', exact: true });
+        if (await commit.isEnabled()) {
+          await commit.click();
+        } else {
+          await expect(
+            commit,
+            'the destructive commit must stay disabled while the capture is missing',
+          ).toBeDisabled();
+        }
       });
 
       await test.step('nothing destructive was attempted', async () => {
-        expect(destructive).toEqual([]);
+        // A request the click DID start needs a window to reach the network
+        // before absence is asserted. The move-in commit is a single fetch off
+        // the click handler, so this is far more than it needs; it bounds the
+        // "nothing happened" claim instead of leaving it to a race.
+        await page.waitForTimeout(2_000);
+        expect(destructive, 'no move-in/move-out request may be issued').toEqual([]);
         // And the portfolio is untouched: still server-readable, still unvaulted.
         const after = await owner!.context.request.get(apiV1('/portfolios'));
         const body = (await after.json()) as { portfolios: Array<{ vaultId: string | null }> };
@@ -756,7 +893,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await admin.dispose();
@@ -784,7 +925,12 @@ test.describe('PARANOID E10 per-vault gate', () => {
     // Intentionally empty: see the block comment above.
   });
 
-  test('[E10-A7] golden btvault1: payload opens the vault on a second device', async ({
+  // NOT "golden": the accepted payload is serialized from THIS account's own
+  // ceremony phrase. `VAULT_TRANSFER_GOLDEN_PAYLOAD` names a vault id no account
+  // owns, so it can never survive the receiver's fetch-then-compare against a
+  // real header — the golden ACCEPT vector is pinned in `qr/payload.test.ts`,
+  // and only its REJECT siblings are drivable through this UI seam.
+  test('[E10-A7] a serialized btvault1: payload opens the vault on a second device', async ({
     browser,
     context,
   }, testInfo) => {
@@ -830,22 +976,69 @@ test.describe('PARANOID E10 per-vault gate', () => {
 
       const receiver = await openTransferReceiver(receiverPage);
 
-      await test.step('the golden conformance rejects stay rejected at the scan seam', async () => {
+      await test.step('the shared conformance reject vectors stay rejected at the scan seam', async () => {
         // The mocked camera, fed the cross-client fixture. These are the exact
         // strings the mobile scanner consumes, so a divergence here IS a
         // wire-format regression.
-        const rejects: ReadonlyArray<
-          readonly [keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS, string]
-        > = [
-          ['unknownPrefix', 'This transfer code uses an unsupported version.'],
-          ['missingMnemonic', 'The transfer code has no seed phrase and was rejected.'],
-          ['missingVaultId', 'The transfer code has no vault ID and was rejected.'],
-          ['badChecksum', 'The seed phrase must be 12 valid English BIP39 words'],
-          ['elevenWords', 'The seed phrase must be 12 valid English BIP39 words'],
-          ['duplicateVaultId', 'The transfer code contains an invalid vault ID.'],
+        //
+        // Each iteration CLEARS the previous verdict first and asserts the alert
+        // is gone before submitting. Without that clear this loop asserted the
+        // previous iteration's DOM: `badChecksum` and `elevenWords` both map to
+        // `invalid-mnemonic` and therefore render the identical string back to
+        // back, so an `elevenWords` submission that silently did nothing — a
+        // disabled Continue, a dead form — would still have found the message on
+        // screen and passed. The clear makes every refusal an observed state
+        // transition produced by its OWN submission.
+        //
+        // Those two sharing one message is deliberate, not a gap: the receiver
+        // must not tell a holder of a bad code WHICH BIP39 rule failed. Which
+        // rule broke is discriminated where the outcome code is visible, in
+        // `qr/payload.test.ts`; what is checked here is the vector's declared
+        // OUTCOME against the copy the receiver actually shows for it, so the
+        // fixture and this UI seam cannot drift apart.
+        const rejects: ReadonlyArray<readonly [VaultTransferRejectVectorName, string, string]> = [
+          ['unknownPrefix', 'update-required', 'This transfer code uses an unsupported version.'],
+          [
+            'missingMnemonic',
+            'missing-mnemonic',
+            'The transfer code has no seed phrase and was rejected.',
+          ],
+          [
+            'missingVaultId',
+            'missing-vault-id',
+            'The transfer code has no vault ID and was rejected.',
+          ],
+          [
+            'badChecksum',
+            'invalid-mnemonic',
+            'The seed phrase must be 12 valid English BIP39 words',
+          ],
+          [
+            'elevenWords',
+            'invalid-mnemonic',
+            'The seed phrase must be 12 valid English BIP39 words',
+          ],
+          [
+            'duplicateVaultId',
+            'invalid-vault-id',
+            'The transfer code contains an invalid vault ID.',
+          ],
         ];
-        for (const [vectorName, message] of rejects) {
+        for (const [vectorName, outcome, message] of rejects) {
           const vector = VAULT_TRANSFER_CONFORMANCE_VECTORS[vectorName];
+          // Indexing `.outcome` also pins these six as REJECT vectors at the
+          // type level: promote one to an accept vector and this stops compiling
+          // rather than quietly asserting a message that can no longer appear.
+          expect(vector.outcome, `${vectorName} must still be a ${outcome} vector`).toBe(outcome);
+
+          // The shipped method button re-selects the scan source, which is the
+          // receiver's own reset of the error state — no test-only hook.
+          await receiver.getByRole('button', { name: 'Scan or paste code', exact: true }).click();
+          await expect(
+            receiver.getByRole('alert'),
+            `the previous verdict must be cleared before ${vectorName} is submitted`,
+          ).toHaveCount(0);
+
           await submitTransferPayload(receiver, vector.payload);
           await expect(
             receiver.getByRole('alert').getByText(message, { exact: false }),
@@ -917,7 +1110,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
     } catch (error) {
       bodyFailure = error;
-      throw error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real device
+      // password, and the artifact is uploaded by the nightly. See
+      // `withoutMatcherAriaSnapshot`.
+      throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
         await secondDevice?.close();
