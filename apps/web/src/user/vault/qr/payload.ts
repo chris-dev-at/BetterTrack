@@ -21,7 +21,14 @@ export const VAULT_TRANSFER_NAME_MAX_CHARS = 64;
 export const VAULT_TRANSFER_PAYLOAD_MAX_BYTES = 220;
 
 export const VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES = [
+  'not-a-bettertrack-code',
   'update-required',
+  // The structural residual: the prefix is ours and the version is one we
+  // speak, but the body does not obey the grammar. Distinct from the
+  // `missing-*` outcomes, which mean a well-formed body is short a key —
+  // reporting a grammar break as a missing key makes the answer depend on
+  // which key the parser happened to read first.
+  'malformed',
   'missing-mnemonic',
   'missing-vault-id',
   'invalid-mnemonic',
@@ -48,17 +55,48 @@ export interface VaultTransferPayload {
 }
 
 /**
+ * The version token is a CANONICAL decimal integer — `^[1-9][0-9]*$`, no
+ * leading zeros, no zero. `btvault1:` is ours; a canonical token above 1 is a
+ * newer BetterTrack; `btvault0:`, `btvault01:`, `btvault007:` and `btvault02:`
+ * are simply not BetterTrack codes. Pinning the SHAPE is what keeps every
+ * client's answer identical: a parser that runs its integer conversion first
+ * (JS `Number`, Kotlin `toInt`) silently accepts the padded forms.
+ */
+const VAULT_TRANSFER_VERSION_TOKEN = /^btvault([1-9][0-9]*):$/;
+
+/**
  * The one E7 wire parser. Everything after the first colon is deliberately
  * parsed as application/x-www-form-urlencoded data, never as a URL authority.
  * Unknown keys are additive extensions and therefore ignored.
  */
 export function parseVaultTransferPayload(payload: string): VaultTransferPayload {
   const separator = payload.indexOf(':');
-  if (separator < 0 || payload.slice(0, separator + 1) !== VAULT_TRANSFER_SCHEME) {
+  const version =
+    separator < 0
+      ? undefined
+      : VAULT_TRANSFER_VERSION_TOKEN.exec(payload.slice(0, separator + 1))?.[1];
+  // Shape BEFORE value. A token that is not a canonical decimal integer is not
+  // a version we ever minted, so it is not our code — never an "update the app"
+  // prompt for a code no BetterTrack client can emit. Comparing `Number(token)`
+  // instead would read `btvault02:` as 2 and send this user to the app store
+  // while `btvault01:` read as foreign, which is the inconsistency this fixes.
+  if (version === undefined) {
+    throw new VaultTransferPayloadError('not-a-bettertrack-code');
+  }
+  if (version !== '1') {
     throw new VaultTransferPayloadError('update-required');
   }
 
-  const query = new URLSearchParams(payload.slice(separator + 1));
+  const body = payload.slice(separator + 1);
+  if (body.startsWith('?')) {
+    // URLSearchParams strips one leading '?', which would silently accept a
+    // URL-shaped body; the query delimiter is never form-encoded data. This is
+    // a break in the body GRAMMAR, so it is `malformed` — answering with the
+    // first key that then came up missing made the outcome depend on whether
+    // the sender wrote `?m=…&v=…` or `?v=…&m=…`.
+    throw new VaultTransferPayloadError('malformed');
+  }
+  const query = new URLSearchParams(body);
   if (query.getAll('m').length > 1) {
     throw new VaultTransferPayloadError('invalid-mnemonic');
   }
@@ -76,13 +114,15 @@ export function parseVaultTransferPayload(payload: string): VaultTransferPayload
 
   const mnemonic = validatedMnemonic(rawMnemonic);
   const vaultId = validatedVaultId(rawVaultId);
-  const name = query.get('n');
+  // Trim FIRST, then cap: a name already at the 64-code-point limit must
+  // survive being padded on the wire, not fail the whole transfer.
+  const name = trimTransferName(query.get('n') ?? '');
   const fingerprint = query.get('f');
 
   return {
     mnemonic,
     vaultId,
-    ...(name == null ? {} : { name: validatedName(name) }),
+    ...(name ? { name: validatedName(name) } : {}),
     ...(fingerprint == null ? {} : { fingerprint: validatedFingerprint(fingerprint) }),
   };
 }
@@ -146,6 +186,46 @@ function validatedVaultId(value: string): string {
     throw new VaultTransferPayloadError('invalid-vault-id');
   }
   return value;
+}
+
+/**
+ * The normative trim set for the optional `n` display hint: Unicode
+ * White_Space ∪ the C0/C1 controls ∪ U+FEFF.
+ *
+ * Deliberately NOT `String.prototype.trim`. ECMAScript's trim strips U+FEFF
+ * but leaves U+001C–U+001F standing; Kotlin's `trim()`/`Char.isWhitespace()`
+ * does the exact opposite. Either host's built-in therefore makes the two
+ * clients disagree about whether a scanned code carries a name at all, so the
+ * wire names the set explicitly and every client implements it. This set is a
+ * strict superset of both built-ins, so nothing either runtime already trims
+ * survives it.
+ *
+ * U+FEFF is listed by hand: it is category Cf with White_Space=No, so no
+ * Unicode property covers it — it is in the set because it is what ECMAScript
+ * trims, and because a zero-width no-break space is never legitimate name
+ * content at the boundary (the same reasoning as the render sanitizer).
+ */
+const VAULT_TRANSFER_NAME_TRIM_CODE_POINT = /^[\p{White_Space}\p{Cc}\uFEFF]$/u;
+
+/** Explicit membership test, so the wire rule is one greppable predicate. */
+function isNameTrimCodePoint(codePoint: string): boolean {
+  return VAULT_TRANSFER_NAME_TRIM_CODE_POINT.test(codePoint);
+}
+
+/**
+ * Trim only the EDGES, counted in CODE POINTS (the same unit as the 64-code-
+ * point cap). Interior code points are preserved verbatim — the wire carries
+ * what the sender wrote, and stripping controls out of the middle is the
+ * render sanitizer's job, not the parser's. A name made only of trim-set code
+ * points comes back empty and is therefore ABSENT.
+ */
+function trimTransferName(value: string): string {
+  const codePoints = [...value];
+  let start = 0;
+  let end = codePoints.length;
+  while (start < end && isNameTrimCodePoint(codePoints[start] as string)) start += 1;
+  while (end > start && isNameTrimCodePoint(codePoints[end - 1] as string)) end -= 1;
+  return codePoints.slice(start, end).join('');
 }
 
 function validatedName(value: string): string {

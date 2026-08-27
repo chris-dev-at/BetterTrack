@@ -462,7 +462,9 @@ export function payloadErrorKey(error: unknown): string {
   const outcome =
     error instanceof VaultTransferPayloadError ? error.outcome : ('invalid-mnemonic' as const);
   const keys: Record<VaultTransferPayloadErrorOutcome, string> = {
+    'not-a-bettertrack-code': 'vault.transfer.receiver.errors.notABettertrackCode',
     'update-required': 'vault.transfer.receiver.errors.updateRequired',
+    malformed: 'vault.transfer.receiver.errors.malformed',
     'missing-mnemonic': 'vault.transfer.receiver.errors.missingMnemonic',
     'missing-vault-id': 'vault.transfer.receiver.errors.missingVaultId',
     'invalid-mnemonic': 'vault.transfer.receiver.errors.invalidMnemonic',
