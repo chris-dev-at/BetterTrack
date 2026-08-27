@@ -608,6 +608,7 @@ describe('retired server vault purge', () => {
       ['other-v1', 'other-v2'],
       now(),
     );
+    // A purge-eligible account cannot hold live rows, so this third user witnesses their preservation.
     const liveUserId = await seedParanoidUser('live-vault@bt.test', 'livevault');
     await writeServerVault(liveUserId, ['live-v1', 'live-v2'], now());
 
@@ -697,6 +698,15 @@ describe('retired server vault purge', () => {
     // The retirement identity `(userId, retiredVersion)` is the natural
     // idempotency key: replaying that exact purge converges on the same empty set.
     expect(await repo.purgeRetired(input)).toEqual({ status: 'ok' });
+
+    // The public input type requires a verified proof; this cast exercises the repository's runtime guard.
+    expect(
+      await repo.purgeRetired({ ...input, proofVerified: false } as unknown as typeof input),
+    ).toEqual({ status: 'proof_required' });
+    // retiredVersion > driveAttestedVersion is still unknown, not converged.
+    expect(await repo.purgeRetired({ ...input, retiredVersion: retiredVersion + 1 })).toEqual({
+      status: 'not_found',
+    });
     expect(
       await db.select().from(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId)),
     ).toEqual([]);
