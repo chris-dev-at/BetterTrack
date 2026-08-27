@@ -1,3 +1,4 @@
+import type { ImportRowCandidate } from '@bettertrack/contracts';
 import { sql, type SQL } from 'drizzle-orm';
 import {
   bigint,
@@ -3138,6 +3139,8 @@ export const importBatches = pgTable(
  * already-recorded data. `asset_id` is the resolved catalog instrument (SET NULL
  * on catalog deletion — the row then re-reads as unresolved rather than
  * vanishing). `result`/`result_message` record the per-row apply outcome.
+ * `candidates` holds the near-match suggestions surfaced for UNRESOLVED rows
+ * (display only — the row stays `unmapped` and excluded from apply).
  */
 export const importRows = pgTable(
   'import_rows',
@@ -3165,6 +3168,7 @@ export const importRows = pgTable(
     contentHash: text('content_hash'),
     result: importRowResultEnum('result'),
     resultMessage: text('result_message'),
+    candidates: jsonb('candidates').$type<ImportRowCandidate[]>(),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );
