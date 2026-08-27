@@ -856,6 +856,17 @@ describe('durable paranoid server-media lifecycle', () => {
       .send(advancedProof);
     expect(purged.status).toBe(200);
     expect(purged.body).toEqual({ purged: true });
+    const replayedPurge = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send(advancedProof);
+    expect(replayedPurge.status).toBe(404);
+    expect(replayedPurge.body).toEqual({
+      error: {
+        code: 'VAULT_NOT_FOUND',
+        message: 'No retired server vault data found.',
+      },
+    });
     expect((await agent.get('/api/v1/vault/history')).body).toEqual({
       items: [],
       nextCursor: null,
