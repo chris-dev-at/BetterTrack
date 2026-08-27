@@ -1,5 +1,6 @@
 import {
-  taxYearReportResponseSchema,
+  MAX_TAX_REPORT_FIGURE_EUR,
+  vaultTaxYearReportResponseSchema,
   type PortfolioAsset,
   type TaxCountry,
   type TaxSettingsResponse,
@@ -14,7 +15,7 @@ import {
   type DeTaxableEvent,
 } from '@bettertrack/domain/tax';
 
-import { VaultMoneyEngineError, moneyFailure, type VaultMoneyFailure } from './errors';
+import { asMoneyFailure, moneyFailure, type VaultMoneyFailure } from './errors';
 import { activeTaxRegime, taxRegimeForRow, type TaxRegime } from './taxEngine';
 
 export const LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY =
@@ -205,31 +206,88 @@ export function composePortfolioFigures(
 ): ({ kind: 'composed' } & Partial<ComposedPortfolioFigures>) | UnavailableComposition {
   const { authoritativeRoster, members } = input;
   assertCompleteAuthoritativeRoster(authoritativeRoster, members);
-  const visible = members.filter(
-    (member): member is Extract<(typeof members)[number], { state: 'visible' }> =>
-      member.state === 'visible',
-  );
+
+  // The same member boundary as the tax seam (#1514 review F5). Home derives
+  // these totals from decrypted vault documents, so a member that cannot be
+  // read must cost that portfolio and nothing else — it is carried as
+  // unavailable coverage, never as a zero that would silently dilute the sum.
+  const readable: Record<string, number>[] = [];
+  const memberFailures: CompositionMemberFailure[] = [];
+  for (const member of members) {
+    if (member.state !== 'visible') continue;
+    try {
+      readable.push(readMemberFigures(member, keys));
+    } catch (cause) {
+      memberFailures.push({ portfolioId: member.portfolioId, error: asMoneyFailure(cause) });
+    }
+  }
+
   const counts: MemberCoverageCounts = {
-    visible: visible.length,
+    visible: readable.length,
     locked: members.filter((member) => member.state === 'locked').length,
-    unreadable: 0,
+    unreadable: memberFailures.length,
   };
-  if (unavailableScope(members, counts)) return unavailableComposition(counts, []);
+  if (unavailableScope(members, counts)) return unavailableComposition(counts, memberFailures);
   const coverage = coverageFor(counts);
-  const figures = Object.fromEntries(
-    keys.map((key) => [
-      key,
-      qualifyMoney(
-        visible.reduce((total, member) => {
-          const value = member.value[key];
-          requireFinite(value, `${member.portfolioId}.${key}`);
-          return total + value;
-        }, 0),
-        coverage,
-      ),
-    ]),
-  ) as Partial<ComposedPortfolioFigures>;
-  return { kind: 'composed', ...figures };
+  try {
+    const figures = Object.fromEntries(
+      keys.map((key) => [
+        key,
+        qualifyMoney(
+          readable.reduce((total, value) => total + (value[key] ?? 0), 0),
+          coverage,
+        ),
+      ]),
+    ) as Partial<ComposedPortfolioFigures>;
+    return { kind: 'composed', ...figures };
+  } catch {
+    // Unreachable while every member figure is bounded (see readMemberFigures);
+    // the honest answer if a bound is ever bypassed is no figure at all.
+    return pooledUnavailableComposition(counts, memberFailures);
+  }
+}
+
+/**
+ * One member's additive figures, checked before they join a sum.
+ *
+ * These are net-worth figures rather than tax data, so a bad one is reported as
+ * VAULT_CORRUPT — the code the rest of the vault already uses for a decrypted
+ * document that produced something unusable, and the one whose copy actually
+ * describes what happened.
+ *
+ * The magnitude bound is the same one the tax reports carry: it is what makes
+ * the pooled addition provably overflow-free, since no realistic total — the
+ * widest EUR column behind one is `numeric(20,6)`, ceiling ~1e14 — comes
+ * anywhere near it.
+ */
+function readMemberFigures(
+  member: Extract<
+    PortfolioCompositionMember<Partial<AdditivePortfolioFigures>>,
+    { state: 'visible' }
+  >,
+  keys: readonly (keyof AdditivePortfolioFigures)[],
+): Record<string, number> {
+  const unusable = (detail: string): never => {
+    throw moneyFailure('VAULT_CORRUPT', `Portfolio ${member.portfolioId} supplied ${detail}.`, {
+      details: { portfolioId: member.portfolioId },
+    });
+  };
+  const value: unknown = member.value;
+  if (!isPlainRecord(value)) return unusable('a figure set that is not an object');
+  const figures: Record<string, number> = {};
+  for (const key of keys) {
+    const figure = value[key];
+    if (
+      typeof figure !== 'number' ||
+      !Number.isFinite(figure) ||
+      Math.abs(figure) > MAX_TAX_REPORT_FIGURE_EUR
+    ) {
+      unusable(`an unusable ${key}`);
+      continue;
+    }
+    figures[key] = figure;
+  }
+  return figures;
 }
 
 export interface VisiblePortfolioTax {
@@ -301,14 +359,32 @@ interface TaxEvent {
  *
  * FAILURE CHANNELS (#1514): one corrupt member must not take the healthy
  * portfolios' figures with it, and a corrupt member must never be read as a
- * zero contribution either. Two disjoint channels enforce that. Member DATA —
- * report row shapes and their money figures, all derived from a decrypted
- * vault document and therefore attacker-influenced — degrades that member to a
- * typed {@link CompositionMemberFailure} counted as unavailable coverage.
- * CALLER CONTRACT breaches — a non-integer year, a roster mismatch, a
- * duplicated portfolio, an incomplete report index — still throw, because only
- * a code change at the call site can fix them and swallowing them would hide a
- * wiring bug behind a plausible-looking number.
+ * zero contribution either. Two disjoint channels enforce that, and the line
+ * between them is PROVENANCE — who computed the fact, not how structural it
+ * looks:
+ *
+ *  - Facts the CALLER computes for itself — the requested `year` ARGUMENT, the
+ *    authoritative roster it fetched, the member records it assembled — still
+ *    THROW. Only a code change at the call site can fix them, and swallowing
+ *    one would hide a wiring bug behind a plausible-looking number.
+ *  - Everything derived from a VAULT DOCUMENT degrades that one member to a
+ *    typed {@link CompositionMemberFailure}, counted as unavailable coverage.
+ *
+ * That includes the member's report/activity YEAR INDEX, which an earlier
+ * revision of this file wrongly filed under "caller contract". For a vaulted
+ * portfolio the index is not a call-site fact at all: `taxEngine.clientTaxYears`
+ * builds it by scanning the DECRYPTED DOCUMENT's transactions, dividends and
+ * cash movements, and `paranoidEnforcement` kills the server's activity-year
+ * routes — so for exactly the portfolios this seam exists to protect, the years
+ * are attacker-influenced content. A future-stamped report, a duplicated year, a
+ * year the index promises but no report carries, a nonsense `effectiveSettings.mode`
+ * — all of it is document content, and all of it degrades ONE member.
+ *
+ * Because the shapes are attacker-influenced, member processing also assumes
+ * NOTHING about the runtime shape of `member.value`: the container is validated
+ * before it is walked, and any unexpected throw inside member scope degrades
+ * that member rather than escaping (a throwing accessor walks straight out of
+ * zod's `safeParse`, which catches ZodError and nothing else).
  */
 export function composeCountryTaxYear(
   country: Extract<TaxCountry, 'AT' | 'DE'>,
@@ -328,11 +404,13 @@ export function composeCountryTaxYear(
     try {
       visibleMembers.push(readMemberReports(member, country, year));
     } catch (cause) {
-      // The ONLY channel that degrades: a typed vault-data failure. A
-      // TypeError/RangeError from the contract assertions above is a caller
-      // bug and keeps propagating, so the two can never be confused.
-      if (!(cause instanceof VaultMoneyEngineError)) throw cause;
-      memberFailures.push({ portfolioId: member.portfolioId, error: cause.failure });
+      // THE MEMBER BOUNDARY. Everything reachable from here reads a decrypted
+      // document, so ANY throw — a typed vault failure, a TypeError off a shape
+      // the compile-time type promised and the runtime value did not, a
+      // throwing accessor that walked out of `safeParse` — costs exactly this
+      // portfolio. The caller-computed checks all ran ABOVE this loop and are
+      // still free to propagate, so the two channels cannot be confused.
+      memberFailures.push({ portfolioId: member.portfolioId, error: asMoneyFailure(cause) });
     }
   }
 
@@ -344,6 +422,27 @@ export function composeCountryTaxYear(
   if (unavailableScope(members, counts)) return unavailableComposition(counts, memberFailures);
   const coverage = coverageFor(counts);
 
+  try {
+    return settleComposedTaxYear(country, year, visibleMembers, coverage, memberFailures);
+  } catch {
+    // BELT AND BRACES (#1514 review F4). Every figure in the pooled stream came
+    // through `vaultTaxYearReportResponseSchema`, so each is finite and within
+    // MAX_TAX_REPORT_FIGURE_EUR and the sums below cannot overflow — reaching
+    // this arm means a bound was bypassed. A pooled failure cannot be blamed on
+    // any single member, so the honest answer is the typed whole-composition
+    // unavailable result, never a `CashLedgerError` thrown through the view.
+    return pooledUnavailableComposition(counts, memberFailures);
+  }
+}
+
+/** The pooled settlement itself, once every member has been read and counted. */
+function settleComposedTaxYear(
+  country: Extract<TaxCountry, 'AT' | 'DE'>,
+  year: number,
+  visibleMembers: readonly ReadTaxMember[],
+  coverage: PortfolioFigureCoverage,
+  memberFailures: readonly CompositionMemberFailure[],
+): { kind: 'composed' } & ComposedCountryTaxYear {
   const events = visibleMembers
     .flatMap((member) => member.events)
     .sort(
@@ -450,21 +549,33 @@ interface ReadTaxMember {
 }
 
 /**
- * Validate one member's own reports and extract its events.
+ * Validate one member's own vault-derived data and extract its events.
  *
- * Throws a typed {@link VaultMoneyEngineError} for vault-data problems (the
- * caller degrades that member) and a plain RangeError/TypeError for caller
- * contract breaches (the caller lets them out). Nothing here is caught locally,
- * so the two channels stay visibly separate.
+ * Every throw from here is caught at the member boundary and degrades this one
+ * portfolio, so the code below is free to fail on anything it does not like.
+ * It runs shape-first: the container before its elements, the regime before
+ * the reports, because each step is what makes the next one safe to walk.
  */
 function readMemberReports(
   member: Extract<PortfolioTaxCompositionMember, { state: 'visible' }>,
   country: Extract<TaxCountry, 'AT' | 'DE'>,
   year: number,
 ): ReadTaxMember {
-  const reports = parseMemberReports(member);
-  assertMemberYearIndex(member, reports, year);
-  const activeRegime = activeTaxRegime(member.value.effectiveSettings);
+  const value = memberTaxValue(member);
+  const activeRegime = activeTaxRegime(value.effectiveSettings);
+  if (activeRegime.kind === 'none') {
+    // An UNTAXED portfolio contributes nothing and is not corrupt (#1514
+    // review F3). Its row classifier answers `none` for every row it holds and
+    // `manual` for the rest — neither names a country — so no report of it
+    // could ever reach an AT/DE pool. The caller therefore derives no reports
+    // for it at all, and demanding a report index from it used to fail the
+    // whole composed view over a portfolio that is simply not taxed. It
+    // composes as a zero-event member instead: counted as visible, withholding
+    // nothing, so the figures it joins stay COMPLETE.
+    return { portfolioId: member.portfolioId, events: [] };
+  }
+  const reports = parseMemberReports(member, value.reports);
+  assertMemberYearIndex(member, value.authoritativeActivityYears, reports, year);
   return {
     portfolioId: member.portfolioId,
     events: reports.flatMap((report) =>
@@ -473,12 +584,68 @@ function readMemberReports(
   };
 }
 
-/** DATA boundary: a report that fails its contract schema degrades its member. */
+/** The member value, as far as the declared type can still be trusted at runtime. */
+interface MemberTaxValue {
+  reports: readonly unknown[];
+  authoritativeActivityYears: readonly unknown[];
+  effectiveSettings: Pick<TaxSettingsResponse, 'mode' | 'country' | 'custom'>;
+}
+
+/**
+ * CONTAINER boundary (#1514 review F1): the member value's own shape, checked
+ * before anything walks it.
+ *
+ * The compile-time type says `reports` is an array; a decrypted document is
+ * under no obligation to agree. Reaching `.map` on a `null` or a string, or
+ * spreading a number as if it were a year index, throws a TypeError from
+ * outside every per-element guard — which at review head escaped the whole
+ * composition and took the healthy portfolios' figures with it. These four
+ * lines are the difference between one degraded member and a blank view.
+ */
+function memberTaxValue(
+  member: Extract<PortfolioTaxCompositionMember, { state: 'visible' }>,
+): MemberTaxValue {
+  const invalid = (detail: string): never => {
+    throw moneyFailure('TAX_DATA_INVALID', `Portfolio ${member.portfolioId} supplied ${detail}.`, {
+      details: { portfolioId: member.portfolioId },
+    });
+  };
+  const value: unknown = member.value;
+  if (!isPlainRecord(value)) return invalid('a tax member value that is not an object');
+  if (!Array.isArray(value.reports)) return invalid('a report set that is not an array');
+  if (!Array.isArray(value.authoritativeActivityYears)) {
+    return invalid('an activity-year index that is not an array');
+  }
+  if (!isPlainRecord(value.effectiveSettings)) {
+    return invalid('tax settings that are not an object');
+  }
+  return {
+    reports: value.reports,
+    authoritativeActivityYears: value.authoritativeActivityYears,
+    // Its FIELDS stay untrusted: `activeTaxRegime` validates mode/country/custom
+    // and raises a typed failure for nonsense, which degrades this member too.
+    effectiveSettings: value.effectiveSettings as MemberTaxValue['effectiveSettings'],
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * DATA boundary: a report that fails its contract schema degrades its member.
+ *
+ * Validation runs against {@link vaultTaxYearReportResponseSchema} rather than
+ * the plain server response contract: same shape, plus the per-row magnitude
+ * bound that keeps two individually finite rows from summing to `Infinity`
+ * inside the pooled settlement (#1514 review F4).
+ */
 function parseMemberReports(
   member: Extract<PortfolioTaxCompositionMember, { state: 'visible' }>,
+  reports: readonly unknown[],
 ): TaxYearReportResponse[] {
-  return member.value.reports.map((report) => {
-    const parsed = taxYearReportResponseSchema.safeParse(report);
+  return reports.map((report) => {
+    const parsed = vaultTaxYearReportResponseSchema.safeParse(report);
     if (parsed.success) return parsed.data;
     throw moneyFailure(
       'TAX_DATA_INVALID',
@@ -489,55 +656,61 @@ function parseMemberReports(
 }
 
 /**
- * CALLER boundary: the report index this member was assembled with. The years
- * come from the caller's own tax-engine query, not from vault content, so an
- * inconsistent index is a wiring bug and stays loud rather than degrading a
- * portfolio the user can actually read.
+ * DATA boundary: the member's report index against its own activity years.
+ *
+ * PROVENANCE (#1514 review F3, correcting this file's earlier claim): these
+ * years are NOT the caller's own facts. For a vaulted portfolio the index comes
+ * from `taxEngine.clientTaxYears`, which derives it by scanning the decrypted
+ * document's transactions, dividends and cash movements, and the server's
+ * activity-year routes are killed by `paranoidEnforcement` — so for exactly the
+ * portfolios this seam protects, both the report years and the activity years
+ * are document content an attacker can shape. Every anomaly here therefore
+ * degrades ONE member rather than throwing the composed view away.
  */
 function assertMemberYearIndex(
   member: Extract<PortfolioTaxCompositionMember, { state: 'visible' }>,
+  authoritativeActivityYears: readonly unknown[],
   reports: readonly TaxYearReportResponse[],
   year: number,
 ): void {
+  const invalid = (detail: string): never => {
+    throw moneyFailure('TAX_DATA_INVALID', `Portfolio ${member.portfolioId} ${detail}.`, {
+      details: { portfolioId: member.portfolioId },
+    });
+  };
   const reportYears = new Set<number>();
   for (const report of reports) {
-    if (report.year > year) {
-      throw new RangeError(
-        `Portfolio ${member.portfolioId} supplied future tax year ${report.year}.`,
-      );
-    }
+    if (report.year > year) invalid(`supplied future tax year ${report.year}`);
     if (reportYears.has(report.year)) {
-      throw new TypeError(
-        `Portfolio ${member.portfolioId} supplied tax year ${report.year} more than once.`,
-      );
+      invalid(`supplied tax year ${report.year} more than once`);
     }
     reportYears.add(report.year);
   }
   const activityYears = new Set<number>();
-  for (const activityYear of member.value.authoritativeActivityYears) {
-    if (!Number.isInteger(activityYear) || activityYear < 1900 || activityYear > 3000) {
-      throw new RangeError(
-        `Portfolio ${member.portfolioId} supplied invalid activity year ${activityYear}.`,
-      );
+  for (const activityYear of authoritativeActivityYears) {
+    if (
+      typeof activityYear !== 'number' ||
+      !Number.isInteger(activityYear) ||
+      activityYear < 1900 ||
+      activityYear > 3000
+    ) {
+      invalid(`supplied invalid activity year ${String(activityYear)}`);
+      continue;
     }
     if (activityYears.has(activityYear)) {
-      throw new TypeError(
-        `Portfolio ${member.portfolioId} supplied activity year ${activityYear} more than once.`,
-      );
+      invalid(`supplied activity year ${activityYear} more than once`);
     }
     activityYears.add(activityYear);
   }
-  const requiredYears = new Set([
-    year,
-    ...[...activityYears].filter((activityYear) => activityYear <= year),
-  ]);
-  const missingYears = [...requiredYears]
-    .filter((requiredYear) => !reportYears.has(requiredYear))
+  // Only years the index CLAIMS activity in are required. The requested year
+  // itself is not (#1514 review F3): a portfolio whose last trade was in 2024
+  // contributes no 2026 events, which makes it dormant, not corrupt — and
+  // demanding a 2026 report from it failed the whole view for an ordinary user.
+  const missingYears = [...activityYears]
+    .filter((activityYear) => activityYear <= year && !reportYears.has(activityYear))
     .sort((left, right) => left - right);
   if (missingYears.length > 0) {
-    throw new RangeError(
-      `Portfolio ${member.portfolioId} did not supply required tax year(s) ${missingYears.join(', ')}.`,
-    );
+    invalid(`did not supply required tax year(s) ${missingYears.join(', ')}`);
   }
 }
 
@@ -627,6 +800,33 @@ function unavailableComposition(
       visiblePortfolioCount: 0,
       lockedPortfolioCount: counts.locked,
       unavailablePortfolioCount: counts.unreadable,
+    },
+    memberFailures,
+  };
+}
+
+/**
+ * The pooled-arithmetic backstop (#1514 review F4).
+ *
+ * A failure in the POOLED step cannot be attributed to any one member — the
+ * whole point of this seam is that the members are settled together — so there
+ * is no honest way to degrade a portfolio and publish the rest. Every non-locked
+ * member is reported as unavailable instead: their figures really are missing
+ * from a number that no longer exists. `memberFailures` still names only the
+ * members that genuinely failed on their own data; the healthy ones are not
+ * slandered with an invented failure.
+ */
+function pooledUnavailableComposition(
+  counts: MemberCoverageCounts,
+  memberFailures: readonly CompositionMemberFailure[],
+): UnavailableComposition {
+  return {
+    kind: 'unavailable',
+    coverage: {
+      kind: 'unavailable',
+      visiblePortfolioCount: 0,
+      lockedPortfolioCount: counts.locked,
+      unavailablePortfolioCount: counts.visible + counts.unreadable,
     },
     memberFailures,
   };
@@ -738,20 +938,24 @@ function assertCompleteAuthoritativeRoster<T>(
 }
 
 /**
- * The finite backstop for figures the CALLER derived and handed over. Their
- * provenance is our own engine, so a non-finite one is a programmer error.
+ * The finite backstop on a POOLED RESULT, after every member figure has already
+ * been bounded on the way in. It should now be unreachable; the callers that
+ * run it turn its throw into a typed unavailable composition rather than
+ * letting it out, because a bad pooled result belongs to no single member.
  */
 function requireFinite(value: unknown, label: string): asserts value is number {
   if (!Number.isFinite(value)) throw new TypeError(`${label} must be a finite money figure.`);
 }
 
 /**
- * The same backstop one layer out, at the vault-DATA boundary — and it is
- * load-bearing, not belt-and-braces: zod's `z.number()` ACCEPTS Infinity, so a
- * schema-valid report can still carry a non-finite figure straight into a
- * domain settlement. Here the figure came from a decrypted document, so the
- * honest answer is to degrade that one portfolio rather than to crash the
- * composed view of every other portfolio (#1514).
+ * The per-ROW finite backstop at the vault-DATA boundary.
+ *
+ * The shared `taxYearReportResponseSchema` accepts Infinity — zod's
+ * `z.number()` admits it — which is why this layer was load-bearing on its own.
+ * Reports now arrive through {@link vaultTaxYearReportResponseSchema}, which
+ * rejects both non-finite and out-of-range figures, so this is the second lock
+ * on the same door: it stays because it is the one that survives a refactor of
+ * which schema the parse above happens to use.
  */
 function requireFiniteReportFigure(
   value: unknown,

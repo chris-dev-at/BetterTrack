@@ -102,11 +102,18 @@ const LEGACY_MONEY_ARITHMETIC_BASELINE = new Map<string, number>([
   ['taxEngine.ts::taxableTransactions::-::@taxableTransactions', 1],
 ]);
 
-/** §14 permits only these two already-reviewed additive composition seams. */
+/**
+ * §14 permits only these two already-reviewed additive composition seams.
+ *
+ * The pooled tax arithmetic moved from `composeCountryTaxYear` into
+ * `settleComposedTaxYear` when the seam grew its member-failure boundary
+ * (#1514 review): operators, operands and COUNTS are all unchanged, so the
+ * relocation is recorded here without widening what is approved.
+ */
 const COMPOSITION_ARITHMETIC_ALLOWLIST = new Map<string, number>([
-  ['composition.ts::composeCountryTaxYear::+::amountEur', 2],
-  ['composition.ts::composeCountryTaxYear::-::@composeCountryTaxYear', 3],
-  ['composition.ts::composeCountryTaxYear::unary-::@composeCountryTaxYear', 2],
+  ['composition.ts::settleComposedTaxYear::+::amountEur', 2],
+  ['composition.ts::settleComposedTaxYear::-::@settleComposedTaxYear', 3],
+  ['composition.ts::settleComposedTaxYear::unary-::@settleComposedTaxYear', 2],
   ['composition.ts::composePortfolioFigures::+::value', 1],
 ]);
 
