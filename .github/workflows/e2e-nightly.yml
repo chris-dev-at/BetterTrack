@@ -16,8 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # The current suite has 53 shared tests plus three mobile-gate tests that
-    # run only in the phone project: 109 project tests, or 27–28 per shard.
+    # The current suite has 71 shared tests plus six mobile-gate tests that run
+    # only in the phone project: 148 project tests, or 37 per shard. Eleven of
+    # the phone-project entries are E10's desktop-only vault arcs, which skip
+    # immediately there and cost a shard nothing.
     # The 60-minute soft test limit leaves ten minutes before the job deadline
     # for Playwright to flush its blob report and for artifact uploads.
     # A GitHub job timeout cancels the runner before those cleanup steps can run.
