@@ -11,7 +11,12 @@ import {
 import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
 import { VAULT_AGGREGATE_SYNC_STATES, VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
+import {
+  VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES,
+  VaultTransferPayloadError,
+} from '../user/vault/qr/payload';
 import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
+import { payloadErrorKey } from '../user/vault/ui/VaultReceivePhrase';
 import { VAULT_STATE_AFFORDANCES } from '../user/vault/vaultStateAffordance';
 import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
@@ -131,6 +136,30 @@ test('registers copy for every vault portfolio-store error code in EN and DE', (
       expect(localizedMessage(locale.code, key)).not.toBe(key);
     }
   }
+});
+
+test('registers copy for every btvault transfer payload outcome in EN and DE', () => {
+  // The scanner's only channel to the user is `payloadErrorKey`, and the
+  // outcome vocabulary is a frozen cross-client contract — adding a member
+  // (`malformed`, #1508) must not be able to land without its copy. Read each
+  // catalog DIRECTLY rather than through `localizedMessage`: that resolver
+  // falls back to EN, so an outcome missing only its DE entry would still
+  // return a real sentence and pass. A key typo'd onto a *different* real key
+  // resolves in both catalogs, so the uniqueness assertion is what catches it.
+  const catalogs = Object.values(LOCALES).map((l) => [l.code, flatten(l.messages)] as const);
+  expect(catalogs.map(([code]) => code)).toEqual(expect.arrayContaining(['en', 'de']));
+
+  const keys = VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES.map((outcome) => {
+    const key = payloadErrorKey(new VaultTransferPayloadError(outcome));
+    for (const [code, flat] of catalogs) {
+      const value = flat.get(key);
+      expect(typeof value, `${code}: ${outcome} -> ${key} does not resolve`).toBe('string');
+      expect(value, `${code}: ${outcome} -> ${key} is blank`).not.toBe('');
+    }
+    return key;
+  });
+
+  expect(new Set(keys).size, `two outcomes share a key: ${keys.join(', ')}`).toBe(keys.length);
 });
 
 test('registers progress + error copy for every paranoid enable stage in EN and DE', () => {
