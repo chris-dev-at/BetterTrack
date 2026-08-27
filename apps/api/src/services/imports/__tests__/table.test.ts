@@ -275,7 +275,21 @@ describe('parseLocalizedDecimal', () => {
   it('parses dot-decimal/comma-grouped notation under the English locale', () => {
     expect(parseLocalizedDecimal('1,234.56', 'en')).toBe(1234.56);
     expect(parseLocalizedDecimal('-42.50', 'en')).toBe(-42.5);
-    expect(parseLocalizedDecimal('1,200', 'en')).toBe(1200);
+    // CHANGED, AND SAID OUT LOUD — this line used to assert
+    // `parseLocalizedDecimal('1,200', 'en')` is 1200. That assertion ENCODED A
+    // BUG. `1,200` — one comma group, no decimal point — is the exact mirror of
+    // `1.000`, which the very next test demands be refused under BOTH locales:
+    // English reads 1200, German reads 1.2, and the cell alone cannot say which.
+    // Trusting the sniffed locale here is precisely how a German export whose
+    // `Stück` column reads `1,250 / 2,750 / 0,500` came back as [1250, 2750,
+    // 500] — 1000× high, at 0.95 confidence, with `issues: []`. Refusing costs
+    // one reported row; the old behaviour cost money.
+    expect(parseLocalizedDecimal('1,200', 'en')).toBeNull();
+    // Coverage is not reduced: the unambiguous comma-grouped forms this test
+    // exists for still parse. Only ENGLISH can write two comma groups, and a
+    // decimal point settles the notation outright.
+    expect(parseLocalizedDecimal('1,200,000', 'en')).toBe(1200000);
+    expect(parseLocalizedDecimal('1,200.00', 'en')).toBe(1200);
   });
 
   it('refuses ambiguous forms in BOTH locales instead of guessing', () => {
