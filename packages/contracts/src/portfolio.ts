@@ -273,6 +273,34 @@ export const MAX_CASH_AMOUNT_EUR = 1_000_000_000_000;
 /** A positive, finite EUR magnitude within the ledger's representable range. */
 const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_EUR);
 
+/**
+ * Upper bound on a SINGLE tax-report row's EUR magnitude, applied only where a
+ * report crosses an untrusted boundary — see
+ * {@link vaultTaxYearReportResponseSchema} (#1514 review F4).
+ *
+ * Why a bound is needed at all: two rows that are individually finite and
+ * schema-valid (1.7e308 each) sum to `Infinity`, and the ledger's `floorCents`
+ * then throws out of a POOLED cross-portfolio settlement — a failure that
+ * cannot be attributed to any one portfolio and so takes every portfolio's
+ * figures down with it. Bounding the row turns that into an ordinary rejection
+ * of the one member that carried it.
+ *
+ * Why 1e15 specifically — it must reject nothing a server can legitimately
+ * produce, and it does not:
+ *  - the widest EUR column behind a tax report is `numeric(20,6)`
+ *    (`dividends.gross_amount_eur`, `portfolio_cash_movements.amount_eur`,
+ *    `*.tax_amount_eur`), whose ceiling is 99,999,999,999,999.999999 — a full
+ *    decade below this bound;
+ *  - user-entered money is already capped at {@link MAX_CASH_AMOUNT_EUR}
+ *    (1e12), three decades below;
+ *  - it stays under `Number.MAX_SAFE_INTEGER` (~9.007e15), so every magnitude
+ *    admitted still has an exactly representable euro part in float64 — the
+ *    bound never accepts a figure whose euros have already silently drifted;
+ *  - with rows capped here, reaching `Infinity` by addition would take ~1e293
+ *    of them, so the pooled sum cannot overflow in practice.
+ */
+export const MAX_TAX_REPORT_FIGURE_EUR = 1_000_000_000_000_000;
+
 // --- Taxes (V3-P4, §13.3) ----------------------------------------------------
 
 /**
@@ -1661,6 +1689,40 @@ export const taxYearReportResponseSchema = z
   })
   .strict();
 export type TaxYearReportResponse = z.infer<typeof taxYearReportResponseSchema>;
+
+/** A finite EUR figure within {@link MAX_TAX_REPORT_FIGURE_EUR} of zero. */
+const boundedReportFigureSchema = z
+  .number()
+  .finite()
+  .min(-MAX_TAX_REPORT_FIGURE_EUR)
+  .max(MAX_TAX_REPORT_FIGURE_EUR);
+
+/**
+ * The same report, validated as it arrives from a DECRYPTED VAULT DOCUMENT
+ * instead of from the server (§13.5 paranoid mode, #1514 review F4).
+ *
+ * It is deliberately a SEPARATE schema rather than a tightening of
+ * {@link taxYearReportResponseSchema}. That one is the server's published
+ * response contract: it feeds the OpenAPI document and `portfolioApi`'s hard
+ * `.parse`, so bounding it there would turn an out-of-range server figure into
+ * a whole-page failure. On the vault path the same figure must instead cost
+ * exactly one portfolio, which is what the composition seam does with the
+ * rejection this schema produces.
+ *
+ * Only the two row figures the cross-portfolio settlement actually consumes are
+ * bounded — the per-position and summary aggregates are presentation-only and
+ * never reach the pooled stream.
+ */
+export const vaultTaxYearReportResponseSchema = taxYearReportResponseSchema.extend({
+  positions: z.array(
+    taxYearPositionSchema.extend({
+      sells: z.array(taxYearSellSchema.extend({ realizedPnlEur: boundedReportFigureSchema })),
+      dividends: z.array(
+        taxYearDividendSchema.extend({ grossAmountEur: boundedReportFigureSchema }),
+      ),
+    }),
+  ),
+});
 
 /** Route params for `/portfolios/:portfolioId/reports/tax-years/:year`. */
 export const taxYearParamsSchema = z

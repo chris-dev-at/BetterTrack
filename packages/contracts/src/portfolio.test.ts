@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PORTFOLIO_KIND,
   MAX_CASH_AMOUNT_EUR,
+  MAX_TAX_REPORT_FIGURE_EUR,
   PORTFOLIO_KINDS,
   cashEntryRequestSchema,
   cashMovementKindSchema,
@@ -16,10 +17,12 @@ import {
   portfolioSummarySchema,
   sourceTagSchema,
   taxYearChangesResponseSchema,
+  taxYearReportResponseSchema,
   taxYearSummarySchema,
   transactionListQuerySchema,
   transactionListResponseSchema,
   updatePortfolioRequestSchema,
+  vaultTaxYearReportResponseSchema,
 } from './portfolio';
 
 describe('cash amount validation (§14 hardening)', () => {
@@ -291,5 +294,127 @@ describe('portfolio kind (board #69)', () => {
     expect(updatePortfolioRequestSchema.safeParse({}).success).toBe(true);
     expect(updatePortfolioRequestSchema.safeParse({ kind: null }).success).toBe(false);
     expect(updatePortfolioRequestSchema.safeParse({ kind: 'yacht' }).success).toBe(false);
+  });
+});
+
+describe('vault tax report bounds (#1514 review F4)', () => {
+  const asset = {
+    id: '018f0000-0000-7000-8000-0000000005a1',
+    symbol: 'TEST',
+    name: 'TEST VECTOR asset',
+    exchange: 'XETRA',
+    currency: 'EUR',
+    type: 'stock',
+    isCustom: false,
+    category: null,
+    smoothing: false,
+  };
+
+  function reportWith(realizedPnlEur: number, grossAmountEur: number): unknown {
+    return {
+      year: 2026,
+      summary: {
+        year: 2026,
+        lastChangedAt: '2026-06-01T10:00:00.000Z',
+        realizedPnlEur,
+        dividendsGrossEur: grossAmountEur,
+        taxWithheldEur: 0,
+        taxRefundedEur: 0,
+        taxNetEur: 0,
+      },
+      positions: [
+        {
+          asset,
+          realizedPnlEur,
+          dividendsGrossEur: grossAmountEur,
+          taxEur: 0,
+          sells: [
+            {
+              transactionId: '018f0000-0000-7000-8000-0000000005a2',
+              executedAt: '2026-03-01T10:00:00.000Z',
+              quantity: 1,
+              proceedsEur: 0,
+              costBasisEur: 0,
+              realizedPnlEur,
+              taxMode: 'country_specific',
+              taxAmountEur: null,
+              taxCountry: 'DE',
+              taxParams: null,
+            },
+          ],
+          dividends: [
+            {
+              dividendId: '018f0000-0000-7000-8000-0000000005a3',
+              executedAt: '2026-06-01T10:00:00.000Z',
+              grossAmountEur,
+              taxMode: 'country_specific',
+              taxAmountEur: null,
+              taxCountry: 'DE',
+              taxParams: null,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('leaves the published server response contract exactly as it was', () => {
+    // The bound belongs to the VAULT path only. Tightening the response schema
+    // would turn an out-of-range server figure into a whole-page `.parse`
+    // failure in portfolioApi and would change the OpenAPI document; the
+    // paranoid path wants a one-portfolio degradation instead.
+    expect(taxYearReportResponseSchema.safeParse(reportWith(1.7e308, 1.7e308)).success).toBe(true);
+    expect(taxYearReportResponseSchema.safeParse(reportWith(Infinity, 0)).success).toBe(true);
+  });
+
+  it('accepts every magnitude a server can actually produce', () => {
+    // `numeric(20,6)` — the widest EUR column behind a report — tops out just
+    // under 1e14, and user entry is capped at MAX_CASH_AMOUNT_EUR (1e12).
+    expect(MAX_TAX_REPORT_FIGURE_EUR).toBeGreaterThan(1e14);
+    expect(MAX_TAX_REPORT_FIGURE_EUR).toBeGreaterThan(MAX_CASH_AMOUNT_EUR);
+    expect(MAX_TAX_REPORT_FIGURE_EUR).toBeLessThan(Number.MAX_SAFE_INTEGER);
+
+    for (const magnitude of [0, 1234.56, MAX_CASH_AMOUNT_EUR, 1e14, MAX_TAX_REPORT_FIGURE_EUR]) {
+      expect(
+        vaultTaxYearReportResponseSchema.safeParse(reportWith(-magnitude, magnitude)).success,
+        `magnitude ${magnitude}`,
+      ).toBe(true);
+    }
+  });
+
+  it('rejects the row magnitudes that overflow a pooled settlement', () => {
+    expect(vaultTaxYearReportResponseSchema.safeParse(reportWith(1.7e308, 0)).success).toBe(false);
+    expect(vaultTaxYearReportResponseSchema.safeParse(reportWith(-1.7e308, 0)).success).toBe(false);
+    expect(vaultTaxYearReportResponseSchema.safeParse(reportWith(0, 1.7e308)).success).toBe(false);
+    expect(
+      vaultTaxYearReportResponseSchema.safeParse(reportWith(MAX_TAX_REPORT_FIGURE_EUR + 1e9, 0))
+        .success,
+    ).toBe(false);
+  });
+
+  it('rejects non-finite row figures the base contract still admits', () => {
+    for (const figure of [Infinity, -Infinity, Number.NaN]) {
+      expect(
+        vaultTaxYearReportResponseSchema.safeParse(reportWith(figure, 0)).success,
+        `realizedPnlEur ${String(figure)}`,
+      ).toBe(false);
+      expect(
+        vaultTaxYearReportResponseSchema.safeParse(reportWith(0, figure)).success,
+        `grossAmountEur ${String(figure)}`,
+      ).toBe(false);
+    }
+  });
+
+  it('keeps the strictness the base schemas were declared with', () => {
+    // `.extend()` must not have quietly rebuilt these objects as passthrough:
+    // an unknown key on a vault-supplied row is exactly the kind of smuggling
+    // the strict contract exists to refuse.
+    const base = reportWith(1, 1) as {
+      positions: { sells: Record<string, unknown>[] }[];
+    };
+    base.positions[0]!.sells[0]!.smuggled = 'payload';
+
+    expect(vaultTaxYearReportResponseSchema.safeParse(base).success).toBe(false);
+    expect(taxYearReportResponseSchema.safeParse(base).success).toBe(false);
   });
 });

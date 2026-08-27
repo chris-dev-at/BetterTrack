@@ -6291,7 +6291,9 @@
   },
   "vaultComposition": {
     "lockedPortfoliosQualifierOne": "+ {{count}} locked portfolio",
-    "lockedPortfoliosQualifierOther": "+ {{count}} locked portfolios"
+    "lockedPortfoliosQualifierOther": "+ {{count}} locked portfolios",
+    "unreadablePortfoliosQualifierOne": "+ {{count}} unreadable portfolio",
+    "unreadablePortfoliosQualifierOther": "+ {{count}} unreadable portfolios"
   },
   "vaultMoney": {
     "error": {
