@@ -407,6 +407,15 @@ export function VaultRuntimeProvider({
     return state;
   }, []);
 
+  const prepareDriveStorage = useCallback(async (): Promise<void> => {
+    if (!authenticated || userId == null) {
+      throw new VaultCryptoError('locked', 'An authenticated vault owner is required.');
+    }
+    const tokenClient = tokens(true);
+    await tokenClient.prepare();
+    setDriveAuthorization(tokenClient.state);
+  }, [authenticated, tokens, userId]);
+
   const authorizeDriveStorage = useCallback(async (): Promise<DataHome> => {
     if (!authenticated || userId == null) {
       throw new VaultCryptoError('locked', 'An authenticated vault owner is required.');
@@ -538,6 +547,7 @@ export function VaultRuntimeProvider({
       unlockWithPassphrase,
       unlockWithRecoveryKit,
       unlockFromDevice,
+      prepareDriveStorage,
       authorizeDriveStorage,
       reconnect,
       downloadRecoveryKit,
@@ -557,6 +567,7 @@ export function VaultRuntimeProvider({
       driveAuthorization,
       lock,
       phase,
+      prepareDriveStorage,
       reconnect,
       rotateKey,
       sync,

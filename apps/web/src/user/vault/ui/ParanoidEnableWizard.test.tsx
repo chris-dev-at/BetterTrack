@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   deliver: vi.fn(),
   migrate: vi.fn(),
   commitApi: vi.fn(),
+  prepareDriveStorage: vi.fn(),
   authorizeDriveStorage: vi.fn(),
   unlockWithPassphrase: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock('../../AuthContext', () => ({
 }));
 vi.mock('../VaultRuntimeProvider', () => ({
   useVaultRuntime: () => ({
+    prepareDriveStorage: mocks.prepareDriveStorage,
     authorizeDriveStorage: mocks.authorizeDriveStorage,
     unlockWithPassphrase: mocks.unlockWithPassphrase,
   }),
@@ -69,6 +71,7 @@ beforeEach(() => {
     },
     dispose: mocks.dispose,
   });
+  mocks.prepareDriveStorage.mockResolvedValue(undefined);
   mocks.authorizeDriveStorage.mockResolvedValue({ medium: 'drive' });
   mocks.unlockWithPassphrase.mockResolvedValue({});
   mocks.enable.mockImplementation(async (input: { onStage?: (stage: string) => void }) => {
@@ -141,6 +144,218 @@ describe('ParanoidEnableWizard', () => {
       driveOnly: false,
       keepUnlocked: false,
     });
+    expect(mocks.authorizeDriveStorage).not.toHaveBeenCalled();
+  });
+
+  it('connects Google Drive from the storage step before showing the passphrase step', async () => {
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.prepareDriveStorage).toHaveBeenCalledOnce();
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled();
+    });
+    expect(screen.getByText(/Connect Google Drive before continuing/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+
+    expect(mocks.authorizeDriveStorage).toHaveBeenCalledOnce();
+    expect(screen.getByText(/Google Drive is connected and ready/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByLabelText('Vault passphrase')).toBeInTheDocument();
+  });
+
+  it('prepares GIS before it enables the first Google Drive authorization gesture', async () => {
+    let finishPreparation!: () => void;
+    mocks.prepareDriveStorage.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPreparation = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+
+    await waitFor(() => expect(mocks.prepareDriveStorage).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: 'Preparing Google sign-in…' })).toBeDisabled();
+    expect(mocks.authorizeDriveStorage).not.toHaveBeenCalled();
+
+    finishPreparation();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled(),
+    );
+  });
+
+  it('keeps the account untouched when the early Google Drive popup is blocked', async () => {
+    mocks.authorizeDriveStorage.mockRejectedValueOnce(new Error('popup blocked'));
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Allow the Google sign-in popup.*account has not changed/i,
+    );
+    expect(screen.getByRole('heading', { name: 'Choose encrypted storage' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    expect(screen.queryByLabelText('Vault passphrase')).not.toBeInTheDocument();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.deliver).not.toHaveBeenCalled();
+    expect(mocks.migrate).not.toHaveBeenCalled();
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+  });
+
+  it('rechecks Drive authorization from the final Enable gesture before writing', async () => {
+    const earlyDrive = { medium: 'drive' };
+    const refreshedDrive = { medium: 'drive', refreshed: true };
+    mocks.authorizeDriveStorage
+      .mockResolvedValueOnce(earlyDrive)
+      .mockResolvedValueOnce(refreshedDrive);
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(mocks.authorizeDriveStorage).toHaveBeenCalledTimes(2);
+    expect(mocks.enable).toHaveBeenCalledWith(
+      expect.objectContaining({ mediaSet: ['server', 'drive'] }),
+      expect.objectContaining({ drive: refreshedDrive }),
+    );
+  });
+
+  it('locks navigation and discards a late final Drive authorization after dismissal', async () => {
+    const finalAuthorization = deferred<{ medium: 'drive' }>();
+    mocks.authorizeDriveStorage
+      .mockResolvedValueOnce({ medium: 'drive' })
+      .mockReturnValueOnce(finalAuthorization.promise);
+    const user = userEvent.setup();
+    const rendered = render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    await waitFor(() => expect(mocks.authorizeDriveStorage).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+
+    // A route/panel close can still unmount the wizard while Google owns its
+    // popup. Resolving it afterwards must not encrypt with the now-zeroed key
+    // or commit the storage choice the user just left.
+    rendered.unmount();
+    await act(async () => {
+      finalAuthorization.resolve({ medium: 'drive' });
+      await finalAuthorization.promise;
+    });
+
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.migrate).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+  });
+
+  it('requires a new Drive connection after final reauthorization fails', async () => {
+    mocks.authorizeDriveStorage
+      .mockResolvedValueOnce({ medium: 'drive' })
+      .mockRejectedValueOnce(new Error('token expired'));
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /needs to be reconnected before the transfer can start.*account has not changed/i,
+    );
+    expect(mocks.migrate).not.toHaveBeenCalled();
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Enable Paranoid mode' })).toBeDisabled();
+
+    // The failed final check invalidates the early Drive home. Going back
+    // cannot re-enter the passphrase/recovery step until Drive reconnects.
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('heading', { name: 'Choose encrypted storage' })).toBeInTheDocument();
+    const continueButton = screen.getByRole('button', { name: 'Continue' });
+    expect(continueButton).toBeDisabled();
+    await user.click(continueButton);
+    expect(screen.queryByLabelText('Vault passphrase')).not.toBeInTheDocument();
   });
 
   it.each([
@@ -370,3 +585,11 @@ describe('ParanoidEnableWizard', () => {
     );
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

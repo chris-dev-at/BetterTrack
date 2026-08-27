@@ -62,6 +62,7 @@ describe('Google Drive GIS token client', () => {
       now: () => 1_000,
     });
 
+    await client.prepare();
     await expect(client.authorize()).resolves.toEqual({
       status: 'ok',
       accessToken: 'memory-only-token',
@@ -84,6 +85,45 @@ describe('Google Drive GIS token client', () => {
     expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
   });
 
+  it('keeps the first popup synchronous after a fresh client finishes preloading GIS', async () => {
+    let completeLoad!: (oauth2: GoogleOauth2) => void;
+    let callback!: (response: GoogleTokenResponse) => void;
+    const loadOauth2 = vi.fn(
+      () =>
+        new Promise<GoogleOauth2>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'fresh-token', expires_in: 3600 });
+    });
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      loadOauth2,
+    });
+
+    const preparation = client.prepare();
+    expect(loadOauth2).toHaveBeenCalledOnce();
+    expect(requestAccessToken).not.toHaveBeenCalled();
+
+    completeLoad({
+      initTokenClient(config) {
+        callback = config.callback;
+        return { requestAccessToken };
+      },
+    });
+    await preparation;
+
+    const authorization = client.authorize();
+    // No await happens between the click-facing call above and GIS opening its
+    // popup. This is the fresh-browser contract the Drive controls rely on.
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+    await expect(authorization).resolves.toMatchObject({
+      status: 'ok',
+      accessToken: 'fresh-token',
+    });
+  });
+
   it('flags invalid_grant and exposes an identity-specific sign-in action', async () => {
     let callback!: (response: GoogleTokenResponse) => void;
     const client = createGoogleDriveTokenClient({
@@ -101,6 +141,7 @@ describe('Google Drive GIS token client', () => {
       }),
     });
 
+    await client.prepare();
     await expect(client.authorize()).resolves.toEqual({
       status: 'revoked',
       message: 'grant revoked',
@@ -132,6 +173,7 @@ describe('Google Drive GIS token client', () => {
     });
 
     // A bootstrap mint: the connection row does not exist yet, so no hint.
+    await client.prepare();
     await expect(client.authorize()).resolves.toMatchObject({ accessToken: 'token-1' });
 
     client.identify({ loginHint: 'drive-z@example.test', identityLabel: 'drive-z@example.test' });
@@ -200,6 +242,7 @@ describe('Google Drive GIS token client', () => {
       }),
     });
 
+    await client.prepare();
     expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
     await client.authorize();
     clock += 31_000;
@@ -228,6 +271,7 @@ describe('Google Drive GIS token client', () => {
       }),
     });
 
+    await client.prepare();
     await expect(client.authorize()).resolves.toEqual({
       status: 'gesture-required',
       message: 'popup blocked',
@@ -253,6 +297,7 @@ describe('Google Drive GIS token client', () => {
       }),
     });
 
+    await client.prepare();
     const first = client.authorize();
     await vi.waitFor(() => expect(callbacks).toHaveLength(1));
     client.clear();
@@ -290,6 +335,7 @@ describe('Google Drive GIS token client', () => {
           },
         }),
       });
+      await client.prepare();
       client.subscribe(listener);
 
       await expect(client.authorize()).resolves.toMatchObject({ status: 'ok' });
@@ -304,49 +350,107 @@ describe('Google Drive GIS token client', () => {
     }
   });
 
-  it('recreates the GIS loader after a transient script failure', async () => {
+  // The E5 per-connection registry mints a client per identity AT gesture time
+  // and cannot preload it, so `authorize()` must still work unprepared. It
+  // loads GIS first — which is what risks the popup block that `prepare()`
+  // exists to avoid — rather than refusing and turning the click into a no-op.
+  it('still reaches the popup for a caller that never prepared', async () => {
+    let completeLoad!: (oauth2: GoogleOauth2) => void;
+    let callback!: (response: GoogleTokenResponse) => void;
+    const loadOauth2 = vi.fn(
+      () =>
+        new Promise<GoogleOauth2>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'deferred-token', expires_in: 3600 });
+    });
+    const client = createGoogleDriveTokenClient({ clientId: 'browser-client-id', loadOauth2 });
+
+    const authorization = client.authorize();
+    expect(loadOauth2).toHaveBeenCalledOnce();
+    expect(requestAccessToken).not.toHaveBeenCalled();
+
+    completeLoad({
+      initTokenClient(config) {
+        callback = config.callback;
+        return { requestAccessToken };
+      },
+    });
+
+    await expect(authorization).resolves.toMatchObject({
+      status: 'ok',
+      accessToken: 'deferred-token',
+    });
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+  });
+
+  it('reports an unloadable GIS to an unprepared caller instead of hanging', async () => {
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      loadOauth2: () => Promise.reject(new Error('offline')),
+    });
+
+    await expect(client.authorize()).resolves.toEqual({
+      status: 'gesture-required',
+      message: 'Google sign-in could not be loaded. Try again.',
+    });
+    expect(client.state).toBe('gesture-required');
+  });
+
+  it('recreates GIS after a failed preload and keeps the retried popup synchronous', async () => {
     delete window.google;
     document
       .querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]')
       ?.remove();
     const client = createGoogleDriveTokenClient({ clientId: 'browser-client-id' });
 
-    const failed = client.authorize();
+    const failed = client.prepare();
     const failedScript = document.querySelector<HTMLScriptElement>(
       'script[src="https://accounts.google.com/gsi/client"]',
     );
     expect(failedScript).not.toBeNull();
     failedScript!.dispatchEvent(new Event('error'));
-    await expect(failed).resolves.toMatchObject({
-      status: 'gesture-required',
-      message: 'Google sign-in could not be loaded. Try again.',
-    });
+    await expect(failed).rejects.toThrow('Google Identity Services could not be loaded.');
     expect(failedScript!.isConnected).toBe(false);
 
-    let callback!: (response: GoogleTokenResponse) => void;
-    const retried = client.authorize();
-    const retryScript = document.querySelector<HTMLScriptElement>(
+    // The failure is not sticky: the retry the UI offers mounts a NEW script.
+    const retried = client.prepare();
+    const script = document.querySelector<HTMLScriptElement>(
       'script[src="https://accounts.google.com/gsi/client"]',
     );
-    expect(retryScript).not.toBeNull();
-    expect(retryScript).not.toBe(failedScript);
+    expect(script).not.toBeNull();
+    expect(script).not.toBe(failedScript);
+    let callback!: (response: GoogleTokenResponse) => void;
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'fresh', expires_in: 3600 });
+    });
     window.google = {
       accounts: {
         oauth2: {
           initTokenClient(config) {
             callback = config.callback;
             return {
-              requestAccessToken: () => callback({ access_token: 'recovered', expires_in: 3600 }),
+              requestAccessToken,
             };
           },
         },
       },
     };
-    retryScript!.dispatchEvent(new Event('load'));
+    script!.dispatchEvent(new Event('load'));
 
-    await expect(retried).resolves.toMatchObject({
+    await retried;
+    expect(requestAccessToken).not.toHaveBeenCalled();
+
+    const authorized = client.authorize();
+    // No await between the click-facing call above and GIS opening its popup.
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+
+    await expect(authorized).resolves.toMatchObject({
       status: 'ok',
-      accessToken: 'recovered',
+      accessToken: 'fresh',
     });
+    client.clear();
   });
 });

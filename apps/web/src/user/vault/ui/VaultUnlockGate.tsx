@@ -11,6 +11,7 @@ import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert, AuthCard, Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
 import { VaultCryptoError } from '../errors';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
+import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 
 /** What the §3 destruction exit re-authenticates with — one credential, like `DELETE /account`. */
 export interface VaultDiscardCredential {
@@ -49,6 +50,8 @@ export function VaultUnlockGate({
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const trustedAttempted = useRef(false);
   const driveSelected = mediaSet.includes('drive');
+  const drivePreparation = useDriveGisPreparation(driveSelected, runtime.prepareDriveStorage);
+  const driveReady = !driveSelected || drivePreparation.state === 'ready';
   const busy = runtime.phase === 'unlocking';
   /*
    * The enable hand-off, carried by the only signal that survives it. The
@@ -72,6 +75,7 @@ export function VaultUnlockGate({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!driveReady) return;
     setErrorKey(null);
     try {
       const options = {
@@ -150,11 +154,31 @@ export function VaultUnlockGate({
         </div>
 
         {driveSelected ? (
-          <p className="bt-muted text-xs">{t('vault.unlock.driveGesture')}</p>
+          <>
+            <p className="bt-muted text-xs">{t('vault.unlock.driveGesture')}</p>
+            {drivePreparation.state === 'preparing' ? (
+              <p className="bt-muted text-xs" role="status">
+                {t('vault.unlock.preparingDrive')}
+              </p>
+            ) : null}
+            {drivePreparation.state === 'failed' ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="bt-neg text-xs" role="alert">
+                  {t('vault.unlock.drivePreparationFailed')}
+                </p>
+                <Button onClick={drivePreparation.retry} type="button" variant="secondary">
+                  {t('vault.unlock.retryDrivePreparation')}
+                </Button>
+              </div>
+            ) : null}
+          </>
         ) : null}
         {errorKey ? <Alert tone="error">{t(errorKey)}</Alert> : null}
 
-        <Button disabled={busy || (recoveryKit == null && passphrase.length === 0)} type="submit">
+        <Button
+          disabled={busy || !driveReady || (recoveryKit == null && passphrase.length === 0)}
+          type="submit"
+        >
           {busy ? t('vault.unlock.unlocking') : t('vault.unlock.action')}
         </Button>
       </form>

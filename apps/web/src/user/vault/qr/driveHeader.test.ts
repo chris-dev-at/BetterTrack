@@ -116,6 +116,7 @@ function tokenClient(): GoogleDriveTokenClient {
       expiresAt: Date.now() + 60_000,
     })),
     subscribe: vi.fn(() => () => undefined),
+    prepare: vi.fn(async () => undefined),
     authorize: vi.fn(),
     identify: vi.fn(),
     clear: vi.fn(),

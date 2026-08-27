@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +18,7 @@ const runtime = vi.hoisted(() => ({
     resume: vi.fn(async () => undefined),
   },
   reconnect: vi.fn(async () => ({})),
+  prepareDriveStorage: vi.fn(async () => undefined),
 }));
 
 vi.mock('../VaultRuntimeContext', () => ({
@@ -39,6 +40,7 @@ const BOTH_MEDIA: ParanoidVaultMediaState = {
 beforeEach(() => {
   vi.clearAllMocks();
   runtime.driveAuthorization = 'connected';
+  runtime.prepareDriveStorage.mockResolvedValue(undefined);
   runtime.syncState = {
     status: 'synced',
     active: {
@@ -83,9 +85,40 @@ describe('VaultSyncChip', () => {
     await user.click(screen.getByRole('button', { name: 'Needs attention' }));
     expect(screen.getByText('Sign in to Google to sync')).toBeInTheDocument();
 
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Sign in to Google and resume' })).toBeEnabled(),
+    );
     await user.click(screen.getByRole('button', { name: 'Sign in to Google and resume' }));
     expect(runtime.connection.resume).toHaveBeenCalledOnce();
     expect(runtime.reconnect).toHaveBeenCalledOnce();
+  });
+
+  it('preloads GIS before exposing the resume gesture', async () => {
+    let finishPreparation!: () => void;
+    runtime.driveAuthorization = 'token-expired';
+    runtime.prepareDriveStorage.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishPreparation = () => resolve(undefined);
+        }),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <VaultSyncChip media={BOTH_MEDIA} />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Needs attention' }));
+    await waitFor(() => expect(runtime.prepareDriveStorage).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: 'Preparing Google sign-in…' })).toBeDisabled();
+    expect(runtime.connection.resume).not.toHaveBeenCalled();
+
+    finishPreparation();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Sign in to Google and resume' })).toBeEnabled(),
+    );
   });
 
   it('uses one aggregate chip with one actionable row per vault', async () => {

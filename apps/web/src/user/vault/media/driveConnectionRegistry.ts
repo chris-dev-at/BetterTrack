@@ -104,6 +104,10 @@ export function createDriveConnectionRegistry(
 
       subscribe: (listener) => raw.subscribe(listener),
 
+      // Straight through: preparation is a GIS script load with no identity in
+      // it, so a mismatch flag has nothing to hide here.
+      prepare: () => raw.prepare(),
+
       async authorize() {
         const before = tokens.getAccessToken();
         state.mismatchMessage = null;

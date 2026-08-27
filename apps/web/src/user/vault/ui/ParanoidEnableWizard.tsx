@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   MAX_PASSWORD_LENGTH,
@@ -18,6 +18,7 @@ import { useAuth } from '../../AuthContext';
 import { deliverClientDownload } from '../export/deliver';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
+import type { DataHome } from '../dataHome';
 import {
   enablePreparedVault,
   prepareVaultMaterial,
@@ -40,6 +41,8 @@ interface EnableErrorCopy {
   vars?: Record<string, string | number>;
 }
 
+type DrivePreparationState = 'idle' | 'preparing' | 'ready' | 'failed';
+
 export function ParanoidEnableWizard({
   onCancel,
   onEnabled,
@@ -54,6 +57,9 @@ export function ParanoidEnableWizard({
   const [includeDrive, setIncludeDrive] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [driveOnly, setDriveOnly] = useState(false);
+  const [drive, setDrive] = useState<DataHome | null>(null);
+  const [drivePreparation, setDrivePreparation] = useState<DrivePreparationState>('idle');
+  const [authorizingDrive, setAuthorizingDrive] = useState(false);
   const [passphrase, setPassphrase] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [material, setMaterial] = useState<PreparedVaultMaterial | null>(null);
@@ -63,6 +69,8 @@ export function ParanoidEnableWizard({
   const [stage, setStage] = useState<VaultEnableStage | null>(null);
   const [captureCompletedRequests, setCaptureCompletedRequests] = useState(0);
   const [error, setError] = useState<EnableErrorCopy | null>(null);
+  const drivePreparationGeneration = useRef(0);
+  const enableOperationGeneration = useRef(0);
 
   const mediaSet = useMemo<VaultMediaSet>(
     () =>
@@ -73,6 +81,18 @@ export function ParanoidEnableWizard({
   );
   const passphraseValid =
     passwordSchema.safeParse(passphrase).success && passphrase === confirmation;
+  const driveSelected = mediaSet.includes('drive');
+
+  useEffect(
+    () => () => {
+      // A Google popup cannot be cancelled, but its result must never revive a
+      // wizard that was dismissed while the popup was open. In particular, the
+      // captured material is zeroed during unmount, so continuing would make a
+      // vault from disposed key material.
+      enableOperationGeneration.current += 1;
+    },
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -82,11 +102,60 @@ export function ParanoidEnableWizard({
   );
 
   function resetMaterial() {
+    enableOperationGeneration.current += 1;
     material?.dispose();
     setMaterial(null);
     setKitDownloaded(false);
     setKitStored(false);
     setLostKeyAcknowledged(false);
+  }
+
+  const prepareDrive = useCallback(() => {
+    const generation = ++drivePreparationGeneration.current;
+    setDrive(null);
+    setError(null);
+    setDrivePreparation('preparing');
+    void runtime
+      .prepareDriveStorage()
+      .then(() => {
+        if (drivePreparationGeneration.current !== generation) return;
+        setDrivePreparation('ready');
+      })
+      .catch(() => {
+        if (drivePreparationGeneration.current !== generation) return;
+        setDrive(null);
+        setDrivePreparation('failed');
+        setError({ key: 'vault.enable.errors.drivePreparation' });
+      });
+  }, [runtime.prepareDriveStorage]);
+
+  useEffect(() => {
+    if (!driveSelected) {
+      drivePreparationGeneration.current += 1;
+      setDrive(null);
+      setDrivePreparation('idle');
+      return;
+    }
+    prepareDrive();
+    return () => {
+      drivePreparationGeneration.current += 1;
+    };
+  }, [driveSelected, prepareDrive]);
+
+  async function authorizeDrive() {
+    if (drivePreparation !== 'ready') return;
+    setError(null);
+    setAuthorizingDrive(true);
+    // Invoke the runtime before the first await so GIS starts from this explicit
+    // medium-choice gesture, while no vault material or server transition exists.
+    try {
+      setDrive(await runtime.authorizeDriveStorage());
+    } catch {
+      setDrive(null);
+      setError({ key: 'vault.enable.errors.driveAuthorization' });
+    } finally {
+      setAuthorizingDrive(false);
+    }
   }
 
   async function downloadRecoveryKit() {
@@ -110,9 +179,44 @@ export function ParanoidEnableWizard({
   }
 
   async function enable() {
-    if (user == null || material == null || !kitDownloaded || !kitStored || !lostKeyAcknowledged) {
+    if (
+      user == null ||
+      material == null ||
+      !kitDownloaded ||
+      !kitStored ||
+      !lostKeyAcknowledged ||
+      (driveSelected && drive == null)
+    ) {
       return;
     }
+    const selectedMaterial = material;
+    const selectedMediaSet = mediaSet;
+    const operationGeneration = ++enableOperationGeneration.current;
+    const isCurrentOperation = () => enableOperationGeneration.current === operationGeneration;
+    let selectedDrive = drive;
+    if (driveSelected) {
+      setAuthorizingDrive(true);
+      // `authorize()` keeps an unexpired token without another popup. If the
+      // early capability expired while the user protected their recovery kit,
+      // this final explicit Enable gesture requests a fresh one before any
+      // capture, encrypted write, or server transition starts.
+      try {
+        selectedDrive = await runtime.authorizeDriveStorage();
+        if (!isCurrentOperation()) return;
+        setDrive(selectedDrive);
+      } catch {
+        if (isCurrentOperation()) {
+          // The early capability is no longer trustworthy. Clearing it keeps
+          // step 2's Drive gate closed if the user goes back to reconnect.
+          setDrive(null);
+          setError({ key: 'vault.enable.errors.driveReauthorization' });
+        }
+        return;
+      } finally {
+        if (isCurrentOperation()) setAuthorizingDrive(false);
+      }
+    }
+    if (!isCurrentOperation()) return;
     setStep(4);
     setError(null);
     setCaptureCompletedRequests(0);
@@ -127,21 +231,19 @@ export function ParanoidEnableWizard({
     const rateLimitScope = markRateLimitHandledLocally(new AbortController().signal);
     let result: Awaited<ReturnType<typeof enablePreparedVault>>;
     try {
-      // GIS must start synchronously from this final wizard gesture.
-      const drive = mediaSet.includes('drive') ? await runtime.authorizeDriveStorage() : undefined;
       // No `signal`: this transition has no cancel affordance by design — once
       // the migration is handed over, the server commit decides the outcome and
       // the wizard reports it. An AbortController nobody can trigger only reads
       // like cancellation exists.
       result = await enablePreparedVault(
         {
-          mediaSet,
-          material,
+          mediaSet: selectedMediaSet,
+          material: selectedMaterial,
           onStage: setStage,
         },
         {
           server: createServerBlobDataHome(),
-          drive,
+          drive: driveSelected ? (selectedDrive ?? undefined) : undefined,
           migrate: (signal) =>
             captureNormalVault({
               userId: user.id,
@@ -171,7 +273,7 @@ export function ParanoidEnableWizard({
     try {
       await runtime.unlockWithPassphrase(passphrase, {
         authorizeDrive: false,
-        driveOnly: mediaSet.length === 1 && mediaSet[0] === 'drive',
+        driveOnly: selectedMediaSet.length === 1 && selectedMediaSet[0] === 'drive',
         keepUnlocked: false,
       });
     } catch {
@@ -207,7 +309,15 @@ export function ParanoidEnableWizard({
       {step === 2 ? (
         <div className="flex flex-col gap-3">
           <label className="bt-panel flex items-start gap-3 p-3">
-            <input checked={!driveOnly} onChange={() => setDriveOnly(false)} type="radio" />
+            <input
+              checked={!driveOnly}
+              disabled={authorizingDrive}
+              onChange={() => {
+                setDriveOnly(false);
+                setError(null);
+              }}
+              type="radio"
+            />
             <span>
               <span className="bt-row-title">{t('vault.enable.media.server.title')}</span>
               <span className="bt-row-sub block">{t('vault.enable.media.server.body')}</span>
@@ -217,7 +327,11 @@ export function ParanoidEnableWizard({
             <label className="bt-soft flex items-start gap-2 text-sm">
               <input
                 checked={includeDrive}
-                onChange={(event) => setIncludeDrive(event.target.checked)}
+                disabled={authorizingDrive}
+                onChange={(event) => {
+                  setIncludeDrive(event.target.checked);
+                  setError(null);
+                }}
                 style={CHECKBOX_STYLE}
                 type="checkbox"
               />
@@ -240,9 +354,11 @@ export function ParanoidEnableWizard({
             <label className="bt-panel mt-2 flex items-start gap-3 p-3">
               <input
                 checked={driveOnly}
+                disabled={authorizingDrive}
                 onChange={() => {
                   setDriveOnly(true);
                   setIncludeDrive(true);
+                  setError(null);
                 }}
                 type="radio"
               />
@@ -252,6 +368,40 @@ export function ParanoidEnableWizard({
               </span>
             </label>
           </details>
+          {driveSelected ? (
+            <div aria-live="polite" className="bt-soft flex flex-col gap-2 p-3 text-sm">
+              <p>
+                {drivePreparation === 'idle' || drivePreparation === 'preparing'
+                  ? t('vault.enable.media.preparingDrive')
+                  : drive == null
+                    ? t('vault.enable.media.driveAuthorizationRequired')
+                    : t('vault.enable.media.driveConnected')}
+              </p>
+              <div>
+                <Button
+                  disabled={
+                    authorizingDrive ||
+                    drivePreparation === 'idle' ||
+                    drivePreparation === 'preparing'
+                  }
+                  onClick={() =>
+                    void (drivePreparation === 'failed' ? prepareDrive() : authorizeDrive())
+                  }
+                  variant="secondary"
+                >
+                  {authorizingDrive
+                    ? t('vault.enable.media.connectingDrive')
+                    : drivePreparation === 'idle' || drivePreparation === 'preparing'
+                      ? t('vault.enable.media.preparingDrive')
+                      : drivePreparation === 'failed'
+                        ? t('vault.enable.media.retryDrivePreparation')
+                        : drive == null
+                          ? t('vault.enable.media.connectDrive')
+                          : t('vault.enable.media.reconnectDrive')}
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -260,6 +410,7 @@ export function ParanoidEnableWizard({
           <p className="bt-soft text-sm">{t('vault.enable.passphraseDistinct')}</p>
           <TextField
             autoComplete="new-password"
+            disabled={authorizingDrive}
             label={t('vault.enable.passphrase')}
             maxLength={MAX_PASSWORD_LENGTH}
             minLength={MIN_PASSWORD_LENGTH}
@@ -272,6 +423,7 @@ export function ParanoidEnableWizard({
           />
           <TextField
             autoComplete="new-password"
+            disabled={authorizingDrive}
             label={t('vault.enable.passphraseConfirm')}
             maxLength={MAX_PASSWORD_LENGTH}
             minLength={MIN_PASSWORD_LENGTH}
@@ -282,7 +434,11 @@ export function ParanoidEnableWizard({
             type="password"
             value={confirmation}
           />
-          <Button onClick={() => void downloadRecoveryKit()} variant="secondary">
+          <Button
+            disabled={authorizingDrive}
+            onClick={() => void downloadRecoveryKit()}
+            variant="secondary"
+          >
             {kitDownloaded
               ? t('vault.enable.downloadAgain')
               : t('vault.enable.downloadRecoveryKit')}
@@ -290,7 +446,7 @@ export function ParanoidEnableWizard({
           <label className="bt-soft flex items-start gap-2 text-sm">
             <input
               checked={kitStored}
-              disabled={!kitDownloaded}
+              disabled={!kitDownloaded || authorizingDrive}
               onChange={(event) => setKitStored(event.target.checked)}
               style={CHECKBOX_STYLE}
               type="checkbox"
@@ -300,6 +456,7 @@ export function ParanoidEnableWizard({
           <label className="bt-panel flex items-start gap-2 p-3 text-sm">
             <input
               checked={lostKeyAcknowledged}
+              disabled={authorizingDrive}
               onChange={(event) => setLostKeyAcknowledged(event.target.checked)}
               style={CHECKBOX_STYLE}
               type="checkbox"
@@ -344,7 +501,11 @@ export function ParanoidEnableWizard({
       <div className="flex flex-wrap justify-end gap-2">
         {step < 4 ? (
           <Button
+            disabled={authorizingDrive}
             onClick={() => {
+              if (authorizingDrive) return;
+              enableOperationGeneration.current += 1;
+              setAuthorizingDrive(false);
               if (step === 1) onCancel();
               else setStep((step - 1) as 1 | 2 | 3);
             }}
@@ -354,11 +515,26 @@ export function ParanoidEnableWizard({
           </Button>
         ) : null}
         {step === 1 || step === 2 ? (
-          <Button onClick={() => setStep((step + 1) as 2 | 3)}>{t('common.continue')}</Button>
+          <Button
+            disabled={step === 2 && (authorizingDrive || (driveSelected && drive == null))}
+            onClick={() => setStep((step + 1) as 2 | 3)}
+          >
+            {t('common.continue')}
+          </Button>
         ) : null}
         {step === 3 ? (
           <Button
-            disabled={!passphraseValid || !kitDownloaded || !kitStored || !lostKeyAcknowledged}
+            disabled={
+              !passphraseValid ||
+              !kitDownloaded ||
+              !kitStored ||
+              !lostKeyAcknowledged ||
+              authorizingDrive ||
+              // A failed final reauthorization clears the previously connected
+              // Drive home. Keep the transfer action unavailable until the user
+              // returns to step 2 and reconnects it.
+              (driveSelected && drive == null)
+            }
             onClick={() => void enable()}
           >
             {t('vault.enable.action')}

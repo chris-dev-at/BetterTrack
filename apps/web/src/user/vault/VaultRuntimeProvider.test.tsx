@@ -76,6 +76,7 @@ function memoryTokenClient(): GoogleDriveTokenClient {
     state: 'connected',
     getAccessToken: vi.fn(() => okToken),
     subscribe: vi.fn(() => () => undefined),
+    prepare: vi.fn(async () => undefined),
     authorize: vi.fn(async () => okToken),
     clear: vi.fn(),
     markExpired: vi.fn(),
@@ -198,6 +199,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
             : { status: authorization, message: 'sign in' },
       ),
       subscribe: vi.fn(() => () => undefined),
+      prepare: vi.fn(async () => undefined),
       authorize: vi.fn(async (): Promise<DriveAccessTokenResult> => {
         events.push('authorize');
         authorization = 'connected';
@@ -312,6 +314,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       state: 'connected',
       getAccessToken: vi.fn(() => okToken),
       subscribe: vi.fn(() => () => undefined),
+      prepare: vi.fn(async () => undefined),
       authorize: vi.fn(async () => okToken),
       clear: vi.fn(),
       markExpired: vi.fn(),
@@ -380,6 +383,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       state: 'connected',
       getAccessToken: vi.fn(() => okToken),
       subscribe: vi.fn(() => () => undefined),
+      prepare: vi.fn(async () => undefined),
       authorize: vi.fn(async () => okToken),
       clear: vi.fn(),
       markExpired: vi.fn(),
@@ -457,6 +461,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
         state: 'connected',
         getAccessToken: vi.fn(() => okToken),
         subscribe: vi.fn(() => () => undefined),
+        prepare: vi.fn(async () => undefined),
         authorize: vi.fn(() =>
           stage === 'authorization' ? authorization.promise : Promise.resolve(okToken),
         ),

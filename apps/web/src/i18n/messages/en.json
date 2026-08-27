@@ -510,6 +510,9 @@
         "connect": "Connect Drive",
         "disconnect": "Disconnect Drive",
         "signIn": "Sign in to Google to sync",
+        "preparing": "Preparing Google sign-in…",
+        "retryPreparation": "Retry Google sign-in",
+        "preparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
         "unlockRequired": "Unlock your encrypted vault to change its storage.",
         "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
         "passphraseLabel": "Vault passphrase",
@@ -3830,6 +3833,13 @@
           "body": "Encrypted on BetterTrack; only you can read it."
         },
         "driveCopy": "Also keep a verified copy in my Google Drive",
+        "driveAuthorizationRequired": "Connect Google Drive before continuing, so you can resolve any sign-in or popup problem before creating your vault passphrase and recovery kit.",
+        "driveConnected": "Google Drive is connected and ready for the encrypted copy.",
+        "preparingDrive": "Preparing Google sign-in…",
+        "connectDrive": "Connect Google Drive",
+        "reconnectDrive": "Reconnect Google Drive",
+        "retryDrivePreparation": "Retry Google Drive setup",
+        "connectingDrive": "Connecting Google Drive…",
         "advanced": "Advanced",
         "driveOnly": {
           "title": "Google Drive only",
@@ -3862,6 +3872,9 @@
         "commit": "Finalizing Paranoid mode…"
       },
       "errors": {
+        "drivePreparation": "Google Drive could not be prepared. Check your connection and try again. Your account has not changed.",
+        "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
+        "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
         "validate": "The prepared vault failed its safety check, so BetterTrack stopped before writing anything. Nothing was changed and your normal account is unchanged.",
         "encrypt": "This browser could not encrypt the vault. Nothing was changed.",
@@ -3891,6 +3904,9 @@
       "recoveryKit": "Use a recovery kit",
       "recoveryKitHint": "Choose bettertrack-recovery-kit.txt instead of entering the passphrase.",
       "driveGesture": "Google may ask you to sign in so this device can read the encrypted Drive copy.",
+      "preparingDrive": "Preparing Google sign-in…",
+      "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+      "retryDrivePreparation": "Retry Google sign-in",
       "action": "Unlock vault",
       "unlocking": "Unlocking…",
       "stuck": {
@@ -3945,6 +3961,9 @@
       },
       "reauthorize": "Sign in to Google and resume",
       "reauthorizing": "Connecting…",
+      "preparingDrive": "Preparing Google sign-in…",
+      "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+      "retryDrivePreparation": "Retry Google sign-in",
       "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"

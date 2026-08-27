@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { DriveConnection } from '@bettertrack/contracts';
 
-import type { DriveAccessTokenResult, GoogleDriveTokenClient } from '../drive/gisTokenClient';
+import {
+  createGoogleDriveTokenClient,
+  type DriveAccessTokenResult,
+  type GoogleDriveTokenClient,
+  type GoogleTokenResponse,
+} from '../drive/gisTokenClient';
 import { createDriveConnectionRegistry, driveTokenClientIdentity } from './driveConnectionRegistry';
 
 function connection(id: string, sub: string, email: string): DriveConnection {
@@ -24,6 +29,7 @@ function tokenClient(token: string): GoogleDriveTokenClient {
       return state;
     },
     getAccessToken: vi.fn(() => current),
+    prepare: vi.fn(async () => undefined),
     authorize: vi.fn(async () => {
       state = 'connected';
       current = { status: 'ok', accessToken: token, expiresAt: Date.now() + 60_000 };
@@ -253,5 +259,75 @@ describe('per-connection Drive registry', () => {
       message: 'Sign in to Google (y@example.test) to sync.',
     });
     expect(registry.authorization(y)).toBe('identity-mismatch');
+  });
+
+  // Every other test in this file injects `tokenClient`, so none of them can
+  // see the DEFAULT factory. #1337 makes `authorize()` refuse to defer its
+  // popup past a script load, and the registry mints a brand-new client per
+  // connection without ever preparing it — so the E5 connect gesture is exactly
+  // the caller that would silently stop opening a popup. Pin it here.
+  it('opens the consent popup on the first connect gesture with its own token client', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000408', 'sub-y', 'y@example.test');
+    let callback!: (response: GoogleTokenResponse) => void;
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'first-gesture-token', expires_in: 3600 });
+    });
+    const registry = createDriveConnectionRegistry({
+      clientId: 'browser-client-id',
+      api: { create: vi.fn(async () => y), verify: vi.fn(async () => y), delete: vi.fn() },
+      // The real `createGoogleDriveTokenClient`, with only the GIS script load
+      // stubbed — this is the code path production uses.
+      tokenClient: (existing) =>
+        createGoogleDriveTokenClient({
+          clientId: 'browser-client-id',
+          ...driveTokenClientIdentity(existing),
+          loadOauth2: async () => ({
+            initTokenClient(config) {
+              callback = config.callback;
+              return { requestAccessToken };
+            },
+          }),
+        }),
+      identify: vi.fn(async () => ({
+        googleSub: y.googleSub,
+        email: y.email,
+        displayName: y.displayName,
+      })),
+    });
+
+    await expect(registry.connect()).resolves.toMatchObject({ status: 'ok', connection: y });
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+  });
+
+  it('opens the consent popup on the first re-authorization of a registered connection', async () => {
+    const y = connection('018f0000-0000-7000-8000-000000000409', 'sub-y', 'y@example.test');
+    let callback!: (response: GoogleTokenResponse) => void;
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'renewed-token', expires_in: 3600 });
+    });
+    const registry = createDriveConnectionRegistry({
+      clientId: 'browser-client-id',
+      api: { create: vi.fn(async () => y), verify: vi.fn(async () => y), delete: vi.fn() },
+      tokenClient: (existing) =>
+        createGoogleDriveTokenClient({
+          clientId: 'browser-client-id',
+          ...driveTokenClientIdentity(existing),
+          loadOauth2: async () => ({
+            initTokenClient(config) {
+              callback = config.callback;
+              return { requestAccessToken };
+            },
+          }),
+        }),
+      identify: vi.fn(async () => ({
+        googleSub: y.googleSub,
+        email: y.email,
+        displayName: y.displayName,
+      })),
+    });
+
+    // No prior `connect()`: this is a reload landing on a stored connection row.
+    await expect(registry.authorize(y)).resolves.toMatchObject({ status: 'ok', connection: y });
+    expect(requestAccessToken).toHaveBeenCalledOnce();
   });
 });
