@@ -269,6 +269,26 @@ test('registers singular and plural locked-portfolio qualifiers in EN and DE', (
   );
 });
 
+test('registers singular and plural unreadable-portfolio qualifiers in EN and DE', () => {
+  // #1514: a composed figure that excludes a corrupt member carries THIS
+  // qualifier instead of the locked one. It is the only thing between the
+  // reader and an unqualified subtotal, so a missing catalog entry would paint
+  // a raw dot-path exactly where the honesty is supposed to be.
+  for (const locale of Object.values(LOCALES)) {
+    for (const suffix of ['One', 'Other']) {
+      const key = `vaultComposition.unreadablePortfoliosQualifier${suffix}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+
+  expect(localizedMessage('en', 'vaultComposition.unreadablePortfoliosQualifierOne')).toBe(
+    '+ {{count}} unreadable portfolio',
+  );
+  expect(localizedMessage('de', 'vaultComposition.unreadablePortfoliosQualifierOther')).toBe(
+    '+ {{count}} nicht lesbare Portfolios',
+  );
+});
+
 test('registers backup readiness copy for every contract level and reason in EN and DE', () => {
   // The Overview tile and the Health panel both render
   // `admin.backup.level.<level>` and `admin.backup.reason.<reason>` as template

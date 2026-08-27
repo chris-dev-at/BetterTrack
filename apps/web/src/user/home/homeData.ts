@@ -269,6 +269,11 @@ export function composeHomeRollup(
   // which is the silent-zero failure the qualifier exists to prevent. A mixed
   // scope still composes normally: there, the qualifier genuinely qualifies a
   // real subtotal.
+  //
+  // REDUNDANT BY SEAM (#1514): composePortfolioFigures now upholds this itself
+  // and answers an all-locked scope with a typed `unavailable` result, handled
+  // below. This guard is kept deliberately — Home's own contract does not
+  // depend on the seam's, and removing it belongs to the wiring epic, not here.
   if (members.length > 0 && members.every((member) => member.state === 'locked')) {
     return {
       status: 'unavailable',
@@ -284,6 +289,21 @@ export function composeHomeRollup(
   }
 
   const composed = composePortfolioFigures({ authoritativeRoster, members }, HOME_FIGURE_KEYS);
+  if (composed.kind === 'unavailable') {
+    // Unreachable behind the guard above, and kept as the honest answer if the
+    // seam ever widens what it refuses to put a number on.
+    return {
+      status: 'unavailable',
+      rows,
+      totalValue: null,
+      invested: null,
+      cash: null,
+      dayChange: null,
+      dayChangePct: null,
+      loading,
+      coverage: { kind: 'unavailable', unavailablePortfolioCount: members.length },
+    };
+  }
   const previous = composed.totalValueEur.valueEur - composed.dayChangeEur.valueEur;
 
   return {

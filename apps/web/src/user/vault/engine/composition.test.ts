@@ -1,8 +1,9 @@
-import type {
-  PortfolioAsset,
-  TaxCountry,
-  TaxYearPosition,
-  TaxYearReportResponse,
+import {
+  taxYearReportResponseSchema,
+  type PortfolioAsset,
+  type TaxCountry,
+  type TaxYearPosition,
+  type TaxYearReportResponse,
 } from '@bettertrack/contracts';
 import { deCarryPots, floorCents, settleAtYear, settleDeYear } from '@bettertrack/domain/tax';
 import { describe, expect, it } from 'vitest';
@@ -10,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   LOCKED_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY,
   LOCKED_PORTFOLIOS_QUALIFIER_OTHER_MESSAGE_KEY,
+  UNREADABLE_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY,
   composeCountryTaxYear,
   composePortfolioFigures,
   type AdditivePortfolioFigures,
@@ -53,6 +55,9 @@ const IDS = {
   atGainA: '018f0000-0000-7000-8000-000000000430',
   atDividendA: '018f0000-0000-7000-8000-000000000431',
   atLossB: '018f0000-0000-7000-8000-000000000432',
+  healthySell: '018f0000-0000-7000-8000-000000000433',
+  corruptSell: '018f0000-0000-7000-8000-000000000434',
+  infiniteSell: '018f0000-0000-7000-8000-000000000435',
 } as const;
 
 const ZERO_FIGURES: AdditivePortfolioFigures = {
@@ -86,7 +91,7 @@ describe('cross-portfolio composition', () => {
         realizedPnlEur: 4.04,
       }),
     ];
-    const result = composePortfolioFigures(testCompositionInput(members));
+    const result = composedFigures(testCompositionInput(members));
 
     expect(result.totalValueEur.valueEur.toFixed(2)).toBe('30.30');
     expect(result.marketValueEur.valueEur.toFixed(2)).toBe('25.20');
@@ -118,7 +123,7 @@ describe('cross-portfolio composition', () => {
     const members = plainFigures.map((value, index) =>
       visible(index === 0 ? IDS.plain : IDS.vaulted, 'plain', null, value),
     );
-    const result = composePortfolioFigures(testCompositionInput(members));
+    const result = composedFigures(testCompositionInput(members));
 
     expect(result.totalValueEur.valueEur.toFixed(3)).toBe('30.218');
     expect(result.marketValueEur.valueEur.toFixed(3)).toBe('25.210');
@@ -142,10 +147,9 @@ describe('cross-portfolio composition', () => {
       { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultOne },
     ];
 
-    const result = composePortfolioFigures(testCompositionInput(members), [
-      'totalValueEur',
-      'cashEur',
-    ]);
+    const result = requireComposed(
+      composePortfolioFigures(testCompositionInput(members), ['totalValueEur', 'cashEur']),
+    );
 
     expect(Object.keys(result)).toEqual(['totalValueEur', 'cashEur']);
     expect(result.totalValueEur.valueEur).toBe(100.109);
@@ -174,7 +178,7 @@ describe('cross-portfolio composition', () => {
       })),
     ];
 
-    const result = composePortfolioFigures(testCompositionInput(members));
+    const result = composedFigures(testCompositionInput(members));
 
     for (const figure of Object.values(result)) {
       if (testCase.expected === 0) {
@@ -219,7 +223,7 @@ describe('cross-portfolio composition', () => {
         { kind: 'dividend', id: IDS.dividend, amount: 100 },
       ]),
     ]);
-    const mixedResult = composeCountryTaxYear('AT', 2026, testCompositionInput(mixed));
+    const mixedResult = composedTaxYear('AT', 2026, testCompositionInput(mixed));
     const expected = settleAtYear({
       existingGainsEur: [1500, -500],
       existingDividendsEur: [100],
@@ -242,7 +246,7 @@ describe('cross-portfolio composition', () => {
         { kind: 'dividend', id: IDS.dividend, amount: 100 },
       ]),
     ]);
-    const mixedResult = composeCountryTaxYear('DE', 2026, testCompositionInput(mixed));
+    const mixedResult = composedTaxYear('DE', 2026, testCompositionInput(mixed));
     const expected = settleDeYear({
       aktienPotInEur: 0,
       sonstigePotInEur: 0,
@@ -289,7 +293,7 @@ describe('cross-portfolio composition', () => {
       },
     ];
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
 
     expect(result.de?.aktienPotInEur.valueEur.toFixed(2)).toBe('400.00');
     expect(result.de?.aktienPotOutEur.valueEur.toFixed(2)).toBe('0.00');
@@ -331,7 +335,7 @@ describe('cross-portfolio composition', () => {
       newEvents: [],
     });
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
 
     expect(authoritative.yearEnd.kapestEur.toFixed(2)).toBe('0.01');
     expect(result.de?.kapestEur.valueEur.toFixed(2)).toBe(
@@ -348,7 +352,7 @@ describe('cross-portfolio composition', () => {
       { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultTwo },
     ];
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
     const everyFigure = [
       result.taxTargetEur,
       result.realizedPnlEur,
@@ -394,12 +398,12 @@ describe('cross-portfolio composition', () => {
       },
     ];
 
-    expect(
-      composeCountryTaxYear('DE', 2026, testCompositionInput(members)).realizedPnlEur.valueEur,
-    ).toBe(2000);
-    expect(
-      composeCountryTaxYear('AT', 2026, testCompositionInput(members)).realizedPnlEur.valueEur,
-    ).toBe(0);
+    expect(composedTaxYear('DE', 2026, testCompositionInput(members)).realizedPnlEur.valueEur).toBe(
+      2000,
+    );
+    expect(composedTaxYear('AT', 2026, testCompositionInput(members)).realizedPnlEur.valueEur).toBe(
+      0,
+    );
   });
 
   it('fails closed when an authoritative prior activity year is missing', () => {
@@ -430,7 +434,7 @@ describe('cross-portfolio composition', () => {
       { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultTwo },
     ];
 
-    const result = composeCountryTaxYear('AT', 2026, testCompositionInput(members));
+    const result = composedTaxYear('AT', 2026, testCompositionInput(members));
     expect(result.de).toBeNull();
     for (const figure of [result.taxTargetEur, result.realizedPnlEur, result.dividendsGrossEur]) {
       expect(figure.coverage).toMatchObject({
@@ -469,7 +473,7 @@ describe('cross-portfolio composition', () => {
       },
     ];
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
 
     // Engine outcome: aktienPotOut 0.005, allowanceUsed 0.005, remaining
     // 999.995 — all sub-cent. The authoritative report floors every one.
@@ -484,7 +488,7 @@ describe('cross-portfolio composition', () => {
     // without it. This second scenario carries a genuine sub-cent SONSTIGE
     // loss (a crypto sell, no offsetting income), so the raw pot-out is 0.005
     // and only the presentation floor makes it 0.
-    const sonstigeLoss = composeCountryTaxYear(
+    const sonstigeLoss = composedTaxYear(
       'DE',
       2026,
       testCompositionInput([
@@ -570,7 +574,7 @@ describe('cross-portfolio composition', () => {
       newEvents: [],
     });
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
 
     expect(authoritative.yearEnd.kapestEur).toBeGreaterThan(0);
     expect(result.taxTargetEur.valueEur).toBe(authoritative.heldAfterEur);
@@ -606,7 +610,7 @@ describe('cross-portfolio composition', () => {
       },
     ];
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
 
     expect(result.de?.allowanceUsedEur.valueEur).toBe(1000);
     expect(result.de?.allowanceRemainingEur.valueEur).toBe(0);
@@ -638,7 +642,7 @@ describe('cross-portfolio composition', () => {
       },
     ];
 
-    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+    const result = composedTaxYear('DE', 2026, testCompositionInput(members));
 
     expect(result.taxTargetEur.valueEur).toBe(0);
     expect(result.de?.kapestEur.valueEur).toBe(0);
@@ -687,7 +691,7 @@ describe('cross-portfolio composition', () => {
       newEvents: [],
     });
 
-    const result = composeCountryTaxYear('AT', 2026, testCompositionInput(members));
+    const result = composedTaxYear('AT', 2026, testCompositionInput(members));
 
     expect(authoritative.heldAfterEur).toBeGreaterThan(0);
     expect(result.taxTargetEur.valueEur).toBe(authoritative.heldAfterEur);
@@ -695,6 +699,352 @@ describe('cross-portfolio composition', () => {
     expect(result.dividendsGrossEur.valueEur).toBe(floorCents(3.0001));
   });
 });
+
+describe('all-locked scopes at the composition seam (#1514 part 1)', () => {
+  it('refuses to publish a bare zero wearing a locked qualifier', () => {
+    // The module doc promises "a partial value cannot exist without its
+    // rendering instruction". Before #1514 a DIRECT call skipped past
+    // composeHomeRollup's guard and produced exactly the forbidden artifact:
+    // valueEur 0 with "+ 2 locked portfolios". The seam itself must refuse.
+    const members: PortfolioCompositionMember<AdditivePortfolioFigures>[] = [
+      { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultOne },
+      { state: 'locked', portfolioId: IDS.lockedTwo, vaultId: IDS.vaultTwo },
+    ];
+
+    const result = composePortfolioFigures(testCompositionInput(members));
+
+    expect(result).toEqual({
+      kind: 'unavailable',
+      coverage: {
+        kind: 'unavailable',
+        visiblePortfolioCount: 0,
+        lockedPortfolioCount: 2,
+        unavailablePortfolioCount: 0,
+      },
+      memberFailures: [],
+    });
+    // No number of any kind escapes an all-locked scope.
+    expect(JSON.stringify(result)).not.toContain('Eur');
+  });
+
+  it('keeps an all-locked projection unavailable for an explicit figure subset too', () => {
+    const members: PortfolioCompositionMember<
+      Pick<AdditivePortfolioFigures, 'totalValueEur' | 'cashEur'>
+    >[] = [{ state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultOne }];
+
+    const result = composePortfolioFigures(testCompositionInput(members), [
+      'totalValueEur',
+      'cashEur',
+    ]);
+
+    expect(result.kind).toBe('unavailable');
+  });
+
+  it('keeps an empty scope an honest complete zero', () => {
+    // Nothing is hidden here: a scope with no portfolios really is worth zero,
+    // so suppressing the figure would be its own kind of dishonesty.
+    const result = requireComposed(
+      composePortfolioFigures(
+        testCompositionInput([] as PortfolioCompositionMember<AdditivePortfolioFigures>[]),
+      ),
+    );
+
+    expect(result.totalValueEur.valueEur).toBe(0);
+    expectComplete(result.totalValueEur, 0);
+  });
+
+  it('reports an all-locked tax scope as unavailable rather than a zero settlement', () => {
+    const members: PortfolioTaxCompositionMember[] = [
+      { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultOne },
+    ];
+
+    const result = composeCountryTaxYear('DE', 2026, testCompositionInput(members));
+
+    expect(result).toEqual({
+      kind: 'unavailable',
+      coverage: {
+        kind: 'unavailable',
+        visiblePortfolioCount: 0,
+        lockedPortfolioCount: 1,
+        unavailablePortfolioCount: 0,
+      },
+      memberFailures: [],
+    });
+  });
+
+  it('keeps an empty tax scope an honest complete zero', () => {
+    const result = requireComposed(
+      composeCountryTaxYear(
+        'DE',
+        2026,
+        testCompositionInput([] as PortfolioTaxCompositionMember[]),
+      ),
+    );
+
+    expect(result.taxTargetEur.valueEur).toBe(0);
+    expectComplete(result.taxTargetEur, 0);
+  });
+});
+
+describe('per-member typed tax failures (#1514 part 2)', () => {
+  it('degrades one corrupt member and still composes the healthy portfolios', () => {
+    const result = requireComposed(
+      composeCountryTaxYear(
+        'DE',
+        2026,
+        testCompositionInput([
+          healthyTaxMember(2000),
+          {
+            state: 'visible',
+            portfolioId: IDS.vaulted,
+            source: 'vaulted',
+            vaultId: IDS.vaultOne,
+            value: taxValue('DE', [corruptedReport()]),
+          },
+        ]),
+      ),
+    );
+
+    expect(result.memberFailures).toEqual([
+      {
+        portfolioId: IDS.vaulted,
+        error: {
+          code: 'TAX_DATA_INVALID',
+          message: expect.stringContaining(IDS.vaulted),
+          retryable: false,
+          details: { portfolioId: IDS.vaulted },
+        },
+      },
+    ]);
+    // The healthy portfolio's own figures survive intact...
+    expect(result.realizedPnlEur.valueEur).toBe(2000);
+    // ...and the unreadable member is carried as unavailable, never as a zero
+    // contribution that would silently dilute the composed view.
+    for (const figure of [
+      result.taxTargetEur,
+      result.realizedPnlEur,
+      result.dividendsGrossEur,
+      ...Object.values(result.de ?? {}),
+    ]) {
+      expect(figure.coverage).toEqual({
+        kind: 'partial',
+        visiblePortfolioCount: 1,
+        lockedPortfolioCount: 0,
+        unavailablePortfolioCount: 1,
+        qualifier: {
+          kind: 'unreadable-portfolios',
+          count: 1,
+          messageKey: UNREADABLE_PORTFOLIOS_QUALIFIER_ONE_MESSAGE_KEY,
+        },
+      });
+    }
+  });
+
+  it('counts locked and unreadable members together in the qualifier', () => {
+    const result = requireComposed(
+      composeCountryTaxYear(
+        'DE',
+        2026,
+        testCompositionInput([
+          healthyTaxMember(2000),
+          {
+            state: 'visible',
+            portfolioId: IDS.vaulted,
+            source: 'vaulted',
+            vaultId: IDS.vaultOne,
+            value: taxValue('DE', [corruptedReport()]),
+          },
+          { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultTwo },
+        ]),
+      ),
+    );
+
+    expect(result.taxTargetEur.coverage).toEqual({
+      kind: 'partial',
+      visiblePortfolioCount: 1,
+      lockedPortfolioCount: 1,
+      unavailablePortfolioCount: 1,
+      qualifier: {
+        kind: 'unreadable-portfolios',
+        count: 2,
+        messageKey: 'vaultComposition.unreadablePortfoliosQualifierOther',
+      },
+    });
+  });
+
+  it('keeps the finite backstop between a schema-valid Infinity and settlement', () => {
+    // #1514 ACCEPTANCE CRITERION: zod's z.number() ACCEPTS Infinity, so schema
+    // validation alone cannot keep a non-finite report figure out of the
+    // domain settlement. The requireFinite layer is load-bearing; this test
+    // fails the moment a refactor drops it and lets Infinity through.
+    const poisoned = report('DE', stockAsset(), [
+      { kind: 'sell', id: IDS.infiniteSell, amount: Number.POSITIVE_INFINITY },
+    ]);
+    expect(taxYearReportResponseSchema.safeParse(poisoned).success).toBe(true);
+
+    const result = requireComposed(
+      composeCountryTaxYear(
+        'DE',
+        2026,
+        testCompositionInput([
+          healthyTaxMember(2000),
+          {
+            state: 'visible',
+            portfolioId: IDS.vaulted,
+            source: 'vaulted',
+            vaultId: IDS.vaultOne,
+            value: taxValue('DE', [poisoned]),
+          },
+        ]),
+      ),
+    );
+
+    expect(result.memberFailures).toMatchObject([
+      { portfolioId: IDS.vaulted, error: { code: 'TAX_DATA_INVALID' } },
+    ]);
+    for (const figure of [
+      result.taxTargetEur,
+      result.realizedPnlEur,
+      result.dividendsGrossEur,
+      ...Object.values(result.de ?? {}),
+    ]) {
+      expect(Number.isFinite(figure.valueEur)).toBe(true);
+      expect(figure.coverage.kind).toBe('partial');
+    }
+    // The healthy member settles exactly as if the poisoned one never existed.
+    const healthyOnly = requireComposed(
+      composeCountryTaxYear('DE', 2026, testCompositionInput([healthyTaxMember(2000)])),
+    );
+    expect(result.taxTargetEur.valueEur).toBe(healthyOnly.taxTargetEur.valueEur);
+    expect(result.de?.kapestEur.valueEur).toBe(healthyOnly.de?.kapestEur.valueEur);
+  });
+
+  it('reports a wholly unreadable scope as unavailable, never as a zero tax target', () => {
+    const result = composeCountryTaxYear(
+      'DE',
+      2026,
+      testCompositionInput([
+        {
+          state: 'visible',
+          portfolioId: IDS.vaulted,
+          source: 'vaulted',
+          vaultId: IDS.vaultOne,
+          value: taxValue('DE', [corruptedReport()]),
+        },
+        { state: 'locked', portfolioId: IDS.lockedOne, vaultId: IDS.vaultTwo },
+      ]),
+    );
+
+    expect(result.kind).toBe('unavailable');
+    if (result.kind !== 'unavailable') throw new Error('Expected an unavailable composition.');
+    expect(result.coverage).toEqual({
+      kind: 'unavailable',
+      visiblePortfolioCount: 0,
+      lockedPortfolioCount: 1,
+      unavailablePortfolioCount: 1,
+    });
+    expect(result.memberFailures).toMatchObject([
+      { portfolioId: IDS.vaulted, error: { code: 'TAX_DATA_INVALID' } },
+    ]);
+  });
+
+  it('still throws for caller bugs instead of degrading them to member failures', () => {
+    // Corrupt vault DATA degrades one member. A CALLER bug is not data: it can
+    // only be fixed by changing the call site, so it must stay loud.
+    const healthy = [healthyTaxMember(2000)];
+
+    expect(() => composeCountryTaxYear('DE', 2026.5, testCompositionInput(healthy))).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      composeCountryTaxYear('DE', 2026, {
+        authoritativeRoster: [{ portfolioId: IDS.plain, source: 'plain', vaultId: null }],
+        members: [...healthy, ...healthy],
+      }),
+    ).toThrow(`Portfolio ${IDS.plain} occurs more than once in composition.`);
+    expect(() =>
+      composeCountryTaxYear('DE', 2026, {
+        authoritativeRoster: [
+          { portfolioId: IDS.plain, source: 'plain', vaultId: null },
+          { portfolioId: IDS.lockedOne, source: 'vaulted', vaultId: IDS.vaultOne },
+        ],
+        members: healthy,
+      }),
+    ).toThrow(`Portfolio ${IDS.lockedOne} is missing from the authoritative composition roster`);
+    expect(() =>
+      composeCountryTaxYear(
+        'DE',
+        2026,
+        testCompositionInput([
+          {
+            state: 'visible',
+            portfolioId: IDS.plain,
+            source: 'plain',
+            vaultId: null,
+            value: {
+              ...taxValue('DE', [report('DE', stockAsset(), [], 2026)]),
+              authoritativeActivityYears: [2025, 2026],
+            },
+          },
+        ]),
+      ),
+    ).toThrow('did not supply required tax year(s) 2025');
+  });
+});
+
+/**
+ * Narrows the seam's typed result to its composed arm and drops the
+ * discriminant again, so every pre-existing exactness/pooling assertion below
+ * keeps its expected values AND its shape: the seam now returns a
+ * discriminated union (#1514), but none of the money assertions moved.
+ */
+function requireComposed<T extends { kind: 'composed' } | { kind: 'unavailable' }>(
+  result: T,
+): Omit<Extract<T, { kind: 'composed' }>, 'kind'> {
+  if (result.kind !== 'composed') {
+    throw new Error(`Expected a composed result, received "${String(result.kind)}".`);
+  }
+  const { kind: _discriminant, ...composed } = result as Extract<T, { kind: 'composed' }>;
+  return composed;
+}
+
+/** The composed arm of {@link composePortfolioFigures}, or a failed assertion. */
+function composedFigures(input: PortfolioCompositionInput<AdditivePortfolioFigures>) {
+  return requireComposed(composePortfolioFigures(input));
+}
+
+/** The composed arm of {@link composeCountryTaxYear}, or a failed assertion. */
+function composedTaxYear(...args: Parameters<typeof composeCountryTaxYear>) {
+  return requireComposed(composeCountryTaxYear(...args));
+}
+
+/** A schema-valid DE member with one taxable gain, used as the healthy control. */
+function healthyTaxMember(amount: number): PortfolioTaxCompositionMember {
+  return {
+    state: 'visible',
+    portfolioId: IDS.plain,
+    source: 'plain',
+    vaultId: null,
+    value: taxValue('DE', [
+      report('DE', stockAsset(), [{ kind: 'sell', id: IDS.healthySell, amount }]),
+    ]),
+  };
+}
+
+/** A zod-rejected report row: the money figure arrives as a string. */
+function corruptedReport(): TaxYearReportResponse {
+  const base = report('DE', stockAsset(), [{ kind: 'sell', id: IDS.corruptSell, amount: 500 }]);
+  const position = base.positions[0]!;
+  return {
+    ...base,
+    positions: [
+      {
+        ...position,
+        sells: [{ ...position.sells[0]!, realizedPnlEur: '500' as unknown as number }],
+      },
+    ],
+  };
+}
 
 function visible(
   portfolioId: string,
