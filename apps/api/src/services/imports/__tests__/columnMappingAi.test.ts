@@ -356,6 +356,61 @@ describe('a crafted header cannot steer its neighbours', () => {
   });
 });
 
+describe('what the model was shown is the ONE list replies are judged against (review F1)', () => {
+  it('discards a reply about a header the sanitizer dropped from the prompt', async () => {
+    // A protocol-only header sanitizes to nothing, so the model never sees it —
+    // a reply naming its index must be treated exactly like any other
+    // never-shown index and discarded, not accepted as a proposal.
+    const headers = [...HEADERS, '=:>~-'];
+    const rows = ROWS.map((row) => [...row, 'x']);
+    const protocolOnlyIndex = headers.length - 1;
+    const { seam, calls } = stubSeam(`${protocolOnlyIndex}=description`);
+
+    const result = await mapColumnsWithAi(headers, rows, {}, { ai: seam });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.prompt).not.toContain(`${protocolOnlyIndex}:`);
+    expect(result.mappings.some((m) => m.source === 'ai')).toBe(false);
+  });
+
+  it('makes no call at all when every unmapped header sanitizes to nothing', async () => {
+    // Only the fully-mappable prefix of the fixture, plus the protocol-only
+    // column — so the sanitizer-dropped header is the ONLY candidate, and the
+    // seam must not be consulted for an empty prompt.
+    const headers = [...HEADERS.slice(0, VENUE), '=:>~-'];
+    const rows = ROWS.map((row) => [...row.slice(0, VENUE), 'x']);
+    const { seam, calls } = stubSeam('0=description');
+
+    await mapColumnsWithAi(headers, rows, {}, { ai: seam });
+
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('understandTableWithAi keeps the sniffed table options (review F2)', () => {
+  it('an ambiguous slash-date column stays needsReview even when AI proposals apply', async () => {
+    // TEST VECTOR: 03/04/2026-class dates are genuinely ambiguous (DD/MM vs
+    // MM/DD). understandTable forces needsReview on the date winner via the
+    // sniffed table options; understandTableWithAi must pass the SAME options
+    // through, or the AI path silently marks an unresolvable date column safe.
+    const csv = [
+      'Trade Date,Description,Amount,Mystery',
+      '03/04/2026,Buy A,-100.00,x',
+      '05/06/2026,Buy B,-200.00,y',
+      '07/08/2026,Buy C,-300.00,z',
+    ].join('\n');
+    const buffer = Buffer.from(csv, 'utf-8');
+    const { seam } = stubSeam('3=ignore');
+
+    const plain = understandTable(buffer, 'ambiguous.csv')!;
+    expect(plain.mapping.fieldWinners.date?.needsReview).toBe(true);
+
+    const withAi = (await understandTableWithAi(buffer, 'ambiguous.csv', { ai: seam }))!;
+    expect(withAi.mapping.fieldWinners.date?.needsReview).toBe(true);
+    expect(withAi.mapping.fieldWinners.date?.header).toBe(plain.mapping.fieldWinners.date?.header);
+  });
+});
+
 describe('understandTableWithAi — a real broker file, end to end', () => {
   const buffer = readFileSync(join(__dirname, 'fixtures', 'flatex-securities-unknown-headers.csv'));
 

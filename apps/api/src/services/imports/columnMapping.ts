@@ -36,10 +36,10 @@ import { parseDay } from './csv';
 import {
   buildHeaderMappingPrompt,
   buildHeaderMappingSystemPrompt,
-  MAX_AI_HEADERS,
   parseHeaderMappingReply,
   type AiHeaderCandidate,
   type ImportHeaderAiSeam,
+  promptableCandidates,
 } from './headerMappingAi';
 import {
   ISO_CURRENCIES,
@@ -1122,7 +1122,10 @@ export async function mapColumnsWithAi(
   });
   if (candidates.length === 0) return result;
 
-  const sent = candidates.slice(0, MAX_AI_HEADERS);
+  // The exact list the model is shown (cap + sanitizer) — `validIndexes` and
+  // the prompt must come from ONE decision (review F1, #1534).
+  const sent = promptableCandidates(candidates);
+  if (sent.length === 0) return result;
   // Sorted in vocabulary order rather than the winners' confidence order: the
   // prompt for one file should not change because two columns swapped ranks.
   const claimedFields = MAPPABLE_FIELDS.filter((field) => result.fieldWinners[field] !== undefined);

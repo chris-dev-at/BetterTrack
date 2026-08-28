@@ -222,14 +222,34 @@ function sanitizeHeader(header: string): string | null {
  * fields: telling the model that `amount` is taken is useful context, restating
  * an untrusted header to say so is not.
  */
+/**
+ * The ONE function that decides which candidates the model is actually shown:
+ * the cap, then the sanitizer. `validIndexes` MUST be derived from this same
+ * list — deriving it from the pre-sanitize slice let a protocol-only header
+ * (e.g. `=:>~-`) stay an accepted index while never being rendered, so a reply
+ * about a header the model was never shown was accepted (review F1, #1534).
+ */
+export function promptableCandidates(
+  candidates: readonly AiHeaderCandidate[],
+): AiHeaderCandidate[] {
+  const shown: AiHeaderCandidate[] = [];
+  for (const candidate of candidates.slice(0, MAX_AI_HEADERS)) {
+    if (sanitizeHeader(candidate.header) === null) continue;
+    shown.push(candidate);
+  }
+  return shown;
+}
+
 export function buildHeaderMappingPrompt(
   candidates: readonly AiHeaderCandidate[],
   vocabulary: Iterable<MappableField>,
   claimedFields: readonly MappableField[] = [],
 ): string {
   const lines: string[] = [];
-  for (const candidate of candidates.slice(0, MAX_AI_HEADERS)) {
+  for (const candidate of promptableCandidates(candidates)) {
     const header = sanitizeHeader(candidate.header);
+    /* v8 ignore next -- promptableCandidates already dropped null-sanitizing
+       headers; kept as a defensive guard so the two loops cannot drift. */
     if (header === null) continue;
     lines.push(`${candidate.index}: ${header}`);
   }
