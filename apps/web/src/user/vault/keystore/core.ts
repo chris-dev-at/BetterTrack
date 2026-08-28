@@ -1,6 +1,6 @@
 import { vaultIdParamSchema } from '@bettertrack/contracts';
 
-import { zeroBytes } from '../bytes';
+import { equalBytes, zeroBytes } from '../bytes';
 import { type RandomBytes, secureRandomBytes } from '../crypto';
 import { entropyToMnemonic, mnemonicToEntropy } from '../bip39/mnemonic';
 import { openVaultHeaderWithMnemonic, type VerifiedVaultHeaderOpen } from '../keys/documents';
@@ -78,6 +78,7 @@ export class EndpointVaultKeystore {
   private readonly contentKeys = new Map<string, CachedContentKey>();
   private readonly activeContentKeyBorrows = new Set<Uint8Array>();
   private readonly sessionEndListeners = new Set<() => void>();
+  private readonly vaultOpenedListeners = new Set<() => void>();
   private sessionGeneration = 0;
   private sessionRevision: number | null = null;
 
@@ -669,6 +670,27 @@ export class EndpointVaultKeystore {
     };
   }
 
+  /**
+   * The opposite edge: a vault's content key just became available on this
+   * endpoint.
+   *
+   * `subscribeToSessionEnd` cannot answer this. It fires when an unlock
+   * BEGINS (`beginSessionChange`), not when one succeeds, so a surface that
+   * only listened there would tear its session down and never learn that the
+   * vault it needs is now open. The portfolio store resolver (#1416) is such a
+   * surface: without this edge, unlocking a vault leaves every one of its
+   * portfolios rendering as a locked stub until the next full navigation.
+   *
+   * Carries no key material and no vault identity — it is a "re-ask me" ping,
+   * and every consumer still has to prove custody through `withContentKey`.
+   */
+  subscribeToVaultOpened(listener: () => void): () => void {
+    this.vaultOpenedListeners.add(listener);
+    return () => {
+      this.vaultOpenedListeners.delete(listener);
+    };
+  }
+
   handleIdle(pinLockEnabled: boolean): void {
     if (pinLockEnabled) this.endSession();
   }
@@ -749,17 +771,58 @@ export class EndpointVaultKeystore {
 
   private cacheVerifiedOpen(verified: VerifiedVaultHeaderOpen): OpenedVault {
     const existing = this.contentKeys.get(verified.vaultId);
+    const opened: OpenedVault = {
+      vaultId: verified.vaultId,
+      keyId: verified.keyId,
+      keyFingerprint: verified.keyFingerprint,
+    };
+    // RE-OPENING AN ALREADY-OPEN VAULT MUST NOT CANCEL ITS LIVE BORROWS.
+    //
+    // `withContentKey` proves its session by identity — `contentKeys.get(id)
+    // !== cached` is `session-ended` — so replacing an entry that reduces to
+    // the very same key invalidated every in-flight operation for no reason.
+    // Two independent readers of one vault is now ordinary (a move-out capture
+    // beside a resolved portfolio store), and this cost one of them its borrow
+    // mid-flight. The verification above is unchanged and still ran in full:
+    // only the CACHE OBJECT is reused, and only when the re-open proved exactly
+    // the same key.
+    if (
+      existing != null &&
+      existing.keyId === verified.keyId &&
+      existing.keyFingerprint === verified.keyFingerprint &&
+      equalBytes(existing.bytes, verified.contentKey)
+    ) {
+      zeroBytes(verified.contentKey);
+      return opened;
+    }
     if (existing != null) zeroBytes(existing.bytes);
     this.contentKeys.set(verified.vaultId, {
       keyId: verified.keyId,
       keyFingerprint: verified.keyFingerprint,
       bytes: verified.contentKey,
     });
-    return {
-      vaultId: verified.vaultId,
-      keyId: verified.keyId,
-      keyFingerprint: verified.keyFingerprint,
-    };
+    // Only a real transition is news: a vault that was not open, or whose key
+    // changed. A no-op re-open notifying here would make every listener that
+    // reacts by re-reading the vault trigger its own next notification.
+    this.notifyVaultOpened();
+    return opened;
+  }
+
+  /**
+   * Isolated from the caller on purpose: a listener that throws is a bug in a
+   * SURFACE, and an unlock that already succeeded must not be reported as
+   * failed because of one. The session-end path deliberately keeps its
+   * unguarded shape — there, a listener that cannot run is a revocation that
+   * did not happen, and failing loudly is the safe direction.
+   */
+  private notifyVaultOpened(): void {
+    for (const listener of [...this.vaultOpenedListeners]) {
+      try {
+        listener();
+      } catch {
+        // Intentionally swallowed; see above.
+      }
+    }
   }
 
   private async ensureDeviceKey(

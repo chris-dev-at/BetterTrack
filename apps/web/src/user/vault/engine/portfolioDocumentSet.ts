@@ -815,7 +815,13 @@ function assertUniqueEntityIds(
   }
 }
 
-function documentSetSnapshotId(envelopes: readonly VaultDocEnvelopeHeader[]): string {
+/**
+ * Identity of one authenticated envelope set. Exported so the resolver can brand
+ * a client-served figure with the SAME snapshot id its derivations carry — two
+ * independent formulas for one identity would let a provenance check pass while
+ * the two sides describe different documents.
+ */
+export function documentSetSnapshotId(envelopes: readonly VaultDocEnvelopeHeader[]): string {
   const versions = envelopes
     .map(({ vaultId, docId, docKind, docVersion, writeId }) => [
       vaultId,

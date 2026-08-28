@@ -61,6 +61,11 @@ vi.mock('../../lib/alertsApi', async (importOriginal) => ({
 const ACCOUNT = 'acc-jane';
 vi.mock('../AuthContext', () => ({
   useAuth: () => ({ user: { id: 'acc-jane', username: 'jane' } }),
+  // `useRollup` now also asks whether this device can OPEN a vaulted portfolio
+  // (#1416). Reported as no auth context on purpose: these tests are about the
+  // board and the composition, and every vaulted member below must keep taking
+  // the locked path it has always taken here.
+  useOptionalAuth: () => null,
 }));
 
 // The board now lives on the account (`homeSync.ts`); these tests are about the

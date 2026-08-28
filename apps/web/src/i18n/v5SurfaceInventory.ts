@@ -732,6 +732,8 @@ export const V5_SURFACE_INVENTORY = [
       'user/home/WidgetFrame.tsx',
       'user/home/widgets/PortfolioCardsWidget.tsx',
       'user/portfolio/LockedPortfolioStub.tsx',
+      'user/portfolio/PortfolioMoveOutAction.tsx',
+      'user/portfolio/UnlockedVaultPortfolio.tsx',
       'user/control/panels/VaultTransferActions.tsx',
       'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
@@ -1877,8 +1879,17 @@ export type V5AsyncStateDebtLedger = Readonly<
  * surface. Every read handles both states directly or delegates them to the
  * exact row that owns the retry action. The +18 is disjoint from E5's
  * ConnectionsPanel read above, which E8 does not touch.
+ *
+ * 203 → 204 with the E6 store resolver (#1416). Exactly one NEW read site:
+ * `PortfolioMoveOutAction`'s own endpoint-state fallback, needed because the
+ * unlocked in-place view offers move-out without already holding that state
+ * (the locked stub still passes its own down, so the stub path gained nothing).
+ * It handles both states directly — an UNKNOWN custody state must not be
+ * rendered as a locked one — and the debt ceiling stays at zero. The move-out
+ * wizard's vault-config read only MOVED files with the extraction; it is the
+ * same single read under the same query key.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 203;
+export const V5_ASYNC_READ_SITE_BASELINE = 204;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

@@ -3740,6 +3740,10 @@
       "countOne": "1 gesperrtes Portfolio",
       "count": "{{count}} gesperrte Portfolios"
     },
+    "unlockedPortfolio": {
+      "badge": "Entsperrt",
+      "body": "Sein Tresor ist auf diesem Gerät offen. Diese Zahlen werden hier aus dem verschlüsselten Dokument gelesen, nie vom Server."
+    },
     "restorePicker": {
       "hint": "Wähle eine authentifizierte aktuelle oder frühere Kopie. Beschädigte Kandidaten bleiben zur Diagnose sichtbar, können den aktiven Tresor aber nicht ersetzen.",
       "empty": "Keine Wiederherstellungskopien gefunden.",

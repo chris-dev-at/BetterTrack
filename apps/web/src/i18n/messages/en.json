@@ -3740,6 +3740,10 @@
       "countOne": "1 locked portfolio",
       "count": "{{count}} locked portfolios"
     },
+    "unlockedPortfolio": {
+      "badge": "Unlocked",
+      "body": "Its vault is open on this device. These figures are read from the encrypted document here, never from the server."
+    },
     "restorePicker": {
       "hint": "Choose any authenticated current or history copy. Corrupt candidates remain visible for diagnosis but cannot replace the active vault.",
       "empty": "No restore candidates were found.",

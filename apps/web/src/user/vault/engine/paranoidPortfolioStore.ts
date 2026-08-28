@@ -3,20 +3,47 @@ import {
   portfolioResponseSchema,
   type PortfolioHistoryResponse,
   type PortfolioResponse,
+  type VaultDocument,
 } from '@bettertrack/contracts';
 
 import type { PortfolioStore } from '../../../lib/portfolioStore';
+import type { VaultPortfolioStore } from '../vaultPortfolioStore';
 import { VaultMoneyEngineError } from './errors';
 import { readPortfolioModel } from './model';
 import type { ClientPortfolioDerivation, VaultMoneyEngine } from './types';
-import type { VaultMoneySession } from './VaultMoneyEngineContext';
+
+/**
+ * Exactly what this composition reads from a session, and nothing more.
+ *
+ * Narrowed from `VaultMoneySession` (which every account-level caller still
+ * satisfies structurally) so the SAME composition can also sit over a single
+ * per-portfolio resolution from the E6 store resolver (#1416): that resolution
+ * has one authenticated document and a derivation engine, but no account-wide
+ * sync coordinator and no standing-order catch-up to offer. Widening the seam
+ * here rather than reimplementing the mapping below is deliberate — the
+ * `PortfolioResponse` arithmetic is T1-reviewed and pinned by the engine's
+ * arithmetic baseline, and a second copy of it is exactly the drift that
+ * baseline exists to catch.
+ */
+export interface ParanoidPortfolioStoreSession {
+  engine: Pick<VaultMoneyEngine, 'derivePortfolio'>;
+  /**
+   * The authenticated document behind the derivations. Structurally satisfied
+   * by `VaultSyncEngine`; a resolver-backed adapter supplies the same shape
+   * over its own decrypted set and reports `active: null` once revoked.
+   */
+  sync: { readonly state: { readonly active: { readonly document: VaultDocument } | null } };
+  store: VaultPortfolioStore;
+}
 
 /**
  * Compose PD5's decrypted mutation store with PD7's client derivation engine.
  * Kept inside the lazy vault graph so normal-mode sessions only load the API
  * portfolio adapter.
  */
-export function createParanoidAppPortfolioStore(session: VaultMoneySession): PortfolioStore {
+export function createParanoidAppPortfolioStore(
+  session: ParanoidPortfolioStoreSession,
+): PortfolioStore {
   return {
     listPortfolios: (...args) => session.store.listPortfolios(...args),
     createPortfolio: (...args) => session.store.createPortfolio(...args),
@@ -74,7 +101,7 @@ export function createParanoidAppPortfolioStore(session: VaultMoneySession): Por
 }
 
 async function requireDerivation(
-  engine: VaultMoneyEngine,
+  engine: Pick<VaultMoneyEngine, 'derivePortfolio'>,
   portfolioId: string,
   range: ClientPortfolioDerivation['range'],
   signal?: AbortSignal,
@@ -86,7 +113,7 @@ async function requireDerivation(
 
 function portfolioResponse(
   derived: ClientPortfolioDerivation,
-  session: VaultMoneySession,
+  session: ParanoidPortfolioStoreSession,
 ): PortfolioResponse {
   const document = session.sync.state.active?.document;
   if (document == null) {

@@ -3,6 +3,7 @@ import {
   portfolioSummarySchema,
   type PortfolioSummary,
   type VaultConfig,
+  type VaultDocument,
 } from '@bettertrack/contracts';
 
 import type { MarketDataSource } from '../../lib/marketDataSource';
@@ -16,7 +17,9 @@ import { asMoneyFailure, moneyFailure, type VaultMoneyOutcome } from './engine/e
 import {
   createPortfolioDocumentSetEngine,
   createVaultDocumentSetSession,
+  documentSetSnapshotId,
   loadDecryptedVaultDocumentSet,
+  portfolioEngineDocument,
   type DecryptedPortfolioDocumentSet,
   type DecryptedVaultDocumentSet,
   type PortfolioDocumentSetEngine,
@@ -112,6 +115,24 @@ export interface UnlockedVaultPortfolioStoreResolution {
   portfolio: PortfolioSummary;
   vault: VaultConfig;
   engine: PortfolioDocumentSetEngine;
+  /**
+   * Identity of the authenticated envelope set behind this resolution, in the
+   * same shape the derivations carry. Constant for the resolution's life: it
+   * describes the exact documents that were opened, so a consumer can brand a
+   * client-served figure with the provenance the Home composition demands
+   * without deriving anything first (#1416 residual).
+   */
+  snapshotId: string;
+  /**
+   * The authenticated per-portfolio document this resolution derives from, or
+   * `null` once the session is disposed, the vault locked, or the synchronized
+   * document set moved underneath it.
+   *
+   * Nullable rather than throwing because that is what a *store* built over
+   * this resolution has to translate into a typed unavailability — never into
+   * a zero, and never into a stale document a lock already retired.
+   */
+  documentSnapshot(): VaultDocument | null;
   exportCleartext(
     options?: ClientCleartextExportOptions,
   ): Promise<VaultMoneyOutcome<ClientCleartextExport>>;
@@ -202,7 +223,7 @@ async function resolvePortfolioStoreWithCoordination(
   signal?.throwIfAborted();
   const createEngine = dependencies.createEngine ?? createPortfolioDocumentSetEngine;
   const prepared: {
-    value: { portfolio: PortfolioSummary; engine: PortfolioDocumentSetEngine } | null;
+    value: ReturnType<typeof prepareUnlockedPortfolio> | null;
   } = { value: null };
   try {
     await dependencies.keys.withContentKey(
@@ -246,7 +267,7 @@ async function resolvePortfolioStoreWithCoordination(
       'The unlocked portfolio engine could not be prepared.',
     );
   }
-  const { portfolio, engine: unguardedEngine } = prepared.value;
+  const { portfolio, engine: unguardedEngine, document, snapshotId } = prepared.value;
   let disposed = false;
 
   const guard = async <T>(
@@ -391,11 +412,28 @@ async function resolvePortfolioStoreWithCoordination(
     }
   }
 
+  /**
+   * The same synchronous liveness question the engine's guard asks, minus the
+   * key borrow: the decrypted document is already in memory, so what has to be
+   * proven before handing it out again is only that nothing retired it.
+   */
+  function documentSnapshot(): VaultDocument | null {
+    if (disposed || activeVaultSet === null) return null;
+    try {
+      return dependencies.isDocumentSetCurrent(activeVaultSet) ? document : null;
+    } catch {
+      // A throwing currency check is a revoked session, never a live one.
+      return null;
+    }
+  }
+
   return {
     kind: 'vaulted-unlocked',
     portfolio,
     vault,
     engine,
+    snapshotId,
+    documentSnapshot,
     exportCleartext,
     dispose,
   };
@@ -521,7 +559,12 @@ function prepareUnlockedPortfolio(
   createEngine: typeof createPortfolioDocumentSetEngine,
   market: MarketDataSource,
   isSessionCurrent: () => boolean,
-): { portfolio: PortfolioSummary; engine: PortfolioDocumentSetEngine } {
+): {
+  portfolio: PortfolioSummary;
+  engine: PortfolioDocumentSetEngine;
+  document: VaultDocument;
+  snapshotId: string;
+} {
   const matchedDocuments = vaultSet.portfolios.filter(
     ({ envelope, document }) => envelope.docId === stub.id && document.portfolioId === stub.id,
   );
@@ -541,6 +584,15 @@ function prepareUnlockedPortfolio(
   return {
     portfolio: truePortfolioSummary(stub, set),
     engine: createEngine(set, market, { isSessionCurrent }),
+    // Built here, inside the E3 borrow that authenticated the set, so the
+    // document a store later serves is provably the one the engine derives
+    // from — not a second parse of possibly-newer bytes.
+    document: portfolioEngineDocument(set),
+    snapshotId: documentSetSnapshotId([
+      set.header.envelope,
+      set.common.envelope,
+      set.portfolio.envelope,
+    ]),
   };
 }
 
