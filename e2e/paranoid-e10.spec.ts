@@ -32,12 +32,13 @@ import {
   submitTransferPayload,
   vaultRow,
 } from './support/e10';
+import { assetIdFor, listTransactions, recordBuy } from './support/mirror';
 import { provisionUser, provisionUserInContext, type E2EUser } from './support/users';
 
 /**
  * PARANOID E10 — the Playwright vault gate (`docs/paranoid-design.md:959`).
  *
- * The spec line names seven arcs. Three of them cannot run against this build,
+ * The spec line names seven arcs. Two of them cannot run against this build,
  * and each is a `test.fixme` naming the exact missing piece rather than a
  * weakened assertion:
  *
@@ -50,14 +51,13 @@ import { provisionUser, provisionUserInContext, type E2EUser } from './support/u
  *     disabled option that names the missing epic — is asserted in [E10-A5].
  *     The account-level v1 Drive-only round trip keeps its coverage in
  *     `e2e/paranoid.spec.ts` ([PD9-A3]).
- *  3. **`test.fixme` — executable move-in / move-out** needs **E6** (client
- *     engine re-home, #1416): `resolvePortfolioVaultMoveCapture()` returns
- *     `null` on `main`, so no capture exists to encrypt a portfolio document or
- *     sign E4's move-out challenge, and BOTH wizards refuse before their
- *     destructive request. [E10-A6] asserts that refusal on the MOVE-IN wizard,
- *     which is the only one reachable: move-out needs a portfolio that is
- *     already in a vault, and the only way to put one there is the move-in this
- *     same precondition blocks. Its request listener watches both paths.
+ *
+ * The former third carve-out — executable move-in / move-out — closed with the
+ * E6 capture residual (#1525): [E10-A10] runs the full
+ * create → move-in → lock → unlock → move-out arc for real, and [E10-A6] keeps
+ * pinning that a genuinely-unready state (the target vault locked on this
+ * endpoint) still refuses BEFORE the destructive request — a resolvable
+ * capture engine does not mean every state is ready.
  *
  * Everything else the line names runs for real here.
  *
@@ -841,17 +841,25 @@ test.describe('PARANOID E10 per-vault gate', () => {
         if (/\/vault\/move-(in|out)/u.test(path)) destructive.push(`${request.method()} ${path}`);
       });
 
-      await test.step('move-in names E6 as the missing piece and stays blocked', async () => {
+      await test.step('a locked target vault is stated as a blocking step and stays blocked', async () => {
+        // The full-page navigation IS the lock: E3 keeps the unwrapped device
+        // key only in memory, so the settings page opens with the freshly
+        // created vault locked on this endpoint — a genuinely-unready state
+        // even though the E6 capture engine resolves (#1525).
         await page.goto(`/portfolio/settings?portfolio=${encodeURIComponent(portfolioId)}`);
         await page.getByRole('button', { name: 'Move into vault', exact: true }).click();
         const wizard = page.getByRole('region', { name: 'Move portfolio into a vault' });
         await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await wizard.getByLabel('Target vault').selectOption(created.vaultId);
         await expect(
-          wizard.getByText('This version can’t prepare the portfolio’s encrypted copy', {
-            exact: false,
-          }),
-          'the capture precondition must be stated, not hidden',
+          wizard.getByText('Open the target vault on this device', { exact: false }),
+          'the locked-vault precondition must be stated, not hidden',
         ).toBeVisible();
+        await expect(
+          wizard.getByRole('link', { name: 'Unlock', exact: true }),
+          'a precondition is a fixable step, never a dead end',
+        ).toBeVisible();
+        await wizard.locator(`#vault-move-credential-in`).fill('E10-Account-Password-Placeholder');
 
         // ATTEMPT THE COMMIT, do not merely look at it.
         //
@@ -862,7 +870,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         //
         // Click-if-enabled / assert-disabled-otherwise fixes that. On `main` the
         // else branch runs and asserts the refusal. On the regression this arc
-        // exists to catch — a build where the capture precondition stops
+        // exists to catch — a build where the locked-vault precondition stops
         // disabling the commit — the button IS enabled, the click really
         // happens, the client really issues `POST …/vault/move-in`, and the
         // listener is what catches it. Force-clicking the disabled button
@@ -874,7 +882,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         } else {
           await expect(
             commit,
-            'the destructive commit must stay disabled while the capture is missing',
+            'the destructive commit must stay disabled while the target vault is locked',
           ).toBeDisabled();
         }
       });
@@ -908,21 +916,184 @@ test.describe('PARANOID E10 per-vault gate', () => {
   });
 
   /**
-   * CARVE-OUT 3 — needs E6 (client engine re-home + composition, #1416).
+   * The full §9/§10 arc, executable since the E6 capture residual closed
+   * (#1525): create → move-in → lock → unlock → move-out, driven entirely
+   * through the product's own wizards and access surfaces. Two properties are
+   * load-bearing throughout:
    *
-   * `resolvePortfolioVaultMoveCapture()` in
-   * `apps/web/src/user/vault/portfolioVaultMove.ts` returns `null` on `main`, so
-   * there is no engine to write the portfolio's encrypted document (move-in) or
-   * to build the strict restore graph and sign E4's challenge (move-out). E4's
-   * server pipeline shipped (#1482) and the wizards shipped (#1487); only the
-   * client capture is missing, and reimplementing it inside the harness would
-   * test the harness rather than the product. Promote this to the executable
-   * `create → move-in → lock → unlock → move-out` arc when E6 supplies the
-   * capture; [E10-A6] then starts failing on its `captureUnavailable`
-   * assertion, which is the reminder.
+   *  - The keystore session lives ONLY in page memory, so any full-page
+   *    navigation locks the vault. Move-in therefore exercises the
+   *    state→affordance invariant for real: the wizard states the locked
+   *    precondition, its own Unlock link (an SPA navigation) clears it, and
+   *    history-back returns to a wizard whose commit finally opens.
+   *  - Both destructive commits carry the §15 step-up in the body; the arc
+   *    types the real account password into the product's own field.
    */
-  test.fixme('[E10-A10] executable move-in and move-out (blocked: E6 #1416)', () => {
-    // Intentionally empty: see the block comment above.
+  test('[E10-A10] executable move-in and move-out', async ({ context }, testInfo) => {
+    skipOnPhone(testInfo);
+    test.setTimeout(420_000);
+
+    const diagnostics: string[] = [];
+    const sensitive: Pd9SensitiveCanary[] = [
+      { name: 'e10-device-password', value: DEVICE_PASSWORD },
+    ];
+    const admin = await newAdminRequestContext(newRequestContext);
+    let owner: E2EUser | null = null;
+    let bodyFailure: unknown;
+
+    try {
+      owner = await provisionUserInContext(context, admin, 'e10a10');
+      const { page } = owner;
+      collectSanitizedDiagnostics(page, diagnostics);
+
+      const portfolios = await owner.context.request.get(apiV1('/portfolios'));
+      expect(portfolios.ok(), await portfolios.text()).toBeTruthy();
+      const portfolioId = ((await portfolios.json()) as { portfolios: Array<{ id: string }> })
+        .portfolios[0]!.id;
+
+      // A portfolio with real money rows, so the round trip proves content —
+      // not just membership flags.
+      const assetId = await assetIdFor(owner, 'SAP', 'SAP.DE');
+      const transactionId = await recordBuy(owner, portfolioId, {
+        assetId,
+        quantity: 2,
+        price: 100,
+      });
+
+      await openPrivacyPanel(page);
+      const name = `E10 A10 ${randomUUID().slice(0, 8)}`;
+      const created = await createVaultThroughCeremony(owner, {
+        name,
+        devicePassword: DEVICE_PASSWORD,
+      });
+      sensitive.push({ name: 'e10-mnemonic', value: created.mnemonic });
+
+      const vaultedState = async (): Promise<string | null> => {
+        const after = await owner!.context.request.get(apiV1('/portfolios'));
+        const body = (await after.json()) as {
+          portfolios: Array<{ id: string; vaultId: string | null }>;
+        };
+        return body.portfolios.find((portfolio) => portfolio.id === portfolioId)?.vaultId ?? null;
+      };
+
+      await test.step('MOVE-IN through the wizard on an unlocked endpoint', async () => {
+        // Unlock FIRST through the real access surface. The endpoint session
+        // lives only in page memory, so every navigation from here to the
+        // commit must be an SPA transition — a page load would relock it.
+        const access = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
+        await expect(access).toBeHidden({ timeout: 60_000 });
+        await expectVaultState(page, name, 'Ready on this device');
+
+        // Leave the Control Center popup the product's own way (SPA), then
+        // walk the product's own path to portfolio settings: shell rail →
+        // workspace → switcher → settings.
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await page.getByRole('link', { name: 'Portfolio', exact: true }).first().click();
+        await page.getByRole('button', { name: 'Switch portfolio' }).click();
+        await page.getByRole('link', { name: 'Portfolio settings', exact: true }).click();
+
+        await page.getByRole('button', { name: 'Move into vault', exact: true }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio into a vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await wizard.getByLabel('Target vault').selectOption(created.vaultId);
+        // The unready-state precondition [E10-A6] pins must NOT appear on an
+        // unlocked endpoint — the capture resolving plus an open vault is the
+        // ready state.
+        await expect(
+          wizard.getByText('Open the target vault on this device', { exact: false }),
+        ).toBeHidden();
+        await wizard.locator('#vault-move-credential-in').fill(ACCOUNT_PASSWORD);
+        await wizard.getByRole('button', { name: 'Move into vault', exact: true }).click();
+
+        // The capture writes + verifies + attests before the destructive
+        // commit; give the whole §9 pipeline a real budget.
+        await expect
+          .poll(vaultedState, { timeout: 120_000, intervals: [1_000] })
+          .toBe(created.vaultId);
+      });
+
+      await test.step('the vaulted portfolio is a content-free stub server-side', async () => {
+        const refused = await owner!.context.request.get(
+          apiV1(`/portfolios/${portfolioId}/transactions`),
+        );
+        expect(refused.ok()).toBe(false);
+        expect(await refused.text()).toContain('VAULTED_PORTFOLIO');
+      });
+
+      await test.step('LOCK, and the stub refuses move-out from a locked endpoint', async () => {
+        // The full-page navigation IS the lock (E3 memory-only session).
+        await page.goto(`/portfolio?portfolio=${encodeURIComponent(portfolioId)}`);
+        const stub = page.getByTestId('locked-portfolio-stub');
+        await expect(stub).toBeVisible({ timeout: 30_000 });
+        await stub.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio out of the vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await expect(
+          wizard.getByText('Unlock this vault on this device', { exact: false }),
+        ).toBeVisible();
+        await wizard
+          .getByRole('checkbox', { name: /portfolio becomes server-readable again/i })
+          .check();
+        await wizard.locator('#vault-move-credential-out').fill(ACCOUNT_PASSWORD);
+        await expect(
+          wizard.getByRole('button', { name: 'Restore as a normal portfolio' }),
+          'the destructive commit must stay disabled while the vault is locked',
+        ).toBeDisabled();
+        // Close the refusing wizard so the post-unlock flow below reopens one
+        // deterministically fresh instance.
+        await wizard.getByRole('button', { name: 'Cancel', exact: true }).click();
+        await expect(wizard).toBeHidden();
+      });
+
+      await test.step('UNLOCK, then MOVE-OUT restores the same rows under the same ids', async () => {
+        const stub = page.getByTestId('locked-portfolio-stub');
+        // The stub's own state action is the §12 affordance — an SPA link into
+        // the Control Center popup; the workspace stays mounted behind it.
+        await stub.getByRole('link', { name: 'Unlock', exact: true }).click();
+        const access = page.getByRole('region', { name: /access$/ });
+        await expect(access).toBeVisible({ timeout: 30_000 });
+        await access.locator(`#vault-access-secret-${created.vaultId}`).fill(DEVICE_PASSWORD);
+        await access.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(access).toBeHidden({ timeout: 60_000 });
+
+        // Leave the popup its own way (SPA back to the workspace behind it).
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await expect(stub).toBeVisible({ timeout: 30_000 });
+        await stub.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio out of the vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await expect(
+          wizard.getByText('Unlock this vault on this device', { exact: false }),
+        ).toBeHidden({ timeout: 15_000 });
+        await wizard
+          .getByRole('checkbox', { name: /portfolio becomes server-readable again/i })
+          .check();
+        await wizard.locator('#vault-move-credential-out').fill(ACCOUNT_PASSWORD);
+        await wizard.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+
+        await expect.poll(vaultedState, { timeout: 120_000, intervals: [1_000] }).toBeNull();
+
+        // Same-UUID restore (§10): the SAME transaction row is readable again,
+        // byte-relevant fields intact.
+        const restored = await listTransactions(owner!, portfolioId);
+        expect(restored.map(({ id }) => id)).toContain(transactionId);
+        const row = restored.find(({ id }) => id === transactionId)!;
+        expect(row).toMatchObject({ side: 'buy', quantity: 2, price: 100 });
+      });
+    } catch (error) {
+      bodyFailure = error;
+      // Drop the matcher's aria snapshot before the runner turns this into
+      // `error-context.md`: it prints input VALUES, this arc types a real
+      // device password and account password, and the artifact is uploaded by
+      // the nightly. See `e2e/support/artifactHygiene.ts`.
+      throw withoutMatcherAriaSnapshot(error);
+    } finally {
+      try {
+        await admin.dispose();
+      } finally {
+        await assertNoE10Secrets(testInfo, diagnostics, sensitive, bodyFailure);
+      }
+    }
   });
 
   // NOT "golden": the accepted payload is serialized from THIS account's own

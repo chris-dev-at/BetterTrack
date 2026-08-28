@@ -112,7 +112,7 @@ const moveOutChallengeBody = () => ({
 function stubTransitions(harness: TestHarness, portfolioId: string) {
   const revision = vi
     .spyOn(harness.ctx.portfolioVaultTransitions, 'revision')
-    .mockResolvedValue({ portfolioDataRevision: REVISION });
+    .mockResolvedValue({ portfolioDataRevision: REVISION, importBatchCount: 0 });
   const moveIn = vi.spyOn(harness.ctx.portfolioVaultTransitions, 'moveIn').mockResolvedValue({
     portfolioId,
     vaultId: VAULT_ID,
@@ -135,7 +135,10 @@ function stubTransitions(harness: TestHarness, portfolioId: string) {
     lifecycleGeneration: 1,
     idempotent: false,
   });
-  return { revision, moveIn, moveOutChallenge, moveOut };
+  const lifecycle = vi
+    .spyOn(harness.ctx.portfolioVaultTransitions, 'lifecycle')
+    .mockResolvedValue({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
+  return { revision, lifecycle, moveIn, moveOutChallenge, moveOut };
 }
 
 async function mintKey(
@@ -156,7 +159,7 @@ async function mintKey(
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
 describe('E4 portfolio-vault HTTP boundary', () => {
-  it('mounts all four cookie-session routes and marks every successful response no-store', async () => {
+  it('mounts all five cookie-session routes and marks every successful response no-store', async () => {
     const harness = await createTestApp();
     const { user, portfolioId, agent } = await seedPrincipal(harness, 'cookie');
     const spies = stubTransitions(harness, portfolioId);
@@ -164,7 +167,12 @@ describe('E4 portfolio-vault HTTP boundary', () => {
     const revision = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/revision`);
     expect(revision.status, JSON.stringify(revision.body)).toBe(200);
     expect(revision.headers['cache-control']).toContain('no-store');
-    expect(revision.body).toEqual({ portfolioDataRevision: REVISION });
+    expect(revision.body).toEqual({ portfolioDataRevision: REVISION, importBatchCount: 0 });
+
+    const lifecycle = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/lifecycle`);
+    expect(lifecycle.status, JSON.stringify(lifecycle.body)).toBe(200);
+    expect(lifecycle.headers['cache-control']).toContain('no-store');
+    expect(lifecycle.body).toEqual({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
 
     const movedIn = await agent
       .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
@@ -196,6 +204,7 @@ describe('E4 portfolio-vault HTTP boundary', () => {
     expect(movedOut.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, moveOutId: MOVE_OUT_ID });
 
     expect(spies.revision).toHaveBeenCalledWith(user.id, portfolioId);
+    expect(spies.lifecycle).toHaveBeenCalledWith(user.id, portfolioId);
     expect(spies.moveIn).toHaveBeenCalledOnce();
     expect(spies.moveOutChallenge).toHaveBeenCalledOnce();
     expect(spies.moveOut).toHaveBeenCalledOnce();
@@ -380,6 +389,7 @@ describe('E4 portfolio-vault HTTP boundary', () => {
 
   it('keeps the mounted-route and generated-OpenAPI censuses converged', () => {
     const expectedMounted = [
+      'GET /api/v1/portfolios/{portfolioId}/vault/lifecycle',
       'GET /api/v1/portfolios/{portfolioId}/vault/revision',
       'POST /api/v1/portfolios/{portfolioId}/vault/move-in',
       'POST /api/v1/portfolios/{portfolioId}/vault/move-out',

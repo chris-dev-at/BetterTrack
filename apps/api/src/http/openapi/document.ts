@@ -153,8 +153,9 @@ const componentSchemas = {
   CreateDriveConnectionRequest: contracts.createDriveConnectionRequestSchema,
   CreateDriveConnectionResponse: contracts.createDriveConnectionResponseSchema,
 
-  // Per-portfolio move pipeline (paranoid E4 #1414)
+  // Per-portfolio move pipeline (paranoid E4 #1414, E6 residual #1525)
   PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
+  PortfolioVaultLifecycleResponse: contracts.portfolioVaultLifecycleResponseSchema,
   PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
   PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
   PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
@@ -4823,6 +4824,23 @@ const endpoints: EndpointDef[] = [
     errorResponses: {
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
       409: 'The portfolio is already vaulted or cannot currently be captured.',
+      429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/lifecycle',
+    tag: 'Vault',
+    summary: 'Read a vaulted portfolio’s current membership lifecycle generation.',
+    description:
+      'Available to an owning session or a bearer holding account:security. §10 allows move-out from any unlocked device holding the phrase, but the server-minted lifecycle generation the move-out proof binds to was only ever returned by the original move-in commit — this no-store read recovers that non-sensitive transition metadata (E6 residual, #1525). It carries no portfolio content.',
+    params: contracts.portfolioIdParamSchema,
+    status: 200,
+    response: R.PortfolioVaultLifecycleResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is not stored in a vault, or its transition state is inconsistent.',
       429: 'The dedicated vault-transition rate limit was exceeded.',
     },
   },

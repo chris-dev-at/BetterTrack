@@ -518,6 +518,9 @@ describe('vaulted portfolio HTTP target defense', () => {
       })),
     ).toEqual([
       { method: 'GET', operation: 'revision' },
+      // The §10 exit's lifecycle read (E6 residual, #1525): the proof binds to
+      // the server-minted generation only the original move-in ever returned.
+      { method: 'GET', operation: 'lifecycle' },
       { method: 'POST', operation: 'move-in' },
       { method: 'POST', operation: 'move-out/challenge' },
       { method: 'POST', operation: 'move-out' },

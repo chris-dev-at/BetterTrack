@@ -730,11 +730,11 @@ export async function buildNormalVaultDocument(
 }
 
 /** The (order, period) pair the run ledger and the order watermark share. */
-function runKey(standingOrderId: string, periodKey: string): string {
+export function runKey(standingOrderId: string, periodKey: string): string {
   return `${standingOrderId}\u0000${periodKey}`;
 }
 
-async function listAllTransactions(
+export async function listAllTransactions(
   store: PortfolioStore,
   portfolioId: string,
   signal?: AbortSignal,
@@ -753,7 +753,7 @@ async function listAllTransactions(
 }
 
 /** Drain the paged cash ledger: migration must capture every row before purge. */
-async function listAllCashMovements(
+export async function listAllCashMovements(
   store: PortfolioStore,
   portfolioId: string,
   signal?: AbortSignal,
@@ -831,7 +831,7 @@ function previousIsoDay(day: string): string {
  * and enable is one-way and destructive: what cannot be proven is refused, not
  * guessed.
  */
-interface FrozenTaxFacts {
+export interface FrozenTaxFacts {
   taxMode: TaxMode | null;
   taxCountry: TaxCountry | null;
   taxParams: CustomTaxParams | null;
@@ -846,7 +846,7 @@ const NO_TAX_FACTS: FrozenTaxFacts = {
 };
 
 /** Every sell and dividend in the reports, keyed by row id. */
-function frozenTaxFacts(
+export function frozenTaxFacts(
   reports: Awaited<ReturnType<typeof getTaxYearReport>>[],
 ): Map<string, FrozenTaxFacts> {
   const result = new Map<string, FrozenTaxFacts>();
@@ -873,7 +873,7 @@ function frozenTaxFacts(
   return result;
 }
 
-function frozenFactsForTransaction(
+export function frozenFactsForTransaction(
   transaction: Transaction,
   recorded: Map<string, FrozenTaxFacts>,
 ): FrozenTaxFacts {
@@ -891,7 +891,7 @@ function frozenFactsForTransaction(
   return assertProvenTaxFacts(facts, `sell ${transaction.id}`);
 }
 
-function frozenFactsForDividend(
+export function frozenFactsForDividend(
   dividend: Dividend,
   recorded: Map<string, FrozenTaxFacts>,
 ): FrozenTaxFacts {
@@ -945,7 +945,7 @@ function taxSettingRow(userId: string, settings: TaxSettingsResponse, updatedAt:
   };
 }
 
-function decimal(value: number): string {
+export function decimal(value: number): string {
   if (!Number.isFinite(value)) throw new Error('Vault migration encountered a non-finite number.');
   const source = String(value);
   if (!/[eE]/.test(source)) return source;

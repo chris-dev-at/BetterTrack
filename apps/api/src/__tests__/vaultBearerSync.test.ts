@@ -254,6 +254,9 @@ describe('#1043 vault bearer policy', () => {
 
   const PORTFOLIO_ACCOUNT_SECURITY_ALLOWLIST = [
     { method: 'GET', path: '/portfolios/{portfolioId}/vault/revision' },
+    // The §10 exit's CAS input (E6 residual, #1525): the lifecycle read shares
+    // the control-plane scope for the same reason the revision read does.
+    { method: 'GET', path: '/portfolios/{portfolioId}/vault/lifecycle' },
     { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
     { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
     { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },

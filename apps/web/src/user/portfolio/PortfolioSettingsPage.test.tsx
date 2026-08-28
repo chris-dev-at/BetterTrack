@@ -14,6 +14,10 @@ vi.mock('../../lib/portfolioApi', () => ({
   getPortfolioTaxSettings: vi.fn(),
   setPortfolioTaxOverride: vi.fn(),
   clearPortfolioTaxOverride: vi.fn(),
+  // Read by the E6 move-capture engine reached through PortfolioVaultSection.
+  getTaxYearReports: vi.fn(),
+  getTaxYearReport: vi.fn(),
+  listDividends: vi.fn(),
 }));
 
 import { ApiError } from '../../lib/apiClient';
