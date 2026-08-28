@@ -928,6 +928,18 @@ test.describe('PARANOID E10 per-vault gate', () => {
    *    history-back returns to a wizard whose commit finally opens.
    *  - Both destructive commits carry the §15 step-up in the body; the arc
    *    types the real account password into the product's own field.
+   *
+   * On what "the data survived" means here (#1528 review note): the arc does
+   * NOT open the vaulted portfolio and look at the buy, because no unlocked
+   * in-place VIEW surface exists in this build — `PortfolioWorkspace` renders
+   * the locked stub for every vaulted portfolio regardless of endpoint state
+   * (the E6 store-resolver seam is not yet wired into a page). Client
+   * readability of the vaulted bytes is still proven, just indirectly: move-in
+   * hard-deletes the server rows, so the same-UUID `quantity`/`price` fields
+   * asserted after move-out can only have come from the encrypted document,
+   * decrypted and re-authored by the client engine. When the unlocked view
+   * ships, add the direct "open it, see the buy" step between unlock and
+   * move-out.
    */
   test('[E10-A10] executable move-in and move-out', async ({ context }, testInfo) => {
     skipOnPhone(testInfo);

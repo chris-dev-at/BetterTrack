@@ -22,6 +22,7 @@ import {
   type VaultPortfolioDoc,
 } from '@bettertrack/contracts';
 
+import { ApiError } from '../../lib/apiClient';
 import { getAssetDetail } from '../../lib/assetApi';
 import { listAllCashBudgets } from '../../lib/cashApi';
 import { getTaxYearReport, getTaxYearReports, listDividends } from '../../lib/portfolioApi';
@@ -590,6 +591,7 @@ export function createPortfolioVaultMoveCapture(
     vault: VaultConfig,
     accountId: string,
     expectedPortfolioIds: readonly string[],
+    plainOwnedPortfolioIds: readonly string[],
   ): Promise<DecryptedVaultDocumentSet> {
     await deps.keys.openStoredVault(
       vault.id,
@@ -601,9 +603,39 @@ export function createPortfolioVaultMoveCapture(
       vault,
       accountId,
       expectedPortfolioIds,
+      // §9's capture-then-refused-commit leaves the header roster one entry
+      // ahead of the server membership. The loader tolerates exactly that
+      // provable in-flight shape (#1528 F1) so a refused commit never wedges
+      // the vault; this capture then converges by rewriting the prospective
+      // document idempotently.
+      plainOwnedPortfolioIds,
       keys: deps.keys,
       reader: deps.reader,
     });
+  }
+
+  /**
+   * One E1 CAS write through the raw `vaultApi` seam, with the 412 translated
+   * into the capture's own typed channel (#1528 F4): a concurrent writer is a
+   * retryable state conflict of THIS operation, never a raw transport error
+   * leaking into the wizard.
+   */
+  async function writeDocument(
+    vaultId: string,
+    docId: string,
+    envelope: Uint8Array,
+    options: { ifVersion: number | null },
+  ): Promise<void> {
+    try {
+      await deps.api.writeVaultDocument(vaultId, docId, envelope, options);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'VAULT_DOCUMENT_CAS_CONFLICT') {
+        throw conflict('Another writer changed the vault documents during the capture.', {
+          cause,
+        });
+      }
+      throw cause;
+    }
   }
 
   async function refreshServerAttestation(
@@ -637,6 +669,9 @@ export function createPortfolioVaultMoveCapture(
       }
       const memberIds = roster
         .filter((candidate) => candidate.vaultId === vault.id)
+        .map((candidate) => candidate.id);
+      const plainOwnedIds = roster
+        .filter((candidate) => candidate.vaultId == null)
         .map((candidate) => candidate.id);
 
       // ── §9 validate-then-accept, with v1's one-rebuild allowance: capture
@@ -689,7 +724,7 @@ export function createPortfolioVaultMoveCapture(
       }
 
       // ── Open the vault and read the exact current encrypted doc set.
-      const set = await openVaultSet(vault, me.id, memberIds);
+      const set = await openVaultSet(vault, me.id, memberIds, plainOwnedIds);
       const accountBinding = await deriveAccountBinding(me.id);
 
       const portfolioDocument: VaultPortfolioDoc = vaultPortfolioDocSchema.parse({
@@ -795,24 +830,18 @@ export function createPortfolioVaultMoveCapture(
         // ── Writes, strictly ordered: the portfolio doc FIRST (its admission
         // binds the capture and invalidates the full-set proof), then the
         // header roster, then the common fold — each under the E1 HTTP CAS.
-        await deps.api.writeVaultDocument(vault.id, portfolioId, encrypted.portfolio.envelope, {
+        await writeDocument(vault.id, portfolioId, encrypted.portfolio.envelope, {
           ifVersion: null,
         });
         if (encrypted.header) {
-          await deps.api.writeVaultDocument(
-            vault.id,
-            set.header.envelope.docId,
-            encrypted.header.envelope,
-            { ifVersion: set.header.envelope.docVersion },
-          );
+          await writeDocument(vault.id, set.header.envelope.docId, encrypted.header.envelope, {
+            ifVersion: set.header.envelope.docVersion,
+          });
         }
         if (encrypted.common) {
-          await deps.api.writeVaultDocument(
-            vault.id,
-            set.common.envelope.docId,
-            encrypted.common.envelope,
-            { ifVersion: set.common.envelope.docVersion },
-          );
+          await writeDocument(vault.id, set.common.envelope.docId, encrypted.common.envelope, {
+            ifVersion: set.common.envelope.docVersion,
+          });
         }
 
         // ── §7 rule 1: verified round trip per written doc, byte for byte.
@@ -881,7 +910,17 @@ export function createPortfolioVaultMoveCapture(
         throw conflict('The portfolio is no longer a member of this vault.');
       }
 
-      const set = await openVaultSet(vault, me.id, memberIds);
+      // The same in-flight tolerance as move-in: another portfolio wedged
+      // between ITS capture and refused commit must not block opening this
+      // vault. The `documentSetHash` below still hashes members only, and E4
+      // compares it against the locked server roster — a vault carrying a
+      // stale prospective blob keeps refusing the destructive commit
+      // server-side until that move-in converges or the next capture begin
+      // clears the blob (`beginPortfolioVaultCapture`).
+      const plainOwnedIds = roster
+        .filter((candidate) => candidate.vaultId == null)
+        .map((candidate) => candidate.id);
+      const set = await openVaultSet(vault, me.id, memberIds, plainOwnedIds);
 
       // The client half of E4's roster CAS: hash the exact opened encrypted
       // version set. The challenge AND the commit both compare this value with

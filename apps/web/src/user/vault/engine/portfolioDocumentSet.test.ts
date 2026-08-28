@@ -407,6 +407,136 @@ describe('split portfolio document-set engine', () => {
     zeroBytes(fixture.vaultKey);
   });
 
+  it('tolerates a roster extra proven plain-owned and never touches its document (#1528 F1)', async () => {
+    // §9's recoverable in-flight state: the capture wrote the roster entry,
+    // the step-up-gated commit was refused, and the retry's capture-begin may
+    // already have deleted the prospective blob. The reader below REFUSES any
+    // read for the extra id, so success also proves the loader never reads,
+    // decrypts, or returns a non-member document.
+    const fixture = await decryptClientMoneyFixture();
+    const encrypted = await encryptSplitFixture(fixture, {
+      headerRosterExtras: [{ id: OTHER_PORTFOLIO_ID, name: 'In-flight move-in' }],
+    });
+    const borrow = trackedBorrower(fixture.vaultKey, fixture.header.keyId);
+
+    const set = await loadDecryptedVaultDocumentSet({
+      vault: encrypted.vault,
+      accountId: CLIENT_MONEY_IDS.user,
+      expectedPortfolioIds: [CLIENT_MONEY_IDS.portfolio],
+      plainOwnedPortfolioIds: [OTHER_PORTFOLIO_ID],
+      keys: borrow.keys,
+      reader: mapReader(encrypted.reads),
+    });
+    expect(set.portfolios.map(({ envelope }) => envelope.docId)).toEqual([
+      CLIENT_MONEY_IDS.portfolio,
+    ]);
+    expect(set.header.document.portfolios.map(({ id }) => id)).toEqual([
+      CLIENT_MONEY_IDS.portfolio,
+      OTHER_PORTFOLIO_ID,
+    ]);
+
+    // The single-portfolio loader applies the identical tolerance.
+    await expect(
+      loadDecryptedPortfolioDocumentSet({
+        vault: encrypted.vault,
+        accountId: CLIENT_MONEY_IDS.user,
+        portfolioId: CLIENT_MONEY_IDS.portfolio,
+        expectedPortfolioIds: [CLIENT_MONEY_IDS.portfolio],
+        plainOwnedPortfolioIds: [OTHER_PORTFOLIO_ID],
+        keys: borrow.keys,
+        reader: mapReader(encrypted.reads),
+      }),
+    ).resolves.toMatchObject({ portfolioId: CLIENT_MONEY_IDS.portfolio });
+
+    zeroBytes(fixture.vaultKey);
+  });
+
+  it('still refuses the same roster extra without plain-owned provenance (#1528 F1 mutation guard)', async () => {
+    // Removing the provenance check — tolerating every extra — must turn this
+    // red: an extra id that the server-truth listing does not prove to be a
+    // currently-plain owned portfolio remains tampering, with the identical
+    // pre-tolerance error.
+    const fixture = await decryptClientMoneyFixture();
+    const encrypted = await encryptSplitFixture(fixture, {
+      headerRosterExtras: [{ id: OTHER_PORTFOLIO_ID, name: 'In-flight move-in' }],
+    });
+    const borrow = trackedBorrower(fixture.vaultKey, fixture.header.keyId);
+
+    for (const plainOwnedPortfolioIds of [undefined, [] as string[]]) {
+      await expect(
+        loadDecryptedVaultDocumentSet({
+          vault: encrypted.vault,
+          accountId: CLIENT_MONEY_IDS.user,
+          expectedPortfolioIds: [CLIENT_MONEY_IDS.portfolio],
+          plainOwnedPortfolioIds,
+          keys: borrow.keys,
+          reader: mapReader(encrypted.reads),
+        }),
+      ).rejects.toMatchObject({
+        name: 'PortfolioDocumentSetError',
+        code: 'VAULT_DOCUMENT_SET_CHANGED',
+        message: 'The encrypted header roster does not match the current locked-stub roster.',
+      });
+    }
+
+    zeroBytes(fixture.vaultKey);
+  });
+
+  it('never lets the tolerance load the in-flight extra itself as a member (#1528 F1)', async () => {
+    // Requesting the tolerated extra as the single-portfolio document set must
+    // fail: the tolerance widens which roster EXTRAS are survivable, never
+    // which portfolios are loadable — a plain portfolio's store is the server.
+    const fixture = await decryptClientMoneyFixture();
+    const encrypted = await encryptSplitFixture(fixture, {
+      headerRosterExtras: [{ id: OTHER_PORTFOLIO_ID, name: 'In-flight move-in' }],
+    });
+    const borrow = trackedBorrower(fixture.vaultKey, fixture.header.keyId);
+
+    await expect(
+      loadDecryptedPortfolioDocumentSet({
+        vault: encrypted.vault,
+        accountId: CLIENT_MONEY_IDS.user,
+        portfolioId: OTHER_PORTFOLIO_ID,
+        expectedPortfolioIds: [CLIENT_MONEY_IDS.portfolio],
+        plainOwnedPortfolioIds: [OTHER_PORTFOLIO_ID],
+        keys: borrow.keys,
+        reader: mapReader(
+          new Map([...encrypted.reads, [OTHER_PORTFOLIO_ID, encrypted.reads.get(HEADER_DOC_ID)!]]),
+        ),
+      }),
+    ).rejects.toMatchObject({
+      name: 'PortfolioDocumentSetError',
+      code: 'VAULT_DOCUMENT_SET_CHANGED',
+    });
+
+    zeroBytes(fixture.vaultKey);
+  });
+
+  it('never lets the tolerance excuse an omitted member (#1528 F1)', async () => {
+    // The anti-tamper direction stays intact: a stale header that OMITS a
+    // member fails even when that id also appears in the plain-owned list —
+    // the tolerance only ever widens the roster, never the membership.
+    const fixture = await decryptClientMoneyFixture();
+    const encrypted = await encryptSplitFixture(fixture);
+    const borrow = trackedBorrower(fixture.vaultKey, fixture.header.keyId);
+
+    await expect(
+      loadDecryptedVaultDocumentSet({
+        vault: encrypted.vault,
+        accountId: CLIENT_MONEY_IDS.user,
+        expectedPortfolioIds: [CLIENT_MONEY_IDS.portfolio, OTHER_PORTFOLIO_ID],
+        plainOwnedPortfolioIds: [OTHER_PORTFOLIO_ID],
+        keys: borrow.keys,
+        reader: mapReader(encrypted.reads),
+      }),
+    ).rejects.toMatchObject({
+      name: 'PortfolioDocumentSetError',
+      code: 'VAULT_DOCUMENT_SET_CHANGED',
+    });
+
+    zeroBytes(fixture.vaultKey);
+  });
+
   it('observes an abort that races asynchronous document decryption', async () => {
     const fixture = await decryptClientMoneyFixture();
     const encrypted = await encryptSplitFixture(fixture);
@@ -490,6 +620,8 @@ async function encryptSplitFixture(
   options: {
     accountBindingByKind?: Partial<Record<VaultDocKind, string>>;
     mutatePortfolioEntities?: (entities: Record<string, VaultEntity[]>) => void;
+    /** Extra header-roster entries WITHOUT a document — §9's in-flight shape. */
+    headerRosterExtras?: readonly { id: string; name: string }[];
   } = {},
 ): Promise<EncryptedSplitFixture> {
   const commonEntities: Record<string, VaultEntity[]> = {};
@@ -519,7 +651,10 @@ async function encryptSplitFixture(
   const headerDocument = vaultHeaderDocSchema.parse({
     schemaVersion: VAULT_DOC_SCHEMA_VERSION,
     name: 'Client money TEST VECTOR vault',
-    portfolios: [{ id: CLIENT_MONEY_IDS.portfolio, name: anchor.name }],
+    portfolios: [
+      { id: CLIENT_MONEY_IDS.portfolio, name: anchor.name },
+      ...(options.headerRosterExtras ?? []),
+    ],
     keySlots,
     driveConnection: null,
     created: { at: fixture.header.writtenAt, deviceId: fixture.header.deviceId },

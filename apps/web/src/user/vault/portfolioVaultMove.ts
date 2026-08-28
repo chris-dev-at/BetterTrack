@@ -9,6 +9,7 @@ import type {
   VaultStrictDocumentV1,
 } from '@bettertrack/contracts';
 
+import { verifySessionPassword } from '../../lib/userApi';
 import {
   getPortfolioVaultRevision,
   movePortfolioIntoVault,
@@ -141,6 +142,19 @@ export async function submitPortfolioMoveIn(input: {
   stepUp: VaultStepUpCredential;
   capture: PortfolioVaultMoveCapture;
 }): Promise<PortfolioVaultMoveInResponse> {
+  // Pre-verify a password step-up BEFORE the capture writes anything (#1528
+  // F1 half 1). The capture completes the header-roster write before E4's
+  // commit verifies the credential, so a mistyped password used to refuse
+  // AFTER the roster ran ahead of the server membership — the common wedge
+  // case. `/auth/reauth` proves the password on its own throttle namespace and
+  // mints nothing; the commit's same-lock §15 verifier remains the boundary.
+  // TOTP and recovery codes are deliberately NOT pre-verified: both are
+  // one-shot consumables that must reach that verifier unspent — for them (and
+  // for REVISION_STALE/429/network refusals) the loader's in-flight roster
+  // tolerance is what heals the vault on the next open.
+  if (input.stepUp.password !== undefined) {
+    await verifySessionPassword(input.stepUp.password, 'portfolio-vault-move-in');
+  }
   // Read the revision FIRST: it binds the capture that follows, and E4 refuses
   // the commit when any write lands in between rather than deleting rows the
   // encrypted document never captured. The capture receives the same token as

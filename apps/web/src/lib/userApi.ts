@@ -401,6 +401,25 @@ export async function persistSession(): Promise<void> {
 }
 
 /**
+ * `POST /auth/reauth` — the generic step-up probe (Vaults v2): verifies the
+ * CURRENT session's password and mints nothing; 204 on success. Callers gate
+ * their own surface on the outcome — a destructive flow can prove the password
+ * BEFORE performing client-side work whose refusal path is expensive (#1528
+ * F1: the §9 capture writes encrypted documents before E4's commit re-verifies
+ * the same credential). Password only by design: TOTP and recovery codes are
+ * one-shot consumables that must reach the commit's same-lock verifier unspent.
+ * `suppressAuthRedirect`: a wrong password here is an in-form error, never a
+ * session-expiry bounce.
+ */
+export async function verifySessionPassword(password: string, purpose: string): Promise<void> {
+  await apiRequest<unknown>('/auth/reauth', {
+    method: 'POST',
+    body: { password, purpose },
+    suppressAuthRedirect: true,
+  });
+}
+
+/**
  * `GET /auth/session` — the caller's own session timestamps (§6.11 Security):
  * when it was created, last renewed, and when the 30-day window lapses. Consumed
  * by Settings → Security.

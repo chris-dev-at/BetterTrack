@@ -23,6 +23,7 @@ import {
   type VaultHeaderDoc,
 } from '@bettertrack/contracts';
 
+import { ApiError } from '../../lib/apiClient';
 import type { PortfolioStore } from '../../lib/portfolioStore';
 import type { VaultDocEnvelopeRead } from '../../lib/vaultsApi';
 import { utf8, zeroBytes } from './bytes';
@@ -230,10 +231,19 @@ function createHarness(): Harness {
 
   const api: PortfolioMoveCaptureApi = {
     getMe: (async () => ({ id: ACCOUNT_ID })) as PortfolioMoveCaptureApi['getMe'],
-    getPortfolioVaultRevision: (async () =>
-      state.settledRevisions.length > 1
+    getPortfolioVaultRevision: (async () => {
+      // Mirror E4's `beginPortfolioVaultCapture`: while the portfolio is still
+      // PLAIN server-side, every revision read clears an uncommitted
+      // prospective blob left by an earlier refused attempt and voids the
+      // full-set proof (the roster it attested no longer matches the store).
+      const plain = state.roster.some(
+        (portfolio) => portfolio.id === PORTFOLIO_ID && portfolio.vaultId == null,
+      );
+      if (plain && docs.delete(PORTFOLIO_ID)) mediaAttestedAt = null;
+      return state.settledRevisions.length > 1
         ? state.settledRevisions.shift()!
-        : state.settledRevisions[0]!) as PortfolioMoveCaptureApi['getPortfolioVaultRevision'],
+        : state.settledRevisions[0]!;
+    }) as PortfolioMoveCaptureApi['getPortfolioVaultRevision'],
     getPortfolioVaultLifecycle: (async (portfolioId: string) => ({
       portfolioId,
       vaultId: VAULT_ID,
@@ -292,7 +302,14 @@ function createHarness(): Harness {
       if (inspected.status !== 'supported') throw new Error('TEST VECTOR: malformed envelope');
       const current = docs.get(docId) ?? null;
       if ((current?.header.docVersion ?? null) !== options.ifVersion) {
-        throw new Error('TEST VECTOR: CAS precondition failed');
+        // The production wire shape: E1 answers a CAS miss with 412, surfaced
+        // by `vaultApi.writeVaultDocument` as this exact typed ApiError.
+        throw new ApiError(
+          412,
+          'VAULT_DOCUMENT_CAS_CONFLICT',
+          'The vault document changed underneath this write.',
+          { currentVersion: current?.header.docVersion ?? null },
+        );
       }
       docs.set(docId, { envelope: envelope.slice(), header: inspected.header });
       writes.push(docId);
@@ -629,6 +646,171 @@ describe('captureMoveIn', () => {
       code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
     });
     expect(harness.writes).toEqual([]);
+  });
+
+  it('WEDGE-PROBE (#1528 F1): a refused E4 commit after a completed capture does not wedge the vault — the retry re-captures end to end', async () => {
+    // The reviewer's exact interleaving: capture → refused commit → retry.
+    // Capture #1 completes every write (portfolio doc, header roster +P,
+    // common fold), then the commit is REFUSED (mistyped password,
+    // REVISION_STALE, 429, network drop) — server membership still excludes P
+    // while the encrypted header roster now contains it.
+    await runMoveIn(harness);
+    expect(harness.writes).toEqual([PORTFOLIO_ID, HEADER_DOC_ID, COMMON_DOC_ID]);
+    harness.writes.length = 0;
+    harness.attestations.length = 0;
+
+    // The retry: its own revision read (E4's `beginPortfolioVaultCapture`,
+    // mirrored by the harness) deletes P's prospective blob, so the roster
+    // names a portfolio with NO document. The loader must tolerate exactly
+    // this provable in-flight shape — P is a currently-plain portfolio owned
+    // by this account — and the retry must converge instead of throwing
+    // `The encrypted header roster does not match the current locked-stub roster.`
+    await expect(runMoveIn(harness)).resolves.toEqual({
+      docVersion: 1,
+      portfolioDataRevision: REVISION,
+    });
+
+    // The re-capture rewrote only what the refusal lost: the prospective
+    // portfolio doc (fresh v1 after the begin-capture delete). The header
+    // roster entry and the common fold are already byte-correct at v2 and are
+    // NOT rewritten — the +1 CAS flow is idempotent.
+    expect(harness.writes).toEqual([PORTFOLIO_ID]);
+    expect(harness.docs.get(HEADER_DOC_ID)!.header.docVersion).toBe(2);
+    expect(harness.docs.get(COMMON_DOC_ID)!.header.docVersion).toBe(2);
+    expect(harness.docs.get(PORTFOLIO_ID)!.header.docVersion).toBe(1);
+
+    // And the full-set proof is current again over the exact completed roster,
+    // ready for E4's destructive commit.
+    const finalAttestation = harness.attestations.at(-1)!;
+    expect(new Set(finalAttestation.docs.map(({ docId }) => docId))).toEqual(
+      new Set([HEADER_DOC_ID, COMMON_DOC_ID, PORTFOLIO_ID]),
+    );
+    expect(harness.mediaAttestedAt()).not.toBeNull();
+  });
+
+  it('still refuses a roster extra that is NOT a plain-owned portfolio (the tolerance is provenance-checked)', async () => {
+    // Mutation guard for the F1 tolerance: an attacker-inserted roster entry
+    // gains nothing new. GHOST is not in the account's portfolio listing at
+    // all, so it is not provably the §9 in-flight state — the open must fail
+    // exactly as before the tolerance existed. Removing the plain-owned
+    // provenance check from the loader turns this test red.
+    const GHOST_ID = '018f0000-0000-7000-8000-0000000000f0';
+    await runMoveIn(harness);
+    const header = harness.docs.get(HEADER_DOC_ID)!;
+    const accountBinding = await deriveAccountBinding(ACCOUNT_ID);
+    const opened = await decryptVaultDoc({
+      envelope: header.envelope,
+      contentKey: CONTENT_KEY,
+      expected: {
+        vaultId: VAULT_ID,
+        docId: HEADER_DOC_ID,
+        docKind: 'header',
+        accountBinding,
+        keyId: KEY_ID,
+      },
+    });
+    const headerDoc = JSON.parse(new TextDecoder().decode(opened.plaintext)) as VaultHeaderDoc;
+    const tampered = await encryptVaultDoc({
+      plaintext: utf8(
+        JSON.stringify({
+          ...headerDoc,
+          portfolios: [...headerDoc.portfolios, { id: GHOST_ID, name: 'Ghost' }],
+        }),
+      ),
+      contentKey: CONTENT_KEY,
+      header: { ...header.header, docVersion: header.header.docVersion + 1 },
+    });
+    harness.docs.set(HEADER_DOC_ID, { envelope: tampered.envelope, header: tampered.header });
+
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      name: 'PortfolioDocumentSetError',
+      code: 'VAULT_DOCUMENT_SET_CHANGED',
+      message: 'The encrypted header roster does not match the current locked-stub roster.',
+    });
+  });
+
+  it('surfaces a store that lies on read-back as VAULT_MOVE_VERIFY_FAILED (#1528 F3)', async () => {
+    // §7 rule 1: the written envelope must read back byte-identical. A store
+    // that returns even one flipped ciphertext byte fails the move with the
+    // typed retryable code — never a silently-accepted capture.
+    const innerRead = harness.reader.read.bind(harness.reader);
+    harness.reader.read = async (vaultId: string, docId: string) => {
+      const read = await innerRead(vaultId, docId);
+      if (docId === PORTFOLIO_ID) read.envelope[read.envelope.length - 1]! ^= 0x01;
+      return read;
+    };
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_VERIFY_FAILED',
+      retryable: true,
+    });
+  });
+
+  it('writes nothing when the vault session dies between encryption and the first write (#1528 F3)', async () => {
+    // E3 discipline: `assertSessionCurrent` runs after the crypto and before
+    // the encrypted result crosses the borrow. A lock race there must abort
+    // the capture with ZERO ciphertext writes — not ship documents encrypted
+    // under a torn-down session.
+    class SessionEndedProbe extends Error {
+      constructor() {
+        super('TEST VECTOR: vault session ended during operation');
+        this.name = 'SessionEndedProbe';
+      }
+    }
+    let borrows = 0;
+    const innerWithContentKey = harness.keys.withContentKey.bind(harness.keys);
+    harness.keys = {
+      ...harness.keys,
+      withContentKey: async (vaultId, operation) => {
+        borrows += 1;
+        if (borrows === 1) return innerWithContentKey(vaultId, operation); // the loader's borrow
+        const borrowed = CONTENT_KEY.slice();
+        try {
+          return await operation(borrowed, KEY_ID, () => {
+            throw new SessionEndedProbe();
+          });
+        } finally {
+          zeroBytes(borrowed);
+        }
+      },
+    };
+    await expect(runMoveIn(harness)).rejects.toMatchObject({ name: 'SessionEndedProbe' });
+    expect(harness.writes).toEqual([]);
+    expect(harness.attestations).toEqual([]);
+  });
+
+  it('types a mid-sequence CAS conflict as a retryable move-capture conflict (#1528 F4)', async () => {
+    // A concurrent writer bumping the header between the open and the write
+    // surfaces through `vaultApi` as a raw 412 ApiError. The capture must
+    // translate it into its own typed channel so the wizard's error handling
+    // stays uniform — with the transport failure preserved as the cause.
+    const innerWrite = harness.api.writeVaultDocument.bind(harness.api);
+    harness.api.writeVaultDocument = (async (
+      vaultId: string,
+      docId: string,
+      envelope: Uint8Array,
+      options: { ifVersion: number | null },
+    ) => {
+      if (docId === HEADER_DOC_ID) {
+        throw new ApiError(
+          412,
+          'VAULT_DOCUMENT_CAS_CONFLICT',
+          'The vault document changed underneath this write.',
+          { currentVersion: 2 },
+        );
+      }
+      return innerWrite(vaultId, docId, envelope, options);
+    }) as PortfolioMoveCaptureApi['writeVaultDocument'];
+
+    const rejection = expect(runMoveIn(harness)).rejects;
+    await rejection.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_STATE_CONFLICT',
+      retryable: true,
+    });
+    await rejection.toMatchObject({
+      cause: { name: 'ApiError', code: 'VAULT_DOCUMENT_CAS_CONFLICT', status: 412 },
+    });
   });
 
   it('refuses a Drive-carrying vault outright', async () => {
