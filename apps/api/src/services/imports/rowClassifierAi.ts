@@ -1,4 +1,7 @@
 import type { AiService } from '../ai/aiService';
+import { MAX_CELL_CHARS } from './table';
+
+export { MAX_CELL_CHARS };
 
 /**
  * Stage-3 AI fallback for import-row classification (PROJECTPLAN.md §16
@@ -31,31 +34,7 @@ import type { AiService } from '../ai/aiService';
  */
 export const ROW_CLASSIFICATION_AI_TIER = 'cheap' as const;
 
-/**
- * How many characters of ONE cell either half of the classifier will interpret.
- *
- * This mirrors the sniffer's own cap: `table.ts` stops analysing a field past
- * this length and raises an `oversized-cell` issue, so a downstream module that
- * happily interprets the full-length cell is doing work the sniffer already
- * declared out of scope — and doing it SYNCHRONOUSLY inside a request. Measured
- * on this module before the cap: 20 rows carrying a 264 000-character memo cost
- * 358 ms of blocked event loop in `classifyRows` alone, all of it spent
- * NFC/NFD-normalizing and RE2-scanning text past the point the sniffer stopped
- * looking. Nothing beyond 4096 characters of a broker memo carries a kind.
- *
- * It lives HERE, in the leaf module, so both halves read one constant:
- * `rowClassifier.ts` imports it for the keyword haystack, `flattenMemo` below
- * uses it for the prompt. Two independently-maintained copies of a bound is the
- * same defect class as the separator drift {@link REPLY_SEPARATOR_CHARS} fixes.
- *
- * TODO(import-sniffer-hardening): `table.ts` grows its own exported
- * `MAX_CELL_CHARS` on the parallel sniffer branch. When that lands, this must
- * become `export { MAX_CELL_CHARS } from './table'` and the literal below has to
- * go — one number, one home.
- */
-export const MAX_CELL_CHARS = 4096;
-
-/** Truncate one cell to the analysable window above. */
+/** Truncate one cell to the sniffer's analysable window, {@link MAX_CELL_CHARS}. */
 export function capCell(value: string): string {
   return value.length > MAX_CELL_CHARS ? value.slice(0, MAX_CELL_CHARS) : value;
 }
@@ -240,8 +219,19 @@ export function buildRowKindBatchPrompt(rows: readonly AiBatchRow[]): string {
  * rejected by `validIndexes` a few lines below anyway. RE2 is not in play here,
  * but `\d+` cannot backtrack either — there is nothing after it to backtrack
  * into but a single-character class.
+ *
+ * The LABEL token is `[a-zA-Z][A-Za-z0-9_]*`, matching `headerMappingAi`'s
+ * `REPLY_LINE_PATTERN` and NOT the looser `[a-zA-Z]+` this pattern used to have:
+ * `[a-zA-Z]+` stops at the first non-letter, so a reply of `0=buy_now` yielded
+ * the token `buy` and the out-of-vocabulary answer was silently COERCED onto a
+ * real kind — precisely what this module otherwise promises never to do.
+ * Consuming the whole identifier makes `buy_now`, `buyX` and `BUY2` fail the
+ * `isAiRowLabel` lookup below and be discarded instead.
  */
-const REPLY_LINE_PATTERN = new RegExp(`(\\d+)\\s*${SEPARATOR_CLASS}+\\s*([a-zA-Z]+)`, 'g');
+const REPLY_LINE_PATTERN = new RegExp(
+  `(\\d+)\\s*${SEPARATOR_CLASS}+\\s*([a-zA-Z][A-Za-z0-9_]*)`,
+  'g',
+);
 
 /**
  * Parse a batch reply defensively. Returns the trusted subset: only indexes the
