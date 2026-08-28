@@ -299,6 +299,110 @@ describe('endpoint keystore custody and verified persistence', () => {
     expect(throwing.mock.calls.length).toBeGreaterThan(beforeUnsubscribe);
   });
 
+  /**
+   * THE CACHE-REUSE PREDICATE, PINNED (#1531 F3).
+   *
+   * `cacheVerifiedOpen` reuses the cached entry only when the re-open proved
+   * EXACTLY the same key (same keyId, same fingerprint, same bytes). Both
+   * halves of that decision are load-bearing and neither had a test: the whole
+   * suite stayed green both when the reuse was removed (every re-open cancels
+   * live borrows) and when it was made unconditional (a genuinely different key
+   * silently keeps serving the old one). The two cases below are those two
+   * mutations, one each.
+   *
+   * The byte comparison itself is deliberately NOT probed in isolation: reaching
+   * it with a matching keyId and a matching fingerprint but different bytes
+   * means a SHA-256 collision, so it is defense in depth against a future
+   * fingerprint change, not a reachable state to test.
+   */
+  it('keeps a live borrow alive when the same vault is re-opened under the same key', async () => {
+    const core = keystore(new MemoryEndpointStorage());
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+
+    // Two independent readers of one vault is ordinary now (a §9 move capture
+    // beside a resolved portfolio store), and the second one's re-open used to
+    // end the first one's operation mid-flight.
+    let borrowStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      borrowStarted = resolve;
+    });
+    let releaseBorrow!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseBorrow = resolve;
+    });
+    const borrow = core.withContentKey(
+      VAULT_1,
+      async (contentKey, _keyId, assertSessionCurrent) => {
+        borrowStarted();
+        await gate;
+        // The identity check `withContentKey` proves its session with: a replaced
+        // cache entry fails here even though nothing was locked.
+        assertSessionCurrent();
+        expect(contentKey).toEqual(new Uint8Array(32).fill(0x31));
+        return 'survived';
+      },
+    );
+    await started;
+
+    await core.openStoredVault(VAULT_1, verifiedHeaderFetch(VAULT_1));
+    releaseBorrow();
+
+    await expect(borrow).resolves.toBe('survived');
+  });
+
+  it('replaces the cached key when a re-open proves a different one, and kills the old borrow', async () => {
+    const core = keystore(new MemoryEndpointStorage());
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+
+    let borrowStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      borrowStarted = resolve;
+    });
+    let releaseBorrow!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseBorrow = resolve;
+    });
+    const stale = core.withContentKey(
+      VAULT_1,
+      async (_contentKey, _keyId, assertSessionCurrent) => {
+        borrowStarted();
+        await gate;
+        assertSessionCurrent();
+        return 'must not survive a key change';
+      },
+    );
+    await started;
+
+    // A rekey: the same vault, authenticated by the same words, but the header
+    // now carries a DIFFERENT content key (and therefore a different
+    // fingerprint). Reuse here would be silent key confusion — the caller is
+    // handed the retired key while the receipt names the new one.
+    const rekeyed = await core.openStoredVault(
+      VAULT_1,
+      verifiedHeaderFetch(VAULT_1, MNEMONIC, 0x32),
+    );
+    releaseBorrow();
+
+    await expect(stale).rejects.toMatchObject({ code: 'session-ended' });
+    await expect(
+      core.withContentKey(VAULT_1, (contentKey, keyId) => {
+        expect(contentKey).toEqual(new Uint8Array(32).fill(0x32));
+        expect(keyId).toBe(rekeyed.keyId);
+        return 'reads the new key';
+      }),
+    ).resolves.toBe('reads the new key');
+  });
+
   it('defaults to wrapped custody and one password unlocks all phrases on one endpoint only', async () => {
     const firstStorage = new MemoryEndpointStorage();
     const secondStorage = new MemoryEndpointStorage();

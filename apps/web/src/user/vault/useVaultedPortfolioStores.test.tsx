@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
@@ -71,11 +72,28 @@ function batchFor(portfolioId: string) {
   };
 }
 
+function emptyBatch() {
+  return { unlocked: new Map<string, never>(), dispose: vi.fn() };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   resetVaultedPortfolioStoreRegistry();
   mocks.useOptionalAuth.mockReturnValue({ status: 'authenticated', user: { id: ACCOUNT_ID } });
-  mocks.listVaults.mockResolvedValue([{ id: VAULT_ID, keyFingerprint: 'TESTVECTOR000000' }]);
+  // SIGNAL-AWARE ON PURPOSE. `listVaults` is the first call in the loader that
+  // carries the registry entry's abort signal, and the real one is `fetch`:
+  // handed an already-aborted signal it REJECTS, it does not resolve. A plain
+  // `mockResolvedValue` here models a `listVaults` that cannot fail that way,
+  // and that is exactly how the shipped suite stayed green while every remount
+  // re-used a permanently-aborted controller and failed closed forever.
+  mocks.listVaults.mockImplementation(async (signal?: AbortSignal) => {
+    if (signal?.aborted === true) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The vault list request was aborted.', 'AbortError');
+    }
+    return [{ id: VAULT_ID, keyFingerprint: 'TESTVECTOR000000' }];
+  });
   mocks.sessionEndSubscription.mockImplementation(() => () => {});
   mocks.vaultOpenedSubscription.mockImplementation(() => () => {});
 });
@@ -234,5 +252,124 @@ describe('useVaultedPortfolioStores', () => {
     view.unmount();
 
     expect(batch.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * THE REGISTRY MUST SURVIVE A SECOND MOUNT (#1531 F1).
+   *
+   * `release()` aborts the entry's controller but deliberately KEEPS the entry
+   * while a listener is still attached — and the acquiring effect is registered
+   * before `useSyncExternalStore`'s subscription, so its cleanup always runs
+   * first and that "still attached" case is the NORMAL one, not an exotic race.
+   * A second `acquire()` on that entry must not reuse the dead signal: it makes
+   * the very first awaited call reject, and the feature fails closed for the
+   * rest of the tab's life. Under StrictMode that is every dev session; in
+   * production it is any Home → Portfolio → Home round trip.
+   *
+   * The three probes below are the three shapes that reach it.
+   */
+  it('resolves under StrictMode, whose simulated remount re-acquires the same entry', async () => {
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <StrictMode>
+        <QueryClientProvider client={client}>
+          <Probe portfolios={[PLAIN, VAULTED]} />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+  });
+
+  /**
+   * The leak behind the same lifecycle (#1531 F4). `release` runs first and
+   * deliberately keeps the entry while a listener is still attached, so without
+   * the re-check on the unsubscribe side every roster token the account ever
+   * mounted stays in the module-level registry for the tab's lifetime. Nothing
+   * secret survives in one — `release` disposed the batch and dropped the
+   * keystore listeners — but "bounded" is a claim that has to be tested, and an
+   * empty dead entry has no other symptom than still being there.
+   */
+  it('leaves no registry entry behind once the last consumer unmounts', async () => {
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+
+    const view = renderProbe([PLAIN, VAULTED]);
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+    view.unmount();
+
+    expect(resetVaultedPortfolioStoreRegistry()).toBe(0);
+  });
+
+  it('resolves again after an unmount and remount of the same roster', async () => {
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+
+    const first = renderProbe([PLAIN, VAULTED]);
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+    first.unmount();
+
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+    renderProbe([PLAIN, VAULTED]);
+
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+  });
+
+  it('resolves a roster it already released, after switching away and back', async () => {
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Probe portfolios={[PLAIN, VAULTED]} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+
+    // T1 → T2: the T1 entry is released and its controller aborted.
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor('p-other'));
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <Probe portfolios={[PLAIN, { ...VAULTED, id: 'p-other' }]} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-other'));
+
+    // T2 → T1: back to the roster whose controller is already aborted.
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <Probe portfolios={[PLAIN, VAULTED]} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+  });
+
+  /**
+   * The other half of the vault-opened edge (#1531 F2). The own-resolution case
+   * above is ignored because our `openStoredVault` raises the same signal — but
+   * an unlock that lands while a resolution that opened NOTHING is in flight is
+   * genuinely new, and dropping it left the portfolio a stub until a reload.
+   */
+  it('re-resolves an unlock that lands while the first resolution is still running', async () => {
+    let vaultOpened = () => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+      vaultOpened = listener;
+      return () => {};
+    });
+    const locked = emptyBatch();
+    // Resolution #1 finds the vault LOCKED (empty batch). The user unlocks
+    // while it is still running, i.e. strictly inside `entry.resolving`.
+    mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
+      vaultOpened();
+      return locked;
+    });
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+
+    renderProbe([PLAIN, VAULTED]);
+
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+    expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(2);
+    expect(locked.dispose).toHaveBeenCalled();
   });
 });

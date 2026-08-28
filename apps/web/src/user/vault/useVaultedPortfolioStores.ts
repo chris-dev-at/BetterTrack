@@ -42,6 +42,12 @@ interface RegistryEntry {
   stores: VaultedPortfolioStores;
   batch: VaultedPortfolioStoresBatch | null;
   listeners: Set<() => void>;
+  /**
+   * Cancels the CURRENT resolution only. `release` aborts it, so a later
+   * `acquire` on the same entry has to install a fresh one: an AbortController
+   * never un-aborts, and a dead signal would reject the loader's very first
+   * awaited call for the rest of the tab's life.
+   */
   abort: AbortController;
   releaseKeystoreListeners: (() => void) | null;
   released: boolean;
@@ -52,9 +58,61 @@ interface RegistryEntry {
    * news.
    */
   resolving: boolean;
+  /**
+   * A vault-opened edge that arrived mid-resolution, waiting to be judged when
+   * the run settles. `consumeRerunRequest` decides what it was really about.
+   */
+  rerunRequested: boolean;
+  /**
+   * Id of the newest resolution on this entry. A run whose id is no longer
+   * current has been superseded (a re-acquire, a re-run) and must publish
+   * nothing: two loaders on one entry would otherwise dispose each other's
+   * batch and leave the snapshot at whichever happened to finish last.
+   */
+  loadSeq: number;
 }
 
 const registry = new Map<string, RegistryEntry>();
+
+interface VaultGraph {
+  listVaults: typeof import('../../lib/vaultApi').listVaults;
+  resolveVaultedPortfolioStores: typeof import('./vaultedPortfolioStores').resolveVaultedPortfolioStores;
+  sessionEndSubscription: typeof import('./vaultedPortfolioStores').sessionEndSubscription;
+  vaultOpenedSubscription: typeof import('./vaultedPortfolioStores').vaultOpenedSubscription;
+}
+
+let pendingVaultGraph: Promise<VaultGraph> | null = null;
+
+/**
+ * ONE import of the heavy half per tab, shared by every loader.
+ *
+ * A remount runs a second loader while the first one's imports are still in
+ * flight, and each entry arms its own keystore listeners from whatever the
+ * import returned — so those subscriptions must provably come from ONE module
+ * instance rather than from two resolutions of the same specifier. The bundler
+ * already caches `import()`; this only makes the guarantee explicit.
+ */
+function loadVaultGraph(): Promise<VaultGraph> {
+  pendingVaultGraph ??= importVaultGraph().catch((cause: unknown) => {
+    // A failed chunk load must fail THIS resolution, not poison every later
+    // one: drop the cached promise so the next acquire imports again.
+    pendingVaultGraph = null;
+    throw cause;
+  });
+  return pendingVaultGraph;
+}
+
+async function importVaultGraph(): Promise<VaultGraph> {
+  const { listVaults } = await import('../../lib/vaultApi');
+  const { resolveVaultedPortfolioStores, sessionEndSubscription, vaultOpenedSubscription } =
+    await import('./vaultedPortfolioStores');
+  return {
+    listVaults,
+    resolveVaultedPortfolioStores,
+    sessionEndSubscription,
+    vaultOpenedSubscription,
+  };
+}
 
 export function useVaultedPortfolioStores(
   portfolios: readonly PortfolioSummary[],
@@ -125,6 +183,14 @@ function subscribe(token: string, onChange: () => void): () => void {
   target.listeners.add(onChange);
   return () => {
     target.listeners.delete(onChange);
+    // `release` runs BEFORE this — the acquiring effect is registered first, so
+    // React tears it down first — and can only keep the entry because a
+    // listener was still attached. Removing the last one is the second half of
+    // that decision; without this re-check every roster token the account ever
+    // mounted leaves a dead entry behind for the tab's lifetime.
+    if (target.refs <= 0 && target.listeners.size === 0 && registry.get(token) === target) {
+      registry.delete(token);
+    }
   };
 }
 
@@ -138,6 +204,8 @@ function placeholderEntry(): RegistryEntry {
     releaseKeystoreListeners: null,
     released: false,
     resolving: false,
+    rerunRequested: false,
+    loadSeq: 0,
   };
 }
 
@@ -155,6 +223,18 @@ function acquire(token: string, accountId: string, portfolios: readonly Portfoli
   const entry = existing ?? placeholderEntry();
   entry.refs += 1;
   entry.released = false;
+  // A REUSED ENTRY CARRIES A DEAD SIGNAL. `release` aborted this controller and
+  // an AbortController never comes back, so handing the same signal to the
+  // loader makes `listVaults` reject instantly and the entry then serves the
+  // empty map forever — which is what shipped: StrictMode hit it on every dev
+  // mount, production on every Home → Portfolio → Home round trip.
+  //
+  // The second lock on the same door. `release` only keeps an entry while a
+  // listener is attached, and the unsubscribe path now drops it as soon as the
+  // last one goes — so today this branch is unreachable through the hook. It
+  // stays because `release`'s keep-the-entry decision is the one that is
+  // allowed to change: reusing an entry is only ever safe with a live signal.
+  if (entry.abort.signal.aborted) entry.abort = new AbortController();
   registry.set(token, entry);
 
   void load(entry, accountId, portfolios);
@@ -164,13 +244,19 @@ async function load(
   entry: RegistryEntry,
   accountId: string,
   portfolios: readonly PortfolioSummary[],
+  isRerun = false,
 ): Promise<void> {
+  const seq = (entry.loadSeq += 1);
+  const superseded = () => entry.released || entry.loadSeq !== seq;
   entry.resolving = true;
   try {
-    const { listVaults } = await import('../../lib/vaultApi');
-    const { resolveVaultedPortfolioStores, sessionEndSubscription, vaultOpenedSubscription } =
-      await import('./vaultedPortfolioStores');
-    if (entry.released) return;
+    const {
+      listVaults,
+      resolveVaultedPortfolioStores,
+      sessionEndSubscription,
+      vaultOpenedSubscription,
+    } = await loadVaultGraph();
+    if (superseded()) return;
     if (entry.releaseKeystoreListeners === null) {
       // Armed BEFORE the resolution, so a lock landing while documents are in
       // flight still drops the batch this loader is about to publish.
@@ -180,9 +266,15 @@ async function load(
         publish(entry, NO_UNLOCKED_PORTFOLIOS);
       });
       const releaseVaultOpened = vaultOpenedSubscription(() => {
-        // Our own `openStoredVault` fires this too; only an unlock that lands
-        // while this entry is idle means something new can be read.
-        if (entry.released || entry.resolving) return;
+        if (entry.released) return;
+        // Our own `openStoredVault` fires this too, so an edge that lands while
+        // a resolution is in flight cannot be acted on blind. Remember it and
+        // let `consumeRerunRequest` judge it once the run has settled and its
+        // outcome is known.
+        if (entry.resolving) {
+          entry.rerunRequested = true;
+          return;
+        }
         entry.batch?.dispose();
         entry.batch = null;
         void load(entry, accountId, portfolios);
@@ -192,15 +284,18 @@ async function load(
         releaseVaultOpened();
       };
     }
-    const vaults = await listVaults(entry.abort.signal);
-    if (entry.released) return;
+    // Pinned once: `release` swaps in a fresh controller for the NEXT
+    // resolution, and this run must keep cancelling on the one it started with.
+    const signal = entry.abort.signal;
+    const vaults = await listVaults(signal);
+    if (superseded()) return;
     const batch = await resolveVaultedPortfolioStores({
       accountId,
       portfolios,
       vaults,
-      signal: entry.abort.signal,
+      signal,
     });
-    if (entry.released) {
+    if (superseded()) {
       batch.dispose();
       return;
     }
@@ -211,10 +306,46 @@ async function load(
     // Fail closed to the stub. Nothing here is worth a console line: a locked
     // vault, a cancelled navigation and a failed chunk load all produce the
     // same, already-correct, screen.
-    if (!entry.released) publish(entry, NO_UNLOCKED_PORTFOLIOS);
+    if (!superseded()) publish(entry, NO_UNLOCKED_PORTFOLIOS);
   } finally {
-    entry.resolving = false;
+    if (entry.loadSeq === seq) {
+      entry.resolving = false;
+      consumeRerunRequest(entry, accountId, portfolios, isRerun);
+    }
   }
+}
+
+/**
+ * Decide what a vault-opened edge that arrived MID-RESOLUTION was about, now
+ * that the run it interrupted has settled.
+ *
+ * The signal itself is ambiguous: the resolver's own `openStoredVault` raises
+ * it, and so does the user unlocking through the access surface a moment later.
+ * The OUTCOME disambiguates it. This resolution can only have raised the edge
+ * if it opened a vault — and a run that opened one publishes a non-empty batch.
+ * So a run that opened nothing and still saw an edge is the real case (#1531
+ * F2): the vault was locked when the resolver looked, the user unlocked while
+ * documents were in flight, and the empty batch just published is already
+ * stale. Dropping that edge left the portfolio a stub until a reload.
+ *
+ * Bounded twice over. A re-run never queues another, so an edge chain is at
+ * most two resolutions whatever the keystore notifies; and the keystore only
+ * raises the edge on a REAL key transition, so the no-op re-open inside the
+ * second run is silent anyway.
+ */
+function consumeRerunRequest(
+  entry: RegistryEntry,
+  accountId: string,
+  portfolios: readonly PortfolioSummary[],
+  isRerun: boolean,
+): void {
+  if (!entry.rerunRequested) return;
+  entry.rerunRequested = false;
+  if (entry.released || isRerun) return;
+  if ((entry.batch?.unlocked.size ?? 0) > 0) return;
+  entry.batch?.dispose();
+  entry.batch = null;
+  void load(entry, accountId, portfolios, true);
 }
 
 function release(token: string): void {
@@ -223,6 +354,7 @@ function release(token: string): void {
   entry.refs -= 1;
   if (entry.refs > 0) return;
   entry.released = true;
+  entry.rerunRequested = false;
   entry.abort.abort();
   entry.releaseKeystoreListeners?.();
   entry.releaseKeystoreListeners = null;
@@ -234,8 +366,16 @@ function release(token: string): void {
   if (entry.listeners.size === 0) registry.delete(token);
 }
 
-/** Test-only reset; production has exactly one registry for the tab's lifetime. */
-export function resetVaultedPortfolioStoreRegistry(): void {
+/**
+ * Test-only reset; production has exactly one registry for the tab's lifetime.
+ *
+ * Returns how many entries it had to clear, which is the only way to observe
+ * the leak the unsubscribe re-check closes (#1531 F4): a dead entry holds no
+ * key material — `release` disposed the batch and dropped the keystore
+ * listeners — so its ONLY symptom is that it is still there.
+ */
+export function resetVaultedPortfolioStoreRegistry(): number {
+  const cleared = registry.size;
   for (const token of [...registry.keys()]) {
     const entry = registry.get(token)!;
     entry.released = true;
@@ -244,4 +384,5 @@ export function resetVaultedPortfolioStoreRegistry(): void {
     entry.batch?.dispose();
     registry.delete(token);
   }
+  return cleared;
 }

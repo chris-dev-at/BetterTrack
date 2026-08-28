@@ -116,14 +116,18 @@ const HOME_FIGURE_KEYS = [
  * React Query dedupe/cancel per portfolio instead of per batch.
  *
  * The read goes through the portfolio STORE seam rather than `portfolioApi`
- * directly (PARANOID-E6 #1416), so a future resolver-backed store can serve a
+ * directly (PARANOID-E6 #1416), so the resolver-backed store can serve a
  * vaulted portfolio from its decrypted document set without this call site
- * changing. Until that store exists, a vaulted stub stays DISABLED: the server
- * cannot read a sealed vault, so the request could only ever 403, and asking is
- * itself a money read against a portfolio the user sealed. `homePortfolioRead`
- * classifies a vaulted stub from the stub alone and never consults this result,
- * so skipping the request costs the rollup nothing — the member still lands in
- * the composition as `locked` and still carries its qualifier.
+ * changing.
+ *
+ * A vaulted member is DISABLED here whatever its custody: the server cannot
+ * read a sealed vault, so the request could only ever 403, and asking is itself
+ * a money read against a portfolio the user sealed. What an unlocked one is
+ * served from instead is `useUnlockedVaultReads` below, under a key of its own;
+ * `homePortfolioRead` merges the two and never consults this result for a
+ * vaulted member, so skipping the request costs the rollup nothing — a locked
+ * member still lands in the composition as `locked`, still carrying its
+ * qualifier.
  */
 export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
   const store = usePortfolioStore();

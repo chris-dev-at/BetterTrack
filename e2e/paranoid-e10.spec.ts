@@ -1073,15 +1073,39 @@ test.describe('PARANOID E10 per-vault gate', () => {
         // it reads the VAULT. A single money request for this portfolio would
         // mean the resolver-backed store was bypassed — and the server would
         // refuse it anyway, so the number on screen would be a stale cache hit.
+        //
+        // MATCHED ON THE WHOLE URL, not the `/portfolios/:id` prefix. Most of
+        // this portfolio's money lives on routes that name it in a SEARCH
+        // PARAM or under another prefix entirely — `/cash/summary?portfolioId=`,
+        // `/cash/trends?portfolioId=`, `/standing-orders?portfolioId=`,
+        // `/analytics/portfolios/:id/series` — and a prefix test sees none of
+        // them, so the old listener would have stayed empty on a build that
+        // read every one of them from the server.
+        //
+        // Account-wide market intel (`/assets/portfolio/dividend-*`,
+        // `/assets/portfolio/news-digest`) is deliberately NOT matched: those
+        // routes name no portfolio and answer from the caller's SERVER-visible
+        // holdings, which for a sealed portfolio is nothing. Asserting on them
+        // would fail a correct build.
+        //
+        // BLIND SPOT, stated rather than solved: this watches HTTP only. A
+        // money read tunnelled over the realtime WebSocket would not appear
+        // here; catching that needs a frame-level assertion the runner does not
+        // give us cheaply, and §4.5 pushes invalidations, not figures.
         const serverMoneyReads: string[] = [];
         page.on('request', (request) => {
-          const path = new URL(request.url()).pathname;
-          if (
-            path.startsWith(`/api/v1/portfolios/${portfolioId}`) &&
-            !/\/vault\//u.test(path) &&
-            !path.endsWith('/vault-revision')
-          ) {
-            serverMoneyReads.push(`${request.method()} ${path}`);
+          const url = new URL(request.url());
+          if (!url.pathname.startsWith('/api/v1/')) return;
+          // Vault routes are the POINT, and all three shapes legitimately name
+          // this portfolio: the `/vaults` ciphertext reader addresses the
+          // per-portfolio document by `docId === portfolio.id`, the revision
+          // poll and the §10 move endpoints hang off the portfolio itself.
+          if (/^\/api\/v1\/vaults?(\/|$)/u.test(url.pathname)) return;
+          if (/\/vault(-revision)?(\/|$)/u.test(url.pathname)) return;
+          const namesThisPortfolio =
+            url.pathname.includes(portfolioId) || url.search.includes(portfolioId);
+          if (namesThisPortfolio) {
+            serverMoneyReads.push(`${request.method()} ${url.pathname}${url.search}`);
           }
         });
 
