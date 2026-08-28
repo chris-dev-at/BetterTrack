@@ -337,6 +337,7 @@ export async function restorePortfolioVaultGraph(input: {
         resultMessage: entity.data.resultMessage,
         // Absent in vault documents written before the column existed.
         candidates: entity.data.candidates ?? null,
+        ruleTagIds: entity.data.ruleTagIds ?? null,
       })),
     );
   }

@@ -1552,11 +1552,21 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // has its own tables; every APPLY write routes through the portfolio/tax
   // services above (trades, dividends, cash) — never SQL of its own. Instrument
   // resolution rides the local-first search catalog (§6.2).
+  // Hoisted above its cash-service block below: the import staging path is now
+  // the FIRST consumer of the caller's cash rules (#964).
+  const cashRuleRepo = createCashRuleRepository(db);
+
   const imports = createImportService({
     importRepo: createImportRepository(db),
     portfolioRepo,
     transactionRepo,
     cashSourceRepo,
+    // Cash-rule pre-tagging at staging (#964): the rules are read through the
+    // repository that owns their evaluation ORDER, and the previewed tags are
+    // written back through the same ownership-scoped attach the auto-tagging
+    // path uses — no SQL of its own, per this service's boundary.
+    cashRuleRepo,
+    cashTagRepo,
     search,
     portfolio,
     tax,
@@ -1609,7 +1619,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // (portfolio, tag, month), rules per user. `cashAutoTag` is what stamps a
   // freshly-booked movement with its app-owned system tag — see `cashAutoTag.ts`
   // for the kind → tag table and what an edited trade does to a manual tag.
-  const cashRuleRepo = createCashRuleRepository(db);
   const cashBudgetRepo = createCashBudgetRepository(db);
   const cashSummaryRepo = createCashSummaryRepository(db);
   const cashTags = createCashTagService({ tags: cashTagRepo, rules: cashRuleRepo });
