@@ -181,9 +181,16 @@ export const CASH_DECIMALS = 2;
  * float64 grid is coarser than ~€0.001, too coarse to tell an intended decimal
  * from genuine sub-cent residue — so quantization degrades to the identity:
  * the amount passes through unchanged rather than being nudged onto a cent it
- * may never have meant. Every admissible money input sits far below this bound
- * (`MAX_CASH_AMOUNT_EUR` = 1e12), and vault-report figures up to the 1e15 row
- * bound (#1514) pass through exact instead of gaining fabricated cents.
+ * may never have meant. Every admissible money *input* sits far below this
+ * bound (`MAX_CASH_AMOUNT_EUR` = 1e12), and vault-report figures up to the
+ * 1e15 row bound (#1514) pass through exact instead of gaining fabricated
+ * cents.
+ *
+ * The degradation applies to accumulations too, not only to single inputs:
+ * `floorCents` is also called on summed balances and tax pools, so enough
+ * near-ceiling rows can push a *total* past `2^42` and quantization becomes
+ * the identity there. That is the intended behavior at that magnitude — the
+ * float64 spacing is already ~€0.001, so there is no cent left to floor to.
  */
 export const FLOOR_CENTS_EXACT_LIMIT_EUR = 2 ** 42;
 

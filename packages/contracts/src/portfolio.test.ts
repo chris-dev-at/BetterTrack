@@ -11,8 +11,10 @@ import {
   cashMovementKindSchema,
   cashMovementsQuerySchema,
   cashPreviewRequestSchema,
+  createCustomAssetRequestSchema,
   createPortfolioRequestSchema,
   decodeTransactionExecutedAtCursor,
+  initialPurchaseSchema,
   encodeTransactionExecutedAtCursor,
   importSourceTag,
   portfolioKindSchema,
@@ -26,6 +28,7 @@ import {
   transactionListQuerySchema,
   transactionListResponseSchema,
   updatePortfolioRequestSchema,
+  updateTransactionRequestSchema,
   vaultTaxYearReportResponseSchema,
 } from './portfolio';
 
@@ -138,6 +141,59 @@ describe('transaction input caps (#1523)', () => {
         transactions: [baseTx, { ...baseTx, quantity: MAX_TRANSACTION_QUANTITY }],
       }).success,
     ).toBe(false);
+  });
+
+  it('caps the edit path too, so a legal buy cannot be patched past the ceilings', () => {
+    // Without these, POST a normal buy then PATCH {quantity: Infinity}: the row
+    // stores as `Infinity` on PG 14+ and every later floorCents on the portfolio
+    // throws — refused at entry beats degrading the member afterwards.
+    expect(updateTransactionRequestSchema.safeParse({ quantity: 12.5 }).success).toBe(true);
+    expect(updateTransactionRequestSchema.safeParse({ price: 100, fee: 1.5 }).success).toBe(true);
+
+    const atCap = updateTransactionRequestSchema.safeParse({
+      quantity: MAX_TRANSACTION_QUANTITY,
+    });
+    expect(atCap.success).toBe(false);
+    if (!atCap.success) {
+      expect(atCap.error.issues[0]?.message).toBe(
+        `Quantity must be below ${MAX_TRANSACTION_QUANTITY}.`,
+      );
+    }
+    expect(updateTransactionRequestSchema.safeParse({ quantity: 1e300 }).success).toBe(false);
+    expect(updateTransactionRequestSchema.safeParse({ quantity: Infinity }).success).toBe(false);
+    expect(updateTransactionRequestSchema.safeParse({ price: MAX_TRANSACTION_PRICE }).success).toBe(
+      false,
+    );
+    expect(updateTransactionRequestSchema.safeParse({ price: Infinity }).success).toBe(false);
+    expect(updateTransactionRequestSchema.safeParse({ fee: MAX_TRANSACTION_PRICE }).success).toBe(
+      false,
+    );
+    expect(updateTransactionRequestSchema.safeParse({ fee: Infinity }).success).toBe(false);
+  });
+
+  it("caps a custom asset's initial purchase, which is recorded as a real BUY", () => {
+    const asset = {
+      name: 'Holiday flat',
+      category: 'other',
+      currency: 'EUR',
+    };
+    const purchase = { quantity: 1, price: 250000, executedAt: '2026-03-01T10:00:00.000Z' };
+    expect(
+      createCustomAssetRequestSchema.safeParse({ ...asset, initialPurchase: purchase }).success,
+    ).toBe(true);
+    expect(
+      createCustomAssetRequestSchema.safeParse({
+        ...asset,
+        initialPurchase: { ...purchase, quantity: MAX_TRANSACTION_QUANTITY },
+      }).success,
+    ).toBe(false);
+    expect(
+      initialPurchaseSchema.safeParse({ ...purchase, price: MAX_TRANSACTION_PRICE }).success,
+    ).toBe(false);
+    expect(initialPurchaseSchema.safeParse({ ...purchase, fee: Infinity }).success).toBe(false);
+    expect(initialPurchaseSchema.safeParse({ ...purchase, quantity: Infinity }).success).toBe(
+      false,
+    );
   });
 });
 
