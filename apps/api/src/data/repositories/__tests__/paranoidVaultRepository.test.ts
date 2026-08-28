@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 
 import { VAULT_RETIRED_SERVER_MIN_RETENTION_MS } from '@bettertrack/contracts';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '../../db';
 import {
@@ -12,7 +12,7 @@ import {
   paranoidVaults,
   users,
 } from '../../schema';
-import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
+import { createTestApp, type SeededUser, type TestHarness } from '../../../testing/createTestApp';
 import {
   createParanoidVaultRepository,
   type ParanoidVaultRepository,
@@ -488,6 +488,45 @@ describe('normal-mode enable staging access', () => {
         .from(paranoidEnableTransitions)
         .where(eq(paranoidEnableTransitions.userId, userId)),
     ).toEqual([]);
+  });
+
+  it('counts examined rows when a selected staging window is refreshed before expiry', async () => {
+    const stagedUsers: SeededUser[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const stagedUser = await harness.seedUser({
+        email: `staging-race-${index}@bt.test`,
+        username: `staging_race_${index}`,
+      });
+      stagedUsers.push(stagedUser);
+      await repo.beginEnableStaging({
+        userId: stagedUser.id,
+        now: T0,
+        expiresAt: new Date(T0.getTime() + index + 1),
+      });
+    }
+    const cutoff = new Date(T0.getTime() + 10);
+    const refreshedUntil = new Date(T0.getTime() + DAY_MS);
+    const expireSelected = repo.expireEnableStaging.bind(repo);
+    const expireSpy = vi.spyOn(repo, 'expireEnableStaging');
+    expireSpy.mockImplementationOnce(async (selectedUserId, now) => {
+      expect(selectedUserId).toBe(stagedUsers[0]!.id);
+      await db
+        .update(paranoidEnableTransitions)
+        .set({ expiresAt: refreshedUntil, updatedAt: now })
+        .where(eq(paranoidEnableTransitions.userId, selectedUserId));
+      return expireSelected(selectedUserId, now);
+    });
+
+    expect(await repo.cleanupExpiredEnableStaging(cutoff, 2)).toBe(2);
+    expect(await repo.cleanupExpiredEnableStaging(cutoff, 2)).toBe(1);
+
+    expect(expireSpy).toHaveBeenCalledTimes(3);
+    expect(
+      await db
+        .select()
+        .from(paranoidEnableTransitions)
+        .orderBy(paranoidEnableTransitions.expiresAt),
+    ).toMatchObject([{ userId: stagedUsers[0]!.id, expiresAt: refreshedUntil }]);
   });
 });
 
