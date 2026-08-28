@@ -12,6 +12,7 @@ import {
 } from '../vault/engine/composition';
 import { SCOPE_ALL, SCOPE_SELECTED, type WidgetScope } from './config';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
+import { useVaultedPortfolioStores } from '../vault/useVaultedPortfolioStores';
 
 /**
  * Shared data layer for the Home widget board.
@@ -136,20 +137,79 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
   });
 }
 
+/**
+ * The client-served half of the roll-up (PARANOID-E6 residual, #1416).
+ *
+ * One query per vaulted portfolio this device can actually open, under a key of
+ * its own — deliberately NOT `['portfolio', id]`. That key belongs to the
+ * server response, is shared with the portfolio page, and is what
+ * `removePlaintextQueries` sweeps on lock; parking a decrypted result in it
+ * would make the two indistinguishable in exactly the situation where telling
+ * them apart is the whole point.
+ *
+ * `snapshotId` rides along because the composition boundary refuses any vaulted
+ * value that cannot name the authenticated document set behind it.
+ */
+export function useUnlockedVaultReads(
+  portfolios: readonly PortfolioSummary[],
+): Map<string, HomePortfolioRead> {
+  const { unlocked } = useVaultedPortfolioStores(portfolios);
+  const openable = portfolios.filter((portfolio) => unlocked.has(portfolio.id));
+  const results = useQueries({
+    queries: openable.map((portfolio) => {
+      const access = unlocked.get(portfolio.id)!;
+      return {
+        queryKey: ['portfolio', portfolio.id, 'vaulted-unlocked', access.vaultId],
+        queryFn: ({ signal }: { signal: AbortSignal }) => access.readTotals(signal),
+        staleTime: PORTFOLIO_STALE_MS,
+      };
+    }),
+  });
+  return new Map(
+    openable.map((portfolio, index): [string, HomePortfolioRead] => {
+      const access = unlocked.get(portfolio.id)!;
+      const result = results[index];
+      if (result === undefined || result.isError) return [portfolio.id, { state: 'error' }];
+      if (result.data === undefined) return [portfolio.id, { state: 'loading' }];
+      return [
+        portfolio.id,
+        {
+          state: 'success',
+          provenance: {
+            kind: 'vaulted-unlocked',
+            vaultId: access.vaultId,
+            snapshotId: result.data.snapshotId,
+            isCurrent: () => access.isCurrent(),
+          },
+          totals: result.data.totals,
+        },
+      ];
+    }),
+  );
+}
+
 /** Roll the per-portfolio summaries up into the figures every headline widget needs. */
 export function useRollup(portfolios: readonly PortfolioSummary[]): Rollup {
   const results = usePortfolioSummaries(portfolios);
+  const unlockedReads = useUnlockedVaultReads(portfolios);
   return composeHomeRollup(
     portfolios,
-    results.map((result, index) => homePortfolioRead(portfolios[index]!, result)),
+    results.map((result, index) =>
+      homePortfolioRead(portfolios[index]!, result, unlockedReads.get(portfolios[index]!.id)),
+    ),
   );
 }
 
 /**
  * A vaulted stub cannot trust this query's cached `PortfolioResponse`: the key
  * may still hold its pre-move plain response while the server refusal is in
- * flight. Until the E10 per-vault store/CAS owner can brand an authenticated
- * unlocked result, production Home therefore classifies the stub as locked.
+ * flight. So a vaulted portfolio's readability is decided entirely by
+ * `clientRead` — the resolver-backed result, or nothing.
+ *
+ * That third argument is the ONLY way a vaulted member becomes readable, and it
+ * arrives from a store that issues no server money request. A LOCKED vault
+ * supplies none, and lands on `error` exactly as it always has: no request was
+ * made for it, and none could have succeeded.
  */
 export function homePortfolioRead(
   portfolio: PortfolioSummary,
@@ -157,8 +217,12 @@ export function homePortfolioRead(
     isError: boolean;
     data?: { totals: PortfolioTotals };
   },
+  clientRead?: HomePortfolioRead,
 ): HomePortfolioRead {
-  if (portfolio.vaultId != null) return { state: 'error' };
+  if (portfolio.vaultId != null) return clientRead ?? { state: 'error' };
+  // A plain portfolio is the server's to answer. A client read handed in for
+  // one would be a resolution against a portfolio that names no vault, and
+  // trusting it here would let a mismatched map entry overwrite a real total.
   if (result.isError) return { state: 'error' };
   if (result.data !== undefined) {
     return { state: 'success', provenance: { kind: 'plain' }, totals: result.data.totals };

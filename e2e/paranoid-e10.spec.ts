@@ -929,17 +929,18 @@ test.describe('PARANOID E10 per-vault gate', () => {
    *  - Both destructive commits carry the §15 step-up in the body; the arc
    *    types the real account password into the product's own field.
    *
-   * On what "the data survived" means here (#1528 review note): the arc does
-   * NOT open the vaulted portfolio and look at the buy, because no unlocked
-   * in-place VIEW surface exists in this build — `PortfolioWorkspace` renders
-   * the locked stub for every vaulted portfolio regardless of endpoint state
-   * (the E6 store-resolver seam is not yet wired into a page). Client
-   * readability of the vaulted bytes is still proven, just indirectly: move-in
-   * hard-deletes the server rows, so the same-UUID `quantity`/`price` fields
-   * asserted after move-out can only have come from the encrypted document,
-   * decrypted and re-authored by the client engine. When the unlocked view
-   * ships, add the direct "open it, see the buy" step between unlock and
-   * move-out.
+   * On what "the data survived" means here: BOTH ways, since the E6 store
+   * resolver was wired into the workspace (#1416).
+   *
+   *  - DIRECTLY: with the vault unlocked, the portfolio renders in place and
+   *    the SAP.DE buy is on screen with its quantity. The server has already
+   *    hard-deleted those rows and refuses to serve them (asserted above), so
+   *    every figure in that table was decrypted and derived on this device.
+   *    The step also runs A6's request listener in reverse — the client store
+   *    must not so much as ASK the server for the portfolio's money.
+   *  - INDIRECTLY: move-in hard-deletes the server rows, so the same-UUID
+   *    `quantity`/`price` fields asserted after move-out can only have come
+   *    from the encrypted document, re-authored by the client engine.
    */
   test('[E10-A10] executable move-in and move-out', async ({ context }, testInfo) => {
     skipOnPhone(testInfo);
@@ -1068,10 +1069,43 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await access.getByRole('button', { name: 'Continue', exact: true }).click();
         await expect(access).toBeHidden({ timeout: 60_000 });
 
+        // A6's listener, inverted: the unlocked view is only worth anything if
+        // it reads the VAULT. A single money request for this portfolio would
+        // mean the resolver-backed store was bypassed — and the server would
+        // refuse it anyway, so the number on screen would be a stale cache hit.
+        const serverMoneyReads: string[] = [];
+        page.on('request', (request) => {
+          const path = new URL(request.url()).pathname;
+          if (
+            path.startsWith(`/api/v1/portfolios/${portfolioId}`) &&
+            !/\/vault\//u.test(path) &&
+            !path.endsWith('/vault-revision')
+          ) {
+            serverMoneyReads.push(`${request.method()} ${path}`);
+          }
+        });
+
         // Leave the popup its own way (SPA back to the workspace behind it).
         await page.getByRole('button', { name: 'Close', exact: true }).click();
-        await expect(stub).toBeVisible({ timeout: 30_000 });
-        await stub.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+
+        // THE UNLOCKED IN-PLACE VIEW (#1416). The stub gives way to the real
+        // portfolio, served by the client engine out of the encrypted document.
+        await expect(stub).toBeHidden({ timeout: 60_000 });
+        const opened = page.getByTestId('unlocked-vault-portfolio');
+        await expect(opened).toBeVisible({ timeout: 60_000 });
+        const holdings = page.getByRole('region', { name: 'Holdings' });
+        const sapRow = holdings.getByRole('row').filter({ hasText: 'SAP.DE' });
+        await expect(sapRow).toHaveCount(1, { timeout: 60_000 });
+        // The buy itself: two shares, from bytes the server cannot read.
+        await expect(sapRow.getByRole('cell').nth(2)).toHaveText(/^2([.,]0+)?$/);
+
+        await page.waitForTimeout(2_000);
+        expect(serverMoneyReads, 'the unlocked view must read the vault, not the server').toEqual(
+          [],
+        );
+
+        // §10 stays reachable from the unlocked view, exactly as from the stub.
+        await opened.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
         const wizard = page.getByRole('region', { name: 'Move portfolio out of the vault' });
         await expect(wizard).toBeVisible({ timeout: 30_000 });
         await expect(

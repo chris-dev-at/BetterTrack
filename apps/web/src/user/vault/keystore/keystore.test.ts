@@ -264,6 +264,41 @@ describe('endpoint keystore custody and verified persistence', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * The opposite edge (#1416). Session-end fires when an unlock BEGINS, so a
+   * surface that only listened there would tear its session down and never
+   * learn that the vault it needs has since been opened.
+   */
+  it('notifies and detaches vault-opened listeners, and survives one that throws', async () => {
+    const core = keystore(new MemoryEndpointStorage());
+    const opened = vi.fn();
+    const throwing = vi.fn(() => {
+      throw new Error('a broken surface must not fail a completed unlock');
+    });
+    core.subscribeToVaultOpened(throwing);
+    const unsubscribe = core.subscribeToVaultOpened(opened);
+
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+
+    expect(opened).toHaveBeenCalled();
+    expect(throwing).toHaveBeenCalled();
+    // The unlock itself completed regardless of the throwing listener.
+    expect(await core.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+
+    const beforeUnsubscribe = opened.mock.calls.length;
+    unsubscribe();
+    core.endSession();
+    await core.unlock(PASSWORD);
+    await core.openStoredVault(VAULT_1, verifiedHeaderFetch(VAULT_1));
+    expect(opened).toHaveBeenCalledTimes(beforeUnsubscribe);
+    expect(throwing.mock.calls.length).toBeGreaterThan(beforeUnsubscribe);
+  });
+
   it('defaults to wrapped custody and one password unlocks all phrases on one endpoint only', async () => {
     const firstStorage = new MemoryEndpointStorage();
     const secondStorage = new MemoryEndpointStorage();

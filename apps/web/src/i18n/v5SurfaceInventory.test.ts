@@ -139,6 +139,7 @@ user/portfolio/ImportPage.tsx
 user/portfolio/LockedPortfolioStub.tsx
 user/portfolio/MirrorchainPanel.tsx
 user/portfolio/ParanoidTaxReport.tsx
+user/portfolio/PortfolioMoveOutAction.tsx
 user/portfolio/PortfolioPage.tsx
 user/portfolio/PortfolioSection.tsx
 user/portfolio/PortfolioSettingsPage.tsx
@@ -151,6 +152,7 @@ user/portfolio/SourceBadge.tsx
 user/portfolio/TaxReportPage.tsx
 user/portfolio/TaxReportPrintPage.tsx
 user/portfolio/TransferDialog.tsx
+user/portfolio/UnlockedVaultPortfolio.tsx
 user/portfolio/ValuePointEditor.tsx
 user/portfolio/analytics/AiInsightsPanel.tsx
 user/portfolio/analytics/AnalyticsPage.tsx
