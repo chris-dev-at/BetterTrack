@@ -2508,9 +2508,7 @@ describe('portfolio vault lifecycle read and capture facts (E6 residual #1525)',
     // Deleting the batches empties the count AND moves the digest — the pair
     // is one snapshot, so a client can never see a zero count for a graph
     // whose digest still covers batch rows.
-    await h.db
-      .delete(importRows)
-      .where(eq(importRows.batchId, TEST_VECTOR.targetBatchId));
+    await h.db.delete(importRows).where(eq(importRows.batchId, TEST_VECTOR.targetBatchId));
     await h.db
       .delete(importBatches)
       .where(eq(importBatches.portfolioId, TEST_VECTOR.targetPortfolioId));
