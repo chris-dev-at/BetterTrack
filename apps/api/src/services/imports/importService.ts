@@ -480,7 +480,47 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * NEVER FAILS THE ROW. The money is booked by the time this runs, and the
    * batch is already claimed, so throwing would report a `failed` row whose
    * cash is nonetheless in the ledger — a worse lie than a missing label. Same
-   * rule `stampMovementTags` follows for the same reason; the miss is logged.
+   * rule `stampMovementTags` follows, for the same reason.
+   *
+   * ── THE TWO CELLS WHERE PREVIEW AND BOOKING STILL DIVERGE ─────────────────
+   *
+   * "Every previewed tag lands" holds everywhere except here, and both cells
+   * are accepted trade-offs rather than oversights:
+   *
+   *  1. THE TAG ITSELF IS DELETED between preview and apply. The id no longer
+   *     names anything, the INSERT's `cash_tags` join matches nothing, and the
+   *     movement books WITHOUT the label the preview showed. The row still
+   *     reports `applied` — see NEVER FAILS THE ROW above. Nothing else can be
+   *     done: re-creating a tag the user deleted would be worse than omitting
+   *     it. Pinned by `importRuleTagging.test.ts`.
+   *
+   *  2. A RULE IS ADDED between preview and apply. The book-time stamp still
+   *     runs on this insert and evaluates the rules as they are NOW, so the
+   *     movement ends up with the previewed set PLUS whatever the new rule
+   *     assigns. If the new rule outranks the previewed one by priority, that
+   *     is a UNION across two rules — strictly beyond the first-match-wins
+   *     doctrine `cashRuleEngine` documents, and the sharpest form of this
+   *     cell. Accepted: tagging is additive-never-subtractive subsystem-wide,
+   *     every previewed tag still lands, and suppressing book time for import
+   *     bookings would mean punching a bypass through the very seam
+   *     `cashSystemTagStamp` exists to prevent.
+   *
+   * ── WHY A MISS IS SILENT ──────────────────────────────────────────────────
+   *
+   * `attachTagWithinPortfolio` reports a miss by RETURNING `false`, and the
+   * return is deliberately discarded. Under `ON CONFLICT DO NOTHING …
+   * RETURNING`, `false` means "no row was inserted" — which covers the miss
+   * (cell 1 above, or a guard refusal) AND the entirely normal case that the
+   * book-time stamp already wrote this exact pair moments earlier. In the
+   * ordinary run, with rules unchanged, `false` is what EVERY call returns.
+   *
+   * Distinguishing the two would take a `SELECT` per tag per row on the common
+   * path — a 5000-row statement under a three-tag rule is 15 000 extra
+   * round-trips — to emit a log line that is empty essentially always. Not
+   * worth it: the one case worth reporting is already visible to the user (the
+   * movement they just imported lacks the label the preview showed) and is
+   * pinned by a test. A thrown error is a different thing entirely and IS
+   * logged, below.
    */
   async function replayRuleTags(
     portfolioId: string,
@@ -490,6 +530,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     if (!tagIds || tagIds.length === 0) return;
     for (const tagId of tagIds) {
       try {
+        // Return value intentionally unused — see WHY A MISS IS SILENT above.
         await cashTagRepo.attachTagWithinPortfolio(portfolioId, movementId, tagId);
       } catch (err) {
         deps.logger?.warn?.(

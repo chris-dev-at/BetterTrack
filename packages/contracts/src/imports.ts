@@ -157,6 +157,12 @@ export type ImportRowCandidate = z.infer<typeof importRowCandidateSchema>;
  * edited or deleted between preview and apply can never make a confirmed tag
  * silently vanish. Ids only, no names: the client already holds the tag list,
  * and a 5000-row preview must not carry 5000 copies of the same labels.
+ *
+ * The ONE exception is the TAG ITSELF being deleted in that window: the id then
+ * names nothing, so the movement books without it — silently, and the row still
+ * reports `applied`, because failing a row whose cash is already in the ledger
+ * would be the worse lie. `replayRuleTags` (API `importService`) states that
+ * cell and the added-rule one in full.
  */
 export const importRowSchema = z
   .object({
