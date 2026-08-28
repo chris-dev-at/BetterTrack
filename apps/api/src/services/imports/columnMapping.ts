@@ -21,9 +21,26 @@
  * the same field within {@link CONTEST_EPSILON}, both are flagged
  * `needsReview` and each records its contender. Below the confidence floor a
  * header lands in `unmapped`. Pure functions, no I/O.
+ *
+ * A THIRD evidence source is optional and strictly last: {@link mapColumnsWithAi}
+ * shows a HEAVY-tier model the headers the two sources above could not name
+ * (#964, `headerMappingAi.ts`). It is opt-in through an injected seam, it costs
+ * at most one call per file, and what it returns is a PROPOSAL — flagged,
+ * provenance-marked, and never a `fieldWinner` — so the deterministic answer
+ * above is what the importer actually reads until a human says otherwise. With
+ * no seam configured this module is exactly what it was: pure, synchronous, and
+ * model-free.
  */
 
 import { parseDay } from './csv';
+import {
+  buildHeaderMappingPrompt,
+  buildHeaderMappingSystemPrompt,
+  MAX_AI_HEADERS,
+  parseHeaderMappingReply,
+  type AiHeaderCandidate,
+  type ImportHeaderAiSeam,
+} from './headerMappingAi';
 import {
   ISO_CURRENCIES,
   MAX_CELL_CHARS,
@@ -71,6 +88,24 @@ export interface ColumnMapping {
   alternativeOf?: { header: string; confidence: number };
   /** Set on a contested WINNER: the close runner-up. */
   alternative?: { header: string; confidence: number };
+  /**
+   * Provenance. ABSENT means the entry came from the deterministic pipeline —
+   * the alias dictionary and/or the value-shape evidence — which is every entry
+   * unless an AI fallback was configured AND ran.
+   *
+   * `'ai'` marks a PROPOSAL: a suggestion for a header the deterministic
+   * pipeline could not name at all. It always carries `needsReview: true`, it
+   * always sits at {@link AI_PROPOSAL_CONFIDENCE}, and it is never a
+   * {@link ColumnMapResult.fieldWinners} entry — so the wizard renders it as a
+   * suggestion the user confirms, and nothing reads a VALUE out of the column
+   * until they do.
+   *
+   * Optional and additive on purpose (the `candidates` precedent in
+   * `@bettertrack/contracts`): every existing consumer of a deterministic result
+   * is byte-for-byte unaffected, and a consumer that wants to badge provenance
+   * opts in with `mapping.source === 'ai'`.
+   */
+  source?: typeof AI_PROPOSAL_SOURCE;
 }
 
 export interface FieldWinner {
@@ -81,13 +116,25 @@ export interface FieldWinner {
 }
 
 export interface ColumnMapResult {
-  /** One entry per ASSIGNED header, in input order. */
+  /**
+   * One entry per ASSIGNED header, in input order — including AI PROPOSALS when
+   * the fallback ran, which are distinguishable by {@link ColumnMapping.source}.
+   */
   mappings: ColumnMapping[];
-  /** Headers with no confident assignment — never a wrong confident guess. */
+  /**
+   * Headers with no assignment at all — never a wrong confident guess. Together
+   * with `mappings` this partitions the input headers, so a caller counting
+   * either bucket still accounts for every column.
+   */
   unmapped: string[];
   /**
    * The winning column per field (highest confidence, leftmost on ties),
    * derived so consumers don't re-implement the contest rules.
+   *
+   * DETERMINISTIC ONLY. An AI proposal never lands here, however unclaimed the
+   * field is: `fieldWinners` is the only thing {@link extractRowFields} reads,
+   * so keeping it model-free is what makes "a proposal is confirmed by a human"
+   * a structural property rather than a promise in a doc comment.
    */
   fieldWinners: Partial<Record<MappableField, FieldWinner>>;
 }
@@ -661,6 +708,25 @@ export function mapColumns(
   sampleRows: string[][],
   options: MapColumnsOptions = {},
 ): ColumnMapResult {
+  return mapColumnsInternal(headers, sampleRows, options).result;
+}
+
+/**
+ * {@link mapColumns} plus the COLUMN INDEXES it assigned.
+ *
+ * The public result reports unmapped headers by NAME (`unmapped: string[]`), and
+ * a name cannot be turned back into a column: two columns may share a header
+ * while only one of them maps (identical names, different cell shapes), so any
+ * reconstruction is a guess. The AI fallback has to address columns by index —
+ * the model's reply is attributed by index — so it reads the indexes from here
+ * rather than re-deriving them. Carrying index+header context on `unmapped`
+ * itself is #1503 and is deliberately NOT done here.
+ */
+function mapColumnsInternal(
+  headers: string[],
+  sampleRows: string[][],
+  options: MapColumnsOptions = {},
+): { result: ColumnMapResult; assignedIndexes: Set<number> } {
   const cappedRows = sampleRows.slice(0, 200);
   if (headers.length === 0 && cappedRows.some((row) => row.some((c) => c.trim() !== ''))) {
     throw new UnmappableTableError(
@@ -834,7 +900,7 @@ export function mapColumns(
     };
   }
 
-  return { mappings, unmapped, fieldWinners };
+  return { result: { mappings, unmapped, fieldWinners }, assignedIndexes };
 }
 
 function round(value: number): number {
@@ -849,7 +915,17 @@ function round(value: number): number {
  * across, which a caller re-deriving them per column would get wrong.
  */
 export function mapTableColumns(table: SniffedTable): ColumnMapResult {
-  return mapColumns(table.headers, table.rows, {
+  return mapColumns(table.headers, table.rows, tableMapOptions(table));
+}
+
+/**
+ * What a SNIFFED table tells the mapper. One definition, because
+ * {@link mapTableColumns} and {@link understandTableWithAi} must not derive it
+ * separately — a second copy is how the AI path would quietly stop honouring the
+ * date/number ambiguity the sniff found.
+ */
+function tableMapOptions(table: SniffedTable): MapColumnsOptions {
+  return {
     numberLocale: table.numberLocale,
     dateLocaleAmbiguous: table.dateLocaleAmbiguous,
     // The sniff already located these; re-deriving them here would be a second
@@ -857,7 +933,7 @@ export function mapTableColumns(table: SniffedTable): ColumnMapResult {
     ambiguousNumberColumns: table.issues
       .filter((issue) => issue.kind === 'ambiguous-grouped-number' && issue.column >= 0)
       .map((issue) => issue.column),
-  });
+  };
 }
 
 /** A file understood end to end: what it is, and what each of its columns means. */
@@ -883,4 +959,207 @@ export function understandTable(buffer: Uint8Array, filename: string): Understoo
   const table = sniffTable(buffer, filename, { headerVocabulary: countKnownHeaderAliases });
   if (!table) return null;
   return { table, mapping: mapTableColumns(table) };
+}
+
+// --- AI header fallback ------------------------------------------------------
+
+/**
+ * The AI fallback for headers the deterministic pipeline could not name (#964).
+ *
+ * The ordering is the product rule, not an optimisation: the dictionary and the
+ * shape evidence run EXACTLY as they do today, and the model is shown only what
+ * is left over — so a file the dictionary maps completely costs zero model
+ * calls, and no deterministic answer can be displaced by one.
+ *
+ * What comes back is a PROPOSAL, and three properties enforce that rather than
+ * describe it:
+ *  - it lands at {@link AI_PROPOSAL_CONFIDENCE} with `needsReview: true`
+ *    unconditionally — a model verdict is never the reason a column stops being
+ *    reviewed;
+ *  - it carries {@link ColumnMapping.source} `'ai'`, so the wizard can render it
+ *    as a suggestion instead of a decision;
+ *  - it is never a {@link ColumnMapResult.fieldWinners} entry, so
+ *    {@link extractRowFields} — the function that decides which column a VALUE
+ *    is read from — cannot be steered by the model at all. Confirming a proposal
+ *    is a user action, and until it happens the file behaves precisely as it
+ *    does today.
+ */
+export const AI_PROPOSAL_SOURCE = 'ai';
+
+/**
+ * The confidence an AI proposal is pinned to: {@link CONFIDENCE_FLOOR}, the
+ * weakest thing this module will still call an assignment. It is a constant and
+ * not a range — there is no evidence here to grade, only an opinion — and it
+ * can never rise above the review bar, because it is never read as anything but
+ * this literal.
+ */
+export const AI_PROPOSAL_CONFIDENCE = CONFIDENCE_FLOOR;
+
+/** Every proposal's `reason`, so a reviewer can never mistake one for evidence. */
+const AI_PROPOSAL_REASON = 'ai proposal (heavy tier) — a suggestion, not a mapping';
+
+export interface HeaderMappingAiContext {
+  /**
+   * The bound HEAVY-tier seam (`bindHeavyTierAi`). Omitted ⇒ the fallback is
+   * disabled and the result is exactly {@link mapColumns}' — unmapped headers
+   * stay unmapped, which is today's behaviour and the safe default.
+   */
+  ai?: ImportHeaderAiSeam;
+}
+
+/**
+ * Merge the model's proposals into a deterministic result. Nothing already in
+ * `result` is modified: proposals only ever occupy indexes the deterministic
+ * pass left unassigned, `fieldWinners` is passed through untouched, and the
+ * existing contested-claim vocabulary (`alternativeOf` / `alternative`) is
+ * reused so a same-field collision is SHOWN rather than silently ranked.
+ *
+ * Two collisions, both recorded and neither resolved in the model's favour:
+ * a proposal for a field a deterministic column already won loses to that
+ * column, and two proposals for one field leave the LEFTMOST holding the claim
+ * (files lead with their primary column, the same rule the deterministic contest
+ * uses for exact ties).
+ */
+function applyAiProposals(
+  headers: readonly string[],
+  result: ColumnMapResult,
+  assignedIndexes: ReadonlySet<number>,
+  proposals: ReadonlyMap<number, MappableField>,
+): ColumnMapResult {
+  const deterministicWinners = new Map<MappableField, { header: string; confidence: number }>(
+    (Object.entries(result.fieldWinners) as [MappableField, FieldWinner][]).map(
+      ([field, winner]) => [field, { header: winner.header, confidence: winner.confidence }],
+    ),
+  );
+
+  const proposed = new Map<number, ColumnMapping>();
+  const aiClaims = new Map<MappableField, ColumnMapping>();
+
+  for (const index of [...proposals.keys()].sort((a, b) => a - b)) {
+    const field = proposals.get(index);
+    const header = headers[index];
+    // Defensive: the parser already rejects indexes we did not send, and we only
+    // ever send unassigned ones. A proposal landing on an assigned column would
+    // OVERWRITE a deterministic mapping, so it is refused here too.
+    if (field === undefined || header === undefined || assignedIndexes.has(index)) continue;
+
+    const mapping: ColumnMapping = {
+      header,
+      field,
+      confidence: AI_PROPOSAL_CONFIDENCE,
+      reason: AI_PROPOSAL_REASON,
+      needsReview: true,
+      source: AI_PROPOSAL_SOURCE,
+    };
+
+    // `ignore` names no field and therefore contests nothing — same as the
+    // deterministic pass, which skips the contest for it entirely.
+    if (field !== 'ignore') {
+      const deterministic = deterministicWinners.get(field);
+      const incumbent = aiClaims.get(field);
+      if (deterministic !== undefined) {
+        mapping.alternativeOf = { ...deterministic };
+      } else if (incumbent !== undefined) {
+        mapping.alternativeOf = { header: incumbent.header, confidence: AI_PROPOSAL_CONFIDENCE };
+        incumbent.alternative ??= { header, confidence: AI_PROPOSAL_CONFIDENCE };
+      } else {
+        aiClaims.set(field, mapping);
+      }
+    }
+    proposed.set(index, mapping);
+  }
+
+  if (proposed.size === 0) return result;
+
+  // Re-thread both lists in HEADER order. `result.mappings` is already in
+  // ascending column order and holds exactly the assigned indexes, so walking
+  // the headers with a cursor into it splices the proposals into their real
+  // column positions without inventing an index field on ColumnMapping (#1503).
+  const mappings: ColumnMapping[] = [];
+  const unmapped: string[] = [];
+  let cursor = 0;
+  headers.forEach((header, index) => {
+    const proposal = proposed.get(index);
+    if (proposal !== undefined) {
+      mappings.push(proposal);
+      return;
+    }
+    if (assignedIndexes.has(index)) {
+      const existing = result.mappings[cursor];
+      cursor += 1;
+      if (existing !== undefined) mappings.push(existing);
+      return;
+    }
+    unmapped.push(header);
+  });
+
+  return { mappings, unmapped, fieldWinners: result.fieldWinners };
+}
+
+/**
+ * {@link mapColumns} with the AI header fallback (#964). Without `ctx.ai` this
+ * IS `mapColumns` — same result object, no call, no behaviour change.
+ *
+ * At most ONE model call per file. There is no batching loop and no retry: the
+ * question ("what are these columns?") is asked once about the whole file, a
+ * failure or a silent model leaves every header unmapped exactly as today, and
+ * headers past {@link MAX_AI_HEADERS} are not asked about at all.
+ */
+export async function mapColumnsWithAi(
+  headers: string[],
+  sampleRows: string[][],
+  options: MapColumnsOptions = {},
+  ctx: HeaderMappingAiContext = {},
+): Promise<ColumnMapResult> {
+  const { result, assignedIndexes } = mapColumnsInternal(headers, sampleRows, options);
+  const seam = ctx.ai;
+  if (seam === undefined) return result;
+
+  const candidates: AiHeaderCandidate[] = [];
+  headers.forEach((header, index) => {
+    if (assignedIndexes.has(index) || header.trim() === '') return;
+    candidates.push({ index, header });
+  });
+  if (candidates.length === 0) return result;
+
+  const sent = candidates.slice(0, MAX_AI_HEADERS);
+  // Sorted in vocabulary order rather than the winners' confidence order: the
+  // prompt for one file should not change because two columns swapped ranks.
+  const claimedFields = MAPPABLE_FIELDS.filter((field) => result.fieldWinners[field] !== undefined);
+
+  let proposals: ReadonlyMap<number, MappableField>;
+  try {
+    const reply = await seam.complete({
+      system: buildHeaderMappingSystemPrompt(MAPPABLE_FIELDS),
+      prompt: buildHeaderMappingPrompt(sent, MAPPABLE_FIELDS, claimedFields),
+    });
+    proposals = parseHeaderMappingReply(
+      reply.text,
+      new Set(sent.map((candidate) => candidate.index)),
+      MAPPABLE_FIELDS,
+    );
+  } catch {
+    // Provider unavailable/erroring: the deterministic result stands unchanged —
+    // the headers stay unmapped, which is what the user would have seen with no
+    // fallback configured. The real seam refunds the daily cap itself; we never
+    // retry, because "once per file" is the budget.
+    return result;
+  }
+
+  return applyAiProposals(headers, result, assignedIndexes, proposals);
+}
+
+/**
+ * {@link understandTable} with the AI header fallback (#964). Same contract,
+ * same throws; without `ctx.ai` it is the synchronous function awaited.
+ */
+export async function understandTableWithAi(
+  buffer: Uint8Array,
+  filename: string,
+  ctx: HeaderMappingAiContext = {},
+): Promise<UnderstoodTable | null> {
+  const table = sniffTable(buffer, filename, { headerVocabulary: countKnownHeaderAliases });
+  if (!table) return null;
+  const mapping = await mapColumnsWithAi(table.headers, table.rows, tableMapOptions(table), ctx);
+  return { table, mapping };
 }
