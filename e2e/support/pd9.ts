@@ -646,6 +646,7 @@ export function createPd9Harness(): Pd9Harness {
             // definition carries no "did you mean" suggestions — those exist
             // only for an identity that never resolved (§13.4).
             candidates: null,
+            ruleTagIds: null,
           },
         ],
       );

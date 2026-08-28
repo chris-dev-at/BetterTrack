@@ -20,6 +20,8 @@ import {
 
 import * as schema from '../../../data/schema';
 import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createCashRuleRepository } from '../../../data/repositories/cashRuleRepository';
+import { createCashTagRepository } from '../../../data/repositories/cashTagRepository';
 import { createImportRepository } from '../../../data/repositories/importRepository';
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
@@ -415,6 +417,8 @@ describe('POST /imports — staged preview', () => {
       portfolioRepo: createPortfolioRepository(harness.db),
       transactionRepo: createTransactionRepository(harness.db),
       cashSourceRepo: createCashSourceRepository(harness.db),
+      cashRuleRepo: createCashRuleRepository(harness.db),
+      cashTagRepo: createCashTagRepository(harness.db),
       search,
       portfolio: harness.ctx.portfolio,
       tax: harness.ctx.tax,
@@ -557,6 +561,8 @@ describe('POST /imports — staged preview', () => {
       portfolioRepo: createPortfolioRepository(harness.db),
       transactionRepo: createTransactionRepository(harness.db),
       cashSourceRepo: createCashSourceRepository(harness.db),
+      cashRuleRepo: createCashRuleRepository(harness.db),
+      cashTagRepo: createCashTagRepository(harness.db),
       search,
       portfolio: harness.ctx.portfolio,
       tax: harness.ctx.tax,
@@ -744,6 +750,8 @@ describe('POST /imports — staged preview', () => {
       portfolioRepo: createPortfolioRepository(harness.db),
       transactionRepo: createTransactionRepository(harness.db),
       cashSourceRepo: createCashSourceRepository(harness.db),
+      cashRuleRepo: createCashRuleRepository(harness.db),
+      cashTagRepo: createCashTagRepository(harness.db),
       search: harness.ctx.search,
       portfolio: harness.ctx.portfolio,
       tax: harness.ctx.tax,

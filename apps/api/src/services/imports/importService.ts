@@ -13,6 +13,7 @@ import type {
   TransactionInput,
 } from '@bettertrack/contracts';
 import {
+  CASH_TAGS_PER_ITEM_MAX,
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
   IMPORT_ROW_CANDIDATE_EXCHANGE_MAX,
@@ -29,6 +30,9 @@ import type {
   StageImportRowInput,
 } from '../../data/repositories/importRepository';
 import type { CashSourceRepository } from '../../data/repositories/cashSourceRepository';
+import type { CashRuleRepository } from '../../data/repositories/cashRuleRepository';
+import type { CashTagRepository } from '../../data/repositories/cashTagRepository';
+import { tagsByRules, type EvaluableCashRule } from '../cash/cashRuleEngine';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
@@ -68,6 +72,20 @@ export interface ImportServiceDeps {
   portfolioRepo: PortfolioRepository;
   transactionRepo: TransactionRepository;
   cashSourceRepo: CashSourceRepository;
+  /**
+   * The caller's own cash rules, for pre-tagging staged cash rows (#964).
+   * `listForOwner` already returns them in evaluation order (priority, then
+   * age, then id), which is the order `tagsByRules` walks — the ordering
+   * decision stays in the repository, exactly one place.
+   */
+  cashRuleRepo: Pick<CashRuleRepository, 'listForOwner'>;
+  /**
+   * Attaches a previewed tag to the movement an applied cash row booked (#964).
+   * REQUIRED rather than optional: a silently unwired dependency would turn
+   * "the preview showed a tag" into "the tag quietly never arrived", which is
+   * the exact drift this slice exists to remove.
+   */
+  cashTagRepo: Pick<CashTagRepository, 'attachTagWithinPortfolio'>;
   search: SearchService;
   portfolio: PortfolioService;
   tax: TaxService;
@@ -344,8 +362,17 @@ function guardStagedRow(line: MappedLine): MappedLine {
 }
 
 export function createImportService(deps: ImportServiceDeps): ImportService {
-  const { importRepo, portfolioRepo, transactionRepo, cashSourceRepo, search, portfolio, tax } =
-    deps;
+  const {
+    importRepo,
+    portfolioRepo,
+    transactionRepo,
+    cashSourceRepo,
+    cashRuleRepo,
+    cashTagRepo,
+    search,
+    portfolio,
+    tax,
+  } = deps;
   const registry = createMapperRegistry(deps.mappers);
   // One queue per service instance is shared by every concurrent import request.
   // Provider clients use the same RequestQueue primitive for their own outbound
@@ -353,6 +380,166 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   // import-driven resolution chains and never retries business/search failures.
   const resolutionQueue =
     deps.resolutionQueue ?? createRequestQueue({ concurrency: 4, minSpacingMs: 0, maxRetries: 0 });
+
+  /**
+   * The row kinds whose apply books an EXTERNAL cash movement directly, and
+   * therefore the rows a cash rule is about.
+   *
+   * Deliberately NOT buy/sell/dividend. Those book a cash leg too, and the
+   * book-time engine keeps tagging it exactly as it always has — but their leg
+   * is a CONSEQUENCE of a trade rather than a statement line a user wrote a
+   * merchant rule for, and the preview would be claiming a suggestion for a row
+   * whose money movement it does not even display. Scope stays where the slice
+   * is: the deposits and withdrawals a bank statement is made of.
+   */
+  function isCashRowKind(kind: NormalizedImportRow['kind']): boolean {
+    return kind === 'deposit' || kind === 'withdrawal';
+  }
+
+  /**
+   * The caller's cash rules for ONE staging pass — loaded once for the whole
+   * file, never per row.
+   *
+   * COST SHAPE. Evaluation is O(cash rows × rules) first-match comparisons over
+   * short strings, on top of exactly ONE rules query per batch; regex patterns
+   * compile once each (`cashRuleEngine` memoizes them) rather than once per
+   * row, so a 5000-row file does not multiply into 5000 compilations per rule.
+   * The early return keeps the whole thing free for the common file that
+   * carries no cash memo at all — a rule that matches nothing costs one query
+   * and a walk over a few hundred short strings, which is the same bargain
+   * `applyCashRulesAtBookTime` already makes.
+   */
+  async function cashRulesForBatch(
+    userId: string,
+    mapped: readonly MappedLine[],
+  ): Promise<Awaited<ReturnType<CashRuleRepository['listForOwner']>>> {
+    const anyTaggableRow = mapped.some(
+      (line) => line.ok && isCashRowKind(line.row.kind) && (line.row.note?.trim() ?? '') !== '',
+    );
+    if (!anyTaggableRow) return [];
+    return cashRuleRepo.listForOwner(userId);
+  }
+
+  /**
+   * The rule tags to STAGE for one normalized row, or null when it earns none.
+   *
+   * THE NOTE IS TRIMMED BEFORE MATCHING, because that is exactly what the
+   * book-time path does (`applyCashRuleTags` trims, treats a whitespace-only
+   * note as no note, and hands the trimmed string to the engine). A `regex`
+   * rule tests the string it is given verbatim, so previewing on the untrimmed
+   * memo while booking on the trimmed one would be a drift source hiding in
+   * plain sight — the two paths must feed the engine the same input.
+   *
+   * Today it is belt-and-braces rather than a live fix: `parseCsv` already
+   * trims every cell, so a CSV-derived note reaches here with nothing to trim.
+   * It is written anyway because the parity is the point — this function must
+   * not be the reason the two paths disagree if a future staging source (the
+   * wizard's `rowClassifier`, a pasted table) stops pre-trimming.
+   *
+   * The stored NOTE keeps its original spacing; only the matching input is
+   * trimmed, again mirroring book time.
+   */
+  function stagedRuleTags(
+    row: NormalizedImportRow,
+    flag: StageImportRowInput['flag'],
+    rules: readonly EvaluableCashRule[],
+  ): string[] | null {
+    // Only rows that will actually import: a duplicate / unmapped / error row
+    // books nothing, so promising it a tag would promise something apply is
+    // never going to do.
+    if (flag !== 'mapped' || !isCashRowKind(row.kind)) return null;
+    const note = row.note?.trim() ?? '';
+    if (note === '') return null;
+    const tags = tagsByRules(note, rules);
+    if (tags.length === 0) return null;
+    // Bound what a stored rule can put on the wire. No API path can build a
+    // rule with more than `CASH_TAGS_PER_ITEM_MAX` tags, but this file follows
+    // `cashRuleEngine`'s own stance that rows persisted before (or beside)
+    // write-time validation are not trusted — and here an over-long list would
+    // fail the row's `.max()` in the response contract, taking the whole
+    // preview down with it on a strict client.
+    return tags.slice(0, CASH_TAGS_PER_ITEM_MAX);
+  }
+
+  /**
+   * Re-attach the tags the PREVIEW promised for a row, onto the movement it
+   * just booked (#964).
+   *
+   * REPLAY, NOT RE-EVALUATION — this is the whole no-drift guarantee. The
+   * book-time engine also runs on this insert and evaluates whatever the rules
+   * say NOW; if that were the only thing tagging the movement, a rule edited or
+   * deleted between preview and apply would silently drop a tag the user had
+   * already confirmed. Writing the previewed ids back makes the preview
+   * binding: every tag the user saw lands, whatever happened to the rule since.
+   *
+   * IDEMPOTENCY KEY: `UNIQUE(movement_id, tag_id)` inside
+   * `attachTagWithinPortfolio` — in the ordinary case (rules unchanged) the
+   * book-time stamp already wrote these exact pairs and every replay here is a
+   * no-op, so the two paths converge instead of duplicating.
+   *
+   * NEVER FAILS THE ROW. The money is booked by the time this runs, and the
+   * batch is already claimed, so throwing would report a `failed` row whose
+   * cash is nonetheless in the ledger — a worse lie than a missing label. Same
+   * rule `stampMovementTags` follows, for the same reason.
+   *
+   * ── THE TWO CELLS WHERE PREVIEW AND BOOKING STILL DIVERGE ─────────────────
+   *
+   * "Every previewed tag lands" holds everywhere except here, and both cells
+   * are accepted trade-offs rather than oversights:
+   *
+   *  1. THE TAG ITSELF IS DELETED between preview and apply. The id no longer
+   *     names anything, the INSERT's `cash_tags` join matches nothing, and the
+   *     movement books WITHOUT the label the preview showed. The row still
+   *     reports `applied` — see NEVER FAILS THE ROW above. Nothing else can be
+   *     done: re-creating a tag the user deleted would be worse than omitting
+   *     it. Pinned by `importRuleTagging.test.ts`.
+   *
+   *  2. A RULE IS ADDED between preview and apply. The book-time stamp still
+   *     runs on this insert and evaluates the rules as they are NOW, so the
+   *     movement ends up with the previewed set PLUS whatever the new rule
+   *     assigns. If the new rule outranks the previewed one by priority, that
+   *     is a UNION across two rules — strictly beyond the first-match-wins
+   *     doctrine `cashRuleEngine` documents, and the sharpest form of this
+   *     cell. Accepted: tagging is additive-never-subtractive subsystem-wide,
+   *     every previewed tag still lands, and suppressing book time for import
+   *     bookings would mean punching a bypass through the very seam
+   *     `cashSystemTagStamp` exists to prevent.
+   *
+   * ── WHY A MISS IS SILENT ──────────────────────────────────────────────────
+   *
+   * `attachTagWithinPortfolio` reports a miss by RETURNING `false`, and the
+   * return is deliberately discarded. Under `ON CONFLICT DO NOTHING …
+   * RETURNING`, `false` means "no row was inserted" — which covers the miss
+   * (cell 1 above, or a guard refusal) AND the entirely normal case that the
+   * book-time stamp already wrote this exact pair moments earlier. In the
+   * ordinary run, with rules unchanged, `false` is what EVERY call returns.
+   *
+   * Distinguishing the two would take a `SELECT` per tag per row on the common
+   * path — a 5000-row statement under a three-tag rule is 15 000 extra
+   * round-trips — to emit a log line that is empty essentially always. Not
+   * worth it: the one case worth reporting is already visible to the user (the
+   * movement they just imported lacks the label the preview showed) and is
+   * pinned by a test. A thrown error is a different thing entirely and IS
+   * logged, below.
+   */
+  async function replayRuleTags(
+    portfolioId: string,
+    movementId: string,
+    tagIds: readonly string[] | null,
+  ): Promise<void> {
+    if (!tagIds || tagIds.length === 0) return;
+    for (const tagId of tagIds) {
+      try {
+        // Return value intentionally unused — see WHY A MISS IS SILENT above.
+        await cashTagRepo.attachTagWithinPortfolio(portfolioId, movementId, tagId);
+      } catch (err) {
+        deps.logger?.warn?.(
+          { err, portfolioId, movementId, tagId },
+          'import: previewed cash-rule tag could not be replayed onto the booked movement',
+        );
+      }
+    }
+  }
 
   async function requireOwnedPortfolio(userId: string, portfolioId: string): Promise<void> {
     const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
@@ -535,6 +722,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       result: row.result,
       resultMessage: row.resultMessage,
       ...(row.candidates && row.candidates.length > 0 ? { candidates: row.candidates } : {}),
+      // Absent, not empty — a row no rule matched claims nothing, exactly as an
+      // exactly-resolved row carries no `candidates`.
+      ...(row.ruleTagIds && row.ruleTagIds.length > 0 ? { ruleTagIds: row.ruleTagIds } : {}),
     };
   }
 
@@ -673,6 +863,12 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       const existing = await collectExistingHashes(userId, input.portfolioId);
       const seenInFile = new Set<string>();
 
+      // The caller's own cash rules, read ONCE for the whole file (#964). The
+      // staged rows below are pre-tagged from this single snapshot, which is
+      // then persisted and replayed at apply — so the suggestion the user
+      // confirms and the tags the movement receives come from the same read.
+      const cashRules = await cashRulesForBatch(userId, mapped);
+
       const staged: StageImportRowInput[] = mapped.map((line) => {
         if (!line.ok) {
           return {
@@ -694,6 +890,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             assetId: null,
             contentHash: null,
             candidates: null,
+            ruleTagIds: null,
           };
         }
 
@@ -759,6 +956,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           assetId: asset?.id ?? null,
           contentHash: hash,
           candidates,
+          // Pre-tag by the caller's OWN rules, through the SAME engine that
+          // tags a hand-recorded movement (first match wins, its whole tag set,
+          // case-insensitively).
+          ruleTagIds: stagedRuleTags(row, flag, cashRules),
         };
       });
 
@@ -914,11 +1115,12 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           executedAt,
           note: row.note,
         };
-        if (row.kind === 'deposit') {
-          await portfolio.depositCash(userId, batch.portfolioId, entry, { source });
-        } else {
-          await portfolio.withdrawCash(userId, batch.portfolioId, entry, { source });
-        }
+        const booked =
+          row.kind === 'deposit'
+            ? await portfolio.depositCash(userId, batch.portfolioId, entry, { source })
+            : await portfolio.withdrawCash(userId, batch.portfolioId, entry, { source });
+        // Bind the booking to what the preview showed (#964).
+        await replayRuleTags(batch.portfolioId, booked.movement.id, row.ruleTagIds);
       };
 
       for (const row of ordered) {

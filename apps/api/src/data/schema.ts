@@ -3169,6 +3169,13 @@ export const importRows = pgTable(
     result: importRowResultEnum('result'),
     resultMessage: text('result_message'),
     candidates: jsonb('candidates').$type<ImportRowCandidate[]>(),
+    /**
+     * The caller's own cash-rule tags for this row's memo (#964), computed once
+     * at staging and replayed verbatim at apply, so what the preview showed and
+     * what the booking gets can never disagree. Null on non-cash rows and
+     * wherever no rule matched.
+     */
+    ruleTagIds: jsonb('rule_tag_ids').$type<string[]>(),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );

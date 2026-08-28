@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { MAX_PASSWORD_LENGTH } from './auth';
-import { cashRuleMatchTypeSchema } from './cash';
+import { CASH_TAGS_PER_ITEM_MAX, cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
   IMPORT_ROW_CANDIDATE_LIMIT,
@@ -1242,6 +1242,24 @@ export const vaultImportRowCandidatesSchema = z
   .optional()
   .catch(null);
 
+/**
+ * The `import_rows.rule_tag_ids` column as it appears inside a vault document
+ * (#964) — the cash-rule tags a staged row was pre-tagged with.
+ *
+ * Exported for exactly the same single reason as
+ * {@link vaultImportRowCandidatesSchema}: it is another `ZodCatch` reachable
+ * from `PortfolioVaultMoveOutRequest`, and the OpenAPI generator needs the hint
+ * installed on this very instance. Nothing else should import it.
+ *
+ * See the field's documentation in `importRowRowSchema` for why it degrades.
+ */
+export const vaultImportRowRuleTagIdsSchema = z
+  .array(uuidSchema)
+  .max(CASH_TAGS_PER_ITEM_MAX)
+  .nullable()
+  .optional()
+  .catch(null);
+
 const importRowRowSchema = z
   .object({
     batchId: uuidSchema,
@@ -1294,6 +1312,21 @@ const importRowRowSchema = z
      * assembler forgot".
      */
     candidates: vaultImportRowCandidatesSchema,
+    /**
+     * The `import_rows.rule_tag_ids` column: the cash-rule tag suggestion this
+     * staged row was pre-tagged with (#964). Enrolled because the
+     * export-completeness sweep requires every persisted column to appear in
+     * the strict payload.
+     *
+     * `.nullable().optional().catch(null)` for the same three reasons as
+     * `candidates` directly above: documents written before this column existed
+     * carry no such key, and a staging-time SUGGESTION must never be the reason
+     * a portfolio cannot be restored. A malformed list, an over-cap array or a
+     * non-uuid member degrades this ONE field to null and the row still parses
+     * — the import batch it belongs to is a short-lived preview, while the
+     * portfolio behind it is the user's actual money.
+     */
+    ruleTagIds: vaultImportRowRuleTagIdsSchema,
   })
   .strict();
 

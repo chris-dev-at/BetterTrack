@@ -46,6 +46,13 @@ export interface ImportRowRecord {
    * stays `unmapped` and is never auto-applied. Null when none were captured.
    */
   candidates: ImportRowCandidate[] | null;
+  /**
+   * The tag ids the owner's own cash rules assigned to this row's memo at
+   * STAGING time (#964). Null on non-cash rows, on rows with no memo, and
+   * wherever no rule matched. Apply replays exactly this list, so the preview
+   * and the booked movement cannot disagree.
+   */
+  ruleTagIds: string[] | null;
 }
 
 export interface CreateImportBatchInput {
@@ -75,6 +82,7 @@ export interface StageImportRowInput {
   assetId: string | null;
   contentHash: string | null;
   candidates: ImportRowCandidate[] | null;
+  ruleTagIds: string[] | null;
 }
 
 const num = (v: string | null): number | null => (v === null ? null : Number(v));
@@ -107,6 +115,7 @@ function toRowRecord(
     resultMessage: row.resultMessage,
     asset,
     candidates: row.candidates ?? null,
+    ruleTagIds: row.ruleTagIds ?? null,
   };
 }
 
@@ -167,6 +176,7 @@ export function createImportRepository(db: Database) {
             assetId: r.assetId,
             contentHash: r.contentHash,
             candidates: r.candidates,
+            ruleTagIds: r.ruleTagIds,
           }));
           await tx.insert(importRows).values(values);
         }

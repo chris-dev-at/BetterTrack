@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { CASH_TAGS_PER_ITEM_MAX } from './cash';
 import { assetTypeSchema, currencyCodeSchema } from './market';
 
 /**
@@ -147,6 +148,21 @@ export type ImportRowCandidate = z.infer<typeof importRowCandidateSchema>;
  * `candidates` is OPTIONAL and additive (shipped mobile builds parse this
  * payload with zod): present only on rows whose instrument did NOT resolve,
  * carrying the near-matches the search already returned — never auto-applied.
+ *
+ * `ruleTagIds` is OPTIONAL and additive for the same reason: present only on a
+ * cash row (`deposit` / `withdrawal`) whose memo one of the caller's own cash
+ * rules matched at staging time, carrying the tag ids that rule assigns. It is
+ * a PRE-COMPUTED SUGGESTION the user confirms with the rest of the preview, and
+ * apply REPLAYS exactly these ids rather than re-running the rules — so a rule
+ * edited or deleted between preview and apply can never make a confirmed tag
+ * silently vanish. Ids only, no names: the client already holds the tag list,
+ * and a 5000-row preview must not carry 5000 copies of the same labels.
+ *
+ * The ONE exception is the TAG ITSELF being deleted in that window: the id then
+ * names nothing, so the movement books without it — silently, and the row still
+ * reports `applied`, because failing a row whose cash is already in the ledger
+ * would be the worse lie. `replayRuleTags` (API `importService`) states that
+ * cell and the added-rule one in full.
  */
 export const importRowSchema = z
   .object({
@@ -171,6 +187,7 @@ export const importRowSchema = z
     result: importRowResultSchema.nullable(),
     resultMessage: z.string().nullable(),
     candidates: z.array(importRowCandidateSchema).max(IMPORT_ROW_CANDIDATE_LIMIT).optional(),
+    ruleTagIds: z.array(z.string().uuid()).max(CASH_TAGS_PER_ITEM_MAX).optional(),
   })
   .strict();
 export type ImportRow = z.infer<typeof importRowSchema>;

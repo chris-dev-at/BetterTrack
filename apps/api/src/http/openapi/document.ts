@@ -53,6 +53,21 @@ const VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION = {
     'the reason a portfolio cannot be restored.',
 };
 
+// Same generator gap, third instance: the vault import-row `ruleTagIds` field
+// is a `.catch(null)` too, so a malformed staging-time tag suggestion can never
+// make a portfolio unrestorable. Reachable from `PortfolioVaultMoveOutRequest`,
+// so without a hint `/openapi.json` and `/docs` 500 for the whole API.
+const VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION = {
+  type: 'array' as const,
+  nullable: true,
+  items: { type: 'string' as const },
+  description:
+    'Cash-rule tag ids a staged import row was pre-tagged with (#964). Tolerant by design: a ' +
+    'value that does not match the strict uuid list is accepted and read back as null rather ' +
+    'than rejecting the row, because a staging-time suggestion must never be the reason a ' +
+    'portfolio cannot be restored.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -67,6 +82,10 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowCandidatesSchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowRuleTagIdsSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION,
   ],
 ];
 
