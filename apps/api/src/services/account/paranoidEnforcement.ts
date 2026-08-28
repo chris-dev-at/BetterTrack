@@ -216,7 +216,7 @@ export interface VaultedPortfolioMatrixPolicy {
 
 export interface VaultedPortfolioTransitionCarveout {
   readonly method: 'GET' | 'POST';
-  readonly operation: 'revision' | 'move-in' | 'move-out/challenge' | 'move-out';
+  readonly operation: 'revision' | 'lifecycle' | 'move-in' | 'move-out/challenge' | 'move-out';
   readonly reason: string;
 }
 
@@ -1193,6 +1193,12 @@ export const VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY = [
     method: 'GET',
     operation: 'revision',
     reason: 'Read the revision token required to serialize a portfolio transition.',
+  },
+  {
+    method: 'GET',
+    operation: 'lifecycle',
+    reason:
+      'Read the lifecycle generation the §10 move-out proof binds to (E6 residual, #1525) — an unlocked device that never saw the move-in response needs it to author the exit.',
   },
   {
     method: 'POST',

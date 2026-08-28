@@ -93,6 +93,12 @@ export async function loadDecryptedPortfolioDocumentSet(input: {
   portfolioId: string;
   /** Complete server-stub roster used to reject stale/omitting headers. */
   expectedPortfolioIds: readonly string[];
+  /**
+   * Server-truth ids of currently-plain portfolios owned by this account.
+   * Solely the provenance input of the roster-extra tolerance documented on
+   * `assertExactRoster` (#1528 F1); omit for strict exact-set behavior.
+   */
+  plainOwnedPortfolioIds?: readonly string[];
   keys: VaultContentKeyBorrower;
   reader: VaultDocEnvelopeReader;
   signal?: AbortSignal;
@@ -128,7 +134,17 @@ export async function loadDecryptedPortfolioDocumentSet(input: {
       assertExactRoster(
         header.document.portfolios.map(({ id }) => id),
         input.expectedPortfolioIds,
+        input.plainOwnedPortfolioIds,
       );
+      // The requested portfolio must be a server-proven MEMBER. The in-flight
+      // tolerance above widens only which extra roster entries are survivable
+      // — it must never make the extra itself loadable as a document set.
+      if (!input.expectedPortfolioIds.includes(input.portfolioId)) {
+        throw new PortfolioDocumentSetError(
+          'VAULT_DOCUMENT_SET_CHANGED',
+          'The requested portfolio is not a member of the current locked-stub roster.',
+        );
+      }
       input.signal?.throwIfAborted();
       assertSessionCurrent();
       const common = await decryptAndParse(
@@ -182,6 +198,15 @@ export async function loadDecryptedVaultDocumentSet(input: {
   accountId: string;
   /** Complete server-stub roster; a stale/partial encrypted header must fail. */
   expectedPortfolioIds: readonly string[];
+  /**
+   * Server-truth ids of currently-plain portfolios owned by this account.
+   * Solely the provenance input of the roster-extra tolerance documented on
+   * `assertExactRoster` (#1528 F1); omit for strict exact-set behavior. A
+   * tolerated extra is NOT a member: its cleartext rows still live server-side
+   * and its prospective document (which the next capture begin may already
+   * have deleted) is never read, decrypted, or returned.
+   */
+  plainOwnedPortfolioIds?: readonly string[];
   keys: VaultContentKeyBorrower;
   reader: VaultDocEnvelopeReader;
   signal?: AbortSignal;
@@ -215,7 +240,11 @@ export async function loadDecryptedVaultDocumentSet(input: {
           'The encrypted header roster repeats a portfolio id.',
         );
       }
-      assertExactRoster(portfolioIds, input.expectedPortfolioIds);
+      assertExactRoster(portfolioIds, input.expectedPortfolioIds, input.plainOwnedPortfolioIds);
+      // Tolerated in-flight extras (see `assertExactRoster`) are not members:
+      // only the server-stub membership is read, decrypted, and returned.
+      const memberIds = new Set(input.expectedPortfolioIds);
+      const memberPortfolioIds = portfolioIds.filter((portfolioId) => memberIds.has(portfolioId));
       input.signal?.throwIfAborted();
       // E3: the roster came from plaintext. Assert immediately before its
       // network reads, keep them inside the same pinned borrow, then assert
@@ -223,7 +252,7 @@ export async function loadDecryptedVaultDocumentSet(input: {
       assertSessionCurrent();
       const [commonRead, ...portfolioReads] = await Promise.all([
         input.reader.read(input.vault.id, input.vault.commonDocId, input.signal),
-        ...portfolioIds.map((portfolioId) =>
+        ...memberPortfolioIds.map((portfolioId) =>
           input.reader.read(input.vault.id, portfolioId, input.signal),
         ),
       ]);
@@ -246,7 +275,7 @@ export async function loadDecryptedVaultDocumentSet(input: {
       assertSessionCurrent();
       assertHeaderCommonConsistency(input.accountId, header, common);
       const portfolios: DecryptedVaultDocumentSet['portfolios'][number][] = [];
-      for (const [index, portfolioId] of portfolioIds.entries()) {
+      for (const [index, portfolioId] of memberPortfolioIds.entries()) {
         const portfolio = await decryptAndParse(
           portfolioReads[index]!,
           contentKey,
@@ -580,22 +609,49 @@ function assertEnvelopeSetConsistency(envelopes: readonly VaultDocEnvelopeHeader
   }
 }
 
+/**
+ * The encrypted header roster must cover the server-stub membership exactly,
+ * with ONE provenance-checked tolerance (#1528 F1): a roster id MISSING from
+ * `expectedPortfolioIds` is acceptable only when the caller proves it is a
+ * currently-PLAIN portfolio owned by this account (`plainOwnedPortfolioIds`,
+ * server truth from the authenticated portfolio listing). That shape is
+ * precisely §9's recoverable in-flight state — the capture wrote the roster
+ * entry, then the step-up-gated destructive commit was refused (wrong
+ * credential, `REVISION_STALE`, 429, network) — and it must heal on the next
+ * open instead of wedging every load until hand-repair. A compensating header
+ * rewrite in the refusal path was rejected deliberately: the compensation
+ * write can itself fail and re-wedge, while this rule heals with no write.
+ *
+ * The tolerance weakens nothing else: an omitted MEMBER still fails (a stale
+ * header can never silently drop a portfolio), duplicates still fail, and an
+ * extra id that is not a plain-owned portfolio still fails with the identical
+ * error — an attacker who can insert roster entries gains no new acceptance.
+ */
 function assertExactRoster(
   encryptedPortfolioIds: readonly string[],
   expectedPortfolioIds: readonly string[],
+  plainOwnedPortfolioIds: readonly string[] = [],
 ): void {
   const expected = new Set(expectedPortfolioIds);
   const encrypted = new Set(encryptedPortfolioIds);
-  if (
-    expected.size !== expectedPortfolioIds.length ||
-    encrypted.size !== encryptedPortfolioIds.length ||
-    encryptedPortfolioIds.length !== expectedPortfolioIds.length ||
-    encryptedPortfolioIds.some((portfolioId) => !expected.has(portfolioId))
-  ) {
+  const plainOwned = new Set(plainOwnedPortfolioIds);
+  const fail = (): never => {
     throw new PortfolioDocumentSetError(
       'VAULT_DOCUMENT_SET_CHANGED',
       'The encrypted header roster does not match the current locked-stub roster.',
     );
+  };
+  if (
+    expected.size !== expectedPortfolioIds.length ||
+    encrypted.size !== encryptedPortfolioIds.length
+  ) {
+    fail();
+  }
+  for (const portfolioId of expectedPortfolioIds) {
+    if (!encrypted.has(portfolioId)) fail();
+  }
+  for (const portfolioId of encryptedPortfolioIds) {
+    if (!expected.has(portfolioId) && !plainOwned.has(portfolioId)) fail();
   }
 }
 

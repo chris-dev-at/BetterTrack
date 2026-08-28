@@ -2,19 +2,23 @@ import {
   createVaultResponseSchema,
   deleteVaultResponseSchema,
   driveConnectionListResponseSchema,
+  parseVaultEtag,
   patchVaultResponseSchema,
   perVaultMediaStateResponseSchema,
   perVaultMediaTransitionResponseSchema,
+  portfolioVaultLifecycleResponseSchema,
   portfolioVaultMoveInResponseSchema,
   portfolioVaultMoveOutChallengeResponseSchema,
   portfolioVaultMoveOutResponseSchema,
   portfolioVaultRevisionResponseSchema,
+  vaultEtag,
   vaultListResponseSchema,
   type DeleteVaultRequest,
   type DriveConnection,
   type PatchVaultRequest,
   type PerVaultMediaState,
   type PerVaultMediaTransitionRequest,
+  type PortfolioVaultLifecycleResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveInResponse,
   type PortfolioVaultMoveOutChallengeRequest,
@@ -96,6 +100,22 @@ export async function getPortfolioVaultRevision(
   return portfolioVaultRevisionResponseSchema.parse(data);
 }
 
+/**
+ * §10 exit metadata (E6 residual, #1525): the server-minted lifecycle
+ * generation the move-out challenge and commit proofs bind to. Any owning
+ * session may read it — the device performing the exit is rarely the device
+ * that saw the move-in response.
+ */
+export async function getPortfolioVaultLifecycle(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<PortfolioVaultLifecycleResponse> {
+  const data = await apiRequest<unknown>(`/portfolios/${segment(portfolioId)}/vault/lifecycle`, {
+    signal,
+  });
+  return portfolioVaultLifecycleResponseSchema.parse(data);
+}
+
 export async function movePortfolioIntoVault(
   portfolioId: string,
   body: PortfolioVaultMoveInRequest,
@@ -161,6 +181,21 @@ export async function createVaultDocument(
   docId: string,
   envelope: Uint8Array,
 ): Promise<void> {
+  await writeVaultDocument(vaultId, docId, envelope, { ifVersion: null });
+}
+
+/**
+ * One opaque per-vault document write under the E1 HTTP CAS: `If-None-Match: *`
+ * for the first version, `If-Match: <etag>` for every replacement. A 412 means
+ * the store moved underneath the caller — surfaced as its own code so the E6
+ * capture can refuse cleanly instead of retry-clobbering a concurrent writer.
+ */
+export async function writeVaultDocument(
+  vaultId: string,
+  docId: string,
+  envelope: Uint8Array,
+  options: { ifVersion: number | null },
+): Promise<void> {
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl()}/vaults/${segment(vaultId)}/docs/${segment(docId)}`, {
@@ -168,13 +203,23 @@ export async function createVaultDocument(
       credentials: 'include',
       headers: {
         'Content-Type': 'application/vnd.bettertrack.vault+octet-stream',
-        'If-None-Match': '*',
+        ...(options.ifVersion === null
+          ? { 'If-None-Match': '*' }
+          : { 'If-Match': vaultEtag(options.ifVersion) }),
         'X-Requested-With': 'BetterTrack',
       },
       body: envelope.slice(),
     });
   } catch {
     throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach the vault store.');
+  }
+  if (response.status === 412) {
+    throw new ApiError(
+      412,
+      'VAULT_DOCUMENT_CAS_CONFLICT',
+      'The vault document changed underneath this write.',
+      { currentVersion: parseVaultEtag(response.headers.get('ETag')) },
+    );
   }
   if (!response.ok) {
     throw new ApiError(response.status, 'VAULT_DOCUMENT_WRITE_FAILED', 'Vault write failed.');

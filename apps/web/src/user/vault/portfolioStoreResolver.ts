@@ -81,6 +81,14 @@ export interface PortfolioStoreResolutionOptions {
    * read can prove that an encrypted header did not silently omit members.
    */
   expectedVaultPortfolioIds?: readonly string[];
+  /**
+   * Server-truth ids of currently-plain portfolios owned by this account —
+   * the provenance input of the loader's in-flight roster tolerance (#1528
+   * F1): a §9 capture whose destructive commit was refused leaves the header
+   * roster one PLAIN-owned entry ahead of the membership, and every view must
+   * keep opening through that state. Omit for strict exact-set behavior.
+   */
+  plainOwnedPortfolioIds?: readonly string[];
 }
 
 export interface PlainPortfolioStoreResolution {
@@ -186,6 +194,7 @@ async function resolvePortfolioStoreWithCoordination(
   let activeVaultSet: DecryptedVaultDocumentSet | null = await coordinatedDocumentSet(
     vault,
     options.expectedVaultPortfolioIds,
+    options.plainOwnedPortfolioIds,
     dependencies,
     coordination,
     signal,
@@ -401,9 +410,13 @@ export function resolvePortfolioStores(
 ): Promise<PortfolioStoreResolution[]> {
   const coordination = createResolutionCoordination();
   const expectedPortfolioIds = new Map<string, string[]>();
+  const plainOwnedPortfolioIds: string[] = [];
   for (const portfolio of portfolios) {
     const vaultId = portfolio.vaultId;
-    if (vaultId == null) continue;
+    if (vaultId == null) {
+      plainOwnedPortfolioIds.push(portfolio.id);
+      continue;
+    }
     const ids = expectedPortfolioIds.get(vaultId);
     if (ids === undefined) expectedPortfolioIds.set(vaultId, [portfolio.id]);
     else ids.push(portfolio.id);
@@ -419,7 +432,10 @@ export function resolvePortfolioStores(
           signal,
           ...(vaultId == null
             ? {}
-            : { expectedVaultPortfolioIds: expectedPortfolioIds.get(vaultId)! }),
+            : {
+                expectedVaultPortfolioIds: expectedPortfolioIds.get(vaultId)!,
+                plainOwnedPortfolioIds,
+              }),
         },
         coordination,
       );
@@ -434,6 +450,7 @@ function createResolutionCoordination(): PortfolioStoreResolutionCoordination {
 function coordinatedDocumentSet(
   vault: VaultConfig,
   expectedPortfolioIds: readonly string[],
+  plainOwnedPortfolioIds: readonly string[] | undefined,
   dependencies: PortfolioStoreResolverDependencies,
   coordination: PortfolioStoreResolutionCoordination,
   signal?: AbortSignal,
@@ -445,6 +462,7 @@ function coordinatedDocumentSet(
       vault,
       accountId: dependencies.accountId,
       expectedPortfolioIds,
+      plainOwnedPortfolioIds,
       keys: dependencies.keys,
       reader: dependencies.reader,
       signal,

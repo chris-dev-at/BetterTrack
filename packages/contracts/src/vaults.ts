@@ -1254,7 +1254,18 @@ export const portfolioDataRevisionSchema = z
 export type PortfolioDataRevision = z.infer<typeof portfolioDataRevisionSchema>;
 
 export const portfolioVaultRevisionResponseSchema = z
-  .object({ portfolioDataRevision: portfolioDataRevisionSchema })
+  .object({
+    portfolioDataRevision: portfolioDataRevisionSchema,
+    /**
+     * Historical import batches keyed to this portfolio, counted in the same
+     * repeatable-read snapshot as the digest (E6 residual, #1525). They are
+     * `vault`-classified and purged by move-in, but this build has no client
+     * read path that could capture their staging rows losslessly — so the
+     * capture refuses while any exist instead of purging rows the encrypted
+     * document never carried. A count is portfolio metadata, not content.
+     */
+    importBatchCount: z.number().int().min(0),
+  })
   .strict();
 export type PortfolioVaultRevisionResponse = z.infer<typeof portfolioVaultRevisionResponseSchema>;
 
@@ -1291,6 +1302,25 @@ export const portfolioVaultLifecycleGenerationSchema = z
 export type PortfolioVaultLifecycleGeneration = z.infer<
   typeof portfolioVaultLifecycleGenerationSchema
 >;
+
+/**
+ * `GET /portfolios/:id/vault/lifecycle` (E6 residual, #1525) — the owner-scoped
+ * read of a VAULTED portfolio's current membership lifecycle. `moveOutChallenge`
+ * and `move-out` both bind the client's proof to the exact server-minted
+ * `lifecycleGeneration` (returned once by move-in), but §10 allows the exit
+ * from ANY unlocked device holding the phrase — a device that never saw that
+ * move-in response. The generation is non-sensitive transition metadata about
+ * the locked stub (it already appears in the owner's own audit records), never
+ * portfolio content.
+ */
+export const portfolioVaultLifecycleResponseSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    vaultId: z.string().uuid(),
+    lifecycleGeneration: portfolioVaultLifecycleGenerationSchema,
+  })
+  .strict();
+export type PortfolioVaultLifecycleResponse = z.infer<typeof portfolioVaultLifecycleResponseSchema>;
 
 /** SHA-256 over the canonical strict restore document, unpadded base64url. */
 export const portfolioVaultRestoreDocumentDigestSchema = z

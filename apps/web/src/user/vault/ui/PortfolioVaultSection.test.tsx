@@ -14,12 +14,21 @@ const mocks = vi.hoisted(() => ({
   getPortfolioVaultRevision: vi.fn(),
   movePortfolioIntoVault: vi.fn(),
   stateFor: vi.fn(),
+  verifySessionPassword: vi.fn(),
 }));
 
+vi.mock('../../../lib/userApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/userApi')>()),
+  verifySessionPassword: mocks.verifySessionPassword,
+}));
 vi.mock('../../../lib/vaultApi', () => ({
   VAULTS_QUERY_KEY: ['vaults', 'configs'],
   listVaults: mocks.listVaults,
   getPortfolioVaultRevision: mocks.getPortfolioVaultRevision,
+  getPortfolioVaultLifecycle: vi.fn(),
+  getVaultMediaState: vi.fn(),
+  transitionVaultMedia: vi.fn(),
+  writeVaultDocument: vi.fn(),
   movePortfolioIntoVault: mocks.movePortfolioIntoVault,
   movePortfolioOutOfVault: vi.fn(),
   requestPortfolioMoveOutChallenge: vi.fn(),
@@ -74,6 +83,7 @@ beforeEach(() => {
     status: 'stored+plain',
     requiredAction: { kind: 'open-silently' },
   });
+  mocks.verifySessionPassword.mockResolvedValue(undefined);
   mocks.getPortfolioVaultRevision.mockResolvedValue({ portfolioDataRevision: 'rev-7' });
   mocks.movePortfolioIntoVault.mockResolvedValue({
     portfolioId: PORTFOLIO_ID,
@@ -143,6 +153,13 @@ describe('PortfolioVaultSection', () => {
     // The revision is read BEFORE the capture, so E4's double-read CAS can
     // refuse a move whose rows changed underneath it.
     expect(mocks.getPortfolioVaultRevision).toHaveBeenCalledBefore(capture.captureMoveIn);
+    // And the password is proven BEFORE the capture writes anything (#1528
+    // F1): a mistyped credential refuses while the vault is still untouched.
+    expect(mocks.verifySessionPassword).toHaveBeenCalledWith(
+      'account-secret',
+      'portfolio-vault-move-in',
+    );
+    expect(mocks.verifySessionPassword).toHaveBeenCalledBefore(capture.captureMoveIn);
   });
 
   it('blocks the move while the target vault is locked on this device', async () => {

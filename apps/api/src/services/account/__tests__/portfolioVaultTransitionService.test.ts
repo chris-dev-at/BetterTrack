@@ -1,7 +1,7 @@
 import { createHash, createPrivateKey, sign } from 'node:crypto';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, count, eq, inArray } from 'drizzle-orm';
 import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
@@ -2490,6 +2490,81 @@ describe('portfolio vault move-in destructive commit', () => {
   );
 });
 
+describe('portfolio vault lifecycle read and capture facts (E6 residual #1525)', () => {
+  it('reports the exact import-batch count in the same snapshot as the revision digest', async () => {
+    const [seededRow] = await h.db
+      .select({ value: count() })
+      .from(importBatches)
+      .where(eq(importBatches.portfolioId, TEST_VECTOR.targetPortfolioId));
+    const seededCount = Number(seededRow?.value ?? 0);
+    expect(seededCount).toBeGreaterThan(0);
+
+    const withBatches = await h.ctx.portfolioVaultTransitions.revision(
+      user.id,
+      TEST_VECTOR.targetPortfolioId,
+    );
+    expect(withBatches.importBatchCount).toBe(seededCount);
+
+    // Deleting the batches empties the count AND moves the digest — the pair
+    // is one snapshot, so a client can never see a zero count for a graph
+    // whose digest still covers batch rows.
+    await h.db.delete(importRows).where(eq(importRows.batchId, TEST_VECTOR.targetBatchId));
+    await h.db
+      .delete(importBatches)
+      .where(eq(importBatches.portfolioId, TEST_VECTOR.targetPortfolioId));
+    const withoutBatches = await h.ctx.portfolioVaultTransitions.revision(
+      user.id,
+      TEST_VECTOR.targetPortfolioId,
+    );
+    expect(withoutBatches.importBatchCount).toBe(0);
+    expect(withoutBatches.portfolioDataRevision).not.toBe(withBatches.portfolioDataRevision);
+  });
+
+  it('refuses the lifecycle read for unvaulted and foreign portfolios with the E4 refusal classes', async () => {
+    await expect(
+      h.ctx.portfolioVaultTransitions.lifecycle(user.id, TEST_VECTOR.targetPortfolioId),
+    ).rejects.toMatchObject({ code: 'NOT_VAULTED' });
+    expect(PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS.NOT_VAULTED.status).toBe(409);
+
+    // Foreign ownership answers exactly like a nonexistent portfolio (no oracle).
+    await expect(
+      h.ctx.portfolioVaultTransitions.lifecycle(viewer.id, TEST_VECTOR.targetPortfolioId),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(
+      h.ctx.portfolioVaultTransitions.lifecycle(user.id, TEST_VECTOR.moveOutId),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('serves the committed generation to any owning session across the full lifecycle', async () => {
+    const request = await stageMoveIn();
+    await h.ctx.portfolioVaultTransitions.moveIn(user.id, TEST_VECTOR.targetPortfolioId, request);
+
+    // The read a SECOND unlocked device performs before authoring its §10
+    // move-out proof: nothing from the move-in response is required.
+    await expect(
+      h.ctx.portfolioVaultTransitions.lifecycle(user.id, TEST_VECTOR.targetPortfolioId),
+    ).resolves.toEqual({
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      vaultId: TEST_VECTOR.vaultId,
+      lifecycleGeneration: 1,
+    });
+
+    // And the value it serves is exactly the one the challenge/commit accept.
+    const document = minimalDocument();
+    await expect(
+      h.ctx.portfolioVaultTransitions.moveOut(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        moveOutRequest(document),
+      ),
+    ).resolves.toMatchObject({ lifecycleGeneration: 1, idempotent: false });
+
+    await expect(
+      h.ctx.portfolioVaultTransitions.lifecycle(user.id, TEST_VECTOR.targetPortfolioId),
+    ).rejects.toMatchObject({ code: 'NOT_VAULTED' });
+  });
+});
+
 describe('portfolio vault transition-driven kill matrix', () => {
   it('flips all seven registry rows only at commit and preserves the sibling throughout rollback', async () => {
     const moveInFailure = serviceWithMoveInFailure('purged');
@@ -3455,7 +3530,10 @@ describe('portfolio vault move-out strict restore', () => {
 
     await expect(
       h.ctx.portfolioVaultTransitions.revision(user.id, TEST_VECTOR.targetPortfolioId),
-    ).resolves.toEqual({ portfolioDataRevision: expect.any(String) });
+    ).resolves.toEqual({
+      portfolioDataRevision: expect.any(String),
+      importBatchCount: expect.any(Number),
+    });
 
     await expect(
       h.ctx.portfolioVaultTransitions.moveOut(

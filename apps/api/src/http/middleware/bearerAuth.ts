@@ -138,10 +138,13 @@ export const VAULT_SESSION_ONLY_ROUTES = [
  * Per-portfolio vault transitions shared by web and native clients under §15.
  * Each POST carries the same in-request step-up credential on both paths. The
  * revision read shares the control-plane scope because it is the CAS input to
- * the destructive move-in commit, not an ordinary portfolio-data read.
+ * the destructive move-in commit, not an ordinary portfolio-data read; the
+ * lifecycle read shares it for the symmetric reason — it is the CAS input the
+ * move-out proof binds to (E6 residual, #1525), not portfolio data.
  */
 export const PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/portfolios/{portfolioId}/vault/revision' },
+  { method: 'GET', path: '/portfolios/{portfolioId}/vault/lifecycle' },
   { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
   { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
   { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },

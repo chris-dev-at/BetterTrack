@@ -69,9 +69,16 @@ import type { E2EUser } from './users';
 export const E10_TRACEABILITY = [
   {
     arc: 'full create→move-in→lock→unlock→move-out arc',
-    assertion: '[E10-A1] vault ceremony, endpoint lock and unlock',
-    status: 'partial',
-    note: 'Create/lock/unlock run. The move halves are blocked by E6 — see [E10-A6].',
+    assertion: '[E10-A10] executable move-in and move-out',
+    status: 'covered',
+    note:
+      'The whole arc runs for real since the E6 capture residual closed (#1525): ceremony, ' +
+      'unlock through the access surface, SPA-only walk to the move-in wizard (the endpoint ' +
+      'session lives in page memory), the destructive commit with the §15 step-up, the ' +
+      'VAULTED_PORTFOLIO stub proof, lock by navigation, the locked-endpoint move-out ' +
+      'refusal, unlock via the stub’s own §12 affordance, and the same-UUID restore of the ' +
+      'recorded transaction. [E10-A1] keeps the focused ceremony/lock/unlock coverage; ' +
+      '[E10-A6] keeps the unready-state refusal pinned.',
   },
   {
     arc: 'Drive-only vault round trip',

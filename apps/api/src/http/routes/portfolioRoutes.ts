@@ -87,7 +87,7 @@ const PORTFOLIO_VAULT_MOVE_OUT_HTTP_PATH = new RegExp(
   'i',
 );
 const PORTFOLIO_VAULT_TRANSITION_ROUTER_PATH = new RegExp(
-  `^/${UUID_PATH_SEGMENT}/vault/(revision|move-in|move-out(?:/challenge)?)/?$`,
+  `^/${UUID_PATH_SEGMENT}/vault/(revision|lifecycle|move-in|move-out(?:/challenge)?)/?$`,
   'i',
 );
 
@@ -196,6 +196,27 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
       res.json(
         await runPortfolioVaultTransition(() =>
           ctx.portfolioVaultTransitions.revision(req.authUser!.id, portfolioId),
+        ),
+      );
+    },
+  );
+
+  // The §10 exit runs from ANY unlocked device holding the phrase, but only
+  // the device that committed move-in ever received the server-minted
+  // lifecycle generation the challenge/commit proofs bind to. This read
+  // recovers that non-sensitive transition metadata for the owner (E6
+  // residual, #1525); it carries no portfolio content.
+  router.get(
+    '/:portfolioId/vault/lifecycle',
+    noStore,
+    transitionBearerAccess,
+    limiters.vault,
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      res.json(
+        await runPortfolioVaultTransition(() =>
+          ctx.portfolioVaultTransitions.lifecycle(req.authUser!.id, portfolioId),
         ),
       );
     },

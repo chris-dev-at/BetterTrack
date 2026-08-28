@@ -9,6 +9,7 @@ import type {
   VaultStrictDocumentV1,
 } from '@bettertrack/contracts';
 
+import { verifySessionPassword } from '../../lib/userApi';
 import {
   getPortfolioVaultRevision,
   movePortfolioIntoVault,
@@ -17,6 +18,7 @@ import {
 } from '../../lib/vaultApi';
 import type { VaultMovePrecondition } from './ui/PortfolioVaultMoveWizard';
 import type { EndpointVaultState } from './keystore';
+import { createPortfolioVaultMoveCapture } from './portfolioMoveCapture';
 import { vaultStateAffordance, vaultStateActionHref } from './vaultStateAffordance';
 
 /**
@@ -38,11 +40,20 @@ export interface PortfolioVaultMoveCapture {
   /**
    * Write this portfolio's encrypted document into the vault and verify it on
    * every selected medium. Returns the doc version E4 commits against.
+   *
+   * `portfolioDataRevision` (input) is the token the wizard read FIRST; it is
+   * the opening token of the capture's first build. Capture reads WRITE (the
+   * cash main-source seed, the tax-year self-heal), so §9's validate-then-
+   * accept protocol may need one rebuild whose opening token is the settled
+   * re-read — when it does, the ACCEPTED token comes back in the result and
+   * the commit binds to it. The server re-derives the same digest under the
+   * account lock before deleting anything either way.
    */
   captureMoveIn(input: {
     portfolioId: string;
     vault: VaultConfig;
-  }): Promise<{ docVersion: number }>;
+    portfolioDataRevision: string;
+  }): Promise<{ docVersion: number; portfolioDataRevision?: string }>;
   /**
    * Open the vault, build the strict restore graph for this portfolio, and
    * return the signer for E4's short-lived challenge.
@@ -56,15 +67,19 @@ export interface PortfolioVaultMoveCapture {
   }>;
 }
 
+let productionCapture: PortfolioVaultMoveCapture | null = null;
+
 /**
  * The capture implementation for this build, or `null` when it has none.
  *
  * One resolver, so every surface asks the same question once and states the
- * answer up front instead of discovering it at the destructive step. E6 (#1416)
- * returns its engine here and both wizards light up unchanged.
+ * answer up front instead of discovering it at the destructive step. E6's
+ * engine (#1416 residual, #1525) is supplied here — one lazy singleton, so
+ * every wizard, precondition and stub answers with the same identity.
  */
 export function resolvePortfolioVaultMoveCapture(): PortfolioVaultMoveCapture | null {
-  return null;
+  productionCapture ??= createPortfolioVaultMoveCapture();
+  return productionCapture;
 }
 
 export interface MoveInPreconditionInput {
@@ -127,18 +142,34 @@ export async function submitPortfolioMoveIn(input: {
   stepUp: VaultStepUpCredential;
   capture: PortfolioVaultMoveCapture;
 }): Promise<PortfolioVaultMoveInResponse> {
+  // Pre-verify a password step-up BEFORE the capture writes anything (#1528
+  // F1 half 1). The capture completes the header-roster write before E4's
+  // commit verifies the credential, so a mistyped password used to refuse
+  // AFTER the roster ran ahead of the server membership — the common wedge
+  // case. `/auth/reauth` proves the password on its own throttle namespace and
+  // mints nothing; the commit's same-lock §15 verifier remains the boundary.
+  // TOTP and recovery codes are deliberately NOT pre-verified: both are
+  // one-shot consumables that must reach that verifier unspent — for them (and
+  // for REVISION_STALE/429/network refusals) the loader's in-flight roster
+  // tolerance is what heals the vault on the next open.
+  if (input.stepUp.password !== undefined) {
+    await verifySessionPassword(input.stepUp.password, 'portfolio-vault-move-in');
+  }
   // Read the revision FIRST: it binds the capture that follows, and E4 refuses
   // the commit when any write lands in between rather than deleting rows the
-  // encrypted document never captured.
+  // encrypted document never captured. The capture receives the same token as
+  // its opening value; when its own reads provoked one settled rebuild (§9),
+  // the token it ACCEPTED comes back and the commit binds to that instead.
   const { portfolioDataRevision } = await getPortfolioVaultRevision(input.portfolio.id);
-  const { docVersion } = await input.capture.captureMoveIn({
+  const captured = await input.capture.captureMoveIn({
     portfolioId: input.portfolio.id,
     vault: input.vault,
+    portfolioDataRevision,
   });
   return movePortfolioIntoVault(input.portfolio.id, {
     vaultId: input.vault.id,
-    docVersion,
-    portfolioDataRevision,
+    docVersion: captured.docVersion,
+    portfolioDataRevision: captured.portfolioDataRevision ?? portfolioDataRevision,
     stepUp: input.stepUp,
   });
 }
