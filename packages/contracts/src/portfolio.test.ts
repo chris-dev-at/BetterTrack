@@ -4,6 +4,8 @@ import {
   DEFAULT_PORTFOLIO_KIND,
   MAX_CASH_AMOUNT_EUR,
   MAX_TAX_REPORT_FIGURE_EUR,
+  MAX_TRANSACTION_PRICE,
+  MAX_TRANSACTION_QUANTITY,
   PORTFOLIO_KINDS,
   cashEntryRequestSchema,
   cashMovementKindSchema,
@@ -19,6 +21,8 @@ import {
   taxYearChangesResponseSchema,
   taxYearReportResponseSchema,
   taxYearSummarySchema,
+  createTransactionsRequestSchema,
+  transactionInputSchema,
   transactionListQuerySchema,
   transactionListResponseSchema,
   updatePortfolioRequestSchema,
@@ -61,6 +65,79 @@ describe('cash amount validation (§14 hardening)', () => {
     expect(cashPreviewRequestSchema.safeParse({ kind: 'deposit', amountEur: 1e300 }).success).toBe(
       false,
     );
+  });
+});
+
+describe('transaction input caps (#1523)', () => {
+  const baseTx = {
+    assetId: '018f0000-0000-7000-8000-0000000001a1',
+    side: 'buy',
+    quantity: 10,
+    price: 100,
+    executedAt: '2026-03-01T10:00:00.000Z',
+  };
+
+  it('accepts a normal entry and magnitudes just below the staging ceilings', () => {
+    expect(transactionInputSchema.safeParse(baseTx).success).toBe(true);
+    expect(
+      transactionInputSchema.safeParse({
+        ...baseTx,
+        quantity: 999999999999.99,
+        price: 99999999999999.9,
+        fee: 99999999999999.9,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('refuses a quantity at or beyond the numeric(20,8) ceiling', () => {
+    // Exclusive bound: 1e12 itself already needs a 13th integer digit.
+    const atCap = transactionInputSchema.safeParse({
+      ...baseTx,
+      quantity: MAX_TRANSACTION_QUANTITY,
+    });
+    expect(atCap.success).toBe(false);
+    if (!atCap.success) {
+      expect(atCap.error.issues[0]?.message).toBe(
+        `Quantity must be below ${MAX_TRANSACTION_QUANTITY}.`,
+      );
+    }
+    expect(transactionInputSchema.safeParse({ ...baseTx, quantity: 1e26 }).success).toBe(false);
+    expect(transactionInputSchema.safeParse({ ...baseTx, quantity: Infinity }).success).toBe(false);
+  });
+
+  it('refuses a price or fee at or beyond the numeric(20,6) ceiling', () => {
+    expect(
+      transactionInputSchema.safeParse({ ...baseTx, price: MAX_TRANSACTION_PRICE }).success,
+    ).toBe(false);
+    expect(transactionInputSchema.safeParse({ ...baseTx, price: Infinity }).success).toBe(false);
+    expect(
+      transactionInputSchema.safeParse({ ...baseTx, fee: MAX_TRANSACTION_PRICE }).success,
+    ).toBe(false);
+    expect(transactionInputSchema.safeParse({ ...baseTx, fee: Infinity }).success).toBe(false);
+  });
+
+  it('caps uncoveredEntryPrice like any other per-unit price', () => {
+    const uncoveredSell = { ...baseTx, side: 'sell', allowUncovered: true };
+    expect(
+      transactionInputSchema.safeParse({ ...uncoveredSell, uncoveredEntryPrice: 42 }).success,
+    ).toBe(true);
+    expect(
+      transactionInputSchema.safeParse({
+        ...uncoveredSell,
+        uncoveredEntryPrice: MAX_TRANSACTION_PRICE,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('applies the caps to every row of the bulk form', () => {
+    expect(createTransactionsRequestSchema.safeParse({ transactions: [baseTx] }).success).toBe(
+      true,
+    );
+    expect(
+      createTransactionsRequestSchema.safeParse({
+        transactions: [baseTx, { ...baseTx, quantity: MAX_TRANSACTION_QUANTITY }],
+      }).success,
+    ).toBe(false);
   });
 });
 

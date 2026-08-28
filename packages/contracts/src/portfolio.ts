@@ -301,6 +301,20 @@ const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_E
  */
 export const MAX_TAX_REPORT_FIGURE_EUR = 1_000_000_000_000_000;
 
+/**
+ * Exclusive upper bounds for manual transaction entry (#1523) — mirrored from
+ * the ceilings the import-staging columns already enforce on every imported
+ * row: `numeric(20,8)` quantities (12 integer digits) and `numeric(20,6)`
+ * prices/fees (14 integer digits). Without them, a deliberately absurd manual
+ * entry (or an `Infinity`, which zod `.number()` otherwise admits) produces
+ * derived figures that overflow the same Postgres columns and exceed the
+ * {@link MAX_TAX_REPORT_FIGURE_EUR} vault-report row bound — degrading that
+ * report member later instead of being refused at entry. Exclusive because the
+ * bound itself already needs one integer digit too many for its column.
+ */
+export const MAX_TRANSACTION_QUANTITY = 1_000_000_000_000;
+export const MAX_TRANSACTION_PRICE = 100_000_000_000_000;
+
 // --- Taxes (V3-P4, §13.3) ----------------------------------------------------
 
 /**
@@ -551,16 +565,28 @@ export type TransactionSide = z.infer<typeof transactionSideSchema>;
 /**
  * One transaction as submitted by the client (§6.9). Amounts are in the asset's
  * **native currency**. `quantity` is strictly positive; `price` and `fee` are
- * non-negative. `executedAt` is an ISO-8601 timestamp (its date portion is the
- * day key for the value-over-time series).
+ * non-negative; all three are capped at the staging-column ceilings
+ * ({@link MAX_TRANSACTION_QUANTITY} / {@link MAX_TRANSACTION_PRICE}, #1523).
+ * `executedAt` is an ISO-8601 timestamp (its date portion is the day key for
+ * the value-over-time series).
  */
 export const transactionInputSchema = z
   .object({
     assetId: z.string().uuid(),
     side: transactionSideSchema,
-    quantity: z.number().positive(),
-    price: z.number().nonnegative(),
-    fee: z.number().nonnegative().default(0),
+    quantity: z
+      .number()
+      .positive()
+      .lt(MAX_TRANSACTION_QUANTITY, `Quantity must be below ${MAX_TRANSACTION_QUANTITY}.`),
+    price: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Price must be below ${MAX_TRANSACTION_PRICE}.`),
+    fee: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Fee must be below ${MAX_TRANSACTION_PRICE}.`)
+      .default(0),
     executedAt: z.string().datetime(),
     note: z.string().max(1000).nullish(),
     /**
@@ -613,7 +639,11 @@ export const transactionInputSchema = z
      * shares take the sale price as their basis, so they realize 0. Requires
      * `allowUncovered`; rejected on a buy.
      */
-    uncoveredEntryPrice: z.number().nonnegative().finite().optional(),
+    uncoveredEntryPrice: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Price must be below ${MAX_TRANSACTION_PRICE}.`)
+      .optional(),
   })
   .strict()
   .superRefine(refineManualTaxEntry)
