@@ -356,6 +356,82 @@ describe('SignInPanel — two-factor authentication (#298)', () => {
     expect(await screen.findByText(/authenticator app turned off/i)).toBeInTheDocument();
   });
 
+  test('a refused disable code is attributed to the code box, not just the form', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    vi.mocked(disableTwoFactor).mockRejectedValue(
+      new ApiError(400, 'INVALID_TWO_FACTOR_CODE', 'That code is not valid.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    const codeField = screen.getByLabelText(/authenticator code or recovery code/i);
+    await user.type(codeField, '000000');
+    await user.click(screen.getByRole('button', { name: 'Turn off authenticator app' }));
+
+    // The server refused what was typed — that is the box's failure (FRONTEND-09).
+    await waitFor(() => expect(codeField).toHaveAttribute('aria-invalid', 'true'));
+    expect(codeField).toHaveAccessibleDescription(/that code is not valid/i);
+    expect(codeField).toHaveFocus();
+  });
+
+  test('an outage while disabling stays form-level and leaves the code box valid', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    vi.mocked(disableTwoFactor).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    const codeField = screen.getByLabelText(/authenticator code or recovery code/i);
+    await user.type(codeField, '000000');
+    await user.click(screen.getByRole('button', { name: 'Turn off authenticator app' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/something went wrong/i);
+    expect(codeField).not.toHaveAttribute('aria-invalid');
+    expect(document.activeElement).toContainElement(alert);
+  });
+
+  test('a refused email confirmation code is attributed to the code boxes', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+    vi.mocked(confirmEmailTwoFactor).mockRejectedValue(
+      new ApiError(400, 'INVALID_TWO_FACTOR_CODE', 'That code is not valid.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+    await user.type(await screen.findByLabelText('Email code'), '654321');
+    await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
+
+    await waitFor(() => expect(confirmEmailTwoFactor).toHaveBeenCalledWith({ code: '654321' }));
+    const firstBox = screen.getByLabelText('Email code');
+    await waitFor(() => expect(firstBox).toHaveAttribute('aria-invalid', 'true'));
+    expect(firstBox).toHaveAccessibleDescription(/that code is not valid/i);
+    expect(firstBox).toHaveFocus();
+    // Every box of the rejected entry is marked, not only the first.
+    expect(screen.getByLabelText('Email code digit 6')).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  test('a blocked email send stays form-level — no code boxes exist yet', async () => {
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+    vi.mocked(enrollEmailTwoFactor).mockRejectedValue(
+      new ApiError(400, 'TWO_FACTOR_EMAIL_UNAVAILABLE', 'Email delivery is not configured.'),
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/email delivery is not configured/i);
+    expect(document.activeElement).toContainElement(alert);
+  });
+
   test('disables the email method directly from the authenticated session', async () => {
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ emailEnabled: true, recoveryCodesRemaining: 5 }),

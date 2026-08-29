@@ -83,12 +83,18 @@ type RegisterField = 'inviteToken' | 'email' | 'username' | 'password';
  * `emailLocked` (the Google-assisted form) keeps a taken address form-level:
  * the field is read-only there, so blaming it would point at a box the user
  * cannot edit.
+ *
+ * `tokenFieldShown` does the same for the access-token box, which only exists
+ * in `invite_token` mode: the token codes are exactly what a mode that flipped
+ * after the page loaded returns, and blaming an unmounted field would leave the
+ * failure with nowhere to render.
  */
 function registerErrorMessage(
   t: TranslateFn,
   err: unknown,
-  emailLocked: boolean,
+  { emailLocked, tokenFieldShown }: { emailLocked: boolean; tokenFieldShown: boolean },
 ): AttributedError<RegisterField> {
+  const tokenField = tokenFieldShown ? 'inviteToken' : null;
   if (err instanceof ApiError) {
     switch (err.code) {
       case 'USERNAME_TAKEN':
@@ -98,9 +104,9 @@ function registerErrorMessage(
       case 'WEAK_PASSWORD':
         return { field: 'password', message: err.message };
       case 'REGISTRATION_TOKEN_REQUIRED':
-        return { field: 'inviteToken', message: t('auth.register.tokenRequired') };
+        return { field: tokenField, message: t('auth.register.tokenRequired') };
       case 'INVALID_REGISTRATION_TOKEN':
-        return { field: 'inviteToken', message: t('auth.register.invalidToken') };
+        return { field: tokenField, message: t('auth.register.invalidToken') };
       case 'REGISTRATION_CLOSED':
         return { field: null, message: t('auth.register.closedMessage') };
       case 'GOOGLE_REGISTER_TICKET_INVALID':
@@ -348,7 +354,10 @@ export function RegisterPage() {
       // an approved applicant never passes through this form at all.
       navigate('/', { replace: true });
     } catch (err) {
-      const attributed = registerErrorMessage(t, err, connected !== null);
+      const attributed = registerErrorMessage(t, err, {
+        emailLocked: connected !== null,
+        tokenFieldShown: mode === 'invite_token',
+      });
       fail(attributed.field, attributed.message);
     } finally {
       setSubmitting(false);

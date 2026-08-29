@@ -407,6 +407,25 @@ test('a taken username is attributed to the username field, which takes focus', 
   expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
 });
 
+test('a token demand raised after the mode flipped is still shown, form-level', async () => {
+  // The page cached `open`, so it submits without a token; the instance flipped
+  // to invite-token in the meantime and the server demands one. The token field
+  // is not on screen in this mode, so blaming it would render the failure
+  // nowhere — it belongs to the submission instead.
+  vi.mocked(api.register).mockRejectedValue(
+    new ApiError(403, 'REGISTRATION_TOKEN_REQUIRED', 'token required'),
+  );
+
+  await submitOpenRegistration();
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/registration token is required/i);
+  for (const label of ['Email', 'Username', 'Password']) {
+    expect(screen.getByLabelText(label)).not.toHaveAttribute('aria-invalid');
+  }
+  expect(document.activeElement).toContainElement(alert);
+});
+
 test('a rate limit stays a form-level alert and leaves every field valid', async () => {
   vi.mocked(api.register).mockRejectedValue(new ApiError(429, 'RATE_LIMITED', 'slow down'));
 

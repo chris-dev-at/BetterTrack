@@ -27,6 +27,11 @@ export interface AttributedError<F extends string = string> {
  * field is blamed. The DOM is queried rather than a ref threaded through every
  * primitive: `aria-invalid` is exactly the "first invalid field" marker, and the
  * shared primitives do not forward refs to their controls.
+ *
+ * Attribution is fail-safe: if the blamed control is not on screen when the
+ * failure lands (a conditionally rendered field, a mode that flipped under the
+ * form), the message is demoted to the form-level alert instead of rendering
+ * nowhere.
  */
 export function useFieldErrors<F extends string = string>() {
   // Wrapped in a fresh object per failure so two identical errors in a row
@@ -37,7 +42,16 @@ export function useFieldErrors<F extends string = string>() {
 
   useEffect(() => {
     if (!failure) return;
-    const invalid = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+    const invalid = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') ?? null;
+    if (invalid === null && failure.error.field !== null) {
+      // The blamed control is not rendered (or sits outside the form), so its
+      // message would be invisible: `fieldError` feeds a field nobody shows and
+      // `formError` stays null. Demote to form-level rather than dropping the
+      // failure — a submission that fails must always say so somewhere. The
+      // demoted failure carries `field: null`, so this cannot re-enter.
+      setFailure({ error: { field: null, message: failure.error.message } });
+      return;
+    }
     // Guarded: jsdom gives every element a `focus`, but a caller may render the
     // alert conditionally and unmount it before the effect runs.
     (invalid ?? alertRef.current)?.focus?.();

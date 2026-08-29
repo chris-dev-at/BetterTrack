@@ -211,6 +211,16 @@ function twoFactorErrorMessage(t: TranslateFn, err: unknown): string {
   return t('common.genericError');
 }
 
+/**
+ * Which control a two-factor failure belongs to. A code the server refused is
+ * the code box's own failure — that is the field-attributable case. A rate
+ * limit judged nothing the user typed and an outage judged nothing at all, so
+ * both stay with the submission.
+ */
+function twoFactorErrorField(err: unknown): 'code' | null {
+  return err instanceof ApiError && err.status < 500 && err.status !== 429 ? 'code' : null;
+}
+
 /** Recovery codes, shown exactly once after the first method is enabled or a regenerate. */
 function RecoveryCodesReveal({ codes, onDone }: { codes: readonly string[]; onDone: () => void }) {
   const t = useT();
@@ -293,7 +303,7 @@ function EnrollWizard({
   const confirm = useMutation({
     mutationFn: () => confirmTwoFactor({ code }),
     onSuccess: (data) => onEnrolled(data.recoveryCodes),
-    onError: (err) => fail('code', twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(twoFactorErrorField(err), twoFactorErrorMessage(t, err)),
   });
 
   if (!enroll.data) {
@@ -372,26 +382,33 @@ function EnrollWizard({
 function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCancel: () => void }) {
   const t = useT();
   const [code, setCode] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The server rejects the authorizing code itself, so the failure belongs to
+  // the code box; only an outage (>=500) is form-level.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'code'>();
 
   const disable = useMutation({
     mutationFn: () => disableTwoFactor({ code }),
     onSuccess: onDisabled,
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(twoFactorErrorField(err), twoFactorErrorMessage(t, err)),
   });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     disable.mutate();
   }
 
   return (
-    <PanelForm onSubmit={onSubmit}>
-      {error ? <Alert tone="error">{error}</Alert> : null}
+    <PanelForm formRef={formRef} onSubmit={onSubmit}>
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
       {/* Explicit `for`/`id`: the popup's Field renders a sibling label, so an
           implicit (nested) association would not exist. */}
       <Field
+        error={fieldError('code')}
         htmlFor="totp-disable-code"
         label={t('settings.security.twoFactor.totp.disableCodeLabel')}
       >
@@ -515,16 +532,19 @@ function EmailMethodRow({
   const [view, setView] = useState<EmailMethodView>('status');
   const [code, setCode] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Only the confirmation step has a field to blame: a refused mailbox code
+  // belongs to the code boxes. Sending the code and turning the method off are
+  // one-button actions, so their failures stay with the submission.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'code'>();
 
   const enroll = useMutation({
     mutationFn: enrollEmailTwoFactor,
     onSuccess: () => {
-      setError(null);
+      clear();
       setView('confirming');
     },
     // A missing SMTP config surfaces as a clear TWO_FACTOR_EMAIL_UNAVAILABLE message.
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(null, twoFactorErrorMessage(t, err)),
   });
 
   const confirm = useMutation({
@@ -536,22 +556,22 @@ function EmailMethodRow({
       else setNotice(t('settings.security.twoFactor.email.enabledNotice'));
       refresh();
     },
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(twoFactorErrorField(err), twoFactorErrorMessage(t, err)),
   });
 
   const disable = useMutation({
     mutationFn: disableEmailTwoFactor,
     onSuccess: () => {
       setNotice(t('settings.security.twoFactor.email.disabledNotice'));
-      setError(null);
+      clear();
       refresh();
     },
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(null, twoFactorErrorMessage(t, err)),
   });
 
   function onConfirm(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     confirm.mutate();
   }
 
@@ -562,7 +582,11 @@ function EmailMethodRow({
       stack={view === 'confirming'}
     >
       {notice ? <Alert tone="success">{notice}</Alert> : null}
-      {error ? <Alert tone="error">{error}</Alert> : null}
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
       {enabled ? (
         <>
           <span className="bt-pos" style={{ fontSize: 12.5 }}>
@@ -584,10 +608,11 @@ function EmailMethodRow({
           </Button>
         </>
       ) : view === 'confirming' ? (
-        <form className="flex flex-col gap-3" onSubmit={onConfirm}>
+        <form className="flex flex-col gap-3" onSubmit={onConfirm} ref={formRef}>
           <PanelNote>{t('settings.security.twoFactor.email.confirmInstructions')}</PanelNote>
           <PinInput
             autoFocus
+            error={fieldError('code')}
             hint={t('settings.security.twoFactor.email.codeHint')}
             label={t('settings.security.twoFactor.email.codeLabel')}
             length={TOTP_CODE_LENGTH}
@@ -608,7 +633,7 @@ function EmailMethodRow({
               onClick={() => {
                 setView('status');
                 setCode('');
-                setError(null);
+                clear();
               }}
               size="sm"
               type="button"

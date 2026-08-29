@@ -58,10 +58,14 @@ export function LocalNav({
   // V5-P13b: at phone widths the strip scrolls, so a tab past the fold would
   // otherwise sit off-screen with no indication of where you are. Runs on mount
   // and on every route change; `NavLink`'s own `aria-current` marks the target,
-  // so this never re-implements the active rule. `inline: 'nearest'` is a no-op
-  // when the tab is already visible and `block: 'nearest'` keeps the page from
-  // scrolling vertically. Guarded because jsdom has no `scrollIntoView`
-  // (mirrors `CmdKPalette.tsx`).
+  // so this never re-implements the active rule. Both axes ask for the MINIMAL
+  // scroll: `inline: 'nearest'` is a no-op once the tab is horizontally visible,
+  // and `block: 'nearest'` leaves the vertical position alone whenever the strip
+  // is already in view — it does still scroll ancestors when the strip is off
+  // the viewport, which is the same trade-off `CmdKPalette.tsx` takes. Keyed on
+  // `pathname` only: a same-path/different-query switch (the `preserveParams`
+  // callers) does not re-scroll, which is fine because the strip has not moved.
+  // Guarded because jsdom has no `scrollIntoView`.
   useEffect(() => {
     const active = navRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
     active?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
