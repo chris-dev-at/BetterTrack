@@ -192,6 +192,9 @@ export const V5_SURFACE_INVENTORY = [
       'user/portfolio/SourceBadge.tsx',
       'user/components/TransactionDialog.tsx',
       'user/portfolio/ImportPage.tsx',
+      'user/portfolio/import/ImportUnderstanding.tsx',
+      'user/portfolio/import/ImportReview.tsx',
+      'user/portfolio/import/ImportPreviewTable.tsx',
       'user/portfolio/CashSourcesPage.tsx',
       'user/assets/capabilityTags.tsx',
     ],
@@ -220,6 +223,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/control/panels/ConnectionsPanel.test.tsx',
       'user/control/panels/SignInPanel.test.tsx',
       'user/portfolio/ImportPage.test.tsx',
+      'user/portfolio/import/ImportWizardSteps.test.tsx',
       'user/portfolio/SourceBadge.test.tsx',
       'user/portfolio/CashSourcesPage.test.tsx',
     ],
@@ -1908,8 +1912,17 @@ export type V5AsyncStateDebtLedger = Readonly<
  * rendered as a locked one — and the debt ceiling stays at zero. The move-out
  * wizard's vault-config read only MOVED files with the extraction; it is the
  * same single read under the same query key.
+ *
+ * 204 → 206 with the import wizard (#964, §16 2026-07-31). Exactly two NEW read
+ * sites, both on the import surface: `ImportPage`'s cash-tag read, which names
+ * the rule-tag ids a staged cash row was pre-tagged with (the ids are on the
+ * wire, the labels are not), and `ImportReview`'s catalog search, which is how a
+ * user pins an unresolved row to an asset. Both join the page's existing
+ * `AsyncReadState` group — the tag read as a fourth classified reference read,
+ * the search rendering its own loading and empty states inline beside the input
+ * it belongs to — so the debt ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 204;
+export const V5_ASYNC_READ_SITE_BASELINE = 206;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
