@@ -59,7 +59,13 @@ export type ParanoidV1WipeRefusal =
   /** The account's legacy rows moved after the archive was taken. */
   | 'BACKUP_STALE'
   /** This account already has a wipe receipt. */
-  | 'ALREADY_WIPED';
+  | 'ALREADY_WIPED'
+  /**
+   * The account's media include Drive, so the server never held all of its
+   * ciphertext and no server-side archive can cover it (§17's evidence paragraph
+   * is explicitly conditional on server-media-only accounts).
+   */
+  | 'DRIVE_MEDIA_PRESENT';
 
 export interface ParanoidV1WipeOutcome {
   ok: boolean;
@@ -195,6 +201,26 @@ export async function wipeParanoidV1Account(
       .where(eq(paranoidV1WipeReceipts.userId, userId));
     if (existing.length > 0) return { ok: false, refusal: 'ALREADY_WIPED' };
 
+    // ── Could a server-side archive even cover this account? ─────────────────
+    // §17's safety argument is conditional and says so: "every live paranoid
+    // account is server-media-only in practice … The wipe migration still
+    // verifies actual `paranoid_media_set` values rather than assuming."
+    //
+    // This is that verification. A Drive-backed vault's bytes live in the user's
+    // own Drive, which the server cannot read by construction (§8, and no
+    // server-held Drive tokens ever — §22). So the ops archive provably does not
+    // contain them, and destroying this account's rows would delete the locked
+    // state pointing at data no backup holds. Both columns are checked, not just
+    // the media set: `paranoid_drive_attested_version` is independent evidence
+    // that Drive was in play, and a hand-patched row must not slip past.
+    const prior = lockedRows[0]!;
+    if (
+      (prior.paranoid_media_set ?? []).includes('drive') ||
+      prior.paranoid_drive_attested_version !== null
+    ) {
+      return { ok: false, refusal: 'DRIVE_MEDIA_PRESENT' };
+    }
+
     // ── The gate: an attestation that names this account ────────────────────
     const attestations = await tx
       .select({
@@ -243,7 +269,6 @@ export async function wipeParanoidV1Account(
       .set({ privacyMode: 'normal', paranoidMediaSet: null, paranoidDriveAttestedVersion: null })
       .where(eq(users.id, userId));
 
-    const prior = lockedRows[0]!;
     await tx.insert(paranoidV1WipeReceipts).values({
       userId,
       attestationId: attestation.id,

@@ -7,7 +7,7 @@ import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Migration `0101_paranoid_v1_transition` — the E9 / §17 transition machinery.
+ * Migration `0102_paranoid_v1_transition` — the E9 / §17 transition machinery.
  *
  * The single most important property asserted here is a NEGATIVE one: applying
  * this migration must not wipe anybody. Merge is deploy on the production host,

@@ -128,6 +128,19 @@ SELECT encode(
 FROM parts
 `.trim();
 
+/**
+ * The export's reads all run inside ONE transaction at this isolation level.
+ *
+ * REPEATABLE READ specifically, not merely "a transaction": under READ COMMITTED
+ * every statement takes a fresh snapshot, so the table dump and the per-account
+ * digest pass could still straddle a client commit. That is the TOCTOU this
+ * closes — dump reads a vault at v5, a live CAS write lands v6, the digest then
+ * covers v6, and the attestation ends up pairing an archive holding v5 with a
+ * digest of v6. `paranoidV1WipeService` trusts that digest, so it would accept
+ * the stale archive and destroy bytes the backup never contained.
+ */
+export const SNAPSHOT_ISOLATION = 'isolation level repeatable read';
+
 function loadPostgres() {
   try {
     return require(require.resolve('postgres', { paths: [path.join(REPO_ROOT, 'apps', 'api')] }));
@@ -235,20 +248,28 @@ export async function runExport({ port, outDir, createdBy, now = new Date() }) {
   }
   mkdirSync(outDir, { recursive: true });
 
-  const tables = {};
-  const counts = {};
-  for (const table of LEGACY_TABLES) {
-    const rows = await port.readTable(table);
-    tables[table] = rows.map((row) => encodeValue({ ...row }));
-    counts[table] = rows.length;
-  }
+  // ONE snapshot for the whole read side: the seven table dumps, the account list
+  // and every per-account digest. The archive and the digests that authorize its
+  // use must describe the same instant, or the wipe is gated on a fact that was
+  // never true at once. Nothing is written here — the file write, the
+  // verification and the attestation all happen after the snapshot closes.
+  const { tables, counts, userDigests } = await port.withSnapshot(async (snap) => {
+    const tables = {};
+    const counts = {};
+    for (const table of LEGACY_TABLES) {
+      const rows = await snap.readTable(table);
+      tables[table] = rows.map((row) => encodeValue({ ...row }));
+      counts[table] = rows.length;
+    }
 
-  // Per-account digests, computed by Postgres via the statement the wipe shares.
-  const userIds = await port.listUserIds();
-  const userDigests = {};
-  for (const userId of userIds) {
-    userDigests[userId] = await port.accountDigest(userId);
-  }
+    // Per-account digests, computed by Postgres via the statement the wipe shares.
+    const userIds = await snap.listUserIds();
+    const userDigests = {};
+    for (const userId of userIds) {
+      userDigests[userId] = await snap.accountDigest(userId);
+    }
+    return { tables, counts, userDigests };
+  });
 
   const payload = {
     kind: 'bettertrack.paranoid-v1-transition-backup',
@@ -311,14 +332,18 @@ export async function confirmOffsite({ port, archiveFile, offsiteSha256 }) {
   return { attestationId: attestation.id };
 }
 
-/** The real database seam. Identifiers come from the constant list above, never from input. */
-function postgresPort(sql) {
+/**
+ * The read side, bound to whichever client is handed in — the pool for ad-hoc use,
+ * or a transaction handle inside `withSnapshot`. Identifiers come from the constant
+ * list above, never from input.
+ */
+function readersFor(client) {
   return {
     async readTable(name) {
-      return sql`select * from ${sql(name)}`;
+      return client`select * from ${client(name)}`;
     },
     async listUserIds() {
-      const rows = await sql`
+      const rows = await client`
         select "id" from "users"
          where "privacy_mode" = 'paranoid'
             or exists (select 1 from "paranoid_vaults" v where v."user_id" = "users"."id")
@@ -329,8 +354,19 @@ function postgresPort(sql) {
       return rows.map((r) => r.id);
     },
     async accountDigest(userId) {
-      const rows = await sql.unsafe(PARANOID_V1_ACCOUNT_DIGEST_SQL, [userId]);
+      const rows = await client.unsafe(PARANOID_V1_ACCOUNT_DIGEST_SQL, [userId]);
       return rows[0].digest;
+    },
+  };
+}
+
+/** The real database seam. */
+function postgresPort(sql) {
+  return {
+    ...readersFor(sql),
+    /** Every read of one export, in a single REPEATABLE READ snapshot. */
+    async withSnapshot(run) {
+      return sql.begin(SNAPSHOT_ISOLATION, async (tx) => run(readersFor(tx)));
     },
     async insertAttestation(record) {
       await sql`
@@ -365,6 +401,23 @@ async function main() {
   };
   const offsite = flag('--confirm-offsite');
   const archiveArg = flag('--archive');
+
+  // `--confirm-offsite` as the LAST argument used to yield `undefined`, fall
+  // through every check below and silently run a FULL EXPORT instead — an
+  // operator who meant "record that the copy is safe" would have got a brand-new
+  // unconfirmed archive and no error. A flag that is present must carry a value.
+  if (argv.includes('--confirm-offsite') && !offsite) {
+    console.error('--confirm-offsite requires the SHA-256 of the offsite copy as its value.');
+    process.exit(1);
+  }
+  if (offsite && !/^[0-9a-f]{64}$/iu.test(offsite.trim())) {
+    console.error(`--confirm-offsite expects a 64-character hex SHA-256, got: ${offsite}`);
+    process.exit(1);
+  }
+  if (argv.includes('--archive') && !archiveArg) {
+    console.error('--archive requires the path to the archive on this host.');
+    process.exit(1);
+  }
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {

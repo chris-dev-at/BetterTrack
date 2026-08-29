@@ -40,6 +40,7 @@ interface AttestationRecord {
 interface ExportModule {
   LEGACY_TABLES: readonly string[];
   PARANOID_V1_ACCOUNT_DIGEST_SQL: string;
+  SNAPSHOT_ISOLATION: string;
   findGitRoot: (dir: string) => string | null;
   encodeValue: (value: unknown) => unknown;
   verifyArchive: (args: {
@@ -74,21 +75,55 @@ const U2 = '019756a0-0000-7000-8000-0000000e9002';
 class FakePort {
   attestations: AttestationRecord[] = [];
   insertCalls = 0;
+  /** Every read the export performed, in order, tagged with snapshot state. */
+  reads: Array<{ call: string; inSnapshot: boolean }> = [];
+  snapshots = 0;
+  private inSnapshot = false;
 
   constructor(
     private readonly tables: Record<string, Array<Record<string, unknown>>>,
     private readonly digests: Record<string, string>,
   ) {}
 
+  /**
+   * The snapshot contract, enforced rather than assumed. A read outside the
+   * snapshot is the TOCTOU the reviewer found: the archive would hold one
+   * version of a vault while the digest covered another, and the wipe — which
+   * trusts the digest — would then destroy bytes the archive never contained.
+   * The fake refuses instead of quietly succeeding.
+   */
+  async withSnapshot<T>(run: (snap: FakePort) => Promise<T>): Promise<T> {
+    this.snapshots += 1;
+    this.inSnapshot = true;
+    try {
+      return await run(this);
+    } finally {
+      this.inSnapshot = false;
+    }
+  }
+
+  private guard(call: string): void {
+    this.reads.push({ call, inSnapshot: this.inSnapshot });
+    if (!this.inSnapshot) {
+      throw new Error(
+        `${call} ran outside the snapshot: the archive and the digests would not ` +
+          'be guaranteed to describe the same instant.',
+      );
+    }
+  }
+
   listUserIds(): Promise<string[]> {
+    this.guard('listUserIds');
     return Promise.resolve(Object.keys(this.digests));
   }
 
   readTable(name: string): Promise<Array<Record<string, unknown>>> {
+    this.guard(`readTable(${name})`);
     return Promise.resolve(this.tables[name] ?? []);
   }
 
   accountDigest(userId: string): Promise<string> {
+    this.guard('accountDigest');
     return Promise.resolve(this.digests[userId]!);
   }
 
@@ -226,6 +261,31 @@ describe('export-paranoid-v1-backup — §17 step 1, the verified ciphertext bac
 
     expect(port.attestations[0]!.offsiteConfirmedAt).not.toBeNull();
     expect(port.attestations[0]!.offsiteConfirmedSha256).toBe(archiveSha256);
+  });
+
+  it('reads the tables, the account list AND every digest inside ONE snapshot', async () => {
+    const script = await loadScript();
+    const port = freshPort();
+
+    await script.runExport({ port, outDir: outsideRepo(), createdBy: 'owner' });
+
+    // Exactly one snapshot, and not a single read escaped it. Without this the
+    // export is a sequence of independent auto-commit queries: a client CAS-write
+    // landing between the table dump and the digest pass would produce an
+    // attestation whose digest describes data the archive does not contain, and
+    // the wipe would then accept it and destroy the difference.
+    expect(port.snapshots).toBe(1);
+    expect(port.reads.length).toBeGreaterThan(0);
+    expect(port.reads.filter((r) => !r.inSnapshot)).toEqual([]);
+  });
+
+  it('pins the snapshot to REPEATABLE READ — READ COMMITTED would not hold it', async () => {
+    const script = await loadScript();
+    // A transaction alone is not enough: under READ COMMITTED each statement gets
+    // a new snapshot, so the dump and the digests could still straddle a commit.
+    expect(script.SNAPSHOT_ISOLATION).toBe('isolation level repeatable read');
+    const source = readFileSync(SCRIPT, 'utf8');
+    expect(source).toMatch(/sql\.begin\(\s*SNAPSHOT_ISOLATION/u);
   });
 
   it('shares ONE account-digest statement with the wipe service, byte for byte', async () => {

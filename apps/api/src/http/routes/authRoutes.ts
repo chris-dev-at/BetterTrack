@@ -145,7 +145,10 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         ip: req.ip,
       });
       setSessionCookie(res, ctx.config, sessionId, persistent);
-      res.json(toMeResponseFromRow(user));
+      // Stamped here too: a 2FA account completes login through THIS handler, so
+      // without it the §17 fresh-start notice would wait for the first `/auth/me`
+      // instead of appearing at login as §17 step 3 describes.
+      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
 
@@ -258,7 +261,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         req.ip,
       );
       if (req.sessionId) clearSessionCookie(res, ctx.config);
-      res.json(toMeResponseFromRow(user));
+      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
 
@@ -269,7 +272,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // owning session and `account:security` bearer use the same handler.
   router.post('/first-run/complete', requireAuth, async (req, res) => {
     const user = await ctx.auth.completeFirstRun(req.authUser!.id);
-    res.json(toMeResponseFromRow(user));
+    res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
   });
 
   // ── Fresh-start notice after the §17 wipe (PARANOID E9) ────────────────────
@@ -331,7 +334,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       // flavour (persistent Max-Age vs browser-session) — PIN verify never
       // changes persistence (V4-P2b).
       setSessionCookie(res, ctx.config, req.sessionId!, req.sessionPersistent ?? true);
-      res.json(toMeResponseFromRow(user));
+      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
 
@@ -339,13 +342,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.put('/pin', requireAuth, validateBody(setPinRequestSchema), async (req, res) => {
     const body = req.valid?.body as SetPinRequest;
     const user = await ctx.auth.setPin(req.authUser!.id, body.pin, req.ip);
-    res.json(toMeResponseFromRow(user));
+    res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
   });
 
   // Disable the PIN.
   router.delete('/pin', requireAuth, async (req, res) => {
     const user = await ctx.auth.disablePin(req.authUser!.id, req.ip);
-    res.json(toMeResponseFromRow(user));
+    res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
   });
 
   // Set (or clear with null) the AFK auto-lock idle timeout (§6.1, §13.2 V2-P2).
@@ -357,7 +360,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     async (req, res) => {
       const body = req.valid?.body as SetPinLockRequest;
       const user = await ctx.auth.setPinLockIdleMinutes(req.authUser!.id, body.idleMinutes, req.ip);
-      res.json(toMeResponseFromRow(user));
+      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
 
@@ -391,7 +394,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       // persistent one); refresh the long-lived device cookie so the memory stays.
       setSessionCookie(res, ctx.config, result.sessionId, false);
       if (deviceId) setRememberedDeviceCookie(res, ctx.config, deviceId);
-      res.json(toMeResponseFromRow(result.user));
+      res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
     },
   );
 
@@ -637,7 +640,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       const body = req.valid?.body as PasskeyLoginVerifyRequest;
       const { user, sessionId, persistent } = await ctx.passkeys.finishLogin(body, req.ip);
       setSessionCookie(res, ctx.config, sessionId, persistent);
-      res.json(toMeResponseFromRow(user));
+      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
     },
   );
 
@@ -716,7 +719,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         return;
       }
       setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
-      res.json(toMeResponseFromRow(result.user));
+      res.json(await withFreshStartNotice(toMeResponseFromRow(result.user)));
     },
   );
 

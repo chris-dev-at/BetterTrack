@@ -476,8 +476,24 @@ node scripts/ops/export-paranoid-v1-backup.mjs --confirm-offsite <sha256> --arch
 ```
 
 A mismatch refuses and changes nothing. This step is §17's "offsite copy
-confirmed", and the wipe requires it — an archive still sitting only on the prod
-host cannot authorize destruction.
+confirmed", and the wipe requires it — an archive with no confirmation recorded
+cannot authorize destruction.
+
+> **What `--confirm-offsite` actually proves.** It proves the caller possesses a
+> byte-identical copy's digest — nothing more. It cannot prove the copy is
+> anywhere in particular, and a digest computed on the prod host would satisfy it
+> just as well. §17 makes the owner the authority here ("The owner
+> runs/authorizes the backup"): the machine check exists so the wipe cannot run
+> with _no_ confirmation step at all, while the owner remains the one asserting
+> the bytes truly left the host. Digest the copy **at its destination**.
+
+> **One gap, known and accepted.** The account list this script digests covers
+> accounts that are `privacy_mode = 'paranoid'` or hold rows in `paranoid_vaults`,
+> `paranoid_vault_history` or `paranoid_vault_retired`. An account whose ONLY rows
+> live in a secondary table (say a lone `paranoid_rehydration_receipts` row) is not
+> digested and so is never wiped — its rows ride to the §19 train un-quarantined.
+> Those tables hold no ciphertext, so nothing unrecoverable is at stake; the train
+> drops them with the tables.
 
 **3. Review the candidates.** Read-only:
 

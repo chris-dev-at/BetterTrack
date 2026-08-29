@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,10 +55,17 @@ beforeEach(async () => {
 const ATT_A = '019756a0-0000-7000-8000-0000000e9aa1';
 
 /** Turn a seeded user into a live v1 paranoid account with a row in all seven tables. */
-async function seedLegacyParanoid(user: SeededUser): Promise<void> {
+async function seedLegacyParanoid(
+  user: SeededUser,
+  media: { mediaSet?: string[]; driveAttestedVersion?: number } = {},
+): Promise<void> {
   await harness.db
     .update(users)
-    .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server'] })
+    .set({
+      privacyMode: 'paranoid',
+      paranoidMediaSet: media.mediaSet ?? ['server'],
+      paranoidDriveAttestedVersion: media.driveAttestedVersion ?? null,
+    })
     .where(eq(users.id, user.id));
   await harness.db.insert(paranoidVaults).values({
     userId: user.id,
@@ -340,6 +347,36 @@ describe('paranoidV1WipeService — §17 step 2, gated on the verified backup', 
     expect((await privacyOf(bystander.id)).privacyMode).toBe('paranoid');
   });
 
+  it('refuses a drive-bearing account: the server never held those bytes to back up', async () => {
+    // §17's safety argument is explicitly conditional — "every live paranoid
+    // account is server-media-only in practice … The wipe migration still
+    // verifies actual `paranoid_media_set` values rather than assuming." A vault
+    // on Drive is unreachable from the server, so the archive provably cannot
+    // contain it and no attestation may authorise destroying its locked stubs.
+    const user = await harness.seedUser({ email: 'e9-drive@example.test', username: 'e9drive' });
+    await seedLegacyParanoid(user, { mediaSet: ['server', 'drive'] });
+    await attest([user.id], { offsiteConfirmed: true });
+
+    const outcome = await wipeParanoidV1Account(harness.db, user.id);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.refusal).toBe('DRIVE_MEDIA_PRESENT');
+    expect(await liveRowCounts(user.id)).toEqual(ALL_SEVEN_PRESENT);
+    expect((await privacyOf(user.id)).privacyMode).toBe('paranoid');
+  });
+
+  it('refuses on a drive attestation version even if the media set were tampered flat', async () => {
+    const user = await harness.seedUser({ email: 'e9-drivev@example.test', username: 'e9drivev' });
+    await seedLegacyParanoid(user, { mediaSet: ['drive'], driveAttestedVersion: 4 });
+    await attest([user.id], { offsiteConfirmed: true });
+
+    const outcome = await wipeParanoidV1Account(harness.db, user.id);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.refusal).toBe('DRIVE_MEDIA_PRESENT');
+    expect(await liveRowCounts(user.id)).toEqual(ALL_SEVEN_PRESENT);
+  });
+
   it('lists exactly the accounts an operator may wipe, and drops them once wiped', async () => {
     // The statement `pnpm wipe:paranoid-v1` runs, executed verbatim: `jsonb_each_text`
     // over the digest map plus the `::uuid` cast typechecks nowhere and fails at
@@ -377,23 +414,31 @@ describe('paranoidV1WipeService — §17 step 2, gated on the verified backup', 
     expect(await listed()).toEqual([]);
   });
 
-  it('is reachable from no HTTP route — the wipe has no request-driven entry point', () => {
+  it('is imported by nothing under http/ or jobs/ — the wipe has no request-driven entry point', () => {
     // §17 makes the wipe an owner-run operation behind a server-verified backup.
-    // A route would put a destructive account-level operation one authenticated
-    // request away from a caller who cannot satisfy that precondition, so the
-    // service is deliberately wired to nothing. This asserts that structurally:
-    // the only importers are its own suite and the ops runner.
+    // A route or a queued job would put an irreversible account-level destruction
+    // one request (or one enqueue) away from a caller who cannot satisfy that
+    // precondition. This walks the whole of `http/` and `jobs/` rather than
+    // spot-checking three files, so a NEW route file cannot quietly wire it up.
     const apiSrc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-    const routeFiles = readFileSync(
-      path.join(apiSrc, 'http', 'routes', 'accountRoutes.ts'),
-      'utf8',
-    );
-    expect(routeFiles).not.toMatch(/paranoidV1Wipe/u);
 
-    const vaultRoutes = readFileSync(path.join(apiSrc, 'http', 'routes', 'vaultRoutes.ts'), 'utf8');
-    expect(vaultRoutes).not.toMatch(/paranoidV1Wipe/u);
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return walk(full);
+        return entry.isFile() && /\.tsx?$/u.test(entry.name) ? [full] : [];
+      });
 
-    const context = readFileSync(path.join(apiSrc, 'http', 'context.ts'), 'utf8');
-    expect(context).not.toMatch(/paranoidV1Wipe/u);
+    const scanned = [...walk(path.join(apiSrc, 'http')), ...walk(path.join(apiSrc, 'jobs'))];
+    // Guard the scanner itself: an empty sweep would make the assertion vacuous.
+    expect(scanned.length).toBeGreaterThan(20);
+
+    // Match a real import specifier or a real call — not a prose mention. The
+    // routes deliberately DOCUMENT that the wipe has no route, and a bare
+    // substring scan flags that comment as if it were a wiring.
+    const WIRES_UP =
+      /from\s+['"][^'"]*paranoidV1WipeService['"]|require\(\s*['"][^'"]*paranoidV1WipeService['"]|\bwipeParanoidV1Account\s*\(/u;
+    const importers = scanned.filter((file) => WIRES_UP.test(readFileSync(file, 'utf8')));
+    expect(importers.map((f) => path.relative(apiSrc, f))).toEqual([]);
   });
 });

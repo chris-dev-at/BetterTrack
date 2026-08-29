@@ -364,9 +364,10 @@ export const meResponseSchema = z.object({
    * words it as a notice "at next login", and because a login-scoped one-time
    * flag is exactly the shape `firstRunCompletedAt` above already has.
    *
-   * Optional, and read with the same doctrine: `undefined` means "unknown" (an
-   * older server), never "nothing owed". Absent for every account the transition
-   * never touched, which is almost all of them.
+   * Optional on the SCHEMA only, so payloads from an older server still parse.
+   * A current server always sends it — `false` for every account the transition
+   * never touched, which is almost all of them. Read `undefined` as "unknown"
+   * and show nothing; never as "owed".
    */
   paranoidFreshStartPending: z.boolean().optional(),
   createdAt: z.string().datetime(),

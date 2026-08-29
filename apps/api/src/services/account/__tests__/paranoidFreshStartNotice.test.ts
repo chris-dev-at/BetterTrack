@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
@@ -175,6 +178,27 @@ describe('fresh-start notice — §17 step 3', () => {
         .where(eq(paranoidV1WipeReceipts.userId, mine.id))
     )[0]!;
     expect(myReceipt.noticeAcknowledgedAt).not.toBeNull();
+  });
+
+  it('every session payload carries the flag — none may silently clear it', () => {
+    // The SPA adopts a MeResponse by spreading it over the current user
+    // (`setUser(current => ({ ...current, ...me }))`). A handler that returns a
+    // MeResponse WITHOUT this field would therefore overwrite a pending `true`
+    // with `undefined` and make the notice vanish mid-session — e.g. a wiped user
+    // toggling discreet mode or setting a PIN before ever reading the notice.
+    const routes = readFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../http/routes/authRoutes.ts',
+      ),
+      'utf8',
+    );
+    const responses = [...routes.matchAll(/res\.json\(([^;]*?toMeResponse[^;]*?)\);/gu)].map(
+      (m) => m[1]!,
+    );
+    // Guard the extractor: a regex that matched nothing would be vacuous.
+    expect(responses.length).toBeGreaterThan(5);
+    expect(responses.filter((r) => !r.includes('withFreshStartNotice'))).toEqual([]);
   });
 
   it('requires authentication', async () => {
