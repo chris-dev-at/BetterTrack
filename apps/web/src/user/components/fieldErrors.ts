@@ -58,8 +58,6 @@ export function useFieldErrors<F extends string = string>() {
     fieldError: (field: F) => (error?.field === field ? error.message : undefined),
     /** The message no field can own, or `null` — the form-level `Alert`. */
     formError: error !== null && error.field === null ? error.message : null,
-    /** Whether any error is showing, attributed or not. */
-    hasError: error !== null,
     fail,
     clear,
   };

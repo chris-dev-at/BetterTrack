@@ -7,18 +7,23 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
+import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { PinInput } from '../components/PinInput';
 import { Alert, AuthCard, Button } from '../components/ui';
 import type { RememberedAccount } from './rememberedAccount';
 
-/** Friendly message for the codes `POST /auth/pin/quick-auth` can return. */
-function quickAuthErrorMessage(t: TranslateFn, err: unknown): string {
+/**
+ * Friendly message for the codes `POST /auth/pin/quick-auth` can return, with
+ * the rejected PIN attributed to the boxes that hold it (FRONTEND-09); a rate
+ * limit or an outage belongs to the submission instead.
+ */
+function quickAuthErrorMessage(t: TranslateFn, err: unknown): AttributedError<'pin'> {
   if (err instanceof ApiError) {
-    if (err.code === 'INVALID_PIN') return t('auth.pin.invalidPin');
-    if (err.status === 429) return t('auth.pin.rateLimited');
-    if (err.status >= 500) return t('common.genericError');
+    if (err.code === 'INVALID_PIN') return { field: 'pin', message: t('auth.pin.invalidPin') };
+    if (err.status === 429) return { field: null, message: t('auth.pin.rateLimited') };
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
   }
-  return t('auth.pin.verifyFailed');
+  return { field: null, message: t('auth.pin.verifyFailed') };
 }
 
 /** A lettered placeholder for the remembered account (there is no avatar system yet). */
@@ -63,19 +68,24 @@ export function OAuthAccountChooser({
   // shown once a probe reports the auto-pass window is closed.
   const [view, setView] = useState<'choose' | 'pin'>('choose');
   const [pin, setPin] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'pin'>();
   const [busy, setBusy] = useState(false);
   // Remount the PinInput to clear the boxes after a wrong PIN (mirrors PinGate).
   const [attempt, setAttempt] = useState(0);
 
-  function handleError(err: unknown) {
+  /**
+   * `canBlamePin` is false on the probe: no PIN was sent and the boxes are not
+   * even mounted yet, so nothing on screen can carry the failure.
+   */
+  function handleError(err: unknown, canBlamePin: boolean) {
     // A gone/expired server binding means the local memory is stale: forget it
     // and fall back to a blank login rather than trap the user on a dead chooser.
     if (err instanceof ApiError && err.code === 'REMEMBER_DEVICE_UNKNOWN') {
       onAnotherAccount();
       return;
     }
-    setError(quickAuthErrorMessage(t, err));
+    const attributed = quickAuthErrorMessage(t, err);
+    fail(canBlamePin ? attributed.field : null, attributed.message);
   }
 
   // Tapping the remembered name: probe the ~15-min window first (owner: "tapping
@@ -83,7 +93,7 @@ export function OAuthAccountChooser({
   // itself was still shown — this fires only on the tap.
   async function handleLoginAs() {
     if (busy) return;
-    setError(null);
+    clear();
     setBusy(true);
     try {
       const outcome = await quickAuth({});
@@ -94,7 +104,7 @@ export function OAuthAccountChooser({
         setView('pin');
       }
     } catch (err) {
-      handleError(err);
+      handleError(err, false);
     } finally {
       setBusy(false);
     }
@@ -102,7 +112,7 @@ export function OAuthAccountChooser({
 
   async function submitPin(value: string) {
     if (busy) return;
-    setError(null);
+    clear();
     setBusy(true);
     try {
       const outcome = await quickAuth({ pin: value });
@@ -111,12 +121,12 @@ export function OAuthAccountChooser({
         return;
       }
       // A PIN was sent but the server still asks for one — treat as a failed
-      // attempt (defensive; the server does not do this in practice).
-      setError(t('auth.pin.verifyFailed'));
+      // attempt on the boxes (defensive; the server does not do this in practice).
+      fail('pin', t('auth.pin.verifyFailed'));
       setPin('');
       setAttempt((n) => n + 1);
     } catch (err) {
-      handleError(err);
+      handleError(err, true);
       setPin('');
       setAttempt((n) => n + 1);
     } finally {
@@ -133,6 +143,7 @@ export function OAuthAccountChooser({
             if (pin.length === PIN_LENGTH) void submitPin(pin);
           }}
           className="flex flex-col gap-4"
+          ref={formRef}
         >
           <div className="flex items-center gap-3">
             <AccountAvatar username={account.username} />
@@ -143,10 +154,15 @@ export function OAuthAccountChooser({
               })}
             </p>
           </div>
-          {error ? <Alert tone="error">{error}</Alert> : null}
+          {formError ? (
+            <div ref={alertRef} tabIndex={-1}>
+              <Alert tone="error">{formError}</Alert>
+            </div>
+          ) : null}
           <div className="flex justify-center">
             <PinInput
               key={attempt}
+              error={fieldError('pin')}
               label={t('auth.pin.inputLabel')}
               length={PIN_LENGTH}
               value={pin}
@@ -168,7 +184,13 @@ export function OAuthAccountChooser({
     <AuthCard subtitle={t('auth.oauthChooser.subtitle')}>
       <div className="flex flex-col gap-4">
         <p className="bt-muted text-sm">{t('auth.oauthChooser.prompt')}</p>
-        {error ? <Alert tone="error">{error}</Alert> : null}
+        {/* The probe step has no form, so this wrapper is the focus target the
+            failure effect falls back to. */}
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={() => void handleLoginAs()}

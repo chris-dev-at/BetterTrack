@@ -297,7 +297,15 @@ function EnrollWizard({
   });
 
   if (!enroll.data) {
-    return enroll.isError ? <Alert tone="error">{formError}</Alert> : <Skeleton height="h-16" />;
+    // No form to blame yet — but the alert still has to be reachable, so it
+    // carries `alertRef` here too and the failure effect lands on it.
+    return enroll.isError ? (
+      <div ref={alertRef} tabIndex={-1}>
+        <Alert tone="error">{formError}</Alert>
+      </div>
+    ) : (
+      <Skeleton height="h-16" />
+    );
   }
 
   function onSubmit(e: FormEvent) {

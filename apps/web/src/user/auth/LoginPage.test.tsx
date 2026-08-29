@@ -551,6 +551,29 @@ test('chooser: a wrong PIN shows an error and stays on the PIN step', async () =
   // Still on the PIN step (boxes cleared and remounted), never a password field.
   expect(screen.getByLabelText('PIN')).toBeInTheDocument();
   expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+  // FRONTEND-09: the rejection is attributed to the boxes, not just announced
+  // above them, and focus lands on the first one.
+  const first = screen.getByLabelText('PIN');
+  expect(first).toHaveAttribute('aria-invalid', 'true');
+  expect(first).toHaveAccessibleDescription(/incorrect pin/i);
+  expect(first).toHaveFocus();
+});
+
+test('chooser: a failed probe blames no field — there are no boxes on screen yet', async () => {
+  rememberJane();
+  vi.mocked(api.quickAuthPin).mockRejectedValue(new ApiError(500, 'INTERNAL', 'boom'));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await u.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: /log in as jane/i })),
+  );
+
+  // The probe sends no PIN, so the failure stays on the chooser as a form-level
+  // alert that takes focus — never the "wrong PIN" shape.
+  const alert = await screen.findByRole('alert');
+  expect(screen.queryByLabelText('PIN')).not.toBeInTheDocument();
+  expect(document.activeElement).toContainElement(alert);
 });
 
 // ── Always-on username memory (V4-P0 (g)) ────────────────────────────────────
