@@ -3,7 +3,13 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AdminStats, AdminUser, CreateUserResponse, MeResponse } from '@bettertrack/contracts';
+import type {
+  AdminStats,
+  AdminUser,
+  AdminUserListResponse,
+  CreateUserResponse,
+  MeResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import { I18nProvider } from '../../i18n';
@@ -47,11 +53,15 @@ const stats: AdminStats = {
   pendingRegistrationCount: 0,
 };
 
-function renderPage(locale = 'en') {
+function page(users: AdminUser[], total = users.length, offset = 0): AdminUserListResponse {
+  return { users, page: { total, limit: 25, offset } };
+}
+
+function renderPage(locale = 'en', entry = '/admin/users') {
   return render(
     <I18nProvider initialLocale={locale}>
       <AuthProvider>
-        <MemoryRouter initialEntries={['/admin/users']}>
+        <MemoryRouter initialEntries={[entry]}>
           <Routes>
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
@@ -78,6 +88,13 @@ function renderPersistentPage(locale = 'en') {
   );
 }
 
+/** The query the page last sent, so filter/sort/page tests assert the real call. */
+function lastListQuery(): Record<string, unknown> {
+  const calls = vi.mocked(api.listUsers).mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  return (calls[calls.length - 1]?.[0] ?? {}) as Record<string, unknown>;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
@@ -90,10 +107,10 @@ beforeEach(() => {
     recoveryCodesRemaining: 8,
   });
   vi.mocked(api.getStats).mockResolvedValue(stats);
-  vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
+  vi.mocked(api.listUsers).mockResolvedValue(page([jane]));
 });
 
-test('renders the slimmed users table with essential columns and stats', async () => {
+test('renders the users table with essential columns and stats', async () => {
   renderPage();
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
@@ -129,7 +146,7 @@ test('the user link is keyboard-operable without changing the selection', async 
   expect(checkbox).toBeChecked();
   expect(checkbox).toHaveFocus();
 
-  const link = screen.getByRole('link', { name: /jane@bettertrack\.test jane/ });
+  const link = screen.getByRole('link', { name: /jane jane@bettertrack\.test/ });
   expect(link).toHaveAttribute('href', '/admin/users/user-1');
 
   await user.tab();
@@ -157,7 +174,7 @@ test('the users table scrolls horizontally instead of clipping columns', async (
 
   const table = await screen.findByRole('table');
   // jsdom does not calculate CSS overflow, so these classes are the regression contract.
-  expect(table).toHaveClass('min-w-[40rem]');
+  expect(table).toHaveStyle({ minWidth: '56rem' });
   expect(table.parentElement).toHaveClass('overflow-x-auto');
   expect(table.parentElement).not.toHaveClass('overflow-hidden');
 });
@@ -266,4 +283,126 @@ test('renders the P13b users surface in German', async () => {
   expect(screen.getByRole('button', { name: 'Nutzer erstellen' })).toBeInTheDocument();
   expect(screen.getByPlaceholderText('Nach E-Mail oder Benutzername filtern')).toBeInTheDocument();
   expect(screen.getByRole('columnheader', { name: 'Rolle' })).toBeInTheDocument();
+});
+
+// ── #1406 W2: filters, sorting and paging are SERVER-side ────────────────────
+// Each of these asserts the query that actually left the page. A filter that
+// only narrows the rows already in the browser would pass a "the table shows
+// one row" assertion while silently paging past the matches on the server.
+
+test('sends the contract defaults on first load and asks for a bounded page', async () => {
+  renderPage();
+  await screen.findByText('jane@bettertrack.test');
+
+  expect(lastListQuery()).toMatchObject({
+    sort: 'createdAt',
+    direction: 'desc',
+    limit: 25,
+    offset: 0,
+  });
+});
+
+test('a kind filter goes to the server and lands in the URL', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('jane@bettertrack.test');
+
+  await user.selectOptions(screen.getByLabelText('Role'), 'admin');
+
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ role: 'admin' }));
+});
+
+test('a state filter and a privacy filter combine rather than replace each other', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('jane@bettertrack.test');
+
+  await user.selectOptions(screen.getByLabelText('Status'), 'disabled');
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ status: 'disabled' }));
+
+  await user.selectOptions(screen.getByLabelText('Privacy'), 'paranoid');
+  await waitFor(() =>
+    expect(lastListQuery()).toMatchObject({ status: 'disabled', privacyMode: 'paranoid' }),
+  );
+});
+
+test('clicking a column head sorts, and clicking it again flips the direction', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('jane@bettertrack.test');
+
+  await user.click(screen.getByRole('button', { name: /User/ }));
+  await waitFor(() =>
+    expect(lastListQuery()).toMatchObject({ sort: 'username', direction: 'desc' }),
+  );
+
+  await user.click(screen.getByRole('button', { name: /User/ }));
+  await waitFor(() =>
+    expect(lastListQuery()).toMatchObject({ sort: 'username', direction: 'asc' }),
+  );
+
+  // The header announces the state it is in, not just the state it can go to.
+  const header = screen.getByRole('columnheader', { name: /User/ });
+  expect(header).toHaveAttribute('aria-sort', 'ascending');
+});
+
+test('the filter state lives in the URL, so a filtered view is a shareable link', async () => {
+  renderPage('en', '/admin/users?role=admin&status=disabled&sort=email&dir=asc&limit=50&offset=50');
+  await screen.findByText('jane@bettertrack.test');
+
+  expect(lastListQuery()).toMatchObject({
+    role: 'admin',
+    status: 'disabled',
+    sort: 'email',
+    direction: 'asc',
+    limit: 50,
+    offset: 50,
+  });
+});
+
+test('paging asks the server for the next window and reports the real total', async () => {
+  vi.mocked(api.listUsers).mockResolvedValue(page([jane], 60, 0));
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('jane@bettertrack.test');
+
+  expect(screen.getByText('1–1 of 60')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ offset: 25 }));
+});
+
+test('changing a filter returns to the first page instead of stranding the operator', async () => {
+  const user = userEvent.setup();
+  renderPage('en', '/admin/users?offset=50');
+  await screen.findByText('jane@bettertrack.test');
+  expect(lastListQuery()).toMatchObject({ offset: 50 });
+
+  await user.selectOptions(screen.getByLabelText('Role'), 'admin');
+
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ role: 'admin', offset: 0 }));
+});
+
+test('a paranoid account is marked in the list without exposing anything inside the vault', async () => {
+  vi.mocked(api.listUsers).mockResolvedValue(
+    page([
+      {
+        ...jane,
+        privacyMode: 'paranoid',
+        paranoid: {
+          mediaSet: ['server'],
+          vault: { version: 14, sizeBytes: 63897, updatedAt: '2026-08-20T10:00:00.000Z' },
+          historyCount: 13,
+        },
+      },
+    ]),
+  );
+  renderPage();
+
+  const row = (await screen.findByText('jane')).closest('tr');
+  expect(row).not.toBeNull();
+  expect(within(row!).getByText('Paranoid')).toBeInTheDocument();
+  // The list shows the MODE. It never shows the vault's size, version or history.
+  expect(within(row!).queryByText(/63897|63,897/)).not.toBeInTheDocument();
 });

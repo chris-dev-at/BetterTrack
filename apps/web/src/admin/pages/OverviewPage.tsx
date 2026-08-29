@@ -160,9 +160,13 @@ export function OverviewPage() {
     stats.loading || problems.loading || health.loading || email.loading || backup.loading;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <PageHeader title={t('admin.overview.title')} description={t('admin.overview.subtitle')} />
+        <PageHeader
+          eyebrow={t('admin.nav.sections.overview')}
+          title={t('admin.overview.title')}
+          description={t('admin.overview.subtitle')}
+        />
         <Button variant="secondary" onClick={reloadAll} disabled={busy}>
           {busy ? t('common.loading') : t('admin.overview.refresh')}
         </Button>
@@ -172,12 +176,14 @@ export function OverviewPage() {
         <section
           aria-label={t('admin.overview.attention.title')}
           className={cx(
-            'flex flex-col rounded-lg border bg-neutral-900 lg:col-span-2',
-            attention.length > 0 ? 'border-amber-900/70' : 'border-neutral-800',
+            'flex flex-col rounded-none border border-l-[3px] bg-neutral-900 lg:col-span-2',
+            attention.length > 0
+              ? 'border-amber-900/70 border-l-amber-500'
+              : 'border-neutral-800 border-l-neutral-700',
           )}
         >
-          <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-3">
-            <h2 className="text-sm font-semibold text-neutral-100">
+          <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-2.5">
+            <h2 className="text-[12px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
               {t('admin.overview.attention.title')}
             </h2>
             {attention.length > 0 ? (
@@ -261,7 +267,7 @@ export function OverviewPage() {
         className="flex flex-col gap-3"
         ref={tilesRef}
       >
-        <h2 className="text-sm font-semibold text-neutral-100">
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
           {t('admin.overview.tiles.title')}
         </h2>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -495,8 +501,8 @@ function Tile({
 }) {
   const t = useT();
   return (
-    <div className="flex min-h-[104px] flex-col gap-1 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+    <div className="flex min-h-[96px] flex-col gap-1 rounded-none border border-l-[3px] border-neutral-800 border-l-neutral-700 bg-neutral-900 p-3">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">
         {label}
       </span>
       {loading ? (
@@ -507,7 +513,7 @@ function Tile({
             {t('admin.overview.tiles.loadError', { tile: label })}
           </span>
           <button
-            className="text-xs text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="text-xs text-sky-400 underline underline-offset-2 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
             onClick={onRetry}
           >
             {t('common.retry')}
@@ -566,9 +572,11 @@ function BackupTile({
             : 'neutral';
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-4 lg:col-span-2">
+    <div className="flex flex-col gap-2 rounded-none border border-neutral-800 bg-neutral-900 p-4 lg:col-span-2">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-semibold text-neutral-100">{t('admin.backup.title')}</span>
+        <span className="text-[12px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
+          {t('admin.backup.title')}
+        </span>
         {data ? <Badge tone={tone}>{t(`admin.backup.level.${data.level}`)}</Badge> : null}
       </div>
 
@@ -636,14 +644,14 @@ function DeployStrip({
 }) {
   const t = useT();
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+    <div className="flex flex-col gap-2 rounded-none border border-neutral-800 bg-neutral-900 p-4">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-500">
         {t('admin.overview.deploy.title')}
       </span>
-      <div className="flex flex-col gap-1 text-sm text-neutral-200">
+      <div className="flex flex-col gap-1 text-[13px] text-neutral-200">
         <span>
           {t('admin.overview.deploy.web')}{' '}
-          <code className="rounded bg-neutral-950 px-1.5 py-0.5 font-mono text-xs text-sky-200">
+          <code className="rounded-none border border-neutral-800 bg-neutral-950 px-1.5 py-0.5 font-mono text-[11px] text-sky-200">
             {WEB_SHA}
           </code>
         </span>
@@ -693,14 +701,14 @@ function ActivityCard({
   return (
     <section
       aria-label={t('admin.overview.activity.title')}
-      className="flex flex-col rounded-lg border border-neutral-800 bg-neutral-900"
+      className="flex flex-col rounded-none border border-neutral-800 bg-neutral-900"
     >
-      <div className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-3">
-        <h2 className="text-sm font-semibold text-neutral-100">
+      <div className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-2.5">
+        <h2 className="text-[12px] font-semibold uppercase tracking-[0.1em] text-neutral-200">
           {t('admin.overview.activity.title')}
         </h2>
         <Link
-          className="text-xs text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="text-[12px] text-sky-400 underline underline-offset-2 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
           to="/admin/audit"
         >
           {t('admin.overview.activity.viewAll')}

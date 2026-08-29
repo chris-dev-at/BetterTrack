@@ -237,11 +237,14 @@ describe('POST /imports — staged preview', () => {
     const brokers = importBrokerListResponseSchema.parse(
       (await agent.get('/api/v1/imports/brokers')).body,
     );
+    // The hand-written mappers, then the generic understanding path LAST
+    // (#964) — a user whose file no mapper claims can still pick a way through.
     expect(brokers.brokers).toEqual([
       { id: 'trade_republic', label: 'Trade Republic' },
       { id: 'george', label: 'George (Erste Bank)' },
       { id: 'flatex', label: 'Flatex' },
       { id: 'ibkr', label: 'Interactive Brokers' },
+      { id: 'generic', label: 'Work it out from the file' },
     ]);
 
     const manual = await upload(agent, pid, FIXTURE, { brokerId: 'trade_republic' });
@@ -255,12 +258,22 @@ describe('POST /imports — staged preview', () => {
       'IMPORT_BROKER_UNKNOWN',
     );
 
-    const foreign = await upload(agent, pid, 'Date,Type,Symbol\n2024-01-01,BUY,AAPL', {
-      expectedStatus: 400,
-    });
-    expect((foreign as unknown as { error: { code: string } }).error.code).toBe(
-      'IMPORT_BROKER_UNRECOGNIZED',
-    );
+    // A file NO mapper claims is no longer a dead end (#964, §16 2026-07-31
+    // point 1: "accept any file and work out what is in it"). It falls through
+    // to the generic pipeline, which stages it and reports what it understood
+    // — `IMPORT_BROKER_UNRECOGNIZED` is gone from this path.
+    const foreign = await upload(agent, pid, 'Date,Type,Symbol\n2024-01-01,BUY,AAPL');
+    expect(foreign.batch.brokerId).toBe('generic');
+    expect(foreign.understanding?.mappings.map((m) => m.field)).toEqual([
+      'date',
+      'kindHint',
+      'symbol',
+    ]);
+    // …and the row it cannot complete is REPORTED, not dropped: this file names
+    // a trade but carries no quantity or price columns at all.
+    expect(foreign.rows).toHaveLength(1);
+    expect(foreign.rows[0]?.flag).toBe('error');
+    expect(foreign.rows[0]?.message).toMatch(/quantity and price/i);
   });
 
   it('requires a file part', async () => {
