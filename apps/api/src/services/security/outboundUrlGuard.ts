@@ -35,23 +35,69 @@ export interface OutboundUrlGuardOptions {
   resolveDns?: boolean;
   /** Test seam, and a future seam for callers with a pinned DNS resolver. */
   resolver?: OutboundUrlResolver;
+  /**
+   * Accept a plain `http:` destination. OFF by default — only a caller whose
+   * product contract explicitly allows cleartext (outbound webhooks, §13.5
+   * V5-P10) may turn it on.
+   */
+  allowHttp?: boolean;
+  /**
+   * Accept private LAN destinations — RFC1918 (`10/8`, `172.16/12`,
+   * `192.168/16`) and its IPv6 equivalent, unique-local `fc00::/7`. OFF by
+   * default. Loopback, link-local/cloud-metadata (`169.254/16`, `fe80::/10`),
+   * unspecified, broadcast, CGNAT, multicast, reserved and the v4-in-v6
+   * transition ranges stay blocked either way, so this never opens a path to
+   * the deployment's own services.
+   */
+  allowPrivateLan?: boolean;
 }
+
+/**
+ * The egress policy for user-supplied **webhook receivers** (§13.5 V5-P10).
+ *
+ * A self-hosted LAN receiver over plain `http` is a first-class use case the
+ * owner recorded in the contract (`packages/contracts/src/webhooks.ts`), so the
+ * blanket "public HTTPS only" policy would revert a real decision. This relaxes
+ * exactly those two axes and nothing else: loopback, link-local/metadata,
+ * unspecified/broadcast and every other non-routable range stay refused, which
+ * is what closes the blind-SSRF/port-scan surface.
+ */
+export const WEBHOOK_RECEIVER_URL_POLICY: Readonly<
+  Pick<OutboundUrlGuardOptions, 'allowHttp' | 'allowPrivateLan'>
+> = Object.freeze({ allowHttp: true, allowPrivateLan: true });
 
 export class UnsafeOutboundUrlError extends Error {
   readonly code = OUTBOUND_URL_BLOCKED;
 
   constructor(readonly reason: OutboundUrlBlockReason) {
-    super('Outbound URL must target a public HTTPS destination.');
+    super('Outbound URL must target an allowed public destination.');
     this.name = 'UnsafeOutboundUrlError';
   }
 }
 
-// Keep the families in separate lists: Node intentionally treats IPv4 input as
-// IPv4-mapped IPv6 when a list contains mapped-v6 rules. A combined list would
-// therefore make the explicit `::ffff:0:0/96` rule block every public IPv4
-// address too.
-const blockedIpv4Addresses = new BlockList();
-const blockedIpv6Addresses = new BlockList();
+/**
+ * True when the URL was refused **by policy** (bad scheme, localhost, a blocked
+ * address) rather than merely being unresolvable right now. Callers that persist
+ * a URL use this to separate a permanent refusal — never retry, never send —
+ * from a transient DNS condition they may treat like any network failure.
+ */
+export function isOutboundPolicyRefusal(err: unknown): err is UnsafeOutboundUrlError {
+  return err instanceof UnsafeOutboundUrlError && err.reason !== 'invalid_resolved_address';
+}
+
+/**
+ * The subnets the LAN policy ({@link OutboundUrlGuardOptions.allowPrivateLan})
+ * drops from the block lists — and ONLY these. Everything else stays blocked,
+ * including the v4-in-v6 spellings (`::ffff:0:0/96`, `64:ff9b::/96`,
+ * `2002::/16`): a LAN receiver is addressed as `http://192.168.1.50:9000`, so
+ * refusing the exotic encodings costs nothing and keeps `::ffff:127.0.0.1` out.
+ */
+const LAN_ALLOWED_IPV4_SUBNETS: ReadonlySet<string> = new Set([
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+]);
+const LAN_ALLOWED_IPV6_SUBNETS: ReadonlySet<string> = new Set(['fc00::/7']);
 
 // IPv4 addresses that are local, private, link-local, non-routable, multicast,
 // or reserved. Server-side outbound traffic has no legitimate reason to target
@@ -88,12 +134,38 @@ const BLOCKED_IPV6_SUBNETS = [
   ['ff00::', 8], // multicast
 ] as const;
 
-for (const [network, prefix] of BLOCKED_IPV4_SUBNETS) {
-  blockedIpv4Addresses.addSubnet(network, prefix, 'ipv4');
+// Keep the families in separate lists: Node intentionally treats IPv4 input as
+// IPv4-mapped IPv6 when a list contains mapped-v6 rules. A combined list would
+// therefore make the explicit `::ffff:0:0/96` rule block every public IPv4
+// address too. Each family gets a strict list and a LAN-policy list, the latter
+// built from the same subnets minus `LAN_ALLOWED_*`.
+function buildBlockList(
+  subnets: readonly (readonly [string, number])[],
+  family: 'ipv4' | 'ipv6',
+  allowed: ReadonlySet<string>,
+): BlockList {
+  const list = new BlockList();
+  for (const [network, prefix] of subnets) {
+    if (allowed.has(`${network}/${prefix}`)) continue;
+    list.addSubnet(network, prefix, family);
+  }
+  return list;
 }
-for (const [network, prefix] of BLOCKED_IPV6_SUBNETS) {
-  blockedIpv6Addresses.addSubnet(network, prefix, 'ipv6');
-}
+
+const NOTHING_ALLOWED: ReadonlySet<string> = new Set();
+
+const blockedIpv4Addresses = buildBlockList(BLOCKED_IPV4_SUBNETS, 'ipv4', NOTHING_ALLOWED);
+const blockedIpv6Addresses = buildBlockList(BLOCKED_IPV6_SUBNETS, 'ipv6', NOTHING_ALLOWED);
+const lanBlockedIpv4Addresses = buildBlockList(
+  BLOCKED_IPV4_SUBNETS,
+  'ipv4',
+  LAN_ALLOWED_IPV4_SUBNETS,
+);
+const lanBlockedIpv6Addresses = buildBlockList(
+  BLOCKED_IPV6_SUBNETS,
+  'ipv6',
+  LAN_ALLOWED_IPV6_SUBNETS,
+);
 
 const defaultResolver: OutboundUrlResolver = (hostname) =>
   lookup(hostname, { all: true, verbatim: true });
@@ -116,13 +188,14 @@ function isLocalhostName(hostname: string): boolean {
 function assertPublicAddress(
   address: string,
   invalidReason: OutboundUrlBlockReason,
+  allowPrivateLan: boolean,
 ): OutboundUrlAddress {
   const family = isIP(address);
   if (family === 0) throw new UnsafeOutboundUrlError(invalidReason);
-  const blocked =
-    family === 4
-      ? blockedIpv4Addresses.check(address, 'ipv4')
-      : blockedIpv6Addresses.check(address, 'ipv6');
+  const [ipv4List, ipv6List] = allowPrivateLan
+    ? [lanBlockedIpv4Addresses, lanBlockedIpv6Addresses]
+    : [blockedIpv4Addresses, blockedIpv6Addresses];
+  const blocked = family === 4 ? ipv4List.check(address, 'ipv4') : ipv6List.check(address, 'ipv6');
   if (blocked) {
     throw new UnsafeOutboundUrlError('blocked_address');
   }
@@ -140,7 +213,10 @@ async function inspectOutboundUrl(
     throw new UnsafeOutboundUrlError('invalid_url');
   }
 
-  if (url.protocol !== 'https:') {
+  const allowPrivateLan = options.allowPrivateLan === true;
+  const protocolAllowed =
+    url.protocol === 'https:' || (options.allowHttp === true && url.protocol === 'http:');
+  if (!protocolAllowed) {
     throw new UnsafeOutboundUrlError('invalid_protocol');
   }
 
@@ -152,7 +228,7 @@ async function inspectOutboundUrl(
   if (literalFamily !== 0) {
     return {
       url,
-      addresses: [assertPublicAddress(hostname, 'blocked_address')],
+      addresses: [assertPublicAddress(hostname, 'blocked_address', allowPrivateLan)],
     };
   }
 
@@ -165,7 +241,7 @@ async function inspectOutboundUrl(
   return {
     url,
     addresses: addresses.map(({ address }) =>
-      assertPublicAddress(address, 'invalid_resolved_address'),
+      assertPublicAddress(address, 'invalid_resolved_address', allowPrivateLan),
     ),
   };
 }
@@ -220,11 +296,16 @@ export function createPinnedHttpsAgent(target: ResolvedOutboundUrl): HttpsAgent 
 }
 
 /**
- * Validate an HTTPS destination before server-side egress.
+ * Validate a destination before server-side egress. HTTPS-only and
+ * public-only by default; {@link OutboundUrlGuardOptions.allowHttp} and
+ * {@link OutboundUrlGuardOptions.allowPrivateLan} relax exactly those two axes
+ * for callers whose product contract requires it (see
+ * {@link WEBHOOK_RECEIVER_URL_POLICY}).
  *
  * The literal/localhost check is always performed. DNS resolution defaults on,
- * and every returned A/AAAA address must be public; callers that persist a URL
- * may disable DNS only when they repeat the full guard immediately before use.
+ * and every returned A/AAAA address must pass the policy; callers that persist a
+ * URL may disable DNS only when they repeat the full guard immediately before
+ * use.
  */
 export async function assertSafeOutboundUrl(
   input: string,
