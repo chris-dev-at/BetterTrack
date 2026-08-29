@@ -103,9 +103,18 @@ describe('ParanoidEnableWizard', () => {
 
     expect(screen.getByRole('radio', { name: /BetterTrack encrypted storage/i })).toBeChecked();
     expect(screen.getByText('Encrypted on BetterTrack; only you can read it.')).toBeInTheDocument();
-    expect(screen.getByText(/Nothing on BetterTrack servers/i)).not.toBeVisible();
+    expect(screen.getByText(/Nothing is kept on BetterTrack servers/i)).not.toBeVisible();
     await user.click(screen.getByText('Advanced'));
-    expect(screen.getByText('Nothing on BetterTrack servers — not even encrypted.')).toBeVisible();
+    // The choice is made here, so the #1491 staged-copy exception and its TTL
+    // are stated here — an absolute "not even encrypted" would be a promise the
+    // retention breaks on the user's first portfolio move.
+    const driveOnlyBody = screen.getByText(/Nothing is kept on BetterTrack servers/i);
+    expect(driveOnlyBody).toBeVisible();
+    expect(driveOnlyBody).toHaveTextContent('not even encrypted');
+    expect(driveOnlyBody).toHaveTextContent(
+      'This setup writes to Drive only; later, moving a portfolio into or out of this vault does leave its encrypted staging copy on the server',
+    );
+    expect(driveOnlyBody).toHaveTextContent('expires by itself after up to 10 minutes');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.getByText(/different from your BetterTrack login password/i)).toBeInTheDocument();
