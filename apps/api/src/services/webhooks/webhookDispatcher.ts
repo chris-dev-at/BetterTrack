@@ -1,6 +1,7 @@
 import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_DELIVERY_REFUSED_ERROR,
   WEBHOOK_EVENT_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
@@ -14,6 +15,12 @@ import type { DomainEvent } from '../../events';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret } from '../crypto/secretBox';
+import {
+  WEBHOOK_RECEIVER_URL_POLICY,
+  assertSafeOutboundUrl,
+  isOutboundPolicyRefusal,
+  type OutboundUrlResolver,
+} from '../security/outboundUrlGuard';
 
 import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
 
@@ -23,6 +30,11 @@ import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
  * the subscription's secret, HMAC-signs the payload, POSTs it through the
  * transport, records the outcome in the bounded log, and maintains the
  * consecutive-failure streak that auto-disables a dead receiver.
+ *
+ * Egress policy: the target is user-supplied, so every attempt re-runs the
+ * outbound guard under {@link WEBHOOK_RECEIVER_URL_POLICY} before anything is
+ * signed or sent. A refused destination is terminal and logged without a
+ * `responseStatus`; see the comment in `deliver`.
  *
  * Retry model: one `deliver` call is ONE attempt. On a non-final failed attempt
  * it returns `retry` and the BullMQ job throws so the queue re-runs it with
@@ -86,6 +98,8 @@ export interface WebhookDispatcherDeps {
   logger: Logger;
   /** Consecutive failures before auto-disable. Defaults to the contract constant. */
   autoDisableThreshold?: number;
+  /** DNS seam for the per-attempt outbound guard (tests); defaults to the system resolver. */
+  dnsResolver?: OutboundUrlResolver;
   /** Injectable clock (tests) — drives the signature timestamp + row stamps. */
   now?: () => number;
 }
@@ -96,6 +110,8 @@ export interface WebhookDispatcher {
 
 const DELIVERY_USER_AGENT = 'BetterTrack-Webhooks/1';
 const MAX_ERROR_LEN = 200;
+/** Pre-send failure: the destination could not be resolved for this attempt. */
+const UNRESOLVED_DESTINATION_ERROR = 'destination unresolved';
 
 /** Never persist receiver-provided text — keep failure reasons short + structural. */
 function shortReason(status: number | null, error: string | undefined): string {
@@ -112,6 +128,7 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     audit,
     logger,
     autoDisableThreshold = WEBHOOK_AUTO_DISABLE_THRESHOLD,
+    dnsResolver,
     now = Date.now,
   } = deps;
 
@@ -155,11 +172,90 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     return true;
   }
 
+  /** Retry-or-terminal decision for one failed attempt (transport or pre-send). */
+  async function concludeFailure(input: {
+    subscriptionId: string;
+    userId: string;
+    deliveryId: string;
+    eventType: string;
+    attempt: number;
+    maxAttempts: number;
+    status: number | null;
+    error?: string;
+  }): Promise<WebhookDeliveryResult> {
+    // A failed attempt that still has retries left → let BullMQ back off.
+    if (input.attempt < input.maxAttempts) {
+      return { outcome: 'retry', status: input.status, error: input.error };
+    }
+    // Terminal failure: record it and advance the auto-disable streak once.
+    const reason = shortReason(input.status, input.error);
+    const disabled = await recordTerminalFailure({
+      subscriptionId: input.subscriptionId,
+      userId: input.userId,
+      deliveryId: input.deliveryId,
+      eventType: input.eventType,
+      attempts: input.attempt,
+      responseStatus: input.status,
+      error: reason,
+    });
+    return { outcome: disabled ? 'disabled' : 'failed', status: input.status, error: reason };
+  }
+
   return {
     async deliver(job, { attempt, maxAttempts }) {
       const sub = await subscriptions.findById(job.subscriptionId);
       // Deleted or disabled (incl. auto-disabled by a prior delivery) → drop.
       if (!sub || !sub.enabled) return { outcome: 'skipped', status: null };
+
+      // SSRF guard (§8 "Outbound safety", §13.5 V5-P10). The destination is
+      // user-supplied, so it is re-resolved and re-checked on EVERY attempt: a
+      // hostname that was public when the subscription was created can point at
+      // loopback by now (DNS rebinding). Nothing is signed or sent before this
+      // passes. Residual: the transport resolves once more when it connects —
+      // that window is why the guard runs per attempt rather than once.
+      try {
+        await assertSafeOutboundUrl(sub.url, {
+          ...WEBHOOK_RECEIVER_URL_POLICY,
+          resolver: dnsResolver,
+        });
+      } catch (err) {
+        if (isOutboundPolicyRefusal(err)) {
+          // A refused destination cannot become deliverable by retrying, and
+          // retrying is what would turn the delivery log into an internal port
+          // scanner. Terminal on the spot, and never with a `responseStatus` —
+          // open and closed internal ports are indistinguishable in the log.
+          logger.warn(
+            { subscriptionId: sub.id, reason: err.reason },
+            'webhook destination refused by the outbound guard',
+          );
+          const disabled = await recordTerminalFailure({
+            subscriptionId: sub.id,
+            userId: sub.userId,
+            deliveryId: job.deliveryId,
+            eventType: job.event.type,
+            attempts: attempt,
+            responseStatus: null,
+            error: WEBHOOK_DELIVERY_REFUSED_ERROR,
+          });
+          return {
+            outcome: disabled ? 'disabled' : 'failed',
+            status: null,
+            error: WEBHOOK_DELIVERY_REFUSED_ERROR,
+          };
+        }
+        // Merely unresolvable right now (DNS error or empty answer): a network
+        // condition, not a policy refusal — same handling as a failed attempt.
+        return concludeFailure({
+          subscriptionId: sub.id,
+          userId: sub.userId,
+          deliveryId: job.deliveryId,
+          eventType: job.event.type,
+          attempt,
+          maxAttempts,
+          status: null,
+          error: UNRESOLVED_DESTINATION_ERROR,
+        });
+      }
 
       const { body } = buildWebhookPayload(job.deliveryId, job.event);
       const timestamp = String(Math.floor(now() / 1000));
@@ -219,24 +315,16 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
         return { outcome: 'delivered', status: result.status };
       }
 
-      // A failed attempt that still has retries left → let BullMQ back off.
-      if (attempt < maxAttempts) {
-        return { outcome: 'retry', status: result.status, error: result.error };
-      }
-
-      // Terminal failure: record it and advance the auto-disable streak once.
-      const reason = shortReason(result.status, result.error);
-      const disabled = await recordTerminalFailure({
+      return concludeFailure({
         subscriptionId: sub.id,
         userId: sub.userId,
         deliveryId: job.deliveryId,
         eventType: job.event.type,
-        attempts: attempt,
-        responseStatus: result.status,
-        error: reason,
+        attempt,
+        maxAttempts,
+        status: result.status,
+        error: result.error,
       });
-
-      return { outcome: disabled ? 'disabled' : 'failed', status: result.status, error: reason };
     },
   };
 }

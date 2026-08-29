@@ -10,6 +10,7 @@ import {
   encodeVaultDocEnvelope,
   encodeVaultEnvelope,
   readVaultDocServerHeader,
+  PER_VAULT_ERROR_CODES,
   serializePerVaultRetiredServerPurgeTranscript,
   serializeVaultRetirementVersionSet,
   twoFactorEnrollResponseSchema,
@@ -767,6 +768,7 @@ describe('E1 per-vault blind document CAS', () => {
     expect(await write(failedPrecondition.id, verifiedVault.id, 7)).toEqual({
       status: 'precondition_failed',
       currentVersion: null,
+      reason: 'stale',
     });
 
     const captures = await h.db.select().from(portfolioVaultTransitionStates);
@@ -1095,12 +1097,104 @@ describe('E1 per-vault blind document CAS', () => {
       version: 1,
     });
     expect(rejected.status).toBe(412);
-    expect(rejected.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+    // Terminal, not stale (#1498): retrying these bytes under this writeId can
+    // never be accepted, so the code differs from the retryable CAS miss.
+    expect(rejected.body.error.code).toBe(PER_VAULT_ERROR_CODES.writeIdReplayed);
     const current = await agent
       .get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}`)
       .responseType('blob');
     expect(current.status).toBe(200);
     expect(Buffer.from(current.body as Buffer)).toEqual(committed);
+  });
+
+  it('separates the retryable and terminal 412 codes and still converges an identical replay', async () => {
+    // #1498: both CAS refusals stay 412, but a client must be able to tell
+    // "re-read, re-merge, retry" from "this writeId is spent" without a local
+    // (vaultId, docId, writeId) -> sha256(bytes) ledger of its own.
+    const user = await h.seedUser({ email: 'e1-412-split@bt.test', username: 'e1_412_split' });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    const writeId = newId();
+    const committed = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+      writeId,
+      ciphertext: new Uint8Array([0x11, 0x22]),
+    });
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, committed, { create: true })).status,
+    ).toBe(204);
+
+    // 1. Stale precondition — a fresh writeId that simply lost the race. The
+    // client re-reads `currentVersion`, re-merges and its retry can succeed.
+    const stale = await putDoc(
+      agent,
+      vault.id,
+      vault.headerDocId,
+      envelope({
+        vaultId: vault.id,
+        docId: vault.headerDocId,
+        docKind: 'header',
+        docVersion: 2,
+        writeId: newId(),
+        ciphertext: new Uint8Array([0x33, 0x44]),
+      }),
+      { version: 9 },
+    );
+    expect(stale.status).toBe(412);
+    expect(stale.body.error.code).toBe(PER_VAULT_ERROR_CODES.preconditionFailed);
+    expect(stale.body.currentVersion).toBe(1);
+
+    // 2. Replayed writeId, different bytes — terminal. No retry of this exact
+    // request can ever be accepted, and the message says why.
+    const replayed = await putDoc(
+      agent,
+      vault.id,
+      vault.headerDocId,
+      envelope({
+        vaultId: vault.id,
+        docId: vault.headerDocId,
+        docKind: 'header',
+        docVersion: 2,
+        writeId,
+        ciphertext: new Uint8Array([0x55, 0x66]),
+      }),
+      { version: 1 },
+    );
+    expect(replayed.status).toBe(412);
+    expect(replayed.body.error.code).toBe(PER_VAULT_ERROR_CODES.writeIdReplayed);
+    expect(replayed.body.currentVersion).toBe(1);
+    expect(replayed.body.error.message).toContain('mint a new writeId');
+
+    // The whole point: one status, two codes. Conflating them is the retry loop.
+    expect(replayed.body.error.code).not.toBe(stale.body.error.code);
+
+    // 3. Replaying the SAME writeId with byte-identical content is not an error
+    // at all — it converges on the committed version.
+    const identical = await putDoc(agent, vault.id, vault.headerDocId, committed, { version: 1 });
+    expect(identical.status).toBe(204);
+    expect(identical.headers.etag).toBe('"1"');
+
+    // 4. And the retryable case really is retryable: re-read, re-merge onto the
+    // reported currentVersion, retry with a fresh writeId — accepted.
+    const merged = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 2,
+      writeId: newId(),
+      ciphertext: new Uint8Array([0x33, 0x44]),
+    });
+    const retried = await putDoc(agent, vault.id, vault.headerDocId, merged, {
+      version: stale.body.currentVersion as number,
+    });
+    expect(retried.status).toBe(204);
+    const current = await agent
+      .get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}`)
+      .responseType('blob');
+    expect(Buffer.from(current.body as Buffer)).toEqual(merged);
   });
 
   it('never stores two byte strings for one docVersion while preserving non-linear distinct versions', async () => {
