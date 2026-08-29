@@ -1463,7 +1463,13 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       );
       const duplicate = existing.has(hash) || siblings.has(hash);
 
-      await importRepo.setRowResolution({
+      // The write is conditional on the batch still being `pending`, because
+      // everything between the check above and this line is `await`ed and an
+      // apply can claim the batch in that gap. A refused write means the claim
+      // won: the client gets the same 409 a sequential second apply gets, and
+      // the row is left exactly as staging had it rather than half-pinned to an
+      // import that already finished.
+      const pinned = await importRepo.setRowResolution({
         id: row.id,
         assetId: asset.id,
         flag: duplicate ? 'duplicate' : 'mapped',
@@ -1473,6 +1479,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         contentHash: hash,
         resolvedBy: 'user',
       });
+      if (!pinned) {
+        throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+      }
 
       const refreshed = await importRepo.findBatchForOwner(userId, batchId);
       return buildPreview(refreshed ?? batch);

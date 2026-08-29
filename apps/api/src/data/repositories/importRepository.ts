@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, exists, sql } from 'drizzle-orm';
 
 import type {
   ImportRowCandidate,
@@ -243,10 +243,23 @@ export function createImportRepository(db: Database) {
      * with everything that derives from it: the preview verdict, its
      * explanation, the recomputed content hash, and the provenance stamp.
      *
-     * Written as a single `UPDATE` over the row's id — the caller has already
-     * proved ownership by reading the row out of an owner-scoped batch, and
-     * every derived value is decided there, so this stays a persistence
-     * primitive with no judgement of its own.
+     * CONDITIONAL ON THE BATCH STILL BEING PENDING, and that is the whole point
+     * of the correlated `EXISTS` rather than a bare `WHERE id = …`.
+     *
+     * The service checks `pending` and then awaits four more things — the row
+     * list, the asset, the portfolio's existing content hashes — before it gets
+     * here. `applyBatch` can claim the batch anywhere in that gap. An
+     * unconditional write would then stamp a row `mapped` + `resolvedBy: user`
+     * on a batch that has already finished applying, leaving the user with a
+     * row the preview calls pinned, whose apply outcome says `skipped_unmapped`,
+     * whose money was never booked, and which can never be applied because every
+     * retry is a 409. Folding the check INTO the write closes the window
+     * entirely: check and write are one statement, so there is no interval for
+     * the claim to land in.
+     *
+     * Same compare-and-set shape `claimPendingBatch` uses for the batch itself,
+     * for the same reason. Returns whether the row was written; false means the
+     * batch was claimed first and the caller owes the client a 409.
      */
     async setRowResolution(update: {
       id: string;
@@ -255,8 +268,8 @@ export function createImportRepository(db: Database) {
       message: string | null;
       contentHash: string;
       resolvedBy: ImportRowResolvedBy;
-    }): Promise<void> {
-      await db
+    }): Promise<boolean> {
+      const rows = await db
         .update(importRows)
         .set({
           assetId: update.assetId,
@@ -265,7 +278,24 @@ export function createImportRepository(db: Database) {
           contentHash: update.contentHash,
           resolvedBy: update.resolvedBy,
         })
-        .where(eq(importRows.id, update.id));
+        .where(
+          and(
+            eq(importRows.id, update.id),
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(importBatches)
+                .where(
+                  and(
+                    eq(importBatches.id, importRows.batchId),
+                    eq(importBatches.status, 'pending'),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning({ id: importRows.id });
+      return rows.length > 0;
     },
 
     /**

@@ -6,7 +6,13 @@ import { importPreviewResponseSchema } from '@bettertrack/contracts';
 import type { ApplyImportResponse, ImportPreviewResponse } from '@bettertrack/contracts';
 
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
+import { createCashRuleRepository } from '../../../data/repositories/cashRuleRepository';
+import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createCashTagRepository } from '../../../data/repositories/cashTagRepository';
+import { createImportRepository } from '../../../data/repositories/importRepository';
+import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import * as schema from '../../../data/schema';
+import { createImportService } from '../importService';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
@@ -315,5 +321,92 @@ describe('the endpoint is no weaker than the surfaces around it', () => {
       .set(...XRW)
       .send({ assetId: '00000000-0000-4000-8000-000000000000' });
     expect(anon.status).toBe(401);
+  });
+});
+
+describe('pinning cannot race the apply that closes the batch', () => {
+  /**
+   * THE WINDOW (review A2). `resolveRow` reads the batch, checks it is
+   * `pending`, and then awaits four more things — the row list, the asset, the
+   * portfolio's existing content hashes — before it writes. `applyBatch` can
+   * claim the batch anywhere in that gap, and an UNCONDITIONAL write at the end
+   * would then stamp a row `mapped` + `resolvedBy: user` on a batch that has
+   * already finished applying. The user is left looking at a row the preview
+   * calls pinned, whose apply outcome says `skipped_unmapped`, whose money was
+   * never booked, and which they can never apply — every retry is a 409.
+   *
+   * That is the silent-drop class this subsystem exists to prevent, so the
+   * write is conditional on the batch STILL being pending, in one statement.
+   */
+  it('refuses the write when the batch was applied mid-flight, and reports the conflict', async () => {
+    const { agent, pid } = await setup();
+    const preview = await stageUnresolved(agent, pid);
+    const target = unresolvedTrades(preview)[0]!;
+    const asset = await seedAsset('MTA.DE', 'Muster Tech AG');
+
+    // Interleave deterministically: `collectExistingHashes` runs AFTER the
+    // pending check and BEFORE the write, so claiming the batch from inside it
+    // reproduces the race exactly, with no timing luck involved.
+    const repo = createImportRepository(harness.db);
+    let claimed = false;
+    const racingTransactionRepo = {
+      ...createTransactionRepository(harness.db),
+      async listForPortfolio(portfolioId: string) {
+        if (!claimed) {
+          claimed = true;
+          await repo.claimPendingBatch(preview.batch.id, null);
+        }
+        return createTransactionRepository(harness.db).listForPortfolio(portfolioId);
+      },
+    } as ReturnType<typeof createTransactionRepository>;
+
+    const imports = createImportService({
+      importRepo: repo,
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: racingTransactionRepo,
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      cashRuleRepo: createCashRuleRepository(harness.db),
+      cashTagRepo: createCashTagRepository(harness.db),
+      search: harness.ctx.search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [],
+    });
+
+    const userId = (await harness.db.select().from(schema.importBatches))[0]!.ownerId;
+    await expect(
+      imports.resolveRow(userId, preview.batch.id, target.id, { assetId: asset.id }),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'IMPORT_ALREADY_APPLIED' });
+
+    // And the row is untouched — no half-written pin, no false provenance.
+    const rows = await repo.listRows(preview.batch.id);
+    const row = rows.find((r) => r.id === target.id)!;
+    expect(row.flag).toBe('unmapped');
+    expect(row.assetId).toBeNull();
+    expect(row.resolvedBy).toBeNull();
+  });
+
+  it('refuses the write at the repository, so no caller can bypass the check', async () => {
+    const { agent, pid } = await setup();
+    const preview = await stageUnresolved(agent, pid);
+    const target = unresolvedTrades(preview)[0]!;
+    const asset = await seedAsset('MTA.DE', 'Muster Tech AG');
+    const repo = createImportRepository(harness.db);
+
+    // The guarantee belongs to the statement, not to the service that calls it.
+    await repo.claimPendingBatch(preview.batch.id, null);
+    const applied = await repo.setRowResolution({
+      id: target.id,
+      assetId: asset.id,
+      flag: 'mapped',
+      message: null,
+      contentHash: 'whatever',
+      resolvedBy: 'user',
+    });
+    expect(applied).toBe(false);
+
+    const row = (await repo.listRows(preview.batch.id)).find((r) => r.id === target.id)!;
+    expect(row.flag).toBe('unmapped');
+    expect(row.assetId).toBeNull();
   });
 });
