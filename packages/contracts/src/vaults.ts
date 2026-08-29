@@ -1210,7 +1210,22 @@ export function serializePerVaultRetiredServerPurgeTranscript(
   );
 }
 
-/** Stable refusal codes for the parallel per-vault surface. */
+/**
+ * Stable refusal codes for the parallel per-vault surface.
+ *
+ * The document CAS deliberately answers `412` for two different facts, and
+ * they need different client behaviour (#1498), so they carry different codes:
+ *  - `VAULT_PRECONDITION_FAILED` — RETRYABLE. The supplied precondition lost
+ *    the race (or the document already names the supplied `docVersion`). The
+ *    client re-reads, re-merges onto the returned `currentVersion` and retries;
+ *    that retry can succeed.
+ *  - `VAULT_WRITE_ID_REPLAYED` — TERMINAL. This `(vaultId, docId, writeId)` was
+ *    already committed for DIFFERENT envelope bytes, so retrying the request as
+ *    sent can never succeed no matter how often it is repeated; the client must
+ *    mint a NEW `writeId` for the bytes it wants to store. A replay of the same
+ *    `writeId` with byte-identical content is not an error at all — it stays an
+ *    idempotent 204.
+ */
 export const PER_VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
   nameConflict: 'VAULT_NAME_CONFLICT',
@@ -1221,6 +1236,7 @@ export const PER_VAULT_ERROR_CODES = {
   docKindMismatch: 'VAULT_DOC_KIND_MISMATCH',
   preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
   preconditionFailed: 'VAULT_PRECONDITION_FAILED',
+  writeIdReplayed: 'VAULT_WRITE_ID_REPLAYED',
   tooLarge: 'VAULT_TOO_LARGE',
   malformed: 'VAULT_MALFORMED',
   mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
@@ -1234,6 +1250,30 @@ export const PER_VAULT_ERROR_CODES = {
   deleteRetirementPending: 'VAULT_RETIREMENT_PENDING',
 } as const;
 export type PerVaultErrorCode = (typeof PER_VAULT_ERROR_CODES)[keyof typeof PER_VAULT_ERROR_CODES];
+
+/**
+ * The refusal vocabulary one document CAS write can answer with, published as
+ * `x-error-codes` on the doc write routes (#1453, #1498) so a typed client can
+ * tripwire on the codes instead of parsing prose.
+ */
+export const PER_VAULT_DOC_WRITE_ERROR_CODES = [
+  PER_VAULT_ERROR_CODES.notFound,
+  PER_VAULT_ERROR_CODES.portfolioBindingMismatch,
+  PER_VAULT_ERROR_CODES.docAddressMismatch,
+  PER_VAULT_ERROR_CODES.docKindMismatch,
+  PER_VAULT_ERROR_CODES.preconditionRequired,
+  PER_VAULT_ERROR_CODES.preconditionFailed,
+  PER_VAULT_ERROR_CODES.writeIdReplayed,
+  PER_VAULT_ERROR_CODES.tooLarge,
+  PER_VAULT_ERROR_CODES.malformed,
+  PER_VAULT_ERROR_CODES.mediaStateConflict,
+] as const;
+
+/** The refusal vocabulary of one document read on the same surface. */
+export const PER_VAULT_DOC_READ_ERROR_CODES = [
+  PER_VAULT_ERROR_CODES.notFound,
+  PER_VAULT_ERROR_CODES.mediaStateConflict,
+] as const;
 
 // ── Per-portfolio revision token + move-in / move-out bodies (§9, §10) ───────
 

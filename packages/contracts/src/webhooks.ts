@@ -241,9 +241,33 @@ export const webhookDeliveryStatusSchema = z.enum(WEBHOOK_DELIVERY_STATUSES);
 export type WebhookDeliveryStatus = (typeof WEBHOOK_DELIVERY_STATUSES)[number];
 
 /**
+ * Refusal code for a destination the API's outbound (SSRF) guard blocks —
+ * `400 { error: { code: 'WEBHOOK_URL_BLOCKED' } }` from create and update. A
+ * subscription URL is user-supplied, so it is checked against the guard at
+ * create/update AND re-resolved on every delivery attempt (a hostname that was
+ * public at create time can point at loopback later).
+ */
+export const WEBHOOK_URL_BLOCKED_CODE = 'WEBHOOK_URL_BLOCKED';
+
+/**
+ * The delivery-log `error` recorded when an attempt is refused by that guard.
+ * Deliberately destination-independent: a refused delivery never records a
+ * `responseStatus`, so the log cannot distinguish an open internal port from a
+ * closed one.
+ */
+export const WEBHOOK_DELIVERY_REFUSED_ERROR = 'destination not allowed';
+
+/**
  * A target URL: a valid absolute http(s) URL. Plain http is accepted (a
  * self-hosted LAN receiver is a first-class use case); the payload is signed
  * either way so the receiver can still authenticate it.
+ *
+ * Shape only — the network policy lives server-side (§8 "Outbound safety"): the
+ * API additionally refuses any destination that resolves to loopback,
+ * link-local/cloud metadata (`169.254.0.0/16`, `fe80::/10`), unspecified,
+ * broadcast or another non-routable range, with
+ * {@link WEBHOOK_URL_BLOCKED_CODE}. Private LAN ranges (RFC1918, `fc00::/7`)
+ * stay allowed — that is the self-hosted-receiver case above.
  */
 export const webhookUrlSchema = z
   .string()
