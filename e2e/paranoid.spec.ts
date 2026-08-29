@@ -608,22 +608,25 @@ async function createMoneyFixture(owner: E2EUser, harness: Pd9Harness): Promise<
   // final scan instead of proving anything.
   const contentSentinel = `PD9-CONTENT-${randomUUID().replace(/-/g, '')}`;
 
-  // The categories READ stays on HTTP — it is the seed-on-first-use gate for
-  // the default set (and reads survive the island's retirement). The budget
-  // and transaction WRITES go through the harness: V5 cash fusion retired the
-  // island's HTTP writes (410 EXPENSE_AREA_RETIRED), but a pre-fusion account
-  // still carries these rows, and carrying them through enable → purge →
-  // disable → restore is precisely what PD9 gates.
-  const categories = await json<{ categories: Array<{ id: string; name: string }> }>(
-    await api.get(apiV1('/expenses/categories')),
-  );
-  const groceries = categories.categories.find((category) => category.name === 'Groceries');
-  expect(groceries, 'default Groceries category exists').toBeTruthy();
+  // The whole legacy expense fixture — category, budget, transaction — is
+  // seeded through the harness's repositories: V5 cash fusion retired the
+  // island's HTTP writes (410 EXPENSE_AREA_RETIRED) and `GET /expenses/
+  // categories` is a pure read (#1550), so nothing on the HTTP side produces
+  // these rows any more. A pre-fusion account still carries them, and carrying
+  // them through enable → purge → disable → restore is precisely what PD9
+  // gates.
   await harness.seedLegacyExpenseFixture({
     email: owner.email,
     bookedOn: today,
     description: `PD9 current-period groceries ${contentSentinel}`,
   });
+  // Reads DO survive the island's retirement: the seeded category must come
+  // back over HTTP, which is what the enable → restore arm later re-checks.
+  const categories = await json<{ categories: Array<{ id: string; name: string }> }>(
+    await api.get(apiV1('/expenses/categories')),
+  );
+  const groceries = categories.categories.find((category) => category.name === 'Groceries');
+  expect(groceries, 'seeded Groceries category is readable').toBeTruthy();
 
   return { portfolioId: portfolioId!, asset, contentSentinel };
 }
