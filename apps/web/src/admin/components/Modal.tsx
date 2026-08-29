@@ -208,11 +208,14 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="mt-12 w-full max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-6 shadow-xl sm:mt-0"
+        className="mt-12 w-full max-w-md rounded-none border border-neutral-700 bg-neutral-900 p-5 shadow-[8px_8px_0_0_rgba(0,0,0,0.55)] sm:mt-0"
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={onDialogKeyDown}
       >
-        <h2 id={titleId} className="mb-4 text-lg font-semibold text-neutral-100">
+        <h2
+          id={titleId}
+          className="mb-4 text-[13px] font-semibold uppercase tracking-[0.1em] text-neutral-100"
+        >
           {title}
         </h2>
         {children}

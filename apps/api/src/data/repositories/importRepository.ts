@@ -1,6 +1,10 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, exists, sql } from 'drizzle-orm';
 
-import type { ImportRowCandidate } from '@bettertrack/contracts';
+import type {
+  ImportRowCandidate,
+  ImportRowResolvedBy,
+  ImportUnderstanding,
+} from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { assets, importBatches, importRows } from '../schema';
@@ -53,6 +57,12 @@ export interface ImportRowRecord {
    * and the booked movement cannot disagree.
    */
   ruleTagIds: string[] | null;
+  /**
+   * Provenance for {@link ImportRowRecord.assetId} (#964): null when the
+   * pipeline matched the instrument exactly, `'user'` when a person pinned it
+   * in the wizard. Never a model — no AI path mints an asset id.
+   */
+  resolvedBy: ImportRowResolvedBy | null;
 }
 
 export interface CreateImportBatchInput {
@@ -60,6 +70,11 @@ export interface CreateImportBatchInput {
   portfolioId: string;
   brokerId: string;
   filename: string;
+  /**
+   * What the GENERIC pipeline understood about the file (#964). Null for every
+   * batch a broker mapper claimed — that path labels no columns.
+   */
+  understanding?: ImportUnderstanding | null;
 }
 
 /** A staged row as the service normalizes it (ids/batch wiring added here). */
@@ -116,6 +131,7 @@ function toRowRecord(
     asset,
     candidates: row.candidates ?? null,
     ruleTagIds: row.ruleTagIds ?? null,
+    resolvedBy: row.resolvedBy ?? null,
   };
 }
 
@@ -152,6 +168,7 @@ export function createImportRepository(db: Database) {
             portfolioId: input.portfolioId,
             brokerId: input.brokerId,
             filename: input.filename,
+            understanding: input.understanding ?? null,
           })
           .returning();
         if (!batch) throw new Error('Import batch vanished after insert');
@@ -219,6 +236,66 @@ export function createImportRepository(db: Database) {
             .where(eq(importRows.id, u.id));
         }
       });
+    },
+
+    /**
+     * Re-point ONE staged row at the asset a person pinned (#964), together
+     * with everything that derives from it: the preview verdict, its
+     * explanation, the recomputed content hash, and the provenance stamp.
+     *
+     * CONDITIONAL ON THE BATCH STILL BEING PENDING, and that is the whole point
+     * of the correlated `EXISTS` rather than a bare `WHERE id = …`.
+     *
+     * The service checks `pending` and then awaits four more things — the row
+     * list, the asset, the portfolio's existing content hashes — before it gets
+     * here. `applyBatch` can claim the batch anywhere in that gap. An
+     * unconditional write would then stamp a row `mapped` + `resolvedBy: user`
+     * on a batch that has already finished applying, leaving the user with a
+     * row the preview calls pinned, whose apply outcome says `skipped_unmapped`,
+     * whose money was never booked, and which can never be applied because every
+     * retry is a 409. Folding the check INTO the write closes the window
+     * entirely: check and write are one statement, so there is no interval for
+     * the claim to land in.
+     *
+     * Same compare-and-set shape `claimPendingBatch` uses for the batch itself,
+     * for the same reason. Returns whether the row was written; false means the
+     * batch was claimed first and the caller owes the client a 409.
+     */
+    async setRowResolution(update: {
+      id: string;
+      assetId: string;
+      flag: ImportRowRecord['flag'];
+      message: string | null;
+      contentHash: string;
+      resolvedBy: ImportRowResolvedBy;
+    }): Promise<boolean> {
+      const rows = await db
+        .update(importRows)
+        .set({
+          assetId: update.assetId,
+          flag: update.flag,
+          message: update.message,
+          contentHash: update.contentHash,
+          resolvedBy: update.resolvedBy,
+        })
+        .where(
+          and(
+            eq(importRows.id, update.id),
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(importBatches)
+                .where(
+                  and(
+                    eq(importBatches.id, importRows.batchId),
+                    eq(importBatches.status, 'pending'),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning({ id: importRows.id });
+      return rows.length > 0;
     },
 
     /**

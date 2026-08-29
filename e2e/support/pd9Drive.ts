@@ -4,56 +4,27 @@ import { join } from 'node:path';
 import { errors as playwrightErrors } from '@playwright/test';
 import type { BrowserContext, Download, Page, TestInfo } from '@playwright/test';
 
+import { installPd9DriveDoubles, PD9_SECRET_CODES } from './doubles/pd9DriveDouble';
+import type { Pd9BoundaryEvent, Pd9DriveState, Pd9SecretName } from './doubles/pd9DriveDouble';
+
 /**
  * PD9's Drive stand-in lives at the same boundary as the production Google
  * adapter: it implements only the encrypted `DriveDataHome` contract. The
  * browser still runs the real vault crypto, sync engine, media switcher and
  * server APIs. No Drive HTTP/OAuth request exists in this spec.
  *
+ * This module owns the NODE-side harness — the boundary monitor, the source
+ * patch that composes the double in, and the secret-canary scanner. The doubles
+ * themselves live in `doubles/pd9DriveDouble.ts`, where `tsc` can hold them
+ * against the product interfaces they stand in for (#1527).
+ *
  * The secret values are deliberately represented as character codes. A trace
  * of the test source or a Playwright call therefore cannot accidentally carry
  * the passphrase/token canaries as cleartext. The focused spec also disables
  * trace, screenshots and video, then scans every remaining artifact.
  */
-const PD9_SECRET_CODES = {
-  passphrase: [
-    80, 100, 57, 45, 86, 97, 117, 108, 116, 45, 79, 110, 108, 121, 45, 50, 48, 50, 54, 33,
-  ],
-  wrongPassphrase: [
-    80, 100, 57, 45, 87, 114, 111, 110, 103, 45, 79, 110, 108, 121, 45, 50, 48, 50, 54, 33,
-  ],
-  accessToken: [
-    112, 100, 57, 45, 109, 101, 109, 111, 114, 121, 45, 116, 111, 107, 101, 110, 45, 99, 97, 110,
-    97, 114, 121,
-  ],
-} as const;
 
-export type Pd9SecretName = keyof typeof PD9_SECRET_CODES;
-
-export interface Pd9BoundaryEvent {
-  seq: number;
-  kind:
-    | 'drive-read'
-    | 'drive-write'
-    | 'drive-info'
-    | 'drive-observe'
-    | 'drive-converge'
-    | 'drive-delete-verify'
-    | 'drive-delete'
-    | 'server-candidate-write'
-    | 'server-candidate-read'
-    | 'media-patch';
-  version: number | null;
-  outcome: string;
-}
-
-export interface Pd9DriveState {
-  present: boolean;
-  version: number | null;
-  sizeBytes: number;
-  tamperReads: boolean;
-  revision: number;
-}
+export type { Pd9BoundaryEvent, Pd9DriveState, Pd9SecretName } from './doubles/pd9DriveDouble';
 
 export interface Pd9SensitiveCanary {
   name: string;
@@ -64,14 +35,6 @@ export interface Pd9DriveMonitor {
   mark(): number;
   since(mark: number): readonly Pd9BoundaryEvent[];
   all(): readonly Pd9BoundaryEvent[];
-}
-
-interface BrowserDriveControl {
-  state(): Pd9DriveState;
-  ciphertextCanaries(): string[];
-  tamperStored(): void;
-  restoreStored(): void;
-  setTamperReads(enabled: boolean): void;
 }
 
 const VAULT_RUNTIME_PROVIDER_SOURCE_PATH = '/src/user/vault/VaultRuntimeProvider.tsx';
@@ -90,15 +53,6 @@ function isVaultRuntimeProviderSource(url: URL): boolean {
     pathname = url.pathname;
   }
   return pathname.replaceAll('\\', '/').endsWith(VAULT_RUNTIME_PROVIDER_SOURCE_PATH);
-}
-
-declare global {
-  interface Window {
-    __bettertrackPd9Drive?: BrowserDriveControl;
-    __bettertrackPd9Secrets?: Record<Pd9SecretName, string>;
-    __bettertrackE2EVaultDependencies?: unknown;
-    __bettertrackPd9DependencyConsumed?: boolean;
-  }
 }
 
 /** Install the deterministic Drive DataHome and its sanitized ordering monitor. */
@@ -164,324 +118,10 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
     await route.fulfill({ response, body: patched });
   });
 
-  await context.addInitScript((secretCodes) => {
-    const STORAGE_KEY = 'bettertrack:e2e:pd9-drive-v1';
-    const MAGIC_LENGTH = 8;
-    const PREFIX_LENGTH = MAGIC_LENGTH + 4;
-
-    type StoredDrive = {
-      current: string | null;
-      lastGood: string | null;
-      tamperReads: boolean;
-      revision: number;
-    };
-
-    type DriveInfo = {
-      medium: 'drive';
-      version: number;
-      sizeBytes: number;
-      updatedAt: string | null;
-    };
-
-    type DriveRead =
-      | { status: 'absent'; medium: 'drive' }
-      | { status: 'ok'; medium: 'drive'; envelope: Uint8Array; info: DriveInfo };
-
-    const secrets = Object.fromEntries(
-      Object.entries(secretCodes).map(([name, codes]) => [name, String.fromCharCode(...codes)]),
-    ) as Record<Pd9SecretName, string>;
-    window.__bettertrackPd9Secrets = secrets;
-
-    function emptyState(): StoredDrive {
-      return { current: null, lastGood: null, tamperReads: false, revision: 0 };
-    }
-
-    function load(): StoredDrive {
-      try {
-        const value = localStorage.getItem(STORAGE_KEY);
-        return value == null ? emptyState() : (JSON.parse(value) as StoredDrive);
-      } catch {
-        return emptyState();
-      }
-    }
-
-    function save(state: StoredDrive): void {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }
-
-    function toBase64(bytes: Uint8Array): string {
-      let binary = '';
-      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-      }
-      return btoa(binary);
-    }
-
-    function fromBase64(encoded: string): Uint8Array {
-      const binary = atob(encoded);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-      return bytes;
-    }
-
-    function header(bytes: Uint8Array): {
-      formatVersion: number;
-      vaultVersion: number;
-      writtenAt: string;
-    } {
-      const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
-        MAGIC_LENGTH,
-        false,
-      );
-      const value = JSON.parse(
-        new TextDecoder().decode(bytes.subarray(PREFIX_LENGTH, PREFIX_LENGTH + length)),
-      ) as { formatVersion: number; vaultVersion: number; writtenAt: string };
-      return value;
-    }
-
-    function info(bytes: Uint8Array): DriveInfo {
-      const value = header(bytes);
-      return {
-        medium: 'drive',
-        version: value.vaultVersion,
-        sizeBytes: bytes.byteLength,
-        updatedAt: value.writtenAt,
-      };
-    }
-
-    function maybeTampered(encoded: string, enabled: boolean): Uint8Array {
-      const bytes = fromBase64(encoded);
-      if (enabled && bytes.length > 0) bytes[bytes.length - 1]! ^= 0x01;
-      return bytes;
-    }
-
-    async function report(
-      kind: Pd9BoundaryEvent['kind'],
-      version: number | null,
-      outcome = 'ok',
-    ): Promise<void> {
-      const params = new URLSearchParams({
-        kind,
-        version: version == null ? '' : String(version),
-        outcome,
-      });
-      await fetch(`/__bettertrack_pd9_drive__?${params.toString()}`, {
-        method: 'POST',
-        credentials: 'same-origin',
-      });
-    }
-
-    function observation(state = load()): DriveRead {
-      if (state.current == null) return { status: 'absent', medium: 'drive' };
-      const envelope = maybeTampered(state.current, state.tamperReads);
-      return { status: 'ok', medium: 'drive', envelope, info: info(envelope) };
-    }
-
-    const drive = {
-      medium: 'drive' as const,
-      async read(): Promise<DriveRead> {
-        const result = observation();
-        await report('drive-read', result.status === 'ok' ? result.info.version : null);
-        return result;
-      },
-      async write(envelope: Uint8Array, options: { ifVersion: number | null }) {
-        const state = load();
-        const current =
-          state.current == null ? null : header(fromBase64(state.current)).vaultVersion;
-        const outgoing = info(envelope);
-        if (current !== options.ifVersion || (current != null && outgoing.version <= current)) {
-          await report('drive-write', outgoing.version, 'conflict');
-          return { status: 'conflict' as const, medium: 'drive' as const, currentVersion: current };
-        }
-        const encoded = toBase64(envelope);
-        save({
-          current: encoded,
-          lastGood: encoded,
-          tamperReads: state.tamperReads,
-          revision: state.revision + 1,
-        });
-        await report('drive-write', outgoing.version);
-        return { status: 'ok' as const, medium: 'drive' as const, info: outgoing };
-      },
-      async info() {
-        const result = observation();
-        await report('drive-info', result.status === 'ok' ? result.info.version : null);
-        return result.status === 'ok'
-          ? { status: 'ok' as const, medium: 'drive' as const, info: result.info }
-          : result;
-      },
-      async observeReplicas() {
-        const frozen = load();
-        const first = observation(frozen);
-        await report('drive-observe', first.status === 'ok' ? first.info.version : null);
-        return {
-          observations: [first],
-          async converge(envelope: Uint8Array) {
-            const outgoing = info(envelope);
-            const encoded = toBase64(envelope);
-            const current = load();
-            save({
-              current: encoded,
-              lastGood: encoded,
-              tamperReads: current.tamperReads,
-              revision: current.revision + 1,
-            });
-            await report('drive-converge', outgoing.version);
-            return { status: 'ok' as const, medium: 'drive' as const, info: outgoing };
-          },
-          async deleteIfUnchanged(verify: (reads: DriveRead[]) => Promise<boolean>) {
-            const before = load();
-            const refreshed = observation(before);
-            await report(
-              'drive-delete-verify',
-              refreshed.status === 'ok' ? refreshed.info.version : null,
-            );
-            const unchanged =
-              before.revision === frozen.revision && before.current === frozen.current;
-            if (!unchanged || !(await verify([refreshed]))) {
-              return {
-                status: 'transport-failure' as const,
-                failure: {
-                  code: 'api-failure' as const,
-                  message: 'The deterministic Drive copy changed before deletion.',
-                },
-              };
-            }
-            if (before.current == null) return { status: 'ok' as const, deleted: false };
-            save({ ...before, current: null, revision: before.revision + 1 });
-            await report('drive-delete', null);
-            return { status: 'ok' as const, deleted: true };
-          },
-        };
-      },
-    };
-
-    // The full `DriveAuthorizationState` union, not the three states this double
-    // happened to need on the day it was written — see `prepare()` below for why
-    // a partial surface here is expensive.
-    let authorization:
-      | 'consent-required'
-      | 'connected'
-      | 'token-expired'
-      | 'gesture-required'
-      | 'revoked'
-      | 'identity-mismatch' = 'consent-required';
-    const listeners = new Set<() => void>();
-    const notify = () => listeners.forEach((listener) => listener());
-    const tokens = {
-      get state() {
-        return authorization;
-      },
-      /**
-       * REQUIRED since #1354, and its absence is expensive to diagnose.
-       *
-       * The enable wizard now preloads GIS before it offers its authorization
-       * button (`runtime.prepareDriveStorage()` → `tokenClient.prepare()`) and
-       * keeps step 2's Continue disabled until that settles. A double without
-       * this method makes the call reject, `prepareDrive()` lands in its catch,
-       * `drivePreparation` becomes `'failed'`, and Continue is disabled forever —
-       * which surfaces as a six-minute test timeout on a click that retries
-       * thousands of times, not as a readable failure.
-       *
-       * This double has no GIS to load, so preparation is immediate.
-       *
-       * Note this object is built inside `addInitScript` and assigned to an
-       * `unknown`-typed global, so TypeScript CANNOT check it against
-       * `GoogleDriveTokenClient`. Implementing the whole interface — including
-       * the two below, which nothing here calls yet — is the only thing that
-       * stops the next method added to that contract from reappearing as a
-       * mysteriously disabled button.
-       */
-      async prepare() {},
-      identify() {},
-      markRevoked() {
-        authorization = 'revoked';
-        notify();
-      },
-      getAccessToken() {
-        return authorization === 'connected'
-          ? {
-              status: 'ok' as const,
-              accessToken: secrets.accessToken,
-              expiresAt: Date.now() + 3_600_000,
-            }
-          : { status: authorization, message: 'Local PD9 Drive authorization is required.' };
-      },
-      subscribe(listener: () => void) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-      async authorize() {
-        authorization = 'connected';
-        notify();
-        return {
-          status: 'ok' as const,
-          accessToken: secrets.accessToken,
-          expiresAt: Date.now() + 3_600_000,
-        };
-      },
-      clear() {
-        authorization = 'consent-required';
-        notify();
-      },
-      markExpired() {
-        authorization = 'token-expired';
-        notify();
-      },
-    };
-
-    window.__bettertrackPd9Drive = {
-      state() {
-        const state = load();
-        const bytes = state.current == null ? null : fromBase64(state.current);
-        return {
-          present: bytes != null,
-          version: bytes == null ? null : header(bytes).vaultVersion,
-          sizeBytes: bytes?.byteLength ?? 0,
-          tamperReads: state.tamperReads,
-          revision: state.revision,
-        };
-      },
-      ciphertextCanaries() {
-        const encoded = load().current;
-        if (encoded == null) return [];
-        const bytes = fromBase64(encoded);
-        const tail = bytes.subarray(Math.max(0, bytes.byteLength - 24));
-        return [
-          encoded.slice(-32),
-          Array.from(tail, (value) => value.toString(16).padStart(2, '0')).join(''),
-        ];
-      },
-      tamperStored() {
-        const state = load();
-        if (state.current == null) throw new Error('No Drive envelope is available to tamper.');
-        const bytes = fromBase64(state.current);
-        bytes[bytes.length - 1]! ^= 0x01;
-        save({ ...state, current: toBase64(bytes), revision: state.revision + 1 });
-      },
-      restoreStored() {
-        const state = load();
-        if (state.lastGood == null) throw new Error('No known-good Drive envelope is available.');
-        save({
-          ...state,
-          current: state.lastGood,
-          tamperReads: false,
-          revision: state.revision + 1,
-        });
-      },
-      setTamperReads(enabled) {
-        const state = load();
-        save({ ...state, tamperReads: enabled });
-      },
-    };
-    window.__bettertrackE2EVaultDependencies = {
-      clientId: 'pd9-local-drive-data-home',
-      tokens,
-      drive,
-    };
-  }, PD9_SECRET_CODES);
+  // The doubles are STRINGIFIED from a normally-typed module rather than written
+  // inline here: that is what puts them inside `tsc`'s reach. See the header of
+  // `doubles/pd9DriveDouble.ts` for the 3457-click failure this prevents.
+  await context.addInitScript(installPd9DriveDoubles, PD9_SECRET_CODES);
 
   return {
     mark: () => events.length,

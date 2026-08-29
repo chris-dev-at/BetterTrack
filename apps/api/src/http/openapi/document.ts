@@ -68,6 +68,33 @@ const VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION = {
     'portfolio cannot be restored.',
 };
 
+// Same generator gap, fourth instance: the vault import-BATCH `understanding`
+// field is a `.catch(null)`, so a malformed description of a staging preview can
+// never make a portfolio unrestorable. Reachable from
+// `PortfolioVaultMoveOutRequest`, so without a hint `/openapi.json` and `/docs`
+// 500 for the whole API.
+const VAULT_IMPORT_BATCH_UNDERSTANDING_DOCUMENTATION = {
+  type: 'object' as const,
+  nullable: true,
+  description:
+    'What the generic import pipeline understood about an uploaded file (#964): the per-column ' +
+    'labels with their evidence, the headers it could not name, and the sniffed delimiter, ' +
+    'encoding and locales. Tolerant by design: a value that does not match the strict shape is ' +
+    'accepted and read back as null rather than rejecting the batch, because a description of a ' +
+    'short-lived staging preview must never be the reason a portfolio cannot be restored.',
+};
+
+// Same generator gap, fifth instance: the vault import-row `resolvedBy` field is
+// a `.catch(null)` for the same reason as its siblings.
+const VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION = {
+  type: 'string' as const,
+  nullable: true,
+  description:
+    "Provenance for a staged import row's resolved asset (#964): absent when the pipeline " +
+    'matched the instrument exactly, "user" when a person pinned it in the wizard. Tolerant by ' +
+    'design: an unrecognized value is read back as null rather than rejecting the row.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -86,6 +113,14 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowRuleTagIdsSchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportBatchUnderstandingSchema as unknown as HintableSchema,
+    VAULT_IMPORT_BATCH_UNDERSTANDING_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowResolvedBySchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION,
   ],
 ];
 
@@ -247,6 +282,13 @@ const componentSchemas = {
   UpdateAccountDefaultsRequest: contracts.updateAccountDefaultsRequestSchema,
   AdminUser: contracts.adminUserSchema,
   AdminUserListResponse: contracts.adminUserListResponseSchema,
+  // People 360 (#1406 W2) — read-only projections + operator notes.
+  AdminUserAccessResponse: contracts.adminUserAccessResponseSchema,
+  AdminUserSharingResponse: contracts.adminUserSharingResponseSchema,
+  AdminUserSupportResponse: contracts.adminUserSupportResponseSchema,
+  AdminUserNote: contracts.adminUserNoteSchema,
+  AdminUserNoteListResponse: contracts.adminUserNoteListResponseSchema,
+  CreateAdminUserNoteRequest: contracts.createAdminUserNoteRequestSchema,
   CreateUserResponse: contracts.createUserResponseSchema,
   ResetPasswordResponse: contracts.resetPasswordResponseSchema,
   AdminInviteListResponse: contracts.adminInviteListResponseSchema,
@@ -431,6 +473,7 @@ const componentSchemas = {
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
   ImportPreviewResponse: contracts.importPreviewResponseSchema,
   ApplyImportRequest: contracts.applyImportRequestSchema,
+  ResolveImportRowRequest: contracts.resolveImportRowRequestSchema,
   ApplyImportResponse: contracts.applyImportResponseSchema,
   CreateIdeaRequest: contracts.createIdeaRequestSchema,
   UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
@@ -1902,6 +1945,77 @@ const endpoints: EndpointDef[] = [
     query: contracts.auditQuerySchema,
     status: 200,
     response: R.AuditLogListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}',
+    tag: 'Admin',
+    summary: 'One account (#1406 W2 — retires the download-the-whole-list detail read).',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUser,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/access',
+    tag: 'Admin',
+    summary: "One account's live sessions, API keys, OAuth grants and linked identities.",
+    description:
+      'Read-only. Session ids are public revocation handles, never session tokens; ' +
+      'linked identities carry no provider subject and no provider email.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUserAccessResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/sharing',
+    tag: 'Admin',
+    summary: 'How exposed one account is, as counts only.',
+    description:
+      'Counts, never an inventory: PROJECTPLAN §3 forbids admin browsing of user ' +
+      'portfolios, and #1406 defers the sharing inventory. No names, no tokens.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUserSharingResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/support',
+    tag: 'Admin',
+    summary: "One account's support submissions, summarized (no message bodies).",
+    params: contracts.idParamSchema,
+    query: contracts.adminUserSupportQuerySchema,
+    status: 200,
+    response: R.AdminUserSupportResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/notes',
+    tag: 'Admin',
+    summary: 'Admin-private operator notes on one account, newest first.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUserNoteListResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/users/{id}/notes',
+    tag: 'Admin',
+    summary: 'Add an admin-private operator note. Audited; never shown to the user.',
+    params: contracts.idParamSchema,
+    body: contracts.createAdminUserNoteRequestSchema,
+    status: 201,
+    response: R.AdminUserNote,
+  },
+  {
+    method: 'delete',
+    path: '/admin/users/{id}/notes/{noteId}',
+    tag: 'Admin',
+    summary: 'Remove an operator note. Audited; 404 when the note is not on this account.',
+    params: contracts.adminUserNoteParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',
@@ -3486,6 +3600,17 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.ApplyImportResponse,
     idempotent: true,
+  },
+  {
+    method: 'patch',
+    path: '/imports/{batchId}/rows/{rowId}',
+    tag: 'Imports',
+    summary:
+      "Pin an unresolved staged row to an asset the USER picked (#964): the row flips to mapped (or duplicate, if the pin collides with data already recorded), is stamped resolvedBy=user, and the refreshed preview is returned. The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted.",
+    params: contracts.importRowIdParamSchema,
+    body: R.ResolveImportRowRequest,
+    status: 200,
+    response: R.ImportPreviewResponse,
   },
   {
     method: 'delete',
