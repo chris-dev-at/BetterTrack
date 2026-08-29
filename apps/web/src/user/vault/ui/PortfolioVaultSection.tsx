@@ -15,7 +15,7 @@ import {
   submitPortfolioMoveIn,
   type PortfolioVaultMoveCapture,
 } from '../portfolioVaultMove';
-import { PortfolioVaultMoveWizard } from './PortfolioVaultMoveWizard';
+import { isDriveOnlyVaultMedia, PortfolioVaultMoveWizard } from './PortfolioVaultMoveWizard';
 import { vaultEndpointStateQueryKey } from './useVaultEndpointState';
 
 /**
@@ -101,7 +101,11 @@ export function PortfolioVaultSection({
             vaultState: selectedIndex < 0 ? undefined : endpointStates[selectedIndex]?.data,
             capture,
           })}
-          vaults={vaults.map((vault) => ({ id: vault.id, name: vault.name }))}
+          vaults={vaults.map((vault) => ({
+            id: vault.id,
+            name: vault.name,
+            driveOnly: isDriveOnlyVaultMedia(vault.media),
+          }))}
         />
       ) : (
         <div className="bt-settings-row">

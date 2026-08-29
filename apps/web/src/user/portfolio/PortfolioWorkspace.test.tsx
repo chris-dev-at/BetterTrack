@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PortfolioSummary } from '@bettertrack/contracts';
+import type { PortfolioSummary, VaultConfig } from '@bettertrack/contracts';
 
 const mocks = vi.hoisted(() => ({
   stateFor: vi.fn(),
@@ -37,6 +37,28 @@ const LOCKED = {
   vaultId: '018f0000-0000-7000-8000-000000000003',
   isDefault: false,
 } as PortfolioSummary;
+
+/**
+ * Typed on purpose: the move-out action reads `media` to decide the Drive-only
+ * retention copy (#1491), and an `{ id, name }` stub let that read reach
+ * `undefined` at runtime while still compiling. `VaultConfig` makes the next
+ * field the wizard starts reading a type error here instead of a render crash.
+ */
+const VAULT: VaultConfig = {
+  id: LOCKED.vaultId!,
+  name: 'Vault portfolio 1',
+  headerDocId: '018f0000-0000-7000-8000-000000000004',
+  commonDocId: '018f0000-0000-7000-8000-000000000005',
+  media: ['server'],
+  driveConnectionId: null,
+  keyFingerprint: 'abcdefghijklmnop',
+  retirementProofPublicKey: 'cHVibGljLWtleQ',
+  retirementGeneration: 0,
+  mediaAttestedAt: '2026-08-20T10:00:00.000Z',
+  mediaAttestedDriveConnectionId: null,
+  createdAt: '2026-08-20T09:00:00.000Z',
+  updatedAt: '2026-08-20T10:00:00.000Z',
+};
 
 function renderWorkspace(portfolios: PortfolioSummary[], active: string, path = '/portfolio') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -84,7 +106,7 @@ beforeEach(() => {
     requiredAction: { kind: 'provide-phrase', methods: ['enter-words', 'scan-qr'] },
   });
   mocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map() });
-  mocks.listVaults.mockResolvedValue([{ id: LOCKED.vaultId, name: 'Vault portfolio 1' }]);
+  mocks.listVaults.mockResolvedValue([VAULT]);
 });
 
 describe('PortfolioWorkspace vault boundary', () => {
