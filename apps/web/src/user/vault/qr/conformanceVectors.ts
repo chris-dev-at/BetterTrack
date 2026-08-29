@@ -153,13 +153,58 @@ export const VAULT_TRANSFER_CONFORMANCE_VECTORS = {
       'btvault1:m=abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+about',
     outcome: 'missing-vault-id',
   },
+  // Ruling 1 (2026-08-23): a repeat of ANY known key rejects the whole
+  // payload under the one `duplicate-key` outcome — `m` and `v` no longer
+  // report their own `invalid-*` code for a duplicate.
   duplicateMnemonic: {
     payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}`,
-    outcome: 'invalid-mnemonic',
+    outcome: 'duplicate-key',
   },
   duplicateVaultId: {
     payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}`,
-    outcome: 'invalid-vault-id',
+    outcome: 'duplicate-key',
+  },
+  duplicateName: {
+    payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&n=${VAULT_TRANSFER_VECTOR_NAME.replaceAll(' ', '+')}`,
+    outcome: 'duplicate-key',
+  },
+  duplicateFingerprint: {
+    payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&f=${VAULT_TRANSFER_VECTOR_FINGERPRINT}`,
+    outcome: 'duplicate-key',
+  },
+  // The first-wins hazard #1508's review proved live: the blank `n` would be
+  // picked, the trim would drop it, and the real name would be silently
+  // discarded. `duplicate-key` now rejects the whole payload instead.
+  duplicateNameBlankFirst: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=&n=real`,
+    outcome: 'duplicate-key',
+  },
+  // Ruling (2026-08-27, #1508 review): DUPLICATE wins over MISSING — a
+  // duplicate `v` with `m` absent still answers `duplicate-key`, never
+  // `missing-mnemonic`, because the payload is untrustworthy as a whole.
+  duplicateVaultIdMissingMnemonic: {
+    payload: `btvault1:v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}`,
+    outcome: 'duplicate-key',
+  },
+  // Whitespace-only `m`/`v` is ABSENT (ruled 2026-08-26), the same
+  // blank-is-absent principle already applied to `n`.
+  blankMnemonic: {
+    payload: `btvault1:m=+&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}`,
+    outcome: 'missing-mnemonic',
+  },
+  blankVaultId: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=+`,
+    outcome: 'missing-vault-id',
+  },
+  // `btvault1:` whose body is JSON is OUR scheme in an obsolete,
+  // pre-form-encoding shape — not foreign input.
+  legacyJsonBody: {
+    payload: `btvault1:{"m":"${VAULT_TRANSFER_VECTOR_MNEMONIC}","v":"${VAULT_TRANSFER_VECTOR_VAULT_ID}"}`,
+    outcome: 'legacy-code',
+  },
+  legacyJsonBodyLeadingWhitespace: {
+    payload: `btvault1: {"m":"${VAULT_TRANSFER_VECTOR_MNEMONIC}","v":"${VAULT_TRANSFER_VECTOR_VAULT_ID}"}`,
+    outcome: 'legacy-code',
   },
   unknownExtraKey: {
     payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&future=ignored`,
