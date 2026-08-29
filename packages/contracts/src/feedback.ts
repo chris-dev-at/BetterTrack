@@ -87,6 +87,28 @@ export const FEEDBACK_STATUSES = [
 export const feedbackStatusSchema = z.enum(FEEDBACK_STATUSES);
 export type FeedbackStatus = z.infer<typeof feedbackStatusSchema>;
 
+/**
+ * The lifecycle partition behind the per-submitter open cap. Every status must
+ * appear in exactly one of the two lists; the contracts test asserts terminal ∪
+ * open equals `FEEDBACK_STATUSES` and that the two are disjoint, so a seventh
+ * status cannot be added and then silently counted as open (or silently
+ * released from the cap) the way a raw SQL literal list allowed.
+ */
+export const FEEDBACK_TERMINAL_STATUSES = [
+  'declined',
+  'shipped',
+] as const satisfies readonly FeedbackStatus[];
+export type FeedbackTerminalStatus = (typeof FEEDBACK_TERMINAL_STATUSES)[number];
+
+/** The complement of the terminal set: what still occupies an open slot. */
+export const FEEDBACK_OPEN_STATUSES = [
+  'new',
+  'triaged',
+  'working_on_it',
+  'saved_as_future_idea',
+] as const satisfies readonly FeedbackStatus[];
+export type FeedbackOpenStatus = (typeof FEEDBACK_OPEN_STATUSES)[number];
+
 export const FEEDBACK_DECLINED_REASON_MAX_LENGTH = 1000;
 export const FEEDBACK_SHIPPED_VERSION_MAX_LENGTH = 64;
 
@@ -387,7 +409,17 @@ export const updateFeedbackArchiveResponseSchema = z
   .strict();
 export type UpdateFeedbackArchiveResponse = z.infer<typeof updateFeedbackArchiveResponseSchema>;
 
-/** The existing generic admin PATCH accepts exactly one independent mutation. */
+/**
+ * The existing generic admin PATCH accepts exactly one independent mutation.
+ *
+ * The `.strict()` on BOTH members is load-bearing, not cosmetic: the route
+ * discriminates on `'archived' in body` (`adminFeedbackRoutes.ts`), which is
+ * only sound because a status body cannot carry an `archived` key past
+ * validation. A future non-strict member would silently route a status body
+ * into the archive branch. Re-check this when the zod v4 migration (#1031)
+ * lands — its unknown-key defaults are the tripwire that would erase the
+ * guarantee without touching this file.
+ */
 export const updateFeedbackRequestSchema = z.union([
   updateFeedbackStatusRequestSchema,
   updateFeedbackArchiveRequestSchema,

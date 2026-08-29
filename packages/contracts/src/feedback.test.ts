@@ -6,13 +6,17 @@ import {
   FEEDBACK_CONTEXT_MAX_KEYS,
   FEEDBACK_DECLINED_REASON_REQUIRED,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_OPEN_STATUSES,
   FEEDBACK_SHIPPED_VERSION_REQUIRED,
+  FEEDBACK_STATUSES,
   FEEDBACK_STATUS_DETAILS_INVALID,
   FEEDBACK_SUBJECT_MAX_LENGTH,
+  FEEDBACK_TERMINAL_STATUSES,
   FEEDBACK_THREAD_MESSAGE_MAX_LENGTH,
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
   createFeedbackRequestSchema,
+  feedbackStatusSchema,
   feedbackThreadMessageSchema,
   feedbackThreadResponseSchema,
   myFeedbackResponseSchema,
@@ -21,6 +25,7 @@ import {
   updateFeedbackArchiveResponseSchema,
   updateFeedbackRequestSchema,
   updateFeedbackStatusRequestSchema,
+  type FeedbackStatus,
 } from './feedback';
 
 describe('feedback contracts', () => {
@@ -163,6 +168,23 @@ describe('feedback contracts', () => {
       }).success,
     ).toBe(true);
     expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'closed' }).success).toBe(false);
+  });
+
+  it('partitions every lifecycle status into exactly one of terminal and open', () => {
+    // The open-submission cap counts "not terminal" rows. Both halves are
+    // declared, so a seventh status added by a later phase fails here instead of
+    // silently occupying (or silently escaping) an open slot in the repository.
+    expect([...FEEDBACK_TERMINAL_STATUSES, ...FEEDBACK_OPEN_STATUSES].sort()).toEqual(
+      [...FEEDBACK_STATUSES].sort(),
+    );
+    expect(
+      FEEDBACK_TERMINAL_STATUSES.filter((status) =>
+        (FEEDBACK_OPEN_STATUSES as readonly FeedbackStatus[]).includes(status),
+      ),
+    ).toEqual([]);
+    for (const status of [...FEEDBACK_TERMINAL_STATUSES, ...FEEDBACK_OPEN_STATUSES]) {
+      expect(feedbackStatusSchema.safeParse(status).success, status).toBe(true);
+    }
   });
 
   it('separates archive state from lifecycle transitions on the generic admin PATCH', () => {

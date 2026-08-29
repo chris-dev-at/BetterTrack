@@ -27,13 +27,24 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
     res.json(await ctx.feedback.listMine(req.authUser!.id));
   });
 
-  router.delete('/:id', validateParams(idParamSchema), async (req, res) => {
-    const { id } = req.valid?.params as { id: string };
-    if (!(await ctx.feedback.deleteMine(req.authUser!.id, id))) {
-      throw notFound('Feedback not found.');
-    }
-    res.status(204).send();
-  });
+  router.delete(
+    '/:id',
+    // A tombstone is a cheap owner-scoped single-row UPDATE, but nothing bounded
+    // it: a session could loop DELETE unmetered. It rides the submission budget
+    // rather than the capture one on purpose — metering deletes at five per hour
+    // would spend exactly the allowance the open-cap 409 tells the submitter to
+    // reclaim ("delete an open request before submitting another"), turning the
+    // documented recovery path into a lockout.
+    limiters.feedbackThread,
+    validateParams(idParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      if (!(await ctx.feedback.deleteMine(req.authUser!.id, id))) {
+        throw notFound('Feedback not found.');
+      }
+      res.status(204).send();
+    },
+  );
 
   router.get(
     '/:id/messages',
