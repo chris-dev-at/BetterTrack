@@ -3215,7 +3215,7 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/expenses/categories',
     tag: 'Expenses',
-    summary: 'The caller’s spending/income categories (defaults seeded on first read).',
+    summary: 'The caller’s spending/income categories (a pure read; never seeds).',
     status: 200,
     response: R.ExpenseCategoryListResponse,
   },

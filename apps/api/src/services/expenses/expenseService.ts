@@ -20,7 +20,6 @@ import { EXPENSE_TRANSACTION_LIST_DEFAULT } from '@bettertrack/contracts';
 
 import { badRequest, conflict, notFound } from '../../errors';
 import type {
-  CreateExpenseCategoryInput,
   ExpenseCategoryRecord,
   ExpenseCategoryRepository,
   ExpenseRuleRecord,
@@ -38,39 +37,12 @@ import { isSupportedExpenseRuleRegex } from './ruleEngine';
  * interaction").
  *
  * The service owns the rules the thin handlers stay out of:
- *  - **Default seeding.** Listing categories seeds a sensible starter set the
- *    first time a user has none (idempotent, race-safe) — so the category
- *    manager is never an empty void.
  *  - **Owner validation of a referenced category (§8).** A transaction or rule
  *    may only point at a category the caller owns; a foreign/unknown id is a
  *    uniform 400, never an IDOR or an existence probe.
  *  - **Rule shapes only.** Rules are stored and CRUD-ed here; their evaluation
  *    (auto-categorization on import) is issue 2/3.
  */
-
-/**
- * The starter category set seeded on first use. These are editable seed DATA
- * (the user renames/deletes them; rules match on them) — not app chrome — so
- * they intentionally ship as neutral English names rather than i18n keys; the
- * rendered UI around them is fully localized. AT-relevant everyday buckets, kept
- * compact per the anti-bloat rule.
- */
-export const DEFAULT_EXPENSE_CATEGORIES: readonly CreateExpenseCategoryInput[] = [
-  { name: 'Groceries', direction: 'expense', color: '#22c55e' },
-  { name: 'Rent & Housing', direction: 'expense', color: '#6366f1' },
-  { name: 'Utilities', direction: 'expense', color: '#06b6d4' },
-  { name: 'Transport', direction: 'expense', color: '#f59e0b' },
-  { name: 'Dining & Takeout', direction: 'expense', color: '#ef4444' },
-  { name: 'Shopping', direction: 'expense', color: '#ec4899' },
-  { name: 'Health', direction: 'expense', color: '#14b8a6' },
-  { name: 'Entertainment', direction: 'expense', color: '#a855f7' },
-  { name: 'Insurance', direction: 'expense', color: '#64748b' },
-  { name: 'Subscriptions', direction: 'expense', color: '#8b5cf6' },
-  { name: 'Travel', direction: 'expense', color: '#0ea5e9' },
-  { name: 'Other', direction: 'expense', color: '#94a3b8' },
-  { name: 'Salary', direction: 'income', color: '#10b981' },
-  { name: 'Other income', direction: 'income', color: '#34d399' },
-];
 
 /**
  * Called after a transaction write so budgets (issue 3/3) can re-evaluate the
@@ -242,11 +214,12 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
   return {
     // ── Categories ──
     async listCategories(userId) {
-      // Seed the sensible starter set the first time a user opens the area, so
-      // the category manager is never empty. Idempotent + race-safe.
-      if ((await categories.countForOwner(userId)) === 0) {
-        await categories.insertDefaults(userId, [...DEFAULT_EXPENSE_CATEGORIES]);
-      }
+      // A PURE READ. This used to seed a starter set when the owner had none,
+      // which outlived its purpose at the cash fusion: the expense area's writes
+      // are retired (410) and its rows now live on the portfolio cash ledger, so
+      // an implicit insert here only re-opens the divergence the retirement gate
+      // exists to close — and re-enters the account into the catch-up script's
+      // owner set, materialising starter `cash_tags` the user never created.
       const records = await categories.listForOwner(userId);
       return { categories: records.map(toCategory) };
     },
