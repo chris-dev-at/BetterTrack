@@ -6,6 +6,7 @@ import {
   type ApplyImportResponse,
   type ImportBrokerListResponse,
   type ImportPreviewResponse,
+  type ResolveImportRowRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -49,6 +50,27 @@ export async function applyImportBatch(
     body,
   });
   return applyImportResponseSchema.parse(data);
+}
+
+/**
+ * `PATCH /imports/:batchId/rows/:rowId` — pin an unresolved row to an asset the
+ * USER picked (#964, §16 2026-07-31 point 4).
+ *
+ * Returns the whole refreshed preview rather than the single row: pinning
+ * changes the batch counts and can flip the row to `duplicate` against data the
+ * client cannot see, so the server's view replaces the local one wholesale —
+ * the client never recomputes what staging decided.
+ */
+export async function resolveImportRow(
+  batchId: string,
+  rowId: string,
+  body: ResolveImportRowRequest,
+): Promise<ImportPreviewResponse> {
+  const data = await apiRequest<unknown>(
+    `/imports/${encodeURIComponent(batchId)}/rows/${encodeURIComponent(rowId)}`,
+    { method: 'PATCH', body },
+  );
+  return importPreviewResponseSchema.parse(data);
 }
 
 /** `DELETE /imports/:batchId` — discard a staged batch (staging data only). */

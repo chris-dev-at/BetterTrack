@@ -5,9 +5,12 @@ import {
   applyImportRequestSchema,
   createImportBatchFieldsSchema,
   importBatchIdParamSchema,
+  importRowIdParamSchema,
+  resolveImportRowRequestSchema,
   IMPORT_MAX_FILE_BYTES,
   type ApplyImportRequest,
   type CreateImportBatchFields,
+  type ResolveImportRowRequest,
 } from '@bettertrack/contracts';
 
 import { badRequest } from '../../errors';
@@ -102,6 +105,10 @@ export function createImportsRouter(ctx: AppContext): Router {
       brokerId: fields.brokerId,
       filename: req.file.originalname || 'import.csv',
       content: req.file.buffer.toString('utf8'),
+      // The generic path sniffs the encoding itself, so it needs the bytes: a
+      // UTF-16LE or windows-1252 statement has already lost that evidence once
+      // it is a UTF-8 string. The broker mappers keep reading `content`.
+      contentBytes: req.file.buffer,
     });
     res.status(201).json(result);
   });
@@ -125,6 +132,22 @@ export function createImportsRouter(ctx: AppContext): Router {
       const result = await ctx.imports.applyBatch(req.authUser!.id, batchId, body);
       res.json(result);
     }),
+  );
+
+  // PATCH /imports/:batchId/rows/:rowId — pin an unresolved row to an asset the
+  // USER picked (§16 2026-07-31 point 4). Owner-scoped in the service, batch
+  // must still be pending. Returns the refreshed preview, so the client never
+  // recomputes counts locally and never drifts from what staging now holds.
+  router.patch(
+    '/:batchId/rows/:rowId',
+    validateParams(importRowIdParamSchema),
+    validateBody(resolveImportRowRequestSchema),
+    async (req, res) => {
+      const { batchId, rowId } = req.valid?.params as { batchId: string; rowId: string };
+      const body = req.valid?.body as ResolveImportRowRequest;
+      const result = await ctx.imports.resolveRow(req.authUser!.id, batchId, rowId, body);
+      res.json(result);
+    },
   );
 
   // DELETE /imports/:batchId — discard a staged batch (staging data only).
