@@ -6,6 +6,8 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 import {
   serializeVaultTransferPayload,
   VAULT_TRANSFER_CONFORMANCE_VECTORS,
+  VAULT_TRANSFER_VECTOR_FINGERPRINT,
+  type VaultTransferPayload,
 } from '../apps/web/src/user/vault/qr';
 import {
   isParanoidKilledPath,
@@ -22,6 +24,9 @@ import {
   attemptUnlock,
   createVaultThroughCeremony,
   E10_TRACEABILITY,
+  ENDPOINT_LOCKOUT_INITIAL_MS,
+  ensureLockoutWindow,
+  expectStillLockedOut,
   expectVaultState,
   listDriveConnectionsApi,
   listVaultsApi,
@@ -29,6 +34,7 @@ import {
   lockVaultsByReload,
   openPrivacyPanel,
   openTransferReceiver,
+  readEndpointLockout,
   submitTransferPayload,
   runParanoidV1TransitionFor,
   vaultRow,
@@ -133,6 +139,42 @@ type VaultTransferRejectVectorName = {
     ? Name
     : never;
 }[keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS];
+
+/**
+ * The fixture's ACCEPT half — the mirror of the type above, selected the same
+ * way: an entry carries `expected` only if it is meant to parse.
+ */
+type VaultTransferAcceptVectorName = {
+  [Name in keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS]: (typeof VAULT_TRANSFER_CONFORMANCE_VECTORS)[Name] extends {
+    expected: VaultTransferPayload;
+  }
+    ? Name
+    : never;
+}[keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS];
+
+interface VaultTransferAcceptVector {
+  payload: string;
+  expected: VaultTransferPayload;
+}
+
+/**
+ * Every ACCEPT vector, enumerated from the fixture rather than transcribed
+ * (#1527/F8). A vector added there is covered by the receive-seam pass below on
+ * the next run; none can be forgotten, and the count assertion in [E10-A7]
+ * keeps a fixture that shrinks to nothing from passing vacuously.
+ */
+const VAULT_TRANSFER_ACCEPT_VECTORS: ReadonlyArray<
+  [VaultTransferAcceptVectorName, VaultTransferAcceptVector]
+> = (
+  Object.entries(VAULT_TRANSFER_CONFORMANCE_VECTORS) as Array<
+    [
+      keyof typeof VAULT_TRANSFER_CONFORMANCE_VECTORS,
+      { payload: string; expected?: VaultTransferPayload },
+    ]
+  >
+).filter((entry): entry is [VaultTransferAcceptVectorName, VaultTransferAcceptVector] =>
+  Object.hasOwn(entry[1], 'expected'),
+);
 
 /** The phone project has its own permanent suite; these are desktop arcs. */
 function skipOnPhone(testInfo: { project: { name: string } }): void {
@@ -356,9 +398,38 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(
           section.getByText('That action could not be completed.', { exact: false }),
         ).toBeVisible({ timeout: 60_000 });
-        await openPrivacyPanel(page);
+
+        // The window is read from E3's OWN persisted record rather than inferred
+        // from the wall clock. That is the #1527/F7 repair: every claim below
+        // names the deadline it was taken inside, so a slow runner reports "the
+        // window closed first" instead of timing out on a control that had
+        // legitimately come back.
+        const armed = await readEndpointLockout(page);
+        expect(armed.failures, 'the fifth consecutive refusal is what arms it').toBe(5);
+        expect(armed.remainingMs, 'the fifth refusal must arm a live window').toBeGreaterThan(0);
+        expect(armed.remainingMs).toBeLessThanOrEqual(ENDPOINT_LOCKOUT_INITIAL_MS);
+      });
+
+      await test.step('THE assertion: the CORRECT password does not silently reopen it', async () => {
+        // The whole point of a lockout, and it is taken FIRST now: it used to
+        // run after three further SPA loads inside the frozen 30 s window
+        // (#1527/F7). One navigation is deliberate — a fresh document is also
+        // what proves the lockout is not an in-memory counter a refresh clears;
+        // E3 persists `{ failures, lockedUntil }` in the endpoint keystore.
+        const live = await ensureLockoutWindow(page, created.vaultId, WRONG_DEVICE_PASSWORD);
+        const section = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
+        await expect(
+          section.getByText('That action could not be completed.', { exact: false }),
+          'the right password must NOT open a locked-out endpoint',
+        ).toBeVisible({ timeout: 60_000 });
+        await expectStillLockedOut(page, live, 'the correct-password refusal');
+      });
+
+      await test.step('the lockout withdraws the unlock affordance while it lasts', async () => {
         // The state→affordance invariant carries the lockout: E3 projects
         // `wait-or-reset`, and E8 must therefore stop offering "Unlock".
+        const live = await ensureLockoutWindow(page, created.vaultId, WRONG_DEVICE_PASSWORD);
+        await openPrivacyPanel(page);
         await expectVaultState(page, name, 'Locked on this device');
         await expect(
           vaultRow(page, name).getByRole('link', { name: 'Reset this device', exact: true }),
@@ -366,27 +437,8 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(
           vaultRow(page, name).getByRole('link', { name: 'Unlock', exact: true }),
         ).toHaveCount(0);
-      });
-
-      await test.step('THE assertion: the CORRECT password does not silently reopen it', async () => {
-        // The whole point of a lockout. A reload first, because an in-memory
-        // counter that a refresh clears would be no lockout at all — E3
-        // persists `{ failures, lockedUntil }` in the endpoint keystore.
-        await lockVaultsByReload(page);
-        await expectVaultState(page, name, 'Locked on this device');
-        await expect(
-          vaultRow(page, name).getByRole('link', { name: 'Reset this device', exact: true }),
-          'the lockout must survive a reload',
-        ).toBeVisible({ timeout: 30_000 });
-
-        const section = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
-        await expect(
-          section.getByText('That action could not be completed.', { exact: false }),
-          'the right password must NOT open a locked-out endpoint',
-        ).toBeVisible({ timeout: 60_000 });
-        await openPrivacyPanel(page);
-        await expectVaultState(page, name, 'Locked on this device');
         await expect(page.getByText('Ready on this device')).toHaveCount(0);
+        await expectStillLockedOut(page, live, 'the withdrawn unlock affordance');
       });
 
       await test.step('the lockout is an endpoint fact, not a server one', async () => {
@@ -1177,7 +1229,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
     context,
   }, testInfo) => {
     skipOnPhone(testInfo);
-    test.setTimeout(300_000);
+    test.setTimeout(420_000);
 
     const diagnostics: string[] = [];
     const sensitive: Pd9SensitiveCanary[] = [
@@ -1216,7 +1268,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expectVaultState(receiverPage, name, 'Words needed on this device');
       });
 
-      const receiver = await openTransferReceiver(receiverPage);
+      // Reassigned once: the `f=` mismatch step below leaves the receiver to
+      // prove nothing was saved, and comes back to a freshly opened one.
+      let receiver = await openTransferReceiver(receiverPage);
 
       await test.step('the shared conformance reject vectors stay rejected at the scan seam', async () => {
         // The mocked camera, fed the cross-client fixture. These are the exact
@@ -1289,6 +1343,88 @@ test.describe('PARANOID E10 per-vault gate', () => {
           // A refused code saves nothing: the receiver is still on its input.
           await expect(receiver.locator('#vault-transfer-payload')).toBeVisible();
         }
+      });
+
+      await test.step('every shared ACCEPT vector round-trips through the real receive seam', async () => {
+        // #1527/F8. The reject half above proves only what the receiver
+        // REFUSES; the fixture's ACCEPT vectors — the normalization rules two
+        // client implementations must agree on: `+` vs `%20`, uppercase words,
+        // the normative `n` trim set, the trim-before-cap order, an unknown
+        // forward-compatible key — were unit-covered only, so this seam could
+        // have diverged from the parser without any suite going red.
+        //
+        // These vectors name a vault no account owns, so the pass deliberately
+        // stops at the parse verdict. The fetch-then-compare half is exercised
+        // against a real header by the two steps that follow.
+        expect(
+          VAULT_TRANSFER_ACCEPT_VECTORS.length,
+          'the shared fixture must still carry its ACCEPT half',
+        ).toBe(14);
+
+        for (const [vectorName, vector] of VAULT_TRANSFER_ACCEPT_VECTORS) {
+          // The shipped method button is the receiver's own reset, exactly as
+          // in the reject loop: every verdict below is a transition produced by
+          // its OWN submission, never the previous iteration's DOM.
+          await receiver.getByRole('button', { name: 'Scan or paste code', exact: true }).click();
+          await expect(
+            receiver.locator('#vault-transfer-payload'),
+            `the receiver must be back on its input before ${vectorName}`,
+          ).toBeVisible();
+
+          await submitTransferPayload(receiver, vector.payload);
+          await expect(
+            receiver.getByText('The phrase and transfer format are valid'),
+            `${vectorName} must be accepted at the scan seam`,
+          ).toBeVisible({ timeout: 30_000 });
+          await expect(
+            receiver.getByText(vector.expected.vaultId),
+            `${vectorName} must carry its vault id through the seam`,
+          ).toBeVisible();
+          // `n` is a display hint, and the receiver prefills its editable name
+          // with the NORMALIZED value — or leaves it empty where the vector
+          // declares no name at all.
+          await expect(
+            receiver.locator('#vault-receive-name'),
+            `${vectorName} must carry its normalized name hint through the seam`,
+          ).toHaveValue(vector.expected.name ?? '');
+        }
+      });
+
+      await test.step('a structurally valid but WRONG f= is refused after the header fetch', async () => {
+        // The other half of #1527/F8. `f` binds a code to one vault key. The
+        // fixture's fingerprint is well-formed, so the parser accepts it and
+        // only the authenticated comparison can catch it — which is the point:
+        // a receiver that ignored `f` would pass every parse test and still
+        // save a phrase against the wrong key.
+        const mismatched = serializeVaultTransferPayload({
+          mnemonic: created.mnemonic,
+          vaultId: created.vaultId,
+          name,
+          fingerprint: VAULT_TRANSFER_VECTOR_FINGERPRINT,
+        });
+        sensitive.push({ name: 'e10-transfer-payload-f-mismatch', value: mismatched });
+
+        await receiver.getByRole('button', { name: 'Scan or paste code', exact: true }).click();
+        await submitTransferPayload(receiver, mismatched);
+        await expect(
+          receiver.getByText('The phrase and transfer format are valid'),
+          'a well-formed f= must pass the PARSER — the refusal has to come later',
+        ).toBeVisible({ timeout: 30_000 });
+
+        await receiver.locator('#vault-receive-device-password').fill(DEVICE_PASSWORD);
+        await receiver.getByRole('button', { name: 'Verify and open vault', exact: true }).click();
+        await expect(
+          receiver
+            .getByRole('alert')
+            .getByText('The phrase did not open the authenticated vault header.', { exact: false }),
+          'a mismatched f= must be refused by the real verification',
+        ).toBeVisible({ timeout: 90_000 });
+
+        // "Nothing was saved on this device" is a claim, so it is checked: the
+        // endpoint must still be asking for the words.
+        await openPrivacyPanel(receiverPage);
+        await expectVaultState(receiverPage, name, 'Words needed on this device');
+        receiver = await openTransferReceiver(receiverPage);
       });
 
       await test.step('[E10-A7 proof] the real handoff opens the vault here', async () => {
