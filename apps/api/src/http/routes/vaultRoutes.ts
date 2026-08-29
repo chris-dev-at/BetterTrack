@@ -598,11 +598,31 @@ const perVaultPreconditionRequired = (): ApiError =>
     'A document write requires If-Match or If-None-Match: *.',
   );
 
+/**
+ * The RETRYABLE 412: the precondition lost the CAS race (or the supplied
+ * `docVersion` already names other bytes). Re-read, re-merge onto
+ * `currentVersion`, retry — that retry can succeed.
+ */
 const perVaultPreconditionFailed = (currentVersion: number | null): ApiError =>
   new EnvelopeApiError(
     412,
     PER_VAULT_ERROR_CODES.preconditionFailed,
     'The document precondition did not match its current version.',
+    { currentVersion },
+  );
+
+/**
+ * The TERMINAL 412 (#1498). Same HTTP status, different code: this
+ * `(vaultId, docId, writeId)` was already committed for different bytes, so
+ * repeating the request can never succeed and a client that retries it loops
+ * forever. The message states the only remedy — mint a new `writeId` — so no
+ * client needs its own local write ledger to tell the two 412s apart.
+ */
+const perVaultWriteIdReplayed = (currentVersion: number | null): ApiError =>
+  new EnvelopeApiError(
+    412,
+    PER_VAULT_ERROR_CODES.writeIdReplayed,
+    'This writeId was already committed for different document bytes. Retrying is futile: mint a new writeId for these bytes and re-send.',
     { currentVersion },
   );
 
@@ -992,7 +1012,9 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
             'The envelope document kind does not match its registered address.',
           );
         case 'precondition_failed':
-          throw perVaultPreconditionFailed(result.currentVersion);
+          throw result.reason === 'write_id_replayed'
+            ? perVaultWriteIdReplayed(result.currentVersion)
+            : perVaultPreconditionFailed(result.currentVersion);
         case 'medium_inactive':
           throw new ApiError(
             409,
