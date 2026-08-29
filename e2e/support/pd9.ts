@@ -943,12 +943,18 @@ export function createPd9Harness(): Pd9Harness {
     async seedLegacyExpenseFixture({ email, bookedOn, description }) {
       const userId = await userIdFor(email);
       const categories = createExpenseCategoryRepository(db);
-      const groceries = (await categories.listForOwner(userId)).find(
-        (category) => category.name === 'Groceries',
-      );
-      if (!groceries) {
-        throw new Error('PD9 expected the default Groceries category to exist.');
-      }
+      // The fixture seeds its OWN category through the repository, exactly as it
+      // does for the budget and the transaction below. There is no producer left
+      // on the HTTP side: the expense area's writes are retired (410) and
+      // `GET /expenses/categories` is a pure read (#1550), so a fresh account
+      // carries no categories at all.
+      const groceries =
+        (await categories.listForOwner(userId)).find((category) => category.name === 'Groceries') ??
+        (await categories.create(userId, {
+          name: 'Groceries',
+          direction: 'expense',
+          color: '#22c55e',
+        }));
       await createExpenseBudgetRepository(db).create(userId, {
         categoryId: groceries.id,
         amount: 200,

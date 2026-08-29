@@ -699,9 +699,18 @@ describe('paranoid capture round trip', () => {
           ),
         );
     expect(await corrections()).toEqual([]);
+    // Nothing has created a category: the expense area's HTTP writes are retired
+    // and `/expenses/categories` is a pure read since #1550, so a fresh account
+    // carries none.
     expect(
       await harness.db.select().from(expenseCategories).where(eq(expenseCategories.userId, userId)),
     ).toEqual([]);
+    // Seed one at the data layer — the only producer left — so the category leg
+    // of the purge → restore comparison below carries a real row rather than
+    // comparing two empty lists.
+    await harness.db
+      .insert(expenseCategories)
+      .values({ userId, name: 'Groceries', direction: 'expense', color: '#22c55e' });
 
     // ── Pass 1: the wizard's real sequence ──────────────────────────────────
     const opened = await revisionToken(agent);
@@ -715,8 +724,10 @@ describe('paranoid capture round trip', () => {
     expect(correction, 'the tax read posted the year correction').toBeTruthy();
     // `/expenses/categories` is a pure read since #1550, so the retired area
     // contributes nothing here — the tag seed and the tax self-heal are the
-    // capture's writers now.
+    // capture's writers now. It still READS the seeded row, which is what makes
+    // the category leg of the restore comparison meaningful.
     expect(pass1.tags.length).toBeGreaterThan(0);
+    expect(pass1.categories.map((category) => category.name)).toEqual(['Groceries']);
     // The dangerous half: the correction is a CASH MOVEMENT the pass-1 ledger
     // read cannot contain, because the tax read posted it afterwards.
     expect(pass1.movements.map((movement) => movement.id)).not.toContain(correction!.id);

@@ -3523,10 +3523,11 @@ export const expenseRuleMatchEnum = pgEnum('expense_rule_match', [
 ]);
 
 /**
- * `expense_categories` — the user's spending/income buckets. Seeded with a
- * sensible default set on first use (owner-scoped, idempotent). UNIQUE(user,
- * name) keeps names distinct per owner and makes the default seed race-safe
- * (`ON CONFLICT DO NOTHING`). Deleting a category SET-NULLs its transactions
+ * `expense_categories` — the user's spending/income buckets. No longer seeded
+ * with a default set: the area's writes are retired behind the 410 gate and
+ * listing categories is a pure read (#1550), so rows only ever come from a
+ * pre-fusion account or a restore. UNIQUE(user, name) keeps names distinct per
+ * owner. Deleting a category SET-NULLs its transactions
  * (they become uncategorized) — see the FK on `expense_transactions`.
  */
 export const expenseCategories = pgTable(

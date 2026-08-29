@@ -89,6 +89,8 @@ describe('GET /expenses/categories — a read handler behind the write-retiremen
       color: '#10b981',
     });
 
+    // `listForOwner` orders by NAME, not by insertion — 'Groceries' before
+    // 'Salary' here is that ordering, and it happens to match the create order.
     const listed = await listCategories(agent);
     expect(listed.map((category) => category.id)).toEqual([groceries.id, salary.id]);
     expect(listed.map((category) => category.name)).toEqual(['Groceries', 'Salary']);
