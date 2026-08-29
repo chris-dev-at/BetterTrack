@@ -6315,5 +6315,11 @@
       "aborted": "The operation was interrupted before completion.",
       "generic": "The operation could not be completed."
     }
+  },
+  "paranoidFreshStart": {
+    "title": "Paranoid mode has a new shape",
+    "body": "Your old paranoid data was retired together with the old system. Your account is complete again — nothing else was touched. Paranoid mode now works per portfolio: you create a vault, and move the portfolios you want into it.",
+    "cta": "Create a vault",
+    "dismiss": "Got it"
   }
 }

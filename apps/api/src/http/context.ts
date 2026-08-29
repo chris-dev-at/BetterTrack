@@ -87,6 +87,10 @@ import {
   type HomeLayoutService,
 } from '../services/account/homeLayoutService';
 import {
+  createParanoidFreshStartNoticeService,
+  type ParanoidFreshStartNoticeService,
+} from '../services/account/paranoidFreshStartNoticeService';
+import {
   createWidgetLayoutService,
   type WidgetLayoutService,
 } from '../services/account/widgetLayoutService';
@@ -593,6 +597,12 @@ export interface AppContext {
    * {@link ai}; both consume the same guarded, capped completion path.
    */
   aiFeatures: AiFeaturesService;
+  /**
+   * The §17 fresh-start notice (E9). Deliberately NOT behind the paranoid guard:
+   * its whole audience is accounts the §17 wipe just flipped to `normal`, and it
+   * must be readable at the very next login.
+   */
+  paranoidFreshStartNotice: ParanoidFreshStartNoticeService;
 }
 
 export interface BuildContextDeps {
@@ -2268,5 +2278,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     featureFlags,
     ai,
     aiFeatures: guarded.aiFeatures,
+    paranoidFreshStartNotice: createParanoidFreshStartNoticeService(db),
   };
 }

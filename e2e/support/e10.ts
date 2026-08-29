@@ -4,7 +4,7 @@ import { expect, type APIRequestContext, type Locator, type Page } from '@playwr
 // harness does — there is no `@bettertrack/contracts` alias in this tsconfig.
 import type { DriveConnection, VaultConfig } from '../../packages/contracts/src/vaults';
 
-import { API_BASE_URL } from './config';
+import { API_BASE_URL, DATABASE_URL } from './config';
 import type { E2EUser } from './users';
 
 /**
@@ -132,8 +132,12 @@ export const E10_TRACEABILITY = [
   {
     arc: 'fresh-start notice after the §17 wipe',
     assertion: '[E10-A8] fresh-start notice after the §17 wipe',
-    status: 'blocked',
-    note: 'E9 is unbuilt and owner-gated; the arc is a documented test.fixme.',
+    status: 'covered',
+    note:
+      'E9 landed the transition, so the arc drives it for real: the ops export script ' +
+      'dumps/verifies/attests, --confirm-offsite closes §17 step 1, and the wipe service ' +
+      'performs the retirement. The notice asserted is the product of an actual §17 wipe, ' +
+      'and the never-wiped control account proves it is not shown to everyone.',
   },
 ] as const;
 
@@ -400,4 +404,87 @@ export async function driveOwnerDigestInBrowser(page: Page, accountId: string): 
     /^[A-Za-z0-9_-]{16,}$/u,
   );
   return digest;
+}
+
+/**
+ * PARANOID E9 / §17 — drive the real owner-run transition against the e2e
+ * database so [E10-A8] asserts the notice that a REAL wipe produced.
+ *
+ * The sequence is the operator's own, not a shortcut:
+ *
+ *   1. seed a live account-level (v1) paranoid account — the population §17
+ *      exists for;
+ *   2. run `scripts/ops/export-paranoid-v1-backup.mjs` as a child process, which
+ *      dumps every v1 row, verifies the archive off disk and records the
+ *      attestation;
+ *   3. run it again with `--confirm-offsite`, which is §17's "offsite copy
+ *      confirmed" and the second half of the gate;
+ *   4. call `wipeParanoidV1Account` for THIS account only.
+ *
+ * Step 4 is scoped deliberately. The operator runner
+ * (`pnpm --filter @bettertrack/api wipe:paranoid-v1 --execute`) sweeps every
+ * covered account, which in a shared e2e database would reach accounts other
+ * specs are using. The gate being proven here is the same either way: the
+ * attestation written by the real ops script in steps 2–3 is what unlocks it,
+ * and without those steps the wipe refuses.
+ */
+export async function runParanoidV1TransitionFor(userId: string): Promise<void> {
+  const { execFileSync } = await import('node:child_process');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const nodePath = await import('node:path');
+
+  const { createDatabase } = await import('../../apps/api/src/data/db');
+  const { eq } = await import('../../apps/api/node_modules/drizzle-orm/index.js');
+  const schema = await import('../../apps/api/src/data/schema');
+  const { wipeParanoidV1Account } =
+    await import('../../apps/api/src/services/account/paranoidV1WipeService');
+
+  // `import.meta.url`, not `__dirname`: the repo is ESM ("type": "module"), where
+  // `__dirname` is undefined at runtime even though @types/node declares it.
+  const { fileURLToPath } = await import('node:url');
+  const repoRoot = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  // Outside every git working tree — the export script refuses a repo-local
+  // directory, because the archive is user ciphertext plus the ids that own it.
+  const backupDir = mkdtempSync(nodePath.join(tmpdir(), 'bt-e9-e2e-'));
+
+  const { db, client } = createDatabase(DATABASE_URL);
+  try {
+    // 1. A live v1 paranoid account: the mode flag, the media columns its CHECK
+    //    constraint requires, and one encrypted blob to actually preserve.
+    await db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server'] })
+      .where(eq(schema.users.id, userId));
+    await db.insert(schema.paranoidVaults).values({
+      userId,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 9,
+      blob: Buffer.from('e9-cipher'),
+    });
+
+    const run = (args: string[]): string =>
+      execFileSync('node', ['scripts/ops/export-paranoid-v1-backup.mjs', ...args], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: { ...process.env, DATABASE_URL, BT_PARANOID_V1_BACKUP_DIR: backupDir },
+      });
+
+    // 2. Dump + verify + attest.
+    const exported = run([]);
+    const file = /Wrote (\S+) \(/u.exec(exported)?.[1];
+    const sha = /Archive SHA-256 : ([0-9a-f]{64})/u.exec(exported)?.[1];
+    if (!file || !sha) throw new Error(`could not parse the export output:\n${exported}`);
+
+    // 3. §17's "offsite copy confirmed". Passing the archive's own digest stands
+    //    in for a faithful copy having reached its destination.
+    run(['--confirm-offsite', sha, '--archive', file]);
+
+    // 4. The wipe, which re-checks the whole gate inside its own transaction.
+    const outcome = await wipeParanoidV1Account(db, userId);
+    if (!outcome.ok) throw new Error(`the §17 wipe refused: ${outcome.refusal}`);
+  } finally {
+    await client.end({ timeout: 5 });
+  }
 }
