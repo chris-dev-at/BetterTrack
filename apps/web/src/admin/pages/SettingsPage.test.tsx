@@ -7,9 +7,12 @@ import type { AppSettingsResponse, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
-import { I18nProvider } from '../../i18n';
+import { I18nProvider, localizedMessage } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { SettingsPage } from './SettingsPage';
+
+/** Expected copy always comes from the catalog, so EN and DE assert the same claim. */
+const message = (locale: 'en' | 'de', key: string) => localizedMessage(locale, key);
 
 const admin: MeResponse = {
   id: 'admin-1',
@@ -46,6 +49,9 @@ function renderPage(locale: 'en' | 'de' = 'en') {
 }
 
 beforeEach(() => {
+  // A test below reads the exact payload of the FIRST save, so call history
+  // starts from zero.
+  vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
   // Bootstrap now consults the mandatory-2FA setup gate — an enrolled admin.
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
@@ -60,48 +66,44 @@ beforeEach(() => {
   vi.mocked(api.updateSettings).mockResolvedValue(settings);
 });
 
-test('shows all four registration modes, every one selectable (V4-P4a)', async () => {
+test.each(['en', 'de'] as const)(
+  'shows the registration mode read-only and points at its one home in %s',
+  async (locale) => {
+    vi.mocked(api.getSettings).mockResolvedValue({ ...settings, registrationMode: 'approval' });
+    renderPage(locale);
+
+    // The stored mode is stated, not offered: a label and the current value.
+    expect(
+      await screen.findByText(message(locale, 'admin.registration.currentMode')),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(message(locale, 'admin.settings.registration.modes.approval.title')),
+    ).toBeInTheDocument();
+
+    // …and the single pointer at where it IS edited (#1406 W2).
+    expect(
+      screen.getByRole('link', { name: message(locale, 'admin.settings.registration.movedLink') }),
+    ).toHaveAttribute('href', '/admin/registration');
+  },
+);
+
+test('the mode has NO second home here — the page renders no selector at all', async () => {
   renderPage();
 
-  // All four modes render as enabled radios — no "Coming soon".
-  expect(await screen.findByRole('radio', { name: /Closed/i })).toBeChecked();
-  for (const name of [/Closed/i, /Invite \/ access-token/i, /Approval/i, /^Open/i]) {
-    expect(screen.getByRole('radio', { name })).toBeEnabled();
-  }
-  expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
+  await screen.findByRole('checkbox', { name: /Beta mode/i });
 
-  // The beta-mode toggle placeholder is present.
-  expect(screen.getByRole('checkbox', { name: /Beta mode/i })).toBeInTheDocument();
-});
-
-test('switching to a self-serve mode and saving persists it', async () => {
-  vi.mocked(api.updateSettings).mockResolvedValue({ ...settings, registrationMode: 'open' });
-  renderPage();
-
-  await userEvent.click(await screen.findByRole('radio', { name: /^Open/i }));
-  await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
-
-  await waitFor(() =>
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      registrationMode: 'open',
-      betaMode: false,
-    }),
-  );
-});
-
-test('a saved gated mode points at the People workspace instead of hosting its queue', async () => {
-  vi.mocked(api.getSettings).mockResolvedValue({ ...settings, registrationMode: 'approval' });
-  renderPage();
-
-  expect(await screen.findByRole('link', { name: 'Open Registration' })).toHaveAttribute(
-    'href',
-    '/admin/registration',
-  );
-  // The approval queue itself no longer lives here (#1406 W1).
+  // The W2 ruling: exactly one home for the registration mode. A radio group
+  // here would be a second one, so its absence is enforced, not assumed.
+  expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  expect(screen.queryAllByRole('combobox')).toHaveLength(0);
+  expect(screen.queryByRole('group', { name: /registration mode/i })).not.toBeInTheDocument();
+  // Nor does the old inline queue/token management live here (#1406 W1).
   expect(screen.queryByRole('heading', { name: 'Approval queue' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Registration tokens' })).not.toBeInTheDocument();
 });
 
-test('toggling beta mode and saving persists via updateSettings', async () => {
+test('saving sends ONLY betaMode — never the mode it no longer owns', async () => {
+  vi.mocked(api.updateSettings).mockResolvedValue({ ...settings, betaMode: true });
   renderPage();
 
   const save = await screen.findByRole('button', { name: /save settings/i });
@@ -113,13 +115,14 @@ test('toggling beta mode and saving persists via updateSettings', async () => {
 
   await userEvent.click(save);
 
-  await waitFor(() =>
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      registrationMode: 'closed',
-      betaMode: true,
-    }),
-  );
+  // Deep equality: a `registrationMode` smuggled into the payload fails here.
+  await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ betaMode: true }));
+  expect(vi.mocked(api.updateSettings).mock.calls[0]![0]).not.toHaveProperty('registrationMode');
+
   expect(await screen.findByText(/settings saved/i)).toBeInTheDocument();
+  // The saved value is the one the server echoed back, and Save goes quiet again.
+  expect(screen.getByRole('checkbox', { name: /Beta mode/i })).toBeChecked();
+  expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled();
 });
 
 test('offers a retry after a load failure', async () => {
@@ -136,26 +139,31 @@ test('offers a retry after a load failure', async () => {
   vi.mocked(api.getSettings).mockResolvedValueOnce(settings);
   await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
-  expect(await screen.findByRole('radio', { name: /Closed/i })).toBeInTheDocument();
+  // Loaded: the mode badge and the beta toggle are back.
+  expect(await screen.findByText('Closed')).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: /Beta mode/i })).toBeInTheDocument();
 });
 
 test('surfaces a save error from the API', async () => {
   const { ApiError } = await import('../../lib/apiClient');
   vi.mocked(api.updateSettings).mockRejectedValueOnce(
-    new ApiError(422, 'validation_error', 'Registration mode not allowed.'),
+    new ApiError(422, 'validation_error', 'Beta mode not allowed.'),
   );
   renderPage();
 
   await userEvent.click(await screen.findByRole('checkbox', { name: /Beta mode/i }));
   await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
 
-  expect(await screen.findByText(/something went wrong. please try again/i)).toBeInTheDocument();
+  // Catalog copy, not the server's English envelope (the useAdminMutation rule).
+  expect(await screen.findByText(message('en', 'admin.settings.saveError'))).toBeInTheDocument();
+  expect(screen.queryByText(/settings saved/i)).not.toBeInTheDocument();
 });
 
 test('renders the P13b settings surface in German', async () => {
   renderPage('de');
 
   expect(await screen.findByRole('heading', { name: 'Einstellungen' })).toBeInTheDocument();
-  expect(screen.getByRole('radio', { name: /Geschlossen/i })).toBeChecked();
+  expect(screen.getByText('Geschlossen')).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: /Beta-Modus/i })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Einstellungen speichern' })).toBeInTheDocument();
 });

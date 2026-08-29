@@ -8,9 +8,10 @@ import { useBodyScrollLock } from '../../ui/useBodyScrollLock';
 import { useOverlayEscape } from '../../ui/overlayStack';
 import { useFocusTrap } from '../../ui/useFocusTrap';
 import { useAuth } from '../AuthContext';
-import { ADMIN_WORKSPACES, isWideAdminPath } from '../adminWorkspaces';
+import { ADMIN_WORKSPACES, adminWorkspaceOwnsPath, isWideAdminPath } from '../adminWorkspaces';
 import { AdminCommandPalette } from './AdminCommandPalette';
 import { Button, Spinner, cx } from './ui';
+import { EDGE_BOTTOM, FOCUS, SURFACE_WELL, TEXT_MICRO } from './tokens';
 
 // Tailwind's default `md` breakpoint. The drawer is `md:hidden`, so its state
 // must retire at the exact same handoff or it can keep the desktop shell inert
@@ -18,16 +19,25 @@ import { Button, Spinner, cx } from './ui';
 const ADMIN_DESKTOP_MEDIA_QUERY = '(min-width: 48rem)';
 const ADMIN_DESKTOP_MIN_WIDTH_PX = 768;
 
-const NAV_LINK_BASE =
-  'flex min-h-[40px] items-center rounded-md px-3 py-1.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
+/**
+ * Nav geometry for the sharp console (#1406 W2). Square, and the active item is
+ * marked by a 2 px accent bar on the leading edge — the console's counterpart to
+ * the user app's gold edge line, in sky because sky is the console's accent. The
+ * idle state carries a transparent bar of the same width so activating an item
+ * never nudges the label sideways.
+ */
+const NAV_LINK_BASE = cx(
+  'flex min-h-[34px] items-center rounded-none border-l-2 px-3 py-1 text-[13px] transition-colors',
+  FOCUS,
+);
 
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   return cx(
     NAV_LINK_BASE,
     'font-medium',
     isActive
-      ? 'bg-neutral-800 text-white'
-      : 'text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200',
+      ? 'border-l-sky-500 bg-neutral-800 text-white'
+      : 'border-l-transparent text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200',
   );
 }
 
@@ -160,7 +170,7 @@ export function AdminLayout() {
   const wide = isWideAdminPath(location.pathname);
 
   const renderSidebar = (variant: 'desktop' | 'drawer') => (
-    <div className="flex h-full min-h-0 flex-col gap-4 bg-neutral-900 p-4">
+    <div className="flex h-full min-h-0 flex-col gap-3 bg-neutral-900 p-3">
       <div className="flex shrink-0 items-center justify-between gap-2 px-2">
         <Wordmark edition="Admin" className="text-xl" />
         {variant === 'drawer' ? (
@@ -168,17 +178,21 @@ export function AdminLayout() {
             type="button"
             onClick={closeDrawer}
             aria-label={t('admin.nav.closeMenu')}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className={cx(
+              'inline-flex h-8 w-8 items-center justify-center rounded-none border border-transparent text-neutral-300',
+              'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+              FOCUS,
+            )}
           >
             <svg
               aria-hidden="true"
               viewBox="0 0 24 24"
-              className="h-5 w-5"
+              className="h-4 w-4"
               fill="none"
               stroke="currentColor"
               strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+              strokeLinecap="square"
+              strokeLinejoin="miter"
             >
               <line x1="6" y1="6" x2="18" y2="18" />
               <line x1="6" y1="18" x2="18" y2="6" />
@@ -189,38 +203,65 @@ export function AdminLayout() {
       <button
         type="button"
         onClick={openPalette}
-        className="flex min-h-[36px] shrink-0 items-center justify-between gap-2 rounded-md bg-neutral-950 px-3 py-1.5 text-sm text-neutral-400 ring-1 ring-inset ring-neutral-700 transition-colors hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className={cx(
+          'flex min-h-[32px] shrink-0 items-center justify-between gap-2 rounded-none border border-neutral-700 px-2.5 py-1',
+          'text-[12px] text-neutral-500 transition-colors hover:border-neutral-600 hover:text-neutral-200',
+          SURFACE_WELL,
+          FOCUS,
+        )}
       >
         <span className="truncate">{t('admin.palette.trigger')}</span>
-        <kbd className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-sans text-[10px] text-neutral-400">
+        <kbd className="rounded-none border border-neutral-700 bg-neutral-900 px-1 py-px font-sans text-[10px] text-neutral-500">
           {t('admin.palette.shortcut')}
         </kbd>
       </button>
       <nav
         aria-label={t('admin.nav.console')}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
       >
         {ADMIN_WORKSPACES.map((workspace, index) => (
-          <div key={workspace.key} className="flex flex-col gap-1">
+          <div key={workspace.key} className="flex flex-col gap-0.5">
             {index > 0 ? (
-              <span aria-hidden="true" className="mb-1 h-px w-full bg-neutral-800" />
+              <span aria-hidden="true" className="mb-2 h-px w-full bg-neutral-800" />
             ) : null}
             {/* A workspace with a landing page carries the link on its own
-                heading, so the label is never duplicated as a child row. */}
-            <h2 className="text-sm font-semibold text-neutral-200">
+                heading, so the label is never duplicated as a child row. A
+                folded workspace (People, #1406 W2) has no child rows at all —
+                its tab strip carries them on the page. */}
+            <h2 className="font-semibold text-neutral-200">
               {workspace.to ? (
-                <NavLink end to={workspace.to} className={navLinkClass}>
+                <NavLink
+                  end
+                  to={workspace.to}
+                  // A folded workspace stays marked across its own tabs and
+                  // detail routes; `end` alone would light up on one of four.
+                  className={(state) =>
+                    navLinkClass({
+                      isActive:
+                        state.isActive ||
+                        (workspace.tabs !== undefined &&
+                          adminWorkspaceOwnsPath(workspace, location.pathname)),
+                    })
+                  }
+                >
                   {t(workspace.labelKey)}
                 </NavLink>
               ) : (
-                <span className="flex min-h-[32px] items-center px-3">{t(workspace.labelKey)}</span>
+                <span
+                  className={cx(
+                    'flex min-h-[28px] items-center border-l-2 border-l-transparent px-3',
+                    TEXT_MICRO,
+                  )}
+                >
+                  {t(workspace.labelKey)}
+                </span>
               )}
             </h2>
             {workspace.pages.map((page) => (
               <NavLink
                 key={page.to}
                 to={page.to}
-                className={(state) => cx(navLinkClass(state), 'pl-6')}
+                className={(state) => cx(navLinkClass(state), 'pl-5 text-[12px]')}
               >
                 {t(page.labelKey)}
               </NavLink>
@@ -228,10 +269,14 @@ export function AdminLayout() {
           </div>
         ))}
       </nav>
-      <div className="flex shrink-0 flex-col gap-2 border-t border-neutral-800 pt-4">
+      <div className="flex shrink-0 flex-col gap-2 border-t border-neutral-800 pt-3">
         <select
           aria-label={t('admin.nav.language')}
-          className="h-8 rounded-md bg-neutral-950 px-2 text-sm text-neutral-200 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-400"
+          className={cx(
+            'h-8 rounded-none border border-neutral-700 px-2 text-[12px] text-neutral-200',
+            SURFACE_WELL,
+            FOCUS,
+          )}
           onChange={(event) => setLocale(event.target.value)}
           value={locale}
         >
@@ -241,7 +286,7 @@ export function AdminLayout() {
             </option>
           ))}
         </select>
-        <span className="truncate px-2 text-sm text-neutral-400">{user.email}</span>
+        <span className={cx('truncate px-1', TEXT_MICRO)}>{user.email}</span>
         <Button variant="ghost" className="justify-start" onClick={() => void logout()}>
           {t('auth.common.signOut')}
         </Button>
@@ -252,7 +297,7 @@ export function AdminLayout() {
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 md:flex">
       <a
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-sky-500 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-white"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-none focus:border focus:border-white focus:bg-sky-600 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none"
         href="#main-content"
         onClick={() => document.getElementById('main-content')?.focus()}
       >
@@ -260,7 +305,12 @@ export function AdminLayout() {
       </a>
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
           is persistent. */}
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-3 md:hidden">
+      <header
+        className={cx(
+          'sticky top-0 z-30 flex items-center gap-3 bg-neutral-900 px-3 py-2 md:hidden',
+          EDGE_BOTTOM,
+        )}
+      >
         <button
           ref={burgerRef}
           type="button"
@@ -268,7 +318,11 @@ export function AdminLayout() {
           aria-label={t('admin.nav.openMenu')}
           aria-expanded={drawerOpen}
           aria-controls="admin-sidebar"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className={cx(
+            'inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
+            'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+            FOCUS,
+          )}
         >
           <svg
             aria-hidden="true"
@@ -277,8 +331,8 @@ export function AdminLayout() {
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            strokeLinecap="square"
+            strokeLinejoin="miter"
           >
             <line x1="4" y1="6" x2="20" y2="6" />
             <line x1="4" y1="12" x2="20" y2="12" />
@@ -290,7 +344,11 @@ export function AdminLayout() {
           type="button"
           onClick={openPalette}
           aria-label={t('admin.palette.trigger')}
-          className="ml-auto inline-flex h-9 w-9 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className={cx(
+            'ml-auto inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
+            'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+            FOCUS,
+          )}
         >
           <svg
             aria-hidden="true"
@@ -332,7 +390,7 @@ export function AdminLayout() {
             role="dialog"
             aria-modal="true"
             aria-label={t('admin.nav.menu')}
-            className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r border-neutral-800 shadow-xl"
+            className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r border-neutral-800"
           >
             {renderSidebar('drawer')}
           </div>
@@ -342,7 +400,7 @@ export function AdminLayout() {
       <main ref={mainRef} id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
         {/* Per-page width opt-in (#1406 W1): the dense operator workspaces get a
             wider column; everything else keeps the established reading width. */}
-        <div className={cx('mx-auto px-4 py-8', wide ? 'max-w-7xl' : 'max-w-5xl')}>
+        <div className={cx('mx-auto px-4 py-6', wide ? 'max-w-7xl' : 'max-w-5xl')}>
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}
           <ErrorBoundary key={location.pathname}>

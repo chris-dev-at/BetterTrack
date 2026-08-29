@@ -307,6 +307,12 @@ export async function restorePortfolioVaultGraph(input: {
         cashSourceId: entity.data.cashSourceId,
         createdAt: new Date(entity.data.createdAt),
         appliedAt: entity.data.appliedAt ? new Date(entity.data.appliedAt) : null,
+        // What the generic pipeline understood about the uploaded file (#964).
+        // Carried explicitly because this assembler is HAND-LISTED: a column it
+        // forgets is dropped silently on restore, and `.optional()` on the vault
+        // schema cannot tell "absent because old document" from "absent because
+        // the assembler forgot" — the exact trap `vault.ts` warns about.
+        understanding: entity.data.understanding ?? null,
       })),
     );
   }
@@ -338,6 +344,8 @@ export async function restorePortfolioVaultGraph(input: {
         // Absent in vault documents written before the column existed.
         candidates: entity.data.candidates ?? null,
         ruleTagIds: entity.data.ruleTagIds ?? null,
+        // Provenance for `assetId` (#964) — same hand-listed-assembler reason.
+        resolvedBy: entity.data.resolvedBy ?? null,
       })),
     );
   }
