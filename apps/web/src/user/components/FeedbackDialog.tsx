@@ -6,6 +6,7 @@ import {
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
   FEEDBACK_OPEN_LIMIT,
+  FEEDBACK_OPEN_SUBMISSION_LIMIT,
   FEEDBACK_SUBJECT_MAX_LENGTH,
   type CreateFeedbackRequest,
   type FeedbackCategory,
@@ -94,7 +95,11 @@ function buildFeedbackContext({
 
 function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.code === FEEDBACK_OPEN_LIMIT) return t('feedback.openLimit');
+    // The cap is the contract's number, interpolated — never a literal in the
+    // catalogs, which would drift silently the day the owner moves it.
+    if (error.code === FEEDBACK_OPEN_LIMIT) {
+      return t('feedback.openLimit', { limit: FEEDBACK_OPEN_SUBMISSION_LIMIT });
+    }
 
     if (error.code === 'VALIDATION_ERROR') {
       if (hasValidationFieldError(error.details, 'message')) {

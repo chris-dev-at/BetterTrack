@@ -9,10 +9,13 @@ import type {
   ImportRowCandidate,
   ImportRowOutcome,
   ImportRowResult,
+  ImportUnderstanding,
+  ResolveImportRowRequest,
   SearchResultItem,
   TransactionInput,
 } from '@bettertrack/contracts';
 import {
+  CASH_TAGS_PER_ITEM_MAX,
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
   IMPORT_MAX_ROWS,
   IMPORT_ROW_CANDIDATE_EXCHANGE_MAX,
@@ -29,6 +32,9 @@ import type {
   StageImportRowInput,
 } from '../../data/repositories/importRepository';
 import type { CashSourceRepository } from '../../data/repositories/cashSourceRepository';
+import type { CashRuleRepository } from '../../data/repositories/cashRuleRepository';
+import type { CashTagRepository } from '../../data/repositories/cashTagRepository';
+import { tagsByRules, type EvaluableCashRule } from '../cash/cashRuleEngine';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
@@ -40,6 +46,11 @@ import type { TaxService } from '../tax/taxService';
 import { contentHash } from './contentHash';
 import { parseCsv } from './csv';
 import { createMapperRegistry } from './registry';
+import { UnmappableTableError } from './columnMapping';
+import type { HeaderMappingAiContext } from './columnMapping';
+import type { ClassifyContext } from './rowClassifier';
+import { UnsupportedFileFormatError } from './table';
+import { stageGenericFile } from './genericStaging';
 import type { ImportBatchRow } from '../../data/schema';
 import type { BrokerMapper, MappedLine, NormalizedImportRow } from './types';
 
@@ -68,6 +79,20 @@ export interface ImportServiceDeps {
   portfolioRepo: PortfolioRepository;
   transactionRepo: TransactionRepository;
   cashSourceRepo: CashSourceRepository;
+  /**
+   * The caller's own cash rules, for pre-tagging staged cash rows (#964).
+   * `listForOwner` already returns them in evaluation order (priority, then
+   * age, then id), which is the order `tagsByRules` walks — the ordering
+   * decision stays in the repository, exactly one place.
+   */
+  cashRuleRepo: Pick<CashRuleRepository, 'listForOwner'>;
+  /**
+   * Attaches a previewed tag to the movement an applied cash row booked (#964).
+   * REQUIRED rather than optional: a silently unwired dependency would turn
+   * "the preview showed a tag" into "the tag quietly never arrived", which is
+   * the exact drift this slice exists to remove.
+   */
+  cashTagRepo: Pick<CashTagRepository, 'attachTagWithinPortfolio'>;
   search: SearchService;
   portfolio: PortfolioService;
   tax: TaxService;
@@ -80,13 +105,52 @@ export interface ImportServiceDeps {
    * resolution chains so one slow import cannot block every other user.
    */
   resolutionQueue?: RequestQueue;
+  /**
+   * Per-user AI seams for the GENERIC staging path (#964), both OPTIONAL by
+   * design and both returning `undefined` when the tier is unconfigured,
+   * disabled, over cap, or refused.
+   *
+   * A factory rather than a bound seam because both binders take the calling
+   * user's id (their daily cap, their audit trail), and because
+   * `bindHeavyTierAi` deliberately THROWS under a test runner — the wiring
+   * catches that and degrades, so no test can reach a real heavy model and no
+   * deployment without an AI provider loses the ability to import.
+   *
+   * When both are absent the generic path is the fully deterministic pipeline:
+   * headers the dictionary cannot name stay unnamed, ambiguous rows stay
+   * flagged for review, and the user maps what is left by hand. That is the
+   * documented degraded mode, not an error state.
+   */
+  headerAi?: (userId: string) => HeaderMappingAiContext['ai'] | undefined;
+  rowAi?: (userId: string) => ClassifyContext['ai'] | undefined;
 }
+
+/**
+ * The broker id a GENERIC batch is stamped with (#964). It is a mapper id
+ * shaped like any other — `broker_id` is deliberately free text (§13.4), the
+ * source tag `import:generic` satisfies `sourceTagSchema`, and the picker lists
+ * it beside the hand-written mappers so a user can force this path for a file
+ * a mapper would otherwise claim.
+ */
+export const GENERIC_BROKER_ID = 'generic';
+export const GENERIC_BROKER_LABEL = 'Work it out from the file';
 
 export interface CreateImportBatchInput {
   portfolioId: string;
   filename: string;
   /** Decoded file text (the route reads the multipart buffer as UTF-8). */
   content: string;
+  /**
+   * The upload's RAW bytes, for the generic path only (#964).
+   *
+   * The broker mappers keep consuming `content` exactly as before. The generic
+   * path needs the bytes because its sniffer detects the encoding itself —
+   * UTF-16LE and windows-1252 statements are common, and a string already
+   * decoded as UTF-8 has lost the evidence (and mangled the umlauts a German
+   * memo needs for keyword classification). Optional so every existing caller
+   * and test is unchanged; absent, the generic path re-encodes `content`.
+   */
+  contentBytes?: Uint8Array;
   /** Manual broker override; omitted → autodetect. */
   brokerId?: string;
 }
@@ -104,6 +168,17 @@ export interface ImportService {
     batchId: string,
     input: ApplyImportRequest,
   ): Promise<ApplyImportResponse>;
+  /**
+   * Pin an unresolved row to an asset the caller chose (#964, directive point
+   * 4). Owner-scoped; the batch must still be `pending`. Returns the refreshed
+   * preview so the client never has to guess what the flip did to the counts.
+   */
+  resolveRow(
+    userId: string,
+    batchId: string,
+    rowId: string,
+    input: ResolveImportRowRequest,
+  ): Promise<ImportPreviewResponse>;
   /** Discard a staged batch (any status — it is only staging data). */
   discardBatch(userId: string, batchId: string): Promise<void>;
 }
@@ -343,9 +418,36 @@ function guardStagedRow(line: MappedLine): MappedLine {
   return { line: line.line, raw: line.raw, ok: false, error: violation };
 }
 
+/**
+ * Bind an OPTIONAL AI seam, treating every failure as "not configured" (#964).
+ *
+ * `bindHeavyTierAi` throws by design under a test runner, a deployment may have
+ * no AI provider at all, and a binder may refuse for a user over their cap.
+ * All three mean the same thing to this subsystem — run deterministically — so
+ * they collapse here rather than each becoming a failed upload. This is the
+ * mechanism behind the standing rule that the heavy tier is optional and its
+ * absence is a graceful degrade, not a 500.
+ */
+function safeSeam<T>(bind: () => T | undefined): T | undefined {
+  try {
+    return bind();
+  } catch {
+    return undefined;
+  }
+}
+
 export function createImportService(deps: ImportServiceDeps): ImportService {
-  const { importRepo, portfolioRepo, transactionRepo, cashSourceRepo, search, portfolio, tax } =
-    deps;
+  const {
+    importRepo,
+    portfolioRepo,
+    transactionRepo,
+    cashSourceRepo,
+    cashRuleRepo,
+    cashTagRepo,
+    search,
+    portfolio,
+    tax,
+  } = deps;
   const registry = createMapperRegistry(deps.mappers);
   // One queue per service instance is shared by every concurrent import request.
   // Provider clients use the same RequestQueue primitive for their own outbound
@@ -354,9 +456,186 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   const resolutionQueue =
     deps.resolutionQueue ?? createRequestQueue({ concurrency: 4, minSpacingMs: 0, maxRetries: 0 });
 
+  /**
+   * The row kinds whose apply books an EXTERNAL cash movement directly, and
+   * therefore the rows a cash rule is about.
+   *
+   * Deliberately NOT buy/sell/dividend. Those book a cash leg too, and the
+   * book-time engine keeps tagging it exactly as it always has — but their leg
+   * is a CONSEQUENCE of a trade rather than a statement line a user wrote a
+   * merchant rule for, and the preview would be claiming a suggestion for a row
+   * whose money movement it does not even display. Scope stays where the slice
+   * is: the deposits and withdrawals a bank statement is made of.
+   */
+  function isCashRowKind(kind: NormalizedImportRow['kind']): boolean {
+    return kind === 'deposit' || kind === 'withdrawal';
+  }
+
+  /**
+   * The caller's cash rules for ONE staging pass — loaded once for the whole
+   * file, never per row.
+   *
+   * COST SHAPE. Evaluation is O(cash rows × rules) first-match comparisons over
+   * short strings, on top of exactly ONE rules query per batch; regex patterns
+   * compile once each (`cashRuleEngine` memoizes them) rather than once per
+   * row, so a 5000-row file does not multiply into 5000 compilations per rule.
+   * The early return keeps the whole thing free for the common file that
+   * carries no cash memo at all — a rule that matches nothing costs one query
+   * and a walk over a few hundred short strings, which is the same bargain
+   * `applyCashRulesAtBookTime` already makes.
+   */
+  async function cashRulesForBatch(
+    userId: string,
+    mapped: readonly MappedLine[],
+  ): Promise<Awaited<ReturnType<CashRuleRepository['listForOwner']>>> {
+    const anyTaggableRow = mapped.some(
+      (line) => line.ok && isCashRowKind(line.row.kind) && (line.row.note?.trim() ?? '') !== '',
+    );
+    if (!anyTaggableRow) return [];
+    return cashRuleRepo.listForOwner(userId);
+  }
+
+  /**
+   * The rule tags to STAGE for one normalized row, or null when it earns none.
+   *
+   * THE NOTE IS TRIMMED BEFORE MATCHING, because that is exactly what the
+   * book-time path does (`applyCashRuleTags` trims, treats a whitespace-only
+   * note as no note, and hands the trimmed string to the engine). A `regex`
+   * rule tests the string it is given verbatim, so previewing on the untrimmed
+   * memo while booking on the trimmed one would be a drift source hiding in
+   * plain sight — the two paths must feed the engine the same input.
+   *
+   * Today it is belt-and-braces rather than a live fix: `parseCsv` already
+   * trims every cell, so a CSV-derived note reaches here with nothing to trim.
+   * It is written anyway because the parity is the point — this function must
+   * not be the reason the two paths disagree if a future staging source (the
+   * wizard's `rowClassifier`, a pasted table) stops pre-trimming.
+   *
+   * The stored NOTE keeps its original spacing; only the matching input is
+   * trimmed, again mirroring book time.
+   */
+  function stagedRuleTags(
+    row: NormalizedImportRow,
+    flag: StageImportRowInput['flag'],
+    rules: readonly EvaluableCashRule[],
+  ): string[] | null {
+    // Only rows that will actually import: a duplicate / unmapped / error row
+    // books nothing, so promising it a tag would promise something apply is
+    // never going to do.
+    if (flag !== 'mapped' || !isCashRowKind(row.kind)) return null;
+    const note = row.note?.trim() ?? '';
+    if (note === '') return null;
+    const tags = tagsByRules(note, rules);
+    if (tags.length === 0) return null;
+    // Bound what a stored rule can put on the wire. No API path can build a
+    // rule with more than `CASH_TAGS_PER_ITEM_MAX` tags, but this file follows
+    // `cashRuleEngine`'s own stance that rows persisted before (or beside)
+    // write-time validation are not trusted — and here an over-long list would
+    // fail the row's `.max()` in the response contract, taking the whole
+    // preview down with it on a strict client.
+    return tags.slice(0, CASH_TAGS_PER_ITEM_MAX);
+  }
+
+  /**
+   * Re-attach the tags the PREVIEW promised for a row, onto the movement it
+   * just booked (#964).
+   *
+   * REPLAY, NOT RE-EVALUATION — this is the whole no-drift guarantee. The
+   * book-time engine also runs on this insert and evaluates whatever the rules
+   * say NOW; if that were the only thing tagging the movement, a rule edited or
+   * deleted between preview and apply would silently drop a tag the user had
+   * already confirmed. Writing the previewed ids back makes the preview
+   * binding: every tag the user saw lands, whatever happened to the rule since.
+   *
+   * IDEMPOTENCY KEY: `UNIQUE(movement_id, tag_id)` inside
+   * `attachTagWithinPortfolio` — in the ordinary case (rules unchanged) the
+   * book-time stamp already wrote these exact pairs and every replay here is a
+   * no-op, so the two paths converge instead of duplicating.
+   *
+   * NEVER FAILS THE ROW. The money is booked by the time this runs, and the
+   * batch is already claimed, so throwing would report a `failed` row whose
+   * cash is nonetheless in the ledger — a worse lie than a missing label. Same
+   * rule `stampMovementTags` follows, for the same reason.
+   *
+   * ── THE TWO CELLS WHERE PREVIEW AND BOOKING STILL DIVERGE ─────────────────
+   *
+   * "Every previewed tag lands" holds everywhere except here, and both cells
+   * are accepted trade-offs rather than oversights:
+   *
+   *  1. THE TAG ITSELF IS DELETED between preview and apply. The id no longer
+   *     names anything, the INSERT's `cash_tags` join matches nothing, and the
+   *     movement books WITHOUT the label the preview showed. The row still
+   *     reports `applied` — see NEVER FAILS THE ROW above. Nothing else can be
+   *     done: re-creating a tag the user deleted would be worse than omitting
+   *     it. Pinned by `importRuleTagging.test.ts`.
+   *
+   *  2. A RULE IS ADDED between preview and apply. The book-time stamp still
+   *     runs on this insert and evaluates the rules as they are NOW, so the
+   *     movement ends up with the previewed set PLUS whatever the new rule
+   *     assigns. If the new rule outranks the previewed one by priority, that
+   *     is a UNION across two rules — strictly beyond the first-match-wins
+   *     doctrine `cashRuleEngine` documents, and the sharpest form of this
+   *     cell. Accepted: tagging is additive-never-subtractive subsystem-wide,
+   *     every previewed tag still lands, and suppressing book time for import
+   *     bookings would mean punching a bypass through the very seam
+   *     `cashSystemTagStamp` exists to prevent.
+   *
+   * ── WHY A MISS IS SILENT ──────────────────────────────────────────────────
+   *
+   * `attachTagWithinPortfolio` reports a miss by RETURNING `false`, and the
+   * return is deliberately discarded. Under `ON CONFLICT DO NOTHING …
+   * RETURNING`, `false` means "no row was inserted" — which covers the miss
+   * (cell 1 above, or a guard refusal) AND the entirely normal case that the
+   * book-time stamp already wrote this exact pair moments earlier. In the
+   * ordinary run, with rules unchanged, `false` is what EVERY call returns.
+   *
+   * Distinguishing the two would take a `SELECT` per tag per row on the common
+   * path — a 5000-row statement under a three-tag rule is 15 000 extra
+   * round-trips — to emit a log line that is empty essentially always. Not
+   * worth it: the one case worth reporting is already visible to the user (the
+   * movement they just imported lacks the label the preview showed) and is
+   * pinned by a test. A thrown error is a different thing entirely and IS
+   * logged, below.
+   */
+  async function replayRuleTags(
+    portfolioId: string,
+    movementId: string,
+    tagIds: readonly string[] | null,
+  ): Promise<void> {
+    if (!tagIds || tagIds.length === 0) return;
+    for (const tagId of tagIds) {
+      try {
+        // Return value intentionally unused — see WHY A MISS IS SILENT above.
+        await cashTagRepo.attachTagWithinPortfolio(portfolioId, movementId, tagId);
+      } catch (err) {
+        deps.logger?.warn?.(
+          { err, portfolioId, movementId, tagId },
+          'import: previewed cash-rule tag could not be replayed onto the booked movement',
+        );
+      }
+    }
+  }
+
   async function requireOwnedPortfolio(userId: string, portfolioId: string): Promise<void> {
     const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
     if (!owned) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+  }
+
+  /**
+   * Autodetect over the CSV front end, tolerating a file it cannot parse.
+   * `parseCsv` is the mappers' reader and assumes a comma/semicolon text table;
+   * a UTF-16 or otherwise exotic export throwing here must fall through to the
+   * generic sniffer rather than fail the upload, because the sniffer is exactly
+   * the thing that can read it.
+   */
+  function tryDetect(content: string): BrokerMapper | null {
+    try {
+      const csv = parseCsv(content);
+      if (!csv.header || csv.records.length === 0) return null;
+      return registry.detect(csv);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -504,7 +783,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       id: batch.id,
       portfolioId: batch.portfolioId,
       brokerId: batch.brokerId,
-      brokerLabel: registry.byId(batch.brokerId)?.label ?? batch.brokerId,
+      brokerLabel:
+        batch.brokerId === GENERIC_BROKER_ID
+          ? GENERIC_BROKER_LABEL
+          : (registry.byId(batch.brokerId)?.label ?? batch.brokerId),
       filename: batch.filename,
       status: batch.status,
       createdAt: batch.createdAt.toISOString(),
@@ -535,49 +817,136 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       result: row.result,
       resultMessage: row.resultMessage,
       ...(row.candidates && row.candidates.length > 0 ? { candidates: row.candidates } : {}),
+      // Absent, not empty — a row no rule matched claims nothing, exactly as an
+      // exactly-resolved row carries no `candidates`.
+      ...(row.ruleTagIds && row.ruleTagIds.length > 0 ? { ruleTagIds: row.ruleTagIds } : {}),
+      // Absent means the pipeline matched the instrument exactly; present means
+      // a person chose it. Same additive convention as the two above.
+      ...(row.resolvedBy ? { resolvedBy: row.resolvedBy } : {}),
     };
   }
 
   async function buildPreview(batch: ImportBatchRow): Promise<ImportPreviewResponse> {
     const rows = await importRepo.listRows(batch.id);
-    return { batch: toBatchDto(batch, rows), rows: rows.map(toRowDto) };
+    return {
+      batch: toBatchDto(batch, rows),
+      rows: rows.map(toRowDto),
+      // Only a generically-staged batch understood any columns; a broker-mapper
+      // batch reports nothing rather than an empty shape it never computed.
+      ...(batch.understanding ? { understanding: batch.understanding } : {}),
+    };
+  }
+
+  /**
+   * Understand a file no broker mapper claims (#964). Every failure mode of the
+   * generic pipeline is mapped onto a 400 the wizard can explain — an
+   * unsupported container, a file with no table in it, a table whose columns
+   * cannot be labelled at all — because reaching the terminal handler as a 500
+   * would report the user's odd CSV as a server fault.
+   */
+  async function stageGenerically(
+    userId: string,
+    input: CreateImportBatchInput,
+  ): Promise<{ mapped: MappedLine[]; understanding: ImportUnderstanding }> {
+    const bytes = input.contentBytes ?? new TextEncoder().encode(input.content);
+    let staged: Awaited<ReturnType<typeof stageGenericFile>>;
+    try {
+      staged = await stageGenericFile(bytes, input.filename, {
+        // Both seams are looked up per user and either may be absent. A binder
+        // that throws (the heavy tier refuses under a test runner) degrades to
+        // the deterministic path rather than failing the upload.
+        header: { ai: safeSeam(() => deps.headerAi?.(userId)) },
+        rows: { ai: safeSeam(() => deps.rowAi?.(userId)) },
+      });
+    } catch (err) {
+      if (err instanceof UnsupportedFileFormatError) {
+        throw badRequest(
+          'This file format is not supported — export your statement as CSV.',
+          'IMPORT_FORMAT_UNSUPPORTED',
+        );
+      }
+      if (err instanceof UnmappableTableError) {
+        throw badRequest(
+          'The columns in this file could not be identified. Export it with a header row, ' +
+            'or pick the broker manually.',
+          'IMPORT_COLUMNS_UNREADABLE',
+        );
+      }
+      throw err;
+    }
+    if (!staged) {
+      throw badRequest('The file contains no data rows.', 'IMPORT_EMPTY');
+    }
+    if (staged.lines.length > IMPORT_MAX_ROWS) {
+      throw badRequest(
+        `The file has more than ${IMPORT_MAX_ROWS} rows — split it and import in parts.`,
+        'IMPORT_TOO_MANY_ROWS',
+      );
+    }
+    return { mapped: staged.lines.map(guardStagedRow), understanding: staged.understanding };
   }
 
   return {
     listBrokers() {
-      return { brokers: registry.list() };
+      // The generic entry is listed LAST and is pickable: a user whose file a
+      // mapper misreads can force the understanding path, and a user whose file
+      // nothing claims sees that there is a way through (§16 point 1).
+      return {
+        brokers: [...registry.list(), { id: GENERIC_BROKER_ID, label: GENERIC_BROKER_LABEL }],
+      };
     },
 
     async createBatch(userId, input) {
       await deps.paranoid?.assertAllowed(userId, 'imports');
       await requireOwnedPortfolio(userId, input.portfolioId);
 
-      const csv = parseCsv(input.content);
-      if (!csv.header || csv.records.length === 0) {
-        throw badRequest('The file contains no data rows.', 'IMPORT_EMPTY');
-      }
-      if (csv.records.length > IMPORT_MAX_ROWS) {
-        throw badRequest(
-          `The file has more than ${IMPORT_MAX_ROWS} rows — split it and import in parts.`,
-          'IMPORT_TOO_MANY_ROWS',
-        );
-      }
-
-      let mapper: BrokerMapper | null;
-      if (input.brokerId !== undefined) {
+      // ── Which front end reads this file ──────────────────────────────────
+      // The hand-written mappers keep first claim: an explicit pick wins, then
+      // autodetection, and only a file NOTHING recognizes reaches the generic
+      // path. That ordering is the product rule — a Trade Republic export must
+      // keep importing through the mapper that was verified against it, byte
+      // for byte, whatever the generic pipeline would have made of it.
+      let mapper: BrokerMapper | null = null;
+      let generic = false;
+      if (input.brokerId === GENERIC_BROKER_ID) {
+        generic = true;
+      } else if (input.brokerId !== undefined) {
         mapper = registry.byId(input.brokerId);
         if (!mapper) throw badRequest('Unknown broker.', 'IMPORT_BROKER_UNKNOWN');
-      } else {
-        mapper = registry.detect(csv);
-        if (!mapper) {
-          throw badRequest(
-            'This file does not match any supported broker export — pick the broker manually.',
-            'IMPORT_BROKER_UNRECOGNIZED',
-          );
-        }
       }
 
-      const mapped = mapper.map(csv).map(guardStagedRow);
+      let mapped: MappedLine[];
+      let understanding: ImportUnderstanding | null = null;
+      let brokerId: string;
+
+      if (!generic && mapper === null) {
+        // Autodetect needs the CSV front end; a file it cannot parse at all is
+        // still a candidate for the generic sniffer (which handles other
+        // delimiters and encodings), so a parse failure here is not fatal.
+        const detected = tryDetect(input.content);
+        if (detected) mapper = detected;
+        else generic = true;
+      }
+
+      if (mapper !== null) {
+        const csv = parseCsv(input.content);
+        if (!csv.header || csv.records.length === 0) {
+          throw badRequest('The file contains no data rows.', 'IMPORT_EMPTY');
+        }
+        if (csv.records.length > IMPORT_MAX_ROWS) {
+          throw badRequest(
+            `The file has more than ${IMPORT_MAX_ROWS} rows — split it and import in parts.`,
+            'IMPORT_TOO_MANY_ROWS',
+          );
+        }
+        mapped = mapper.map(csv).map(guardStagedRow);
+        brokerId = mapper.id;
+      } else {
+        const staged = await stageGenerically(userId, input);
+        mapped = staged.mapped;
+        understanding = staged.understanding;
+        brokerId = GENERIC_BROKER_ID;
+      }
 
       // Collect before resolving so an over-cap file is rejected without doing
       // any catalog/provider work. Files repeat instruments heavily, so the raw
@@ -673,6 +1042,12 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       const existing = await collectExistingHashes(userId, input.portfolioId);
       const seenInFile = new Set<string>();
 
+      // The caller's own cash rules, read ONCE for the whole file (#964). The
+      // staged rows below are pre-tagged from this single snapshot, which is
+      // then persisted and replayed at apply — so the suggestion the user
+      // confirms and the tags the movement receives come from the same read.
+      const cashRules = await cashRulesForBatch(userId, mapped);
+
       const staged: StageImportRowInput[] = mapped.map((line) => {
         if (!line.ok) {
           return {
@@ -694,6 +1069,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             assetId: null,
             contentHash: null,
             candidates: null,
+            ruleTagIds: null,
           };
         }
 
@@ -759,6 +1135,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           assetId: asset?.id ?? null,
           contentHash: hash,
           candidates,
+          // Pre-tag by the caller's OWN rules, through the SAME engine that
+          // tags a hand-recorded movement (first match wins, its whole tag set,
+          // case-insensitively).
+          ruleTagIds: stagedRuleTags(row, flag, cashRules),
         };
       });
 
@@ -766,8 +1146,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         {
           ownerId: userId,
           portfolioId: input.portfolioId,
-          brokerId: mapper.id,
+          brokerId,
           filename: input.filename,
+          understanding,
         },
         staged,
       );
@@ -914,11 +1295,12 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           executedAt,
           note: row.note,
         };
-        if (row.kind === 'deposit') {
-          await portfolio.depositCash(userId, batch.portfolioId, entry, { source });
-        } else {
-          await portfolio.withdrawCash(userId, batch.portfolioId, entry, { source });
-        }
+        const booked =
+          row.kind === 'deposit'
+            ? await portfolio.depositCash(userId, batch.portfolioId, entry, { source })
+            : await portfolio.withdrawCash(userId, batch.portfolioId, entry, { source });
+        // Bind the booking to what the preview showed (#964).
+        await replayRuleTags(batch.portfolioId, booked.movement.id, row.ruleTagIds);
       };
 
       for (const row of ordered) {
@@ -982,6 +1364,127 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         failed,
         rows: outcomes,
       };
+    },
+
+    /**
+     * Pin an unresolved row to an asset the CALLER chose (#964, §16 2026-07-31
+     * point 4: "resolvable IN the wizard … never a dead end and never a silent
+     * mis-map").
+     *
+     * ── WHAT VALIDATES THE ID, AND WHAT DOES NOT ─────────────────────────────
+     *
+     * The row's stored `candidates` are UI suggestions and deliberately NOT the
+     * validation boundary. Constraining the pick to them would re-create the
+     * dead end this exists to remove: the directive's other half is "or create a
+     * custom one on the spot", and a just-created custom asset is by definition
+     * not in a suggestion list computed at staging time. So the id is validated
+     * with the SAME rule the manual transaction path uses — a global catalog
+     * asset, or the caller's OWN custom asset; anything else is a 404 that
+     * cannot distinguish "missing" from "someone else's" (§10).
+     *
+     * That is the correct boundary because the hazard this subsystem guards
+     * against is a MODEL minting an asset id, and no model reaches this method:
+     * the id comes from a person, over an authenticated session, naming
+     * something they could already book by hand.
+     *
+     * ── WHY THE ROW IS RE-JUDGED, NOT JUST STAMPED ───────────────────────────
+     *
+     * Pinning an asset changes the two things staging derived from it, so both
+     * are recomputed rather than left stale:
+     *  - the CURRENCY agreement a trade needs (the same check staging makes);
+     *  - the CONTENT HASH, which keys on the resolved asset — so a row pinned to
+     *    an instrument the portfolio already holds that exact trade for flips to
+     *    `duplicate` instead of quietly becoming a second copy at apply.
+     */
+    async resolveRow(userId, batchId, rowId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
+      const batch = await importRepo.findBatchForOwner(userId, batchId);
+      if (!batch) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
+      if (batch.status !== 'pending') {
+        throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+      }
+
+      const rows = await importRepo.listRows(batch.id);
+      const row = rows.find((r) => r.id === rowId);
+      // Scoped to THIS batch: a row id from someone else's import is a 404 for
+      // the same reason a foreign batch id is.
+      if (!row) throw notFound('Import row not found.', 'IMPORT_ROW_NOT_FOUND');
+      // Kind first, then flag: a cash row is BOTH "not an instrument row" and
+      // "not unresolved", and the first of those is the specific truth a user
+      // needs to hear. The generic message would send them hunting for a
+      // resolution problem on a row that can never have one.
+      if (row.kind === null || !needsInstrument(row.kind)) {
+        throw badRequest('This row does not reference an instrument.', 'IMPORT_ROW_NOT_INSTRUMENT');
+      }
+      if (row.flag !== 'unmapped') {
+        throw badRequest(
+          'Only a row whose instrument could not be resolved can be pinned to an asset.',
+          'IMPORT_ROW_NOT_UNRESOLVED',
+        );
+      }
+      // An `unmapped` row parsed successfully and therefore has a date; this
+      // keeps the content hash honest rather than trusting that invariant.
+      if (row.executedAt === null) {
+        throw badRequest('This row has no date to match against.', 'IMPORT_ROW_INVALID');
+      }
+
+      // Same visibility rule as `portfolioService.loadVisibleAssets`.
+      const [asset] = await portfolioRepo.assetsByIds([input.assetId]);
+      if (!asset || (asset.ownerId !== null && asset.ownerId !== userId)) {
+        throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+      }
+
+      // A trade must be quoted in the row's own currency — staging refuses the
+      // mismatch, and a hand-pinned asset gets no weaker a check.
+      if ((row.kind === 'buy' || row.kind === 'sell') && asset.currency !== row.currency) {
+        throw badRequest(
+          `${asset.symbol} is quoted in ${asset.currency} but this row is ${row.currency} — ` +
+            `pick the ${row.currency} listing instead.`,
+          'IMPORT_ROW_CURRENCY_MISMATCH',
+        );
+      }
+
+      const hash = contentHash({
+        kind: row.kind,
+        executedAt: row.executedAt,
+        instrument: asset.id,
+        quantity: row.quantity,
+        price: row.price,
+        amountEur: row.amountEur,
+      });
+
+      // Duplicate truth against what is already recorded AND against the rows
+      // this batch will itself apply — the same two questions staging asks.
+      const existing = await collectExistingHashes(userId, batch.portfolioId);
+      const siblings = new Set(
+        rows
+          .filter((r) => r.id !== row.id && r.flag === 'mapped' && r.contentHash !== null)
+          .map((r) => r.contentHash as string),
+      );
+      const duplicate = existing.has(hash) || siblings.has(hash);
+
+      // The write is conditional on the batch still being `pending`, because
+      // everything between the check above and this line is `await`ed and an
+      // apply can claim the batch in that gap. A refused write means the claim
+      // won: the client gets the same 409 a sequential second apply gets, and
+      // the row is left exactly as staging had it rather than half-pinned to an
+      // import that already finished.
+      const pinned = await importRepo.setRowResolution({
+        id: row.id,
+        assetId: asset.id,
+        flag: duplicate ? 'duplicate' : 'mapped',
+        message: duplicate
+          ? 'An identical row (same date, instrument, quantity, price) already exists.'
+          : null,
+        contentHash: hash,
+        resolvedBy: 'user',
+      });
+      if (!pinned) {
+        throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+      }
+
+      const refreshed = await importRepo.findBatchForOwner(userId, batchId);
+      return buildPreview(refreshed ?? batch);
     },
 
     async discardBatch(userId, batchId) {

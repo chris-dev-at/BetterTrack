@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { MAX_PASSWORD_LENGTH } from './auth';
-import { cashRuleMatchTypeSchema } from './cash';
+import { CASH_TAGS_PER_ITEM_MAX, cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
   IMPORT_ROW_CANDIDATE_LIMIT,
@@ -9,7 +9,9 @@ import {
   importRowCandidateSchema,
   importRowFlagSchema,
   importRowKindSchema,
+  importRowResolvedBySchema,
   importRowResultSchema,
+  importUnderstandingSchema,
 } from './imports';
 import { currencyCodeSchema } from './market';
 import { mirrorRowKindSchema } from './mirrorchain';
@@ -1209,6 +1211,20 @@ const standingOrderRunRowSchema = z
   })
   .strict();
 
+/**
+ * The `import_batches.understanding` column as it appears inside a vault
+ * document (#964) — the generic pipeline's read of the uploaded file.
+ *
+ * Exported for exactly the same single reason as
+ * {@link vaultImportRowCandidatesSchema}: it is a `ZodCatch` reachable from
+ * `PortfolioVaultMoveOutRequest`, and the OpenAPI generator needs the type hint
+ * installed on this very instance. Nothing else should import it.
+ */
+export const vaultImportBatchUnderstandingSchema = importUnderstandingSchema
+  .nullable()
+  .optional()
+  .catch(null);
+
 const importBatchRowSchema = z
   .object({
     ownerId: uuidSchema,
@@ -1219,6 +1235,20 @@ const importBatchRowSchema = z
     cashSourceId: uuidSchema.nullable(),
     createdAt: timestampSchema,
     appliedAt: timestampSchema.nullable(),
+    /**
+     * The `import_batches.understanding` column (#964): what the generic
+     * pipeline worked out about the uploaded file. Enrolled because the
+     * export-completeness sweep requires every persisted column to appear in
+     * the strict payload.
+     *
+     * `.nullable().optional().catch(null)` for the same three reasons as
+     * `import_rows.candidates` below: documents written before this column
+     * existed carry no such key, and a DESCRIPTION of a short-lived staging
+     * preview must never be the reason a portfolio cannot be restored. A
+     * malformed or unknown-shaped value degrades this ONE field to null and
+     * the batch still parses.
+     */
+    understanding: vaultImportBatchUnderstandingSchema,
   })
   .strict();
 
@@ -1238,6 +1268,34 @@ const importBatchRowSchema = z
 export const vaultImportRowCandidatesSchema = z
   .array(importRowCandidateSchema)
   .max(IMPORT_ROW_CANDIDATE_LIMIT)
+  .nullable()
+  .optional()
+  .catch(null);
+
+/**
+ * The `import_rows.rule_tag_ids` column as it appears inside a vault document
+ * (#964) — the cash-rule tags a staged row was pre-tagged with.
+ *
+ * Exported for exactly the same single reason as
+ * {@link vaultImportRowCandidatesSchema}: it is another `ZodCatch` reachable
+ * from `PortfolioVaultMoveOutRequest`, and the OpenAPI generator needs the hint
+ * installed on this very instance. Nothing else should import it.
+ *
+ * See the field's documentation in `importRowRowSchema` for why it degrades.
+ */
+export const vaultImportRowRuleTagIdsSchema = z
+  .array(uuidSchema)
+  .max(CASH_TAGS_PER_ITEM_MAX)
+  .nullable()
+  .optional()
+  .catch(null);
+
+/**
+ * The `import_rows.resolved_by` column as it appears inside a vault document
+ * (#964). Exported for the same OpenAPI-generator reason as its two siblings
+ * above; nothing else should import it.
+ */
+export const vaultImportRowResolvedBySchema = importRowResolvedBySchema
   .nullable()
   .optional()
   .catch(null);
@@ -1294,6 +1352,34 @@ const importRowRowSchema = z
      * assembler forgot".
      */
     candidates: vaultImportRowCandidatesSchema,
+    /**
+     * The `import_rows.rule_tag_ids` column: the cash-rule tag suggestion this
+     * staged row was pre-tagged with (#964). Enrolled because the
+     * export-completeness sweep requires every persisted column to appear in
+     * the strict payload.
+     *
+     * `.nullable().optional().catch(null)` for the same three reasons as
+     * `candidates` directly above: documents written before this column existed
+     * carry no such key, and a staging-time SUGGESTION must never be the reason
+     * a portfolio cannot be restored. A malformed list, an over-cap array or a
+     * non-uuid member degrades this ONE field to null and the row still parses
+     * — the import batch it belongs to is a short-lived preview, while the
+     * portfolio behind it is the user's actual money.
+     */
+    ruleTagIds: vaultImportRowRuleTagIdsSchema,
+    /**
+     * The `import_rows.resolved_by` column (#964): provenance for `assetId` —
+     * null when the pipeline matched the instrument exactly, `'user'` when a
+     * person pinned it in the wizard. Enrolled because the
+     * export-completeness sweep requires every persisted column to appear in
+     * the strict payload.
+     *
+     * `.nullable().optional().catch(null)` for the same three reasons as the
+     * two fields above. Degrading to null loses only the badge that says a
+     * human chose this asset; the `assetId` itself is a plain column and is
+     * unaffected, so no restored row can be re-pointed by this field failing.
+     */
+    resolvedBy: vaultImportRowResolvedBySchema,
   })
   .strict();
 
@@ -1982,6 +2068,14 @@ export const PARANOID_TRANSITION_ERROR_CODES = {
    */
   normalDataChanged: 'PARANOID_NORMAL_DATA_CHANGED',
   invalidRehydration: 'PARANOID_REHYDRATION_INVALID',
+  /**
+   * The account already went through the §17 backup + wipe (PARANOID E9), so it
+   * may not re-enter the account-level v1 model. The wipe is idempotent on
+   * `paranoid_v1_wipe_receipts.user_id` and refuses a second run, which means
+   * anything created after a wipe could never be backed up or quarantined again.
+   * The per-portfolio vault model is where such an account goes instead.
+   */
+  legacyWiped: 'PARANOID_LEGACY_WIPED',
 } as const;
 export type ParanoidTransitionErrorCode =
   (typeof PARANOID_TRANSITION_ERROR_CODES)[keyof typeof PARANOID_TRANSITION_ERROR_CODES];

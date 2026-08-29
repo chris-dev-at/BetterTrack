@@ -53,6 +53,48 @@ const VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION = {
     'the reason a portfolio cannot be restored.',
 };
 
+// Same generator gap, third instance: the vault import-row `ruleTagIds` field
+// is a `.catch(null)` too, so a malformed staging-time tag suggestion can never
+// make a portfolio unrestorable. Reachable from `PortfolioVaultMoveOutRequest`,
+// so without a hint `/openapi.json` and `/docs` 500 for the whole API.
+const VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION = {
+  type: 'array' as const,
+  nullable: true,
+  items: { type: 'string' as const },
+  description:
+    'Cash-rule tag ids a staged import row was pre-tagged with (#964). Tolerant by design: a ' +
+    'value that does not match the strict uuid list is accepted and read back as null rather ' +
+    'than rejecting the row, because a staging-time suggestion must never be the reason a ' +
+    'portfolio cannot be restored.',
+};
+
+// Same generator gap, fourth instance: the vault import-BATCH `understanding`
+// field is a `.catch(null)`, so a malformed description of a staging preview can
+// never make a portfolio unrestorable. Reachable from
+// `PortfolioVaultMoveOutRequest`, so without a hint `/openapi.json` and `/docs`
+// 500 for the whole API.
+const VAULT_IMPORT_BATCH_UNDERSTANDING_DOCUMENTATION = {
+  type: 'object' as const,
+  nullable: true,
+  description:
+    'What the generic import pipeline understood about an uploaded file (#964): the per-column ' +
+    'labels with their evidence, the headers it could not name, and the sniffed delimiter, ' +
+    'encoding and locales. Tolerant by design: a value that does not match the strict shape is ' +
+    'accepted and read back as null rather than rejecting the batch, because a description of a ' +
+    'short-lived staging preview must never be the reason a portfolio cannot be restored.',
+};
+
+// Same generator gap, fifth instance: the vault import-row `resolvedBy` field is
+// a `.catch(null)` for the same reason as its siblings.
+const VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION = {
+  type: 'string' as const,
+  nullable: true,
+  description:
+    "Provenance for a staged import row's resolved asset (#964): absent when the pipeline " +
+    'matched the instrument exactly, "user" when a person pinned it in the wizard. Tolerant by ' +
+    'design: an unrecognized value is read back as null rather than rejecting the row.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -67,6 +109,18 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowCandidatesSchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_CANDIDATES_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowRuleTagIdsSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportBatchUnderstandingSchema as unknown as HintableSchema,
+    VAULT_IMPORT_BATCH_UNDERSTANDING_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowResolvedBySchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION,
   ],
 ];
 
@@ -153,8 +207,9 @@ const componentSchemas = {
   CreateDriveConnectionRequest: contracts.createDriveConnectionRequestSchema,
   CreateDriveConnectionResponse: contracts.createDriveConnectionResponseSchema,
 
-  // Per-portfolio move pipeline (paranoid E4 #1414)
+  // Per-portfolio move pipeline (paranoid E4 #1414, E6 residual #1525)
   PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
+  PortfolioVaultLifecycleResponse: contracts.portfolioVaultLifecycleResponseSchema,
   PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
   PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
   PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
@@ -227,6 +282,13 @@ const componentSchemas = {
   UpdateAccountDefaultsRequest: contracts.updateAccountDefaultsRequestSchema,
   AdminUser: contracts.adminUserSchema,
   AdminUserListResponse: contracts.adminUserListResponseSchema,
+  // People 360 (#1406 W2) — read-only projections + operator notes.
+  AdminUserAccessResponse: contracts.adminUserAccessResponseSchema,
+  AdminUserSharingResponse: contracts.adminUserSharingResponseSchema,
+  AdminUserSupportResponse: contracts.adminUserSupportResponseSchema,
+  AdminUserNote: contracts.adminUserNoteSchema,
+  AdminUserNoteListResponse: contracts.adminUserNoteListResponseSchema,
+  CreateAdminUserNoteRequest: contracts.createAdminUserNoteRequestSchema,
   CreateUserResponse: contracts.createUserResponseSchema,
   ResetPasswordResponse: contracts.resetPasswordResponseSchema,
   AdminInviteListResponse: contracts.adminInviteListResponseSchema,
@@ -411,6 +473,7 @@ const componentSchemas = {
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
   ImportPreviewResponse: contracts.importPreviewResponseSchema,
   ApplyImportRequest: contracts.applyImportRequestSchema,
+  ResolveImportRowRequest: contracts.resolveImportRowRequestSchema,
   ApplyImportResponse: contracts.applyImportResponseSchema,
   CreateIdeaRequest: contracts.createIdeaRequestSchema,
   UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
@@ -1006,6 +1069,14 @@ const endpoints: EndpointDef[] = [
     path: '/auth/first-run/complete',
     tag: 'Auth',
     summary: 'Mark first-run setup as finished or dismissed (idempotent, set-once).',
+    status: 200,
+    response: R.MeResponse,
+  },
+  {
+    method: 'post',
+    path: '/auth/fresh-start-notice/acknowledge',
+    tag: 'Auth',
+    summary: 'Acknowledge the one-time paranoid fresh-start notice (§17, idempotent, set-once).',
     status: 200,
     response: R.MeResponse,
   },
@@ -1868,6 +1939,77 @@ const endpoints: EndpointDef[] = [
     query: contracts.auditQuerySchema,
     status: 200,
     response: R.AuditLogListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}',
+    tag: 'Admin',
+    summary: 'One account (#1406 W2 — retires the download-the-whole-list detail read).',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUser,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/access',
+    tag: 'Admin',
+    summary: "One account's live sessions, API keys, OAuth grants and linked identities.",
+    description:
+      'Read-only. Session ids are public revocation handles, never session tokens; ' +
+      'linked identities carry no provider subject and no provider email.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUserAccessResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/sharing',
+    tag: 'Admin',
+    summary: 'How exposed one account is, as counts only.',
+    description:
+      'Counts, never an inventory: PROJECTPLAN §3 forbids admin browsing of user ' +
+      'portfolios, and #1406 defers the sharing inventory. No names, no tokens.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUserSharingResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/support',
+    tag: 'Admin',
+    summary: "One account's support submissions, summarized (no message bodies).",
+    params: contracts.idParamSchema,
+    query: contracts.adminUserSupportQuerySchema,
+    status: 200,
+    response: R.AdminUserSupportResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/notes',
+    tag: 'Admin',
+    summary: 'Admin-private operator notes on one account, newest first.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminUserNoteListResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/users/{id}/notes',
+    tag: 'Admin',
+    summary: 'Add an admin-private operator note. Audited; never shown to the user.',
+    params: contracts.idParamSchema,
+    body: contracts.createAdminUserNoteRequestSchema,
+    status: 201,
+    response: R.AdminUserNote,
+  },
+  {
+    method: 'delete',
+    path: '/admin/users/{id}/notes/{noteId}',
+    tag: 'Admin',
+    summary: 'Remove an operator note. Audited; 404 when the note is not on this account.',
+    params: contracts.adminUserNoteParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',
@@ -3454,6 +3596,17 @@ const endpoints: EndpointDef[] = [
     idempotent: true,
   },
   {
+    method: 'patch',
+    path: '/imports/{batchId}/rows/{rowId}',
+    tag: 'Imports',
+    summary:
+      "Pin an unresolved staged row to an asset the USER picked (#964): the row flips to mapped (or duplicate, if the pin collides with data already recorded), is stamped resolvedBy=user, and the refreshed preview is returned. The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted.",
+    params: contracts.importRowIdParamSchema,
+    body: R.ResolveImportRowRequest,
+    status: 200,
+    response: R.ImportPreviewResponse,
+  },
+  {
     method: 'delete',
     path: '/imports/{batchId}',
     tag: 'Imports',
@@ -4823,6 +4976,23 @@ const endpoints: EndpointDef[] = [
     errorResponses: {
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
       409: 'The portfolio is already vaulted or cannot currently be captured.',
+      429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/lifecycle',
+    tag: 'Vault',
+    summary: 'Read a vaulted portfolio’s current membership lifecycle generation.',
+    description:
+      'Available to an owning session or a bearer holding account:security. §10 allows move-out from any unlocked device holding the phrase, but the server-minted lifecycle generation the move-out proof binds to was only ever returned by the original move-in commit — this no-store read recovers that non-sensitive transition metadata (E6 residual, #1525). It carries no portfolio content.',
+    params: contracts.portfolioIdParamSchema,
+    status: 200,
+    response: R.PortfolioVaultLifecycleResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is not stored in a vault, or its transition state is inconsistent.',
       429: 'The dedicated vault-transition rate limit was exceeded.',
     },
   },

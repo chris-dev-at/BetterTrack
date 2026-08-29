@@ -392,6 +392,10 @@ describe('OpenAPI document', () => {
     // reads use vault:sync; DELETE alone uses account:security + in-body step-up;
     // config and recovery-media transitions remain session-only.
     const perVaultSyncOperations = [
+      // #1497: the two config reads joined this scope family so a phone holding
+      // only a §13 phrase can discover the vault and its singleton doc ids.
+      ['get', '/vaults'],
+      ['get', '/vaults/{vaultId}'],
       ['get', '/vaults/{vaultId}/docs/{docId}'],
       ['put', '/vaults/{vaultId}/docs/{docId}'],
       ['get', '/vaults/{vaultId}/docs/{docId}/history'],
@@ -479,9 +483,7 @@ describe('OpenAPI document', () => {
     ).toMatchObject({ schema: { $ref: '#/components/schemas/PortfolioVaultMoveOutResponse' } });
 
     const perVaultSessionOperations = [
-      ['get', '/vaults'],
       ['post', '/vaults'],
-      ['get', '/vaults/{vaultId}'],
       ['patch', '/vaults/{vaultId}'],
       ['patch', '/vaults/{vaultId}/media'],
       ['put', '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}'],
@@ -495,6 +497,28 @@ describe('OpenAPI document', () => {
         { sessionCookie: [] },
       ]);
     }
+
+    // #1497: the deployed schema must show apiKeyBearer on EXACTLY the per-vault
+    // operations above and nothing else, so widening the two config reads cannot
+    // drag an unnoticed sibling along with it.
+    const perVaultBearerOperations = Object.entries(paths)
+      .filter(([path]) => path === '/vaults' || path.startsWith('/vaults/'))
+      .flatMap(([path, operations]) =>
+        Object.entries(operations as JsonObject)
+          .filter(([, operation]) =>
+            ((operation as JsonObject).security as JsonObject[] | undefined)?.some(
+              (requirement) => 'apiKeyBearer' in requirement,
+            ),
+          )
+          .map(([method]) => `${method} ${path}`),
+      )
+      .sort();
+    expect(perVaultBearerOperations).toEqual(
+      [
+        ...perVaultSyncOperations.map(([method, path]) => `${method} ${path}`),
+        'delete /vaults/{vaultId}',
+      ].sort(),
+    );
 
     // The blind store stays binary at the public contract boundary. A JSON
     // declaration here would invite generated clients to parse ciphertext.

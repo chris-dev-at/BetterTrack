@@ -1,4 +1,8 @@
-import type { ImportRowCandidate } from '@bettertrack/contracts';
+import type {
+  ImportRowCandidate,
+  ImportRowResolvedBy,
+  ImportUnderstanding,
+} from '@bettertrack/contracts';
 import { sql, type SQL } from 'drizzle-orm';
 import {
   bigint,
@@ -594,6 +598,48 @@ export const auditLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('audit_log_created_at_idx').on(t.createdAt)],
+);
+
+/**
+ * Operator notes on an account (#1406 W2, People 360 "Notes" tab).
+ *
+ * Admin-private annotations — "prefers German copy", "reported the dividend
+ * rounding twice" — that give the next operator the context the audit log
+ * cannot carry. They are never exposed on any user-facing route, drive no
+ * behaviour anywhere in the product, and every write is audited with the
+ * operator as actor, so the table is purely additive: deleting all of it would
+ * leave every account byte-identical.
+ *
+ * `user_id` cascades (a deleted account takes its notes with it — they are
+ * about a person who no longer exists), while `author_id` set-nulls the way
+ * {@link auditLog.actorId} does, so a note survives the departure of the admin
+ * who wrote it and the trail stays readable.
+ */
+export const adminUserNotes = pgTable(
+  'admin_user_notes',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id').references(() => users.id, { onDelete: 'set null' }),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('admin_user_notes_user_created_idx').on(t.userId, t.createdAt),
+    // Declared here as well as in the migration: drizzle-kit generates from
+    // THIS file, so a constraint that lives only in SQL is one the next
+    // `generate` silently proposes dropping. Mirrors `feedback_messages`
+    // (#1339) — the zod contract already rejects blank and over-long bodies,
+    // and the column repeats both so no future caller can write unbounded
+    // operator prose past the route. The 2000 is a literal for the same reason
+    // `feedback_messages` uses one — schema.ts holds no runtime contract import
+    // — and `adminPeople.test.ts` pins it to ADMIN_USER_NOTE_MAX_LENGTH so the
+    // two cannot drift apart silently.
+    check('admin_user_notes_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
+    check('admin_user_notes_body_length', sql`char_length(${t.body}) <= 2000`),
+  ],
 );
 
 /**
@@ -3125,6 +3171,18 @@ export const importBatches = pgTable(
     }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp('applied_at', { withTimezone: true }),
+    /**
+     * What the GENERIC pipeline worked out about this file (#964, §16
+     * 2026-07-31): the per-column labels with their evidence and review flags,
+     * the headers nothing could name, and the sniffed delimiter/encoding/
+     * locales. Null for every batch a broker mapper claimed — that path labels
+     * no columns — and for every batch staged before this change.
+     *
+     * Persisted rather than recomputed so `GET /imports/:batchId` re-reads the
+     * same understanding the upload returned: the file itself is never stored,
+     * so there would otherwise be nothing to recompute it from.
+     */
+    understanding: jsonb('understanding').$type<ImportUnderstanding>(),
   },
   (t) => [index('import_batches_owner_idx').on(t.ownerId)],
 );
@@ -3169,6 +3227,20 @@ export const importRows = pgTable(
     result: importRowResultEnum('result'),
     resultMessage: text('result_message'),
     candidates: jsonb('candidates').$type<ImportRowCandidate[]>(),
+    /**
+     * The caller's own cash-rule tags for this row's memo (#964), computed once
+     * at staging and replayed verbatim at apply, so what the preview showed and
+     * what the booking gets can never disagree. Null on non-cash rows and
+     * wherever no rule matched.
+     */
+    ruleTagIds: jsonb('rule_tag_ids').$type<string[]>(),
+    /**
+     * Provenance for `asset_id` (#964, §16 2026-07-31 point 4). Null means the
+     * staging pipeline resolved the instrument by EXACT identity; `'user'`
+     * means a person pinned it in the wizard. Never `'ai'` — no model mints an
+     * asset id anywhere in this subsystem.
+     */
+    resolvedBy: text('resolved_by').$type<ImportRowResolvedBy>(),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );
@@ -3930,6 +4002,96 @@ export type ParanoidVaultRetiredRow = typeof paranoidVaultRetired.$inferSelect;
 export type NewParanoidVaultRetiredRow = typeof paranoidVaultRetired.$inferInsert;
 export type ParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferSelect;
 export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferInsert;
+
+// ── PARANOID E9 / §17 — the transition gate and its receipt ──────────────────
+// (`docs/paranoid-design.md` §17, ruled (C) "backup + wipe" on 2026-08-20 §21 Q3;
+// migration `0102_paranoid_v1_transition`.)
+//
+// The seven quarantine tables the same migration creates deliberately have NO
+// drizzle definition. `paranoidV1WipeService` moves rows into them with
+// `INSERT INTO ... SELECT`, which copies `bytea` ciphertext byte-exact inside the
+// wipe's own transaction; round-tripping user ciphertext through JavaScript to
+// satisfy an ORM would add a re-encoding step to the one code path in this
+// codebase that must not corrupt what it is preserving.
+
+/**
+ * The owner-run verified-backup fact — §17 step 1, made server-checkable.
+ *
+ * `scripts/ops/export-paranoid-v1-backup.mjs` is the ONLY writer, and it inserts
+ * only after re-reading the archive it wrote from disk and matching both the
+ * per-table row counts and a SHA-256 content digest. Nothing reachable from an
+ * HTTP route can create a row here — that is the point. §17 orders the backup
+ * before "any destructive step", and PROJECTPLAN §16's 2026-07-28 ruling is
+ * explicit that unverifiable assertions may never destroy: only a fact the
+ * server established itself may authorise the wipe.
+ */
+export const paranoidV1BackupAttestations = pgTable('paranoid_v1_backup_attestations', {
+  id: uuid('id').primaryKey().$defaultFn(newId),
+  /** Absolute path of the archive on the prod host, for the operator's audit trail. */
+  archiveFile: text('archive_file').notNull(),
+  /** SHA-256 of the archive file's bytes, lowercase hex (CHECK-enforced shape). */
+  archiveSha256: text('archive_sha256').notNull(),
+  /** `{ "<table>": <rowCount> }` as dumped and verified. */
+  rowCounts: jsonb('row_counts').notNull(),
+  /**
+   * `{ "<userId>": "<sha256>" }` — the digest of THAT account's legacy rows at
+   * dump time. The wipe recomputes it per account inside its own transaction, so
+   * a vault that changed after the backup is refused instead of destroyed
+   * against a stale archive.
+   */
+  userDigests: jsonb('user_digests').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy: text('created_by').notNull(),
+  /**
+   * §17's "offsite copy confirmed", turned into a checked fact: the operator
+   * digests the copy that left the host and hands it back; only a match sets
+   * these two. The wipe requires them, so an archive still sitting on the prod
+   * host cannot authorise destruction.
+   */
+  offsiteConfirmedAt: timestamp('offsite_confirmed_at', { withTimezone: true }),
+  offsiteConfirmedSha256: text('offsite_confirmed_sha256'),
+});
+
+/**
+ * One row per wiped account — three jobs in one table.
+ *
+ * 1. The wipe's idempotency key. The primary key IS `user_id`, so a second wipe
+ *    of the same account cannot run silently; `paranoidV1WipeService` refuses on
+ *    conflict rather than guessing what a re-wipe should mean.
+ * 2. §17 step 3's one-time notice state: `notice_acknowledged_at IS NULL` means
+ *    the fresh-start notice is still owed. Only wiped accounts have a row, so an
+ *    account that was always `normal` can never be shown the notice — structural,
+ *    not conditional.
+ * 3. §18's admin "legacy-wiped marker" ("the account went through the
+ *    backup+wipe").
+ *
+ * `priorPrivacyMode` is `text`, not the `privacyMode` enum, on purpose: this row
+ * outlives the §19 deletion train, which drops that enum along with the column.
+ */
+export const paranoidV1WipeReceipts = pgTable(
+  'paranoid_v1_wipe_receipts',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    attestationId: uuid('attestation_id')
+      .notNull()
+      .references(() => paranoidV1BackupAttestations.id, { onDelete: 'restrict' }),
+    wipedAt: timestamp('wiped_at', { withTimezone: true }).notNull().defaultNow(),
+    priorPrivacyMode: text('prior_privacy_mode').notNull(),
+    priorMediaSet: text('prior_media_set').array(),
+    priorDriveAttestedVersion: integer('prior_drive_attested_version'),
+    noticeAcknowledgedAt: timestamp('notice_acknowledged_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('paranoid_v1_wipe_receipts_notice_pending_idx')
+      .on(t.userId)
+      .where(sql`${t.noticeAcknowledgedAt} is null`),
+  ],
+);
+
+export type ParanoidV1BackupAttestationRow = typeof paranoidV1BackupAttestations.$inferSelect;
+export type ParanoidV1WipeReceiptRow = typeof paranoidV1WipeReceipts.$inferSelect;
 
 // ── PARANOID VAULTS — the per-portfolio model ────────────────────────────────
 // (`docs/paranoid-design.md` §3/§7/§8, ACKED & RULED 2026-08-20; §13.5 V5-P13

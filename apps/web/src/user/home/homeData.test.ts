@@ -3,7 +3,13 @@ import { describe, expect, test } from 'vitest';
 import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
 
 import { SCOPE_ALL, SCOPE_SELECTED } from './config';
-import { composeHomeRollup, homePortfolioRead, resolveScope, resolveWidgetScope } from './homeData';
+import {
+  composeHomeRollup,
+  homePortfolioRead,
+  resolveScope,
+  resolveWidgetScope,
+  type HomePortfolioRead,
+} from './homeData';
 
 /**
  * Scope resolution: the rule that turns a *stored* scope into the portfolios a
@@ -229,6 +235,54 @@ describe('Home money roll-up coverage', () => {
     expect(homePortfolioRead(vaulted, { isError: false, data: { totals: TOTALS } })).toEqual({
       state: 'error',
     });
+  });
+
+  /**
+   * PARANOID-E6 residual (#1416): the resolver-backed client read.
+   *
+   * The stub-only classification above is what a LOCKED vault still gets. When
+   * the vault is unlocked on this device the client engine can serve the same
+   * portfolio, and that read arrives here as an explicit third argument — never
+   * as the server query result, which stays disabled for every vaulted member.
+   */
+  test('an unlocked client read is what makes a vaulted member readable', () => {
+    const vaulted = {
+      ...SAVINGS,
+      vaultId: '00000000-0000-4000-8000-000000000001',
+      vaultAlias: 'Private',
+    };
+    const clientRead = {
+      state: 'success',
+      provenance: {
+        kind: 'vaulted-unlocked',
+        vaultId: vaulted.vaultId,
+        snapshotId: 'vault-document-set-v1',
+        isCurrent: () => true,
+      },
+      totals: TOTALS,
+    } satisfies HomePortfolioRead;
+
+    // The disabled server query is still what the second argument carries.
+    expect(homePortfolioRead(vaulted, { isError: false }, clientRead)).toBe(clientRead);
+    // And it never becomes the answer for a portfolio the resolver did not open.
+    expect(homePortfolioRead(vaulted, { isError: false })).toEqual({ state: 'error' });
+  });
+
+  test('a client read still cannot overrule a settled server read for a PLAIN portfolio', () => {
+    const clientRead = {
+      state: 'success',
+      provenance: {
+        kind: 'vaulted-unlocked',
+        vaultId: '00000000-0000-4000-8000-000000000001',
+        snapshotId: 'vault-document-set-v1',
+        isCurrent: () => true,
+      },
+      totals: TOTALS,
+    } satisfies HomePortfolioRead;
+
+    expect(
+      homePortfolioRead(MAIN, { isError: false, data: { totals: TOTALS } }, clientRead),
+    ).toEqual({ state: 'success', provenance: { kind: 'plain' }, totals: TOTALS });
   });
 
   test('plain-only successful figures compose as complete server-shaped totals', () => {

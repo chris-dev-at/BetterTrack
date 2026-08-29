@@ -35,13 +35,14 @@ beforeEach(async () => {
 /** A repository stub that resolves nothing — the sweep then has no work. */
 const noUsers: Pick<UserRepository, 'listByIds'> = { listByIds: async () => [] };
 const noVaultStaging = { cleanupExpiredEnableStaging: async () => 0 };
+const noVaultCandidates = { cleanupExpiredServerCandidates: async () => 0 };
 
-function ctx(): JobContext {
+function ctx(jobLogger: Logger = logger): JobContext {
   return {
     events: harness.ctx.events,
     deadLetter: {} as JobContext['deadLetter'],
     redis: harness.ctx.redis,
-    logger,
+    logger: jobLogger,
   };
 }
 
@@ -51,6 +52,7 @@ describe('data.retentionCleanup', () => {
       audit: { deleteOlderThan: vi.fn() },
       emailLog: { deleteOlderThan: vi.fn() },
       vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
       users: noUsers,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
@@ -100,6 +102,7 @@ describe('data.retentionCleanup', () => {
       audit,
       emailLog,
       vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
       users: noUsers,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
@@ -133,6 +136,7 @@ describe('data.retentionCleanup', () => {
       audit: { deleteOlderThan: auditDelete },
       emailLog: { deleteOlderThan: emailDelete },
       vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
       users: noUsers,
       auditRetentionDays: 0,
       emailLogRetentionDays: 180,
@@ -143,6 +147,92 @@ describe('data.retentionCleanup', () => {
 
     expect(auditDelete).not.toHaveBeenCalled();
     expect(emailDelete).toHaveBeenCalledOnce();
+  });
+
+  it('continues a full vault-staging batch and reports examined rows truthfully', async () => {
+    const cleanupExpiredEnableStaging = vi.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(1);
+    const info = vi.fn();
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: { cleanupExpiredEnableStaging },
+      vaultCandidates: noVaultCandidates,
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      batchSize: 2,
+      now: () => NOW,
+    });
+
+    await job.handler({} as never, ctx({ info } as unknown as Logger));
+
+    expect(cleanupExpiredEnableStaging).toHaveBeenNthCalledWith(1, NOW, 2);
+    expect(cleanupExpiredEnableStaging).toHaveBeenNthCalledWith(2, NOW, 2);
+    expect(info).toHaveBeenCalledWith(
+      {
+        auditPruned: 0,
+        emailLogPruned: 0,
+        abandonedVaultStagesExamined: 3,
+        expiredVaultCandidatesDisposed: 0,
+        deferredToNextRun: false,
+      },
+      'expired audit and email-log rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
+    );
+  });
+
+  /**
+   * #1521: the #1491 retention ruling assumed staged per-vault candidates
+   * expire on their own. They do not — lazy expiry only fires when the vault
+   * is read again. This pass makes the TTL real for a vault nobody reads.
+   */
+  it('drains expired staged vault candidates in bounded batches and reports the count', async () => {
+    const cleanupExpiredServerCandidates = vi
+      .fn()
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(0);
+    const info = vi.fn();
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: { cleanupExpiredServerCandidates },
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      batchSize: 2,
+      now: () => NOW,
+    });
+
+    await job.handler({} as never, ctx({ info } as unknown as Logger));
+
+    expect(cleanupExpiredServerCandidates.mock.calls).toEqual([
+      [NOW, 2],
+      [NOW, 2],
+      [NOW, 2],
+    ]);
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ expiredVaultCandidatesDisposed: 4, deferredToNextRun: false }),
+      expect.stringContaining('expired vault candidates disposed'),
+    );
+  });
+
+  it('stays silent when no sweep found anything to dispose', async () => {
+    const info = vi.fn();
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      now: () => NOW,
+    });
+
+    await job.handler({} as never, ctx({ info } as unknown as Logger));
+
+    expect(info).not.toHaveBeenCalled();
   });
 });
 
@@ -174,6 +264,7 @@ describe('data.retentionCleanup — legacy remembered-device bindings', () => {
       audit: { deleteOlderThan: vi.fn().mockResolvedValue(0) },
       emailLog: { deleteOlderThan: vi.fn().mockResolvedValue(0) },
       vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
       users,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,

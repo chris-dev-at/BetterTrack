@@ -2088,7 +2088,7 @@
     "import": {
       "title": "Broker-CSV-Import",
       "intro": "Lade den CSV-Export deines Brokers hoch, um bestehende Trades, Dividenden und Cash-Bewegungen in dieses Portfolio zu übernehmen. Die Zeilen werden zuerst als Vorschau angezeigt — gebucht wird erst nach deiner Bestätigung. Broker-Konten werden nie direkt verbunden.",
-      "uploadTitle": "1. Datei & Broker wählen",
+      "uploadTitle": "Datei & Broker wählen",
       "fileLabel": "CSV-Export",
       "brokerLabel": "Broker",
       "brokerAuto": "Automatisch erkennen",
@@ -2116,7 +2116,8 @@
         "quantity": "Anzahl",
         "price": "Kurs",
         "amount": "Betrag (EUR)",
-        "status": "Status"
+        "status": "Status",
+        "tags": "Tags"
       },
       "kind": {
         "buy": "Kauf",
@@ -2148,7 +2149,80 @@
         "skipped_error": "Übersprungen (Fehler)",
         "failed": "Fehlgeschlagen"
       },
-      "startOver": "Weitere Datei importieren"
+      "startOver": "Weitere Datei importieren",
+      "resolveFailed": "Die Zeile konnte nicht mit der Anlage verknüpft werden. Bitte versuche es erneut.",
+      "pinnedByYou": "Von dir zugeordnet",
+      "unknownTag": "Gelöschter Tag",
+      "step": {
+        "file": "Datei",
+        "understood": "Erkannt",
+        "review": "Prüfen",
+        "confirm": "Bestätigen"
+      },
+      "field": {
+        "date": "Datum",
+        "symbol": "Symbol",
+        "isin": "ISIN",
+        "description": "Beschreibung",
+        "quantity": "Stück",
+        "price": "Kurs",
+        "amount": "Betrag",
+        "fee": "Gebühr",
+        "tax": "Steuer",
+        "currency": "Währung",
+        "kindHint": "Buchungsart",
+        "ignore": "Wird nicht importiert"
+      },
+      "numberLocale": {
+        "de": "1.234,56",
+        "en": "1,234.56"
+      },
+      "dateLocale": {
+        "iso": "JJJJ-MM-TT",
+        "de": "TT.MM.JJJJ",
+        "us": "MM/TT/JJJJ",
+        "eu-slash": "TT/MM/JJJJ"
+      },
+      "understanding": {
+        "title": "Das haben wir aus {{filename}} gelesen",
+        "delimiter": "Trennzeichen: {{delimiter}}",
+        "encoding": "Kodierung: {{encoding}}",
+        "numbers": "Zahlen: {{locale}}",
+        "dates": "Datumsformat: {{locale}}",
+        "ambiguousDates": "Die Daten in dieser Datei sind doppeldeutig — 01/02 ist sowohl der 1. Februar als auch der 2. Jänner. Es wird nichts importiert, bis du die Datei mit ISO-Daten exportierst oder über einen konkreten Broker importierst.",
+        "column": "Spalte",
+        "readAs": "Gelesen als",
+        "confidence": "Sicherheit",
+        "evidence": "Warum",
+        "needsReview": "Bitte prüfen",
+        "confident": "Sicher",
+        "alternative": "Knappe Entscheidung gegen {{header}}.",
+        "unmapped": "Spalten, die wir nicht benennen konnten und daher ignoriert haben: {{headers}}",
+        "proposalsTitle": "Vorschläge, die wir nicht verwendet haben",
+        "proposalsBody": "Für die oben genannten Spalten, die wir nicht benennen konnten, hat ein Assistent geraten. Vermutungen werden nie angewendet — aus diesen Spalten wurde kein einziger Wert gelesen, und der Import verhält sich genau so, als wäre dieser Abschnitt leer. Exportiere die Datei mit klareren Spaltenüberschriften oder wähle einen Broker, falls einer davon stimmt.",
+        "suggestionOnly": "Vorschlag — nicht angewendet",
+        "wouldDisplace": "würde {{header}} ablösen"
+      },
+      "review": {
+        "title": "Das brauchen wir noch von dir",
+        "unresolvedBody": "Diese Anlagen stehen in deiner Datei, aber nicht im Katalog — deshalb bleiben sie vom Import ausgeschlossen. Wähle die richtige aus, dann kommt die Zeile mit. Wir ordnen nichts für dich zu.",
+        "skippedBody": "Wir haben diese Zeilen gelesen, buchen sie aber nicht auf Verdacht — unten steht jeweils, was fehlt. Sie bleiben vom Import ausgeschlossen; nichts verschwindet stillschweigend.",
+        "candidatesTitle": "Ähnliche Treffer aus dem Katalog:",
+        "noCandidates": "Der Katalog hat nichts Ähnliches gefunden. Such unten danach.",
+        "searchLabel": "Katalog durchsuchen",
+        "searchHint": "Du kannst auch eine eigene Anlage wählen, die du selbst angelegt hast.",
+        "searchPlaceholder": "Name, Symbol oder ISIN",
+        "searchEmpty": "Zu dieser Suche wurde nichts gefunden.",
+        "pick": "Diesen nehmen",
+        "noIdentity": "Keine Anlage benannt",
+        "emptyTitle": "Nichts zu prüfen",
+        "emptyBody": "Alle Zeilen wurden gelesen und zugeordnet. Weiter zur Bestätigung.",
+        "searchFailed": "Der Katalog konnte gerade nicht durchsucht werden.",
+        "unresolvedTitleOne": "{{count}} Zeile ohne zugeordnete Anlage",
+        "unresolvedTitleOther": "{{count}} Zeilen ohne zugeordnete Anlage",
+        "skippedTitleOne": "{{count}} Zeile können wir ohne dich nicht importieren",
+        "skippedTitleOther": "{{count}} Zeilen können wir ohne dich nicht importieren"
+      }
     },
     "tabs": {
       "overview": "Übersicht",
@@ -3740,6 +3814,10 @@
       "countOne": "1 gesperrtes Portfolio",
       "count": "{{count}} gesperrte Portfolios"
     },
+    "unlockedPortfolio": {
+      "badge": "Entsperrt",
+      "body": "Sein Tresor ist auf diesem Gerät offen. Diese Zahlen werden hier aus dem verschlüsselten Dokument gelesen, nie vom Server."
+    },
     "restorePicker": {
       "hint": "Wähle eine authentifizierte aktuelle oder frühere Kopie. Beschädigte Kandidaten bleiben zur Diagnose sichtbar, können den aktiven Tresor aber nicht ersetzen.",
       "empty": "Keine Wiederherstellungskopien gefunden.",
@@ -4314,7 +4392,8 @@
         "product": "Produkt & Kommunikation",
         "securityApi": "Sicherheit & API"
       },
-      "registration": "Registrierung"
+      "registration": "Registrierung",
+      "testAccounts": "Testkonten"
     },
     "settings": {
       "title": "Einstellungen",
@@ -4325,7 +4404,6 @@
       "unsaved": "Ungespeicherte Änderungen",
       "registration": {
         "title": "Registrierungsmodus",
-        "description": "Legt fest, wie neue Konten entstehen. Ein Wechsel gilt sofort.",
         "modes": {
           "closed": {
             "title": "Geschlossen",
@@ -4344,8 +4422,7 @@
             "description": "Automatische Registrierung — jeder kann ein Konto erstellen und sich direkt anmelden."
           }
         },
-        "manageLead": "Die Freigabeliste und die Zugangstoken für diesen Modus liegen im Bereich Personen.",
-        "manageLink": "Registrierung öffnen"
+        "movedLink": "In Personen → Registrierung ändern"
       },
       "features": {
         "title": "Funktionsschalter",
@@ -4373,8 +4450,6 @@
           "expired": "abgelaufen",
           "revoked": "widerrufen"
         },
-        "uses": "{{used}}/{{max}} Nutzungen",
-        "expires": "läuft am {{date}} ab",
         "noExpiry": "läuft nicht ab",
         "empty": "Noch keine Registrierungstoken."
       },
@@ -4383,11 +4458,11 @@
         "description": "Selbstständige Registrierungen, die auf eine Prüfung warten.",
         "inactive": "Neue Anträge kommen nur an, solange oben Freigabe ausgewählt ist.",
         "loading": "Anträge werden geladen…",
-        "requested": "beantragt {{date}}",
         "approve": "Freigeben",
         "reject": "Ablehnen",
         "empty": "Keine ausstehenden Registrierungen."
-      }
+      },
+      "saveError": "Die Einstellung konnte nicht gespeichert werden."
     },
     "users": {
       "title": "Nutzer",
@@ -4406,7 +4481,10 @@
       "columns": {
         "user": "Nutzer",
         "role": "Rolle",
-        "status": "Status"
+        "status": "Status",
+        "privacy": "Privatsphäre",
+        "lastLogin": "Letzte Anmeldung",
+        "created": "Erstellt"
       },
       "roles": {
         "admin": "Admin",
@@ -4429,6 +4507,27 @@
         "disabledOne": "{{count}} Nutzer deaktiviert",
         "disabledOther": "{{count}} Nutzer deaktiviert",
         "skipped": "{{count}} übersprungen"
+      },
+      "open": "Öffnen",
+      "privacy": {
+        "normal": "Normal",
+        "paranoid": "Paranoid"
+      },
+      "flags": {
+        "mustChangePassword": "Passwort muss geändert werden",
+        "chatBanned": "Chat gesperrt"
+      },
+      "filters": {
+        "anyRole": "Alle Kontoarten",
+        "anyStatus": "Alle Zustände",
+        "anyPrivacy": "Alle Privatsphäre-Modi",
+        "pageSize": "Pro Seite",
+        "reset": "Filter zurücksetzen"
+      },
+      "pagination": {
+        "range": "{{first}}–{{last}} von {{total}}",
+        "previous": "Zurück",
+        "next": "Weiter"
       }
     },
     "accountDefaults": {
@@ -5084,13 +5183,24 @@
       "title": "Registrierung",
       "subtitle": "Wer hereinkommt: die Freigabewarteschlange und die Zugangstoken für die Anmeldung.",
       "currentMode": "Aktueller Registrierungsmodus",
-      "changeMode": "Modus in den Einstellungen ändern",
       "decideError": "Diese Registrierungsanfrage konnte nicht aktualisiert werden.",
       "createTokenError": "Das Registrierungstoken konnte nicht erstellt werden.",
       "revokeTokenError": "Das Registrierungstoken konnte nicht widerrufen werden.",
       "modeUnknown": "Der aktive Registrierungsmodus konnte nicht gelesen werden, daher ist unklar, ob das hier gerade greift.",
       "requestGone": "Diese Anfrage steht nicht mehr in der Warteschlange — vielleicht hat sie jemand bereits bearbeitet.",
-      "tokenGone": "Dieses Token existiert nicht mehr; womöglich wurde es bereits widerrufen."
+      "tokenGone": "Dieses Token existiert nicht mehr; womöglich wurde es bereits widerrufen.",
+      "modeAppliesImmediately": "Gilt sofort. Kein Neustart, kein Deploy.",
+      "modeSaveError": "Der Registrierungsmodus konnte nicht geändert werden.",
+      "columns": {
+        "applicant": "Antragsteller",
+        "applied": "Beantragt",
+        "via": "Über",
+        "uses": "Verwendungen",
+        "expires": "Läuft ab"
+      },
+      "viaPassword": "Passwort",
+      "decisionEffect": "Beim Freigeben wird das Konto erstellt und die Person benachrichtigt. Beim Ablehnen wird der Antrag verworfen und die Person ebenfalls benachrichtigt. Beides wird protokolliert.",
+      "tokenUrlOnce": "Die Registrierungs-URL wird nur einmal bei der Erstellung angezeigt. Gespeichert wird nur ihr Hash."
     },
     "backup": {
       "title": "Backup & Restore-Probe",
@@ -5128,7 +5238,212 @@
         "hourMinute": "{{hours}} Std. {{minutes}} Min.",
         "minuteSecond": "{{minutes}} Min. {{seconds}} Sek.",
         "second": "{{seconds}} Sek."
+      },
+      "soon": "Bald"
+    },
+    "userDetail": {
+      "back": "← Alle Personen",
+      "loading": "Konto wird geladen …",
+      "gone": "Dieses Konto existiert nicht mehr.",
+      "account": "Konto",
+      "profile": "Profil",
+      "saveProfile": "Änderungen speichern",
+      "profileSaved": "Profil aktualisiert.",
+      "disabled": "Konto deaktiviert. Sitzungen und Bearer-Zugangsdaten wurden widerrufen.",
+      "enabled": "Konto wieder aktiviert.",
+      "chatBanned": "Für den Chat gesperrt.",
+      "chatUnbanned": "Chat-Sperre aufgehoben.",
+      "testEmailSent": "Test-E-Mail an {{to}} gesendet.",
+      "testEmailFailed": "Die Test-E-Mail konnte nicht gesendet werden.",
+      "moreActions": "Weitere Aktionen",
+      "moreActionsHint": "Deaktivieren ist die einzige Sperre — sie beendet bereits jede Sitzung und alle Bearer-Zugangsdaten.",
+      "tabsLabel": "Kontobereiche",
+      "tabs": {
+        "summary": "Überblick",
+        "access": "Zugang",
+        "support": "Support",
+        "sharing": "Geteiltes",
+        "activity": "Aktivität",
+        "notes": "Notizen"
+      },
+      "actions": {
+        "snapshot": "Support-Auszug kopieren",
+        "resetPassword": "Passwort zurücksetzen",
+        "disable": "Deaktivieren",
+        "enable": "Aktivieren",
+        "delete": "Löschen",
+        "chatBan": "Für den Chat sperren",
+        "chatUnban": "Chat-Sperre aufheben",
+        "testEmail": "Test-E-Mail senden",
+        "notYourself": "Das kannst du nicht mit deinem eigenen Konto tun."
+      },
+      "resetConfirm": "Ein neues temporäres Passwort für {{email}} erzeugen? Das bisherige Passwort funktioniert sofort nicht mehr.",
+      "deleteConfirm": "Damit werden {{email}} und alle zugehörigen Daten endgültig gelöscht; das lässt sich nicht rückgängig machen. Gib zur Bestätigung den Benutzernamen {{username}} ein.",
+      "confirmUsername": "Benutzernamen bestätigen",
+      "deleting": "Wird gelöscht …",
+      "paranoid": {
+        "title": "Paranoid-Konto",
+        "encrypted": "Verschlüsselt",
+        "mode": "Privatsphäre-Modus",
+        "media": "Speicherorte",
+        "version": "Tresor-Version",
+        "size": "Tresor-Größe",
+        "updated": "Tresor aktualisiert",
+        "history": "Verlaufseinträge",
+        "explainer": "Das ist alles, was der Server über dieses Paranoid-Konto weiß. Die Inhalte sind mit einem Schlüssel verschlüsselt, der die Geräte des Kontos nie verlässt — mehr gibt es nicht zu sehen, und keine Support-Aktion kann sie öffnen.",
+        "normal": "Dieses Konto speichert seine Daten normal. Es gibt keinen Tresor."
+      },
+      "access": {
+        "loading": "Zugang wird geladen …",
+        "readOnlyNotice": "Nur lesend. Das Deaktivieren des Kontos beendet seine Sitzungen und Bearer-Zugangsdaten; einen Widerruf einzelner Sitzungen oder Schlüssel gibt es hier noch nicht.",
+        "sessions": "Sitzungen & Geräte",
+        "sessionsHint": "Abgeleitet aus dem gespeicherten User-Agent. Die Sitzungskennungen sind undurchsichtig — das Sitzungstoken selbst verlässt den Server nie.",
+        "noSessions": "Keine aktiven Sitzungen.",
+        "device": "Gerät",
+        "lastSeen": "Zuletzt gesehen",
+        "started": "Begonnen",
+        "persistence": "Art",
+        "persistent": "Angemeldet bleiben",
+        "ephemeral": "Kurzlebig",
+        "credentials": "Schlüssel & verbundene Apps",
+        "noCredentials": "Keine API-Schlüssel und keine verbundenen Apps.",
+        "credential": "Zugangsdaten",
+        "scopes": "Berechtigungen",
+        "lastUsed": "Zuletzt verwendet",
+        "revoked": "Widerrufen",
+        "apiKey": "API-Schlüssel „{{name}}“",
+        "oauthGrant": "App · {{name}}",
+        "firstParty": "Eigene App",
+        "identities": "Verknüpfte Identitäten",
+        "noIdentities": "Mit diesem Konto ist keine externe Identität verknüpft.",
+        "verified": "E-Mail bestätigt",
+        "unverified": "E-Mail unbestätigt"
+      },
+      "support": {
+        "loading": "Support-Verlauf wird geladen …",
+        "total": "Anfragen",
+        "open": "Offen",
+        "empty": "Dieses Konto hat den Support nie kontaktiert.",
+        "submissions": "Anfragen",
+        "bodiesElsewhere": "Nur Zusammenfassungen — die Unterhaltung selbst liegt im Helpdesk.",
+        "openHelpdesk": "Helpdesk öffnen",
+        "subject": "Betreff",
+        "category": "Kategorie",
+        "noSubject": "(kein Betreff)",
+        "unread": "Ungelesen",
+        "deletedByUser": "Von der Person gelöscht",
+        "archived": "Archiviert"
+      },
+      "sharing": {
+        "loading": "Geteiltes wird geladen …",
+        "boundary": "Nur Zahlen. Admins können die Portfolios oder Watchlists einer Person nicht ansehen — das ist eine bewusste Datenschutz-Entscheidung, kein fehlender Bildschirm.",
+        "portfolios": "Portfolios",
+        "sharedPortfolios": "Mit Freunden geteilt",
+        "audiences": "Geteilt mit",
+        "activeLinks": "Aktive Teilen-Links",
+        "revokedLinks": "{{count}} widerrufen",
+        "friends": "Freunde",
+        "followers": "Follower",
+        "following": "Folgt",
+        "inventoryDeferred": "Eine Übersicht des Geteilten pro Objekt samt Widerruf mit einem Klick ist bewusst zurückgestellt; diese Seite beantwortet, wie sichtbar das Konto ist — nicht, was es enthält."
+      },
+      "activity": {
+        "audit": "Audit-Verlauf",
+        "email": "E-Mail-Verlauf",
+        "loading": "Audit-Verlauf wird geladen …",
+        "empty": "Für dieses Konto gibt es noch keine Audit-Einträge.",
+        "when": "Wann",
+        "action": "Aktion",
+        "details": "Details",
+        "loadMore": "Mehr laden"
+      },
+      "notes": {
+        "add": "Operator-Notiz hinzufügen",
+        "privacy": "Nur für Admins. Das Konto sieht diese Notizen nie, und eine Notiz ändert nichts daran.",
+        "label": "Notiz",
+        "placeholder": "Was sollte der nächste Operator wissen?",
+        "remaining": "Noch {{count}} Zeichen",
+        "save": "Notiz speichern",
+        "loading": "Notizen werden geladen …",
+        "empty": "Zu diesem Konto gibt es noch keine Operator-Notizen.",
+        "remove": "Entfernen",
+        "removing": "Wird entfernt …",
+        "confirm": "Notiz entfernen",
+        "confirmRemove": "Diese Notiz entfernen?",
+        "unknownAuthor": "(Admin inzwischen gelöscht)",
+        "addError": "Die Notiz konnte nicht gespeichert werden.",
+        "removeError": "Die Notiz konnte nicht entfernt werden.",
+        "gone": "Diese Notiz ist bereits weg."
+      },
+      "snapshot": {
+        "title": "Support-Auszug",
+        "description": "Alles auf dieser Seite, was gefahrlos in eine Support-Unterhaltung kopiert werden kann. Der Auszug enthält nie Bestände, entschlüsselte Inhalte oder Speicher-Kennungen, weil diese Seite sie nie erhält.",
+        "label": "Auszug",
+        "heading": "BetterTrack Support-Auszug",
+        "fields": {
+          "username": "Benutzername",
+          "email": "E-Mail",
+          "id": "ID",
+          "kind": "Kontoart",
+          "state": "Zustand",
+          "mustChangePassword": "Passwort muss geändert werden",
+          "chatBanned": "Chat gesperrt",
+          "created": "erstellt",
+          "lastLogin": "letzte Anmeldung",
+          "privacyMode": "Privatsphäre-Modus",
+          "vaultMedia": "Tresor-Speicherorte",
+          "vaultVersion": "Tresor-Version",
+          "vaultSize": "Tresor-Größe",
+          "vaultUpdated": "Tresor aktualisiert",
+          "vaultHistory": "Tresor-Verlaufseinträge",
+          "supportSubmissions": "Support-Anfragen",
+          "openSuffix": "{{count}} offen"
+        }
+      },
+      "deleteTitle": "Konto löschen",
+      "deleteAction": "Konto löschen"
+    },
+    "invites": {
+      "title": "Einladungen",
+      "subtitle": "Eine Person per E-Mail einladen und den einmaligen Link teilen.",
+      "create": "Neue Einladung",
+      "createHint": "An diese Adresse gebunden und sieben Tage gültig. Für einen ungebundenen, mehrfach nutzbaren Link nimm stattdessen ein Registrierungs-Zugangstoken.",
+      "createAction": "Einladung erstellen",
+      "emailPlaceholder": "person@example.com",
+      "listTitle": "Einladungen",
+      "loading": "Einladungen werden geladen …",
+      "empty": "Noch keine Einladungen. Erstelle oben eine.",
+      "ttlNote": "Einladungen laufen sieben Tage nach ihrer Erstellung ab.",
+      "createError": "Die Einladung konnte nicht erstellt werden.",
+      "revokeError": "Die Einladung konnte nicht widerrufen werden.",
+      "gone": "Diese Einladung ist bereits weg.",
+      "status": {
+        "pending": "Offen",
+        "used": "Eingelöst",
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
       }
+    },
+    "testAccounts": {
+      "title": "Testkonten",
+      "subtitle": "Wegwerfbar, markiert, aus der Auswertung ausgenommen, laufen immer ab.",
+      "comingSoonShort": "Geplant — die Erzeugung selbst ist ein späteres Paket.",
+      "notShipped": "Noch nicht gebaut. Dieser Tab hält den Platz frei, an dem die Testkonto-Erzeugung entstehen wird; hier wird kein Konto erstellt, verlängert oder gelöscht.",
+      "plannedTitle": "Was es können wird",
+      "plannedDescription": "Die folgenden Leitplanken sind bereits entschieden und müssen mitgeliefert werden.",
+      "rows": {
+        "lifetime": "Lebensdauer",
+        "lifetimeValue": "1 Stunde / 24 Stunden / 7 Tage, Standard 24 Stunden. Sieben Tage sind die harte Obergrenze — ein „nie“ gibt es nicht.",
+        "contents": "Inhalt",
+        "contentsValue": "Standardmäßig leer, oder eine klar benannte synthetische Vorlage. Nie aus einem echten Konto kopiert.",
+        "analytics": "Auswertung",
+        "analyticsValue": "Als Testkonto markiert und aus jedem Nutzungszähler ausgenommen.",
+        "notifications": "Benachrichtigungen",
+        "notificationsValue": "Unterdrückt, ebenso die Provider-Kontingentzählung. Es kann nie zum Admin gemacht werden.",
+        "cleanup": "Aufräumen",
+        "cleanupValue": "Der Ablauf löscht es im Job-Runner — dieselbe idempotente Bereinigung, ob sie einmal oder fünfmal läuft — und schreibt einen Audit-Eintrag."
+      },
+      "why": "Es gibt keine Staging-Umgebung: Produktion ist die einzige Umgebung, und die Einladungssperre macht echtes Durchtesten zum Token-Tanz. Genau dafür ist das hier da."
     }
   },
   "create": {
@@ -5843,7 +6158,7 @@
       "body": "Dein Feedback ist wieder im Posteingang."
     },
     "feedbackStatusTriaged": {
-      "title": "Feedback-Update",
+      "title": "Feedback wird geprüft",
       "body": "Dein Feedback wird geprüft."
     },
     "feedbackStatusWorkingOnIt": {
@@ -5855,7 +6170,7 @@
       "body": "Dein Feedback wurde als zukünftige Idee gespeichert."
     },
     "feedbackStatusDeclined": {
-      "title": "Feedback-Update",
+      "title": "Feedback abgelehnt",
       "body": "Dein Feedback wurde abgelehnt. Öffne es für Details."
     },
     "feedbackStatusShipped": {
@@ -5957,7 +6272,7 @@
     "submitting": "Wird gesendet…",
     "success": "Danke — dein Feedback wurde gesendet.",
     "submitError": "Dein Feedback konnte nicht gesendet werden. Bitte versuche es erneut.",
-    "openLimit": "Du hast bereits 20 offene Anfragen. Bitte warte auf die Prüfung oder lösche eine offene Anfrage, bevor du eine weitere sendest.",
+    "openLimit": "Du hast bereits {{limit}} offene Anfragen. Bitte warte auf die Prüfung oder lösche eine offene Anfrage, bevor du eine weitere sendest.",
     "status": {
       "new": "Gesendet",
       "triaged": "Gelesen / in Prüfung",
@@ -6311,5 +6626,11 @@
       "aborted": "Der Vorgang wurde vor Abschluss unterbrochen.",
       "generic": "Der Vorgang konnte nicht abgeschlossen werden."
     }
+  },
+  "paranoidFreshStart": {
+    "title": "Der Paranoid-Modus hat eine neue Form",
+    "body": "Deine alten Paranoid-Daten wurden gemeinsam mit dem alten System stillgelegt. Dein Konto ist wieder vollständig — sonst wurde nichts angetastet. Der Paranoid-Modus arbeitet jetzt pro Portfolio: Du legst einen Tresor an und verschiebst die gewünschten Portfolios hinein.",
+    "cta": "Tresor anlegen",
+    "dismiss": "Verstanden"
   }
 }

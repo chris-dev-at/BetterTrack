@@ -678,6 +678,76 @@ describe('strict vault document v1', () => {
     });
   });
 
+  /**
+   * The import-row `ruleTagIds` list is the cash-rule tag SUGGESTION a staged
+   * row was pre-tagged with (#964), enrolled in the strict payload for the same
+   * mechanical reason as `candidates` directly above: the export-completeness
+   * sweep requires every persisted column to be — NOT because a restore depends
+   * on its contents. An import batch is a short-lived preview; the portfolio
+   * behind it is the user's actual money, so a staging-time suggestion must
+   * never be the reason a portfolio cannot be restored. It degrades to null,
+   * field-locally, and the row still parses.
+   */
+  describe('import-row ruleTagIds degrade instead of locking a portfolio out', () => {
+    const importRow = fixtures.find((fixture) => fixture.kind === 'importRow');
+    if (importRow?.kind !== 'importRow') throw new Error('importRow fixture missing');
+    const validIds = [uuid(70), uuid(71)];
+
+    const parseWithRuleTagIds = (ruleTagIds: unknown) => {
+      const parsed = vaultStrictEntitySchema.parse({
+        ...importRow,
+        data: { ...importRow.data, ruleTagIds },
+      });
+      if (parsed.kind !== 'importRow') throw new Error('importRow parse changed kind');
+      return parsed;
+    };
+
+    it('parses a valid list verbatim — the tolerance never touches good data', () => {
+      const parsed = parseWithRuleTagIds(validIds);
+      expect(parsed.data.ruleTagIds).toEqual(validIds);
+      // And the whole row is still intact around it.
+      expect(parsed.data.contentHash).toBe(importRow.data.contentHash);
+    });
+
+    it('degrades an OVER-CAP list to null rather than rejecting the row', () => {
+      // One past `CASH_TAGS_PER_ITEM_MAX` (20). No API path can build a rule
+      // with that many tags, which is exactly why a document carrying one is
+      // corrupt rather than merely unusual — and still not worth a refusal.
+      const overCap = Array.from({ length: 21 }, (_unused, index) => uuid(80 + index));
+      expect(overCap).toHaveLength(21);
+      const parsed = parseWithRuleTagIds(overCap);
+      expect(parsed.data.ruleTagIds).toBeNull();
+      expect(parsed.data.rowIndex).toBe(importRow.data.rowIndex);
+    });
+
+    it('degrades a MALFORMED member to null rather than rejecting the row', () => {
+      // One good id and one that is not a uuid: the list is refused as a WHOLE,
+      // never half-kept — a partial suggestion would be a fabricated one.
+      const parsed = parseWithRuleTagIds([validIds[0], 'not-a-uuid']);
+      expect(parsed.data.ruleTagIds).toBeNull();
+      expect(parsed.data.quantity).toBe(importRow.data.quantity);
+      // …and the same for a member of the wrong type entirely.
+      expect(parseWithRuleTagIds([validIds[0], 42]).data.ruleTagIds).toBeNull();
+      expect(parseWithRuleTagIds([null]).data.ruleTagIds).toBeNull();
+    });
+
+    it('degrades any other malformed shape to null, and keeps null/absent meaning "none"', () => {
+      for (const malformed of ['not-an-array', 42, {}, [[validIds[0]]]]) {
+        expect(parseWithRuleTagIds(malformed).data.ruleTagIds).toBeNull();
+      }
+      // A stored null already means "none" and stays null, row intact.
+      expect(parseWithRuleTagIds(null).data.ruleTagIds).toBeNull();
+      expect(parseWithRuleTagIds(null).data.assetId).toBe(importRow.data.assetId);
+      // Absent (every document written before the column existed) stays absent
+      // — NOT defaulted to null, which would invent a value no writer produced.
+      const { ruleTagIds: _omitted, ...withoutRuleTagIds } = importRow.data;
+      const parsed = vaultStrictEntitySchema.parse({ ...importRow, data: withoutRuleTagIds });
+      if (parsed.kind !== 'importRow') throw new Error('importRow parse changed kind');
+      expect(parsed.data.ruleTagIds).toBeUndefined();
+      expect('ruleTagIds' in parsed.data).toBe(false);
+    });
+  });
+
   it('keeps assets.meta.recategorize and every sibling metadata field', () => {
     const asset = fixtures.find((fixture) => fixture.kind === 'customAsset');
     if (asset?.kind !== 'customAsset') throw new Error('asset fixture missing');

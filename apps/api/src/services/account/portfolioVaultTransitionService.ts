@@ -4,10 +4,12 @@ import {
   VAULT_SERVER_CANDIDATE_TTL_MS,
   portfolioVaultMoveInRequestSchema,
   portfolioVaultMoveInResponseSchema,
+  portfolioVaultLifecycleResponseSchema,
   portfolioVaultMoveOutChallengeRequestSchema,
   portfolioVaultMoveOutRequestSchema,
   portfolioVaultMoveOutResponseSchema,
   portfolioVaultRevisionResponseSchema,
+  type PortfolioVaultLifecycleResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveInResponse,
   type PortfolioVaultMoveOutChallengeRequest,
@@ -27,10 +29,12 @@ import {
   beginPortfolioVaultCapture,
   completePendingPortfolioVaultMoveOut,
   computePortfolioDataRevision,
+  countPortfolioImportBatches,
   createPortfolioVaultTransitionTransactionRepository,
   listPendingPortfolioVaultMoveOutFinalizations,
   markPendingPortfolioVaultMoveOutFinalizationAttempt,
   readPendingPortfolioVaultMoveOutFinalization,
+  readPortfolioVaultLifecycle,
   withPortfolioVaultTransitionTransaction,
 } from '../../data/repositories/portfolioVaultTransitionRepository';
 import {
@@ -241,6 +245,7 @@ export interface PortfolioVaultMoveOutFinalizerDeps {
 
 export interface PortfolioVaultTransitionService {
   revision(userId: string, portfolioId: string): Promise<PortfolioVaultRevisionResponse>;
+  lifecycle(userId: string, portfolioId: string): Promise<PortfolioVaultLifecycleResponse>;
   moveOutChallenge(
     userId: string,
     portfolioId: string,
@@ -382,8 +387,14 @@ export function createPortfolioVaultTransitionService(
     async revision(userId, portfolioId) {
       // One snapshot prevents a cross-table torn digest. Such a tear could not
       // purge data, but it would make the user repeat a costly capture pass.
-      const revision = await deps.db.transaction(
-        (tx) => computePortfolioDataRevision(tx as unknown as Database, userId, portfolioId),
+      // The import-batch count rides the SAME snapshot: it is the client's
+      // refuse-before-loss fact for staging rows this build cannot capture.
+      const [revision, importBatchCount] = await deps.db.transaction(
+        (tx) =>
+          Promise.all([
+            computePortfolioDataRevision(tx as unknown as Database, userId, portfolioId),
+            countPortfolioImportBatches(tx as unknown as Database, portfolioId),
+          ]),
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
       );
       if (revision === null) fail('NOT_FOUND', 'Portfolio not found.');
@@ -404,7 +415,29 @@ export function createPortfolioVaultTransitionService(
       if (opened === 'finalization_pending') {
         fail('TRANSITION_CONFLICT', 'The preceding portfolio move-out is still finalizing.');
       }
-      return portfolioVaultRevisionResponseSchema.parse({ portfolioDataRevision: revision });
+      return portfolioVaultRevisionResponseSchema.parse({
+        portfolioDataRevision: revision,
+        importBatchCount,
+      });
+    },
+
+    async lifecycle(userId, portfolioId) {
+      const read = await deps.db.transaction(
+        (tx) => readPortfolioVaultLifecycle(tx as unknown as Database, userId, portfolioId),
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+      );
+      if (read.status === 'not_found') fail('NOT_FOUND', 'Portfolio not found.');
+      if (read.status === 'not_vaulted') {
+        fail('NOT_VAULTED', 'The portfolio is not stored in a vault.');
+      }
+      if (read.status === 'inconsistent') {
+        fail('TRANSITION_CONFLICT', 'The portfolio vault transition state is inconsistent.');
+      }
+      return portfolioVaultLifecycleResponseSchema.parse({
+        portfolioId,
+        vaultId: read.vaultId,
+        lifecycleGeneration: read.lifecycleGeneration,
+      });
     },
 
     async moveIn(userId, portfolioId, request, options) {

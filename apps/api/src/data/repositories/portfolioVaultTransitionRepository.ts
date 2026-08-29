@@ -313,6 +313,82 @@ export async function computePortfolioDataRevision(
     .digest('base64url');
 }
 
+/**
+ * Historical import batches keyed to the portfolio (E6 residual, #1525).
+ * They are part of the capture digest above, but this build has no client
+ * read path for their staging rows — the revision response surfaces the
+ * count so the client capture can refuse losslessly instead of purging rows
+ * its encrypted document never carried. Run inside the SAME snapshot
+ * transaction as the digest so the pair cannot tear.
+ */
+export async function countPortfolioImportBatches(
+  db: Database,
+  portfolioId: string,
+): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(importBatches)
+    .where(eq(importBatches.portfolioId, portfolioId));
+  return Number(row?.value ?? 0);
+}
+
+export type PortfolioVaultLifecycleRead =
+  | { status: 'ok'; vaultId: string; lifecycleGeneration: number }
+  | { status: 'not_found' }
+  | { status: 'not_vaulted' }
+  | { status: 'inconsistent' };
+
+/**
+ * Owner-scoped read of a vaulted portfolio's current membership lifecycle
+ * (E6 residual, #1525). §10 allows move-out from ANY unlocked device holding
+ * the phrase, and the move-out challenge/commit both bind the proof to the
+ * exact server-minted generation — which only the moving device ever received.
+ * The value is transition metadata about the locked stub (it already rides the
+ * owner's own audit records), never portfolio content. Plain reads, no locks:
+ * a stale answer only makes the later challenge refuse, exactly like any other
+ * CAS input read outside the commit lock.
+ */
+export async function readPortfolioVaultLifecycle(
+  db: Database,
+  userId: string,
+  portfolioId: string,
+): Promise<PortfolioVaultLifecycleRead> {
+  const [portfolio] = await db
+    .select({ id: portfolios.id, vaultId: portfolios.vaultId })
+    .from(portfolios)
+    .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+    .limit(1);
+  if (!portfolio) return { status: 'not_found' };
+  if (portfolio.vaultId === null) return { status: 'not_vaulted' };
+  const [state] = await db
+    .select({
+      lifecycleGeneration: portfolioVaultTransitionStates.lifecycleGeneration,
+      moveInVaultId: portfolioVaultTransitionStates.moveInVaultId,
+      moveInCompletedAt: portfolioVaultTransitionStates.moveInCompletedAt,
+    })
+    .from(portfolioVaultTransitionStates)
+    .where(
+      and(
+        eq(portfolioVaultTransitionStates.portfolioId, portfolioId),
+        eq(portfolioVaultTransitionStates.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (
+    !state ||
+    state.moveInVaultId !== portfolio.vaultId ||
+    state.moveInCompletedAt === null ||
+    state.lifecycleGeneration < 1
+  ) {
+    return { status: 'inconsistent' };
+  }
+  return {
+    status: 'ok',
+    vaultId: portfolio.vaultId,
+    lifecycleGeneration: state.lifecycleGeneration,
+  };
+}
+
 export interface LockedPortfolioVaultOwner {
   passwordHash: string;
   twoFactorSecret: string | null;

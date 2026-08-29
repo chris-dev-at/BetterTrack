@@ -75,7 +75,13 @@ export interface HeldAssetHolderRow {
 }
 
 export interface MarketIntelRepository {
-  /** Held (net > 0) + watched assets for one user, deduped by asset (earnings). */
+  /**
+   * Held (net > 0) + watched assets for one user, deduped by asset (earnings).
+   * "Held" counts only the user's **active** portfolios — archiving one retires
+   * its holdings from the calendars, the digest and the reminder scan, exactly
+   * as it already does on the dividend side. Watchlist membership is unaffected
+   * by archiving, so a watched asset stays in the result set either way.
+   */
   listUserWatchAndHoldAssets(userId: string): Promise<UserIntelAsset[]>;
   /**
    * GLOBAL watchlisted assets for one user, without touching portfolio
@@ -86,7 +92,10 @@ export interface MarketIntelRepository {
    * {@link listUserWatchAndHoldAssets} instead.
    */
   listUserWatchAssets(userId: string): Promise<UserIntelAsset[]>;
-  /** Held + watched assets across EVERY user, tagged with the owner (earnings). */
+  /**
+   * Held + watched assets across EVERY user, tagged with the owner (earnings).
+   * Same active-portfolio scoping as {@link listUserWatchAndHoldAssets}.
+   */
   listAllWatchAndHoldAssets(): Promise<UserIntelAssetWithUser[]>;
   /**
    * GLOBAL watchlisted assets across every user — the scan job's unguarded
@@ -153,7 +162,13 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
-        .where(and(eq(portfolios.userId, userId), isNull(portfolios.vaultId)))
+        .where(
+          and(
+            eq(portfolios.userId, userId),
+            isNull(portfolios.vaultId),
+            isNull(portfolios.archivedAt),
+          ),
+        )
         .groupBy(assets.id, assets.symbol, assets.name, assets.providerId, assets.providerRef)
         .having(gt(signedQuantity, sql`0`));
 
@@ -202,7 +217,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
-        .where(isNull(portfolios.vaultId))
+        .where(and(isNull(portfolios.vaultId), isNull(portfolios.archivedAt)))
         .groupBy(
           portfolios.userId,
           assets.id,

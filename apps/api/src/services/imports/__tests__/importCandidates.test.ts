@@ -14,6 +14,8 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createCashRuleRepository } from '../../../data/repositories/cashRuleRepository';
+import { createCashTagRepository } from '../../../data/repositories/cashTagRepository';
 import { createImportRepository } from '../../../data/repositories/importRepository';
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
@@ -129,6 +131,8 @@ async function buildService(
     portfolioRepo: createPortfolioRepository(harness.db),
     transactionRepo: createTransactionRepository(harness.db),
     cashSourceRepo: createCashSourceRepository(harness.db),
+    cashRuleRepo: createCashRuleRepository(harness.db),
+    cashTagRepo: createCashTagRepository(harness.db),
     search,
     portfolio: harness.ctx.portfolio,
     tax: harness.ctx.tax,

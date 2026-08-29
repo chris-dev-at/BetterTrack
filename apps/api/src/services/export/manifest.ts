@@ -104,6 +104,17 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   audit_log: skipped(
     'Security audit trail, retained independently of the user (actor set-null on delete).',
   ),
+  // ADMIN-ONLY, and deliberately NOT in the subject's own export (#1406 W2,
+  // Chief ruling 2026-08-29). An operator note is support/moderation workspace
+  // — one operator writing context for the next — not content the account
+  // authored or owns. Shipping it in the self-service ZIP would turn every
+  // moderation observation into a disclosure and end candid note-taking, which
+  // is the same reasoning that keeps the admin-only feedback columns out of the
+  // submitter ZIP (#1470). The row still cascades away with the account, so
+  // deletion stays total; what is withheld is disclosure, never retention.
+  admin_user_notes: skipped(
+    'Admin-only operator notes about the account — support/moderation workspace, not user-authored content (#1406 W2; mirrors the #1470 admin-only feedback columns).',
+  ),
   email_log: skipped('Email delivery log — a system record retained independently of the user.'),
   problems: skipped(
     'Operational error/insight capture (the Sentry replacement) — a system diagnostics record, not user-owned.',
@@ -303,6 +314,18 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   ),
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
+  ),
+  // PARANOID E9 / §17 — the transition gate and its receipt. Neither holds
+  // portfolio data: the attestation records that an owner-run ciphertext backup
+  // was written and verified (path, digests, row counts), and the receipt records
+  // that this account went through the wipe. The ciphertext they are ABOUT lives
+  // in the operator's external archive and the `zz_paranoid_v1_backup_*`
+  // quarantine, neither of which this collector can or should reach.
+  paranoid_v1_backup_attestations: skipped(
+    'Paranoid v1 transition backup attestation (§17) — operator audit metadata (archive path, SHA-256 digests, row counts), never user content.',
+  ),
+  paranoid_v1_wipe_receipts: skipped(
+    'Paranoid v1 transition wipe receipt (§17) — internal marker that this account went through the backup+wipe, plus the mode it had before; not portfolio data.',
   ),
   // V5-P13 arc b, the PER-PORTFOLIO vault model (docs/paranoid-design.md §3/§8,
   // epic E0 #1410): raw table rows stay out of the general collector. E1's
@@ -516,6 +539,12 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
 
   // ── server: operational / global records (kept) ────────────────────────────
   audit_log: 'server',
+  // Operator prose about the account, authored by an admin. Not `vault`: it is
+  // not client data and must never enter the encrypted document. Not purged at
+  // enable either — going paranoid hides what the account HOLDS, and was never
+  // a promise to erase the moderation record kept about it, exactly as
+  // `audit_log` above is kept.
+  admin_user_notes: 'server',
   email_log: 'server',
   problems: 'server',
   // PURGED, not kept. `usage_events` folds one row per (user, feature, asset,
@@ -634,6 +663,11 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   paranoid_enable_transitions: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
+  // §17 transition gate + receipt (E9): server-side operator/audit metadata. The
+  // attestation is deliberately never exported — it names a host-local archive
+  // path and the digests that authorize destruction.
+  paranoid_v1_backup_attestations: 'server',
+  paranoid_v1_wipe_receipts: 'server',
   // The PER-PORTFOLIO vault surface (V5-P13 arc b, E0 #1410): config rows +
   // opaque ciphertext + Drive-connection identities — all `server` for the same
   // reason the v1 rows above are: knowing THAT a vault exists, where it stores

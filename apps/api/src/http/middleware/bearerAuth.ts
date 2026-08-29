@@ -50,6 +50,16 @@ export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
     path: '/vault/history/{version}',
     params: { version: 'positive-integer' },
   },
+  // Per-vault config READS (#1497). A native client that arrives with nothing
+  // but a §13 QR phrase must be able to discover the vault it was handed and
+  // its two singleton doc ids, or the "take your phrase to a second device"
+  // flow dead-ends on the phone. They join the doc scope family deliberately:
+  // reading a vault's cleartext config (name, media) is strictly less sensitive
+  // than the DELETE bearers already reach, doc CONTENT stays encrypted either
+  // way, and ownership scoping stays in the repository (a foreign id is a 404).
+  // Creation, rename and every media transition remain session-only below.
+  { method: 'GET', path: '/vaults' },
+  { method: 'GET', path: '/vaults/{vaultId}' },
   // Per-vault, per-doc blind store (E1 #1411).
   { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}' },
   { method: 'PUT', path: '/vaults/{vaultId}/docs/{docId}' },
@@ -118,11 +128,11 @@ export const VAULT_SESSION_ONLY_ROUTES = [
   { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
   { method: 'POST', path: '/vault/media/retired/purge/challenge' },
   { method: 'POST', path: '/vault/media/retired/purge' },
-  // Per-vault config and recovery-media transitions. DELETE is the one
-  // account:security + in-request step-up carve-out declared separately below.
-  { method: 'GET', path: '/vaults' },
+  // Per-vault config writes and recovery-media transitions. DELETE is the one
+  // account:security + in-request step-up carve-out declared separately below,
+  // and the two config READS are the vault:sync carve-out declared above
+  // (#1497); everything left here stays owning-browser-session work.
   { method: 'POST', path: '/vaults' },
-  { method: 'GET', path: '/vaults/{vaultId}' },
   { method: 'PATCH', path: '/vaults/{vaultId}' },
   { method: 'PATCH', path: '/vaults/{vaultId}/media' },
   {
@@ -138,10 +148,13 @@ export const VAULT_SESSION_ONLY_ROUTES = [
  * Per-portfolio vault transitions shared by web and native clients under §15.
  * Each POST carries the same in-request step-up credential on both paths. The
  * revision read shares the control-plane scope because it is the CAS input to
- * the destructive move-in commit, not an ordinary portfolio-data read.
+ * the destructive move-in commit, not an ordinary portfolio-data read; the
+ * lifecycle read shares it for the symmetric reason — it is the CAS input the
+ * move-out proof binds to (E6 residual, #1525), not portfolio data.
  */
 export const PORTFOLIO_VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/portfolios/{portfolioId}/vault/revision' },
+  { method: 'GET', path: '/portfolios/{portfolioId}/vault/lifecycle' },
   { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
   { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
   { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },

@@ -216,7 +216,7 @@ export interface VaultedPortfolioMatrixPolicy {
 
 export interface VaultedPortfolioTransitionCarveout {
   readonly method: 'GET' | 'POST';
-  readonly operation: 'revision' | 'move-in' | 'move-out/challenge' | 'move-out';
+  readonly operation: 'revision' | 'lifecycle' | 'move-in' | 'move-out/challenge' | 'move-out';
   readonly reason: string;
 }
 
@@ -502,6 +502,10 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getBatch',
     'applyBatch',
     'discardBatch',
+    // Pinning a staged row to an asset (#964) reads and writes the batch's
+    // portfolio exactly as its siblings do, and takes the batch id in the same
+    // second position — so it is gated by the same binding.
+    'resolveRow',
   ]),
   serviceBinding('imports', 'expenseImports', 'userIdFirst', ['preview', 'apply']),
   serviceBinding('standingOrderExecution', 'standingOrders', 'optionalPortfolioIdOptionSecond', [
@@ -1003,6 +1007,16 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'kept',
     'AI provider controls are capability/configuration plumbing; user portfolio insight calls are classified on aiFeatures.',
   ),
+  serviceExemption(
+    'paranoidFreshStartNotice',
+    ['*'],
+    'kept',
+    'The §17 fresh-start notice (E9) reads and stamps the account’s own wipe receipt — ' +
+      'a one-time marker with no portfolio content. It must stay reachable precisely ' +
+      'because its whole audience is accounts the §17 wipe just returned to `normal`, ' +
+      'and killing it would suppress the notice the transition owes them. It can never ' +
+      'reach the wipe itself, which has no route at all (paranoidV1WipeService).',
+  ),
 ] as const;
 
 const jobPolicy = (
@@ -1193,6 +1207,12 @@ export const VAULTED_PORTFOLIO_TRANSITION_CARVEOUT_REGISTRY = [
     method: 'GET',
     operation: 'revision',
     reason: 'Read the revision token required to serialize a portfolio transition.',
+  },
+  {
+    method: 'GET',
+    operation: 'lifecycle',
+    reason:
+      'Read the lifecycle generation the §10 move-out proof binds to (E6 residual, #1525) — an unlocked device that never saw the move-in response needs it to author the exit.',
   },
   {
     method: 'POST',

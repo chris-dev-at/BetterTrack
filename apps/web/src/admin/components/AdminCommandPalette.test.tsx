@@ -70,7 +70,11 @@ beforeEach(() => {
     twoFactorEmail: null,
     recoveryCodesRemaining: 8,
   });
-  vi.mocked(api.listUsers).mockResolvedValue({ users: [] });
+  // The People list is paged as of #1406 W2 — `page` is part of the response.
+  vi.mocked(api.listUsers).mockResolvedValue({
+    users: [],
+    page: { total: 0, limit: 6, offset: 0 },
+  });
   vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 0 });
 });
 
@@ -107,13 +111,20 @@ test('filters destinations by their localized label', async () => {
 });
 
 test('searches users through the existing admin endpoint and flags a disabled account', async () => {
-  vi.mocked(api.listUsers).mockResolvedValue({ users: [disabledUser] });
+  vi.mocked(api.listUsers).mockResolvedValue({
+    users: [disabledUser],
+    page: { total: 1, limit: 6, offset: 0 },
+  });
   const user = userEvent.setup();
   renderPalette();
 
   await user.type(screen.getByRole('combobox'), 'huber');
 
-  await waitFor(() => expect(api.listUsers).toHaveBeenCalledWith('huber', expect.anything()));
+  // The paged read (#1406 W2) takes a params object, and the palette asks for a
+  // handful of matches — never the whole account table.
+  await waitFor(() =>
+    expect(api.listUsers).toHaveBeenCalledWith({ search: 'huber', limit: 6 }, expect.anything()),
+  );
   const row = await screen.findByRole('option', { name: /m_huber/ });
   expect(row).toHaveTextContent('m.huber@example.net');
   expect(row).toHaveTextContent('Disabled');

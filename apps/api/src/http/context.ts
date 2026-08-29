@@ -57,6 +57,7 @@ import { createPortfolioSettingsRepository } from '../data/repositories/portfoli
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createAdminPeopleRepository } from '../data/repositories/adminPeopleRepository';
 import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import { createEventBus, type EventBus } from '../events';
@@ -86,6 +87,10 @@ import {
   createHomeLayoutService,
   type HomeLayoutService,
 } from '../services/account/homeLayoutService';
+import {
+  createParanoidFreshStartNoticeService,
+  type ParanoidFreshStartNoticeService,
+} from '../services/account/paranoidFreshStartNoticeService';
 import {
   createWidgetLayoutService,
   type WidgetLayoutService,
@@ -245,6 +250,8 @@ import {
 } from '../services/account/vaultedPortfolioEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
+import { bindHeavyTierAi } from '../services/imports/headerMappingAi';
+import { bindCheapTierAi } from '../services/imports/rowClassifierAi';
 import {
   createStandingOrderService,
   type StandingOrderService,
@@ -593,6 +600,12 @@ export interface AppContext {
    * {@link ai}; both consume the same guarded, capped completion path.
    */
   aiFeatures: AiFeaturesService;
+  /**
+   * The §17 fresh-start notice (E9). Deliberately NOT behind the paranoid guard:
+   * its whole audience is accounts the §17 wipe just flipped to `normal`, and it
+   * must be readable at the very next login.
+   */
+  paranoidFreshStartNotice: ParanoidFreshStartNoticeService;
 }
 
 export interface BuildContextDeps {
@@ -701,6 +714,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const observability = initObservability(config, logger, { serverName: 'api' });
 
   const userRepo = createUserRepository(db);
+  // Cross-table reads + operator notes behind the People 360 tabs (#1406 W2).
+  const adminPeopleRepo = createAdminPeopleRepository(db);
   const privacyLockDb = deps.lockDb ?? db;
   const paranoidSubjects = createParanoidEnforcementRepository(db);
   const paranoidGuard = createParanoidModeGuard({
@@ -1201,6 +1216,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     redis,
     userRepo,
+    people: adminPeopleRepo,
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,
@@ -1552,17 +1568,36 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // has its own tables; every APPLY write routes through the portfolio/tax
   // services above (trades, dividends, cash) — never SQL of its own. Instrument
   // resolution rides the local-first search catalog (§6.2).
+  // Hoisted above its cash-service block below: the import staging path is now
+  // the FIRST consumer of the caller's cash rules (#964).
+  const cashRuleRepo = createCashRuleRepository(db);
+
   const imports = createImportService({
     importRepo: createImportRepository(db),
     portfolioRepo,
     transactionRepo,
     cashSourceRepo,
+    // Cash-rule pre-tagging at staging (#964): the rules are read through the
+    // repository that owns their evaluation ORDER, and the previewed tags are
+    // written back through the same ownership-scoped attach the auto-tagging
+    // path uses — no SQL of its own, per this service's boundary.
+    cashRuleRepo,
+    cashTagRepo,
     search,
     portfolio,
     tax,
     mappers: ALL_MAPPERS,
     logger,
     paranoid: paranoidGuard,
+    // Generic staging path (#964, §16 2026-07-31): both AI tiers are OPTIONAL
+    // and neither can decide anything on its own — the heavy tier only PROPOSES
+    // column labels a human confirms, and the cheap tier's row verdicts are
+    // review-flagged. `bindHeavyTierAi` refuses under a test runner by design,
+    // and either binder may throw when no provider is configured; `safeSeam` in
+    // the service turns all of that into "run deterministically", so an import
+    // never fails because AI is unavailable.
+    headerAi: (userId) => bindHeavyTierAi(ai, userId),
+    rowAi: (userId) => bindCheapTierAi(ai, userId),
   });
 
   // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from
@@ -1609,7 +1644,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // (portfolio, tag, month), rules per user. `cashAutoTag` is what stamps a
   // freshly-booked movement with its app-owned system tag — see `cashAutoTag.ts`
   // for the kind → tag table and what an edited trade does to a manual tag.
-  const cashRuleRepo = createCashRuleRepository(db);
   const cashBudgetRepo = createCashBudgetRepository(db);
   const cashSummaryRepo = createCashSummaryRepository(db);
   const cashTags = createCashTagService({ tags: cashTagRepo, rules: cashRuleRepo });
@@ -2259,5 +2293,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     featureFlags,
     ai,
     aiFeatures: guarded.aiFeatures,
+    paranoidFreshStartNotice: createParanoidFreshStartNoticeService(db),
   };
 }

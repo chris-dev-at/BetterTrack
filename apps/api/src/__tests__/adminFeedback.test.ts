@@ -434,16 +434,33 @@ describe('admin feedback inbox', () => {
       deletedByUser: true,
     });
 
-    const transitioned = await adminAgent
-      .patch(`/api/v1/admin/feedback/${created.body.id as string}`)
+    // A live control submission from the same user, transitioned identically.
+    // Since #1340 landed, transitions DO notify — so this row proves the
+    // tombstone assertion below is a real suppression rather than a vacuous
+    // count of a notification path that never fires for anybody.
+    const live = await agent
+      .post('/api/v1/feedback')
       .set(...XRW)
-      .send({ status: 'shipped', shippedVersion: '5.5.0' });
-    expect(transitioned.status).toBe(200);
+      .send({ category: 'help', message: 'This one I still need.' });
+    expect(live.status).toBe(201);
+
+    for (const id of [created.body.id as string, live.body.id as string]) {
+      const transitioned = await adminAgent
+        .patch(`/api/v1/admin/feedback/${id}`)
+        .set(...XRW)
+        .send({ status: 'shipped', shippedVersion: '5.5.0' });
+      expect(transitioned.status).toBe(200);
+    }
+
+    const notices = await notificationRows(user.id, 'feedback.status_changed');
+    expect(notices.map((notice) => (notice.payload as { feedbackId: string }).feedbackId)).toEqual([
+      live.body.id,
+    ]);
     const [notifications] = await harness.db
       .select({ value: count() })
       .from(schema.notifications)
       .where(eq(schema.notifications.userId, user.id));
-    expect(notifications?.value).toBe(0);
+    expect(notifications?.value).toBe(1);
   });
 
   it('lets an admin persist declined reasons and shipped versions with status timestamps', async () => {
@@ -515,6 +532,20 @@ describe('admin feedback inbox', () => {
     expect(retryResponse.status).toBe(200);
     const retry = updateFeedbackStatusResponseSchema.parse(retryResponse.body);
     expect(retry.lastStatusChangeAt).toBe(first.lastStatusChangeAt);
+
+    // The HTTP retry alone would be satisfied by the repository's `changed:false`
+    // short-circuit, which never reaches the dispatcher. Redelivering the SAME
+    // transition event directly — what BullMQ does on a retry — is what actually
+    // pins the documented key `…:{feedbackId}:{lastStatusChangeAt}`, mirroring
+    // the reply case's message-id redelivery.
+    await harness.ctx.notificationDispatcher.dispatch({
+      type: 'feedback.status_changed',
+      userId: webUser.id,
+      feedbackId: target.id,
+      status: 'triaged',
+      lastStatusChangeAt: first.lastStatusChangeAt,
+      occurredAt: first.lastStatusChangeAt,
+    });
 
     const notices = await notificationRows(webUser.id, 'feedback.status_changed');
     expect(notices).toHaveLength(1);

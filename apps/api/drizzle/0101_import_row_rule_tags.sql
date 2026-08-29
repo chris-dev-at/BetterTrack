@@ -1,0 +1,14 @@
+-- Import epic (#964, §16 2026-07-31): tag imported cash movements with the
+-- user's own cash rules AT STAGING, so the suggestion is visible in the preview
+-- and confirmed together with everything else instead of re-tagged afterwards.
+--
+-- The tag ids the caller's rules assigned to this row's memo, computed ONCE
+-- when the batch was staged and replayed verbatim at apply. Persisting the
+-- snapshot is the whole point: apply must book what the preview SHOWED, so a
+-- rule edited or deleted in between cannot make a confirmed tag disappear.
+--
+-- Nullable jsonb, exactly like `candidates`: absent on every row no rule
+-- matched, on every non-cash row, and on all previews staged before this
+-- change. No default and no backfill — a staged batch is a short-lived preview,
+-- not a record, and an old one simply carries no suggestions.
+ALTER TABLE "import_rows" ADD COLUMN "rule_tag_ids" jsonb;

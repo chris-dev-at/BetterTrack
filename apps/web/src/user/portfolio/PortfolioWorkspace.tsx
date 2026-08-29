@@ -11,9 +11,12 @@ import { Button, SubTabLink } from '../../ui/origin';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
+import { useVaultedPortfolioStores } from '../vault/useVaultedPortfolioStores';
+import type { UnlockedVaultPortfolioAccess } from '../vault/resolvedPortfolioStore';
 import { LockedPortfolioStub } from './LockedPortfolioStub';
 import { isVaultedPortfolio } from './lockedPortfolio';
 import { usePortfolioStore } from './PortfolioStoreProvider';
+import { UnlockedVaultPortfolio } from './UnlockedVaultPortfolio';
 
 /**
  * The portfolio workspace (PRODUCT_BLUEPRINT.md §4 "Portfolio-local
@@ -29,6 +32,7 @@ import { usePortfolioStore } from './PortfolioStoreProvider';
 export function PortfolioWorkspace() {
   const t = useT();
   const store = usePortfolioStore();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const items = useSectionNavItems('portfolio');
   const portfolios = useQuery({
@@ -44,7 +48,16 @@ export function PortfolioWorkspace() {
       ),
     [portfolios.data, searchParams],
   );
-  const locked = isVaultedPortfolio(active);
+  const roster = useMemo(() => portfolios.data?.portfolios ?? [], [portfolios.data]);
+  const { unlocked } = useVaultedPortfolioStores(roster);
+  // Membership alone no longer decides the fork (#1416). A vaulted portfolio is
+  // LOCKED unless this device holds a live resolution for it — the currency
+  // check is synchronous and re-asked on every render, so the moment the vault
+  // locks the very next paint is the stub again, with no decrypted name or
+  // figure surviving into it.
+  const vaulted = isVaultedPortfolio(active);
+  const opened = vaulted ? currentAccess(unlocked.get(active.id)) : null;
+  const locked = vaulted && opened === null;
   // A locked stub has one job: lead to its state action. Portfolio operations,
   // including Import, never remain as tempting dead-end tabs around it.
   //
@@ -52,7 +65,19 @@ export function PortfolioWorkspace() {
   // list is still in flight would blank the local nav down to Overview on every
   // cold load of the hot path — the page body below already refuses to render
   // anything but a skeleton until the same read resolves, so nothing leaks.
-  const visibleItems = locked ? items.filter((item) => item.to === '/portfolio') : items;
+  //
+  // An UNLOCKED vaulted portfolio keeps the strip collapsed too (#1416): the
+  // resolver-backed store serves the overview's derivations and refuses every
+  // row read in a typed way, so the other tabs would be honest-but-empty dead
+  // ends. Offering a tab that can only report unavailability is worse than not
+  // offering it — and the collapse is what today's LOCKED behaviour already is,
+  // so nothing regresses on the way in or out of the vault.
+  const visibleItems = vaulted ? items.filter((item) => item.to === '/portfolio') : items;
+  // The one route the client store can answer. Deep-linking to any other
+  // portfolio tab while unlocked lands on the strip alone rather than on a page
+  // whose every read refuses — the same "nothing broken on screen" the locked
+  // stub gives that URL today.
+  const onOverview = location.pathname === '/portfolio';
 
   return (
     <div>
@@ -75,12 +100,32 @@ export function PortfolioWorkspace() {
           </div>
         ) : locked ? (
           <LockedPortfolioStub portfolio={active} />
+        ) : opened && isVaultedPortfolio(active) ? (
+          <UnlockedVaultPortfolio access={opened} portfolio={active}>
+            {onOverview ? <Outlet /> : null}
+          </UnlockedVaultPortfolio>
         ) : (
           <Outlet />
         )}
       </Suspense>
     </div>
   );
+}
+
+/**
+ * An access object only counts while it says it is current, and a currency
+ * check that THROWS is a revoked session — never a live one. Both readings
+ * collapse to "render the stub", which is the safe direction.
+ */
+function currentAccess(
+  access: UnlockedVaultPortfolioAccess | undefined,
+): UnlockedVaultPortfolioAccess | null {
+  if (access === undefined) return null;
+  try {
+    return access.isCurrent() ? access : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

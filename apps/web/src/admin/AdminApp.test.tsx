@@ -90,7 +90,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   vi.mocked(api.getStats).mockResolvedValue(stats);
-  vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
+  // The People list is paged as of #1406 W2 — `page` is part of the response.
+  vi.mocked(api.listUsers).mockResolvedValue({
+    users: [jane],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   // Bootstrap/login now consult the 2FA setup gate — default to an enrolled admin.
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue(enrolledTwoFactor);
 });
@@ -141,18 +145,19 @@ test('the admin language control persists across an admin remount', async () => 
   vi.mocked(api.getMe).mockResolvedValue(admin);
   const user = userEvent.setup();
 
+  // The rail entry for the account list is the folded People workspace (W2).
   const first = renderAt('/admin/users');
-  expect(await screen.findByRole('link', { name: 'Users' })).toBeInTheDocument();
+  expect(await screen.findByRole('link', { name: 'People' })).toBeInTheDocument();
 
   await user.selectOptions(screen.getByRole('combobox', { name: 'Console language' }), 'de');
 
   expect(localStorage.getItem('bettertrack.locale')).toBe('de');
-  expect(screen.getByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Personen' })).toBeInTheDocument();
 
   first.unmount();
   renderAt('/admin/users');
 
-  expect(await screen.findByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+  expect(await screen.findByRole('link', { name: 'Personen' })).toBeInTheDocument();
 });
 
 test.each([0, 500])(
