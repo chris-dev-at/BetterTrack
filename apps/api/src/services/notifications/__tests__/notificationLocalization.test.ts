@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   ALERT_KINDS,
+  FEEDBACK_STATUSES,
   NOTIFICATION_MESSAGE_KEYS,
   notificationMessageSchema,
   type AlertKind,
+  type FeedbackStatus,
   type NotificationMessageKey,
 } from '@bettertrack/contracts';
 
@@ -45,6 +47,20 @@ const ALERT_SUFFIX: Record<AlertKind, string> = {
 function alertKey(prefix: string, kind: AlertKind): NotificationMessageKey {
   return `${prefix}${ALERT_SUFFIX[kind]}` as NotificationMessageKey;
 }
+
+/**
+ * Every feedback lifecycle status carries its OWN message key. Typed against
+ * `FeedbackStatus` so a seventh status cannot silently inherit another's copy,
+ * and shared by the copy-case table below and the distinct-title assertion.
+ */
+const FEEDBACK_STATUS_MESSAGE_KEYS = {
+  new: 'feedbackStatusNew',
+  triaged: 'feedbackStatusTriaged',
+  working_on_it: 'feedbackStatusWorkingOnIt',
+  saved_as_future_idea: 'feedbackStatusSavedAsFutureIdea',
+  declined: 'feedbackStatusDeclined',
+  shipped: 'feedbackStatusShipped',
+} as const satisfies Record<FeedbackStatus, NotificationMessageKey>;
 
 /**
  * One event for every copy branch. The two coverage assertions below bind this
@@ -353,17 +369,9 @@ function copyCases(userId: string): CopyCase[] {
     });
   }
 
-  const feedbackStatusVariants = [
-    ['new', 'feedbackStatusNew'],
-    ['triaged', 'feedbackStatusTriaged'],
-    ['working_on_it', 'feedbackStatusWorkingOnIt'],
-    ['saved_as_future_idea', 'feedbackStatusSavedAsFutureIdea'],
-    ['declined', 'feedbackStatusDeclined'],
-    ['shipped', 'feedbackStatusShipped'],
-  ] as const;
-  for (const [status, key] of feedbackStatusVariants) {
+  for (const status of FEEDBACK_STATUSES) {
     cases.push({
-      key,
+      key: FEEDBACK_STATUS_MESSAGE_KEYS[status],
       event: {
         type: 'feedback.status_changed',
         userId,
@@ -507,6 +515,21 @@ describe('dispatcher notification localization (#1138)', () => {
     expect(Object.keys(NOTIFICATION_COPY.de)).toEqual([...NOTIFICATION_MESSAGE_KEYS]);
     for (const key of NOTIFICATION_MESSAGE_KEYS) {
       expect(NOTIFICATION_COPY.de[key], key).not.toEqual(NOTIFICATION_COPY.en[key]);
+    }
+  });
+
+  it('keeps every feedback lifecycle title distinct within each locale', () => {
+    // The property the per-status titles exist for: a push banner frequently
+    // renders the title alone, so "under review" and "declined" must not both
+    // read "Feedback update". Nothing else pins it — key coverage, the per-key
+    // DE≠EN check and the server↔web byte-identity test all stay green if the
+    // six titles are re-collapsed onto one shared string in both catalogs.
+    // Byte-identity carries this to the web catalogs transitively.
+    for (const locale of ['en', 'de'] as const) {
+      const titles = FEEDBACK_STATUSES.map(
+        (status) => NOTIFICATION_COPY[locale][FEEDBACK_STATUS_MESSAGE_KEYS[status]].title,
+      );
+      expect(new Set(titles).size, `${locale}: feedbackStatus* titles`).toBe(titles.length);
     }
   });
 

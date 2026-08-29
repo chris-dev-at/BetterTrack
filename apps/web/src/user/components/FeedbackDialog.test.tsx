@@ -7,6 +7,7 @@ import {
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
   FEEDBACK_OPEN_LIMIT,
+  FEEDBACK_OPEN_SUBMISSION_LIMIT,
 } from '@bettertrack/contracts';
 
 vi.mock('../../lib/feedbackApi', () => ({ submitFeedback: vi.fn() }));
@@ -198,11 +199,14 @@ test('shows localized open-request-cap copy instead of the server fallback', asy
   await user.type(screen.getByLabelText('Message'), 'One request too many.');
   await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
 
+  // The number comes from the contract, so this stays true if the owner moves
+  // the cap — the catalogs carry a {{limit}} placeholder, not a literal 20.
   expect(
     await screen.findByText(
-      'You already have 20 open requests. Please wait for triage or delete an open request before submitting another.',
+      `You already have ${FEEDBACK_OPEN_SUBMISSION_LIMIT} open requests. Please wait for triage or delete an open request before submitting another.`,
     ),
   ).toBeInTheDocument();
+  expect(screen.queryByText(/\{\{limit\}\}/)).not.toBeInTheDocument();
   expect(screen.queryByText('Unlocalized server fallback.')).not.toBeInTheDocument();
 });
 
