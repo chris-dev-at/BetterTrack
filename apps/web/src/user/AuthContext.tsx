@@ -226,6 +226,13 @@ interface AuthContextValue {
    * strictly better than a loop the user cannot escape.
    */
   completeFirstRun: () => Promise<void>;
+  /**
+   * Acknowledge the one-time paranoid fresh-start notice (§17 step 3). Optimistic
+   * and error-swallowing for the same reason `completeFirstRun` is: a failed
+   * request must never leave the banner stuck on screen, and the server keeps the
+   * notice owed until it really lands.
+   */
+  acknowledgeFreshStartNotice: () => Promise<void>;
   /** Request a one-time email login code for a pending 2FA challenge. */
   requestTwoFactorEmailCode: (body: TwoFactorEmailCodeRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
@@ -754,6 +761,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const acknowledgeFreshStartNotice = useCallback(async () => {
+    // Local-first, exactly like completeFirstRun above: clearing the in-memory
+    // flag is what dismisses the banner, so it must not wait on the network.
+    setUser((current) => (current ? { ...current, paranoidFreshStartPending: false } : current));
+    try {
+      const me = await api.acknowledgeFreshStartNotice();
+      setUser((current) => (current ? { ...current, ...me } : current));
+    } catch {
+      // Deliberately swallowed. The acknowledgement is set-once server-side and
+      // still owed until it lands, so the notice simply returns next session
+      // rather than trapping the user behind a banner they cannot dismiss.
+    }
+  }, []);
+
   const clearRateLimitBanner = useCallback(() => setRateLimitBanner(null), []);
 
   const value = useMemo<AuthContextValue>(
@@ -778,6 +799,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout,
       toggleDiscreetMode,
       completeFirstRun,
+      acknowledgeFreshStartNotice,
       rateLimitBanner,
       clearRateLimitBanner,
     }),
@@ -802,6 +824,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       logout,
       toggleDiscreetMode,
       completeFirstRun,
+      acknowledgeFreshStartNotice,
       rateLimitBanner,
       clearRateLimitBanner,
     ],

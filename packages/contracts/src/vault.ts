@@ -2015,6 +2015,14 @@ export const PARANOID_TRANSITION_ERROR_CODES = {
    */
   normalDataChanged: 'PARANOID_NORMAL_DATA_CHANGED',
   invalidRehydration: 'PARANOID_REHYDRATION_INVALID',
+  /**
+   * The account already went through the §17 backup + wipe (PARANOID E9), so it
+   * may not re-enter the account-level v1 model. The wipe is idempotent on
+   * `paranoid_v1_wipe_receipts.user_id` and refuses a second run, which means
+   * anything created after a wipe could never be backed up or quarantined again.
+   * The per-portfolio vault model is where such an account goes instead.
+   */
+  legacyWiped: 'PARANOID_LEGACY_WIPED',
 } as const;
 export type ParanoidTransitionErrorCode =
   (typeof PARANOID_TRANSITION_ERROR_CODES)[keyof typeof PARANOID_TRANSITION_ERROR_CODES];
