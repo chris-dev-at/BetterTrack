@@ -12,6 +12,7 @@
     "./**/*.ts",
     "./support/**/*.mjs",
     "../playwright.config.ts",
-    "../apps/api/src/http/types.ts"
+    "../apps/api/src/http/types.ts",
+    "../apps/web/src/vite-env.d.ts"
   ]
 }

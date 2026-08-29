@@ -121,13 +121,20 @@ export const E10_TRACEABILITY = [
     note:
       'The accepted payload is built by the product’s own serializer from this ' +
       'account’s ceremony phrase — deliberately NOT the shared golden vector, which ' +
-      'names a vault no account owns and so cannot be verified against a real header. The ' +
-      'golden vector and its ACCEPT siblings are pinned by qr/payload.test.ts.',
+      'names a vault no account owns and so cannot be verified against a real header. ' +
+      'Since #1527/F8 the fixture’s full ACCEPT half also round-trips through the real ' +
+      'scan seam (parse verdict only, for that same reason), and a structurally valid but ' +
+      'WRONG f= is driven all the way through the authenticated header comparison.',
   },
   {
     arc: 'wrong-password lockout',
     assertion: '[E10-A2] five wrong device passwords, and the vault does not reopen',
     status: 'covered',
+    note:
+      'Every window-bound claim is anchored to the endpoint’s own `lockedUntil` rather ' +
+      'than to the wall clock (#1527/F7), and re-arms through the real access surface ' +
+      'when a slow runner burns the frozen window — so a throttled machine reports which ' +
+      'claim it could not reach instead of timing out on a control that came back.',
   },
   {
     arc: 'fresh-start notice after the §17 wipe',
@@ -351,6 +358,127 @@ export async function attemptUnlock(
 }
 
 /**
+ * E3's first lockout tier: the 5th consecutive wrong device password arms a
+ * 30 s window (`keystore/core.ts` LOCKOUT_INITIAL_MS). Mirrored rather than
+ * imported — `core.ts` is a browser module, and importing it for one number
+ * would drag WebCrypto into the Node-side harness.
+ */
+export const ENDPOINT_LOCKOUT_INITIAL_MS = 30_000;
+
+/** Headroom a window-bound claim needs before it is worth attempting. */
+export const ENDPOINT_LOCKOUT_MIN_REMAINING_MS = 8_000;
+
+export interface EndpointLockoutState {
+  failures: number;
+  lockedUntil: number | null;
+  /** Milliseconds left on the window at the moment of the read; 0 when closed. */
+  remainingMs: number;
+}
+
+/**
+ * Read the endpoint's OWN persisted lockout record through the product's own
+ * storage + parser.
+ *
+ * #1527/F7: [E10-A2] used to race the wall clock — it performed several SPA
+ * loads inside a frozen 30 s window and, on a slow runner, simply ran out of
+ * window and reported a confusing timeout that `retries: 1` masked. Anchoring
+ * every window-bound claim to `lockedUntil` turns "the runner was slow" into a
+ * named failure and lets {@link ensureLockoutWindow} re-arm instead of losing.
+ *
+ * Evaluated in the page rather than imported here for the reason spelled out on
+ * {@link driveOwnerDigestInBrowser}: the specifiers are passed in so the e2e
+ * TypeScript project never tries to resolve a dev-server URL as a module.
+ */
+export async function readEndpointLockout(page: Page): Promise<EndpointLockoutState> {
+  return page.evaluate(
+    async ({ storageSpecifier, recordsSpecifier }) => {
+      const storage = (await import(/* @vite-ignore */ storageSpecifier)) as {
+        createIndexedDbEndpointKeystoreStorage(): {
+          readEndpointSnapshot(): Promise<{ revision: number; metadata: unknown | null }>;
+        };
+      };
+      const records = (await import(/* @vite-ignore */ recordsSpecifier)) as {
+        parseEndpointPasswordMetadata(value: unknown): {
+          lockout: { failures: number; lockedUntil: number | null };
+        };
+      };
+      const snapshot = await storage
+        .createIndexedDbEndpointKeystoreStorage()
+        .readEndpointSnapshot();
+      if (snapshot.metadata == null) {
+        throw new Error('This endpoint has no keystore password metadata yet.');
+      }
+      const { lockout } = records.parseEndpointPasswordMetadata(snapshot.metadata);
+      return {
+        failures: lockout.failures,
+        lockedUntil: lockout.lockedUntil,
+        remainingMs:
+          lockout.lockedUntil == null ? 0 : Math.max(0, lockout.lockedUntil - Date.now()),
+      };
+    },
+    {
+      storageSpecifier: '/src/user/vault/keystore/storage.ts',
+      recordsSpecifier: '/src/user/vault/keystore/records.ts',
+    },
+  );
+}
+
+/**
+ * Guarantee a live lockout window with enough headroom for the next claim,
+ * re-arming through the REAL access surface when the runner burned the last one.
+ *
+ * The window is frozen once armed: an attempt made inside it does not extend it
+ * (`registerWrongPassword` returns the existing lockout unchanged), so a
+ * nearly-closed window has to be allowed to close before a fresh refusal can
+ * re-arm it at the next, longer tier. Nothing is weakened by re-arming — the
+ * claim under test is "a locked-out endpoint refuses", and which failure armed
+ * the lockout is not part of it.
+ */
+export async function ensureLockoutWindow(
+  page: Page,
+  vaultId: string,
+  wrongPassword: string,
+  minRemainingMs = ENDPOINT_LOCKOUT_MIN_REMAINING_MS,
+): Promise<EndpointLockoutState> {
+  const current = await readEndpointLockout(page);
+  if (current.remainingMs >= minRemainingMs) return current;
+  if (current.remainingMs > 0) await page.waitForTimeout(current.remainingMs + 250);
+
+  const section = await attemptUnlock(page, vaultId, wrongPassword);
+  await expect(
+    section.getByText('That action could not be completed.', { exact: false }),
+    're-arming the lockout must itself be refused',
+  ).toBeVisible({ timeout: 60_000 });
+
+  const rearmed = await readEndpointLockout(page);
+  expect(
+    rearmed.remainingMs,
+    'a refusal past the first tier must arm a fresh lockout window',
+  ).toBeGreaterThan(0);
+  return rearmed;
+}
+
+/**
+ * Assert that a claim just observed was observed INSIDE the window it is about,
+ * against the endpoint's own deadline rather than the test's stopwatch.
+ */
+export async function expectStillLockedOut(
+  page: Page,
+  armed: EndpointLockoutState,
+  claim: string,
+): Promise<void> {
+  const now = await readEndpointLockout(page);
+  expect(now.lockedUntil, `${claim} must be measured against the window the proof armed`).toBe(
+    armed.lockedUntil,
+  );
+  expect(
+    now.remainingMs,
+    `the lockout window closed before ${claim} was observed — the runner was too slow, ` +
+      'which is not evidence about the product',
+  ).toBeGreaterThan(0);
+}
+
+/**
  * Open E7's receiver. It is account-mode independent and sits in the Privacy
  * panel above the v1 mode split, so it is reachable on a brand-new endpoint.
  */
@@ -379,14 +507,15 @@ export async function submitTransferPayload(receiver: Locator, payload: string):
  * §8's owner namespace, derived by the PRODUCT's own function in the PRODUCT's
  * own runtime.
  *
- * It is evaluated in the page rather than imported here on purpose:
- * `driveDataHome.ts` reaches `window.google` through the web app's ambient
- * `vite-env.d.ts`, which the separate `e2e/tsconfig.json` project does not (and
- * should not) include. Pulling the module into the spec's type graph would
- * either fail to compile or force that ambient file into a project it does not
- * belong to. Importing it through the dev server keeps the assertion on the real
- * derivation — a change to `DRIVE_OWNER_CONTEXT` or the digest breaks this — and
- * uses the same "Vite serves `/src/...`" fact `pd9Drive.ts` already relies on.
+ * It is evaluated in the page rather than imported here on purpose. The e2e
+ * project can now SEE these modules — `e2e/tsconfig.json` includes the web app's
+ * ambient `vite-env.d.ts` so `doubles/pd9DriveDouble.ts` can type its doubles
+ * against the real interfaces (#1527) — but seeing them is not running them:
+ * `driveDataHome.ts` is a browser module built on WebCrypto and `window`, and a
+ * value import would execute it in the Node test process. Importing it through
+ * the dev server keeps the assertion on the real derivation — a change to
+ * `DRIVE_OWNER_CONTEXT` or the digest breaks this — and uses the same "Vite
+ * serves `/src/...`" fact `pd9Drive.ts` already relies on.
  */
 export async function driveOwnerDigestInBrowser(page: Page, accountId: string): Promise<string> {
   const digest = await page.evaluate(
