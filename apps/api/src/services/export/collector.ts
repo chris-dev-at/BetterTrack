@@ -108,6 +108,33 @@ function sanitize(
 }
 
 /**
+ * The submitter-visible columns of the `feedback` table (#1470). The export ZIP
+ * is the submitter's copy of their own submissions, so the collector projects
+ * this set explicitly instead of selecting the row: the admin-workspace columns
+ * (`archivedAt` from #1443, `adminLastReadAt` from #1339) are invisible on every
+ * submitter surface — `/feedback/mine` and the thread routes never render them —
+ * and the export must not be the one place they leak. Projecting rather than
+ * denylisting also fails closed: a future admin-side column added to the table
+ * without touching this file stays out of the ZIP by default.
+ */
+const FEEDBACK_EXPORT_COLUMNS = {
+  id: feedback.id,
+  userId: feedback.userId,
+  category: feedback.category,
+  subject: feedback.subject,
+  message: feedback.message,
+  context: feedback.context,
+  status: feedback.status,
+  lastStatusChangeAt: feedback.lastStatusChangeAt,
+  declinedReason: feedback.declinedReason,
+  shippedVersion: feedback.shippedVersion,
+  submitterLastReadAt: feedback.submitterLastReadAt,
+  deletedByUserAt: feedback.deletedByUserAt,
+  createdAt: feedback.createdAt,
+  updatedAt: feedback.updatedAt,
+} as const;
+
+/**
  * Support-thread replies from staff belong in the export — their bodies were
  * addressed to this user — but `authorUserId` on an admin-side row is the
  * replying account's internal id, identity the product never surfaces to a user
@@ -168,7 +195,7 @@ export async function collectUserExport(
         .from(shareAudiences)
         .where(eq(shareAudiences.ownerId, userId)),
       db.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId)),
-      db.select().from(feedback).where(eq(feedback.userId, userId)),
+      db.select(FEEDBACK_EXPORT_COLUMNS).from(feedback).where(eq(feedback.userId, userId)),
     ]);
   // A vault-backed portfolio row is only a locked config stub. Its cleartext
   // descendants are forbidden by the per-vault model, but filter them here too
@@ -312,6 +339,8 @@ export async function collectUserExport(
     alerts: sanitize(alertRows),
     notifications: sanitize(notificationRows),
     notificationSettings: sanitize(notificationSettingRows),
+    // Already narrowed to {@link FEEDBACK_EXPORT_COLUMNS} at the query, so no
+    // admin-workspace column reaches the ZIP here either.
     feedback: sanitize(feedbackRows),
     feedbackMessages: projectFeedbackMessages(sanitize(feedbackMessageRows)),
     conglomerates: sanitize(conglomerateFull),
