@@ -77,7 +77,7 @@ export const expenseCategorySchema = z
   .strict();
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 
-/** `GET /expenses/categories` — the caller's categories (defaults seeded on first read). */
+/** `GET /expenses/categories` — the caller's categories (a pure read; never seeds). */
 export const expenseCategoryListResponseSchema = z
   .object({ categories: z.array(expenseCategorySchema) })
   .strict();

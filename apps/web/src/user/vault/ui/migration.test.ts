@@ -1110,10 +1110,11 @@ describe('buildNormalVaultDocument', () => {
      * `GET …/reports/tax-years` runs the #635 self-heal and INSERTS the open
      * year's correction cash movement, while `store.getCashMovements` sits in
      * the same `Promise.all` and has already snapshotted the ledger without it.
-     * `GET /expenses/categories` likewise seeds this account's default
-     * categories on first read. A single-pass capture therefore shipped a
-     * document MISSING money rows — and enable hard-deletes them, with disable
-     * restoring from the document alone.
+     * A single-pass capture therefore shipped a document MISSING money rows —
+     * and enable hard-deletes them, with disable restoring from the document
+     * alone. (The category read below is a SYNTHETIC second write-on-read, kept
+     * so the protocol is exercised against more than one moving table; the real
+     * `GET /expenses/categories` has been a pure read since #1550.)
      *
      * The fake reproduces that ordering exactly: the ledger snapshot happens
      * first, then the tax read appends the correction and moves the revision.
@@ -1169,8 +1170,8 @@ describe('buildNormalVaultDocument', () => {
       return { years: [] };
     });
     vi.mocked(listExpenseCategories).mockImplementation(async () => {
-      // The lazy default seed: one-shot, and self-covering — the read that
-      // seeds also returns what it seeded.
+      // A synthetic one-shot, self-covering write-on-read — the read that
+      // writes also returns what it wrote.
       if (categories.length === 0) {
         categories.push({
           id: CATEGORY_ID,

@@ -208,7 +208,7 @@ export class VaultCaptureUnstableError extends Error {
  * order to mean anything.
  *
  * The second read is not extra caution about other sessions. THE CAPTURE'S OWN
- * READS WRITE. Six of them seed or self-heal rows in tables the revision hashes:
+ * READS WRITE. Five of them seed or self-heal rows in tables the revision hashes:
  *
  * - `GET /portfolios` materializes "Main" (`portfolios`);
  * - `GET /portfolios/:id/cash` materializes its main source
@@ -216,11 +216,12 @@ export class VaultCaptureUnstableError extends Error {
  * - `GET …/reports/tax-years` and `…/tax-years/:year` run the #635 self-heal,
  *   posting each documented year's pending tax correction (`portfolio_cash_movements`,
  *   and through the auto-tagger `cash_movement_tags` / `cash_tags`);
- * - `GET /expenses/categories` seeds the default categories
- *   (`expense_categories`);
  * - `GET /cash/tags` seeds the app-owned system tags (`cash_tags`).
  *
- * Four of those are self-covering — the read that seeds also returns what it
+ * (`GET /expenses/categories` used to seed the retired area's starter set too;
+ * it is a pure read since #1550.)
+ *
+ * Three of those are self-covering — the read that seeds also returns what it
  * seeded. The tax reconciler is not: it inserts CASH MOVEMENTS, while
  * `getCashMovements` sits in the same `Promise.all` as the year list and runs
  * strictly before the per-year reports. Those corrections are missing from the
