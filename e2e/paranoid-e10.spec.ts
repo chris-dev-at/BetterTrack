@@ -30,6 +30,7 @@ import {
   openPrivacyPanel,
   openTransferReceiver,
   submitTransferPayload,
+  runParanoidV1TransitionFor,
   vaultRow,
 } from './support/e10';
 import { assetIdFor, listTransactions, recordBuy } from './support/mirror';
@@ -1370,19 +1371,75 @@ test.describe('PARANOID E10 per-vault gate', () => {
   });
 
   /**
-   * CARVE-OUT 1 — needs E9 (transition + v1 retirement), unbuilt and owner-gated.
+   * §17 as ruled (C): an owner-run verified ciphertext backup, then a wipe/reset
+   * (privacy_mode→normal, the account kill rail cleared, v1 rows quarantined),
+   * and only then the one-time fresh-start notice this arc asserts.
    *
-   * §17 as ruled (C) is: an owner-run verified ciphertext backup, then a
-   * wipe/reset migration (privacy_mode→normal, the account kill rail cleared,
-   * v1 rows quarantined), and only then the one-time fresh-start notice this arc
-   * would assert. None of that exists on `main` — there is no migration, no
-   * quarantine table write and no notice component — so there is nothing to
-   * drive and nothing to assert. Promote this when E9 lands the notice; it must
-   * cover the notice appearing exactly once for a wiped account and never for an
-   * account that was already normal.
+   * The setup runs that sequence for real — `scripts/ops/export-paranoid-v1-backup.mjs`
+   * as a child process for the dump/verify/attest and the `--confirm-offsite`
+   * step, then `paranoidV1WipeService` for the wipe — so the banner asserted below
+   * is the product of an actual §17 transition and not a hand-written row. The
+   * wipe has no HTTP route by design, which is exactly why this arc reaches for
+   * the operator path instead of an endpoint.
+   *
+   * Both halves of "one-time" are covered: it shows for the wiped account, and it
+   * is gone after acknowledgement — across a reload, because the flag lives on the
+   * session payload and not in browser state.
    */
-  test.fixme('[E10-A8] fresh-start notice after the §17 wipe (blocked: E9)', () => {
-    // Intentionally empty: see the block comment above.
+  test('[E10-A8] fresh-start notice after the §17 wipe', async ({ browser, context }, testInfo) => {
+    skipOnPhone(testInfo);
+    test.setTimeout(180_000);
+
+    const admin = await newAdminRequestContext(newRequestContext);
+    let wiped: E2EUser | null = null;
+    try {
+      wiped = await provisionUser(browser, admin, 'e9-wiped');
+      const untouched = await provisionUserInContext(context, admin, 'e9-untouched');
+
+      await runParanoidV1TransitionFor(await accountId(wiped));
+
+      await test.step('the wiped account is told once, calmly, with the create-a-vault CTA', async () => {
+        // `provisionUser` leaves the account signed in, and the transition ran
+        // after that session opened — so the SPA is still holding the pre-wipe
+        // session payload. A reload re-reads `/auth/me`, which is exactly the
+        // "at next login" moment §17 describes. (That the LOGIN response carries
+        // the flag too is pinned server-side by the paranoidFreshStartNotice suite.)
+        await wiped!.page.reload();
+        await expectUserShellReady(wiped!.page);
+
+        const notice = wiped!.page.getByTestId('paranoid-fresh-start-notice');
+        await expect(notice).toBeVisible();
+        // §17 step 3 forbids a conversion ceremony and a legacy passphrase prompt;
+        // the CTA points at the new per-portfolio model instead.
+        await expect(notice.getByRole('link')).toHaveAttribute('href', /\/control\/privacy/u);
+        await expect(notice).not.toContainText(/passphrase/iu);
+
+        // The wipe really did put the account back to normal: the v1 kill rail is
+        // cleared, so the shell is the ordinary authenticated one.
+        const me = await wiped!.context.request.get(apiV1('/auth/me'));
+        expect(((await me.json()) as { privacyMode: string }).privacyMode).toBe('normal');
+      });
+
+      await test.step('acknowledging spends it — and a reload does not bring it back', async () => {
+        const notice = wiped!.page.getByTestId('paranoid-fresh-start-notice');
+        await notice.getByRole('button').click();
+        await expect(notice).toBeHidden();
+
+        await wiped!.page.reload();
+        await expectUserShellReady(wiped!.page);
+        await expect(wiped!.page.getByTestId('paranoid-fresh-start-notice')).toBeHidden();
+      });
+
+      await test.step('an account the transition never touched is never told', async () => {
+        await untouched.page.reload();
+        await expectUserShellReady(untouched.page);
+        // Structural, not conditional: a never-wiped account has no wipe receipt,
+        // so there is nothing for the notice to read.
+        await expect(untouched.page.getByTestId('paranoid-fresh-start-notice')).toBeHidden();
+      });
+    } finally {
+      await admin.dispose();
+    }
   });
 });
 

@@ -16,7 +16,10 @@ import {
   type ParanoidRehydrationPostCommitPlan,
 } from '@bettertrack/contracts';
 
+import { eq } from 'drizzle-orm';
+
 import type { Database } from '../../data/db';
+import { paranoidV1WipeReceipts } from '../../data/schema';
 import { createParanoidForkProvenanceRepository } from '../../data/repositories/paranoidRehydrationRepository';
 import {
   createParanoidVaultRepository,
@@ -61,7 +64,8 @@ export class ParanoidTransitionError extends Error {
       | 'EXPORT_IN_FLIGHT'
       | 'TRANSITION_CONFLICT'
       | 'NORMAL_DATA_CHANGED'
-      | 'INVALID_REHYDRATION',
+      | 'INVALID_REHYDRATION'
+      | 'LEGACY_WIPED',
     message: string,
   ) {
     super(message);
@@ -240,6 +244,7 @@ export const PARANOID_TRANSITION_HTTP_ERRORS = {
     status: 400,
     code: PARANOID_TRANSITION_ERROR_CODES.invalidRehydration,
   },
+  LEGACY_WIPED: { status: 409, code: PARANOID_TRANSITION_ERROR_CODES.legacyWiped },
 } as const;
 
 export function createParanoidTransitionService(
@@ -306,6 +311,26 @@ export function createParanoidTransitionService(
     },
 
     async enable(userId, request) {
+      // ── PARANOID E9 / §17: no return trip into the retired model ───────────
+      // The wipe's idempotency key is `paranoid_v1_wipe_receipts.user_id` and a
+      // second run is refused with ALREADY_WIPED. So rows created by re-enabling
+      // after a wipe could never be quarantined or backed up again — they would
+      // be silently orphaned when the §19 train drops the v1 tables.
+      //
+      // Only WIPED accounts are refused. The enable pipeline itself stays alive
+      // on purpose: §19 retires it "at the end of §17, not before", and
+      // un-wiped straggler accounts still depend on it.
+      const wipeReceipt = await deps.db
+        .select({ userId: paranoidV1WipeReceipts.userId })
+        .from(paranoidV1WipeReceipts)
+        .where(eq(paranoidV1WipeReceipts.userId, userId));
+      if (wipeReceipt.length > 0) {
+        throw new ParanoidTransitionError(
+          'LEGACY_WIPED',
+          'This account was retired from account-level paranoid mode and cannot re-enable it.',
+        );
+      }
+
       const parsed = paranoidEnableRequestSchema.safeParse(request);
       if (!parsed.success) {
         throw new ParanoidTransitionError(

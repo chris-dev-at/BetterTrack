@@ -245,6 +245,7 @@ function buildInertContext(): AppContext {
     featureFlags: inertService('featureFlags'),
     ai: inertService('ai'),
     aiFeatures: inertService('aiFeatures'),
+    paranoidFreshStartNotice: inertService('paranoidFreshStartNotice'),
   };
 }
 
