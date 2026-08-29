@@ -50,9 +50,11 @@ export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'ale
       name: QUEUE_NAMES.alertsEvaluate,
       schedule: { id: ALERTS_EVALUATE_SCHEDULER_ID, every: ALERTS_EVALUATE_INTERVAL_MS },
       async handler(job, ctx) {
-        // Anchor the trigger window to the job's scheduled time so a run's fires
-        // all share one (alert, window) idempotency bucket.
-        const now = job.timestamp || Date.now();
+        // Anchor the trigger window to the run's execution instant so a run's
+        // fires all share one (alert, window) idempotency bucket. NOT the job's
+        // creation `timestamp`: BullMQ stamps that when the delayed job is
+        // created, i.e. at the previous iteration's pickup, one full period ago.
+        const now = job.processedOn ?? Date.now();
         const result = await runAlertsEvaluation({
           alertRepo,
           marketData: deps.marketData,

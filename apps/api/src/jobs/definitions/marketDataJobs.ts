@@ -72,9 +72,14 @@ export interface MarketDataJobDeps {
 /** Never-local fallback so a caller that omits the predicate keeps prior behaviour. */
 const NEVER_LOCAL = (): boolean => false;
 
-/** ISO timestamp the job's events are stamped with (mirrors the heartbeat job). */
-function occurredAtOf(job: { timestamp?: number }): string {
-  return new Date(job.timestamp || Date.now()).toISOString();
+/**
+ * ISO timestamp the job's events are stamped with (mirrors the heartbeat job).
+ * `processedOn` is the run's real execution instant; the creation `timestamp`
+ * is when BullMQ created the delayed job — for a repeatable schedule that is
+ * the previous iteration's pickup, a full period stale.
+ */
+function occurredAtOf(job: { processedOn?: number }): string {
+  return new Date(job.processedOn ?? Date.now()).toISOString();
 }
 
 function errorMessage(err: unknown): string {

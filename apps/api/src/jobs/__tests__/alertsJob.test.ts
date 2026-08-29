@@ -86,10 +86,20 @@ function makeCtx(events: EventBus): JobContext {
   return { events, deadLetter: createDeadLetter(redis), redis, logger };
 }
 
-function makeJob(timestamp: number): Job<Record<string, never>> {
-  return { id: 'job-1', name: 'alerts.evaluate', data: {}, timestamp } as unknown as Job<
-    Record<string, never>
-  >;
+/**
+ * A job picked up at `processedOn` whose `timestamp` is one full period stale —
+ * BullMQ stamps `timestamp` when the delayed job is created, at the previous
+ * iteration's pickup (#1543). The evaluator must anchor its trigger window to
+ * `processedOn`.
+ */
+function makeJob(processedOn: number): Job<Record<string, never>> {
+  return {
+    id: 'job-1',
+    name: 'alerts.evaluate',
+    data: {},
+    timestamp: processedOn - ALERTS_EVALUATE_INTERVAL_MS,
+    processedOn,
+  } as unknown as Job<Record<string, never>>;
 }
 
 const allowingParanoidGuard = {
