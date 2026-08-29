@@ -165,18 +165,29 @@ export class TaxComputationError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * Magnitude bound of the cent quantizer — `2^42` € (≈ €4.4 trillion), #1523.
+ * Exact mirror of `cashLedger.FLOOR_CENTS_EXACT_LIMIT_EUR` (see the rationale
+ * there); parity is pinned by tests.
+ */
+export const FLOOR_CENTS_EXACT_LIMIT_EUR = 2 ** 42;
+
+/**
  * Quantize a EUR amount **down** to whole cents — floor toward zero, never round
  * up (the #370 money policy). Nudges a value a few ULPs below a cent boundary
  * (`8.61 → 860.999…9`) back onto it before truncating, so exact cents survive
- * float error while a genuine sub-cent residue still floors away. Exact mirror
- * of `cashLedger.floorCents` (#322/#370); parity is pinned by tests.
+ * float error while a genuine sub-cent residue still floors away. At and above
+ * {@link FLOOR_CENTS_EXACT_LIMIT_EUR} the amount passes through unchanged —
+ * float64 is too coarse to quantize cents there (#1523). Exact mirror of
+ * `cashLedger.floorCents` (#322/#370); parity is pinned by tests.
  */
 export function floorCents(amountEur: number): number {
   if (!Number.isFinite(amountEur)) {
     throw new TaxComputationError(`Cannot floor a non-finite EUR amount, got ${amountEur}.`);
   }
+  const abs = Math.abs(amountEur);
+  if (abs >= FLOOR_CENTS_EXACT_LIMIT_EUR) return amountEur;
   const sign = amountEur < 0 ? -1 : 1;
-  const cents = Math.floor(Math.abs(amountEur) * 100 * (1 + Number.EPSILON * 8));
+  const cents = Math.floor(abs * 100 * (1 + Number.EPSILON * 8));
   return cents === 0 ? 0 : (sign * cents) / 100;
 }
 

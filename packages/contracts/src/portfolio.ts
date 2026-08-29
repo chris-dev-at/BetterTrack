@@ -301,6 +301,26 @@ const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_E
  */
 export const MAX_TAX_REPORT_FIGURE_EUR = 1_000_000_000_000_000;
 
+/**
+ * Exclusive upper bounds for manual transaction entry (#1523) — mirrored from
+ * the ceilings the import-staging columns already enforce on every imported
+ * row: `numeric(20,8)` quantities (12 integer digits) and `numeric(20,6)`
+ * prices/fees (14 integer digits). Without them, a deliberately absurd manual
+ * entry (or an `Infinity`, which zod `.number()` otherwise admits) overflows
+ * those same Postgres columns on write — a `22003` surfacing as a 500, or (for
+ * `Infinity`, which `numeric` accepts on PG 14+) a stored value that later
+ * throws out of every `floorCents` on the portfolio, degrading that member
+ * long after entry instead of being refused at it. Exclusive because the bound
+ * itself already needs one integer digit too many for its column.
+ *
+ * Scope: these are *column* bounds on a single field, not a bound on derived
+ * amounts — a quantity × price product admissible here can still exceed the
+ * {@link MAX_TAX_REPORT_FIGURE_EUR} row bound, which stays enforced where the
+ * report row is built.
+ */
+export const MAX_TRANSACTION_QUANTITY = 1_000_000_000_000;
+export const MAX_TRANSACTION_PRICE = 100_000_000_000_000;
+
 // --- Taxes (V3-P4, §13.3) ----------------------------------------------------
 
 /**
@@ -551,16 +571,28 @@ export type TransactionSide = z.infer<typeof transactionSideSchema>;
 /**
  * One transaction as submitted by the client (§6.9). Amounts are in the asset's
  * **native currency**. `quantity` is strictly positive; `price` and `fee` are
- * non-negative. `executedAt` is an ISO-8601 timestamp (its date portion is the
- * day key for the value-over-time series).
+ * non-negative; all three are capped at the staging-column ceilings
+ * ({@link MAX_TRANSACTION_QUANTITY} / {@link MAX_TRANSACTION_PRICE}, #1523).
+ * `executedAt` is an ISO-8601 timestamp (its date portion is the day key for
+ * the value-over-time series).
  */
 export const transactionInputSchema = z
   .object({
     assetId: z.string().uuid(),
     side: transactionSideSchema,
-    quantity: z.number().positive(),
-    price: z.number().nonnegative(),
-    fee: z.number().nonnegative().default(0),
+    quantity: z
+      .number()
+      .positive()
+      .lt(MAX_TRANSACTION_QUANTITY, `Quantity must be below ${MAX_TRANSACTION_QUANTITY}.`),
+    price: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Price must be below ${MAX_TRANSACTION_PRICE}.`),
+    fee: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Fee must be below ${MAX_TRANSACTION_PRICE}.`)
+      .default(0),
     executedAt: z.string().datetime(),
     note: z.string().max(1000).nullish(),
     /**
@@ -613,7 +645,11 @@ export const transactionInputSchema = z
      * shares take the sale price as their basis, so they realize 0. Requires
      * `allowUncovered`; rejected on a buy.
      */
-    uncoveredEntryPrice: z.number().nonnegative().finite().optional(),
+    uncoveredEntryPrice: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Price must be below ${MAX_TRANSACTION_PRICE}.`)
+      .optional(),
   })
   .strict()
   .superRefine(refineManualTaxEntry)
@@ -633,7 +669,12 @@ export const createTransactionsRequestSchema = z.union([
 export type CreateTransactionsRequest = z.infer<typeof createTransactionsRequestSchema>;
 
 /**
- * `PATCH /portfolios/:id/transactions/:txId` body — every field optional.
+ * `PATCH /portfolios/:id/transactions/:txId` body — every field optional. The
+ * amount fields carry the same staging-column caps the create path enforces
+ * ({@link MAX_TRANSACTION_QUANTITY} / {@link MAX_TRANSACTION_PRICE}, #1523):
+ * an edit is another way to write the same three columns, so an uncapped one
+ * would let a legal buy be patched to an absurd (or `Infinity`) magnitude the
+ * create path refuses.
  * `baseSeq` is the §3 stale-edit guard on a synced-copy edit (V5-P7 M5, design
  * §3): the entity's `mirror.version` the client edited against — the append
  * transaction refuses with `409 MIRROR_CONFLICT` if it no longer matches. Non-
@@ -642,9 +683,21 @@ export type CreateTransactionsRequest = z.infer<typeof createTransactionsRequest
 export const updateTransactionRequestSchema = z
   .object({
     side: transactionSideSchema.optional(),
-    quantity: z.number().positive().optional(),
-    price: z.number().nonnegative().optional(),
-    fee: z.number().nonnegative().optional(),
+    quantity: z
+      .number()
+      .positive()
+      .lt(MAX_TRANSACTION_QUANTITY, `Quantity must be below ${MAX_TRANSACTION_QUANTITY}.`)
+      .optional(),
+    price: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Price must be below ${MAX_TRANSACTION_PRICE}.`)
+      .optional(),
+    fee: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Fee must be below ${MAX_TRANSACTION_PRICE}.`)
+      .optional(),
     executedAt: z.string().datetime().optional(),
     note: z.string().max(1000).nullish(),
     baseSeq: z.number().int().nonnegative().optional(),
@@ -1759,12 +1812,26 @@ export type TaxYearExportQuery = z.infer<typeof taxYearExportQuerySchema>;
 
 // --- Custom assets ---------------------------------------------------------
 
-/** Optional initial purchase, recorded as a BUY transaction (§6.9). */
+/**
+ * Optional initial purchase, recorded as a BUY transaction (§6.9) — so its
+ * amounts carry the same staging-column caps as {@link transactionInputSchema}
+ * ({@link MAX_TRANSACTION_QUANTITY} / {@link MAX_TRANSACTION_PRICE}, #1523).
+ */
 export const initialPurchaseSchema = z
   .object({
-    quantity: z.number().positive(),
-    price: z.number().nonnegative(),
-    fee: z.number().nonnegative().default(0),
+    quantity: z
+      .number()
+      .positive()
+      .lt(MAX_TRANSACTION_QUANTITY, `Quantity must be below ${MAX_TRANSACTION_QUANTITY}.`),
+    price: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Price must be below ${MAX_TRANSACTION_PRICE}.`),
+    fee: z
+      .number()
+      .nonnegative()
+      .lt(MAX_TRANSACTION_PRICE, `Fee must be below ${MAX_TRANSACTION_PRICE}.`)
+      .default(0),
     executedAt: z.string().datetime(),
     note: z.string().max(1000).nullish(),
   })
