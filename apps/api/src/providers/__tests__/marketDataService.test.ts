@@ -3,7 +3,7 @@ import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { cacheKey, freshCacheKey, negativeCacheKey } from '../cache';
+import { cacheKey, freshCacheKey, negativeCacheKey, staleCacheKey } from '../cache';
 import { CircuitOpenError } from '../circuitBreaker';
 import { AssetNotFoundError } from '../errors';
 import {
@@ -12,6 +12,8 @@ import {
   normalizeSearchQuery,
 } from '../marketDataService';
 import { createProviderRegistry } from '../registry';
+import type { StooqClient } from '../stooqClient';
+import { createStooqProvider } from '../stooqProvider';
 
 import {
   createDeferred,
@@ -555,5 +557,155 @@ describe('MarketDataService — provider failover (§13.5 V5-P1c)', () => {
     expect(result.stale).toBe(false);
     expect(provider.calls.quote).toBe(1); // a real serve happened
     expect(service.failoverStatus()).toEqual({ chains: [], switches: [], attribution: [] });
+  });
+});
+
+describe('MarketDataService — a not-found is breaker-neutral (§13.5 V5-P1c)', () => {
+  /**
+   * A portfolio holding several delisted tickers (or an import with unmapped
+   * symbols) fans out concurrently over the same provider. Those 404s are
+   * authoritative answers from a healthy upstream: they must not open the
+   * breaker, which would degrade every *other* asset to stale for the cooldown
+   * and report a provider outage that never happened.
+   */
+  it('five unknown symbols leave the breaker closed, and a healthy read still reaches upstream', async () => {
+    const opens: unknown[] = [];
+    const unknownRefs = ['DELISTED1', 'DELISTED2', 'DELISTED3', 'DELISTED4', 'DELISTED5'] as const;
+    let known = false;
+    const provider = createFakeProvider('fake', {
+      quote: () =>
+        known
+          ? Promise.resolve(sampleQuote({ price: 42 }))
+          : (Promise.reject(
+              new AssetNotFoundError('No data found, symbol may be delisted'),
+            ) as Promise<ReturnType<typeof sampleQuote>>),
+    });
+    const registry = createProviderRegistry([provider]);
+    const service = createMarketDataService({
+      registry,
+      redis,
+      // The real onOpen is wired to problems.captureProviderFailure (§13.5 V5-P2).
+      options: { breaker: { failureThreshold: 5, onOpen: (err) => opens.push(err) } },
+    });
+
+    // Five DIFFERENT refs, so the negative cache absorbs none of them.
+    for (const providerRef of unknownRefs) {
+      await expect(service.getQuote({ providerId: 'fake', providerRef })).rejects.toBeInstanceOf(
+        AssetNotFoundError,
+      );
+    }
+    expect(service.breakerStates()).toEqual([{ providerId: 'fake', state: 'closed' }]);
+    expect(opens).toEqual([]); // no admin Problems capture for unknown symbols
+
+    // On the SAME service: a healthy ref still goes upstream instead of failing
+    // fast with CircuitOpenError.
+    known = true;
+    expect((await service.getQuote(REF)).value.price).toBe(42);
+    expect(provider.calls.quote).toBe(6); // 5 definitive (never retried) + the healthy read
+
+    // The genuine not-founds are still negative-cached (§5.3, unchanged).
+    expect(
+      await redis.get(negativeCacheKey(cacheKey('fake', unknownRefs[0], 'quote', 'spot'))),
+    ).not.toBeNull();
+  });
+
+  it('a 429 still trips immediately and five transient errors still open the breaker', async () => {
+    const rateLimited = createFakeProvider('fake', {
+      quote: () =>
+        Promise.reject(Object.assign(new Error('HTTP 429'), { code: 429 })) as Promise<
+          ReturnType<typeof sampleQuote>
+        >,
+    });
+    const limitedService = createMarketDataService({
+      registry: createProviderRegistry([rateLimited]),
+      redis,
+    });
+    await expect(limitedService.getQuote(REF)).rejects.toThrowError('HTTP 429');
+    expect(limitedService.breakerStates()).toEqual([{ providerId: 'fake', state: 'open' }]);
+
+    const flaky = createFakeProvider('flaky', {
+      quote: () =>
+        Promise.reject(new Error('socket hang up')) as Promise<ReturnType<typeof sampleQuote>>,
+    });
+    const flakyService = createMarketDataService({
+      registry: createProviderRegistry([flaky]),
+      redis,
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await expect(
+        flakyService.getQuote({ providerId: 'flaky', providerRef: `T${i}` }),
+      ).rejects.toThrowError('socket hang up');
+    }
+    expect(flakyService.breakerStates()).toEqual([{ providerId: 'flaky', state: 'open' }]);
+  });
+});
+
+describe('MarketDataService — an empty secondary history never poisons the cache (§13.5 V5-P1c)', () => {
+  const AAPL: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
+  const HISTORY_KEY = cacheKey('yahoo', 'AAPL', 'history', '1Y@1d');
+
+  /** Yahoo blips transiently; Stooq maps the symbol but has no rows for it. */
+  function stooqFailoverService() {
+    const yahoo = createFakeProvider('yahoo', {
+      history: () =>
+        Promise.reject(new Error('yahoo history down')) as Promise<
+          ReturnType<typeof sampleHistory>
+        >,
+    });
+    const client: StooqClient = {
+      quote: async () => ({
+        symbol: 'AAPL.US',
+        date: '2026-07-16',
+        time: '22:00:04',
+        close: 209.05,
+      }),
+      history: async () => [], // Stooq's "No data" body
+    };
+    const stooq = createStooqProvider({
+      client,
+      queueOptions: { minSpacingMs: 0 },
+      now: () => Date.parse('2026-07-16T23:00:00Z'),
+    });
+    const registry = createProviderRegistry([yahoo, stooq]);
+    const service = createMarketDataService({
+      registry,
+      redis,
+      options: { failover: { byClass: {}, default: ['stooq'] } },
+    });
+    return { yahoo, service };
+  }
+
+  it('rejects with the PRIMARY error, writes no cache keys, and credits Stooq with no serve', async () => {
+    const { service } = stooqFailoverService();
+
+    await expect(service.getHistory(AAPL, '1Y')).rejects.toThrowError('yahoo history down');
+
+    expect(await redis.get(freshCacheKey(HISTORY_KEY))).toBeNull();
+    expect(await redis.get(staleCacheKey(HISTORY_KEY))).toBeNull();
+    // The primary's error is transient, so it is not negative-cached either.
+    expect(await redis.get(negativeCacheKey(HISTORY_KEY))).toBeNull();
+    expect(service.failoverStatus().attribution).toEqual([]);
+  });
+
+  it("keeps the primary's last-known-good history: one blip does not blank the asset", async () => {
+    const lastKnownGood = sampleHistory();
+    await redis.set(
+      staleCacheKey(HISTORY_KEY),
+      JSON.stringify({ value: lastKnownGood, asOf: 1 }),
+      'EX',
+      7 * 24 * 3600,
+    );
+    const { service } = stooqFailoverService();
+
+    // The stale copy is served instantly while the refresh fails over to Stooq.
+    const served = await service.getHistory(AAPL, '1Y');
+    expect(served).toMatchObject({ stale: true, value: lastKnownGood });
+    await service.settled();
+
+    expect(await redis.get(freshCacheKey(HISTORY_KEY))).toBeNull();
+    expect(JSON.parse((await redis.get(staleCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: lastKnownGood,
+    });
+    expect(service.failoverStatus().attribution).toEqual([]);
   });
 });

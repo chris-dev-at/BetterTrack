@@ -76,6 +76,33 @@ describe('StooqProvider.getHistory + getMeta + canServe', () => {
     ]);
   });
 
+  it('throws AssetNotFoundError when Stooq has no rows, in parity with getQuote (§13.5 V5-P1c)', async () => {
+    // `stooqClient` maps a bare/"No data" CSV body to []. That is Stooq saying it
+    // does not know the symbol — the same answer getQuote gives for a null close.
+    // Returning [] here would be cached as a successful serve over the primary's
+    // last-known-good history.
+    const noHistory = providerWith({ history: async () => [] });
+    const noQuote = providerWith({
+      quote: async () => ({ symbol: 'X', date: null, time: null, close: null }),
+    });
+    await expect(noHistory.getHistory(AAPL, '1Y', '1d')).rejects.toBeInstanceOf(AssetNotFoundError);
+    await expect(noQuote.getQuote(AAPL)).rejects.toBeInstanceOf(AssetNotFoundError);
+  });
+
+  it('throws AssetNotFoundError when no row carries a usable date', async () => {
+    const provider = providerWith({ history: async () => [{ date: 'not-a-date', close: 1 }] });
+    await expect(provider.getHistory(AAPL, '1Y', '1d')).rejects.toBeInstanceOf(AssetNotFoundError);
+  });
+
+  it('throws AssetNotFoundError for an unsupported ref without calling the client', async () => {
+    const history = vi.fn();
+    const provider = providerWith({ history });
+    await expect(
+      provider.getHistory({ providerId: 'yahoo', providerRef: 'BTC-USD' }, '1Y', '1d'),
+    ).rejects.toBeInstanceOf(AssetNotFoundError);
+    expect(history).not.toHaveBeenCalled();
+  });
+
   it('derives a symbol-based meta with the mapped currency/type', async () => {
     const meta = await providerWith().getMeta(AAPL);
     expect(meta).toMatchObject({

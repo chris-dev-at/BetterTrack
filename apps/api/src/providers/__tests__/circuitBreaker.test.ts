@@ -114,6 +114,92 @@ describe('CircuitBreaker', () => {
   });
 });
 
+describe('CircuitBreaker — ignoreFailure: an authoritative answer is breaker-neutral (§13.5 V5-P1c)', () => {
+  /** A 404-shaped rejection: definitive, and from a perfectly healthy upstream. */
+  const notFound = () => Promise.reject(Object.assign(new Error('unknown symbol'), { code: 404 }));
+  const isNotFound = (err: unknown) => (err as { code?: unknown }).code === 404;
+
+  it('does not count toward the failure threshold: five not-founds leave the breaker closed', async () => {
+    const opens: unknown[] = [];
+    const breaker = new CircuitBreaker('yahoo', {
+      failureThreshold: 5,
+      ignoreFailure: isNotFound,
+      onOpen: (err) => opens.push(err),
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      await expect(breaker.execute(notFound)).rejects.toThrowError('unknown symbol');
+    }
+    expect(breaker.getState()).toBe('closed');
+    // No trip ⇒ no admin Problems capture for a symbol that simply does not exist.
+    expect(opens).toEqual([]);
+    await expect(breaker.execute(ok)).resolves.toBe('ok'); // upstream still reached
+  });
+
+  it('leaves an interleaved transient count intact (a not-found neither adds nor resets)', async () => {
+    const breaker = new CircuitBreaker('yahoo', { failureThreshold: 2, ignoreFailure: isNotFound });
+
+    await expect(breaker.execute(fail)).rejects.toThrowError(); // transient 1
+    await expect(breaker.execute(notFound)).rejects.toThrowError(); // neutral
+    expect(breaker.getState()).toBe('closed');
+    await expect(breaker.execute(fail)).rejects.toThrowError(); // transient 2 → opens
+    expect(breaker.getState()).toBe('open');
+  });
+
+  it('tripImmediately still wins: a 429 trips on the first occurrence even with ignoreFailure set', async () => {
+    const rateLimited = Object.assign(new Error('HTTP 429'), { code: 429 });
+    const breaker = new CircuitBreaker('yahoo', {
+      failureThreshold: 5,
+      ignoreFailure: isNotFound,
+      tripImmediately: (err) => (err as { code?: unknown }).code === 429,
+    });
+
+    await expect(breaker.execute(() => Promise.reject(rateLimited))).rejects.toThrow('HTTP 429');
+    expect(breaker.getState()).toBe('open');
+  });
+
+  it('does not knock a half-open probe back to open; the next call still probes', async () => {
+    const clock = fakeClock();
+    const opens: unknown[] = [];
+    const breaker = new CircuitBreaker('yahoo', {
+      failureThreshold: 1,
+      openMs: 1_000,
+      now: clock.now,
+      ignoreFailure: isNotFound,
+      onOpen: (err) => opens.push(err),
+    });
+
+    await expect(breaker.execute(fail)).rejects.toThrow(); // opens (capture 1)
+    clock.advance(1_000);
+    expect(breaker.getState()).toBe('half-open');
+
+    // The probe happens to hit an unknown symbol: no signal about provider health.
+    await expect(breaker.execute(notFound)).rejects.toThrowError('unknown symbol');
+    expect(breaker.getState()).toBe('half-open'); // NOT re-opened
+    expect(opens).toHaveLength(1); // and no second capture
+
+    // The probe slot was released, so the very next call is the real probe.
+    await expect(breaker.execute(ok)).resolves.toBe('ok');
+    expect(breaker.getState()).toBe('closed');
+  });
+
+  it('the probe outcome is still decided by transient failures: a failing probe re-opens', async () => {
+    const clock = fakeClock();
+    const breaker = new CircuitBreaker('yahoo', {
+      failureThreshold: 1,
+      openMs: 1_000,
+      now: clock.now,
+      ignoreFailure: isNotFound,
+    });
+
+    await expect(breaker.execute(fail)).rejects.toThrow();
+    clock.advance(1_000);
+    await expect(breaker.execute(notFound)).rejects.toThrow(); // neutral
+    await expect(breaker.execute(fail)).rejects.toThrow(); // real probe fails → re-open
+    expect(breaker.getState()).toBe('open');
+  });
+});
+
 describe('CircuitBreaker — capture hook, reset & single half-open probe (§13.5 V5-P2)', () => {
   it('fires onOpen exactly once when it trips, with the failure and providerId (admin Problems capture)', async () => {
     const opens: Array<{ err: unknown; providerId?: string }> = [];

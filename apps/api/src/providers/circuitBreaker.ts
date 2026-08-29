@@ -27,6 +27,16 @@ export interface CircuitBreakerOptions {
    */
   tripImmediately?: (err: unknown) => boolean;
   /**
+   * Failures matching this predicate are breaker-NEUTRAL: an authoritative
+   * answer from a *healthy* upstream (a 404 for an unknown symbol) says nothing
+   * about that provider's health, so it must not count toward the consecutive-
+   * failure threshold and must not knock a half-open probe back to open — the
+   * probe outcome is decided by transient failures alone (§13.5 V5-P1c).
+   * Evaluated AFTER {@link tripImmediately}, so a 429 keeps tripping the breaker
+   * immediately even if both predicates would match it.
+   */
+  ignoreFailure?: (err: unknown) => boolean;
+  /**
    * Called each time the breaker transitions TO open — a definitive provider
    * failure. Wired to the admin Problems capture (§13.5 V5-P2 arc (d)). Must
    * never throw; the breaker ignores its return.
@@ -51,6 +61,7 @@ export class CircuitBreaker {
   private readonly openMs: number;
   private readonly now: () => number;
   private readonly tripImmediately?: (err: unknown) => boolean;
+  private readonly ignoreFailure?: (err: unknown) => boolean;
   private readonly onOpen?: (err: unknown, meta: { providerId?: string }) => void;
 
   private state: CircuitState = 'closed';
@@ -67,6 +78,7 @@ export class CircuitBreaker {
     this.openMs = options.openMs ?? DEFAULT_OPEN_MS;
     this.now = options.now ?? Date.now;
     this.tripImmediately = options.tripImmediately;
+    this.ignoreFailure = options.ignoreFailure;
     this.onOpen = options.onOpen;
   }
 
@@ -133,6 +145,11 @@ export class CircuitBreaker {
       this.trip(err);
       return;
     }
+    // A definitive answer from a healthy upstream (unknown symbol / 404) is not
+    // a provider failure: leave the state and the consecutive-failure count
+    // exactly as they were. Releasing `probing` above means a half-open breaker
+    // stays half-open and simply lets the next call be the real probe.
+    if (this.ignoreFailure?.(err)) return;
     if (this.state === 'half-open') {
       // Probe failed → straight back to open with a fresh cooldown.
       this.trip(err);
