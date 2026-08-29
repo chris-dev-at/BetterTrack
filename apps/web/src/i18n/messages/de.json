@@ -3789,7 +3789,7 @@
       "moveIn": {
         "title": "Portfolio in einen Tresor verschieben",
         "warning": "Nachdem jede verschlüsselte Kopie geprüft wurde, löscht BetterTrack die serverlesbaren Finanzdaten dieses Portfolios dauerhaft und widerruft seine bestehenden Freigaben. Diese Freigaben werden beim späteren Herausverschieben nicht wiederhergestellt.",
-        "driveOnlyRetention": "Dieser Tresor speichert seine verschlüsselten Dokumente nur in Google Drive. Eine kurzlebige verschlüsselte Zwischenkopie bleibt {{minutes}} Minuten auf dem BetterTrack-Server, damit ein nicht angekommener Drive-Schreibvorgang noch wiederherstellbar ist, und läuft dann von selbst ab. BetterTrack liest sie nie und liefert sie nie als Tresorspeicher aus.",
+        "driveOnlyRetention": "Dieser Tresor speichert seine verschlüsselten Dokumente nur in Google Drive. Eine kurzlebige verschlüsselte Zwischenkopie bleibt ab dem Zeitpunkt der Zwischenspeicherung bis zu {{minutes}} Minuten auf dem BetterTrack-Server — der Umzug selbst verbraucht einen Teil davon —, damit ein nicht angekommener Drive-Schreibvorgang noch wiederherstellbar ist, und läuft dann von selbst ab. BetterTrack liest sie nie und liefert sie nie als Tresorspeicher aus.",
         "action": "In den Tresor verschieben",
         "working": "Portfolio wird in den Tresor verschoben…",
         "done": "Das Portfolio ist im Tresor verschlüsselt und auf dem Server gesperrt.",
@@ -3799,6 +3799,7 @@
         "title": "Portfolio aus dem Tresor verschieben",
         "unlockRequired": "Entsperre diesen Tresor auf diesem Gerät, bevor du das Portfolio herausverschiebst.",
         "warning": "Wenn du dieses Portfolio aus dem Tresor verschiebst, wird es für den BetterTrack-Server wieder lesbar. BetterTrack stellt seine entschlüsselten Finanzdaten unter derselben Portfolio-ID wieder her; frühere Freigaben bleiben widerrufen.",
+        "driveOnlyRetention": "Dieser Tresor speichert seine verschlüsselten Dokumente nur in Google Drive. Seine übrigen Dokumente bleiben ab dem Zeitpunkt der Zwischenspeicherung bis zu {{minutes}} Minuten als kurzlebige verschlüsselte Zwischenkopie auf dem BetterTrack-Server, damit ein nicht angekommener Drive-Schreibvorgang noch wiederherstellbar ist, und sie läuft dann von selbst ab. BetterTrack liest sie nie und liefert sie nie als Tresorspeicher aus.",
         "confirm": "Mir ist bewusst, dass dieses Portfolio für den Server wieder lesbar wird.",
         "action": "Als normales Portfolio wiederherstellen",
         "working": "Portfolio wird wiederhergestellt…",
@@ -3848,7 +3849,7 @@
         "advanced": "Erweitert",
         "driveOnly": {
           "title": "Nur Google Drive",
-          "body": "Nichts auf BetterTrack-Servern — nicht einmal verschlüsselt."
+          "body": "Auf BetterTrack-Servern bleibt nichts — nicht einmal verschlüsselt. Diese Einrichtung schreibt nur nach Drive; wenn du später ein Portfolio in diesen Tresor hinein- oder herausverschiebst, bleibt dessen verschlüsselte Zwischenkopie allerdings auf dem Server, damit ein nicht angekommener Drive-Schreibvorgang noch wiederherstellbar ist. Diese Kopie läuft nach bis zu {{minutes}} Minuten von selbst ab und wird nie als Tresorspeicher ausgeliefert."
         }
       },
       "passphraseDistinct": "Erstelle eine neue Tresor-Passphrase. Sie muss sich von deinem BetterTrack-Anmeldepasswort unterscheiden und wird nie an den Server gesendet.",

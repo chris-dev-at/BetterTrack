@@ -1392,9 +1392,17 @@ export function createPortfolioVaultTransitionTransactionRepository(
       // last verified full-roster ciphertext of the vault, and the post-commit
       // Drive work (delete the moved-out doc, re-sync the rest) still runs on
       // the client. Keeping the inactive rows to their TTL keeps the vault's
-      // REMAINING portfolios recoverable if that client work goes wrong. The
-      // next staged batch carries a new transition id and replaces them
-      // wholesale, so a stale set can never pass an exact-roster proof.
+      // REMAINING portfolios recoverable if that client work goes wrong.
+      //
+      // What the server actually enforces about the leftovers: staging under a
+      // DIFFERENT transition id wipes the batch wholesale, and this commit just
+      // shrank the roster, so the retained set can no longer cover it. A client
+      // reusing its own committed transition id tops the batch up instead of
+      // replacing it, mixing a fresh doc with up-to-TTL-old siblings — bounded
+      // by the TTL, same owner, and every consumer still compares the batch
+      // against a client-declared value (the move-out `documentSetHash` CAS,
+      // `attestationsEqual` on a refresh), so a set that is stale relative to
+      // the client's own view fails closed rather than committing old bytes.
       await tx
         .update(vaults)
         .set({

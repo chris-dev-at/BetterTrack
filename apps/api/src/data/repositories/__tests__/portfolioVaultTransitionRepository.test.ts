@@ -7,6 +7,7 @@ import {
   encodeVaultDocEnvelope,
   serializeVaultRetirementVersionSet,
   VAULT_CONTENT_CIPHER,
+  type PerVaultMediaTransitionRequest,
   type VaultDocKind,
 } from '@bettertrack/contracts';
 
@@ -1707,6 +1708,7 @@ describe('Drive-only staged candidate retention', () => {
     headerCandidateId: id(71),
     commonCandidateId: id(72),
     portfolioCandidateId: id(73),
+    replacementDriveConnectionId: id(75),
     // Staged at TEST_VECTOR.at; VAULT_SERVER_CANDIDATE_TTL_MS is 10 minutes.
     expiresAt: new Date('2026-08-21T10:10:00.000Z'),
     insideWindow: new Date('2026-08-21T10:09:59.999Z'),
@@ -1893,5 +1895,102 @@ describe('Drive-only staged candidate retention', () => {
         .from(vaults)
         .where(eq(vaults.id, TEST_VECTOR.vaultId)),
     ).toEqual([{ mediaAttestedAt: null }]);
+  });
+
+  /**
+   * Second accepted consequence, pinned here so a future change to it is a
+   * deliberate one: `completeMoveIn` stamps `mediaAttestedAt` itself, so the
+   * batch it retained now satisfies `verifyMoveOutDocuments`' `createdAt <=
+   * mediaAttestedAt` pairing. A move-out straight after a move-in can therefore
+   * take its drive-only roster proof from a batch staged BEFORE the move-in,
+   * where pre-#1491 it needed a fresh full-set stage. It stays fail-closed one
+   * level up: the returned `documentSetHash` is the CAS the service compares
+   * against the client's own declared value, so a set that is stale relative to
+   * the client's view is refused (`DOCUMENT_SET_STALE`), never committed.
+   */
+  it('lets the retained batch serve as the drive-only move-out roster proof until its TTL', async () => {
+    await stagedDriveOnlyMoveIn();
+    const transitions = createPortfolioVaultTransitionTransactionRepository(h.db);
+    const vault = await transitions.lockVault(userId, TEST_VECTOR.vaultId);
+    expect(vault).not.toBeNull();
+
+    const inside = await transitions.verifyMoveOutDocuments({
+      vault: vault!,
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      now: RETENTION.insideWindow,
+    });
+    expect(inside).toMatchObject({ mediaReady: true, exactRoster: true });
+    expect(inside.documentSetHash).not.toBeNull();
+
+    // At the TTL the proof loses its evidence and fails closed on its own — the
+    // window bounds this consequence exactly as it bounds the recovery.
+    expect(
+      await transitions.verifyMoveOutDocuments({
+        vault: vault!,
+        portfolioId: TEST_VECTOR.targetPortfolioId,
+        now: RETENTION.expiresAt,
+      }),
+    ).toEqual({ mediaReady: true, exactRoster: false, documentSetHash: null });
+  });
+
+  /**
+   * The consequence recorded in §7: a live retained batch blocks a Drive-only
+   * Drive-connection replacement (Y → Z), because that edge requires the server
+   * to hold no candidate rows at all. Bounded by the TTL and self-healing —
+   * both halves pinned so the refusal cannot silently become permanent.
+   */
+  it('refuses a Drive-connection replacement while the batch is retained, and heals at the TTL', async () => {
+    await stagedDriveOnlyMoveIn();
+    await h.db.insert(driveConnections).values({
+      id: RETENTION.replacementDriveConnectionId,
+      userId,
+      googleSub: 'TEST_VECTOR_retention_drive_sub_z',
+      email: 'test-vector-retention-drive-z@example.test',
+    });
+    const blobs = createVaultBlobRepository(h.db);
+    const request: PerVaultMediaTransitionRequest = {
+      transitionId: id(76),
+      expected: {
+        media: ['drive'],
+        driveConnectionId: TEST_VECTOR.driveConnectionId,
+        mediaAttestedAt: TEST_VECTOR.at.toISOString(),
+      },
+      next: { media: ['drive'], driveConnectionId: RETENTION.replacementDriveConnectionId },
+      verification: {
+        kind: 'drive',
+        driveConnectionId: RETENTION.replacementDriveConnectionId,
+        docs: [
+          { docId: TEST_VECTOR.headerDocId, docVersion: 1, writeId: id(77) },
+          { docId: TEST_VECTOR.commonDocId, docVersion: 1, writeId: id(78) },
+          { docId: TEST_VECTOR.targetPortfolioId, docVersion: 7, writeId: id(79) },
+        ],
+      },
+    };
+
+    const refused = await blobs.transitionMedia({
+      userId,
+      vaultId: TEST_VECTOR.vaultId,
+      request,
+      verifiedCandidateIds: new Set(),
+      now: RETENTION.insideWindow,
+    });
+    expect(refused.status).toBe('state_conflict');
+
+    const afterTtl = new Date(RETENTION.expiresAt.getTime() + 1);
+    expect(await blobs.cleanupExpiredServerCandidates(afterTtl, 100)).toBe(stagedDocs.length);
+    const replaced = await blobs.transitionMedia({
+      userId,
+      vaultId: TEST_VECTOR.vaultId,
+      request,
+      verifiedCandidateIds: new Set(),
+      now: afterTtl,
+    });
+    expect(replaced.status).toBe('ok');
+    expect(
+      await h.db
+        .select({ driveConnectionId: vaults.driveConnectionId })
+        .from(vaults)
+        .where(eq(vaults.id, TEST_VECTOR.vaultId)),
+    ).toEqual([{ driveConnectionId: RETENTION.replacementDriveConnectionId }]);
   });
 });

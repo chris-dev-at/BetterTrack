@@ -373,9 +373,36 @@ lying or buggy client into irrecoverable data loss. Retention converts that into
 `media` remains the only authority on where a vault is stored, reads resolve
 against `vault_blobs` only (a Drive-only vault answers `medium_inactive`), and
 the media state reports the rows as `inactive-candidates`, never as a data home.
-Consequence, accepted: while a retained batch is live, replacing the vault's
-Drive connection (below) still refuses with its existing state conflict; that
-refusal is bounded by the TTL.
+Three consequences, all accepted and all bounded by the same TTL:
+
+1. **Drive-connection replacement waits.** While a retained batch is live,
+   replacing the vault's Drive connection (below) refuses with its existing
+   state conflict, because that edge requires zero candidate rows. Self-healing
+   at `expires_at`; no user-facing surface exists yet (the Y → Z move has no
+   production caller until E8), so the specific "try again in N minutes" copy
+   belongs with that UI, not here.
+2. **A signed purge of retired server data waits too** — `purgeRetired` refuses
+   while any live candidate exists, so after a Drive-only move-in/move-out the
+   purge is delayed by up to the TTL. Deliberate asymmetry with the
+   retirement-pending branch of `transitionMedia`, which still DROPS the batch
+   on purpose: there the batch is unusable anyway (the retirement gate refuses
+   the promotion it was staged for), so dropping it costs no recoverability and
+   lets the purge proceed immediately. Here the batch is the recovery copy, so
+   the purge is what waits.
+3. **A move-out straight after a move-in can prove its roster from the retained
+   batch.** `completeMoveIn` stamps `mediaAttestedAt` itself, so the batch it
+   retained satisfies `verifyMoveOutDocuments`' `createdAt <= mediaAttestedAt`
+   pairing (§10), where pre-#1491 a fresh full-set stage was required. It stays
+   fail-closed one level up: the roster proof yields the `documentSetHash` the
+   service compares against the client's own declared value, so a set stale
+   relative to the client's view is refused (`DOCUMENT_SET_STALE`).
+
+What the server does NOT enforce: that a client opens a NEW transition id after
+a commit. Staging under a different id wipes the batch wholesale, but a client
+reusing its own committed id tops the batch up — mixing a fresh document with
+up-to-TTL-old siblings. Bounded by the TTL and by the same owner, and every
+consumer compares the batch against a client-declared value, so this is a
+recorded property, not a proof the server makes.
 
 Changing a vault's **Drive connection** (Y → Z) is a media migration with the
 same discipline, and it starts one step earlier than a byte copy (E5): the
@@ -444,8 +471,10 @@ with zero user migration.
   ciphertext" is exact, and the §7 retention is what lives inside that word: a
   staged batch stays as bounded, self-expiring INACTIVE rows for its 10-minute
   TTL after a Drive-only move-in or move-out — never a medium, never served,
-  never a data home. The client is told so in the move-in ceremony, with the
-  TTL. That retention exists precisely BECAUSE this bullet is true: since the
+  never a data home. The user is told so with the TTL at the moment of the
+  CHOICE (the create ceremony's Drive-only radio, which therefore does not
+  promise "nothing, not even encrypted" without naming the exception) and again
+  in both move ceremonies, in and out. That retention exists precisely BECAUSE this bullet is true: since the
   server can never verify a Drive write, a client that attests one that did not
   land must stay recoverable for a bounded window. Refresh = GIS
   re-mint (silent while the Google session lives, a user gesture otherwise).

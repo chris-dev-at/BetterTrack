@@ -15,7 +15,7 @@ import {
   submitPortfolioMoveIn,
   type PortfolioVaultMoveCapture,
 } from '../portfolioVaultMove';
-import { PortfolioVaultMoveWizard } from './PortfolioVaultMoveWizard';
+import { isDriveOnlyVaultMedia, PortfolioVaultMoveWizard } from './PortfolioVaultMoveWizard';
 import { vaultEndpointStateQueryKey } from './useVaultEndpointState';
 
 /**
@@ -104,7 +104,7 @@ export function PortfolioVaultSection({
           vaults={vaults.map((vault) => ({
             id: vault.id,
             name: vault.name,
-            driveOnly: !vault.media.includes('server'),
+            driveOnly: isDriveOnlyVaultMedia(vault.media),
           }))}
         />
       ) : (
