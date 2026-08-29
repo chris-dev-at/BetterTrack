@@ -78,7 +78,7 @@ export class EndpointVaultKeystore {
   private readonly contentKeys = new Map<string, CachedContentKey>();
   private readonly activeContentKeyBorrows = new Set<Uint8Array>();
   private readonly sessionEndListeners = new Set<() => void>();
-  private readonly vaultOpenedListeners = new Set<() => void>();
+  private readonly vaultOpenedListeners = new Set<(vaultId: string) => void>();
   private sessionGeneration = 0;
   private sessionRevision: number | null = null;
 
@@ -681,10 +681,14 @@ export class EndpointVaultKeystore {
    * surface: without this edge, unlocking a vault leaves every one of its
    * portfolios rendering as a locked stub until the next full navigation.
    *
-   * Carries no key material and no vault identity — it is a "re-ask me" ping,
-   * and every consumer still has to prove custody through `withContentKey`.
+   * Carries the vault id and nothing else — no key material, no custody claim.
+   * It is a "re-ask me about THAT vault" ping, and every consumer still has to
+   * prove custody through `withContentKey`. The id is what lets a listener tell
+   * an open it caused itself from a foreign one PER VAULT (#1533): judging that
+   * by the run's outcome instead collapses two vaults unlocked in quick
+   * succession into one signal and drops the second one's edge.
    */
-  subscribeToVaultOpened(listener: () => void): () => void {
+  subscribeToVaultOpened(listener: (vaultId: string) => void): () => void {
     this.vaultOpenedListeners.add(listener);
     return () => {
       this.vaultOpenedListeners.delete(listener);
@@ -804,7 +808,7 @@ export class EndpointVaultKeystore {
     // Only a real transition is news: a vault that was not open, or whose key
     // changed. A no-op re-open notifying here would make every listener that
     // reacts by re-reading the vault trigger its own next notification.
-    this.notifyVaultOpened();
+    this.notifyVaultOpened(verified.vaultId);
     return opened;
   }
 
@@ -815,10 +819,10 @@ export class EndpointVaultKeystore {
    * unguarded shape — there, a listener that cannot run is a revocation that
    * did not happen, and failing loudly is the safe direction.
    */
-  private notifyVaultOpened(): void {
+  private notifyVaultOpened(vaultId: string): void {
     for (const listener of [...this.vaultOpenedListeners]) {
       try {
-        listener();
+        listener(vaultId);
       } catch {
         // Intentionally swallowed; see above.
       }
