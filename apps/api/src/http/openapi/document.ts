@@ -760,6 +760,12 @@ interface EndpointDef {
   noStore?: boolean;
   /** Stable non-validation error statuses emitted by this operation. */
   errorResponses?: Readonly<Record<number, string>>;
+  /**
+   * Documents the bodyless `304 Not Modified` a conditional read answers with
+   * (#1498). Kept apart from `errorResponses` because a 304 carries no error
+   * envelope — no body at all — only the success response's validators.
+   */
+  notModified?: string;
   /** Contract body returned with HTTP 503 by readiness-style public probes. */
   unavailableResponse?: z.ZodTypeAny;
   /**
@@ -4707,6 +4713,12 @@ const endpoints: EndpointDef[] = [
     }),
     responseContentType: 'application/octet-stream',
     responseHeaders: perVaultEtagResponseHeaders,
+    notModified: 'If-None-Match already holds the current document version; no ciphertext follows.',
+    errorResponses: {
+      404: 'No such caller-owned vault document (VAULT_NOT_FOUND).',
+      409: 'The server medium is not active for this vault (VAULT_MEDIA_STATE_CONFLICT).',
+    },
+    errorCodes: contracts.PER_VAULT_DOC_READ_ERROR_CODES,
   },
   {
     method: 'put',
@@ -4715,7 +4727,7 @@ const endpoints: EndpointDef[] = [
     summary:
       'Compare-and-swap one opaque vault document using If-None-Match: * or If-Match: "<version>".',
     description:
-      'A stale or missing precondition returns 412 or 428 without mutation. Per-kind byte caps return 413. Replaying the same (vaultId, docId, writeId) at the current docVersion is a no-op.',
+      'A stale or missing precondition returns 412 or 428 without mutation. Per-kind byte caps return 413. Replaying the same (vaultId, docId, writeId) at the current docVersion is a no-op. The two 412 meanings carry DIFFERENT codes: VAULT_PRECONDITION_FAILED is retryable after a re-read/re-merge, while VAULT_WRITE_ID_REPLAYED is terminal for that writeId — the same request can never be accepted and the client must mint a new writeId.',
     params: contracts.vaultDocParamsSchema,
     requestHeaders: perVaultCasWriteHeaders,
     body: z.string().openapi({
@@ -4726,6 +4738,14 @@ const endpoints: EndpointDef[] = [
     bodyContentType: 'application/octet-stream',
     status: 204,
     responseHeaders: perVaultEtagResponseHeaders,
+    errorResponses: {
+      404: 'No such caller-owned vault document (VAULT_NOT_FOUND).',
+      409: 'The server medium is not active for this vault (VAULT_MEDIA_STATE_CONFLICT).',
+      412: 'Retryable stale precondition (VAULT_PRECONDITION_FAILED) or the terminal writeId replay with different bytes (VAULT_WRITE_ID_REPLAYED). Both carry the top-level currentVersion.',
+      413: 'The document exceeds its configured per-kind byte cap (VAULT_TOO_LARGE).',
+      428: 'Neither If-Match nor If-None-Match: * was supplied (VAULT_PRECONDITION_REQUIRED).',
+    },
+    errorCodes: contracts.PER_VAULT_DOC_WRITE_ERROR_CODES,
   },
   {
     method: 'get',
@@ -4788,6 +4808,9 @@ const endpoints: EndpointDef[] = [
     bodyContentType: 'application/octet-stream',
     status: 200,
     response: R.PerVaultServerCandidateMetadata,
+    errorResponses: {
+      413: 'The candidate exceeds its configured per-kind byte cap (VAULT_TOO_LARGE).',
+    },
   },
   {
     method: 'get',
@@ -4962,6 +4985,15 @@ const endpoints: EndpointDef[] = [
       description: 'Opaque AES-256-GCM vault envelope bytes (never interpreted server-side).',
     }),
     responseContentType: 'application/octet-stream',
+    notModified: 'If-None-Match already holds the current vault version; no ciphertext follows.',
+    errorResponses: {
+      404: 'No vault blob is stored for this account (VAULT_NOT_FOUND).',
+      409: 'The server vault medium is inactive (VAULT_SERVER_MEDIUM_INACTIVE).',
+    },
+    errorCodes: [
+      contracts.VAULT_ERROR_CODES.notFound,
+      contracts.VAULT_ERROR_CODES.serverMediumInactive,
+    ],
   },
   {
     method: 'get',
@@ -5045,6 +5077,20 @@ const endpoints: EndpointDef[] = [
     }),
     bodyContentType: 'application/octet-stream',
     status: 204,
+    errorResponses: {
+      409: 'The server vault medium is inactive, or the retirement proof key is immutable (VAULT_SERVER_MEDIUM_INACTIVE / VAULT_RETIRED_SERVER_CONFLICT).',
+      412: 'The precondition lost the CAS race; the top-level currentVersion names the winner (VAULT_PRECONDITION_FAILED).',
+      413: 'The ciphertext exceeds the configured size cap (VAULT_TOO_LARGE).',
+      428: 'Neither If-Match nor If-None-Match: * was supplied (VAULT_PRECONDITION_REQUIRED).',
+    },
+    errorCodes: [
+      contracts.VAULT_ERROR_CODES.preconditionRequired,
+      contracts.VAULT_ERROR_CODES.preconditionFailed,
+      contracts.VAULT_ERROR_CODES.tooLarge,
+      contracts.VAULT_ERROR_CODES.malformed,
+      contracts.VAULT_ERROR_CODES.serverMediumInactive,
+      contracts.VAULT_ERROR_CODES.retirementConflict,
+    ],
   },
 
   {
@@ -5140,6 +5186,11 @@ for (const ep of endpoints) {
       'Idempotency-Key conflict (IDEMPOTENCY_KEY_MISMATCH / IDEMPOTENCY_IN_PROGRESS).',
       errorHeaders,
     );
+  }
+  if (ep.notModified) {
+    // No content member: RFC 9110 §15.4.5 forbids a 304 body, so the response
+    // carries only the same validators the 200 would have sent.
+    responses['304'] = { description: ep.notModified, ...successHeaders };
   }
   for (const [status, description] of Object.entries(ep.errorResponses ?? {})) {
     responses[status] = errorResponse(description, errorHeaders);

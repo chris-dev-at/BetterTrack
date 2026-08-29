@@ -659,6 +659,60 @@ describe('OpenAPI document', () => {
     ).toContain(contracts.ADMIN_2FA_SETUP_REQUIRED);
   });
 
+  it('publishes the vault doc conditional/CAS statuses and both 412 codes', () => {
+    // #1498: 304/412/413/428 used to live only in route prose, so a generated
+    // client could not see them at all — and the two 412 meanings shared one
+    // code, which is an infinite-retry hazard for the terminal one.
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const docPath = paths['/vaults/{vaultId}/docs/{docId}'] as JsonObject;
+
+    const write = docPath.put as JsonObject;
+    const writeResponses = write.responses as JsonObject;
+    for (const status of ['412', '413', '428']) {
+      expect(Object.keys(writeResponses), `PUT doc documents ${status}`).toContain(status);
+      const content = (writeResponses[status] as JsonObject).content as JsonObject;
+      expect((content['application/json'] as JsonObject).schema).toEqual({
+        $ref: '#/components/schemas/ApiError',
+      });
+    }
+    const writeCodes = write['x-error-codes'] as string[];
+    expect(writeCodes).toEqual(
+      expect.arrayContaining([...contracts.PER_VAULT_DOC_WRITE_ERROR_CODES]),
+    );
+    expect(contracts.PER_VAULT_ERROR_CODES.writeIdReplayed).not.toBe(
+      contracts.PER_VAULT_ERROR_CODES.preconditionFailed,
+    );
+    expect(writeCodes).toContain(contracts.PER_VAULT_ERROR_CODES.writeIdReplayed);
+    expect(JSON.stringify((writeResponses['412'] as JsonObject).description)).toContain(
+      contracts.PER_VAULT_ERROR_CODES.writeIdReplayed,
+    );
+
+    // A 304 carries no body at all, so it is documented without content.
+    const read = docPath.get as JsonObject;
+    const readResponses = read.responses as JsonObject;
+    expect(Object.keys(readResponses)).toContain('304');
+    expect((readResponses['304'] as JsonObject).content).toBeUndefined();
+    expect(read['x-error-codes']).toEqual(
+      expect.arrayContaining([...contracts.PER_VAULT_DOC_READ_ERROR_CODES]),
+    );
+
+    // The legacy account-singleton vault emits the same four statuses.
+    const legacy = paths['/vault'] as JsonObject;
+    expect(Object.keys((legacy.get as JsonObject).responses as JsonObject)).toContain('304');
+    const legacyWriteResponses = (legacy.put as JsonObject).responses as JsonObject;
+    for (const status of ['412', '413', '428']) {
+      expect(Object.keys(legacyWriteResponses), `PUT /vault documents ${status}`).toContain(status);
+    }
+    expect((legacy.put as JsonObject)['x-error-codes']).toEqual(
+      expect.arrayContaining([
+        contracts.VAULT_ERROR_CODES.preconditionRequired,
+        contracts.VAULT_ERROR_CODES.preconditionFailed,
+        contracts.VAULT_ERROR_CODES.tooLarge,
+      ]),
+    );
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI
