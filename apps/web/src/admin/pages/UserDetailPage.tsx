@@ -369,30 +369,42 @@ export function supportSnapshot(
   support: AdminUserSupportResponse | null,
   t: TranslateFn,
 ): string {
+  // Every label resolves through the catalog. This renders ON SCREEN inside
+  // translated modal chrome, so an English `key: value` dump under a German
+  // heading is simply incoherent — and the literal-copy AST guard cannot see
+  // inside a string builder, which is why `UserDetailPage.test.tsx` asserts
+  // directly that no English label survives under DE.
+  const field = (key: string) => t(`admin.userDetail.snapshot.fields.${key}`);
+  const yesNo = (value: boolean) => (value ? t('common.yes') : t('common.no'));
   const lines = [
-    `${t('admin.userDetail.snapshot.heading')}`,
-    `username: ${user.username}`,
-    `email: ${user.email}`,
-    `id: ${user.id}`,
-    `kind: ${user.role}`,
-    `state: ${user.status}`,
-    `must change password: ${user.mustChangePassword ? 'yes' : 'no'}`,
-    `chat banned: ${user.chatBanned ? 'yes' : 'no'}`,
-    `created: ${formatDateTime(user.createdAt)}`,
-    `last login: ${user.lastLoginAt ? formatDateTime(user.lastLoginAt) : '—'}`,
-    `privacy mode: ${user.privacyMode ?? 'normal'}`,
+    t('admin.userDetail.snapshot.heading'),
+    `${field('username')}: ${user.username}`,
+    `${field('email')}: ${user.email}`,
+    `${field('id')}: ${user.id}`,
+    `${field('kind')}: ${user.role}`,
+    `${field('state')}: ${user.status}`,
+    `${field('mustChangePassword')}: ${yesNo(user.mustChangePassword)}`,
+    `${field('chatBanned')}: ${yesNo(user.chatBanned)}`,
+    `${field('created')}: ${formatDateTime(user.createdAt)}`,
+    `${field('lastLogin')}: ${user.lastLoginAt ? formatDateTime(user.lastLoginAt) : '—'}`,
+    // The enum VALUES stay verbatim: `paranoid` / `normal` are what the wire and
+    // the database say, and a support paste is worth more when it quotes them.
+    `${field('privacyMode')}: ${user.privacyMode ?? 'normal'}`,
   ];
   if (user.paranoid) {
     lines.push(
-      `vault media: ${user.paranoid.mediaSet.join(' + ')}`,
-      `vault version: ${user.paranoid.vault?.version ?? '—'}`,
-      `vault size: ${user.paranoid.vault ? `${user.paranoid.vault.sizeBytes} B` : '—'}`,
-      `vault updated: ${user.paranoid.vault ? formatDateTime(user.paranoid.vault.updatedAt) : '—'}`,
-      `vault history entries: ${user.paranoid.historyCount}`,
+      `${field('vaultMedia')}: ${user.paranoid.mediaSet.join(' + ')}`,
+      `${field('vaultVersion')}: ${user.paranoid.vault?.version ?? '—'}`,
+      `${field('vaultSize')}: ${user.paranoid.vault ? `${user.paranoid.vault.sizeBytes} B` : '—'}`,
+      `${field('vaultUpdated')}: ${
+        user.paranoid.vault ? formatDateTime(user.paranoid.vault.updatedAt) : '—'
+      }`,
+      `${field('vaultHistory')}: ${user.paranoid.historyCount}`,
     );
   }
   if (support) {
-    lines.push(`support submissions: ${support.total} (${support.openCount} open)`);
+    const open = t('admin.userDetail.snapshot.fields.openSuffix', { count: support.openCount });
+    lines.push(`${field('supportSubmissions')}: ${support.total} (${open})`);
   }
   return lines.join('\n');
 }

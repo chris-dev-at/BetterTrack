@@ -626,7 +626,20 @@ export const adminUserNotes = pgTable(
     body: text('body').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('admin_user_notes_user_created_idx').on(t.userId, t.createdAt)],
+  (t) => [
+    index('admin_user_notes_user_created_idx').on(t.userId, t.createdAt),
+    // Declared here as well as in the migration: drizzle-kit generates from
+    // THIS file, so a constraint that lives only in SQL is one the next
+    // `generate` silently proposes dropping. Mirrors `feedback_messages`
+    // (#1339) — the zod contract already rejects blank and over-long bodies,
+    // and the column repeats both so no future caller can write unbounded
+    // operator prose past the route. The 2000 is a literal for the same reason
+    // `feedback_messages` uses one — schema.ts holds no runtime contract import
+    // — and `adminPeople.test.ts` pins it to ADMIN_USER_NOTE_MAX_LENGTH so the
+    // two cannot drift apart silently.
+    check('admin_user_notes_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
+    check('admin_user_notes_body_length', sql`char_length(${t.body}) <= 2000`),
+  ],
 );
 
 /**

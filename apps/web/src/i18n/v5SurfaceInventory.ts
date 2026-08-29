@@ -2074,6 +2074,12 @@ export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
   'admin/pages/AnnouncementsPage.tsx': 36,
   'admin/pages/AuditPage.tsx': 13,
   'admin/pages/EmailPage.tsx': 21,
-  'admin/pages/InvitesPage.tsx': 14,
-  'admin/pages/UserDetailPage.tsx': 46,
+  // 14 → 0 and 46 → 0 with the admin rebuild W2 (#1406). Both pages were
+  // rewritten and are now fully catalogued in EN + DE — InvitesPage was the
+  // console's last untranslated surface. The budgets are dropped to zero rather
+  // than deleted so the ratchet still names them: a single hardcoded string
+  // reappearing in either file now fails the suite instead of quietly
+  // re-spending a budget nobody is watching.
+  'admin/pages/InvitesPage.tsx': 0,
+  'admin/pages/UserDetailPage.tsx': 0,
 };

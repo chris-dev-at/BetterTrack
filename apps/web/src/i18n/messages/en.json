@@ -4330,7 +4330,6 @@
       "unsaved": "Unsaved changes",
       "registration": {
         "title": "Registration mode",
-        "description": "How new accounts come to exist. Switching a mode takes effect immediately.",
         "modes": {
           "closed": {
             "title": "Closed",
@@ -4377,8 +4376,6 @@
           "expired": "expired",
           "revoked": "revoked"
         },
-        "uses": "{{used}}/{{max}} uses",
-        "expires": "expires {{date}}",
         "noExpiry": "no expiry",
         "empty": "No registration tokens yet."
       },
@@ -4387,7 +4384,6 @@
         "description": "Pending self-serve registrations awaiting review.",
         "inactive": "New applications only arrive while the mode above is Approval.",
         "loading": "Loading requests…",
-        "requested": "requested {{date}}",
         "approve": "Approve",
         "reject": "Reject",
         "empty": "No pending registrations."
@@ -5309,7 +5305,26 @@
         "title": "Support snapshot",
         "description": "Everything on this page that is safe to paste into a support conversation. It never contains holdings, decrypted content or storage identifiers, because this page never receives any.",
         "label": "Snapshot",
-        "heading": "BetterTrack support snapshot"
+        "heading": "BetterTrack support snapshot",
+        "fields": {
+          "username": "username",
+          "email": "email",
+          "id": "id",
+          "kind": "kind",
+          "state": "state",
+          "mustChangePassword": "must change password",
+          "chatBanned": "chat banned",
+          "created": "created",
+          "lastLogin": "last login",
+          "privacyMode": "privacy mode",
+          "vaultMedia": "vault media",
+          "vaultVersion": "vault version",
+          "vaultSize": "vault size",
+          "vaultUpdated": "vault updated",
+          "vaultHistory": "vault history entries",
+          "supportSubmissions": "support submissions",
+          "openSuffix": "{{count}} open"
+        }
       },
       "deleteTitle": "Delete account",
       "deleteAction": "Delete account"

@@ -339,10 +339,26 @@ test('the Access tab is read-only — no session, key or grant revoke', async ()
   expect(screen.getByText('API key “home dashboard”')).toBeInTheDocument();
   expect(screen.getByText('google')).toBeInTheDocument();
 
-  // No revoke, no sign-out-everywhere: the server has no such admin route, and
-  // offering a control that cannot work is worse than not offering it.
-  expect(screen.queryByRole('button', { name: /revoke/i })).not.toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: /sign out/i })).not.toBeInTheDocument();
+  // STRUCTURAL, not label-coupled. Matching /revoke/i and /sign out/i passed
+  // happily with a working "Terminate all sessions" button sitting on the tab,
+  // which is exactly the capability the #1406 kill list says must not exist.
+  // So: the loaded Access panel must contain NO actionable control of any kind.
+  // Any button, link, input, checkbox or form added here fails this test
+  // whatever it is called, and shipping one becomes a deliberate act.
+  const panel = screen.getByRole('tabpanel');
+  for (const role of ['button', 'link', 'checkbox', 'textbox', 'combobox', 'radio', 'switch']) {
+    expect(
+      within(panel)
+        .queryAllByRole(role)
+        .map((el) => el.textContent?.trim() || el.outerHTML),
+      `the read-only Access tab must expose no ${role}`,
+    ).toEqual([]);
+  }
+  expect(panel.querySelectorAll('form, input, select, textarea, button, a')).toHaveLength(0);
+
+  // Control: the guard is scoped to the panel, not the whole page — the header's
+  // account actions still exist, so an empty-page false positive cannot pass it.
+  expect(screen.getByRole('button', { name: 'Reset password' })).toBeInTheDocument();
 });
 
 test('the Sharing tab reports counts and never an inventory', async () => {
@@ -465,6 +481,64 @@ test('the save button stays disabled for a blank note', async () => {
 });
 
 // ── Support snapshot ────────────────────────────────────────────────────────
+
+// The literal-copy AST guard cannot see inside a string builder, so the snapshot
+// is the one surface where a hardcoded English label could ship unnoticed under
+// German chrome. This is that guard, done behaviourally.
+test('the support snapshot is fully localized — no English labels survive under DE', async () => {
+  vi.mocked(api.getUser).mockResolvedValue({
+    ...jane,
+    privacyMode: 'paranoid',
+    paranoid: {
+      mediaSet: ['server'],
+      vault: { version: 14, sizeBytes: 63897, updatedAt: '2026-08-20T10:00:00.000Z' },
+      historyCount: 13,
+    },
+  });
+  vi.mocked(api.getUserSupport).mockResolvedValue({ items: [], total: 2, openCount: 1 });
+
+  const user = userEvent.setup();
+  renderPage('de');
+  await user.click(await screen.findByRole('button', { name: 'Support-Auszug kopieren' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Support-Auszug' });
+  const body = dialog.querySelector('pre')?.textContent ?? '';
+  expect(body).not.toBe('');
+
+  // Every English label the builder used to hardcode, plus the yes/no values.
+  const ENGLISH_LABELS = [
+    'username:',
+    'email:',
+    'kind:',
+    'state:',
+    'must change password:',
+    'chat banned:',
+    'created:',
+    'last login:',
+    'privacy mode:',
+    'vault media:',
+    'vault version:',
+    'vault size:',
+    'vault updated:',
+    'vault history entries:',
+    'support submissions:',
+  ];
+  for (const label of ENGLISH_LABELS) {
+    expect(body, `snapshot still ships the English label "${label}" under DE`).not.toContain(label);
+  }
+  expect(body).not.toMatch(/:\s(yes|no)$/m);
+  expect(body).not.toContain(' open)');
+
+  // ...and the German ones are actually there, so "no English" cannot be
+  // satisfied by an empty or truncated dump.
+  expect(body).toContain('Benutzername: jane');
+  expect(body).toContain('Passwort muss geändert werden: Nein');
+  expect(body).toContain('Tresor-Version: 14');
+  expect(body).toContain('Support-Anfragen: 2 (1 offen)');
+
+  // The enum values stay verbatim on purpose — the wire says `paranoid`.
+  expect(body).toContain('Privatsphäre-Modus: paranoid');
+});
 
 test('the support snapshot carries account facts and no vault contents', async () => {
   vi.mocked(api.getUser).mockResolvedValue({

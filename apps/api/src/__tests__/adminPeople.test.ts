@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
@@ -18,6 +20,14 @@ import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+/**
+ * Recognizable vault bytes. The paranoid-leak test seeds a REAL vault row with
+ * these so its "nothing from the vault travels" assertions have something to
+ * catch — a fixture with no vault makes that check unable to fail.
+ */
+const VAULT_MARKER = 'PARANOID-CIPHERTEXT-MUST-NOT-LEAK';
+const VAULT_CIPHERTEXT = Buffer.from(VAULT_MARKER, 'utf8');
 
 let harness: TestHarness;
 
@@ -142,6 +152,20 @@ describe('GET /admin/users — filter, sort, page (#1406 W2)', () => {
       .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server'] })
       .where(eq(schema.users.id, paranoid.id));
 
+    // A REAL vault row, so there is genuinely something to leak. Without this
+    // the "no ciphertext in the response" assertion below is vacuous: an
+    // endpoint that dumps the whole envelope would still pass, because the
+    // envelope would not exist. The marker is a recognizable byte string so the
+    // check fails on the bytes themselves, not on a field name.
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: paranoid.id,
+      version: 14,
+      formatVersion: 1,
+      sizeBytes: VAULT_CIPHERTEXT.length,
+      blob: VAULT_CIPHERTEXT,
+      retirementProofPublicKey: 'RETIREMENT-PUBKEY-MUST-NOT-LEAK',
+    });
+
     const encryptedRes = await agent.get('/api/v1/admin/users?privacyMode=paranoid');
     const encrypted = adminUserListResponseSchema.parse(encryptedRes.body);
     expect(encrypted.users.map((u) => u.username)).toEqual(['paranoid-one']);
@@ -153,7 +177,25 @@ describe('GET /admin/users — filter, sort, page (#1406 W2)', () => {
     // check unable to catch a leak the route actually shipped.
     expect(encrypted.users[0]?.privacyMode).toBe('paranoid');
     expect(encrypted.users[0]?.paranoid?.mediaSet).toEqual(['server']);
+    // The vault EXISTS and its metadata is reported...
+    expect(encrypted.users[0]?.paranoid?.vault).toMatchObject({
+      version: 14,
+      sizeBytes: VAULT_CIPHERTEXT.length,
+    });
+
+    // ...and none of its bytes are anywhere in the response, in any encoding a
+    // careless serializer might reach for.
     const rawBody = JSON.stringify(encryptedRes.body);
+    for (const [encoding, leak] of [
+      ['utf8', VAULT_MARKER],
+      ['base64', VAULT_CIPHERTEXT.toString('base64')],
+      ['hex', VAULT_CIPHERTEXT.toString('hex')],
+      ['json-bytes', JSON.stringify([...VAULT_CIPHERTEXT].slice(0, 8)).slice(1, -1)],
+      ['retirement-key', 'RETIREMENT-PUBKEY-MUST-NOT-LEAK'],
+    ] as const) {
+      expect(rawBody, `vault ciphertext leaked as ${encoding}`).not.toContain(leak);
+    }
+    // Field names too, so a renamed-but-present column is still caught.
     for (const forbidden of ['blob', 'ciphertext', 'passwordHash', 'driveFileId', 'wrappedKey']) {
       expect(rawBody).not.toContain(forbidden);
     }
@@ -415,6 +457,18 @@ describe('Operator notes (#1406 W2) — the one additive write', () => {
       (await agent.get(`/api/v1/admin/users/${a.id}/notes`)).body,
     );
     expect(aNotes.notes.map((n) => n.id)).toEqual([note.id]);
+  });
+
+  // The DB CHECK is a literal 2000 (schema.ts holds no runtime contract import,
+  // matching `feedback_messages`). This is the pin that stops the literal and
+  // the contract constant from drifting apart in silence.
+  it('keeps the contract cap and the column CHECK in lockstep', async () => {
+    expect(ADMIN_USER_NOTE_MAX_LENGTH).toBe(2000);
+
+    const schemaSource = readFileSync(new URL('../data/schema.ts', import.meta.url), 'utf8');
+    expect(schemaSource).toContain(
+      `check('admin_user_notes_body_length', sql\`char_length(\${t.body}) <= ${ADMIN_USER_NOTE_MAX_LENGTH}\`)`,
+    );
   });
 
   it('rejects a blank note and one past the length cap', async () => {

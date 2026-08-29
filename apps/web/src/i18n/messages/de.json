@@ -4330,7 +4330,6 @@
       "unsaved": "Ungespeicherte Änderungen",
       "registration": {
         "title": "Registrierungsmodus",
-        "description": "Legt fest, wie neue Konten entstehen. Ein Wechsel gilt sofort.",
         "modes": {
           "closed": {
             "title": "Geschlossen",
@@ -4377,8 +4376,6 @@
           "expired": "abgelaufen",
           "revoked": "widerrufen"
         },
-        "uses": "{{used}}/{{max}} Nutzungen",
-        "expires": "läuft am {{date}} ab",
         "noExpiry": "läuft nicht ab",
         "empty": "Noch keine Registrierungstoken."
       },
@@ -4387,7 +4384,6 @@
         "description": "Selbstständige Registrierungen, die auf eine Prüfung warten.",
         "inactive": "Neue Anträge kommen nur an, solange oben Freigabe ausgewählt ist.",
         "loading": "Anträge werden geladen…",
-        "requested": "beantragt {{date}}",
         "approve": "Freigeben",
         "reject": "Ablehnen",
         "empty": "Keine ausstehenden Registrierungen."
@@ -5129,7 +5125,7 @@
         "expires": "Läuft ab"
       },
       "viaPassword": "Passwort",
-      "decisionEffect": "Beim Freigeben wird das Konto erstellt und die Person benachrichtigt. Beim Ablehnen wird der Antrag verworfen und ebenfalls benachrichtigt. Beides wird protokolliert.",
+      "decisionEffect": "Beim Freigeben wird das Konto erstellt und die Person benachrichtigt. Beim Ablehnen wird der Antrag verworfen und die Person ebenfalls benachrichtigt. Beides wird protokolliert.",
       "tokenUrlOnce": "Die Registrierungs-URL wird nur einmal bei der Erstellung angezeigt. Gespeichert wird nur ihr Hash."
     },
     "backup": {
@@ -5192,7 +5188,7 @@
         "summary": "Überblick",
         "access": "Zugang",
         "support": "Support",
-        "sharing": "Freigaben",
+        "sharing": "Geteiltes",
         "activity": "Aktivität",
         "notes": "Notizen"
       },
@@ -5265,17 +5261,17 @@
         "archived": "Archiviert"
       },
       "sharing": {
-        "loading": "Freigaben werden geladen …",
+        "loading": "Geteiltes wird geladen …",
         "boundary": "Nur Zahlen. Admins können die Portfolios oder Watchlists einer Person nicht ansehen — das ist eine bewusste Datenschutz-Entscheidung, kein fehlender Bildschirm.",
         "portfolios": "Portfolios",
         "sharedPortfolios": "Mit Freunden geteilt",
-        "audiences": "Freigabe-Zielgruppen",
-        "activeLinks": "Aktive Freigabelinks",
+        "audiences": "Geteilt mit",
+        "activeLinks": "Aktive Teilen-Links",
         "revokedLinks": "{{count}} widerrufen",
         "friends": "Freunde",
         "followers": "Follower",
         "following": "Folgt",
-        "inventoryDeferred": "Eine Freigabe-Übersicht pro Objekt samt Widerruf mit einem Klick ist bewusst zurückgestellt; diese Seite beantwortet, wie sichtbar das Konto ist — nicht, was es enthält."
+        "inventoryDeferred": "Eine Übersicht des Geteilten pro Objekt samt Widerruf mit einem Klick ist bewusst zurückgestellt; diese Seite beantwortet, wie sichtbar das Konto ist — nicht, was es enthält."
       },
       "activity": {
         "audit": "Audit-Verlauf",
@@ -5307,9 +5303,28 @@
       },
       "snapshot": {
         "title": "Support-Auszug",
-        "description": "Alles auf dieser Seite, das gefahrlos in eine Support-Unterhaltung kopiert werden kann. Er enthält nie Bestände, entschlüsselte Inhalte oder Speicher-Kennungen, weil diese Seite sie nie erhält.",
+        "description": "Alles auf dieser Seite, was gefahrlos in eine Support-Unterhaltung kopiert werden kann. Der Auszug enthält nie Bestände, entschlüsselte Inhalte oder Speicher-Kennungen, weil diese Seite sie nie erhält.",
         "label": "Auszug",
-        "heading": "BetterTrack Support-Auszug"
+        "heading": "BetterTrack Support-Auszug",
+        "fields": {
+          "username": "Benutzername",
+          "email": "E-Mail",
+          "id": "ID",
+          "kind": "Kontoart",
+          "state": "Zustand",
+          "mustChangePassword": "Passwort muss geändert werden",
+          "chatBanned": "Chat gesperrt",
+          "created": "erstellt",
+          "lastLogin": "letzte Anmeldung",
+          "privacyMode": "Privatsphäre-Modus",
+          "vaultMedia": "Tresor-Speicherorte",
+          "vaultVersion": "Tresor-Version",
+          "vaultSize": "Tresor-Größe",
+          "vaultUpdated": "Tresor aktualisiert",
+          "vaultHistory": "Tresor-Verlaufseinträge",
+          "supportSubmissions": "Support-Anfragen",
+          "openSuffix": "{{count}} offen"
+        }
       },
       "deleteTitle": "Konto löschen",
       "deleteAction": "Konto löschen"
