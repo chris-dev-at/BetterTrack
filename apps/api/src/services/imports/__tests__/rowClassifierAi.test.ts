@@ -252,6 +252,15 @@ describe('defensive reply parsing', () => {
     expect(parsed.get(2)).toBe('deposit');
   });
 
+  it('discards an extended token instead of coercing it onto a real kind', () => {
+    for (const label of ['buy_now', 'buyX', 'sellish', 'BUY2']) {
+      expect(parseRowKindBatchReply(`0=${label}`, VALID).size, label).toBe(0);
+    }
+    // …and the plain tokens they extend still parse correctly.
+    expect(parseRowKindBatchReply('0=buy\n1=SELL', VALID).get(0)).toBe('buy');
+    expect(parseRowKindBatchReply('0=buy\n1=SELL', VALID).get(1)).toBe('sell');
+  });
+
   it('keeps the first line per index when the model repeats itself', () => {
     const parsed = parseRowKindBatchReply('0=buy\n0=sell', VALID);
     expect(parsed.get(0)).toBe('buy');
