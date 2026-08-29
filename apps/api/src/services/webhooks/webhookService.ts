@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import {
   WEBHOOK_MAX_SUBSCRIPTIONS,
   WEBHOOK_SECRET_PREFIX,
+  WEBHOOK_URL_BLOCKED_CODE,
   type CreateWebhookSubscriptionResponse,
   type WebhookDelivery,
   type WebhookDisabledReason,
@@ -19,6 +20,12 @@ import type { WebhookDeliveryRow, WebhookSubscriptionRow } from '../../data/sche
 import { badRequest, notFound } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { encryptSecret } from '../crypto/secretBox';
+import {
+  WEBHOOK_RECEIVER_URL_POLICY,
+  assertSafeOutboundUrl,
+  isOutboundPolicyRefusal,
+  type OutboundUrlResolver,
+} from '../security/outboundUrlGuard';
 
 /**
  * Outbound-webhook management (§13.5 V5-P10, issue 1/2). Owns subscription CRUD:
@@ -36,6 +43,8 @@ export interface WebhookServiceDeps {
   audit: AuditService;
   /** 32-byte secretBox key (shared with TOTP/Discord — `config.twoFactor.encryptionKey`). */
   encryptionKey: Buffer;
+  /** DNS seam for the outbound guard (tests); defaults to the system resolver. */
+  dnsResolver?: OutboundUrlResolver;
 }
 
 export interface CreateWebhookInput {
@@ -94,7 +103,29 @@ function mintSecret(): string {
 }
 
 export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
-  const { subscriptions, deliveries, audit, encryptionKey } = deps;
+  const { subscriptions, deliveries, audit, encryptionKey, dnsResolver } = deps;
+
+  /**
+   * SSRF guard on a user-supplied destination (§8 "Outbound safety"). Refuses
+   * loopback/link-local/metadata/unspecified/broadcast and every other
+   * non-routable range while keeping plain http and RFC1918 LAN receivers —
+   * the owner-recorded webhook contract.
+   *
+   * A hostname that does not resolve right now is NOT a refusal: a self-hosted
+   * receiver may get its DNS record later, and the dispatcher re-runs this same
+   * guard on every delivery attempt, so nothing is ever sent unchecked.
+   */
+  async function assertAllowedDestination(url: string): Promise<void> {
+    try {
+      await assertSafeOutboundUrl(url, { ...WEBHOOK_RECEIVER_URL_POLICY, resolver: dnsResolver });
+    } catch (err) {
+      if (!isOutboundPolicyRefusal(err)) return;
+      throw badRequest(
+        'That webhook URL is not allowed: it points at a loopback, link-local or otherwise non-routable address. Use a publicly reachable or private LAN receiver.',
+        WEBHOOK_URL_BLOCKED_CODE,
+      );
+    }
+  }
 
   async function requireOwned(userId: string, id: string): Promise<WebhookSubscriptionRow> {
     const row = await subscriptions.findByIdForUser(userId, id);
@@ -120,6 +151,7 @@ export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
           'WEBHOOK_LIMIT_REACHED',
         );
       }
+      await assertAllowedDestination(url);
       const secret = mintSecret();
       const row = await subscriptions.create({
         userId,
@@ -144,7 +176,10 @@ export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
       const current = await requireOwned(userId, id);
 
       const patch: UpdateWebhookSubscriptionPatch = {};
-      if (url !== undefined) patch.url = url;
+      if (url !== undefined) {
+        await assertAllowedDestination(url);
+        patch.url = url;
+      }
       if (description !== undefined) patch.description = description;
       if (eventTypes !== undefined) patch.eventTypes = eventTypes;
       if (enabled !== undefined && enabled !== current.enabled) {
