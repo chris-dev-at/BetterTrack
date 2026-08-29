@@ -68,6 +68,33 @@ const VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION = {
     'portfolio cannot be restored.',
 };
 
+// Same generator gap, fourth instance: the vault import-BATCH `understanding`
+// field is a `.catch(null)`, so a malformed description of a staging preview can
+// never make a portfolio unrestorable. Reachable from
+// `PortfolioVaultMoveOutRequest`, so without a hint `/openapi.json` and `/docs`
+// 500 for the whole API.
+const VAULT_IMPORT_BATCH_UNDERSTANDING_DOCUMENTATION = {
+  type: 'object' as const,
+  nullable: true,
+  description:
+    'What the generic import pipeline understood about an uploaded file (#964): the per-column ' +
+    'labels with their evidence, the headers it could not name, and the sniffed delimiter, ' +
+    'encoding and locales. Tolerant by design: a value that does not match the strict shape is ' +
+    'accepted and read back as null rather than rejecting the batch, because a description of a ' +
+    'short-lived staging preview must never be the reason a portfolio cannot be restored.',
+};
+
+// Same generator gap, fifth instance: the vault import-row `resolvedBy` field is
+// a `.catch(null)` for the same reason as its siblings.
+const VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION = {
+  type: 'string' as const,
+  nullable: true,
+  description:
+    "Provenance for a staged import row's resolved asset (#964): absent when the pipeline " +
+    'matched the instrument exactly, "user" when a person pinned it in the wizard. Tolerant by ' +
+    'design: an unrecognized value is read back as null rather than rejecting the row.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -86,6 +113,14 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowRuleTagIdsSchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_RULE_TAG_IDS_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportBatchUnderstandingSchema as unknown as HintableSchema,
+    VAULT_IMPORT_BATCH_UNDERSTANDING_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowResolvedBySchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION,
   ],
 ];
 
@@ -431,6 +466,7 @@ const componentSchemas = {
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
   ImportPreviewResponse: contracts.importPreviewResponseSchema,
   ApplyImportRequest: contracts.applyImportRequestSchema,
+  ResolveImportRowRequest: contracts.resolveImportRowRequestSchema,
   ApplyImportResponse: contracts.applyImportResponseSchema,
   CreateIdeaRequest: contracts.createIdeaRequestSchema,
   UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
@@ -3480,6 +3516,17 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.ApplyImportResponse,
     idempotent: true,
+  },
+  {
+    method: 'patch',
+    path: '/imports/{batchId}/rows/{rowId}',
+    tag: 'Imports',
+    summary:
+      "Pin an unresolved staged row to an asset the USER picked (#964): the row flips to mapped (or duplicate, if the pin collides with data already recorded), is stamped resolvedBy=user, and the refreshed preview is returned. The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted.",
+    params: contracts.importRowIdParamSchema,
+    body: R.ResolveImportRowRequest,
+    status: 200,
+    response: R.ImportPreviewResponse,
   },
   {
     method: 'delete',

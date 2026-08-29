@@ -91,8 +91,6 @@ async function upload(
   return importPreviewResponseSchema.parse(res.body);
 }
 
-const bytes = (text: string) => new TextEncoder().encode(text);
-
 describe('the wire vocabulary and the mapper vocabulary cannot drift', () => {
   it('pins contracts IMPORT_MAPPABLE_FIELDS to columnMapping MAPPABLE_FIELDS', () => {
     // The API list is the AI prompt's security boundary; the contract list is
