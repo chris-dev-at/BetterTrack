@@ -1,4 +1,8 @@
-import type { ImportRowCandidate } from '@bettertrack/contracts';
+import type {
+  ImportRowCandidate,
+  ImportRowResolvedBy,
+  ImportUnderstanding,
+} from '@bettertrack/contracts';
 import { sql, type SQL } from 'drizzle-orm';
 import {
   bigint,
@@ -594,6 +598,48 @@ export const auditLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('audit_log_created_at_idx').on(t.createdAt)],
+);
+
+/**
+ * Operator notes on an account (#1406 W2, People 360 "Notes" tab).
+ *
+ * Admin-private annotations — "prefers German copy", "reported the dividend
+ * rounding twice" — that give the next operator the context the audit log
+ * cannot carry. They are never exposed on any user-facing route, drive no
+ * behaviour anywhere in the product, and every write is audited with the
+ * operator as actor, so the table is purely additive: deleting all of it would
+ * leave every account byte-identical.
+ *
+ * `user_id` cascades (a deleted account takes its notes with it — they are
+ * about a person who no longer exists), while `author_id` set-nulls the way
+ * {@link auditLog.actorId} does, so a note survives the departure of the admin
+ * who wrote it and the trail stays readable.
+ */
+export const adminUserNotes = pgTable(
+  'admin_user_notes',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id').references(() => users.id, { onDelete: 'set null' }),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('admin_user_notes_user_created_idx').on(t.userId, t.createdAt),
+    // Declared here as well as in the migration: drizzle-kit generates from
+    // THIS file, so a constraint that lives only in SQL is one the next
+    // `generate` silently proposes dropping. Mirrors `feedback_messages`
+    // (#1339) — the zod contract already rejects blank and over-long bodies,
+    // and the column repeats both so no future caller can write unbounded
+    // operator prose past the route. The 2000 is a literal for the same reason
+    // `feedback_messages` uses one — schema.ts holds no runtime contract import
+    // — and `adminPeople.test.ts` pins it to ADMIN_USER_NOTE_MAX_LENGTH so the
+    // two cannot drift apart silently.
+    check('admin_user_notes_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
+    check('admin_user_notes_body_length', sql`char_length(${t.body}) <= 2000`),
+  ],
 );
 
 /**
@@ -3125,6 +3171,18 @@ export const importBatches = pgTable(
     }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp('applied_at', { withTimezone: true }),
+    /**
+     * What the GENERIC pipeline worked out about this file (#964, §16
+     * 2026-07-31): the per-column labels with their evidence and review flags,
+     * the headers nothing could name, and the sniffed delimiter/encoding/
+     * locales. Null for every batch a broker mapper claimed — that path labels
+     * no columns — and for every batch staged before this change.
+     *
+     * Persisted rather than recomputed so `GET /imports/:batchId` re-reads the
+     * same understanding the upload returned: the file itself is never stored,
+     * so there would otherwise be nothing to recompute it from.
+     */
+    understanding: jsonb('understanding').$type<ImportUnderstanding>(),
   },
   (t) => [index('import_batches_owner_idx').on(t.ownerId)],
 );
@@ -3176,6 +3234,13 @@ export const importRows = pgTable(
      * wherever no rule matched.
      */
     ruleTagIds: jsonb('rule_tag_ids').$type<string[]>(),
+    /**
+     * Provenance for `asset_id` (#964, §16 2026-07-31 point 4). Null means the
+     * staging pipeline resolved the instrument by EXACT identity; `'user'`
+     * means a person pinned it in the wizard. Never `'ai'` — no model mints an
+     * asset id anywhere in this subsystem.
+     */
+    resolvedBy: text('resolved_by').$type<ImportRowResolvedBy>(),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );

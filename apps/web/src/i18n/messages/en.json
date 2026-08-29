@@ -2088,7 +2088,7 @@
     "import": {
       "title": "Broker CSV import",
       "intro": "Upload your broker's CSV export to bring existing trades, dividends and cash movements into this portfolio. Rows are staged and previewed first — nothing is recorded until you confirm. Broker accounts are never connected directly.",
-      "uploadTitle": "1. Choose file & broker",
+      "uploadTitle": "Choose file & broker",
       "fileLabel": "CSV export",
       "brokerLabel": "Broker",
       "brokerAuto": "Detect automatically",
@@ -2116,7 +2116,8 @@
         "quantity": "Quantity",
         "price": "Price",
         "amount": "Amount (EUR)",
-        "status": "Status"
+        "status": "Status",
+        "tags": "Tags"
       },
       "kind": {
         "buy": "Buy",
@@ -2148,7 +2149,80 @@
         "skipped_error": "Skipped (error)",
         "failed": "Failed"
       },
-      "startOver": "Import another file"
+      "startOver": "Import another file",
+      "resolveFailed": "That row couldn't be pinned to the asset. Please try again.",
+      "pinnedByYou": "Pinned by you",
+      "unknownTag": "Deleted tag",
+      "step": {
+        "file": "File",
+        "understood": "Understood",
+        "review": "Review",
+        "confirm": "Confirm"
+      },
+      "field": {
+        "date": "Date",
+        "symbol": "Symbol",
+        "isin": "ISIN",
+        "description": "Description",
+        "quantity": "Quantity",
+        "price": "Price",
+        "amount": "Amount",
+        "fee": "Fee",
+        "tax": "Tax",
+        "currency": "Currency",
+        "kindHint": "Transaction type",
+        "ignore": "Not imported"
+      },
+      "numberLocale": {
+        "de": "1.234,56",
+        "en": "1,234.56"
+      },
+      "dateLocale": {
+        "iso": "YYYY-MM-DD",
+        "de": "DD.MM.YYYY",
+        "us": "MM/DD/YYYY",
+        "eu-slash": "DD/MM/YYYY"
+      },
+      "understanding": {
+        "title": "What we read from {{filename}}",
+        "delimiter": "Separator: {{delimiter}}",
+        "encoding": "Encoding: {{encoding}}",
+        "numbers": "Numbers: {{locale}}",
+        "dates": "Dates: {{locale}}",
+        "ambiguousDates": "This file's dates could be read either way — 01/02 is both 1 February and 2 January. Nothing will be imported until you re-export with ISO dates, or import through a specific broker.",
+        "column": "Column",
+        "readAs": "Read as",
+        "confidence": "Certainty",
+        "evidence": "Why",
+        "needsReview": "Check this",
+        "confident": "Confident",
+        "alternative": "Close call against {{header}}.",
+        "unmapped": "Columns we couldn't name, and therefore ignored: {{headers}}",
+        "proposalsTitle": "Suggestions we did not use",
+        "proposalsBody": "For the columns above that we couldn't name, an assistant offered a guess. Guesses are never applied — no value was read from these columns, and the import behaves exactly as if this section were empty. Re-export the file with clearer headers, or pick a broker, if one of these looks right.",
+        "suggestionOnly": "Suggestion — not applied",
+        "wouldDisplace": "would take over from {{header}}"
+      },
+      "review": {
+        "title": "What still needs you",
+        "unresolvedBody": "We found these instruments in your file but not in the catalog, so they're excluded from the import. Pick the right one and the row joins the import — nothing is matched for you.",
+        "skippedBody": "We read these rows but won't book them on a guess — each says what it needs below. They stay out of the import; nothing disappears silently.",
+        "candidatesTitle": "Close matches from the catalog:",
+        "noCandidates": "The catalog returned nothing close. Search for it below.",
+        "searchLabel": "Search the catalog",
+        "searchHint": "You can also pick a custom asset you created yourself.",
+        "searchPlaceholder": "Name, symbol or ISIN",
+        "searchEmpty": "Nothing found for that search.",
+        "pick": "Use this",
+        "noIdentity": "No instrument named",
+        "emptyTitle": "Nothing to review",
+        "emptyBody": "Every row was read and matched. Continue to confirm the import.",
+        "searchFailed": "Couldn't search the catalog just now.",
+        "unresolvedTitleOne": "{{count}} row without a matched instrument",
+        "unresolvedTitleOther": "{{count}} rows without a matched instrument",
+        "skippedTitleOne": "{{count}} row we can't import without you",
+        "skippedTitleOther": "{{count}} rows we can't import without you"
+      }
     },
     "tabs": {
       "overview": "Overview",
@@ -4318,7 +4392,8 @@
         "product": "Product & Comms",
         "securityApi": "Security & API"
       },
-      "registration": "Registration"
+      "registration": "Registration",
+      "testAccounts": "Test accounts"
     },
     "settings": {
       "title": "Settings",
@@ -4329,7 +4404,6 @@
       "unsaved": "Unsaved changes",
       "registration": {
         "title": "Registration mode",
-        "description": "How new accounts come to exist. Switching a mode takes effect immediately.",
         "modes": {
           "closed": {
             "title": "Closed",
@@ -4348,8 +4422,7 @@
             "description": "Automatic registration — anyone can create an account and sign straight in."
           }
         },
-        "manageLead": "The queue and access tokens for this mode live in the People workspace.",
-        "manageLink": "Open Registration"
+        "movedLink": "Change it in People → Registration"
       },
       "features": {
         "title": "Feature toggles",
@@ -4377,8 +4450,6 @@
           "expired": "expired",
           "revoked": "revoked"
         },
-        "uses": "{{used}}/{{max}} uses",
-        "expires": "expires {{date}}",
         "noExpiry": "no expiry",
         "empty": "No registration tokens yet."
       },
@@ -4387,11 +4458,11 @@
         "description": "Pending self-serve registrations awaiting review.",
         "inactive": "New applications only arrive while the mode above is Approval.",
         "loading": "Loading requests…",
-        "requested": "requested {{date}}",
         "approve": "Approve",
         "reject": "Reject",
         "empty": "No pending registrations."
-      }
+      },
+      "saveError": "The setting could not be saved."
     },
     "users": {
       "title": "Users",
@@ -4410,7 +4481,10 @@
       "columns": {
         "user": "User",
         "role": "Role",
-        "status": "Status"
+        "status": "Status",
+        "privacy": "Privacy",
+        "lastLogin": "Last login",
+        "created": "Created"
       },
       "roles": {
         "admin": "admin",
@@ -4433,6 +4507,27 @@
         "disabledOne": "Disabled {{count}} user",
         "disabledOther": "Disabled {{count}} users",
         "skipped": "skipped {{count}}"
+      },
+      "open": "Open",
+      "privacy": {
+        "normal": "Normal",
+        "paranoid": "Paranoid"
+      },
+      "flags": {
+        "mustChangePassword": "Must change password",
+        "chatBanned": "Chat banned"
+      },
+      "filters": {
+        "anyRole": "Any kind",
+        "anyStatus": "Any state",
+        "anyPrivacy": "Any privacy mode",
+        "pageSize": "Per page",
+        "reset": "Clear filters"
+      },
+      "pagination": {
+        "range": "{{first}}–{{last}} of {{total}}",
+        "previous": "Previous",
+        "next": "Next"
       }
     },
     "accountDefaults": {
@@ -5088,13 +5183,24 @@
       "title": "Registration",
       "subtitle": "Who gets in: the approval queue and the access tokens that gate sign-up.",
       "currentMode": "Current registration mode",
-      "changeMode": "Change the mode in Settings",
       "decideError": "Could not update that registration request.",
       "createTokenError": "Could not create the registration token.",
       "revokeTokenError": "Could not revoke the registration token.",
       "modeUnknown": "The active registration mode could not be read, so it is unclear whether this applies right now.",
       "requestGone": "That application is no longer in the queue — someone may have handled it already.",
-      "tokenGone": "That token no longer exists; it may already have been revoked."
+      "tokenGone": "That token no longer exists; it may already have been revoked.",
+      "modeAppliesImmediately": "Applies immediately. No restart, no redeploy.",
+      "modeSaveError": "The registration mode could not be changed.",
+      "columns": {
+        "applicant": "Applicant",
+        "applied": "Applied",
+        "via": "Via",
+        "uses": "Uses",
+        "expires": "Expires"
+      },
+      "viaPassword": "Password",
+      "decisionEffect": "Approving creates the account and emails the applicant. Rejecting drops the application and emails them too. Both are audited.",
+      "tokenUrlOnce": "The registration URL is shown once, on creation. Only its hash is stored."
     },
     "backup": {
       "title": "Backup & restore drill",
@@ -5132,7 +5238,212 @@
         "hourMinute": "{{hours}} h {{minutes}} min",
         "minuteSecond": "{{minutes}} min {{seconds}} s",
         "second": "{{seconds}} s"
+      },
+      "soon": "Soon"
+    },
+    "userDetail": {
+      "back": "← All people",
+      "loading": "Loading this account…",
+      "gone": "This account no longer exists.",
+      "account": "Account",
+      "profile": "Profile",
+      "saveProfile": "Save changes",
+      "profileSaved": "Profile updated.",
+      "disabled": "Account disabled. Its sessions and bearer credentials were revoked.",
+      "enabled": "Account re-enabled.",
+      "chatBanned": "Banned from chat.",
+      "chatUnbanned": "Chat ban lifted.",
+      "testEmailSent": "Test email sent to {{to}}.",
+      "testEmailFailed": "The test email could not be sent.",
+      "moreActions": "More actions",
+      "moreActionsHint": "Disabling is the one suspension there is — it already ends every session and bearer credential.",
+      "tabsLabel": "Account sections",
+      "tabs": {
+        "summary": "Summary",
+        "access": "Access",
+        "support": "Support",
+        "sharing": "Sharing",
+        "activity": "Activity",
+        "notes": "Notes"
+      },
+      "actions": {
+        "snapshot": "Copy support snapshot",
+        "resetPassword": "Reset password",
+        "disable": "Disable",
+        "enable": "Enable",
+        "delete": "Delete",
+        "chatBan": "Ban from chat",
+        "chatUnban": "Lift chat ban",
+        "testEmail": "Send test email",
+        "notYourself": "You cannot do this to your own account."
+      },
+      "resetConfirm": "Generate a new temporary password for {{email}}? Their current password stops working immediately.",
+      "deleteConfirm": "This permanently deletes {{email}} and all of their data, and cannot be undone. Type the username {{username}} to confirm.",
+      "confirmUsername": "Confirm username",
+      "deleting": "Deleting…",
+      "paranoid": {
+        "title": "Paranoid account",
+        "encrypted": "Encrypted",
+        "mode": "Privacy mode",
+        "media": "Media set",
+        "version": "Vault version",
+        "size": "Vault size",
+        "updated": "Vault updated",
+        "history": "History entries",
+        "explainer": "This is every paranoid fact the server holds. The contents are encrypted with a key that never leaves the account's own devices — there is nothing further to show, and no support action can open it.",
+        "normal": "This account stores its data normally. There is no vault."
+      },
+      "access": {
+        "loading": "Loading access…",
+        "readOnlyNotice": "Read-only. Disabling the account is what ends its sessions and bearer credentials; there is no per-session or per-key revoke here yet.",
+        "sessions": "Sessions & devices",
+        "sessionsHint": "Derived from the stored user agent. Session handles are opaque — the session token itself never leaves the server.",
+        "noSessions": "No live sessions.",
+        "device": "Device",
+        "lastSeen": "Last seen",
+        "started": "Started",
+        "persistence": "Type",
+        "persistent": "Stay signed in",
+        "ephemeral": "Ephemeral",
+        "credentials": "Keys & connected apps",
+        "noCredentials": "No API keys and no connected apps.",
+        "credential": "Credential",
+        "scopes": "Scopes",
+        "lastUsed": "Last used",
+        "revoked": "Revoked",
+        "apiKey": "API key “{{name}}”",
+        "oauthGrant": "App · {{name}}",
+        "firstParty": "First-party",
+        "identities": "Linked identities",
+        "noIdentities": "No external identity is linked to this account.",
+        "verified": "Email verified",
+        "unverified": "Email unverified"
+      },
+      "support": {
+        "loading": "Loading support history…",
+        "total": "Submissions",
+        "open": "Open",
+        "empty": "This account has never contacted support.",
+        "submissions": "Submissions",
+        "bodiesElsewhere": "Summaries only — the conversation itself lives on the helpdesk.",
+        "openHelpdesk": "Open the helpdesk",
+        "subject": "Subject",
+        "category": "Category",
+        "noSubject": "(no subject)",
+        "unread": "Unread",
+        "deletedByUser": "Deleted by user",
+        "archived": "Archived"
+      },
+      "sharing": {
+        "loading": "Loading sharing…",
+        "boundary": "Counts only. Admins cannot browse a user's portfolios or watchlists — that is a deliberate privacy stance, not a missing screen.",
+        "portfolios": "Portfolios",
+        "sharedPortfolios": "Shared with friends",
+        "audiences": "Share audiences",
+        "activeLinks": "Active share links",
+        "revokedLinks": "{{count}} revoked",
+        "friends": "Friends",
+        "followers": "Followers",
+        "following": "Following",
+        "inventoryDeferred": "A per-item sharing inventory with one-click revoke is deliberately deferred; this page answers how exposed the account is, not what it holds."
+      },
+      "activity": {
+        "audit": "Audit history",
+        "email": "Email history",
+        "loading": "Loading audit history…",
+        "empty": "No audit entries for this account yet.",
+        "when": "When",
+        "action": "Action",
+        "details": "Details",
+        "loadMore": "Load more"
+      },
+      "notes": {
+        "add": "Add an operator note",
+        "privacy": "Admin-only. The account never sees these, and a note changes nothing about it.",
+        "label": "Note",
+        "placeholder": "What should the next operator know?",
+        "remaining": "{{count}} characters left",
+        "save": "Save note",
+        "loading": "Loading notes…",
+        "empty": "No operator notes on this account yet.",
+        "remove": "Remove",
+        "removing": "Removing…",
+        "confirm": "Remove note",
+        "confirmRemove": "Remove this note?",
+        "unknownAuthor": "(admin since removed)",
+        "addError": "The note could not be saved.",
+        "removeError": "The note could not be removed.",
+        "gone": "That note is already gone."
+      },
+      "snapshot": {
+        "title": "Support snapshot",
+        "description": "Everything on this page that is safe to paste into a support conversation. It never contains holdings, decrypted content or storage identifiers, because this page never receives any.",
+        "label": "Snapshot",
+        "heading": "BetterTrack support snapshot",
+        "fields": {
+          "username": "username",
+          "email": "email",
+          "id": "id",
+          "kind": "kind",
+          "state": "state",
+          "mustChangePassword": "must change password",
+          "chatBanned": "chat banned",
+          "created": "created",
+          "lastLogin": "last login",
+          "privacyMode": "privacy mode",
+          "vaultMedia": "vault media",
+          "vaultVersion": "vault version",
+          "vaultSize": "vault size",
+          "vaultUpdated": "vault updated",
+          "vaultHistory": "vault history entries",
+          "supportSubmissions": "support submissions",
+          "openSuffix": "{{count}} open"
+        }
+      },
+      "deleteTitle": "Delete account",
+      "deleteAction": "Delete account"
+    },
+    "invites": {
+      "title": "Invites",
+      "subtitle": "Invite one person by email, then share the one-time link.",
+      "create": "New invite",
+      "createHint": "Bound to this address and valid for seven days. For an unbound, multi-use link use a registration access token instead.",
+      "createAction": "Create invite",
+      "emailPlaceholder": "person@example.com",
+      "listTitle": "Invites",
+      "loading": "Loading invites…",
+      "empty": "No invites yet. Create one above.",
+      "ttlNote": "Invites expire seven days after they are created.",
+      "createError": "The invite could not be created.",
+      "revokeError": "The invite could not be revoked.",
+      "gone": "That invite is already gone.",
+      "status": {
+        "pending": "Pending",
+        "used": "Used",
+        "revoked": "Revoked",
+        "expired": "Expired"
       }
+    },
+    "testAccounts": {
+      "title": "Test accounts",
+      "subtitle": "Disposable, flagged, excluded from analytics, always expiring.",
+      "comingSoonShort": "Planned — the factory itself is a later package.",
+      "notShipped": "Not built yet. This tab holds the place the test-account factory will occupy; nothing here creates, extends or deletes an account.",
+      "plannedTitle": "What it will do",
+      "plannedDescription": "The guardrails below are already decided, and are what the factory must ship with.",
+      "rows": {
+        "lifetime": "Lifetime",
+        "lifetimeValue": "1 hour / 24 hours / 7 days, default 24 hours. Seven days is a hard cap — there is no “never”.",
+        "contents": "Contents",
+        "contentsValue": "Empty by default, or one clearly-named synthetic preset. Never cloned from a real account.",
+        "analytics": "Analytics",
+        "analyticsValue": "Flagged as a test account and excluded from every usage counter.",
+        "notifications": "Notifications",
+        "notificationsValue": "Suppressed, along with provider-quota accounting. It can never be promoted to admin.",
+        "cleanup": "Cleanup",
+        "cleanupValue": "Expiry deletes it on the job runner — the same idempotent cleanup whether it fires once or five times — and writes an audit row."
+      },
+      "why": "There is no staging estate: production is the only estate, and the invite gate makes real smoke testing a token dance. That is what this is for."
     }
   },
   "create": {

@@ -82,7 +82,12 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
   // palette is a destination list, and must not cost an admin-users round trip.
   const remoteQuery = isOpen && debounced.length > 0 ? debounced : null;
   const users = useResource(
-    (signal) => (remoteQuery === null ? Promise.resolve(null) : api.listUsers(remoteQuery, signal)),
+    (signal) =>
+      remoteQuery === null
+        ? Promise.resolve(null)
+        : // The list read is paged as of W2; the palette wants the first
+          // handful of matches, not the account table.
+          api.listUsers({ search: remoteQuery, limit: USER_LIMIT }, signal),
     [remoteQuery],
   );
   // Problems are matched client-side, so the list is fetched once per palette

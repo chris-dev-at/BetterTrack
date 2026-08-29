@@ -9,7 +9,9 @@ import {
   importRowCandidateSchema,
   importRowFlagSchema,
   importRowKindSchema,
+  importRowResolvedBySchema,
   importRowResultSchema,
+  importUnderstandingSchema,
 } from './imports';
 import { currencyCodeSchema } from './market';
 import { mirrorRowKindSchema } from './mirrorchain';
@@ -1209,6 +1211,20 @@ const standingOrderRunRowSchema = z
   })
   .strict();
 
+/**
+ * The `import_batches.understanding` column as it appears inside a vault
+ * document (#964) — the generic pipeline's read of the uploaded file.
+ *
+ * Exported for exactly the same single reason as
+ * {@link vaultImportRowCandidatesSchema}: it is a `ZodCatch` reachable from
+ * `PortfolioVaultMoveOutRequest`, and the OpenAPI generator needs the type hint
+ * installed on this very instance. Nothing else should import it.
+ */
+export const vaultImportBatchUnderstandingSchema = importUnderstandingSchema
+  .nullable()
+  .optional()
+  .catch(null);
+
 const importBatchRowSchema = z
   .object({
     ownerId: uuidSchema,
@@ -1219,6 +1235,20 @@ const importBatchRowSchema = z
     cashSourceId: uuidSchema.nullable(),
     createdAt: timestampSchema,
     appliedAt: timestampSchema.nullable(),
+    /**
+     * The `import_batches.understanding` column (#964): what the generic
+     * pipeline worked out about the uploaded file. Enrolled because the
+     * export-completeness sweep requires every persisted column to appear in
+     * the strict payload.
+     *
+     * `.nullable().optional().catch(null)` for the same three reasons as
+     * `import_rows.candidates` below: documents written before this column
+     * existed carry no such key, and a DESCRIPTION of a short-lived staging
+     * preview must never be the reason a portfolio cannot be restored. A
+     * malformed or unknown-shaped value degrades this ONE field to null and
+     * the batch still parses.
+     */
+    understanding: vaultImportBatchUnderstandingSchema,
   })
   .strict();
 
@@ -1256,6 +1286,16 @@ export const vaultImportRowCandidatesSchema = z
 export const vaultImportRowRuleTagIdsSchema = z
   .array(uuidSchema)
   .max(CASH_TAGS_PER_ITEM_MAX)
+  .nullable()
+  .optional()
+  .catch(null);
+
+/**
+ * The `import_rows.resolved_by` column as it appears inside a vault document
+ * (#964). Exported for the same OpenAPI-generator reason as its two siblings
+ * above; nothing else should import it.
+ */
+export const vaultImportRowResolvedBySchema = importRowResolvedBySchema
   .nullable()
   .optional()
   .catch(null);
@@ -1327,6 +1367,19 @@ const importRowRowSchema = z
      * portfolio behind it is the user's actual money.
      */
     ruleTagIds: vaultImportRowRuleTagIdsSchema,
+    /**
+     * The `import_rows.resolved_by` column (#964): provenance for `assetId` —
+     * null when the pipeline matched the instrument exactly, `'user'` when a
+     * person pinned it in the wizard. Enrolled because the
+     * export-completeness sweep requires every persisted column to appear in
+     * the strict payload.
+     *
+     * `.nullable().optional().catch(null)` for the same three reasons as the
+     * two fields above. Degrading to null loses only the badge that says a
+     * human chose this asset; the `assetId` itself is a plain column and is
+     * unaffected, so no restored row can be re-pointed by this field failing.
+     */
+    resolvedBy: vaultImportRowResolvedBySchema,
   })
   .strict();
 

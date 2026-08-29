@@ -3,7 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AppSettingsResponse, MeResponse, RegistrationToken } from '@bettertrack/contracts';
+import type {
+  AdminStats,
+  AppSettingsResponse,
+  MeResponse,
+  RegistrationToken,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
@@ -48,8 +53,27 @@ const pendingRequest = {
   id: 'req-1',
   email: 'queue@test.dev',
   username: 'queue_user',
+  // #1406 W2: the applicant row now says HOW they applied.
+  provider: null as string | null,
   createdAt: '2026-07-14T00:00:00.000Z',
 };
+
+const stats: AdminStats = {
+  userCount: 3,
+  activeUserCount: 3,
+  disabledUserCount: 0,
+  pendingInviteCount: 1,
+  pendingRegistrationCount: 1,
+};
+
+/**
+ * A mode radio, addressed by its TITLE. Its accessible name is the whole label —
+ * title followed by the explanation — so the pattern is anchored: an unanchored
+ * /Approval/ also matches the sentence inside a different mode's description.
+ */
+function modeRadio(title: string): HTMLElement {
+  return screen.getByRole('radio', { name: new RegExp(`^${title}`) });
+}
 
 function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
@@ -77,18 +101,83 @@ beforeEach(() => {
     recoveryCodesRemaining: 8,
   });
   vi.mocked(api.getSettings).mockResolvedValue(settings);
+  vi.mocked(api.getStats).mockResolvedValue(stats);
   vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [] });
   vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [] });
 });
 
-test('shows the active registration mode and links back to the mode switch', async () => {
+// The Chief's ruling of 2026-08-29 moved the mode selector OFF /admin/settings
+// and onto this page, beside the queue it governs. These four tests are what
+// keeps it here: the control, its explicit save, its honest failure, and the
+// absence of a second copy anywhere.
+test('owns the registration-mode selector, beside the queue it governs', async () => {
   renderPage();
 
-  expect(await screen.findByText('Approval queue')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Change the mode in Settings' })).toHaveAttribute(
-    'href',
-    '/admin/settings',
+  expect(await screen.findByRole('heading', { name: 'Approval queue' })).toBeInTheDocument();
+
+  // All four modes are offered, and the STORED one is the one selected — the
+  // form seeds from the settings read rather than defaulting to `closed`.
+  await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(4));
+  await waitFor(() => expect(modeRadio('Approval')).toBeChecked());
+  expect(modeRadio('Closed')).not.toBeChecked();
+
+  // No pointer back to Settings: this page IS the home now, not a mirror of one.
+  expect(screen.queryByRole('link', { name: /Settings/i })).not.toBeInTheDocument();
+});
+
+test('changing the mode is an explicit save, not a side effect of clicking a radio', async () => {
+  vi.mocked(api.updateSettings).mockResolvedValue({ ...settings, registrationMode: 'open' });
+  const user = userEvent.setup();
+  renderPage();
+
+  const save = await screen.findByRole('button', { name: 'Save settings' });
+  expect(save).toBeDisabled();
+
+  await user.click(modeRadio('Open'));
+  // Selecting is not saving.
+  expect(api.updateSettings).not.toHaveBeenCalled();
+  await waitFor(() => expect(save).toBeEnabled());
+  expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+
+  await user.click(save);
+  await waitFor(() =>
+    expect(api.updateSettings).toHaveBeenCalledWith({ registrationMode: 'open' }),
   );
+  expect(await screen.findByText('Settings saved.')).toBeInTheDocument();
+});
+
+test('a failed mode write shows catalog copy, never the server envelope', async () => {
+  const { ApiError } = await import('../../lib/apiClient');
+  vi.mocked(api.updateSettings).mockRejectedValueOnce(
+    new ApiError(500, 'internal_error', 'Server-authored English envelope.'),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByRole('button', { name: 'Save settings' });
+  await user.click(modeRadio('Open'));
+  await user.click(screen.getByRole('button', { name: 'Save settings' }));
+
+  expect(
+    await screen.findByText('The registration mode could not be changed.'),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Server-authored English envelope/)).not.toBeInTheDocument();
+});
+
+test('shows how each applicant applied, so Google and password are distinguishable', async () => {
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [
+      { ...pendingRequest, provider: 'google' },
+      { ...pendingRequest, id: 'req-2', username: 'pw_user', provider: null },
+    ],
+  });
+
+  renderPage();
+
+  const googleRow = (await screen.findByText('queue_user')).closest('tr');
+  const passwordRow = screen.getByText('pw_user').closest('tr');
+  expect(within(googleRow!).getByText('google')).toBeInTheDocument();
+  expect(within(passwordRow!).getByText('Password')).toBeInTheDocument();
 });
 
 test('approves a pending registration from the queue', async () => {
@@ -183,9 +272,10 @@ test('two rows acted on at once keep their own progress state', async () => {
   renderPage();
 
   await screen.findByText('queue_user');
-  const rows = screen.getAllByRole('listitem');
-  const approveB = within(rows[1]!).getByRole('button', { name: /approve/i });
-  const approveA = within(rows[0]!).getByRole('button', { name: /approve/i });
+  // Row 0 is the header row of the queue table.
+  const rows = screen.getAllByRole('row');
+  const approveB = within(rows[2]!).getByRole('button', { name: /approve/i });
+  const approveA = within(rows[1]!).getByRole('button', { name: /approve/i });
 
   await user.click(approveB);
   await waitFor(() => expect(approveB).toBeDisabled());
