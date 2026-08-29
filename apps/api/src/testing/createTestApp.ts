@@ -33,8 +33,18 @@ import type { GoogleTokenVerifier } from '../services/auth/googleVerifier';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
 import type { OAuthLogoFetcher } from '../services/oauth/oauthLogo';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
+import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard';
 import type { WebhookTransport } from '../services/webhooks';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
+
+/**
+ * Offline DNS for the webhook outbound guard: every hostname resolves to one
+ * public address. Keeps the suite's `https://receiver.test/hook` subscriptions
+ * working without a network round trip; IP-literal destinations never reach it.
+ */
+export const publicTestResolver: OutboundUrlResolver = async () => [
+  { address: '93.184.216.34', family: 4 },
+];
 
 /**
  * In-process integration harness. Default mode: PGlite (WASM) + ioredis-mock —
@@ -251,6 +261,14 @@ export interface CreateTestAppOptions {
    */
   webhookTransport?: WebhookTransport;
   /**
+   * DNS resolver for the webhook outbound (SSRF) guard (§13.5 V5-P10), used at
+   * create/update and on every delivery attempt. Defaults to a stub that maps
+   * every hostname to one public address, so the suite's `*.test` receivers stay
+   * deterministic and offline; a test that exercises the guard injects its own
+   * (e.g. one that starts public and later returns `127.0.0.1`).
+   */
+  webhookUrlResolver?: OutboundUrlResolver;
+  /**
    * Canned/recording fetch for the local-AI (Ollama) adapter (§13.5 V5-P12).
    * Lets a test drive the AI feature endpoints with no real network and assert
    * the model only ever reaches the configured local endpoint.
@@ -329,6 +347,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,
     webhookTransport: options.webhookTransport,
+    webhookUrlResolver: options.webhookUrlResolver ?? publicTestResolver,
     aiFetch: options.aiFetch,
     oauthLogoFetcher: options.oauthLogoFetcher,
   });
