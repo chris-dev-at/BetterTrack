@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { floorCents as ledgerFloorCents } from '../cashLedger';
+import {
+  floorCents as ledgerFloorCents,
+  FLOOR_CENTS_EXACT_LIMIT_EUR as LEDGER_FLOOR_CENTS_EXACT_LIMIT_EUR,
+} from '../cashLedger';
 import {
   AT_KEST_RATE,
   atYearTargetEur,
@@ -12,6 +15,7 @@ import {
   manualTaxEur,
   realizedSellsEur,
   floorCents,
+  FLOOR_CENTS_EXACT_LIMIT_EUR,
   settleAtYear,
   settleFiYear,
   TaxComputationError,
@@ -53,10 +57,33 @@ describe('floorCents (local mirror)', () => {
       0.1 + 0.2,
       123.456,
       -76.545,
+      // Large-magnitude cases across the 2^42 quantization limit (#1523):
+      // just below (still quantized), at, and far above (identity), including
+      // the 2^53/100 ≈ 9e13 boundary and the 1e15 vault-report row bound.
+      4398046511103.0009765625,
+      4398046511103.25,
+      2 ** 42,
+      2 ** 42 + 0.0068359375,
+      50000000000000.0078125,
+      Number.MAX_SAFE_INTEGER / 100,
+      1e14,
+      -1e14,
+      1e15,
     ];
     for (const value of cases) {
       expect(floorCents(value)).toBe(ledgerFloorCents(value));
     }
+  });
+
+  it('mirrors the cashLedger quantization limit exactly (#1523)', () => {
+    expect(FLOOR_CENTS_EXACT_LIMIT_EUR).toBe(LEDGER_FLOOR_CENTS_EXACT_LIMIT_EUR);
+    // Identity at and above the limit; the old formula fabricated cents here.
+    expect(floorCents(1e14)).toBe(1e14);
+    expect(floorCents(FLOOR_CENTS_EXACT_LIMIT_EUR + 0.0068359375)).toBe(
+      FLOOR_CENTS_EXACT_LIMIT_EUR + 0.0068359375,
+    );
+    // Still floors just below it.
+    expect(floorCents(4398046511103.0009765625)).toBe(4398046511103);
   });
 
   it('floors down (never rounds up) despite float representation', () => {
