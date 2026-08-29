@@ -1003,6 +1003,16 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'kept',
     'AI provider controls are capability/configuration plumbing; user portfolio insight calls are classified on aiFeatures.',
   ),
+  serviceExemption(
+    'paranoidFreshStartNotice',
+    ['*'],
+    'kept',
+    'The §17 fresh-start notice (E9) reads and stamps the account’s own wipe receipt — ' +
+      'a one-time marker with no portfolio content. It must stay reachable precisely ' +
+      'because its whole audience is accounts the §17 wipe just returned to `normal`, ' +
+      'and killing it would suppress the notice the transition owes them. It can never ' +
+      'reach the wipe itself, which has no route at all (paranoidV1WipeService).',
+  ),
 ] as const;
 
 const jobPolicy = (

@@ -12,6 +12,7 @@ import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
+import { FreshStartNotice } from './components/FreshStartNotice';
 import { AuthCard, Button, Spinner, Splash } from './components/ui';
 import { apiPortfolioStore } from '../lib/portfolioStore';
 import { PortfolioStoreProvider } from './portfolio/PortfolioStoreProvider';
@@ -776,6 +777,18 @@ function AnnouncementBannerRoot() {
   return <AnnouncementBanner enabled={status === 'authenticated'} />;
 }
 
+/**
+ * The one-time §17 fresh-start notice (PARANOID E9). Same silence-by-default
+ * contract as the announcement banner: it renders nothing unless the server says
+ * this account was wiped by the paranoid v1 transition and has not acknowledged
+ * it yet.
+ */
+function FreshStartNoticeRoot() {
+  const { status } = useAuth();
+  if (status !== 'authenticated') return null;
+  return <FreshStartNotice />;
+}
+
 /** Keeps an automatic interface scale correct as the window resizes. */
 function UiScaleWatcher() {
   useUiScaleWatcher();
@@ -816,6 +829,7 @@ export function UserApp() {
               <AccountModeRoot>
                 <RealtimeRoot>
                   <AnnouncementBannerRoot />
+                  <FreshStartNoticeRoot />
                   <UserShell />
                 </RealtimeRoot>
               </AccountModeRoot>
