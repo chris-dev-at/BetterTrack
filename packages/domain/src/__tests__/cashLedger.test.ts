@@ -18,6 +18,7 @@ import {
   projectCashLedger,
   projectCashLedgerBySource,
   floorCents,
+  FLOOR_CENTS_EXACT_LIMIT_EUR,
   setBalanceDelta,
   setBalanceMovement,
   spendableAsOf,
@@ -106,6 +107,54 @@ describe('floorCents', () => {
   it('throws on a non-finite amount', () => {
     expect(() => floorCents(Number.POSITIVE_INFINITY)).toThrow(CashLedgerError);
     expect(() => floorCents(Number.NaN)).toThrow(CashLedgerError);
+  });
+
+  it('still quantizes exactly just below the 2^42 limit (#1523 boundary)', () => {
+    // 2^42 − 1 carries ULP 2^-11 ≈ €0.0005: sub-cent residues are still
+    // representable and still floor away; whole-cent values still survive.
+    expect(FLOOR_CENTS_EXACT_LIMIT_EUR).toBe(2 ** 42);
+    expect(floorCents(4398046511103.0009765625)).toBe(4398046511103);
+    expect(floorCents(4398046511103.25)).toBe(4398046511103.25);
+    expect(floorCents(-4398046511103.25)).toBe(-4398046511103.25);
+  });
+
+  it('passes amounts at and above the limit through unchanged (#1523)', () => {
+    // Past 2^42 the 1+8ε nudge exceeds a cent and past 2^53/100 the ×100
+    // product leaves the exact-integer grid — the old formula manufactured
+    // cents there (floorCents(1e14) → 100000000000000.19, and 5e13 + one ULP
+    // rounded UP ~9 cents). Quantization degrades to the identity instead.
+    expect(floorCents(FLOOR_CENTS_EXACT_LIMIT_EUR)).toBe(FLOOR_CENTS_EXACT_LIMIT_EUR);
+    expect(floorCents(2 ** 42 + 0.0068359375)).toBe(2 ** 42 + 0.0068359375);
+    expect(floorCents(50000000000000.0078125)).toBe(50000000000000.0078125);
+    // The #1523 headline case and the 2^53/100 ≈ 9e13 boundary itself.
+    expect(floorCents(1e14)).toBe(1e14);
+    expect(floorCents(-1e14)).toBe(-1e14);
+    expect(floorCents(Number.MAX_SAFE_INTEGER / 100)).toBe(Number.MAX_SAFE_INTEGER / 100);
+    expect(floorCents(90000000000000.015625)).toBe(90000000000000.015625);
+    // The full vault-report row range (≤ 1e15, #1514) passes through exact.
+    expect(floorCents(999999999999999.875)).toBe(999999999999999.875);
+    expect(floorCents(1e15)).toBe(1e15);
+  });
+
+  it('never fabricates a cent and stays idempotent across the limit (#1523)', () => {
+    const sweep = [
+      1234.56,
+      1000000000000.004,
+      4398046511103.0009765625,
+      4398046511103.25,
+      2 ** 42,
+      2 ** 42 + 0.25,
+      9e13,
+      1e14 + 0.25,
+      1e15,
+    ];
+    for (const value of sweep) {
+      const floored = floorCents(value);
+      // Bounded by the sub-cent nudge below the limit; exact at/above it.
+      expect(Math.abs(floored - value)).toBeLessThan(0.01);
+      expect(floorCents(floored)).toBe(floored);
+      expect(floorCents(-value)).toBe(-floored);
+    }
   });
 });
 

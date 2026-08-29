@@ -34,7 +34,10 @@ export const heartbeatJob: JobDefinition<'system.heartbeat'> = {
   name: QUEUE_NAMES.systemHeartbeat,
   schedule: { id: HEARTBEAT_SCHEDULER_ID, every: HEARTBEAT_INTERVAL_MS },
   async handler(job, ctx) {
-    const occurredAt = new Date(job.timestamp || Date.now()).toISOString();
+    // `processedOn` is the run's real execution instant; the job's creation
+    // `timestamp` is the previous iteration's pickup, so a freshness marker
+    // built from it would be one interval stale the moment it is written.
+    const occurredAt = new Date(job.processedOn ?? Date.now()).toISOString();
     ctx.logger.debug({ jobId: job.id, occurredAt }, 'heartbeat: publishing proof event');
     // Freshness marker for the admin health page — read cross-process from Redis.
     await ctx.redis.set(HEARTBEAT_LAST_KEY, occurredAt);

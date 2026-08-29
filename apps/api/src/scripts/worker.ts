@@ -27,6 +27,7 @@ import {
   withLockedPrivacyModes,
 } from '../data/repositories/paranoidEnforcementRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createVaultBlobRepository } from '../data/repositories/vaultBlobRepository';
 import { createEventBus } from '../events';
 import {
   ALL_QUEUE_NAMES,
@@ -677,6 +678,7 @@ const definitions = assembleRegisteredJobDefinitions({
     audit: createAuditRepository(db),
     emailLog: createEmailLogRepository(db),
     vaultStaging: createParanoidVaultRepository(db),
+    vaultCandidates: createVaultBlobRepository(db),
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,

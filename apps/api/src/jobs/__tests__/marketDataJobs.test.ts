@@ -94,12 +94,19 @@ function makeCtx(events: EventBus): JobContext {
   return { events, deadLetter: createDeadLetter(redis), redis, logger };
 }
 
+/** The run's real execution instant — every event this suite asserts is stamped with it. */
+const RUN_AT = Date.parse('2026-06-23T01:00:00.000Z');
+
 function makeJob<T>(data: T): Job<T> {
   return {
     id: 'job-1',
     name: 'test',
     data,
-    timestamp: Date.parse('2026-06-23T01:00:00.000Z'),
+    // A full period stale (#1543): BullMQ stamps `timestamp` when the delayed
+    // job is created, i.e. at the previous iteration's pickup. The handler must
+    // stamp its events from `processedOn`, not from this.
+    timestamp: RUN_AT - 86_400_000,
+    processedOn: RUN_AT,
   } as unknown as Job<T>;
 }
 
