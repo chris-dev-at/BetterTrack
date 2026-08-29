@@ -889,6 +889,11 @@ export const NON_V5_SURFACES = [
     note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
   },
   {
+    path: 'admin/components/WorkspaceTabs.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W2 (#1406): the folded People workspace’s tab strip; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/EmailLogTable.tsx',
     reason: 'no-v5-deliverable',
     note: 'V2 email-log table (#187).',
@@ -947,6 +952,11 @@ export const NON_V5_SURFACES = [
     path: 'admin/pages/SupportPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W1 (#1406) Support landing; the helpdesk console it stands in for is W3.',
+  },
+  {
+    path: 'admin/pages/TestAccountsPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W2 (#1406): the People workspace’s placeholder for the W6 test-account factory.',
   },
   {
     path: 'admin/pages/UserDetailPage.tsx',
@@ -1438,6 +1448,11 @@ export const NON_V5_ROUTES = [
     path: '/admin/support',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W1 (#1406): the Support workspace landing ahead of the W3 helpdesk console.',
+  },
+  {
+    path: '/admin/test-accounts',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W2 (#1406): the People workspace tab that holds W6’s place; a placeholder, not the factory.',
   },
   { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
   {
@@ -1932,7 +1947,19 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // nine. Every one of the thirteen observes both its loading and its error state,
 // which is why the debt ceiling below is unchanged.
 // E8 moves PortfolioCardsWidget's two reads into the P13 reviewed inventory.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 67;
+//
+// 67 → 74 with the admin rebuild W2 (#1406). Seven new reads, all analyzed:
+//   • People 360 (+4) — the single-account GET that REPLACED the
+//     download-the-whole-list read, plus the Access, Sharing, Support and Notes
+//     tab reads. The page went from one read to five and from one screen to six,
+//     and every one of the five renders `AsyncReadState`.
+//   • Registration (+1), Invites (+1), Test accounts (+1) — one `/admin/stats`
+//     read each, feeding the workspace tab strip's counts. The counts are
+//     decorative by construction: while the read is in flight or failed the
+//     strip renders its tabs with no chip rather than a zero, so a failed count
+//     can never be mistaken for "nothing is waiting".
+// The debt ceiling below is unchanged: none of the seven adds a state gap.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 74;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error
@@ -2060,6 +2087,12 @@ export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
   'admin/pages/AnnouncementsPage.tsx': 36,
   'admin/pages/AuditPage.tsx': 13,
   'admin/pages/EmailPage.tsx': 21,
-  'admin/pages/InvitesPage.tsx': 14,
-  'admin/pages/UserDetailPage.tsx': 46,
+  // 14 → 0 and 46 → 0 with the admin rebuild W2 (#1406). Both pages were
+  // rewritten and are now fully catalogued in EN + DE — InvitesPage was the
+  // console's last untranslated surface. The budgets are dropped to zero rather
+  // than deleted so the ratchet still names them: a single hardcoded string
+  // reappearing in either file now fails the suite instead of quietly
+  // re-spending a budget nobody is watching.
+  'admin/pages/InvitesPage.tsx': 0,
+  'admin/pages/UserDetailPage.tsx': 0,
 };

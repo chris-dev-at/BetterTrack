@@ -57,6 +57,7 @@ import { createPortfolioSettingsRepository } from '../data/repositories/portfoli
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createAdminPeopleRepository } from '../data/repositories/adminPeopleRepository';
 import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import { createEventBus, type EventBus } from '../events';
@@ -713,6 +714,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const observability = initObservability(config, logger, { serverName: 'api' });
 
   const userRepo = createUserRepository(db);
+  // Cross-table reads + operator notes behind the People 360 tabs (#1406 W2).
+  const adminPeopleRepo = createAdminPeopleRepository(db);
   const privacyLockDb = deps.lockDb ?? db;
   const paranoidSubjects = createParanoidEnforcementRepository(db);
   const paranoidGuard = createParanoidModeGuard({
@@ -1213,6 +1216,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     redis,
     userRepo,
+    people: adminPeopleRepo,
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,

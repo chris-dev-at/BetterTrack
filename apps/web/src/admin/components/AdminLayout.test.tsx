@@ -25,17 +25,16 @@ vi.mock('../AuthContext', () => {
 });
 vi.mock('../../lib/adminApi');
 
+import { ADMIN_DESTINATIONS } from '../adminWorkspaces';
 import { AdminLayout } from './AdminLayout';
 import { Modal } from './Modal';
 
-// Every page destination the six-workspace sidebar offers (#1406 W1). Two of the
-// six workspaces carry their landing route on the workspace label itself, so
-// those live in ADMIN_WORKSPACE_KEYS below rather than here.
+// Every CHILD ROW the six-workspace sidebar offers (#1406 W1). Workspaces that
+// carry their landing route on the workspace label itself live in
+// ADMIN_WORKSPACE_LANDING_KEYS below, and the People workspace's pages are no
+// longer rows at all — see ADMIN_PEOPLE_TAB_KEYS.
 const ADMIN_NAV_KEYS = [
   'admin.nav.feedback',
-  'admin.nav.users',
-  'admin.nav.registration',
-  'admin.nav.invites',
   'admin.nav.health',
   'admin.nav.problems',
   'admin.nav.monitoring',
@@ -65,6 +64,21 @@ const ADMIN_WORKSPACE_KEYS = [
 const ADMIN_WORKSPACE_LANDING_KEYS = [
   'admin.nav.sections.overview',
   'admin.nav.sections.support',
+  // People landed here in #1406 W2: it folded, so its label is the only rail
+  // entry it has, and it links at the account list.
+  'admin.nav.sections.people',
+] as const;
+
+/**
+ * The People workspace's pages after the W2 fold. They are no longer sidebar
+ * rows — the page's tab strip carries them — but they are still real routes, so
+ * their labels must still translate and they must still be reachable.
+ */
+const ADMIN_PEOPLE_TAB_KEYS = [
+  'admin.nav.users',
+  'admin.nav.registration',
+  'admin.nav.invites',
+  'admin.nav.testAccounts',
 ] as const;
 
 const ADMIN_SHELL_KEYS = [
@@ -75,6 +89,7 @@ const ADMIN_SHELL_KEYS = [
   'admin.palette.shortcut',
   ...ADMIN_WORKSPACE_KEYS,
   ...ADMIN_NAV_KEYS,
+  ...ADMIN_PEOPLE_TAB_KEYS,
 ] as const;
 
 function Bomb(): never {
@@ -85,19 +100,26 @@ function AdminTestApp({
   initialPath,
   initialLocale = 'en',
   invitesElement = <p>Invites page</p>,
+  usersElement = <Bomb />,
 }: {
   initialPath: string;
   initialLocale?: string;
   invitesElement?: ReactNode;
+  usersElement?: ReactNode;
 }) {
   return (
     <I18nProvider initialLocale={initialLocale}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route element={<AdminLayout />}>
-            <Route path="/admin/users" element={<Bomb />} />
+            <Route path="/admin/users" element={usersElement} />
+            <Route path="/admin/users/:userId" element={<p>User 360</p>} />
+            <Route path="/admin/test-accounts" element={<p>Test accounts page</p>} />
+            <Route path="/admin/registration" element={<p>Registration page</p>} />
             <Route path="/admin/invites" element={invitesElement} />
             <Route path="/admin/health" element={<p>Health page</p>} />
+            {/* A narrow workspace, for the content-width test. */}
+            <Route path="/admin/settings" element={<p>Settings page</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -212,7 +234,7 @@ test('a page that throws renders the error boundary fallback while the admin chr
 
   expect(screen.getByRole('alert')).toBeInTheDocument();
   expect(screen.getByText('Something went wrong.')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Invites' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'People' })).toBeInTheDocument();
   expect(screen.getByText('admin@bettertrack.test')).toBeInTheDocument();
 });
 
@@ -221,22 +243,59 @@ test('navigating to a different route clears a stuck error boundary', async () =
 
   expect(screen.getByRole('alert')).toBeInTheDocument();
 
-  await userEvent.setup().click(screen.getByRole('link', { name: 'Invites' }));
+  await userEvent.setup().click(screen.getByRole('link', { name: 'Health' }));
 
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  expect(screen.getByText('Invites page')).toBeInTheDocument();
+  expect(screen.getByText('Health page')).toBeInTheDocument();
 });
 
 test('the admin nav is a vertical sidebar — no horizontal scroll, no wrap', () => {
-  renderAdmin('/admin/invites');
+  renderAdmin('/admin/health');
 
   const nav = screen.getByRole('navigation', { name: 'Admin console' });
   expect(nav.className).not.toContain('overflow-x-auto');
   expect(nav.className).not.toContain('flex-wrap');
   expect(nav.className).toContain('flex-col');
 
-  const link = screen.getByRole('link', { name: 'Invites' });
-  expect(link.className).toContain('min-h-[40px]');
+  // The sharp console's rail geometry (#1406 W2): a 34 px row carrying a 2 px
+  // leading edge bar, coloured only while the row is the active one so
+  // activating an item never nudges its label sideways.
+  const active = screen.getByRole('link', { name: 'Health' });
+  expect(active.className).toContain('min-h-[34px]');
+  expect(active.className).toContain('border-l-2');
+  expect(active.className).toContain('border-l-sky-500');
+
+  const idle = screen.getByRole('link', { name: 'People' });
+  expect(idle.className).toContain('min-h-[34px]');
+  expect(idle.className).toContain('border-l-transparent');
+  expect(idle.className).not.toContain('border-l-sky-500');
+});
+
+// The regression the fold introduced and this pins shut: `NavLink end` marks
+// People only on `/admin/users`, so three of its four tabs and the whole People
+// 360 detail route left the rail with NOTHING highlighted. A fold that costs the
+// "where am I" cue is not free.
+test.each([
+  ['/admin/registration'],
+  ['/admin/invites'],
+  ['/admin/test-accounts'],
+  ['/admin/users/user-1'],
+])('the folded People rail entry stays marked on %s', (path) => {
+  render(<AdminTestApp initialPath={path} usersElement={<p>Users page</p>} />);
+
+  const people = screen.getByRole('link', { name: 'People' });
+  expect(people.className).toContain('border-l-sky-500');
+
+  // Control: an unrelated workspace's row must NOT light up on the same path,
+  // so "everything is active" cannot pass this test.
+  expect(screen.getByRole('link', { name: 'Health' }).className).toContain('border-l-transparent');
+});
+
+test('a workspace that is not folded keeps exact-match highlighting', () => {
+  render(<AdminTestApp initialPath="/admin/settings" usersElement={<p>Users page</p>} />);
+
+  expect(screen.getByRole('link', { name: 'Settings' }).className).toContain('border-l-sky-500');
+  expect(screen.getByRole('link', { name: 'People' }).className).toContain('border-l-transparent');
 });
 
 test('every admin shell key is available in every supported locale', () => {
@@ -282,6 +341,93 @@ test('the sidebar offers the six operator workspaces in their decided order', ()
   ]);
 });
 
+test.each(['en', 'de'] as const)(
+  'the folded People workspace is ONE rail link with no child rows in %s',
+  (locale) => {
+    renderAdmin('/admin/invites', locale);
+
+    const nav = screen.getByRole('navigation', {
+      name: localizedMessage(locale, 'admin.nav.console'),
+    });
+
+    // Exactly one People entry — `getByRole` throws on a second — and it opens
+    // the workspace landing, the account list.
+    const people = within(nav).getByRole('link', {
+      name: localizedMessage(locale, 'admin.nav.sections.people'),
+    });
+    expect(people).toHaveAttribute('href', '/admin/users');
+
+    // The workspace's own column holds that link and nothing else: the pages
+    // that used to sit under it are the page's tab strip now.
+    const column = people.closest('div')!;
+    expect(within(column).getAllByRole('link')).toEqual([people]);
+
+    // Control, same query: Support has NOT folded (that is W7's package), so its
+    // column still carries its label plus its one child row. Without this, "one
+    // link in the column" could just mean the query never sees child rows.
+    const support = within(nav).getByRole('link', {
+      name: localizedMessage(locale, 'admin.nav.sections.support'),
+    });
+    expect(within(support.closest('div')!).getAllByRole('link')).toEqual([
+      support,
+      within(nav).getByRole('link', { name: localizedMessage(locale, 'admin.nav.feedback') }),
+    ]);
+
+    for (const key of ADMIN_PEOPLE_TAB_KEYS) {
+      expect(
+        within(nav).queryByRole('link', { name: localizedMessage(locale, key) }),
+      ).not.toBeInTheDocument();
+    }
+  },
+);
+
+test('the fold costs no reachability — every People tab is still a destination', () => {
+  const paths = ADMIN_DESTINATIONS.map((destination) => destination.to);
+
+  // The landing carries /admin/users; the two folded pages stay addressable in
+  // their own right, so ⌘K can still reach what the rail stopped listing.
+  expect(paths).toContain('/admin/users');
+  expect(paths).toContain('/admin/registration');
+  expect(paths).toContain('/admin/invites');
+  // …and each is attributed to People, so the palette groups them correctly.
+  for (const to of ['/admin/users', '/admin/registration', '/admin/invites']) {
+    expect(ADMIN_DESTINATIONS.find((destination) => destination.to === to)?.workspaceKey).toBe(
+      'people',
+    );
+  }
+  // The coming-soon tab is deliberately NOT a destination: the palette
+  // navigates, and navigating to a placeholder is noise.
+  expect(paths).not.toContain('/admin/test-accounts');
+});
+
+test.each(['en', 'de'] as const)(
+  'the folded People tabs are still reachable through ⌘K in %s',
+  async (locale) => {
+    const user = userEvent.setup();
+    renderAdmin('/admin/invites', locale);
+
+    await user.keyboard('{Meta>}k{/Meta}');
+    const palette = await screen.findByRole('dialog', {
+      name: localizedMessage(locale, 'admin.palette.title'),
+    });
+
+    // Anchored: a folded tab's row also carries "People" as its workspace meta,
+    // so an unanchored needle would match three rows and prove nothing.
+    for (const key of [
+      'admin.nav.registration',
+      'admin.nav.invites',
+      // /admin/users rides in on the workspace label itself.
+      'admin.nav.sections.people',
+    ] as const) {
+      expect(
+        within(palette).getByRole('option', {
+          name: new RegExp(`^${localizedMessage(locale, key)}`),
+        }),
+      ).toBeInTheDocument();
+    }
+  },
+);
+
 test('⌘K opens the command palette from anywhere in the console', async () => {
   const user = userEvent.setup();
   renderAdmin('/admin/invites');
@@ -310,7 +456,12 @@ test('only the dense operator workspaces widen the content column', () => {
   const { container: wide } = renderAdmin('/admin/health');
   expect(wide.querySelector('main > div')?.className).toContain('max-w-7xl');
 
-  const { container: standard } = renderAdmin('/admin/invites');
+  // A folded workspace's TABS inherit the workspace's density (#1406 W2):
+  // People is wide, so its Invites tab is wide too.
+  const { container: foldedTab } = renderAdmin('/admin/invites');
+  expect(foldedTab.querySelector('main > div')?.className).toContain('max-w-7xl');
+
+  const { container: standard } = renderAdmin('/admin/settings');
   expect(standard.querySelector('main > div')?.className).toContain('max-w-5xl');
 });
 
@@ -326,7 +477,7 @@ test('the compact language control re-renders the admin shell immediately', asyn
   expect(screen.getByRole('combobox', { name: 'Sprache der Konsole' })).toHaveValue('de');
   expect(screen.getByRole('navigation', { name: 'Admin-Konsole' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Produkt & Kommunikation' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Personen' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Abmelden' })).toBeInTheDocument();
 });
 
@@ -517,14 +668,16 @@ test('crossing the desktop breakpoint beneath a Modal preserves its focus and sc
 test('navigating from inside the drawer closes it', async () => {
   setViewportWidth(390);
   const user = userEvent.setup();
-  renderAdmin('/admin/invites');
+  render(<AdminTestApp initialPath="/admin/invites" usersElement={<p>Users page</p>} />);
 
   await user.click(screen.getByRole('button', { name: 'Open admin menu' }));
   const drawer = screen.getByRole('dialog', { name: 'Admin menu' });
 
-  // Click the "Users" link inside the drawer (both drawer and desktop sidebar
-  // render one; scope to the drawer so this exercises the drawer's own link).
-  await user.click(within(drawer).getByRole('link', { name: 'Users' }));
+  // Click the folded "People" link inside the drawer (both drawer and desktop
+  // sidebar render one; scope to the drawer so this exercises the drawer's own
+  // link) — it must both navigate to the account list and retire the drawer.
+  await user.click(within(drawer).getByRole('link', { name: 'People' }));
 
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  expect(screen.getByText('Users page')).toBeInTheDocument();
 });
