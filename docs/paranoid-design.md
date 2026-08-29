@@ -361,7 +361,9 @@ reconciliation (#895/#896) and is kept because it is right:
 `expires_at` per row) is consumed only when it is PROMOTED into the active plane
 (`added = ['server']`, which copies the bytes into `vault_blobs`) or dropped by a
 gate that makes it unusable (retirement-pending refusal, a newer transition id
-replacing it, the signed purge). The destructive per-portfolio commits — move-in
+replacing it — the signed purge never drops a live batch; it prunes only
+already-expired rows and otherwise refuses, see consequence 2). The destructive
+per-portfolio commits — move-in
 (§9) and move-out (§10) — no longer delete it: the rows live out their own
 `expires_at` and are disposed by the lazy expiry checks plus the bounded
 retention sweep (#1521). The reason is the §8 attestation boundary: the server's
@@ -373,7 +375,7 @@ lying or buggy client into irrecoverable data loss. Retention converts that into
 `media` remains the only authority on where a vault is stored, reads resolve
 against `vault_blobs` only (a Drive-only vault answers `medium_inactive`), and
 the media state reports the rows as `inactive-candidates`, never as a data home.
-Three consequences, all accepted and all bounded by the same TTL:
+Four consequences, all accepted and all bounded by the same TTL:
 
 1. **Drive-connection replacement waits.** While a retained batch is live,
    replacing the vault's Drive connection (below) refuses with its existing
@@ -385,9 +387,11 @@ Three consequences, all accepted and all bounded by the same TTL:
    while any live candidate exists, so after a Drive-only move-in/move-out the
    purge is delayed by up to the TTL. Deliberate asymmetry with the
    retirement-pending branch of `transitionMedia`, which still DROPS the batch
-   on purpose: there the batch is unusable anyway (the retirement gate refuses
-   the promotion it was staged for), so dropping it costs no recoverability and
-   lets the purge proceed immediately. Here the batch is the recovery copy, so
+   on purpose: where the explicit-purge ruling (2026-07-28) and recoverability
+   collide, the purge wins — on a Drive-only vault carrying a retirement row, a
+   refused add-server attempt does destroy a live recovery copy before its TTL,
+   and that is the accepted price of keeping the ruled purge path immediately
+   reachable. Here (no retirement pending) the batch is the recovery copy, so
    the purge is what waits.
 3. **A move-out straight after a move-in can prove its roster from the retained
    batch.** `completeMoveIn` stamps `mediaAttestedAt` itself, so the batch it
@@ -396,6 +400,16 @@ Three consequences, all accepted and all bounded by the same TTL:
    fail-closed one level up: the roster proof yields the `documentSetHash` the
    service compares against the client's own declared value, so a set stale
    relative to the client's view is refused (`DOCUMENT_SET_STALE`).
+4. **A retained batch stays PROMOTABLE for the rest of its TTL** — the one way
+   the "inactive" rows become active again. Pre-#1491 the commit-time delete
+   closed that window immediately; now promotion (`added = ['server']`) is
+   TTL-closed twice over: `exactCandidateRoster` requires every row's
+   `expires_at > now`, and the readback token embeds the candidate's own
+   `expiresAt`, re-checked at `transitionMedia` — the receipt dies with the
+   candidate. Note the honest boundary: rows stop being READABLE at
+   `expires_at` (every read path disposes-and-refuses), while the bytes leave
+   disk at the next lazy touch or the daily retention sweep (#1521) — up to
+   ~24h later on a vault nobody opens.
 
 What the server does NOT enforce: that a client opens a NEW transition id after
 a commit. Staging under a different id wipes the batch wholesale, but a client
