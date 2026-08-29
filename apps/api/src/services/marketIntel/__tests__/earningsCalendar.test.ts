@@ -45,6 +45,24 @@ const MSFT: UserIntelAsset = {
   watched: true,
 };
 
+/**
+ * Every case pins its own clock: the calendar drops reports dated before today
+ * (UTC), so a suite leaning on the wall clock would silently go vacuous the
+ * moment its fixture dates passed.
+ */
+const clock = (iso: string) => () => Date.parse(iso);
+
+/** A clock earlier than every date the "shape" cases below use. */
+const BEFORE_ALL = clock('2026-07-20T09:00:00.000Z');
+
+/** A single dated upcoming report for the given ref. */
+function nextOn(date: string) {
+  return () =>
+    cachedIntel(
+      sampleEarningsEvents({ next: { date, epsEstimate: 1.4, epsActual: null, estimated: true } }),
+    );
+}
+
 describe('marketIntel.earningsCalendar (V5-P5)', () => {
   it('returns held + watched entries with a dated upcoming report, ascending by date', async () => {
     const marketData = createStubMarketData({
@@ -68,6 +86,7 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
       assetRepo,
       intelRepo: intelRepo([AAPL, MSFT]),
       enabled: true,
+      now: BEFORE_ALL,
     });
 
     const res = await service.earningsCalendar('u1');
@@ -96,6 +115,7 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
       assetRepo,
       intelRepo: intelRepo([AAPL, MSFT]),
       enabled: true,
+      now: BEFORE_ALL,
     });
     const res = await service.earningsCalendar('u1');
     expect(res.entries.map((e) => e.symbol)).toEqual(['AAPL']);
@@ -110,6 +130,7 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
       assetRepo,
       intelRepo: intelRepo([AAPL]),
       enabled: true,
+      now: BEFORE_ALL,
     });
     const res = await service.earningsCalendar('u1');
     expect(res.available).toBe(true);
@@ -137,9 +158,75 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
       assetRepo,
       intelRepo: intelRepo([AAPL, MSFT]),
       enabled: true,
+      now: BEFORE_ALL,
     });
     const res = await service.earningsCalendar('u1');
     expect(res.entries.map((e) => e.symbol)).toEqual(['AAPL']);
+  });
+
+  it('drops a report that already happened and keeps the genuinely upcoming one', async () => {
+    const marketData = createStubMarketData({
+      earnings: (ref: AssetRef) =>
+        cachedIntel(
+          sampleEarningsEvents({
+            next: {
+              // MSFT reported a fortnight ago — the keystone can serve that
+              // payload stale for days once the provider breaker opens, and
+              // being the smallest key it would otherwise HEAD the panel.
+              date:
+                ref.providerRef === 'MSFT'
+                  ? '2026-07-29T00:00:00.000Z'
+                  : '2026-08-20T00:00:00.000Z',
+              epsEstimate: 1.42,
+              epsActual: null,
+              estimated: true,
+            },
+          }),
+        ),
+    });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL, MSFT]),
+      enabled: true,
+      now: clock('2026-08-15T09:30:00.000Z'),
+    });
+
+    const res = await service.earningsCalendar('u1');
+    expect(res.available).toBe(true);
+    expect(res.entries.map((e) => e.symbol)).toEqual(['AAPL']);
+  });
+
+  it('keeps a report dated exactly today — the boundary is "before today"', async () => {
+    const marketData = createStubMarketData({
+      earnings: nextOn('2026-08-15T00:00:00.000Z'),
+    });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL]),
+      enabled: true,
+      // Later in the same UTC day than the report's own timestamp.
+      now: clock('2026-08-15T21:45:00.000Z'),
+    });
+
+    const res = await service.earningsCalendar('u1');
+    expect(res.entries.map((e) => e.symbol)).toEqual(['AAPL']);
+  });
+
+  it('defaults the clock to the wall clock when no `now` is injected', async () => {
+    const marketData = createStubMarketData({
+      earnings: nextOn(new Date(Date.now() - 3 * 86_400_000).toISOString()),
+    });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL]),
+      enabled: true,
+    });
+
+    // No `now` in the deps ⇒ Date.now, so a report three days old is dropped.
+    expect((await service.earningsCalendar('u1')).entries).toEqual([]);
   });
 
   it('is invisible (available:false, empty) when the gate is off', async () => {
