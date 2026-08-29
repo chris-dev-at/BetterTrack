@@ -61,9 +61,27 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** The chronological sort key of a calendar event: its earliest known date. */
-function eventSortKey(entry: DividendCalendarEntry): string {
-  return entry.exDate ?? entry.payDate ?? '';
+/** The event's known dates, day-only (UTC), in no particular order. */
+function eventDays(entry: Pick<DividendCalendarEntry, 'exDate' | 'payDate'>): string[] {
+  const days: string[] = [];
+  if (entry.exDate) days.push(entry.exDate.slice(0, 10));
+  if (entry.payDate) days.push(entry.payDate.slice(0, 10));
+  return days;
+}
+
+/**
+ * The chronological sort key of a calendar event: the earliest of its dates
+ * that has not yet passed. An event that has already gone ex but is not yet
+ * paid is still upcoming and sorts on its **pay** date — the date the widget
+ * shows for it — not on the ex-date already behind us.
+ */
+function eventSortKey(entry: DividendCalendarEntry, todayStart: string): string {
+  let key = '';
+  for (const day of eventDays(entry)) {
+    if (day < todayStart) continue;
+    if (key === '' || day < key) key = day;
+  }
+  return key;
 }
 
 export function createPortfolioMarketIntelService(
@@ -93,8 +111,10 @@ export function createPortfolioMarketIntelService(
         if (!byAsset.has(row.assetId)) byAsset.set(row.assetId, { row, source: 'watchlist' });
       }
 
-      // "Upcoming" is any event whose earliest date is >= the start of today
-      // (UTC) — an ex-date landing today still belongs on the calendar.
+      // "Upcoming" is any event with at least one date >= the start of today
+      // (UTC) — an ex-date landing today still belongs on the calendar, and so
+      // does an event that has already gone ex but whose payout is still to
+      // come: that pay date is exactly what the Home widget renders for it.
       const todayStart = new Date(now()).toISOString().slice(0, 10);
 
       const entries: DividendCalendarEntry[] = [];
@@ -112,9 +132,7 @@ export function createPortfolioMarketIntelService(
             return;
           }
           for (const event of events.upcoming) {
-            const earliest = event.exDate ?? event.payDate;
-            if (!earliest) continue;
-            if (earliest.slice(0, 10) < todayStart) continue;
+            if (!eventDays(event).some((day) => day >= todayStart)) continue;
             entries.push({
               assetId: row.assetId,
               symbol: row.symbol,
@@ -130,7 +148,7 @@ export function createPortfolioMarketIntelService(
       );
 
       entries.sort((a, b) => {
-        const cmp = eventSortKey(a).localeCompare(eventSortKey(b));
+        const cmp = eventSortKey(a, todayStart).localeCompare(eventSortKey(b, todayStart));
         return cmp !== 0 ? cmp : a.symbol.localeCompare(b.symbol);
       });
 
