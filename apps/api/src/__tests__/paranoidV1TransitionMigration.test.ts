@@ -118,21 +118,45 @@ const LEGACY_TABLES = [
 const QUARANTINE_TABLES = LEGACY_TABLES.map((t) => `zz_paranoid_v1_backup_${t}`);
 
 describe('migration 0102_paranoid_v1_transition', () => {
-  it('is appended, not edited: next free idx with a strictly newer `when`', () => {
+  it('is appended, not edited: idx 102 with a strictly newer `when` than 101', () => {
     const entries = journal();
     const mine = entries.find((e) => e.tag === TAG);
     expect(mine, `${TAG} must be in the journal`).toBeDefined();
-    const previous = entries[entries.indexOf(mine!) - 1]!;
-    expect(mine!.idx).toBe(previous.idx + 1);
+
+    // POSITION-BASED, NOT TAIL-BASED. What this test protects is that E9 was
+    // APPENDED rather than inserted or edited: it took the next free idx and a
+    // stamp newer than the entry before it, so no deployed database re-runs an
+    // earlier migration. That property is about 102's relationship to 101 and
+    // is true forever.
+    //
+    // It was originally written as "nothing may sort after it", which is a
+    // different and much shorter-lived claim: it holds only until the NEXT
+    // migration is written by anyone, and 0103 was simply the first to reach
+    // it. Later migrations appending after 102 is the system working, not a
+    // regression, so the assertion now pins the position instead of the tail.
+    // The global "every `when` exceeds every earlier `when`" rule still has a
+    // single home in `migrationJournal.test.ts`, which covers the whole file.
+    expect(mine!.idx).toBe(102);
+    expect(entries[102]!.tag).toBe(TAG);
+
+    const previous = entries[101]!;
+    expect(previous.idx).toBe(101);
     expect(mine!.when).toBeGreaterThan(previous.when);
-    // It must be the tail: nothing may sort after it.
-    expect(entries[entries.length - 1]!.tag).toBe(TAG);
   });
 
   it('wipes nobody at deploy time — every legacy row and the paranoid mode survive', async () => {
     // Boot to the migration immediately BEFORE this one, seed a live paranoid
     // account, then apply this one on top — that is the production shape.
-    const client = await boot(journal().at(-2)!.tag);
+    //
+    // Found BY TAG, not by counting back from the tail: `at(-2)` meant "the one
+    // before 0102" only while 0102 was last. Once 0103 existed it resolved to
+    // 0102 itself, so this booted THROUGH the migration under test and then
+    // applied it a second time — failing with `relation ... already exists`,
+    // which looks like a broken migration and is really a broken test.
+    const entries = journal();
+    const index = entries.findIndex((e) => e.tag === TAG);
+    expect(index, `${TAG} must be in the journal`).toBeGreaterThan(0);
+    const client = await boot(entries[index - 1]!.tag);
     try {
       await seedLegacyParanoidAccount(client, U1);
       await applyMigration(client, TAG);

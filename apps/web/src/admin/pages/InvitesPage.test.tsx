@@ -1,13 +1,31 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AdminInvite, CreateInviteResponse, MeResponse } from '@bettertrack/contracts';
+import type {
+  AdminInvite,
+  AdminStats,
+  CreateInviteResponse,
+  MeResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { I18nProvider, localizedMessage } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { InvitesPage } from './InvitesPage';
+
+/**
+ * Expected copy resolves from the catalog, like every other admin page test.
+ * The page was hardcoded English until #1406 W2 folded it into the People strip;
+ * asserting the literal strings would let a missing translation pass.
+ */
+const en = (key: string, values: Record<string, string> = {}) =>
+  Object.entries(values).reduce<string>(
+    (text, [name, value]) => text.replaceAll(`{{${name}}}`, value),
+    localizedMessage('en', key),
+  );
 
 const admin: MeResponse = {
   id: 'admin-1',
@@ -39,6 +57,15 @@ const created: CreateInviteResponse = {
   inviteUrl: 'https://bettertrack.test/invite/one-time-secret',
 };
 
+/** The People tab strip reads these for its counts (#1406 W2). */
+const stats: AdminStats = {
+  userCount: 3,
+  activeUserCount: 3,
+  disabledUserCount: 0,
+  pendingInviteCount: 1,
+  pendingRegistrationCount: 0,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
@@ -51,13 +78,21 @@ beforeEach(() => {
     recoveryCodesRemaining: 8,
   });
   vi.mocked(api.listInvites).mockResolvedValue({ invites: [invite] });
+  vi.mocked(api.getStats).mockResolvedValue(stats);
 });
 
-function renderPage() {
+// The page is a People tab now: it renders the shared WorkspaceTabs strip, so
+// it needs a router, and every string resolves through the catalog, so it needs
+// the i18n provider.
+function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
-    <AuthProvider>
-      <InvitesPage />
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <MemoryRouter initialEntries={['/admin/invites']}>
+        <AuthProvider>
+          <InvitesPage />
+        </AuthProvider>
+      </MemoryRouter>
+    </I18nProvider>,
   );
 }
 
@@ -67,16 +102,23 @@ test('requires an inline confirmation before revoking an invite', async () => {
   renderPage();
 
   await screen.findByText(invite.email);
-  await user.click(screen.getByRole('button', { name: 'Revoke' }));
+  // The row's status reads from the catalog now, not a hardcoded English word.
+  expect(await screen.findByText(en('admin.invites.status.pending'))).toBeInTheDocument();
 
-  expect(await screen.findByText(`Revoke invite for ${invite.email}?`)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: en('admin.actions.revoke') }));
+
+  expect(
+    await screen.findByText(en('admin.confirmations.revokeInvite.prompt', { email: invite.email })),
+  ).toBeInTheDocument();
   expect(api.revokeInvite).not.toHaveBeenCalled();
 
-  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  await user.click(screen.getByRole('button', { name: en('common.cancel') }));
   expect(api.revokeInvite).not.toHaveBeenCalled();
 
-  await user.click(screen.getByRole('button', { name: 'Revoke' }));
-  await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
+  await user.click(screen.getByRole('button', { name: en('admin.actions.revoke') }));
+  await user.click(
+    screen.getByRole('button', { name: en('admin.confirmations.revokeInvite.confirm') }),
+  );
 
   await waitFor(() => expect(api.revokeInvite).toHaveBeenCalledWith(invite.id));
 });
@@ -86,13 +128,13 @@ test('keeps a newly created invite URL open until it is acknowledged', async () 
   const user = userEvent.setup();
   renderPage();
 
-  await user.type(await screen.findByLabelText('Email'), invite.email);
-  await user.click(screen.getByRole('button', { name: 'Create invite' }));
+  await user.type(await screen.findByLabelText(en('admin.users.emailLabel')), invite.email);
+  await user.click(screen.getByRole('button', { name: en('admin.invites.createAction') }));
 
   expect(await screen.findByText(created.inviteUrl)).toBeInTheDocument();
   await user.keyboard('{Escape}');
   expect(screen.getByText(created.inviteUrl)).toBeInTheDocument();
 
-  await user.click(screen.getByRole('button', { name: "I've saved this" }));
+  await user.click(screen.getByRole('button', { name: en('common.savedOneTimeSecret') }));
   await waitFor(() => expect(screen.queryByText(created.inviteUrl)).not.toBeInTheDocument());
 });
