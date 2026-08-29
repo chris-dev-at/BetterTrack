@@ -213,12 +213,17 @@ function twoFactorErrorMessage(t: TranslateFn, err: unknown): string {
 
 /**
  * Which control a two-factor failure belongs to. A code the server refused is
- * the code box's own failure — that is the field-attributable case. A rate
- * limit judged nothing the user typed and an outage judged nothing at all, so
- * both stay with the submission.
+ * the code box's own failure — that is the only field-attributable case, so it
+ * is recognised by its code rather than inferred from the status class (review
+ * nit): a lapsed session (401), a forbidden state (403) and the enrollment
+ * codes (`TWO_FACTOR_NOT_PENDING`, `TWO_FACTOR_ALREADY_ENABLED`,
+ * `TWO_FACTOR_EMAIL_UNAVAILABLE`) are all non-429 4xx that judged nothing about
+ * the typed digits, and a rate limit judged nothing the user typed either.
+ * `TWO_FACTOR_INVALID_CODE` is what every refusing endpoint here actually
+ * returns (`twoFactorService.confirmTotp` / `confirmEmail` / `disable`).
  */
 function twoFactorErrorField(err: unknown): 'code' | null {
-  return err instanceof ApiError && err.status < 500 && err.status !== 429 ? 'code' : null;
+  return err instanceof ApiError && err.code === 'TWO_FACTOR_INVALID_CODE' ? 'code' : null;
 }
 
 /** Recovery codes, shown exactly once after the first method is enabled or a regenerate. */
@@ -773,17 +778,49 @@ function TwoFactorGroup() {
   );
 }
 
-/** Map a passkey add/manage failure to a localized message. */
-function passkeyErrorMessage(t: TranslateFn, err: unknown): string {
-  if (isPasskeyCancellation(err)) return t('settings.security.passkeys.cancelled');
-  if (err instanceof ApiError) {
-    if (err.status === 429) return t('settings.security.passkeys.rateLimited');
-    if (err.code === 'PASSKEY_ALREADY_REGISTERED')
-      return t('settings.security.passkeys.alreadyRegistered');
-    if (err.status === 401) return t('settings.security.passkeys.wrongPassword');
-    if (err.status >= 500) return t('common.genericError');
+/** The controls a passkey add/manage failure can be attributed to. */
+type PasskeyField = 'name' | 'password';
+
+/**
+ * Map a passkey add/manage failure to a localized message and the control it
+ * belongs to (FRONTEND-09). A refused re-auth (401) is the one case that judges
+ * something typed — the password box — and only where such a box exists:
+ * renaming sends no password and renders no password field, so `canBlamePassword`
+ * gates the attribution at the mapper the way `registerErrorMessage` gates its
+ * token field. Blaming an unmounted control would otherwise lean on the
+ * `useFieldErrors` fail-safe to stay visible. A cancelled authenticator prompt,
+ * a rate limit, an already-registered credential and an outage judged nothing
+ * the user typed, so all of them stay with the submission.
+ *
+ * Exported for its own test: an ungated `401 → 'password'` would blame the
+ * rename form's absent password box, and the `useFieldErrors` fail-safe would
+ * silently demote that back to form-level — so the gate is invisible through the
+ * DOM and has to be asserted here.
+ */
+export function passkeyErrorMessage(
+  t: TranslateFn,
+  err: unknown,
+  { canBlamePassword }: { canBlamePassword: boolean },
+): AttributedError<PasskeyField> {
+  if (isPasskeyCancellation(err)) {
+    return { field: null, message: t('settings.security.passkeys.cancelled') };
   }
-  return t('settings.security.passkeys.genericError');
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      return { field: null, message: t('settings.security.passkeys.rateLimited') };
+    }
+    if (err.code === 'PASSKEY_ALREADY_REGISTERED') {
+      return { field: null, message: t('settings.security.passkeys.alreadyRegistered') };
+    }
+    if (err.status === 401) {
+      return {
+        field: canBlamePassword ? 'password' : null,
+        message: t('settings.security.passkeys.wrongPassword'),
+      };
+    }
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
+  }
+  return { field: null, message: t('settings.security.passkeys.genericError') };
 }
 
 /** Add-a-passkey form: name + password re-auth, then the authenticator prompt. */
@@ -791,24 +828,37 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
   const t = useT();
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The re-auth password is the only control the server judges here, so a
+  // rejected credential is that box's failure (FRONTEND-09).
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<PasskeyField>();
 
   const add = useMutation({
     mutationFn: () => registerPasskey(name.trim(), { password }),
     onSuccess: onAdded,
-    onError: (err) => setError(passkeyErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = passkeyErrorMessage(t, err, { canBlamePassword: true });
+      fail(attributed.field, attributed.message);
+    },
   });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     add.mutate();
   }
 
   return (
-    <PanelForm onSubmit={onSubmit}>
-      {error ? <Alert tone="error">{error}</Alert> : null}
-      <Field htmlFor="passkey-add-name" label={t('settings.security.passkeys.nameLabel')}>
+    <PanelForm formRef={formRef} onSubmit={onSubmit}>
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
+      <Field
+        error={fieldError('name')}
+        htmlFor="passkey-add-name"
+        label={t('settings.security.passkeys.nameLabel')}
+      >
         <Input
           autoComplete="off"
           id="passkey-add-name"
@@ -820,6 +870,7 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
         />
       </Field>
       <Field
+        error={fieldError('password')}
         hint={t('settings.security.passkeys.reauthHint')}
         htmlFor="passkey-add-password"
         label={t('settings.security.passkeys.passwordLabel')}
@@ -864,7 +915,10 @@ function PasskeyRow({
   const [mode, setMode] = useState<'view' | 'rename' | 'delete'>('view');
   const [name, setName] = useState(passkey.name);
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // One attribution shared by both inline forms — only one is ever mounted. The
+  // delete form's re-auth password is blamable; renaming submits no credential,
+  // so nothing it sends can be judged and its failures stay form-level.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<PasskeyField>();
 
   const rename = useMutation({
     mutationFn: () => renamePasskey(passkey.id, name.trim()),
@@ -872,33 +926,52 @@ function PasskeyRow({
       setMode('view');
       refresh();
     },
-    onError: (err) => setError(passkeyErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = passkeyErrorMessage(t, err, { canBlamePassword: false });
+      fail(attributed.field, attributed.message);
+    },
   });
 
   const remove = useMutation({
     mutationFn: () => deletePasskey(passkey.id, { password }),
     onSuccess: refresh,
-    onError: (err) => setError(passkeyErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = passkeyErrorMessage(t, err, { canBlamePassword: true });
+      fail(attributed.field, attributed.message);
+    },
   });
 
   function reset() {
     setMode('view');
     setName(passkey.name);
     setPassword('');
-    setError(null);
+    clear();
   }
 
   if (mode === 'rename') {
     return (
-      <PanelListItem main={error ? <Alert tone="error">{error}</Alert> : null}>
+      <PanelListItem
+        main={
+          // The row's alert sits outside the form (same shape as EmailMethodRow):
+          // `formRef` keeps the invalid-field lookup scoped to the form, `alertRef`
+          // gives the form-level failure something to focus.
+          formError ? (
+            <div ref={alertRef} tabIndex={-1}>
+              <Alert tone="error">{formError}</Alert>
+            </div>
+          ) : null
+        }
+      >
         <PanelForm
+          formRef={formRef}
           onSubmit={(e) => {
             e.preventDefault();
-            setError(null);
+            clear();
             rename.mutate();
           }}
         >
           <Field
+            error={fieldError('name')}
             htmlFor={`passkey-rename-${passkey.id}`}
             label={t('settings.security.passkeys.nameLabel')}
           >
@@ -928,11 +1001,20 @@ function PasskeyRow({
 
   if (mode === 'delete') {
     return (
-      <PanelListItem main={error ? <Alert tone="error">{error}</Alert> : null}>
+      <PanelListItem
+        main={
+          formError ? (
+            <div ref={alertRef} tabIndex={-1}>
+              <Alert tone="error">{formError}</Alert>
+            </div>
+          ) : null
+        }
+      >
         <PanelForm
+          formRef={formRef}
           onSubmit={(e) => {
             e.preventDefault();
-            setError(null);
+            clear();
             remove.mutate();
           }}
         >
@@ -943,6 +1025,7 @@ function PasskeyRow({
               : t('settings.security.passkeys.deleteConfirm')}
           </PanelNote>
           <Field
+            error={fieldError('password')}
             htmlFor={`passkey-delete-${passkey.id}`}
             label={t('settings.security.passkeys.passwordLabel')}
           >

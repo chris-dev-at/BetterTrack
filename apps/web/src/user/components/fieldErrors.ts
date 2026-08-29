@@ -42,6 +42,12 @@ export function useFieldErrors<F extends string = string>() {
 
   useEffect(() => {
     if (!failure) return;
+    // Invariant this query depends on (review nit): within one form, `aria-invalid`
+    // is set ONLY by `fieldError`, and a failure blames at most one field — so the
+    // first invalid control IS the blamed one, and "no invalid control" means the
+    // blamed field is unmounted. A control carrying a static `aria-invalid="true"`
+    // would break both halves (stealing focus, and suppressing the demote below),
+    // so keep validity in this hook rather than hardcoding it on a field.
     const invalid = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]') ?? null;
     if (invalid === null && failure.error.field !== null) {
       // The blamed control is not rendered (or sits outside the form), so its
