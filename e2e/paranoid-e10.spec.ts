@@ -20,6 +20,8 @@ import { passwordSignIn } from './support/auth';
 import { expectUserShellReady } from './support/flows';
 import { assertNoPd9Secrets, type Pd9SensitiveCanary } from './support/pd9Drive';
 import {
+  ACCESS_LOCKOUT_COPY,
+  ACCESS_REFUSAL_COPY,
   apiV1,
   attemptUnlock,
   createVaultThroughCeremony,
@@ -33,6 +35,7 @@ import {
   driveOwnerDigestInBrowser,
   lockVaultsByReload,
   openPrivacyPanel,
+  openVaultAction,
   openTransferReceiver,
   readEndpointLockout,
   submitTransferPayload,
@@ -379,7 +382,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         for (let attempt = 1; attempt <= 4; attempt += 1) {
           const section = await attemptUnlock(page, created.vaultId, WRONG_DEVICE_PASSWORD);
           await expect(
-            section.getByText('That action could not be completed.', { exact: false }),
+            section.getByText(ACCESS_REFUSAL_COPY, { exact: false }),
             `attempt ${attempt} must be refused`,
           ).toBeVisible({ timeout: 60_000 });
           // The refusal is not a partial open: the row never claims readiness.
@@ -395,9 +398,16 @@ test.describe('PARANOID E10 per-vault gate', () => {
 
       await test.step('[E10-A2 proof] the fifth failure arms the lockout', async () => {
         const section = await attemptUnlock(page, created.vaultId, WRONG_DEVICE_PASSWORD);
-        await expect(
-          section.getByText('That action could not be completed.', { exact: false }),
-        ).toBeVisible({ timeout: 60_000 });
+        // #1526: the refusal that ARMS the lockout says so, with the instant the
+        // endpoint accepts a password again — not the generic wrong-password
+        // copy the four attempts above got.
+        const armedNotice = section.getByText(ACCESS_LOCKOUT_COPY, { exact: false });
+        await expect(armedNotice).toBeVisible({ timeout: 60_000 });
+        expect(
+          (await armedNotice.textContent()) ?? '',
+          'the lockout copy must carry its retry time',
+        ).toMatch(/\d{1,2}:\d{2}/);
+        await expect(section.getByText(ACCESS_REFUSAL_COPY, { exact: false })).toHaveCount(0);
 
         // The window is read from E3's OWN persisted record rather than inferred
         // from the wall clock. That is the #1527/F7 repair: every claim below
@@ -410,19 +420,35 @@ test.describe('PARANOID E10 per-vault gate', () => {
         expect(armed.remainingMs).toBeLessThanOrEqual(ENDPOINT_LOCKOUT_INITIAL_MS);
       });
 
-      await test.step('THE assertion: the CORRECT password does not silently reopen it', async () => {
+      await test.step('THE assertion: no password — right or wrong — is taken while it lasts', async () => {
         // The whole point of a lockout, and it is taken FIRST now: it used to
         // run after three further SPA loads inside the frozen 30 s window
         // (#1527/F7). One navigation is deliberate — a fresh document is also
         // what proves the lockout is not an in-memory counter a refresh clears;
         // E3 persists `{ failures, lockedUntil }` in the endpoint keystore.
+        //
+        // Since #1526 the deep link is reconciled against that record, so the
+        // form the CORRECT password would go into is not rendered at all: the
+        // URL-addressed surface answers with the same wait-or-reset affordance
+        // the row offers. "The right password is still refused inside the
+        // window" is E3's own claim and stays pinned in `keystore.test.ts`;
+        // what this arc proves is that the surface never invites it.
         const live = await ensureLockoutWindow(page, created.vaultId, WRONG_DEVICE_PASSWORD);
-        const section = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
+        const section = await openVaultAction(page, created.vaultId, 'unlock');
         await expect(
-          section.getByText('That action could not be completed.', { exact: false }),
-          'the right password must NOT open a locked-out endpoint',
+          section.getByText(ACCESS_LOCKOUT_COPY, { exact: false }),
+          'a locked-out unlock deep link must name the lockout',
         ).toBeVisible({ timeout: 60_000 });
-        await expectStillLockedOut(page, live, 'the correct-password refusal');
+        await expect(
+          section.locator(`#vault-access-secret-${created.vaultId}`),
+          'no live password field may be offered inside the window',
+        ).toHaveCount(0);
+        await expect(section.getByRole('button', { name: 'Continue', exact: true })).toHaveCount(0);
+        await expect(
+          section.getByRole('link', { name: 'Reset this device', exact: true }),
+        ).toBeVisible();
+        await expect(page.getByText('Ready on this device')).toHaveCount(0);
+        await expectStillLockedOut(page, live, 'the withdrawn unlock form');
       });
 
       await test.step('the lockout withdraws the unlock affordance while it lasts', async () => {

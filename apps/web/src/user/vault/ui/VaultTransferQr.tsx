@@ -14,7 +14,6 @@ import { QRCodeSVG } from 'qrcode.react';
 import type { VaultKeyFingerprint } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { getFormatLocale } from '../../../lib/format';
 import { Button, Field, Input } from '../../../ui/origin';
 import { useOverlayEscape } from '../../../ui/overlayStack';
 import { useFocusTrap } from '../../../ui/useFocusTrap';
@@ -27,6 +26,7 @@ import {
   type VaultTransferQrCustody,
   type VaultTransferQrSource,
 } from '../qr';
+import { vaultRetryTimeLabel } from './retryTime';
 
 export type { VaultTransferQrSource } from '../qr';
 
@@ -374,7 +374,10 @@ export function VaultTransferQr({
                     className="bt-neg w-full rounded-lg border border-red-800 bg-red-950/40 p-3"
                     role="alert"
                   >
-                    {t(errorKey, retryAt == null ? undefined : { time: retryTimeLabel(retryAt) })}
+                    {t(
+                      errorKey,
+                      retryAt == null ? undefined : { time: vaultRetryTimeLabel(retryAt) },
+                    )}
                   </p>
                 ) : null}
 
@@ -580,21 +583,4 @@ export function EndpointKeystoreResetFold({ onReset }: { onReset: () => Promise<
       </div>
     </div>
   );
-}
-
-/**
- * The instant the endpoint accepts a password again. Seconds are shown on
- * purpose: §12's first rung is 30 s, and a bare "14:32" would read as a minute
- * of wait for a half-minute lockout.
- */
-function retryTimeLabel(retryAt: number): string {
-  try {
-    return new Intl.DateTimeFormat(getFormatLocale(), {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }).format(new Date(retryAt));
-  } catch {
-    return new Date(retryAt).toISOString();
-  }
 }
