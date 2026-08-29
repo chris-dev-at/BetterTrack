@@ -61,6 +61,15 @@ export const AuditAction = {
   UserUsernameChanged: 'user.username_changed',
   UserEmailChanged: 'user.email_changed',
   UserDeleted: 'user.deleted',
+  /**
+   * Operator notes on an account (#1406 W2). Audited even though a note changes
+   * nothing about the account: the note IS operator speech about a real person,
+   * so who wrote and who removed one has to be answerable. `meta` carries the
+   * note id only — never the body, which would copy the prose into a second,
+   * longer-lived store the delete route cannot reach.
+   */
+  AdminUserNoteAdded: 'user.note_added',
+  AdminUserNoteDeleted: 'user.note_deleted',
   /** Admin workspace hygiene for the helpdesk queue; no submitter lifecycle change. */
   FeedbackArchived: 'feedback.archived',
   FeedbackUnarchived: 'feedback.unarchived',

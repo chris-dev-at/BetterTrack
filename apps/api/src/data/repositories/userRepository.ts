@@ -1,7 +1,25 @@
-import { and, count, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { users, type UserRow } from '../schema';
+
+/**
+ * Filter + order + window for the admin People list (#1406 W2). Every field is
+ * already validated by `adminUserListQuerySchema` before it reaches here; the
+ * repository still switches on the sort key through a closed map rather than
+ * interpolating it, so no caller can smuggle an expression into ORDER BY.
+ */
+export interface AdminUserListFilters {
+  search?: string;
+  role?: 'user' | 'admin';
+  status?: 'active' | 'disabled';
+  privacyMode?: 'normal' | 'paranoid';
+  sort: 'createdAt' | 'lastLoginAt' | 'username' | 'email';
+  direction: 'asc' | 'desc';
+  limit: number;
+  offset: number;
+}
 
 export interface CreateUserInput {
   email: string;
@@ -400,6 +418,49 @@ function createUserQueries(db: Database) {
           .orderBy(users.createdAt);
       }
       return db.select().from(users).orderBy(users.createdAt);
+    },
+
+    /**
+     * The admin People list (#1406 W2): the same filters the operator sees,
+     * ordered and windowed in the database, plus the total the page footer
+     * needs. `list()` above stays for the callers that genuinely want every row
+     * (the ⌘K palette's search).
+     *
+     * The `id` tiebreak on every ordering is what makes paging correct: without
+     * it two accounts created in the same millisecond can swap places between
+     * page 1 and page 2 and one of them is never shown.
+     */
+    async listPage(filters: AdminUserListFilters): Promise<{ rows: UserRow[]; total: number }> {
+      const conditions: SQL[] = [];
+      const search = filters.search?.trim();
+      if (search) {
+        const pattern = `%${search}%`;
+        const matches = or(ilike(users.email, pattern), ilike(users.username, pattern));
+        if (matches) conditions.push(matches);
+      }
+      if (filters.role) conditions.push(eq(users.role, filters.role));
+      if (filters.status) conditions.push(eq(users.status, filters.status));
+      if (filters.privacyMode) conditions.push(eq(users.privacyMode, filters.privacyMode));
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+      const column = {
+        createdAt: users.createdAt,
+        lastLoginAt: users.lastLoginAt,
+        username: users.username,
+        email: users.email,
+      }[filters.sort];
+      const order = filters.direction === 'asc' ? asc : desc;
+
+      const rows = await db
+        .select()
+        .from(users)
+        .where(where)
+        .orderBy(order(column), order(users.id))
+        .limit(filters.limit)
+        .offset(filters.offset);
+
+      const [totalRow] = await db.select({ value: count() }).from(users).where(where);
+      return { rows, total: totalRow?.value ?? 0 };
     },
 
     async counts(): Promise<{ total: number; disabled: number; activeRecentLogin: number }> {

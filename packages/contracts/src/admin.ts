@@ -204,10 +204,82 @@ export const adminUserSchema = z
   });
 export type AdminUser = z.infer<typeof adminUserSchema>;
 
+// --- Users list: filter, sort, page (#1406 W2) --------------------------------
+// Before W2 the list query was `{ search? }` and the response an unbounded array:
+// every mount of the detail page downloaded the whole table to find one row. The
+// query below adds the filters the operator list actually needs and a bounded
+// page; `GET /admin/users/:id` (below) retires the download-everything read.
+
+/** Columns the operator list may be ordered by. */
+export const ADMIN_USER_SORTS = ['createdAt', 'lastLoginAt', 'username', 'email'] as const;
+export const adminUserSortSchema = z.enum(ADMIN_USER_SORTS);
+export type AdminUserSort = z.infer<typeof adminUserSortSchema>;
+
+export const ADMIN_USER_SORT_DIRECTIONS = ['asc', 'desc'] as const;
+export const adminUserSortDirectionSchema = z.enum(ADMIN_USER_SORT_DIRECTIONS);
+export type AdminUserSortDirection = z.infer<typeof adminUserSortDirectionSchema>;
+
+/**
+ * Privacy-mode filter. `paranoid` selects encrypted accounts; the mode is the
+ * ONLY thing about a paranoid account this filter can reach — the vault itself
+ * stays unreadable to everyone including the operator (§16 2026-07-21: "admin
+ * sees mode/media/blob metadata only").
+ */
+export const ADMIN_USER_PRIVACY_FILTERS = ['normal', 'paranoid'] as const;
+export const adminUserPrivacyFilterSchema = z.enum(ADMIN_USER_PRIVACY_FILTERS);
+export type AdminUserPrivacyFilter = z.infer<typeof adminUserPrivacyFilterSchema>;
+
+export const ADMIN_USER_PAGE_SIZE_DEFAULT = 25;
+export const ADMIN_USER_PAGE_SIZE_MAX = 200;
+/**
+ * Deep-paging bound. Paging past this is a symptom of a missing filter, not a
+ * real operator need, and an unbounded offset is a cheap way to make the
+ * database sort the whole table on every request.
+ */
+export const ADMIN_USER_PAGE_OFFSET_MAX = 100_000;
+
+/**
+ * Offset paging rather than the cursor shape the audit log uses. A cursor is
+ * only stable while the ordering is: this list is sortable on four columns in
+ * both directions, so a cursor would have to encode the sort key and be
+ * re-issued whenever the operator clicks a column head. The mockup's own footer
+ * ("Page 1 of 3 · 47 accounts") is page-shaped for the same reason, and a total
+ * is worth more to an operator than an opaque token.
+ */
 export const adminUserListQuerySchema = z
-  .object({ search: z.string().max(120).optional() })
+  .object({
+    search: z.string().max(120).optional(),
+    role: roleSchema.optional(),
+    status: userStatusSchema.optional(),
+    privacyMode: adminUserPrivacyFilterSchema.optional(),
+    sort: adminUserSortSchema.default('createdAt'),
+    direction: adminUserSortDirectionSchema.default('desc'),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ADMIN_USER_PAGE_SIZE_MAX)
+      .default(ADMIN_USER_PAGE_SIZE_DEFAULT),
+    offset: z.coerce.number().int().min(0).max(ADMIN_USER_PAGE_OFFSET_MAX).default(0),
+  })
   .strict();
-export const adminUserListResponseSchema = z.object({ users: z.array(adminUserSchema) });
+export type AdminUserListQuery = z.infer<typeof adminUserListQuerySchema>;
+
+/** Where this page sits in the filtered result set. */
+export const adminUserListPageSchema = z
+  .object({
+    /** Rows matching the filter, ignoring the page window. */
+    total: z.number().int().nonnegative(),
+    limit: z.number().int().positive(),
+    offset: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminUserListPage = z.infer<typeof adminUserListPageSchema>;
+
+export const adminUserListResponseSchema = z.object({
+  users: z.array(adminUserSchema),
+  page: adminUserListPageSchema,
+});
 export type AdminUserListResponse = z.infer<typeof adminUserListResponseSchema>;
 
 export const createUserRequestSchema = z
@@ -285,6 +357,206 @@ export const deleteUserRequestSchema = z
   .object({ confirmUsername: z.string().min(1).max(40) })
   .strict();
 export type DeleteUserRequest = z.infer<typeof deleteUserRequestSchema>;
+
+// ── User 360 (#1406 W2) ──────────────────────────────────────────────────────
+// Four read-only projections behind the detail page's tabs. Every one of them is
+// deliberately a PROJECTION and not a handle: none carries a raw token, a
+// provider subject, a portfolio name, a holding, or anything that came out of a
+// vault. What an operator may see here is bounded by §3 ("Admin cannot browse
+// users' portfolios — privacy stance, deliberate") and by the #1406 kill list
+// (no impersonation, no vault or Drive inspection, no data-export download).
+
+/**
+ * One live session of this account (`GET /admin/users/:id/access`). `id` is the
+ * public revocation handle — SHA-256 of the session id — never the session
+ * token itself, so this response cannot be replayed into a session.
+ */
+export const adminUserSessionSchema = z
+  .object({
+    id: z.string(),
+    /** Device label derived from the stored User-Agent, never the raw string. */
+    device: z.string(),
+    createdAt: z.string().datetime(),
+    lastSeenAt: z.string().datetime(),
+    /** True = "stay signed in"; false = an ephemeral, hard-capped session. */
+    persistent: z.boolean(),
+  })
+  .strict();
+export type AdminUserSession = z.infer<typeof adminUserSessionSchema>;
+
+/** One of this account's API keys. The key material itself is hash-only at rest. */
+export const adminUserApiKeySchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    scopes: z.array(z.string()),
+    lastUsedAt: z.string().datetime().nullable(),
+    revokedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminUserApiKey = z.infer<typeof adminUserApiKeySchema>;
+
+/** One OAuth grant this account has issued to an app (§6.13). */
+export const adminUserOAuthGrantSchema = z
+  .object({
+    id: z.string().uuid(),
+    clientName: z.string(),
+    /** True for the official BetterTrack apps (system-owned trusted clients). */
+    firstParty: z.boolean(),
+    scopes: z.array(z.string()),
+    lastUsedAt: z.string().datetime().nullable(),
+    revokedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminUserOAuthGrant = z.infer<typeof adminUserOAuthGrantSchema>;
+
+/**
+ * A linked external identity (today only Google). The provider `subject` is
+ * deliberately absent: it is a stable cross-service identifier for a real
+ * person and an operator has no support question that it answers. The linked
+ * address is also absent — the account's own email is already on the page, and
+ * a *different* provider address would be new PII this surface never needed.
+ */
+export const adminUserIdentitySchema = z
+  .object({
+    provider: z.string(),
+    emailVerified: z.boolean(),
+    linkedAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminUserIdentity = z.infer<typeof adminUserIdentitySchema>;
+
+/** `GET /admin/users/:id/access` — the Access tab, in one read. */
+export const adminUserAccessResponseSchema = z
+  .object({
+    sessions: z.array(adminUserSessionSchema),
+    apiKeys: z.array(adminUserApiKeySchema),
+    oauthGrants: z.array(adminUserOAuthGrantSchema),
+    identities: z.array(adminUserIdentitySchema),
+  })
+  .strict();
+export type AdminUserAccessResponse = z.infer<typeof adminUserAccessResponseSchema>;
+
+/**
+ * `GET /admin/users/:id/sharing` — the Sharing tab. COUNTS ONLY, on purpose.
+ * The #1406 decision defers the sharing inventory ("cheap public-link view
+ * later") and forbids browsing a user's portfolios or watchlists outright, so
+ * this answers "how exposed is this account?" without naming a single thing
+ * they own. No portfolio names, no share tokens, no friend identities.
+ */
+export const adminUserSharingResponseSchema = z
+  .object({
+    portfolioCount: z.number().int().nonnegative(),
+    /**
+     * Of those, the ones visible to this account's friends. There is no
+     * "public" portfolio in the product — `portfolioVisibilitySchema` is
+     * `private | friends` — so `friends` is the widest a portfolio ever gets,
+     * and the anyone-with-the-link surface is the share LINKS below.
+     */
+    sharedPortfolioCount: z.number().int().nonnegative(),
+    /** Non-private share-audience rows across every shareable kind (§6.9). */
+    shareAudienceCount: z.number().int().nonnegative(),
+    /** Tokenized conglomerate links: live vs. already revoked. */
+    activeShareLinkCount: z.number().int().nonnegative(),
+    revokedShareLinkCount: z.number().int().nonnegative(),
+    friendCount: z.number().int().nonnegative(),
+    followerCount: z.number().int().nonnegative(),
+    followingCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminUserSharingResponse = z.infer<typeof adminUserSharingResponseSchema>;
+
+/**
+ * One of this account's support submissions, summarized for the User 360
+ * Support tab. The message BODY is not here: the thread is W3's surface and
+ * lives on the helpdesk, and a detail page has no reason to render support
+ * prose it cannot reply to.
+ */
+export const adminUserSupportItemSchema = z
+  .object({
+    id: z.string().uuid(),
+    category: z.string(),
+    subject: z.string().nullable(),
+    status: z.string(),
+    /** True once the submitter has tombstoned it (#1400); the row survives. */
+    deletedByUser: z.boolean(),
+    archived: z.boolean(),
+    /** True when the last message in the thread is still unread by an admin. */
+    unreadByAdmin: z.boolean(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminUserSupportItem = z.infer<typeof adminUserSupportItemSchema>;
+
+export const ADMIN_USER_SUPPORT_LIMIT_MAX = 50;
+export const ADMIN_USER_SUPPORT_LIMIT_DEFAULT = 20;
+
+export const adminUserSupportQuerySchema = z
+  .object({
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ADMIN_USER_SUPPORT_LIMIT_MAX)
+      .default(ADMIN_USER_SUPPORT_LIMIT_DEFAULT),
+  })
+  .strict();
+export type AdminUserSupportQuery = z.infer<typeof adminUserSupportQuerySchema>;
+
+export const adminUserSupportResponseSchema = z
+  .object({
+    items: z.array(adminUserSupportItemSchema),
+    /** Every submission this account has ever filed, not just the page above. */
+    total: z.number().int().nonnegative(),
+    openCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminUserSupportResponse = z.infer<typeof adminUserSupportResponseSchema>;
+
+// ── Operator notes (#1406 W2) ────────────────────────────────────────────────
+// Admin-private annotations on an account: "prefers German copy", "reported the
+// same rounding bug twice". They are never shown to the user, carry no
+// behaviour, and every write is audited with the operator as actor. This is the
+// one capability W2 adds that is not a read — and it is additive by
+// construction: deleting every note would leave the account byte-identical.
+
+export const ADMIN_USER_NOTE_MAX_LENGTH = 2000;
+export const ADMIN_USER_NOTE_PAGE_LIMIT = 100;
+
+export const adminUserNoteSchema = z
+  .object({
+    id: z.string().uuid(),
+    body: z.string(),
+    /** The operator who wrote it; null once that admin account is deleted. */
+    authorId: z.string().uuid().nullable(),
+    authorUsername: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminUserNote = z.infer<typeof adminUserNoteSchema>;
+
+export const adminUserNoteListResponseSchema = z
+  .object({ notes: z.array(adminUserNoteSchema) })
+  .strict();
+export type AdminUserNoteListResponse = z.infer<typeof adminUserNoteListResponseSchema>;
+
+export const createAdminUserNoteRequestSchema = z
+  .object({ body: z.string().trim().min(1).max(ADMIN_USER_NOTE_MAX_LENGTH) })
+  .strict();
+export type CreateAdminUserNoteRequest = z.infer<typeof createAdminUserNoteRequestSchema>;
+
+/**
+ * `DELETE /admin/users/:id/notes/:noteId` — both ids, because the delete is
+ * scoped by both. A note id alone would let a stale account id remove a note
+ * from a different account.
+ */
+export const adminUserNoteParamSchema = z
+  .object({ id: z.string().uuid(), noteId: z.string().uuid() })
+  .strict();
+export type AdminUserNoteParam = z.infer<typeof adminUserNoteParamSchema>;
 
 export const INVITE_STATUSES = ['pending', 'used', 'revoked', 'expired'] as const;
 export const inviteStatusSchema = z.enum(INVITE_STATUSES);
@@ -377,6 +649,14 @@ export const registrationRequestSchema = z.object({
   id: z.string().uuid(),
   email: z.string(),
   username: z.string(),
+  /**
+   * How they applied (#1406 W2): the federated provider id (`google`) or null
+   * for a password application. Already stored on the row and consumed at
+   * approval time to link the identity — it was simply never exposed, so an
+   * operator could not tell a Google applicant from a password one. Additive:
+   * the provider SUBJECT stays server-side.
+   */
+  provider: z.string().nullable(),
   createdAt: z.string().datetime(),
 });
 export type RegistrationRequest = z.infer<typeof registrationRequestSchema>;

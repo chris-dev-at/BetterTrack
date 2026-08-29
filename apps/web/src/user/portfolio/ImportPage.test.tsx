@@ -11,8 +11,17 @@ import { I18nProvider } from '../../i18n';
 
 vi.mock('../../lib/importsApi');
 vi.mock('../../lib/portfolioApi');
+// Partial mock ON PURPOSE. Vitest's automock empties exported arrays, which
+// would turn BOTH `CASH_TAGS_QUERY_KEY` and `IMPORT_BROKERS_QUERY_KEY` into
+// `[]` — the two react-query caches would then collide on one key and the tag
+// read would silently serve the broker list. Only the function is replaced.
+vi.mock('../../lib/cashApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/cashApi')>()),
+  listCashTags: vi.fn(),
+}));
 import * as importsApi from '../../lib/importsApi';
 import * as portfolioApi from '../../lib/portfolioApi';
+import * as cashApi from '../../lib/cashApi';
 import { ApiError } from '../../lib/apiClient';
 
 import { ImportPage } from './ImportPage';
@@ -146,6 +155,20 @@ const APPLY_RESULT: ApplyImportResponse = {
   ],
 };
 
+/**
+ * Walk the wizard from wherever the upload landed to the CONFIRM step.
+ *
+ * The flow deliberately stops earlier when a batch has something to say: a
+ * generically-staged file pauses on "Understood", and any batch with unmapped
+ * or unreadable rows pauses on "Review". The shared PREVIEW fixture has both an
+ * unmapped and an error row, so it stops on Review — these tests are about what
+ * confirm does, so they click through rather than pretend the step is not there.
+ */
+async function continueToConfirm(user: ReturnType<typeof userEvent.setup>, label = 'Continue') {
+  const next = screen.queryByRole('button', { name: label });
+  if (next) await user.click(next);
+}
+
 function renderPage(locale?: 'en' | 'de') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const page = (
@@ -177,6 +200,7 @@ beforeEach(() => {
   vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(PREVIEW);
   vi.mocked(importsApi.applyImportBatch).mockResolvedValue(APPLY_RESULT);
   vi.mocked(importsApi.discardImportBatch).mockResolvedValue(undefined);
+  vi.mocked(cashApi.listCashTags).mockResolvedValue({ tags: [] });
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -238,8 +262,9 @@ describe('ImportPage', () => {
   test('uploads the chosen file and renders the preview with per-row flags', async () => {
     renderPage();
     await screen.findByRole('option', { name: 'Trade Republic' });
-    await uploadFixtureFile();
+    const user = await uploadFixtureFile();
 
+    await continueToConfirm(user);
     await screen.findByText('Preview: export.csv');
     expect(vi.mocked(importsApi.uploadImportBatch)).toHaveBeenCalledWith({
       file: expect.any(File),
@@ -262,6 +287,7 @@ describe('ImportPage', () => {
     const user = userEvent.setup();
     await user.selectOptions(screen.getByLabelText('Broker'), 'trade_republic');
     await uploadFixtureFile();
+    await continueToConfirm(user);
     await screen.findByText('Preview: export.csv');
     expect(vi.mocked(importsApi.uploadImportBatch)).toHaveBeenCalledWith({
       file: expect.any(File),
@@ -274,6 +300,7 @@ describe('ImportPage', () => {
     renderPage();
     await screen.findByRole('option', { name: 'Trade Republic' });
     const user = await uploadFixtureFile();
+    await continueToConfirm(user);
     await screen.findByText('Preview: export.csv');
 
     await user.selectOptions(
@@ -298,6 +325,7 @@ describe('ImportPage', () => {
     renderPage();
     await screen.findByRole('option', { name: 'Trade Republic' });
     const user = await uploadFixtureFile();
+    await continueToConfirm(user);
     await screen.findByText('Preview: export.csv');
 
     await user.click(screen.getByRole('button', { name: 'Discard' }));
@@ -372,6 +400,7 @@ describe('ImportPage', () => {
     renderPage('de');
     await screen.findByRole('option', { name: 'Trade Republic' });
     const user = await uploadFixtureFile({ file: 'CSV-Export', cta: 'Vorschau erstellen' });
+    await continueToConfirm(user, 'Weiter');
     await screen.findByText('Vorschau: export.csv');
     await screen.findByLabelText('Geldquelle (Dividenden & Cash-Zeilen)');
     await user.click(screen.getByRole('button', { name: '2 Zeilen importieren' }));

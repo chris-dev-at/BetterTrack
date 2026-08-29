@@ -11,6 +11,11 @@ import {
   adminTwoFactorStatusResponseSchema,
   adminUserListResponseSchema,
   adminUserSchema,
+  adminUserAccessResponseSchema,
+  adminUserSharingResponseSchema,
+  adminUserSupportResponseSchema,
+  adminUserNoteSchema,
+  adminUserNoteListResponseSchema,
   accountDefaultsResponseSchema,
   adminFeatureFlagsResponseSchema,
   adminSessionPolicyResponseSchema,
@@ -100,6 +105,13 @@ import {
   type RegistrationRequestListResponse,
   type RegistrationTokenListResponse,
   type ResetPasswordResponse,
+  type AdminUserListQuery,
+  type AdminUserAccessResponse,
+  type AdminUserSharingResponse,
+  type AdminUserSupportResponse,
+  type AdminUserNote,
+  type AdminUserNoteListResponse,
+  type CreateAdminUserNoteRequest,
   type TestEmailRequest,
   type TestEmailResponse,
   type TwoFactorConfirmRequest,
@@ -196,12 +208,82 @@ export async function getVersion(signal?: AbortSignal): Promise<VersionResponse>
 
 // --- Admin: users ---------------------------------------------------------
 
+/**
+ * The People list (#1406 W2). Every filter is optional; omitted keys are simply
+ * not sent, so the server's own defaults (newest first, 25 rows) apply and the
+ * ⌘K palette can keep calling this with nothing but a search term.
+ */
 export async function listUsers(
-  search?: string,
+  params: Partial<AdminUserListQuery> = {},
   signal?: AbortSignal,
 ): Promise<AdminUserListResponse> {
-  const data = await apiRequest<unknown>('/admin/users', { query: { search }, signal });
+  const data = await apiRequest<unknown>('/admin/users', {
+    query: {
+      search: params.search,
+      role: params.role,
+      status: params.status,
+      privacyMode: params.privacyMode,
+      sort: params.sort,
+      direction: params.direction,
+      limit: params.limit,
+      offset: params.offset,
+    },
+    signal,
+  });
   return adminUserListResponseSchema.parse(data);
+}
+
+/** One account — the read that retired downloading the whole table (#1406 W2). */
+export async function getUser(id: string, signal?: AbortSignal): Promise<AdminUser> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}`, { signal });
+  return adminUserSchema.parse(data);
+}
+
+/** Sessions, API keys, OAuth grants and linked identities — all read-only. */
+export async function getUserAccess(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminUserAccessResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/access`, { signal });
+  return adminUserAccessResponseSchema.parse(data);
+}
+
+/** How exposed the account is, as counts. Never an inventory (§3, §6.12). */
+export async function getUserSharing(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminUserSharingResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/sharing`, { signal });
+  return adminUserSharingResponseSchema.parse(data);
+}
+
+/** This account's support submissions, summarized — no message bodies. */
+export async function getUserSupport(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminUserSupportResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/support`, { signal });
+  return adminUserSupportResponseSchema.parse(data);
+}
+
+export async function listUserNotes(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminUserNoteListResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/notes`, { signal });
+  return adminUserNoteListResponseSchema.parse(data);
+}
+
+export async function createUserNote(
+  id: string,
+  body: CreateAdminUserNoteRequest,
+): Promise<AdminUserNote> {
+  const data = await apiRequest<unknown>(`/admin/users/${id}/notes`, { method: 'POST', body });
+  return adminUserNoteSchema.parse(data);
+}
+
+export async function deleteUserNote(id: string, noteId: string): Promise<void> {
+  await apiRequest<unknown>(`/admin/users/${id}/notes/${noteId}`, { method: 'DELETE' });
 }
 
 export async function createUser(body: CreateUserRequest): Promise<CreateUserResponse> {
