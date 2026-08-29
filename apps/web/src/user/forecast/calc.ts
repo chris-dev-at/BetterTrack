@@ -18,6 +18,17 @@
  *     met by principal, sustainable withdrawal rate).
  */
 
+/**
+ * Horizon bounds the calculator "Years" fields are held to, mirroring
+ * `FORECAST_HORIZON_MIN_YEARS`/`FORECAST_HORIZON_MAX_YEARS` (projection.ts):
+ * the cards bound what they hand in and the math below defends the same range.
+ * A free-text horizon is not merely a wrong number here — `dividendPlan`
+ * materialises one array element per year, so `1000000000` would allocate a
+ * 10⁹-element array on the main thread.
+ */
+export const FORECAST_CALC_MIN_YEARS = 0;
+export const FORECAST_CALC_MAX_YEARS = 100;
+
 // ─── Compound interest ───────────────────────────────────────────────────────
 
 export interface CompoundInterestInput {
@@ -48,7 +59,11 @@ export interface CompoundInterestResult {
  * Falls back to the linear formula at r = 0 so the divide never fires.
  */
 export function compoundInterest(input: CompoundInterestInput): CompoundInterestResult {
-  const { principal, monthlyContribution, ratePctPerYear, years, compoundingPerYear: n } = input;
+  const { principal, monthlyContribution, ratePctPerYear, compoundingPerYear: n } = input;
+  // A negative horizon is not a shorter plan — it is a discount factor, and it
+  // would report a final balance BELOW the starting principal while still
+  // counting contributions as paid in. Floor it at "no time has passed".
+  const years = Math.max(FORECAST_CALC_MIN_YEARS, input.years);
   const N = n * years;
   const perPeriodContribution = (monthlyContribution * 12) / n;
   const totalContributions = principal + perPeriodContribution * N;
@@ -99,7 +114,10 @@ export interface SavingsContributionResult {
 export function savingsPlanContribution(
   input: SavingsContributionInput,
 ): SavingsContributionResult {
-  const { target, principal, ratePctPerYear, years, compoundingPerYear: n } = input;
+  const { target, principal, ratePctPerYear, compoundingPerYear: n } = input;
+  // Same floor as {@link compoundInterest}: a negative horizon collapses to the
+  // zero-horizon answer instead of inverting the growth term.
+  const years = Math.max(FORECAST_CALC_MIN_YEARS, input.years);
   const N = n * years;
 
   if (N <= 0) {
@@ -192,19 +210,28 @@ export interface DividendPlanResult {
   yearlyDividends: number[];
   /** Sum of yearlyDividends. */
   totalDividends: number;
-  /** Yield-on-cost after `years` years of growth, percent. */
+  /**
+   * Yield-on-cost of the LAST projected payment, percent — i.e.
+   * `yearlyDividends.at(-1) / positionValue · 100`. With no projected year at
+   * all it stays at the current yield.
+   */
   yieldOnCostFinalPct: number;
 }
 
 /**
  * Compound the annual dividend at `growthPctPerYear` for `years` years, seeded
  * from `positionValue · yieldPctPerYear/100`. Sums the stream and reports the
- * yield-on-cost at the end. Non-integer `years` is truncated; the caller UI
- * accepts whole years only.
+ * yield-on-cost of the final year IN that stream. Non-integer `years` is
+ * truncated and the horizon is bounded to `FORECAST_CALC_MIN_YEARS ..
+ * FORECAST_CALC_MAX_YEARS` — one element is materialised per year, so an
+ * unbounded horizon is an allocation, not just a nonsense figure.
  */
 export function dividendPlan(input: DividendPlanInput): DividendPlanResult {
   const { positionValue, yieldPctPerYear, growthPctPerYear, years } = input;
-  const wholeYears = Math.max(0, Math.trunc(years));
+  const wholeYears = Math.max(
+    FORECAST_CALC_MIN_YEARS,
+    Math.min(FORECAST_CALC_MAX_YEARS, Number.isFinite(years) ? Math.trunc(years) : 0),
+  );
   const g = growthPctPerYear / 100;
   const yearlyDividends: number[] = [];
   let dividend = (positionValue * yieldPctPerYear) / 100;
@@ -213,7 +240,11 @@ export function dividendPlan(input: DividendPlanInput): DividendPlanResult {
     dividend *= 1 + g;
   }
   const totalDividends = yearlyDividends.reduce((sum, x) => sum + x, 0);
-  const yieldOnCostFinalPct = yieldPctPerYear * Math.pow(1 + g, wholeYears);
+  // Year 1 is seeded UNGROWN, so the year-N payment is seed·(1+g)^(N−1); the
+  // "final year" yield-on-cost has to read off that same payment rather than a
+  // growth step past the end of the stream the card shows beside it.
+  const yieldOnCostFinalPct =
+    wholeYears === 0 ? yieldPctPerYear : yieldPctPerYear * Math.pow(1 + g, wholeYears - 1);
   return { yearlyDividends, totalDividends, yieldOnCostFinalPct };
 }
 

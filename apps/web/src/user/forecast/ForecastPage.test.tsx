@@ -51,10 +51,12 @@ vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
 }));
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
+import { EM_DASH, formatMoney, formatPercent } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
+import { dividendPlan, FORECAST_CALC_MAX_YEARS, FORECAST_CALC_MIN_YEARS } from './calc';
 import { ForecastPage } from './ForecastPage';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -337,6 +339,39 @@ test('opening a card exposes its inputs and computed result', async () => {
   // Expanded → the input is now rendered and the derived stat lands with it.
   expect(screen.getByLabelText('Starting principal (€)')).toBeInTheDocument();
   expect(screen.getByText('Final balance')).toBeInTheDocument();
+});
+
+test('the dividend card bounds its Years field, so no stat degrades to an em-dash', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  await user.click(await screen.findByRole('button', { name: /Dividend \/ yield projection/i }));
+  const years = screen.getByLabelText('Years');
+  expect(years).toHaveAttribute('min', String(FORECAST_CALC_MIN_YEARS));
+  expect(years).toHaveAttribute('max', String(FORECAST_CALC_MAX_YEARS));
+
+  await user.clear(years);
+  await user.type(years, '1000000000');
+  expect(years).toHaveValue(1000000000);
+
+  // The card is capped at the bounded horizon rather than compounding a
+  // billion years into Infinity (which formatMoney/formatPercent render as
+  // an em-dash) — every stat stays a real figure.
+  const bounded = dividendPlan({
+    positionValue: 10000,
+    yieldPctPerYear: 3,
+    growthPctPerYear: 5,
+    years: 1_000_000_000,
+  });
+  expect(screen.getByText('Total dividends').parentElement).toHaveTextContent(
+    formatMoney(bounded.totalDividends),
+  );
+  expect(screen.getByText('Yield on cost, final year').parentElement).toHaveTextContent(
+    formatPercent(bounded.yieldOnCostFinalPct),
+  );
+  for (const label of ['Total dividends', 'Year 1 dividend', 'Yield on cost, final year']) {
+    expect(screen.getByText(label).parentElement).not.toHaveTextContent(EM_DASH);
+  }
 });
 
 test('prefill from portfolio fills current value + historical average return', async () => {
