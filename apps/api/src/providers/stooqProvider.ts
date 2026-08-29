@@ -110,6 +110,14 @@ export function createStooqProvider(deps: CreateStooqProviderDeps): AssetProvide
       if (Number.isNaN(ms)) continue;
       points.push({ time: new Date(ms).toISOString(), close: row.close });
     }
+    if (points.length === 0) {
+      // No usable rows ⇒ Stooq does not know this symbol — a definitive
+      // not-found, exactly as `getQuote` treats a missing price. Returning `[]`
+      // would be recorded as a successful serve and cached over the primary's
+      // last-known-good history, blanking the asset for a whole TTL window
+      // (§13.5 V5-P1c); throwing lets the chain re-throw the primary's error.
+      throw new AssetNotFoundError(`Stooq returned no history for "${mapped.symbol}"`);
+    }
     return points;
   }
 
