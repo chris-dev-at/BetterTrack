@@ -69,6 +69,18 @@ export async function purgeManualAssetCaches(
   }
 }
 
+/**
+ * An "empty" provider answer: a collection with no members. Storing one as the
+ * *fresh* copy is legitimate (it is what upstream just said), but it must never
+ * replace a non-empty **stale** copy: the stale key is the 7-day last-known-good
+ * fallback, and blanking it turns one bad answer into an asset that contributes
+ * nothing to every series read for the rest of the TTL window. Defence in depth
+ * behind the providers' own not-found classification (§13.5 V5-P1c).
+ */
+function isEmptyCollection(value: unknown): boolean {
+  return Array.isArray(value) && value.length === 0;
+}
+
 interface StoredEntry<T> {
   value: T;
   /** Epoch ms when this value was fetched from upstream. */
@@ -219,6 +231,17 @@ export function createMarketCache(
     return result === 'OK' ? token : null;
   }
 
+  /**
+   * True when writing `value` would replace a non-empty stale copy with an empty
+   * one — the last-known-good copy wins (see {@link isEmptyCollection}). Only an
+   * empty value pays for the extra read, so the common path is unchanged.
+   */
+  async function staleWouldRegress(key: string, value: unknown): Promise<boolean> {
+    if (!isEmptyCollection(value)) return false;
+    const existing = await readEntry<unknown>(staleCacheKey(key));
+    return existing !== null && !isEmptyCollection(existing.value);
+  }
+
   async function store<T>(
     params: Pick<GetOrLoadParams<T>, 'key' | 'ttlSeconds' | 'staleTtlSeconds'>,
     value: T,
@@ -227,12 +250,14 @@ export function createMarketCache(
     const payload = JSON.stringify(entry);
     // Fresh copy expires at the §5.3 TTL; stale copy is retained much longer.
     await redis.set(freshCacheKey(params.key), payload, 'EX', params.ttlSeconds);
-    await redis.set(
-      staleCacheKey(params.key),
-      payload,
-      'EX',
-      params.staleTtlSeconds ?? STALE_TTL_SECONDS,
-    );
+    if (!(await staleWouldRegress(params.key, value))) {
+      await redis.set(
+        staleCacheKey(params.key),
+        payload,
+        'EX',
+        params.staleTtlSeconds ?? STALE_TTL_SECONDS,
+      );
+    }
     // A successful load supersedes any negative answer written by a racing process.
     await redis.del(negativeCacheKey(params.key));
     return { value, stale: false, asOf: entry.asOf };
