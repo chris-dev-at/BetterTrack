@@ -195,6 +195,11 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
 
   // One breaker per provider: a sick upstream trips fast for all its assets.
   // A 429 trips it immediately (§5.3), unless the caller overrides the predicate.
+  // A not-found is breaker-neutral: an authoritative "this symbol does not
+  // exist" comes from a *healthy* upstream, so a portfolio holding several
+  // delisted tickers (or an import with unmapped symbols) must not open the
+  // provider's breaker — which would degrade every other asset to stale and
+  // report a provider outage that never happened (§13.5 V5-P1c).
   const breakers = new Map<string, CircuitBreaker>();
   const breakerFor = (providerId: string): CircuitBreaker => {
     let breaker = breakers.get(providerId);
@@ -202,6 +207,7 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
       breaker = new CircuitBreaker(providerId, {
         now: options.now,
         tripImmediately: isRateLimitError,
+        ignoreFailure: isNotFoundError,
         ...options.breaker,
       });
       breakers.set(providerId, breaker);

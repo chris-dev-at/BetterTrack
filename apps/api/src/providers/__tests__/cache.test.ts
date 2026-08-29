@@ -434,6 +434,79 @@ describe('MarketCache — corrupt payload resilience (degrades, never a 5xx)', (
   });
 });
 
+describe('MarketCache — an empty answer never destroys the last-known-good copy (§13.5 V5-P1c)', () => {
+  const HISTORY_KEY = cacheKey('yahoo', 'AAPL', 'history', '1Y@1d');
+  const REAL_HISTORY = [
+    { time: '2026-06-14T00:00:00.000Z', close: 99 },
+    { time: '2026-06-15T00:00:00.000Z', close: 100 },
+  ];
+
+  /** The 7-day last-known-good copy the primary left behind. */
+  async function seedStale(): Promise<void> {
+    await redis.set(
+      staleCacheKey(HISTORY_KEY),
+      JSON.stringify({ value: REAL_HISTORY, asOf: 1 }),
+      'EX',
+      7 * 24 * 3600,
+    );
+  }
+
+  it('stores the empty value fresh but keeps the non-empty stale copy intact', async () => {
+    await seedStale();
+    const cache = createMarketCache(redis);
+
+    const result = await cache.prime({ key: HISTORY_KEY, ttlSeconds: 3_600 }, []);
+    expect(result).toMatchObject({ value: [], stale: false });
+
+    // Fresh reflects what upstream just said...
+    expect(JSON.parse((await redis.get(freshCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: [],
+    });
+    // ...but the fallback copy still holds the real series.
+    expect(JSON.parse((await redis.get(staleCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: REAL_HISTORY,
+      asOf: 1,
+    });
+  });
+
+  it('still writes an empty stale copy when there is no non-empty one to protect', async () => {
+    const cache = createMarketCache(redis);
+    await cache.prime({ key: HISTORY_KEY, ttlSeconds: 3_600 }, []);
+
+    expect(JSON.parse((await redis.get(staleCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: [],
+    });
+  });
+
+  it('a non-empty value replaces the stale copy exactly as before (no regression)', async () => {
+    await seedStale();
+    const cache = createMarketCache(redis);
+    const next = [{ time: '2026-06-16T00:00:00.000Z', close: 101 }];
+
+    await cache.prime({ key: HISTORY_KEY, ttlSeconds: 3_600 }, next);
+    expect(JSON.parse((await redis.get(staleCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: next,
+    });
+  });
+
+  it('a loaded empty value through getOrLoad leaves the stale copy standing', async () => {
+    await seedStale();
+    // No fresh copy: the stale one is served while a background refresh loads [].
+    const cache = createMarketCache(redis);
+    const served = await cache.getOrLoad<unknown[]>({
+      key: HISTORY_KEY,
+      ttlSeconds: 3_600,
+      loader: () => Promise.resolve([]),
+    });
+    expect(served).toMatchObject({ value: REAL_HISTORY, stale: true });
+    await cache.settled();
+
+    expect(JSON.parse((await redis.get(staleCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: REAL_HISTORY,
+    });
+  });
+});
+
 describe('MarketCache.prime (Live Mode, §6.3 V3-P7b)', () => {
   it('writes fresh + stale and clears any pre-existing negative entry', async () => {
     const cache = createMarketCache(redis);
