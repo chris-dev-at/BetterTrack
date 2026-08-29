@@ -48,7 +48,11 @@ export function createEarningsReminderJob(
       tz: EARNINGS_REMINDER_TZ,
     },
     async handler(job, ctx) {
-      const now = job.timestamp || Date.now();
+      // The REAL execution instant. A repeatable job's creation `timestamp`
+      // is stamped when BullMQ *creates* the delayed job — i.e. at the PREVIOUS
+      // iteration's pickup, a full period (here: a day) stale. Reading that as
+      // "now" would shift the whole lead window by that period.
+      const now = job.processedOn ?? Date.now();
       const result = await runEarningsReminderScan({
         intelRepo: deps.intelRepo,
         marketData: deps.marketData,

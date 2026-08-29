@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createEventBus, type DomainEvent, type EventBus } from '../../events';
 import type { Logger } from '../../logger';
 import { createDeadLetter } from '../deadLetter';
-import { HEARTBEAT_ASSET_ID, heartbeatJob } from '../definitions';
+import { HEARTBEAT_ASSET_ID, HEARTBEAT_INTERVAL_MS, heartbeatJob } from '../definitions';
 import type { JobContext } from '../types';
 
 let bus: EventBus;
@@ -44,11 +44,16 @@ describe('heartbeat job', () => {
     });
     await new Promise((r) => setTimeout(r, 20));
 
+    const runAt = Date.parse('2026-06-15T08:00:00.000Z');
     const job = {
       id: 'hb-1',
       name: 'system.heartbeat',
       data: {},
-      timestamp: Date.parse('2026-06-15T08:00:00.000Z'),
+      // One full interval stale: BullMQ stamps `timestamp` when the delayed job
+      // is created, at the PREVIOUS iteration's pickup. Only `processedOn` is
+      // the run's real execution instant.
+      timestamp: runAt - HEARTBEAT_INTERVAL_MS,
+      processedOn: runAt,
     } as unknown as Job<Record<string, never>>;
 
     await heartbeatJob.handler(job, ctx);
@@ -59,5 +64,8 @@ describe('heartbeat job', () => {
       assetId: HEARTBEAT_ASSET_ID,
       occurredAt: '2026-06-15T08:00:00.000Z',
     });
+    // Regression (#1543): the freshness marker is the execution instant, never
+    // the one-interval-stale `job.timestamp`.
+    expect(await ctx.redis.get('system:heartbeat:last')).toBe('2026-06-15T08:00:00.000Z');
   });
 });

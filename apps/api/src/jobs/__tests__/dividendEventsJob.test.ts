@@ -1,4 +1,8 @@
+import type { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
+import RedisMock from 'ioredis-mock';
+import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { AssetRef, DividendEvents } from '@bettertrack/contracts';
@@ -7,10 +11,22 @@ import type { Database } from '../../data/db';
 import type { HeldAssetHolderRow } from '../../data/repositories/marketIntelRepository';
 import { createNotificationRepository } from '../../data/repositories/notificationRepository';
 import { notifications } from '../../data/schema';
-import { createNotificationCenter } from '../../services/notifications/notificationCenter';
+import type { Logger } from '../../logger';
+import {
+  createNotificationCenter,
+  type NotificationCenter,
+} from '../../services/notifications/notificationCenter';
+import type { DispatchableEvent } from '../../services/notifications/notificationDispatcher';
 import { createStubMarketData, cachedIntel } from '../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
-import { dividendNotifyGate, runDividendEventsScan } from '../definitions/dividendEventsJob';
+import { createDeadLetter } from '../deadLetter';
+import {
+  DIVIDEND_EVENT_HORIZON_DAYS,
+  createDividendEventsScanJob,
+  dividendNotifyGate,
+  runDividendEventsScan,
+} from '../definitions/dividendEventsJob';
+import type { JobContext } from '../types';
 
 const NOW = Date.parse('2026-07-18T00:00:00.000Z');
 
@@ -183,5 +199,85 @@ describe('marketIntel.dividendScan (V5-P5)', () => {
     });
     expect(result).toEqual({ assetsScanned: 0, emitted: 0 });
     expect(await dividendRows(user.id)).toHaveLength(0);
+  });
+});
+
+/**
+ * The run's real execution instant. BullMQ stamps `job.timestamp` when it
+ * CREATES the delayed job, which for a repeatable schedule is the previous
+ * iteration's pickup — one full period (a day) earlier (#1543). A
+ * `job.timestamp` clock would set `todayStart` to yesterday (admitting an
+ * already-passed ex-date) and cut the horizon a day short.
+ */
+const JOB_RUN_AT = Date.parse('2026-09-01T00:00:00.000Z');
+const JOB_STALE_TIMESTAMP = Date.parse('2026-08-31T00:00:00.000Z');
+
+function makeJob(): Job<Record<string, never>> {
+  return {
+    id: 'dividend-1',
+    name: 'marketIntel.dividendScan',
+    data: {},
+    timestamp: JOB_STALE_TIMESTAMP,
+    processedOn: JOB_RUN_AT,
+  } as unknown as Job<Record<string, never>>;
+}
+
+/** A notification-center double that records what the scan emitted. */
+function recordingCenter(): NotificationCenter & { emitted: DispatchableEvent[] } {
+  const emitted: DispatchableEvent[] = [];
+  return {
+    emitted,
+    async emit(event) {
+      emitted.push(event);
+      return true;
+    },
+  };
+}
+
+function makeJobCtx(): JobContext {
+  const redis = new RedisMock() as unknown as Redis;
+  return {
+    events: harness.ctx.events,
+    deadLetter: createDeadLetter(redis),
+    redis,
+    logger: pino({ level: 'silent' }) as unknown as Logger,
+  };
+}
+
+describe('marketIntel.dividendScan — run clock (#1543)', () => {
+  it('scans from the execution instant: yesterday is excluded and the horizon is full', async () => {
+    const user = await harness.seedUser({ email: 'clock@bt.test', username: 'clock' });
+    await optIn(user.id);
+    const {
+      now: _now,
+      notify: _notify,
+      ...deps
+    } = scanDeps({
+      holders: [holder(user.id)],
+      upcoming: [
+        // Already past on 2026-09-01 — but "today" under the stale clock.
+        { exDate: '2026-08-31T00:00:00.000Z', payDate: null, amount: 0.1, currency: 'USD' },
+        // The far edge of the 7-day horizon measured from 2026-09-01; the stale
+        // clock's horizon would end at 2026-09-07 and drop it.
+        { exDate: '2026-09-08T00:00:00.000Z', payDate: null, amount: 0.2, currency: 'USD' },
+        // One day past the horizon on either clock.
+        { exDate: '2026-09-09T00:00:00.000Z', payDate: null, amount: 0.3, currency: 'USD' },
+      ],
+    });
+    const notify = recordingCenter();
+
+    await createDividendEventsScanJob({ ...deps, notify }).handler(makeJob(), makeJobCtx());
+
+    expect(notify.emitted).toEqual([
+      expect.objectContaining({
+        type: 'dividend.event',
+        userId: user.id,
+        exDate: '2026-09-08T00:00:00.000Z',
+        // `occurredAt` is stamped from the scan's clock — the direct proof that
+        // the effective `now` is the execution instant, not `job.timestamp`.
+        occurredAt: '2026-09-01T00:00:00.000Z',
+      }),
+    ]);
+    expect(DIVIDEND_EVENT_HORIZON_DAYS).toBe(7);
   });
 });
