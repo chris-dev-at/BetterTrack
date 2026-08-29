@@ -249,6 +249,8 @@ import {
 } from '../services/account/vaultedPortfolioEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
+import { bindHeavyTierAi } from '../services/imports/headerMappingAi';
+import { bindCheapTierAi } from '../services/imports/rowClassifierAi';
 import {
   createStandingOrderService,
   type StandingOrderService,
@@ -1583,6 +1585,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     mappers: ALL_MAPPERS,
     logger,
     paranoid: paranoidGuard,
+    // Generic staging path (#964, §16 2026-07-31): both AI tiers are OPTIONAL
+    // and neither can decide anything on its own — the heavy tier only PROPOSES
+    // column labels a human confirms, and the cheap tier's row verdicts are
+    // review-flagged. `bindHeavyTierAi` refuses under a test runner by design,
+    // and either binder may throw when no provider is configured; `safeSeam` in
+    // the service turns all of that into "run deterministically", so an import
+    // never fails because AI is unavailable.
+    headerAi: (userId) => bindHeavyTierAi(ai, userId),
+    rowAi: (userId) => bindCheapTierAi(ai, userId),
   });
 
   // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from

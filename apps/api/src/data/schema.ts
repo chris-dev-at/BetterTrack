@@ -1,4 +1,8 @@
-import type { ImportRowCandidate } from '@bettertrack/contracts';
+import type {
+  ImportRowCandidate,
+  ImportRowResolvedBy,
+  ImportUnderstanding,
+} from '@bettertrack/contracts';
 import { sql, type SQL } from 'drizzle-orm';
 import {
   bigint,
@@ -3125,6 +3129,18 @@ export const importBatches = pgTable(
     }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp('applied_at', { withTimezone: true }),
+    /**
+     * What the GENERIC pipeline worked out about this file (#964, §16
+     * 2026-07-31): the per-column labels with their evidence and review flags,
+     * the headers nothing could name, and the sniffed delimiter/encoding/
+     * locales. Null for every batch a broker mapper claimed — that path labels
+     * no columns — and for every batch staged before this change.
+     *
+     * Persisted rather than recomputed so `GET /imports/:batchId` re-reads the
+     * same understanding the upload returned: the file itself is never stored,
+     * so there would otherwise be nothing to recompute it from.
+     */
+    understanding: jsonb('understanding').$type<ImportUnderstanding>(),
   },
   (t) => [index('import_batches_owner_idx').on(t.ownerId)],
 );
@@ -3176,6 +3192,13 @@ export const importRows = pgTable(
      * wherever no rule matched.
      */
     ruleTagIds: jsonb('rule_tag_ids').$type<string[]>(),
+    /**
+     * Provenance for `asset_id` (#964, §16 2026-07-31 point 4). Null means the
+     * staging pipeline resolved the instrument by EXACT identity; `'user'`
+     * means a person pinned it in the wizard. Never `'ai'` — no model mints an
+     * asset id anywhere in this subsystem.
+     */
+    resolvedBy: text('resolved_by').$type<ImportRowResolvedBy>(),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );

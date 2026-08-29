@@ -1,6 +1,10 @@
 import { and, asc, eq } from 'drizzle-orm';
 
-import type { ImportRowCandidate } from '@bettertrack/contracts';
+import type {
+  ImportRowCandidate,
+  ImportRowResolvedBy,
+  ImportUnderstanding,
+} from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { assets, importBatches, importRows } from '../schema';
@@ -53,6 +57,12 @@ export interface ImportRowRecord {
    * and the booked movement cannot disagree.
    */
   ruleTagIds: string[] | null;
+  /**
+   * Provenance for {@link ImportRowRecord.assetId} (#964): null when the
+   * pipeline matched the instrument exactly, `'user'` when a person pinned it
+   * in the wizard. Never a model — no AI path mints an asset id.
+   */
+  resolvedBy: ImportRowResolvedBy | null;
 }
 
 export interface CreateImportBatchInput {
@@ -60,6 +70,11 @@ export interface CreateImportBatchInput {
   portfolioId: string;
   brokerId: string;
   filename: string;
+  /**
+   * What the GENERIC pipeline understood about the file (#964). Null for every
+   * batch a broker mapper claimed — that path labels no columns.
+   */
+  understanding?: ImportUnderstanding | null;
 }
 
 /** A staged row as the service normalizes it (ids/batch wiring added here). */
@@ -116,6 +131,7 @@ function toRowRecord(
     asset,
     candidates: row.candidates ?? null,
     ruleTagIds: row.ruleTagIds ?? null,
+    resolvedBy: row.resolvedBy ?? null,
   };
 }
 
@@ -152,6 +168,7 @@ export function createImportRepository(db: Database) {
             portfolioId: input.portfolioId,
             brokerId: input.brokerId,
             filename: input.filename,
+            understanding: input.understanding ?? null,
           })
           .returning();
         if (!batch) throw new Error('Import batch vanished after insert');
@@ -219,6 +236,36 @@ export function createImportRepository(db: Database) {
             .where(eq(importRows.id, u.id));
         }
       });
+    },
+
+    /**
+     * Re-point ONE staged row at the asset a person pinned (#964), together
+     * with everything that derives from it: the preview verdict, its
+     * explanation, the recomputed content hash, and the provenance stamp.
+     *
+     * Written as a single `UPDATE` over the row's id — the caller has already
+     * proved ownership by reading the row out of an owner-scoped batch, and
+     * every derived value is decided there, so this stays a persistence
+     * primitive with no judgement of its own.
+     */
+    async setRowResolution(update: {
+      id: string;
+      assetId: string;
+      flag: ImportRowRecord['flag'];
+      message: string | null;
+      contentHash: string;
+      resolvedBy: ImportRowResolvedBy;
+    }): Promise<void> {
+      await db
+        .update(importRows)
+        .set({
+          assetId: update.assetId,
+          flag: update.flag,
+          message: update.message,
+          contentHash: update.contentHash,
+          resolvedBy: update.resolvedBy,
+        })
+        .where(eq(importRows.id, update.id));
     },
 
     /**
