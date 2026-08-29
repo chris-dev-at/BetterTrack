@@ -205,6 +205,11 @@ export function createFeedbackService({
     },
 
     async sendMessageForSubmitter(userId, id, input) {
+      // Deliberately unwired: a submitter reply notifies nobody. Only the
+      // admin→submitter direction is routed, because a staff fan-out needs an
+      // owner decision on WHICH admins receive it (all, the assignee, the
+      // replier) — recorded here rather than assumed closed, so #1341/#1342 can
+      // pick it up with the seam already identified.
       const row = await repo.createMessageForSubmitter(userId, id, input.body);
       return row ? { message: toThreadMessage(row, 'submitter') } : null;
     },
@@ -266,6 +271,11 @@ export function createFeedbackService({
       if (!transition) return null;
       const { row, changed } = transition;
 
+      // Three conditions, each load-bearing: an unchanged row is an HTTP retry,
+      // a user-deleted tombstone has left the submitter's rail entirely (it must
+      // not push them about a submission they can no longer open), and an admin
+      // triaging their own submission is not news to themselves. The admin rail
+      // still sees the transition — the tombstone keeps its audit trail.
       if (changed && row.deletedByUserAt === null && row.userId !== adminUserId) {
         const occurredAt = row.lastStatusChangeAt.toISOString();
         await notify.emit({

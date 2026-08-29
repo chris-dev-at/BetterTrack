@@ -260,8 +260,11 @@ export const NOTIFICATION_COPY: Record<
       title: 'Feedback reopened',
       body: 'Your feedback submission is back in the inbox.',
     },
+    // Titles stay distinct per lifecycle event: a push banner often shows the
+    // title alone, where a shared "Feedback update" would make "being reviewed"
+    // and "declined" indistinguishable.
     feedbackStatusTriaged: {
-      title: 'Feedback update',
+      title: 'Feedback under review',
       body: 'Your feedback submission is being reviewed.',
     },
     feedbackStatusWorkingOnIt: {
@@ -273,7 +276,7 @@ export const NOTIFICATION_COPY: Record<
       body: 'Your feedback submission has been saved as a future idea.',
     },
     feedbackStatusDeclined: {
-      title: 'Feedback update',
+      title: 'Feedback declined',
       body: 'Your feedback submission was declined. Open it for details.',
     },
     feedbackStatusShipped: {
@@ -515,7 +518,7 @@ export const NOTIFICATION_COPY: Record<
       body: 'Dein Feedback ist wieder im Posteingang.',
     },
     feedbackStatusTriaged: {
-      title: 'Feedback-Update',
+      title: 'Feedback wird geprüft',
       body: 'Dein Feedback wird geprüft.',
     },
     feedbackStatusWorkingOnIt: {
@@ -527,7 +530,7 @@ export const NOTIFICATION_COPY: Record<
       body: 'Dein Feedback wurde als zukünftige Idee gespeichert.',
     },
     feedbackStatusDeclined: {
-      title: 'Feedback-Update',
+      title: 'Feedback abgelehnt',
       body: 'Dein Feedback wurde abgelehnt. Öffne es für Details.',
     },
     feedbackStatusShipped: {
