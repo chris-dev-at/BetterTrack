@@ -244,6 +244,88 @@ describe('account data export', () => {
     expect(feedbackRows).not.toContainEqual(expect.objectContaining({ id: bobFeedback!.id }));
   });
 
+  it('omits the admin-workspace feedback columns from the submitter’s export', async () => {
+    const user = await harness.seedUser({
+      email: 'archived@bettertrack.test',
+      username: 'archived',
+    });
+    const archivedAt = new Date('2026-08-20T09:00:00.000Z');
+    const adminLastReadAt = new Date('2026-08-21T10:30:00.000Z');
+    const [submission] = await harness.db
+      .insert(schema.feedback)
+      .values({
+        userId: user.id,
+        category: 'bug',
+        subject: 'Chart legend overlaps',
+        message: 'The legend covers the last candle.',
+        context: { screen: '/portfolio' },
+        status: 'declined',
+        declinedReason: 'Working as intended.',
+        // Admin workspace hygiene: invisible on every submitter surface.
+        archivedAt,
+        adminLastReadAt,
+      })
+      .returning({ id: schema.feedback.id });
+
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const reqRes = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { downloadToken } = exportRequestResponseSchema.parse(reqRes.body);
+    const dl = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .responseType('blob');
+    const files = unzipText(dl.body as Buffer);
+    const rows = JSON.parse(files['data/feedback.json']!) as Record<string, unknown>[];
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+
+    // The admin-side columns never reach the ZIP — not as a value, not as a key.
+    expect(Object.keys(row)).not.toContain('archivedAt');
+    expect(Object.keys(row)).not.toContain('adminLastReadAt');
+    expect(JSON.stringify(row)).not.toContain(archivedAt.toISOString());
+    expect(JSON.stringify(row)).not.toContain(adminLastReadAt.toISOString());
+
+    // …while everything the submitter authored or is shown survives unchanged.
+    expect(row).toMatchObject({
+      id: submission!.id,
+      userId: user.id,
+      category: 'bug',
+      subject: 'Chart legend overlaps',
+      message: 'The legend covers the last candle.',
+      context: { screen: '/portfolio' },
+      status: 'declined',
+      declinedReason: 'Working as intended.',
+      shippedVersion: null,
+    });
+    for (const key of ['createdAt', 'updatedAt', 'lastStatusChangeAt']) {
+      expect(typeof row[key], `${key} should be a serialized timestamp`).toBe('string');
+    }
+    // Pinned exactly, so a future admin-only column added to the table without
+    // touching the collector cannot silently join the submitter's export.
+    expect(Object.keys(row).sort()).toEqual(
+      [
+        'category',
+        'context',
+        'createdAt',
+        'declinedReason',
+        'deletedByUserAt',
+        'id',
+        'lastStatusChangeAt',
+        'message',
+        'shippedVersion',
+        'status',
+        'subject',
+        'submitterLastReadAt',
+        'updatedAt',
+        'userId',
+      ].sort(),
+    );
+  });
+
   it('exports staff replies without the replying admin’s internal user id', async () => {
     const user = await harness.seedUser({
       email: 'threaded@bettertrack.test',
