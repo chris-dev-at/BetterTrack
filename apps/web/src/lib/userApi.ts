@@ -526,6 +526,18 @@ export async function completeFirstRun(): Promise<MeResponse> {
   return meResponseSchema.parse(data);
 }
 
+/**
+ * Acknowledge the one-time paranoid fresh-start notice (§17 step 3, PARANOID E9).
+ * Set-once server-side, so a replay is harmless; returns the refreshed session
+ * payload with `paranoidFreshStartPending` flipped to false.
+ */
+export async function acknowledgeFreshStartNotice(): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/fresh-start-notice/acknowledge', {
+    method: 'POST',
+  });
+  return meResponseSchema.parse(data);
+}
+
 /** Enable or change the PIN (§6.1). */
 export async function setPin(body: SetPinRequest): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/pin', { method: 'PUT', body });
