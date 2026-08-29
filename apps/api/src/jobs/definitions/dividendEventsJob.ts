@@ -174,7 +174,10 @@ export function createDividendEventsScanJob(
       tz: DIVIDEND_SCAN_TZ,
     },
     async handler(job, ctx) {
-      const now = job.timestamp || Date.now();
+      // The REAL execution instant — see earningsReminderJob: the creation
+      // `timestamp` is the previous iteration's pickup, so `todayStart` would
+      // resolve to yesterday and the horizon end would fall a day short.
+      const now = job.processedOn ?? Date.now();
       const result = await runDividendEventsScan({ ...deps, now: () => now, logger: ctx.logger });
       ctx.logger.info(
         { assetsScanned: result.assetsScanned, emitted: result.emitted },
