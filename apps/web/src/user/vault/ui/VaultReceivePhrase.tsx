@@ -464,12 +464,14 @@ export function payloadErrorKey(error: unknown): string {
   const keys: Record<VaultTransferPayloadErrorOutcome, string> = {
     'not-a-bettertrack-code': 'vault.transfer.receiver.errors.notABettertrackCode',
     'update-required': 'vault.transfer.receiver.errors.updateRequired',
+    'legacy-code': 'vault.transfer.receiver.errors.legacyCode',
     malformed: 'vault.transfer.receiver.errors.malformed',
     'missing-mnemonic': 'vault.transfer.receiver.errors.missingMnemonic',
     'missing-vault-id': 'vault.transfer.receiver.errors.missingVaultId',
+    'duplicate-key': 'vault.transfer.receiver.errors.duplicateKey',
     'invalid-mnemonic': 'vault.transfer.receiver.errors.invalidMnemonic',
     'invalid-vault-id': 'vault.transfer.receiver.errors.invalidVaultId',
-    'invalid-name': 'vault.transfer.receiver.errors.invalidName',
+    'name-too-long': 'vault.transfer.receiver.errors.nameTooLong',
     'invalid-fingerprint': 'vault.transfer.receiver.errors.invalidFingerprint',
   };
   return keys[outcome];
