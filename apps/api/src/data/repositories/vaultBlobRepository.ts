@@ -45,12 +45,24 @@ export type VaultBlobReadResult =
   | { status: 'not_found' }
   | { status: 'medium_inactive' };
 
+/**
+ * Why one CAS refusal lost: `stale` is retryable after a re-read/re-merge,
+ * `write_id_replayed` never is — that `(vaultId, docId, writeId)` already names
+ * different committed bytes, so only a NEW `writeId` can ever be accepted
+ * (#1498). The HTTP status stays 412 for both; only the code differs.
+ */
+export type VaultBlobPreconditionReason = 'stale' | 'write_id_replayed';
+
 export type VaultBlobWriteResult =
   | { status: 'ok'; row: VaultBlobRow; idempotent: boolean }
   | { status: 'not_found' }
   | { status: 'portfolio_binding_mismatch' }
   | { status: 'doc_kind_mismatch' }
-  | { status: 'precondition_failed'; currentVersion: number | null }
+  | {
+      status: 'precondition_failed';
+      currentVersion: number | null;
+      reason: VaultBlobPreconditionReason;
+    }
   | { status: 'medium_inactive' };
 
 export type VaultBlobHistoryResult<T> = { status: 'ok'; value: T } | { status: 'not_found' };
@@ -718,9 +730,12 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
                 await bindProspectiveCapture(tx, vault, doc, input.now);
                 return { status: 'ok', row: current, idempotent: true } as const;
               }
+              // Same token, different bytes: no retry of THIS request can ever
+              // be accepted, so the caller must learn that from the code.
               return {
                 status: 'precondition_failed',
                 currentVersion: current.version,
+                reason: 'write_id_replayed',
               } as const;
             }
           }
@@ -764,9 +779,12 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               await bindProspectiveCapture(tx, vault, doc, input.now);
               return { status: 'ok', row: current, idempotent: true } as const;
             }
+            // Retained receipt for the same token naming different bytes (or a
+            // document that has since gone): terminal for this writeId too.
             return {
               status: 'precondition_failed',
               currentVersion: current?.version ?? null,
+              reason: 'write_id_replayed',
             } as const;
           }
 
@@ -780,9 +798,13 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             (row) => row?.version === input.header.docVersion,
           );
           if (versionReceipt && !sameBytes(versionReceipt.blob, input.blob)) {
+            // Retryable: this write's own `writeId` is still unused, so the
+            // client's normal re-read/re-merge (which mints a fresh docVersion)
+            // converges. Only the token collision is refused, not the client.
             return {
               status: 'precondition_failed',
               currentVersion: current?.version ?? null,
+              reason: 'stale',
             } as const;
           }
 
@@ -791,7 +813,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           // `docVersion` is client-owned merge state (and can move non-linearly
           // after a client merge); the blind store records it but never gates it.
           if (currentVersion !== input.expectedVersion) {
-            return { status: 'precondition_failed', currentVersion } as const;
+            return { status: 'precondition_failed', currentVersion, reason: 'stale' } as const;
           }
 
           await bindProspectiveCapture(tx, vault, doc, input.now);
