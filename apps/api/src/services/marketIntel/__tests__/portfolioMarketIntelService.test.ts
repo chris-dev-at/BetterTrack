@@ -15,6 +15,9 @@ import { createPortfolioMarketIntelService } from '../portfolioMarketIntelServic
 /** Fixed clock inside the calendar fixtures' window. */
 const NOW = Date.parse('2026-07-18T00:00:00.000Z');
 
+/** A clock sitting BETWEEN the shared fixture's ex-date and its pay date. */
+const GONE_EX_NOW = Date.parse('2026-08-12T00:00:00.000Z');
+
 /** A currency stub: USD→EUR at 0.9, everything else 1:1 (EUR path). */
 const currency = {
   convert: async (amount: number, from: string, _to: string) =>
@@ -344,6 +347,87 @@ describe('portfolio dividend calendar (V5-P5)', () => {
     const result = await service.dividendCalendar('user-1');
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0]).toMatchObject({ exDate: '2026-09-01T00:00:00.000Z' });
+  });
+
+  it('keeps an event that has gone ex but is not yet paid, and drops a fully past one', async () => {
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({
+          currency: 'USD',
+          upcoming: [
+            // Gone ex four days ago, pays in three — the payout is still ahead
+            // of the holder, so the calendar must keep it.
+            {
+              exDate: '2026-08-08T00:00:00.000Z',
+              payDate: '2026-08-15T00:00:00.000Z',
+              amount: 0.25,
+              currency: 'USD',
+            },
+            // Ex AND pay behind us — nothing left to show.
+            {
+              exDate: '2026-07-01T00:00:00.000Z',
+              payDate: '2026-07-10T00:00:00.000Z',
+              amount: 0.24,
+              currency: 'USD',
+            },
+          ],
+        }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: [held({ assetId: 'asset-a', providerRef: 'AAA' })] }),
+      currency,
+      enabled: true,
+      now: () => GONE_EX_NOW,
+    });
+
+    const result = await service.dividendCalendar('user-1');
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({
+      assetId: 'asset-a',
+      exDate: '2026-08-08T00:00:00.000Z',
+      payDate: '2026-08-15T00:00:00.000Z',
+    });
+  });
+
+  it('orders on the earliest still-future date, so a gone-ex event sorts on its pay date', async () => {
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({
+          currency: 'USD',
+          upcoming: [
+            {
+              exDate: '2026-08-08T00:00:00.000Z',
+              payDate: '2026-08-15T00:00:00.000Z',
+              amount: 0.25,
+              currency: 'USD',
+            },
+          ],
+        }),
+        CCC: makeDividends({
+          currency: 'EUR',
+          upcoming: [
+            { exDate: '2026-08-13T00:00:00.000Z', payDate: null, amount: 1.1, currency: 'EUR' },
+          ],
+        }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({
+        held: [held({ assetId: 'asset-a', providerRef: 'AAA' })],
+        watched: [watched({ assetId: 'asset-c', providerRef: 'CCC' })],
+      }),
+      currency,
+      enabled: true,
+      now: () => GONE_EX_NOW,
+    });
+
+    const result = await service.dividendCalendar('user-1');
+    // AAA's ex-date (08-08) is the smaller literal but it is already behind us;
+    // its operative date is the 08-15 payout, which falls AFTER CCC's 08-13.
+    expect(result.entries.map((e) => e.symbol)).toEqual(['CCC', 'AAA']);
   });
 
   it('is unavailable + empty when the gate is off', async () => {
