@@ -651,7 +651,7 @@ describe('DELETE /api/v1/feedback/:id', () => {
     expect(stored?.deletedByUserAt).toBeInstanceOf(Date);
   });
 
-  it('meters tombstones on the submission budget, leaving the capture allowance whole', async () => {
+  it('meters tombstones on the conversation budget, leaving the capture allowance whole', async () => {
     harness = await createTestApp({ rateLimitsEnabled: true });
     const user = await harness.seedUser({
       email: 'feedback-delete-limited@bt.test',
@@ -665,9 +665,9 @@ describe('DELETE /api/v1/feedback/:id', () => {
       .set(...XRW)
       .expect(204);
 
-    // The delete counted against the submission budget only. Metering it on the
-    // five-per-hour capture counter would spend the very allowance the open-cap
-    // 409 tells the submitter to reclaim by deleting.
+    // The delete counted against the conversation budget only. Metering it on
+    // the five-per-hour capture counter would spend the very allowance the
+    // open-cap 409 tells the submitter to reclaim by deleting.
     const captureKeys = progressiveKeys('feedback', user.id);
     const deleteKeys = progressiveKeys('feedback_thread', user.id);
     expect(await harness.ctx.redis.get(deleteKeys.count)).toBe('1');
@@ -692,8 +692,9 @@ describe('DELETE /api/v1/feedback/:id', () => {
       .where(eq(schema.feedback.id, rows[1]!.id));
     expect(untouched?.deletedByUserAt).toBeNull();
 
-    // Capture stays open while deletes are closed — the two rails never share
-    // a counter.
+    // Capture stays open while deletes are closed: capture never shares a
+    // counter with the conversation rail. (Within that rail, deletes and thread
+    // replies deliberately DO share one — see `feedbackRoutes.ts`.)
     const stillCapturing = await agent
       .post('/api/v1/feedback')
       .set(...XRW)

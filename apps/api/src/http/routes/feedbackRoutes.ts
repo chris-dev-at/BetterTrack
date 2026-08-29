@@ -30,11 +30,17 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
   router.delete(
     '/:id',
     // A tombstone is a cheap owner-scoped single-row UPDATE, but nothing bounded
-    // it: a session could loop DELETE unmetered. It rides the submission budget
-    // rather than the capture one on purpose — metering deletes at five per hour
-    // would spend exactly the allowance the open-cap 409 tells the submitter to
-    // reclaim ("delete an open request before submitting another"), turning the
-    // documented recovery path into a lockout.
+    // it: a session could loop DELETE unmetered. It rides the conversation
+    // budget rather than the capture one on purpose — metering deletes at five
+    // per hour would spend exactly the allowance the open-cap 409 tells the
+    // submitter to reclaim ("delete an open request before submitting
+    // another"), turning the documented recovery path into a lockout.
+    // The recorded cost: deletes and thread replies now share one counter, so a
+    // submitter who spends the 60/h conversation allowance can neither reply nor
+    // tombstone until the (non-retained, decaying) cooldown lapses. At 60/h that
+    // is not a practical hazard, and the alternative — the five-per-hour capture
+    // rail — is strictly worse; `env.ts` (rateLimits.feedbackThread) records the
+    // same coupling so the independence promise there is not read too broadly.
     limiters.feedbackThread,
     validateParams(idParamSchema),
     async (req, res) => {

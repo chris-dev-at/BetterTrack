@@ -100,7 +100,13 @@ export const FEEDBACK_TERMINAL_STATUSES = [
 ] as const satisfies readonly FeedbackStatus[];
 export type FeedbackTerminalStatus = (typeof FEEDBACK_TERMINAL_STATUSES)[number];
 
-/** The complement of the terminal set: what still occupies an open slot. */
+/**
+ * The complement of the terminal set: what still occupies an open slot. Only
+ * the terminal half is load-bearing at runtime (the cap predicate is a
+ * `notInArray`), so this list has no production consumer by design — it exists
+ * so the partition test can force a seventh status to be classified. Not dead
+ * code; do not delete it as such.
+ */
 export const FEEDBACK_OPEN_STATUSES = [
   'new',
   'triaged',
