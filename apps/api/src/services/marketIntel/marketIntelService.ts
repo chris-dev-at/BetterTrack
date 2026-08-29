@@ -54,8 +54,9 @@ export interface MarketIntelService {
   /**
    * Upcoming-earnings calendar across the caller's held + watched assets,
    * ascending by date (the Workboard panel, arc b). Unavailable/empty when the
-   * gate is off; an asset with no dated upcoming report (or a provider without
-   * the earnings capability, or one that errors) is simply dropped.
+   * gate is off; an asset with no dated upcoming report, one whose report is
+   * already in the past (or a provider without the earnings capability, or one
+   * that errors) is simply dropped.
    */
   earningsCalendar(userId: string): Promise<EarningsCalendarResponse>;
   /**
@@ -75,6 +76,8 @@ export interface MarketIntelServiceDeps {
   intelRepo: Pick<MarketIntelRepository, 'listUserWatchAndHoldAssets' | 'listUserWatchAssets'>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ everything reports unconfigured. */
   enabled: boolean;
+  /** Injectable clock (tests); defaults to the wall clock. */
+  now?: () => number;
   /** Mixed kept/holding-derived calendar filtering under the account transition lock. */
   paranoid?: Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedWithOptional'>;
 }
@@ -131,6 +134,7 @@ function clampFundamentalsLimit(limit: number | undefined): number {
 
 export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIntelService {
   const { marketData, assetRepo, intelRepo, enabled, paranoid } = deps;
+  const now = deps.now ?? Date.now;
 
   /**
    * Resolve the asset to a provider ref, enforcing §10: a global asset or the
@@ -183,6 +187,14 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     const assets = includeHoldings
       ? await intelRepo.listUserWatchAndHoldAssets(userId)
       : await intelRepo.listUserWatchAssets(userId);
+
+    // "Upcoming" is UTC-day-based: a report dated today still belongs on the
+    // panel, anything strictly before today has already happened. The guard is
+    // not optional — the keystone serves a cached earnings payload stale for up
+    // to STALE_TTL_SECONDS while the provider breaker is open, so a reported
+    // date lingers and, being the smallest key, would sort to the very front.
+    const todayStart = new Date(now()).toISOString().slice(0, 10);
+
     const entries: EarningsCalendarEntry[] = [];
     for (const a of assets) {
       const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
@@ -199,6 +211,8 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
       }
       // Only dated upcoming reports make the panel; an undated/absent next drops.
       if (!next || !next.date) continue;
+      // …and so does a report that already happened (see `todayStart`).
+      if (next.date.slice(0, 10) < todayStart) continue;
       entries.push({
         assetId: a.assetId,
         symbol: a.symbol,
