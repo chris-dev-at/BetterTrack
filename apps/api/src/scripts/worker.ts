@@ -519,6 +519,9 @@ const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
 const webhookDispatcher = createWebhookDispatcher({
   subscriptions: webhookSubscriptionRepo,
   deliveries: webhookDeliveryRepo,
+  // No `dnsResolver` override: the guard re-resolves each user-supplied
+  // destination through the system resolver before every attempt (§8 outbound
+  // safety), so a rebinding hostname is refused here, not delivered to.
   transport: createFetchWebhookTransport(),
   encryptionKey: config.twoFactor.encryptionKey,
   audit,

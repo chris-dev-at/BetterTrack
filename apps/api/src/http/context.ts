@@ -316,6 +316,7 @@ import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import { createMirrorService, type MirrorService } from '../services/mirror';
+import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard';
 import { createSessionService } from '../services/sessions/sessionService';
 import { createSocialService, type SocialService } from '../services/social/socialService';
 import { createCommentService, type CommentService } from '../services/social/commentService';
@@ -681,6 +682,13 @@ export interface BuildContextDeps {
    */
   webhookDeliveryEnqueue?: (job: WebhookDeliveryJob) => Promise<void>;
   /**
+   * Test seam (§13.5 V5-P10): the DNS resolver the outbound (SSRF) guard uses
+   * for webhook destinations, at create/update and on every delivery attempt.
+   * Defaults to the system resolver; a test injects a stub so a rebinding
+   * hostname is deterministic.
+   */
+  webhookUrlResolver?: OutboundUrlResolver;
+  /**
    * Test seam (§13.5 V5-P12): the fetch the local-AI (Ollama) adapter uses.
    * Defaults to global `fetch`; tests inject a canned/recording fake so the AI
    * feature paths run with no real network — and so a test can assert the model
@@ -1021,11 +1029,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
   const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
+  // The subscription URL is user-supplied: the SSRF guard runs at create/update
+  // (service) AND on every delivery attempt (dispatcher), both over the same
+  // DNS seam so a test can drive rebinding deterministically.
   const webhooks = createWebhookService({
     subscriptions: webhookSubscriptionRepo,
     deliveries: webhookDeliveryRepo,
     audit,
     encryptionKey: config.twoFactor.encryptionKey,
+    dnsResolver: deps.webhookUrlResolver,
   });
   const webhookTransport: WebhookTransport = deps.webhookTransport ?? createFetchWebhookTransport();
   const webhookDispatcher = createWebhookDispatcher({
@@ -1035,6 +1047,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     encryptionKey: config.twoFactor.encryptionKey,
     audit,
     logger,
+    dnsResolver: deps.webhookUrlResolver,
   });
   // Delivery transport: durable BullMQ queue in production; a direct single
   // attempt under test (BullMQ can't run on ioredis-mock), mirroring the
