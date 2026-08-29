@@ -2150,7 +2150,7 @@
         "failed": "Fehlgeschlagen"
       },
       "startOver": "Weitere Datei importieren",
-      "resolveFailed": "Die Zeile konnte nicht mit dem Wert verknüpft werden. Bitte versuche es erneut.",
+      "resolveFailed": "Die Zeile konnte nicht mit der Anlage verknüpft werden. Bitte versuche es erneut.",
       "pinnedByYou": "Von dir zugeordnet",
       "unknownTag": "Gelöschter Tag",
       "step": {
@@ -2205,21 +2205,23 @@
       },
       "review": {
         "title": "Das brauchen wir noch von dir",
-        "unresolvedTitle": "{{count}} Zeilen ohne zugeordneten Wert",
-        "unresolvedBody": "Diese Werte stehen in deiner Datei, aber nicht im Katalog — deshalb bleiben sie vom Import ausgeschlossen. Wähle den richtigen aus, dann kommt die Zeile mit. Wir ordnen nichts für dich zu.",
-        "skippedTitle": "{{count}} Zeilen konnten wir nicht lesen",
-        "skippedBody": "Diese Zeilen bleiben draußen. Sie stehen hier, damit nichts stillschweigend verschwindet.",
+        "unresolvedBody": "Diese Anlagen stehen in deiner Datei, aber nicht im Katalog — deshalb bleiben sie vom Import ausgeschlossen. Wähle die richtige aus, dann kommt die Zeile mit. Wir ordnen nichts für dich zu.",
+        "skippedBody": "Wir haben diese Zeilen gelesen, buchen sie aber nicht auf Verdacht — unten steht jeweils, was fehlt. Sie bleiben vom Import ausgeschlossen; nichts verschwindet stillschweigend.",
         "candidatesTitle": "Ähnliche Treffer aus dem Katalog:",
         "noCandidates": "Der Katalog hat nichts Ähnliches gefunden. Such unten danach.",
         "searchLabel": "Katalog durchsuchen",
-        "searchHint": "Du kannst auch einen eigenen Wert wählen, den du selbst angelegt hast.",
+        "searchHint": "Du kannst auch eine eigene Anlage wählen, die du selbst angelegt hast.",
         "searchPlaceholder": "Name, Symbol oder ISIN",
         "searchEmpty": "Zu dieser Suche wurde nichts gefunden.",
         "pick": "Diesen nehmen",
-        "noIdentity": "Kein Wert benannt",
+        "noIdentity": "Keine Anlage benannt",
         "emptyTitle": "Nichts zu prüfen",
         "emptyBody": "Alle Zeilen wurden gelesen und zugeordnet. Weiter zur Bestätigung.",
-        "searchFailed": "Der Katalog konnte gerade nicht durchsucht werden."
+        "searchFailed": "Der Katalog konnte gerade nicht durchsucht werden.",
+        "unresolvedTitleOne": "{{count}} Zeile ohne zugeordnete Anlage",
+        "unresolvedTitleOther": "{{count}} Zeilen ohne zugeordnete Anlage",
+        "skippedTitleOne": "{{count}} Zeile können wir ohne dich nicht importieren",
+        "skippedTitleOther": "{{count}} Zeilen können wir ohne dich nicht importieren"
       }
     },
     "tabs": {

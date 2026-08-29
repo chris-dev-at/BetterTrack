@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 
 import type { ImportRow, ImportRowCandidate, SearchResultItem } from '@bettertrack/contracts';
 
 import type { TranslateFn } from '../../../i18n';
 import { EM_DASH, formatDate } from '../../../lib/format';
-import { searchAssets } from '../../../lib/searchApi';
+import { useAssetSearch } from '../../components/useAssetSearch';
 import { Badge, Button, Empty, Field, Input } from '../../../ui/origin';
 
 /**
@@ -35,8 +34,6 @@ import { Badge, Button, Empty, Field, Input } from '../../../ui/origin';
  * exchange, currency, type — and the identity the file actually carried, so the
  * comparison is theirs to make.
  */
-
-const MIN_SEARCH_CHARS = 2;
 
 function Identity({ row, t }: { row: ImportRow; t: TranslateFn }) {
   const parts = [row.symbol, row.isin, row.name].filter((p): p is string => Boolean(p));
@@ -89,19 +86,15 @@ function UnresolvedRow({
   t: TranslateFn;
 }) {
   const [term, setTerm] = useState('');
-  const trimmed = term.trim();
 
-  // Only searches once the user has typed something worth a query — the catalog
-  // read is cheap but a one-character term returns noise, not help.
-  const searchQuery = useQuery({
-    queryKey: ['search', trimmed],
-    queryFn: ({ signal }) => searchAssets(trimmed, signal),
-    enabled: trimmed.length >= MIN_SEARCH_CHARS,
-    staleTime: 30_000,
-  });
+  // The ONE catalog search every surface uses (§6.2): debounced, cached,
+  // enrichment-aware, and honouring the owner's single-character directive
+  // (#248 §3). Re-implementing it here with a private threshold would have made
+  // this the only search box in the app that behaves differently.
+  const search = useAssetSearch(term);
 
   const candidates = row.candidates ?? [];
-  const results = searchQuery.data?.results ?? [];
+  const results = search.results;
 
   return (
     <li className="bt-band flex flex-col gap-3 py-3">
@@ -152,21 +145,19 @@ function UnresolvedRow({
         />
       </Field>
 
-      {trimmed.length >= MIN_SEARCH_CHARS ? (
+      {search.enabled ? (
         <ul className="flex flex-col">
-          {searchQuery.isLoading ? (
-            <li className="bt-meta py-2">{t('common.loading')}</li>
-          ) : searchQuery.error ? (
-            // The search is an aid, not the only way through — a failed lookup
-            // says so and offers a retry, and the candidates above still stand.
-            <li className="flex items-center gap-2 py-2">
-              <span className="bt-meta" role="alert">
-                {t('portfolio.import.review.searchFailed')}
-              </span>
-              <Button onClick={() => void searchQuery.refetch()} size="sm" variant="quiet">
-                {t('common.retry')}
-              </Button>
+          {search.isError && !search.isFetching ? (
+            // The search is an aid, not the only way through: it says so, and
+            // the candidates above still stand. Typing re-runs the query, so
+            // there is nothing for a retry button to do that the input cannot.
+            <li className="bt-meta py-2" role="alert">
+              {t('portfolio.import.review.searchFailed')}
             </li>
+          ) : search.isFetching && !search.hasLoaded ? (
+            // Same gate `AssetSearchBox` uses: the first fetch shows progress, a
+            // background refetch keeps the results that are already on screen.
+            <li className="bt-meta py-2">{t('common.loading')}</li>
           ) : results.length === 0 ? (
             <li className="bt-meta py-2">{t('portfolio.import.review.searchEmpty')}</li>
           ) : (
@@ -215,7 +206,12 @@ export function ImportReviewPanel({
       {unresolved.length > 0 ? (
         <section className="flex flex-col gap-2">
           <h3 className="bt-h3">
-            {t('portfolio.import.review.unresolvedTitle', { count: unresolved.length })}
+            {t(
+              unresolved.length === 1
+                ? 'portfolio.import.review.unresolvedTitleOne'
+                : 'portfolio.import.review.unresolvedTitleOther',
+              { count: unresolved.length },
+            )}
           </h3>
           <p className="bt-meta" style={{ maxWidth: 640 }}>
             {t('portfolio.import.review.unresolvedBody')}
@@ -237,7 +233,12 @@ export function ImportReviewPanel({
       {errored.length > 0 ? (
         <section className="flex flex-col gap-2">
           <h3 className="bt-h3">
-            {t('portfolio.import.review.skippedTitle', { count: errored.length })}
+            {t(
+              errored.length === 1
+                ? 'portfolio.import.review.skippedTitleOne'
+                : 'portfolio.import.review.skippedTitleOther',
+              { count: errored.length },
+            )}
           </h3>
           <p className="bt-meta" style={{ maxWidth: 640 }}>
             {t('portfolio.import.review.skippedBody')}

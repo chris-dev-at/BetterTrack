@@ -23,6 +23,7 @@ import * as importsApi from '../../../lib/importsApi';
 import * as portfolioApi from '../../../lib/portfolioApi';
 import * as cashApi from '../../../lib/cashApi';
 import * as searchApi from '../../../lib/searchApi';
+import { ApiError } from '../../../lib/apiClient';
 
 import { ImportPage } from '../ImportPage';
 
@@ -378,7 +379,7 @@ describe('nothing is dropped silently', () => {
     const user = await upload();
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
 
-    await screen.findByText("1 rows we couldn't read");
+    await screen.findByText("1 row we can't import without you");
     expect(screen.getByText(/The file's date order is ambiguous/)).toBeInTheDocument();
   });
 
@@ -462,5 +463,129 @@ describe('German', () => {
     expect(screen.getByText('Vorschlag — nicht angewendet')).toBeInTheDocument();
     // Server English must never reach the localized surface.
     expect(screen.queryByText('Suggestions we did not use')).not.toBeInTheDocument();
+  });
+});
+
+describe('finishing the review step does not strand the wizard', () => {
+  /**
+   * Review B1. `steps` is recomputed from the preview, so pinning the LAST
+   * unresolved row removes `review` from the list while the current step still
+   * names it. Left unreconciled that renders "Step 0 of N" and turns Continue
+   * into a jump back to the file picker — the user does exactly what the wizard
+   * asked and gets thrown to the start.
+   *
+   * Both fixtures in the tests above keep an `error` row, which keeps `review`
+   * alive whatever happens to the unmapped one — which is precisely why they
+   * could not see this. This fixture has NO error row.
+   */
+  const CLEAN_UNRESOLVED: ImportPreviewResponse = {
+    ...PREVIEW,
+    rows: [row({ id: 'r-mapped', rowIndex: 2, flag: 'mapped' }), UNRESOLVED],
+    batch: {
+      ...PREVIEW.batch,
+      counts: { total: 2, mapped: 1, unmapped: 1, duplicate: 0, error: 0 },
+    },
+  };
+
+  test('advances to confirm when the last unresolved row is pinned', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(CLEAN_UNRESOLVED);
+    vi.mocked(importsApi.resolveImportRow).mockResolvedValue({
+      ...CLEAN_UNRESOLVED,
+      rows: [
+        row({ id: 'r-mapped', rowIndex: 2, flag: 'mapped' }),
+        row({ id: 'r-unmapped', rowIndex: 4, flag: 'mapped', resolvedBy: 'user' }),
+      ],
+      batch: {
+        ...CLEAN_UNRESOLVED.batch,
+        counts: { total: 2, mapped: 2, unmapped: 0, duplicate: 0, error: 0 },
+      },
+    });
+
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('What still needs you');
+
+    await user.click(screen.getByRole('button', { name: 'Use this' }));
+
+    // The step it was on no longer exists, so the wizard moves FORWARD to the
+    // next surviving one rather than falling off the list.
+    await screen.findByText('Preview: statement.csv');
+    expect(screen.queryByText('What still needs you')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Step 0 of/)).not.toBeInTheDocument();
+    // …and it is genuinely the last step: no Continue past confirm.
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+  });
+});
+
+describe('a pin in flight cannot be raced by the buttons around it', () => {
+  /** A pin that never settles until the test lets it. */
+  function pendingPin() {
+    let release!: (value: ImportPreviewResponse) => void;
+    const promise = new Promise<ImportPreviewResponse>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(importsApi.resolveImportRow).mockReturnValue(promise);
+    return { release };
+  }
+
+  const CLEAN_UNRESOLVED: ImportPreviewResponse = {
+    ...PREVIEW,
+    rows: [row({ id: 'r-mapped', rowIndex: 2, flag: 'mapped' }), UNRESOLVED],
+    batch: {
+      ...PREVIEW.batch,
+      counts: { total: 2, mapped: 1, unmapped: 1, duplicate: 0, error: 0 },
+    },
+  };
+
+  test('freezes navigation and the other candidates until the server answers (B2)', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(CLEAN_UNRESOLVED);
+    const { release } = pendingPin();
+
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('What still needs you');
+    await user.click(screen.getByRole('button', { name: 'Use this' }));
+
+    // The server's answer decides which rows are importable AND whether this
+    // step still exists, so nothing may move until it lands: no stepping
+    // forward onto a preview that is about to change, no stepping back, and no
+    // second pick racing the first.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Use this' })).toBeDisabled();
+
+    release({
+      ...CLEAN_UNRESOLVED,
+      rows: [
+        row({ id: 'r-mapped', rowIndex: 2, flag: 'mapped' }),
+        row({ id: 'r-unmapped', rowIndex: 4, flag: 'mapped', resolvedBy: 'user' }),
+      ],
+      batch: {
+        ...CLEAN_UNRESOLVED.batch,
+        counts: { total: 2, mapped: 2, unmapped: 0, duplicate: 0, error: 0 },
+      },
+    });
+
+    // Once it lands the wizard moves on and the write becomes available.
+    await screen.findByText('Preview: statement.csv');
+    expect(screen.getByRole('button', { name: /^Import / })).toBeEnabled();
+  });
+
+  test('a pin error survives on screen instead of being cleared by the next success', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(CLEAN_UNRESOLVED);
+    vi.mocked(importsApi.resolveImportRow).mockRejectedValue(
+      new ApiError(409, 'IMPORT_ALREADY_APPLIED', 'This import was already applied.'),
+    );
+
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('What still needs you');
+    await user.click(screen.getByRole('button', { name: 'Use this' }));
+
+    // The server's 409 — the apply/pin race PR-A closes — reaches the user.
+    expect(await screen.findByText('This import was already applied.')).toBeInTheDocument();
   });
 });

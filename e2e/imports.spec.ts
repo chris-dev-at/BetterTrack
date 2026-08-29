@@ -146,14 +146,23 @@ test('imports: malformed row shows as error while the rest apply', async ({ brow
   await page.getByLabel('CSV export').setInputFiles(errorCsv);
   await page.getByRole('button', { name: 'Create preview' }).click();
 
-  // Preview lands with the broker autodetected and the malformed row surfaced
-  // as `error` — the mapper flags the buy whose quantity is "kaputt", the other
-  // two rows (deposit + real Allianz SE buy) stay mapped.
-  await expect(page.getByText('Broker: Trade Republic')).toBeVisible({ timeout: 60_000 });
+  // A file with something to decide stops on REVIEW first (#964): the wizard
+  // asks only about what it could not finish, and the malformed row is named
+  // with its reason instead of being dropped. The happy and re-import paths
+  // above have nothing to review and still land straight on the preview.
+  await expect(page.getByText('What still needs you')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("1 row we can't import without you")).toBeVisible();
+  await expect(page.getByText(/Invalid quantity "kaputt"/)).toBeVisible();
+  await expect(page.getByText(/^Step 2 of 3/)).toBeVisible();
+
+  // Nothing here is fixable — the row is unreadable, not unresolved — so the
+  // user continues to the staged preview.
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  await expect(page.getByText('Broker: Trade Republic')).toBeVisible();
   await expect(page.getByText('3 rows', { exact: true })).toBeVisible();
   await expect(page.getByText('2 mapped')).toBeVisible();
   await expect(page.getByText('1 errors')).toBeVisible();
-  await expect(page.getByText(/Invalid quantity "kaputt"/)).toBeVisible();
 
   // The framework books the two mapped rows even though one row failed —
   // per-row tolerance, never all-or-nothing (§13.4 V4-P8).

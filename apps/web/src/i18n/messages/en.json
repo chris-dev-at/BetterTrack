@@ -2205,10 +2205,8 @@
       },
       "review": {
         "title": "What still needs you",
-        "unresolvedTitle": "{{count}} rows without a matched instrument",
         "unresolvedBody": "We found these instruments in your file but not in the catalog, so they're excluded from the import. Pick the right one and the row joins the import — nothing is matched for you.",
-        "skippedTitle": "{{count}} rows we couldn't read",
-        "skippedBody": "These rows stay out of the import. They're listed so nothing disappears silently.",
+        "skippedBody": "We read these rows but won't book them on a guess — each says what it needs below. They stay out of the import; nothing disappears silently.",
         "candidatesTitle": "Close matches from the catalog:",
         "noCandidates": "The catalog returned nothing close. Search for it below.",
         "searchLabel": "Search the catalog",
@@ -2219,7 +2217,11 @@
         "noIdentity": "No instrument named",
         "emptyTitle": "Nothing to review",
         "emptyBody": "Every row was read and matched. Continue to confirm the import.",
-        "searchFailed": "Couldn't search the catalog just now."
+        "searchFailed": "Couldn't search the catalog just now.",
+        "unresolvedTitleOne": "{{count}} row without a matched instrument",
+        "unresolvedTitleOther": "{{count}} rows without a matched instrument",
+        "skippedTitleOne": "{{count}} row we can't import without you",
+        "skippedTitleOther": "{{count}} rows we can't import without you"
       }
     },
     "tabs": {

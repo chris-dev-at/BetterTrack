@@ -77,6 +77,15 @@ const AUTO_BROKER = 'auto';
 
 type Step = 'file' | 'understood' | 'review' | 'confirm';
 
+/**
+ * Canonical order. `steps` below is a SUBSET of this — a broker-mapper batch
+ * has no `understood`, a clean file has no `review` — and the subset is
+ * recomputed on every preview change, including the one that lands when the
+ * user pins the LAST unresolved row. Without a canonical order there is nothing
+ * to reconcile the current step against when it vanishes mid-flow.
+ */
+const ALL_STEPS: readonly Step[] = ['file', 'understood', 'review', 'confirm'];
+
 const RESULT_TONES: Record<ImportRowResult, BadgeTone> = {
   applied: 'pos',
   skipped_duplicate: 'gold',
@@ -191,7 +200,26 @@ export function ImportPage() {
       : []),
   ];
 
+  /**
+   * True from the moment Discard is fired until the page resets (review B3).
+   *
+   * Discard deletes the batch server-side, but a pin started just before it can
+   * still be in flight — and its `onSuccess` would `setPreview` a batch that no
+   * longer exists, resurrecting a dead preview whose Apply can only ever 404.
+   * A ref rather than state because the check happens inside a mutation
+   * callback, which must read the value at settle time, not at render time.
+   *
+   * DEFENSE IN DEPTH, deliberately kept with no UI path today: gating the
+   * footer on `resolveMutation.isPending` means the user cannot leave Review
+   * while a pin is settling, and Discard lives on Confirm — so the two cannot
+   * currently overlap. That is a property of the STEP FLOW, which is exactly
+   * the kind of thing a later step gets added to; this guard is what stops that
+   * change from silently re-opening the window.
+   */
+  const discardedRef = useRef(false);
+
   const reset = () => {
+    discardedRef.current = false;
     setPreview(null);
     setResult(null);
     setStep('file');
@@ -229,10 +257,10 @@ export function ImportPage() {
   const uploadMutation = useMutation({
     mutationFn: (input: { file: File; portfolioId: string; brokerId?: string }) =>
       uploadImportBatch(input),
+    onMutate: () => setError(null),
     onSuccess: (data) => {
       setPreview(data);
       setResult(null);
-      setError(null);
       goAfter('file', data);
     },
     onError: (err) => {
@@ -245,9 +273,15 @@ export function ImportPage() {
   const resolveMutation = useMutation({
     mutationFn: (input: { rowId: string; assetId: string }) =>
       resolveImportRow(preview!.batch.id, input.rowId, { assetId: input.assetId }),
+    // Clearing on START, not on success (review B2): a mutation may only clear
+    // the error IT is replacing. Clearing on success lets a pin that resolves
+    // later wipe a failure written by something else in the meantime, leaving
+    // the user with a silent problem and no message.
+    onMutate: () => setError(null),
     onSuccess: (data) => {
+      // The batch may have been discarded while this was in flight (B3).
+      if (discardedRef.current) return;
       setPreview(data);
-      setError(null);
     },
     onError: (err) => {
       setError(
@@ -263,9 +297,9 @@ export function ImportPage() {
         ...(cashSourceId ? { cashSourceId } : {}),
         linkCashOnTrades: linkCash,
       }),
+    onMutate: () => setError(null),
     onSuccess: (data) => {
       setResult(data);
-      setError(null);
     },
     onError: (err) => {
       setError(
@@ -277,6 +311,11 @@ export function ImportPage() {
 
   const discardMutation = useMutation({
     mutationFn: () => discardImportBatch(preview!.batch.id),
+    // Raised BEFORE the request leaves, so a pin already in flight is ignored
+    // when it lands rather than restoring the batch this is deleting (B3).
+    onMutate: () => {
+      discardedRef.current = true;
+    },
     onSettled: reset,
   });
 
@@ -289,8 +328,31 @@ export function ImportPage() {
     });
   };
 
+  /**
+   * The step actually being shown (review B1).
+   *
+   * Pinning the last unresolved row removes `review` from `steps` while `step`
+   * still names it. Left alone that is `indexOf` === -1, which renders "Step 0
+   * of 2" and turns Continue into a jump BACK to the file picker — the user
+   * finishes the work the wizard asked for and is thrown to the start.
+   *
+   * Derived rather than corrected in an effect: this reconciles during the same
+   * render that drops the step, so the broken intermediate state never paints.
+   * A vanished step advances FORWARD to the next surviving one, which is where
+   * finishing that step would have gone anyway.
+   */
+  const activeStep = useMemo<Step>(() => {
+    if (steps.includes(step)) return step;
+    const from = ALL_STEPS.indexOf(step);
+    return (
+      steps.find((candidate) => ALL_STEPS.indexOf(candidate) >= from) ??
+      steps[steps.length - 1] ??
+      'file'
+    );
+  }, [steps, step]);
+
   const counts = preview?.batch.counts;
-  const stepIndex = steps.indexOf(step);
+  const stepIndex = steps.indexOf(activeStep);
   const canGoBack = stepIndex > 0 && result === null;
 
   return (
@@ -309,10 +371,10 @@ export function ImportPage() {
         errorLabel={t('portfolio.import.referenceDataLoadError')}
       />
 
-      {preview && result === null ? <Stepper current={step} steps={steps} t={t} /> : null}
+      {preview && result === null ? <Stepper current={activeStep} steps={steps} t={t} /> : null}
 
       {/* ── Step 1 — the file ── */}
-      {step === 'file' ? (
+      {activeStep === 'file' ? (
         <section className="bt-section">
           <div
             className="bt-panel bt-panel--soft bt-panel--pad flex flex-col gap-3"
@@ -360,7 +422,7 @@ export function ImportPage() {
       ) : null}
 
       {/* ── Step 2 — what the file turned out to be ── */}
-      {step === 'understood' && preview?.understanding ? (
+      {activeStep === 'understood' && preview?.understanding ? (
         <section className="bt-section flex flex-col gap-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="bt-h3">
@@ -375,7 +437,7 @@ export function ImportPage() {
       ) : null}
 
       {/* ── Step 3 — only what needs a person ── */}
-      {step === 'review' && preview ? (
+      {activeStep === 'review' && preview ? (
         <section className="bt-section flex flex-col gap-3">
           <h2 className="bt-h3">{t('portfolio.import.review.title')}</h2>
           <ImportReviewPanel
@@ -388,7 +450,7 @@ export function ImportPage() {
       ) : null}
 
       {/* ── Step 4 — the staged truth, then the one button that writes ── */}
-      {step === 'confirm' && preview && counts ? (
+      {activeStep === 'confirm' && preview && counts ? (
         <section className="bt-section">
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -460,13 +522,19 @@ export function ImportPage() {
                 </div>
                 <div className="flex gap-2">
                   <Button
-                    disabled={discardMutation.isPending || applyMutation.isPending}
+                    disabled={
+                      discardMutation.isPending ||
+                      applyMutation.isPending ||
+                      resolveMutation.isPending
+                    }
                     onClick={() => discardMutation.mutate()}
                   >
                     {t('portfolio.import.discardCta')}
                   </Button>
                   <Button
-                    disabled={applyMutation.isPending || counts.mapped === 0}
+                    disabled={
+                      applyMutation.isPending || resolveMutation.isPending || counts.mapped === 0
+                    }
                     loading={applyMutation.isPending}
                     onClick={() => applyMutation.mutate()}
                     variant="primary"
@@ -521,14 +589,22 @@ export function ImportPage() {
       {preview && result === null ? (
         <div className="bt-pfw__foot">
           {canGoBack ? (
-            <Button onClick={() => setStep(steps[stepIndex - 1]!)} variant="quiet">
+            <Button
+              disabled={resolveMutation.isPending}
+              onClick={() => setStep(steps[stepIndex - 1]!)}
+              variant="quiet"
+            >
               {t('common.back')}
             </Button>
           ) : (
             <span />
           )}
-          {step !== 'confirm' ? (
-            <Button onClick={() => setStep(steps[stepIndex + 1] ?? 'confirm')} variant="primary">
+          {activeStep !== 'confirm' ? (
+            <Button
+              disabled={resolveMutation.isPending}
+              onClick={() => setStep(steps[stepIndex + 1] ?? 'confirm')}
+              variant="primary"
+            >
               {t('common.continue')}
             </Button>
           ) : null}
