@@ -241,6 +241,10 @@ describe('#1043 vault bearer policy', () => {
       path: '/vault/history/{version}',
       params: { version: 'positive-integer' },
     },
+    // #1497: the two config reads share the per-doc scope family so a phone
+    // holding only a §13 phrase can discover the vault and its singleton doc ids.
+    { method: 'GET', path: '/vaults' },
+    { method: 'GET', path: '/vaults/{vaultId}' },
     { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}' },
     { method: 'PUT', path: '/vaults/{vaultId}/docs/{docId}' },
     { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}/history' },
@@ -273,9 +277,7 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
     { method: 'POST', path: '/vault/media/retired/purge/challenge' },
     { method: 'POST', path: '/vault/media/retired/purge' },
-    { method: 'GET', path: '/vaults' },
     { method: 'POST', path: '/vaults' },
-    { method: 'GET', path: '/vaults/{vaultId}' },
     { method: 'PATCH', path: '/vaults/{vaultId}' },
     { method: 'PATCH', path: '/vaults/{vaultId}/media' },
     {
@@ -479,7 +481,9 @@ describe('#1043 vault bearer policy', () => {
     expect(pathAcceptsBearer('/vault/history/{version}', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/media/server-candidate/12', 'HEAD')).toBe(false);
     expect(pathAcceptsBearer(`/vaults/${UUID_A}/docs/${UUID_B}`, 'HEAD')).toBe(true);
-    expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'HEAD')).toBe(false);
+    // #1497 widened the config READ only: HEAD follows its GET, PATCH does not.
+    expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'HEAD')).toBe(true);
+    expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'PATCH')).toBe(false);
     expect(
       portfolioVaultAccountSecurityRouteAcceptsBearer(
         'HEAD',
@@ -970,9 +974,7 @@ describe('#1043 bearer vault synchronization', () => {
       { method: 'get', path: `/vault/media/server-candidate/${MISSING_ID}` },
       { method: 'post', path: '/vault/media/retired/purge/challenge' },
       { method: 'post', path: '/vault/media/retired/purge' },
-      { method: 'get', path: '/vaults' },
       { method: 'post', path: '/vaults' },
-      { method: 'get', path: `/vaults/${UUID_A}` },
       { method: 'patch', path: `/vaults/${UUID_A}` },
       { method: 'patch', path: `/vaults/${UUID_A}/media` },
       {
@@ -1160,5 +1162,118 @@ describe('#1043 bearer vault synchronization', () => {
     const over = await write(3, 2);
     expect(over.status).toBe(429);
     expect(over.headers['retry-after']).toBeDefined();
+  });
+});
+
+/**
+ * #1497 — a phone that arrives with nothing but a §13 QR phrase must be able to
+ * discover the vault it was handed and its two singleton doc ids. The two
+ * config READS therefore join the same scope family as the per-doc store; the
+ * destructive verb keeps its separate account:security + step-up rail, and
+ * every write / transition stays owning-browser-session work.
+ */
+describe('#1497 bearer vault config reads', () => {
+  it('serves a vault:sync bearer exactly the list and config body the owning session gets', async () => {
+    const { user, token } = await mintPersonalToken(['vault:sync'], 'pervault-config-read');
+    const vaultId = await createRealPerVault(user.id, 'QR handoff vault');
+    const agent = await loginAgent(harness.app, user);
+
+    const [bearerList, sessionList] = await Promise.all([
+      request(harness.app).get('/api/v1/vaults').set(bearer(token)),
+      agent.get('/api/v1/vaults'),
+    ]);
+    expect(bearerList.status, JSON.stringify(bearerList.body)).toBe(200);
+    expect(sessionList.status, JSON.stringify(sessionList.body)).toBe(200);
+    expect(bearerList.body).toEqual(sessionList.body);
+    // The bootstrap payload the §13 phrase alone cannot carry.
+    expect(bearerList.body.vaults).toMatchObject([
+      { id: vaultId, name: 'QR handoff vault', headerDocId: UUID_A, commonDocId: UUID_B },
+    ]);
+
+    const [bearerVault, sessionVault] = await Promise.all([
+      request(harness.app).get(`/api/v1/vaults/${vaultId}`).set(bearer(token)),
+      agent.get(`/api/v1/vaults/${vaultId}`),
+    ]);
+    expect(bearerVault.status, JSON.stringify(bearerVault.body)).toBe(200);
+    expect(sessionVault.status, JSON.stringify(sessionVault.body)).toBe(200);
+    expect(bearerVault.body).toEqual(sessionVault.body);
+    expect(bearerVault.body.vault).toMatchObject({ id: vaultId, headerDocId: UUID_A });
+    expect(bearerVault.headers['cache-control']).toBe('private, no-store');
+
+    // Reading config buys no write: the same token still cannot create, rename
+    // or delete, and each refusal keeps its own established vocabulary.
+    const created = await request(harness.app)
+      .post('/api/v1/vaults')
+      .set(bearer(token))
+      .send({ name: 'refused' });
+    expect(created.status).toBe(403);
+    expect(created.body.error.code).toBe('API_KEY_FORBIDDEN');
+    const renamed = await request(harness.app)
+      .patch(`/api/v1/vaults/${vaultId}`)
+      .set(bearer(token))
+      .send({ name: 'refused' });
+    expect(renamed.status).toBe(403);
+    expect(renamed.body.error.code).toBe('API_KEY_FORBIDDEN');
+    const deleted = await request(harness.app)
+      .delete(`/api/v1/vaults/${vaultId}`)
+      .set(bearer(token))
+      .send({ stepUp: { password: user.password } });
+    expect(deleted.status).toBe(403);
+    expect(deleted.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(deleted.body.error.message).toContain('account:security');
+  });
+
+  it('denies a bearer without the doc scope with an audited INSUFFICIENT_SCOPE naming it', async () => {
+    const { user, token, id } = await mintPersonalToken(['market:read'], 'pervault-config-scope');
+    const vaultId = await createRealPerVault(user.id, 'Scope-denied vault');
+
+    for (const path of ['/api/v1/vaults', `/api/v1/vaults/${vaultId}`]) {
+      const denied = await request(harness.app).get(path).set(bearer(token));
+      expect(denied.status, `${path}: ${JSON.stringify(denied.body)}`).toBe(403);
+      expect(denied.body.error.code, path).toBe('INSUFFICIENT_SCOPE');
+      expect(denied.body.error.message, path).toContain('vault:sync');
+    }
+
+    const denials = await harness.db
+      .select({ meta: auditLog.meta })
+      .from(auditLog)
+      .where(and(eq(auditLog.targetId, id), eq(auditLog.action, 'api_key.scope_denied')));
+    expect(denials.map((row) => row.meta)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ requiredScope: 'vault:sync', method: 'GET', path: '/vaults' }),
+        expect.objectContaining({
+          requiredScope: 'vault:sync',
+          method: 'GET',
+          path: `/vaults/${vaultId}`,
+        }),
+      ]),
+    );
+  });
+
+  it('answers another account’s vault id with 404, never 403, and keeps future siblings closed', async () => {
+    const { token } = await mintPersonalToken(['vault:sync'], 'pervault-config-foreign');
+    const stranger = await seedUser('pervault-config-owner');
+    const foreignVaultId = await createRealPerVault(stranger.id, 'Stranger vault');
+
+    const foreign = await request(harness.app)
+      .get(`/api/v1/vaults/${foreignVaultId}`)
+      .set(bearer(token));
+    expect(foreign.status, JSON.stringify(foreign.body)).toBe(404);
+    expect(foreign.body.error.code).toBe('VAULT_NOT_FOUND');
+
+    // Ownership scoping stays in the repository: the list is the caller's own.
+    const list = await request(harness.app).get('/api/v1/vaults').set(bearer(token));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(list.body.vaults).toEqual([]);
+
+    // Canary: an unknown future `/vaults/*` read is still default-closed, both
+    // as a word-shaped sibling and as a deeper path under a real vault id.
+    for (const path of ['/api/v1/vaults/future-config-read', `/api/v1/vaults/${UUID_A}/future`]) {
+      const refused = await request(harness.app).get(path).set(bearer(token));
+      expect(refused.status, `${path}: ${JSON.stringify(refused.body)}`).toBe(403);
+      expect(refused.body.error.code, path).toBe('API_KEY_FORBIDDEN');
+    }
+    expect(pathAcceptsBearer(`/vaults/${UUID_A}/future`, 'GET')).toBe(false);
+    expect(openApiPathTemplateAcceptsBearer('/vaults/{vaultId}/future', 'GET')).toBe(false);
   });
 });
