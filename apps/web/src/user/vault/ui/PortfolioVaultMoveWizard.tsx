@@ -1,11 +1,27 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { VaultStepUpCredential } from '@bettertrack/contracts';
+import {
+  VAULT_SERVER_CANDIDATE_TTL_MS,
+  type VaultMediaList,
+  type VaultStepUpCredential,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { Button, Field, Input, Select } from '../../../ui/origin';
 import { CHECKBOX_STYLE } from '../../components/ui';
+
+/** Stated in the copy, derived from the server's TTL so the two cannot drift. */
+const VAULT_SERVER_CANDIDATE_TTL_MINUTES = Math.round(VAULT_SERVER_CANDIDATE_TTL_MS / 60_000);
+
+/**
+ * "Drive is the ONLY medium", stated positively. `!media.includes('server')`
+ * would hand the Drive-only retention copy to any future non-server medium
+ * (the reserved `local`), which is not what the sentence promises.
+ */
+export function isDriveOnlyVaultMedia(media: VaultMediaList): boolean {
+  return media.length === 1 && media[0] === 'drive';
+}
 
 export interface VaultMovePrecondition {
   id: string;
@@ -22,6 +38,12 @@ export interface VaultMovePrecondition {
 export interface VaultMoveTarget {
   id: string;
   name: string;
+  /**
+   * Drive is the target's only medium. The move-in then leaves a short-lived,
+   * inactive encrypted staging copy on the server until its TTL (#1491), and
+   * the ceremony says so before the destructive step rather than after it.
+   */
+  driveOnly?: boolean;
 }
 
 type MoveWizardProps = {
@@ -34,6 +56,8 @@ type MoveWizardProps = {
       mode: 'in';
       vaults: readonly VaultMoveTarget[];
       vaultName?: never;
+      /** Per-target on this side; the chosen entry carries it. */
+      driveOnly?: never;
       unlocked?: never;
       /** Lets the mount site re-derive preconditions for the chosen target. */
       onTargetChange?(vaultId: string | null): void;
@@ -43,6 +67,8 @@ type MoveWizardProps = {
       mode: 'out';
       vaults?: never;
       vaultName: string;
+      /** Drive is the source vault's only medium — see {@link VaultMoveTarget}. */
+      driveOnly?: boolean;
       unlocked: boolean;
       onSubmit(input: { stepUp: VaultStepUpCredential }): Promise<void>;
     }
@@ -139,13 +165,29 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
       ) : null}
 
       {props.mode === 'in' ? (
-        <p className="bt-gold-note">{t('vault.portfolioMove.moveIn.warning')}</p>
+        <>
+          <p className="bt-gold-note">{t('vault.portfolioMove.moveIn.warning')}</p>
+          {props.vaults.find((vault) => vault.id === vaultId)?.driveOnly ? (
+            <p className="bt-row-sub">
+              {t('vault.portfolioMove.moveIn.driveOnlyRetention', {
+                minutes: VAULT_SERVER_CANDIDATE_TTL_MINUTES,
+              })}
+            </p>
+          ) : null}
+        </>
       ) : (
         <>
           {!props.unlocked ? (
             <p className="bt-gold-note">{t('vault.portfolioMove.moveOut.unlockRequired')}</p>
           ) : null}
           <p className="bt-gold-note">{t('vault.portfolioMove.moveOut.warning')}</p>
+          {props.driveOnly ? (
+            <p className="bt-row-sub">
+              {t('vault.portfolioMove.moveOut.driveOnlyRetention', {
+                minutes: VAULT_SERVER_CANDIDATE_TTL_MINUTES,
+              })}
+            </p>
+          ) : null}
           <label className="bt-soft flex items-start gap-2 text-sm">
             <input
               checked={serverReadableAcknowledged}

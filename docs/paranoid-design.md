@@ -356,6 +356,68 @@ reconciliation (#895/#896) and is kept because it is right:
    (the leftover is the user's own ciphertext in their own Drive).
 3. The last medium can never be removed.
 
+**Staged-candidate lifetime — retained to TTL, never deleted at success
+(#1491, Chief 2026-08-22).** A staged batch (`vault_server_candidates`, 10-minute
+`expires_at` per row) is consumed only when it is PROMOTED into the active plane
+(`added = ['server']`, which copies the bytes into `vault_blobs`) or dropped by a
+gate that makes it unusable (retirement-pending refusal, a newer transition id
+replacing it — the signed purge never drops a live batch; it prunes only
+already-expired rows and otherwise refuses, see consequence 2). The destructive
+per-portfolio commits — move-in
+(§9) and move-out (§10) — no longer delete it: the rows live out their own
+`expires_at` and are disposed by the lazy expiry checks plus the bounded
+retention sweep (#1521). The reason is the §8 attestation boundary: the server's
+Drive attestation is a consistency check against its own rows and can never be
+evidence that bytes reached Drive, so deleting the batch at commit would turn a
+lying or buggy client into irrecoverable data loss. Retention converts that into
+"recoverable inside the window", and the window is the honest boundary — after
+`expires_at` a lost Drive write is gone. Throughout, the batch stays INACTIVE:
+`media` remains the only authority on where a vault is stored, reads resolve
+against `vault_blobs` only (a Drive-only vault answers `medium_inactive`), and
+the media state reports the rows as `inactive-candidates`, never as a data home.
+Four consequences, all accepted and all bounded by the same TTL:
+
+1. **Drive-connection replacement waits.** While a retained batch is live,
+   replacing the vault's Drive connection (below) refuses with its existing
+   state conflict, because that edge requires zero candidate rows. Self-healing
+   at `expires_at`; no user-facing surface exists yet (the Y → Z move has no
+   production caller until E8), so the specific "try again in N minutes" copy
+   belongs with that UI, not here.
+2. **A signed purge of retired server data waits too** — `purgeRetired` refuses
+   while any live candidate exists, so after a Drive-only move-in/move-out the
+   purge is delayed by up to the TTL. Deliberate asymmetry with the
+   retirement-pending branch of `transitionMedia`, which still DROPS the batch
+   on purpose: where the explicit-purge ruling (2026-07-28) and recoverability
+   collide, the purge wins — on a Drive-only vault carrying a retirement row, a
+   refused add-server attempt does destroy a live recovery copy before its TTL,
+   and that is the accepted price of keeping the ruled purge path immediately
+   reachable. Here (no retirement pending) the batch is the recovery copy, so
+   the purge is what waits.
+3. **A move-out straight after a move-in can prove its roster from the retained
+   batch.** `completeMoveIn` stamps `mediaAttestedAt` itself, so the batch it
+   retained satisfies `verifyMoveOutDocuments`' `createdAt <= mediaAttestedAt`
+   pairing (§10), where pre-#1491 a fresh full-set stage was required. It stays
+   fail-closed one level up: the roster proof yields the `documentSetHash` the
+   service compares against the client's own declared value, so a set stale
+   relative to the client's view is refused (`DOCUMENT_SET_STALE`).
+4. **A retained batch stays PROMOTABLE for the rest of its TTL** — the one way
+   the "inactive" rows become active again. Pre-#1491 the commit-time delete
+   closed that window immediately; now promotion (`added = ['server']`) is
+   TTL-closed twice over: `exactCandidateRoster` requires every row's
+   `expires_at > now`, and the readback token embeds the candidate's own
+   `expiresAt`, re-checked at `transitionMedia` — the receipt dies with the
+   candidate. Note the honest boundary: rows stop being READABLE at
+   `expires_at` (every read path disposes-and-refuses), while the bytes leave
+   disk at the next lazy touch or the daily retention sweep (#1521) — up to
+   ~24h later on a vault nobody opens.
+
+What the server does NOT enforce: that a client opens a NEW transition id after
+a commit. Staging under a different id wipes the batch wholesale, but a client
+reusing its own committed id tops the batch up — mixing a fresh document with
+up-to-TTL-old siblings. Bounded by the TTL and by the same owner, and every
+consumer compares the batch against a client-declared value, so this is a
+recorded property, not a proof the server makes.
+
 Changing a vault's **Drive connection** (Y → Z) is a media migration with the
 same discipline, and it starts one step earlier than a byte copy (E5): the
 header doc's §8 `driveConnection` identity echo is first rewritten to Z through
@@ -419,7 +481,16 @@ with zero user migration.
   id that Google does not document as a hint value, so it is kept for the
   post-consent principal check and the email is the hint.) Consequence (the binding Drive-only guarantee, carried
   over): for a Drive-only vault the server holds zero cleartext, zero active
-  ciphertext, and zero CAPABILITY to fetch the Drive copy. Refresh = GIS
+  ciphertext, and zero CAPABILITY to fetch the Drive copy. "Zero ACTIVE
+  ciphertext" is exact, and the §7 retention is what lives inside that word: a
+  staged batch stays as bounded, self-expiring INACTIVE rows for its 10-minute
+  TTL after a Drive-only move-in or move-out — never a medium, never served,
+  never a data home. The user is told so with the TTL at the moment of the
+  CHOICE (the create ceremony's Drive-only radio, which therefore does not
+  promise "nothing, not even encrypted" without naming the exception) and again
+  in both move ceremonies, in and out. That retention exists precisely BECAUSE this bullet is true: since the
+  server can never verify a Drive write, a client that attests one that did not
+  land must stay recoverable for a bounded window. Refresh = GIS
   re-mint (silent while the Google session lives, a user gesture otherwise).
   **Every re-mint repeats `about.get` and compares its `permissionId` with the
   connection's stored `google_sub`; a chooser switch fails closed as the
