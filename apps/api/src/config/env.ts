@@ -1247,6 +1247,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // exhausted counter is NOT retained, so the bounded cooldown genuinely
       // reopens the rail. Admin callers additionally pass the router-level
       // `admin` budget, so this one only has to be conversation-shaped.
+      // Scope note (#1472): submitter tombstones (DELETE /feedback/:id) also
+      // meter here, for the same reason DELETE must not touch capture. So the
+      // independence above is capture-vs-conversation only — inside this
+      // namespace, replies and deletes do share a counter and a cooldown.
       feedbackThread: {
         windowSec: 60 * 60,
         limit: 60,
