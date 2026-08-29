@@ -2088,7 +2088,7 @@
     "import": {
       "title": "Broker-CSV-Import",
       "intro": "Lade den CSV-Export deines Brokers hoch, um bestehende Trades, Dividenden und Cash-Bewegungen in dieses Portfolio zu übernehmen. Die Zeilen werden zuerst als Vorschau angezeigt — gebucht wird erst nach deiner Bestätigung. Broker-Konten werden nie direkt verbunden.",
-      "uploadTitle": "1. Datei & Broker wählen",
+      "uploadTitle": "Datei & Broker wählen",
       "fileLabel": "CSV-Export",
       "brokerLabel": "Broker",
       "brokerAuto": "Automatisch erkennen",
@@ -2116,7 +2116,8 @@
         "quantity": "Anzahl",
         "price": "Kurs",
         "amount": "Betrag (EUR)",
-        "status": "Status"
+        "status": "Status",
+        "tags": "Tags"
       },
       "kind": {
         "buy": "Kauf",
@@ -2148,7 +2149,78 @@
         "skipped_error": "Übersprungen (Fehler)",
         "failed": "Fehlgeschlagen"
       },
-      "startOver": "Weitere Datei importieren"
+      "startOver": "Weitere Datei importieren",
+      "resolveFailed": "Die Zeile konnte nicht mit dem Wert verknüpft werden. Bitte versuche es erneut.",
+      "pinnedByYou": "Von dir zugeordnet",
+      "unknownTag": "Gelöschter Tag",
+      "step": {
+        "file": "Datei",
+        "understood": "Erkannt",
+        "review": "Prüfen",
+        "confirm": "Bestätigen"
+      },
+      "field": {
+        "date": "Datum",
+        "symbol": "Symbol",
+        "isin": "ISIN",
+        "description": "Beschreibung",
+        "quantity": "Stück",
+        "price": "Kurs",
+        "amount": "Betrag",
+        "fee": "Gebühr",
+        "tax": "Steuer",
+        "currency": "Währung",
+        "kindHint": "Buchungsart",
+        "ignore": "Wird nicht importiert"
+      },
+      "numberLocale": {
+        "de": "1.234,56",
+        "en": "1,234.56"
+      },
+      "dateLocale": {
+        "iso": "JJJJ-MM-TT",
+        "de": "TT.MM.JJJJ",
+        "us": "MM/TT/JJJJ",
+        "eu-slash": "TT/MM/JJJJ"
+      },
+      "understanding": {
+        "title": "Das haben wir aus {{filename}} gelesen",
+        "delimiter": "Trennzeichen: {{delimiter}}",
+        "encoding": "Kodierung: {{encoding}}",
+        "numbers": "Zahlen: {{locale}}",
+        "dates": "Datumsformat: {{locale}}",
+        "ambiguousDates": "Die Daten in dieser Datei sind doppeldeutig — 01/02 ist sowohl der 1. Februar als auch der 2. Jänner. Es wird nichts importiert, bis du die Datei mit ISO-Daten exportierst oder über einen konkreten Broker importierst.",
+        "column": "Spalte",
+        "readAs": "Gelesen als",
+        "confidence": "Sicherheit",
+        "evidence": "Warum",
+        "needsReview": "Bitte prüfen",
+        "confident": "Sicher",
+        "alternative": "Knappe Entscheidung gegen {{header}}.",
+        "unmapped": "Spalten, die wir nicht benennen konnten und daher ignoriert haben: {{headers}}",
+        "proposalsTitle": "Vorschläge, die wir nicht verwendet haben",
+        "proposalsBody": "Für die oben genannten Spalten, die wir nicht benennen konnten, hat ein Assistent geraten. Vermutungen werden nie angewendet — aus diesen Spalten wurde kein einziger Wert gelesen, und der Import verhält sich genau so, als wäre dieser Abschnitt leer. Exportiere die Datei mit klareren Spaltenüberschriften oder wähle einen Broker, falls einer davon stimmt.",
+        "suggestionOnly": "Vorschlag — nicht angewendet",
+        "wouldDisplace": "würde {{header}} ablösen"
+      },
+      "review": {
+        "title": "Das brauchen wir noch von dir",
+        "unresolvedTitle": "{{count}} Zeilen ohne zugeordneten Wert",
+        "unresolvedBody": "Diese Werte stehen in deiner Datei, aber nicht im Katalog — deshalb bleiben sie vom Import ausgeschlossen. Wähle den richtigen aus, dann kommt die Zeile mit. Wir ordnen nichts für dich zu.",
+        "skippedTitle": "{{count}} Zeilen konnten wir nicht lesen",
+        "skippedBody": "Diese Zeilen bleiben draußen. Sie stehen hier, damit nichts stillschweigend verschwindet.",
+        "candidatesTitle": "Ähnliche Treffer aus dem Katalog:",
+        "noCandidates": "Der Katalog hat nichts Ähnliches gefunden. Such unten danach.",
+        "searchLabel": "Katalog durchsuchen",
+        "searchHint": "Du kannst auch einen eigenen Wert wählen, den du selbst angelegt hast.",
+        "searchPlaceholder": "Name, Symbol oder ISIN",
+        "searchEmpty": "Zu dieser Suche wurde nichts gefunden.",
+        "pick": "Diesen nehmen",
+        "noIdentity": "Kein Wert benannt",
+        "emptyTitle": "Nichts zu prüfen",
+        "emptyBody": "Alle Zeilen wurden gelesen und zugeordnet. Weiter zur Bestätigung.",
+        "searchFailed": "Der Katalog konnte gerade nicht durchsucht werden."
+      }
     },
     "tabs": {
       "overview": "Übersicht",
