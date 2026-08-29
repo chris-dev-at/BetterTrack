@@ -2088,7 +2088,7 @@
     "import": {
       "title": "Broker CSV import",
       "intro": "Upload your broker's CSV export to bring existing trades, dividends and cash movements into this portfolio. Rows are staged and previewed first — nothing is recorded until you confirm. Broker accounts are never connected directly.",
-      "uploadTitle": "1. Choose file & broker",
+      "uploadTitle": "Choose file & broker",
       "fileLabel": "CSV export",
       "brokerLabel": "Broker",
       "brokerAuto": "Detect automatically",
@@ -2116,7 +2116,8 @@
         "quantity": "Quantity",
         "price": "Price",
         "amount": "Amount (EUR)",
-        "status": "Status"
+        "status": "Status",
+        "tags": "Tags"
       },
       "kind": {
         "buy": "Buy",
@@ -2148,7 +2149,80 @@
         "skipped_error": "Skipped (error)",
         "failed": "Failed"
       },
-      "startOver": "Import another file"
+      "startOver": "Import another file",
+      "resolveFailed": "That row couldn't be pinned to the asset. Please try again.",
+      "pinnedByYou": "Pinned by you",
+      "unknownTag": "Deleted tag",
+      "step": {
+        "file": "File",
+        "understood": "Understood",
+        "review": "Review",
+        "confirm": "Confirm"
+      },
+      "field": {
+        "date": "Date",
+        "symbol": "Symbol",
+        "isin": "ISIN",
+        "description": "Description",
+        "quantity": "Quantity",
+        "price": "Price",
+        "amount": "Amount",
+        "fee": "Fee",
+        "tax": "Tax",
+        "currency": "Currency",
+        "kindHint": "Transaction type",
+        "ignore": "Not imported"
+      },
+      "numberLocale": {
+        "de": "1.234,56",
+        "en": "1,234.56"
+      },
+      "dateLocale": {
+        "iso": "YYYY-MM-DD",
+        "de": "DD.MM.YYYY",
+        "us": "MM/DD/YYYY",
+        "eu-slash": "DD/MM/YYYY"
+      },
+      "understanding": {
+        "title": "What we read from {{filename}}",
+        "delimiter": "Separator: {{delimiter}}",
+        "encoding": "Encoding: {{encoding}}",
+        "numbers": "Numbers: {{locale}}",
+        "dates": "Dates: {{locale}}",
+        "ambiguousDates": "This file's dates could be read either way — 01/02 is both 1 February and 2 January. Nothing will be imported until you re-export with ISO dates, or import through a specific broker.",
+        "column": "Column",
+        "readAs": "Read as",
+        "confidence": "Certainty",
+        "evidence": "Why",
+        "needsReview": "Check this",
+        "confident": "Confident",
+        "alternative": "Close call against {{header}}.",
+        "unmapped": "Columns we couldn't name, and therefore ignored: {{headers}}",
+        "proposalsTitle": "Suggestions we did not use",
+        "proposalsBody": "For the columns above that we couldn't name, an assistant offered a guess. Guesses are never applied — no value was read from these columns, and the import behaves exactly as if this section were empty. Re-export the file with clearer headers, or pick a broker, if one of these looks right.",
+        "suggestionOnly": "Suggestion — not applied",
+        "wouldDisplace": "would take over from {{header}}"
+      },
+      "review": {
+        "title": "What still needs you",
+        "unresolvedBody": "We found these instruments in your file but not in the catalog, so they're excluded from the import. Pick the right one and the row joins the import — nothing is matched for you.",
+        "skippedBody": "We read these rows but won't book them on a guess — each says what it needs below. They stay out of the import; nothing disappears silently.",
+        "candidatesTitle": "Close matches from the catalog:",
+        "noCandidates": "The catalog returned nothing close. Search for it below.",
+        "searchLabel": "Search the catalog",
+        "searchHint": "You can also pick a custom asset you created yourself.",
+        "searchPlaceholder": "Name, symbol or ISIN",
+        "searchEmpty": "Nothing found for that search.",
+        "pick": "Use this",
+        "noIdentity": "No instrument named",
+        "emptyTitle": "Nothing to review",
+        "emptyBody": "Every row was read and matched. Continue to confirm the import.",
+        "searchFailed": "Couldn't search the catalog just now.",
+        "unresolvedTitleOne": "{{count}} row without a matched instrument",
+        "unresolvedTitleOther": "{{count}} rows without a matched instrument",
+        "skippedTitleOne": "{{count}} row we can't import without you",
+        "skippedTitleOther": "{{count}} rows we can't import without you"
+      }
     },
     "tabs": {
       "overview": "Overview",
