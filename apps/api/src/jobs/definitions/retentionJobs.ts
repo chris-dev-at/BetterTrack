@@ -2,6 +2,7 @@ import type { AuditRepository } from '../../data/repositories/auditRepository';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { ParanoidVaultRepository } from '../../data/repositories/paranoidVaultRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
+import type { VaultBlobRepository } from '../../data/repositories/vaultBlobRepository';
 import { sweepLegacyRememberedDeviceBindings } from '../../services/auth/loginThrottle';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
@@ -52,6 +53,14 @@ export interface DataRetentionCleanupJobDeps {
   emailLog: Pick<EmailLogRepository, 'deleteOlderThan'>;
   /** Expired normal-mode enable windows and every opaque byte staged under them. */
   vaultStaging: Pick<ParanoidVaultRepository, 'cleanupExpiredEnableStaging'>;
+  /**
+   * Per-vault staged server candidates past their TTL. The #1491 retention
+   * ruling keeps a staged candidate recoverable until `expires_at` rather than
+   * deleting it at move-in; without this sweep a candidate on a vault nobody
+   * reads again would outlive that window forever (#1521). The lazy expiry
+   * checks in the repository stay — this is the belt to their braces.
+   */
+  vaultCandidates: Pick<VaultBlobRepository, 'cleanupExpiredServerCandidates'>;
   /** Batched account lookup for the remembered-device sweep. */
   users: Pick<UserRepository, 'listByIds'>;
   /** Whole days; `0` explicitly means retain audit rows forever. */
@@ -115,19 +124,33 @@ export function createDataRetentionCleanupJob(
         maxRowsPerRun,
       );
       const abandonedVaultStagesExamined = vaultStaging.deleted;
+      const vaultCandidates = await deleteInBatches(
+        deps.vaultCandidates.cleanupExpiredServerCandidates.bind(deps.vaultCandidates),
+        new Date(runAt),
+        batchSize,
+        maxRowsPerRun,
+      );
       const devices = await sweepLegacyRememberedDeviceBindings(ctx.redis, deps.users);
 
-      if (audit.deleted > 0 || emailLog.deleted > 0 || abandonedVaultStagesExamined > 0) {
+      if (
+        audit.deleted > 0 ||
+        emailLog.deleted > 0 ||
+        abandonedVaultStagesExamined > 0 ||
+        vaultCandidates.deleted > 0
+      ) {
         ctx.logger.info(
           {
             auditPruned: audit.deleted,
             emailLogPruned: emailLog.deleted,
             abandonedVaultStagesExamined,
+            // The staged residue the #1491 TTL promises to bound (#1521).
+            expiredVaultCandidatesDisposed: vaultCandidates.deleted,
             // A capped run leaves eligible rows behind on purpose; the next
             // scheduled run continues, so this must be visible in the log.
-            deferredToNextRun: audit.capped || emailLog.capped || vaultStaging.capped,
+            deferredToNextRun:
+              audit.capped || emailLog.capped || vaultStaging.capped || vaultCandidates.capped,
           },
-          'expired audit and email-log rows pruned; abandoned vault-staging rows examined',
+          'expired audit and email-log rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
         );
       }
       if (devices.legacy > 0) {

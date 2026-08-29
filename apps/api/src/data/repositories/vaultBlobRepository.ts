@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or } from 'drizzle-orm';
 
 import {
   readVaultDocServerHeader,
@@ -136,6 +136,13 @@ export interface VaultBlobRepository {
     candidateId: string,
     now: Date,
   ): Promise<VaultServerCandidateRow | null>;
+  /**
+   * Bounded sweep of staged candidates past their TTL, independent of whether
+   * their vault is ever read again (#1521, closing the gap in the #1491
+   * retention ruling). Returns the number of rows disposed; a short return
+   * proves the cutoff is drained.
+   */
+  cleanupExpiredServerCandidates(expiresAtOrBefore: Date, limit: number): Promise<number>;
   transitionMedia(input: {
     userId: string;
     vaultId: string;
@@ -566,6 +573,21 @@ function exactCandidateRoster(
   });
 }
 
+/**
+ * The single disposal path for staged candidates. Every removal of an EXPIRED
+ * row — the lazy checks below and the periodic sweeper that makes the #1491
+ * retention TTL real for a vault nobody reads again — routes through here, so
+ * there is exactly one implementation of "this candidate is gone".
+ */
+async function disposeCandidates(executor: Database, ids: readonly string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const disposed = await executor
+    .delete(vaultServerCandidates)
+    .where(inArray(vaultServerCandidates.id, [...ids]))
+    .returning({ id: vaultServerCandidates.id });
+  return disposed.length;
+}
+
 async function mediaState(
   executor: Database,
   vault: VaultRow,
@@ -581,9 +603,7 @@ async function mediaState(
     .filter((candidate) => candidate.expiresAt.getTime() <= now.getTime())
     .map((candidate) => candidate.id);
   if (cleanExpired && expiredIds.length > 0) {
-    await executor
-      .delete(vaultServerCandidates)
-      .where(inArray(vaultServerCandidates.id, expiredIds));
+    await disposeCandidates(executor, expiredIds);
     candidates = candidates.filter((candidate) => !expiredIds.includes(candidate.id));
   }
   const [retirement] = await executor
@@ -995,9 +1015,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           .filter((row) => row.expiresAt.getTime() <= input.now.getTime())
           .map((row) => row.id);
         if (expiredIds.length > 0) {
-          await tx
-            .delete(vaultServerCandidates)
-            .where(inArray(vaultServerCandidates.id, expiredIds));
+          await disposeCandidates(tx, expiredIds);
           existing = existing.filter((row) => !expiredIds.includes(row.id));
         }
         if (existing.some((row) => row.transitionId !== input.transitionId)) {
@@ -1073,13 +1091,34 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           .for('update');
         if (!candidate) return null;
         if (candidate.candidate.expiresAt.getTime() <= now.getTime()) {
-          await tx.delete(vaultServerCandidates).where(eq(vaultServerCandidates.id, candidateId));
+          await disposeCandidates(tx, [candidateId]);
           return null;
         }
         if (!(await expectedDoc(tx, candidate.vault, candidate.candidate.docId, { now }))) {
           return null;
         }
         return candidate.candidate;
+      });
+    },
+
+    async cleanupExpiredServerCandidates(expiresAtOrBefore, limit) {
+      if (!Number.isSafeInteger(limit) || limit < 1) return 0;
+      return db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Database;
+        // Oldest expiry first, locked before disposal: a staging write racing
+        // this sweep either waits behind the lock or inserts a fresh row the
+        // selection never saw.
+        const expired = await tx
+          .select({ id: vaultServerCandidates.id })
+          .from(vaultServerCandidates)
+          .where(lte(vaultServerCandidates.expiresAt, expiresAtOrBefore))
+          .orderBy(asc(vaultServerCandidates.expiresAt), asc(vaultServerCandidates.id))
+          .limit(limit)
+          .for('update');
+        return disposeCandidates(
+          tx,
+          expired.map((row) => row.id),
+        );
       });
     },
 
