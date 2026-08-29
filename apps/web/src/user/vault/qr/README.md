@@ -41,11 +41,6 @@ conformance vectors against their scanner before shipping.
 The full rejection vocabulary (twelve literals, frozen 2026-08-26) and the reasoning behind each
 one lives in §13, not here.
 
-**Web/spec drift note:** the shipped web parser (`payload.ts`) predates the 2026-08-26 vocabulary
-freeze and hasn't been renamed onto it yet (`invalid-name` instead of `name-too-long`, no
-`duplicate-key`/`legacy-code` outcomes, duplicate `n`/`f` still first-wins) — tracked separately
-in #1513, out of scope for the doc that introduced §13's normative text (#1502).
-
 ### Implementation notes for `n`
 
 §13 is the normative home for both of these rules; they are restated here because a client author
@@ -61,7 +56,7 @@ reads this file first, and both are places where two correct-looking implementat
   by the parser. A name composed entirely of trim-set code points is ABSENT.
 - **Order: trim, then cap.** Trim the edges first, then apply the 64-code-point cap to the result.
   A name already at 64 code points must survive being padded on the wire; capping first would count
-  the padding and fail the whole transfer as `invalid-name` (§13: `name-too-long`).
+  the padding and fail the whole transfer as `name-too-long`.
 
 Fingerprint verification is fetch-then-compare: the receiver must fetch the opaque header envelope,
 unwrap its active key slot with the phrase, compare the derived content-key fingerprint, and only
