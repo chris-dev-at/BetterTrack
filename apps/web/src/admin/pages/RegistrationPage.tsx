@@ -1,23 +1,37 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link } from 'react-router-dom';
 
-import type { RegistrationMode, RegistrationToken } from '@bettertrack/contracts';
+import {
+  REGISTRATION_MODES,
+  type AdminStats,
+  type AppSettingsResponse,
+  type RegistrationMode,
+  type RegistrationToken,
+} from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
+import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
+  AsyncReadState,
   Badge,
   Button,
   CopyField,
+  DataTable,
   EmptyState,
   PageHeader,
-  Spinner,
+  Panel,
+  PanelHeader,
+  Td,
   TextField,
+  Th,
+  cx,
 } from '../components/ui';
+import { EDGE_TOP, TEXT_MICRO, TEXT_MUTED, TEXT_NUM } from '../components/tokens';
 
 const TOKEN_STATUS_TONE: Record<RegistrationToken['status'], 'green' | 'amber' | 'neutral'> = {
   active: 'green',
@@ -26,69 +40,236 @@ const TOKEN_STATUS_TONE: Record<RegistrationToken['status'], 'green' | 'amber' |
   revoked: 'amber',
 };
 
-const MODE_LABEL_KEY: Record<RegistrationMode, string> = {
-  closed: 'admin.settings.registration.modes.closed.title',
-  invite_token: 'admin.settings.registration.modes.inviteToken.title',
-  approval: 'admin.settings.registration.modes.approval.title',
-  open: 'admin.settings.registration.modes.open.title',
-};
+/** The subset of `useResource`'s handle the sections below consume. */
+interface ReadHandle<T> {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  retryable: boolean;
+  reload: () => void;
+}
 
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString();
+interface ModeMeta {
+  mode: RegistrationMode;
+  title: string;
+  description: string;
 }
 
 /**
- * Who gets in (#1406 W1, People workspace).
+ * The four registration modes (PROJECTPLAN.md §6.12, §13.4 V4-P4a), in
+ * enforcement order. All four are live: switching the mode takes effect
+ * immediately (no restart).
+ */
+function modeMeta(t: TranslateFn): ModeMeta[] {
+  return [
+    {
+      mode: 'closed',
+      title: t('admin.settings.registration.modes.closed.title'),
+      description: t('admin.settings.registration.modes.closed.description'),
+    },
+    {
+      mode: 'invite_token',
+      title: t('admin.settings.registration.modes.inviteToken.title'),
+      description: t('admin.settings.registration.modes.inviteToken.description'),
+    },
+    {
+      mode: 'approval',
+      title: t('admin.settings.registration.modes.approval.title'),
+      description: t('admin.settings.registration.modes.approval.description'),
+    },
+    {
+      mode: 'open',
+      title: t('admin.settings.registration.modes.open.title'),
+      description: t('admin.settings.registration.modes.open.description'),
+    },
+  ];
+}
+
+/**
+ * People → Registration (#1406 W1, completed by W2).
  *
- * The approval queue and the registration access tokens used to hang off the
- * global-settings page, where they sat beside the beta toggle rather than beside
- * the people they admit. W1's IA moves both here and leaves `/admin/settings`
- * owning the mode switch itself, so this page reads the active mode and links
- * back to it instead of duplicating the selector.
- *
- * Both write paths run through the shared `useAdminMutation` seam.
+ * W1 moved the approval queue and the access tokens here off `/admin/settings`
+ * and left the mode selector behind, with links in both directions. W2 finishes
+ * the regrouping per the Chief's ruling of 2026-08-29: the selector lives HERE,
+ * beside the queue, and `/admin/settings` no longer owns it. "Which door is
+ * open" and "who is knocking" are one question, and splitting them across two
+ * workspaces was precisely the discombobulation the owner named.
  */
 export function RegistrationPage() {
   const t = useT();
   const settings = useResource((signal) => api.getSettings(signal), []);
-  const mode = settings.data?.registrationMode ?? null;
+  const stats = useResource((signal) => api.getStats(signal), []);
   // A failed settings read is NOT the same as a mode that happens to be off: the
   // sections below must say "we could not tell" rather than "this is inactive",
-  // which would read as a deliberate configuration.
+  // which would read as a deliberate configuration. Reading `loading` and
+  // `error` here — not only inside the section — is what makes that distinction
+  // exist at all.
+  const modeSettled = !settings.loading && settings.error === null;
+  const mode = modeSettled ? (settings.data?.registrationMode ?? null) : null;
   const modeKnown = mode !== null;
 
+  // Counts are decorative: while the stats read is in flight or has failed the
+  // strip renders no chips at all, so a missing number can never be mistaken for
+  // a confident zero ("nothing is waiting for a decision").
+  const counts = stats.loading || stats.error !== null ? undefined : tabCounts(stats.data);
+
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       <PageHeader
+        eyebrow={t('admin.nav.sections.people')}
         title={t('admin.registration.title')}
         description={t('admin.registration.subtitle')}
       />
 
-      <section className="flex flex-wrap items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
-        <span className="text-sm text-neutral-400">{t('admin.registration.currentMode')}</span>
-        {settings.loading && !settings.data ? (
-          <Spinner label={t('admin.settings.loading')} />
-        ) : settings.error ? (
-          <Alert tone="error">
-            {settings.error}{' '}
-            <button className="underline" onClick={settings.reload}>
-              {t('common.retry')}
-            </button>
-          </Alert>
-        ) : mode ? (
-          <Badge tone={mode === 'closed' ? 'neutral' : 'sky'}>{t(MODE_LABEL_KEY[mode])}</Badge>
-        ) : null}
-        <Link
-          className="ml-auto text-sm text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          to="/admin/settings"
-        >
-          {t('admin.registration.changeMode')}
-        </Link>
-      </section>
+      <WorkspaceTabs counts={counts} />
 
-      <ApprovalQueueSection active={modeKnown ? mode === 'approval' : 'unknown'} />
+      <RegistrationModeSection resource={settings} />
+      <ApprovalQueueSection
+        active={modeKnown ? mode === 'approval' : 'unknown'}
+        onDecided={stats.reload}
+      />
       <RegistrationTokensSection active={modeKnown ? mode === 'invite_token' : 'unknown'} />
     </div>
+  );
+}
+
+function tabCounts(stats: AdminStats | null): Record<string, number> | undefined {
+  if (!stats) return undefined;
+  return {
+    '/admin/users': stats.userCount,
+    '/admin/registration': stats.pendingRegistrationCount,
+    '/admin/invites': stats.pendingInviteCount,
+  };
+}
+
+/**
+ * The registration-mode selector, in its new home (Chief ruling, 2026-08-29).
+ *
+ * Saving is explicit rather than save-on-click: flipping the front door of the
+ * product open is not something an operator should be able to do by brushing a
+ * radio button, and the unsaved-changes marker makes the pending state visible.
+ */
+function RegistrationModeSection({ resource }: { resource: ReadHandle<AppSettingsResponse> }) {
+  const t = useT();
+  const modes = modeMeta(t);
+
+  if (modes.length !== REGISTRATION_MODES.length) {
+    throw new Error('Registration-mode UI is out of sync with the contract enum.');
+  }
+
+  const { data } = resource;
+  const [selected, setSelected] = useState<RegistrationMode>('closed');
+  const [baseline, setBaseline] = useState<RegistrationMode | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!data) return;
+    setSelected(data.registrationMode);
+    setBaseline(data.registrationMode);
+  }, [data]);
+
+  const save = useAdminMutation(
+    async (next: RegistrationMode) => {
+      const result = await api.updateSettings({ registrationMode: next });
+      setSelected(result.registrationMode);
+      setBaseline(result.registrationMode);
+      setSaved(true);
+    },
+    { errorKey: 'admin.registration.modeSaveError' },
+  );
+
+  const dirty = baseline !== null && selected !== baseline;
+
+  return (
+    <Panel padded={false}>
+      <PanelHeader
+        title={t('admin.settings.registration.title')}
+        description={t('admin.registration.modeAppliesImmediately')}
+      />
+      <div className="p-4">
+        {resource.loading && !data ? (
+          <AsyncReadState
+            error={resource.error}
+            loading={resource.loading}
+            loadingLabel={t('admin.settings.loading')}
+            onRetry={resource.reload}
+            retryable={resource.retryable}
+          />
+        ) : resource.error ? (
+          <AsyncReadState
+            error={resource.error}
+            loading={false}
+            onRetry={resource.reload}
+            retryable={resource.retryable}
+          />
+        ) : (
+          <>
+            <fieldset
+              className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4"
+              aria-label={t('admin.settings.registration.title')}
+            >
+              {modes.map((meta) => {
+                const active = selected === meta.mode;
+                const inputId = `registration-mode-${meta.mode}`;
+                return (
+                  <label
+                    key={meta.mode}
+                    htmlFor={inputId}
+                    className={cx(
+                      'flex cursor-pointer flex-col gap-1.5 border px-3 py-2.5 transition-colors',
+                      active
+                        ? 'border-sky-600 bg-sky-950/30'
+                        : 'border-neutral-800 bg-neutral-950 hover:border-neutral-600',
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      <input
+                        id={inputId}
+                        type="radio"
+                        name="registration-mode"
+                        className="accent-sky-500"
+                        value={meta.mode}
+                        checked={active}
+                        onChange={() => setSelected(meta.mode)}
+                      />
+                      <span className="text-[13px] font-semibold text-neutral-100">
+                        {meta.title}
+                      </span>
+                    </span>
+                    <span className={TEXT_MUTED}>{meta.description}</span>
+                  </label>
+                );
+              })}
+            </fieldset>
+
+            {save.error ? (
+              <div className="mt-3">
+                <Alert tone="error">{save.error}</Alert>
+              </div>
+            ) : null}
+            {saved && !dirty ? (
+              <div className="mt-3">
+                <Alert tone="success">{t('admin.settings.saved')}</Alert>
+              </div>
+            ) : null}
+
+            <div className="mt-3 flex items-center gap-3">
+              <Button
+                size="sm"
+                disabled={save.pending || !dirty}
+                onClick={() => {
+                  setSaved(false);
+                  void save.run(selected);
+                }}
+              >
+                {save.pending ? t('common.saving') : t('admin.settings.save')}
+              </Button>
+              {dirty ? <span className={TEXT_MICRO}>{t('admin.settings.unsaved')}</span> : null}
+            </div>
+          </>
+        )}
+      </div>
+    </Panel>
   );
 }
 
@@ -110,7 +291,13 @@ function activityHintKey(active: SectionActivity, inactiveKey: string): string |
  * Approve creates the account (and emails the applicant); reject drops it (and
  * emails the applicant). Either way the row leaves the queue.
  */
-function ApprovalQueueSection({ active }: { active: SectionActivity }) {
+function ApprovalQueueSection({
+  active,
+  onDecided,
+}: {
+  active: SectionActivity;
+  onDecided: () => void;
+}) {
   const t = useT();
   const requests = useResource((signal) => api.listRegistrationRequests(signal), []);
   const decide = useAdminMutation(
@@ -124,72 +311,99 @@ function ApprovalQueueSection({ active }: { active: SectionActivity }) {
       // another tab acted first. Banner + reload, never a forced sign-out.
       notFound: 'surface',
       notFoundErrorKey: 'admin.registration.requestGone',
-      onSuccess: requests.reload,
+      onSuccess: () => {
+        requests.reload();
+        onDecided();
+      },
     },
   );
   const hintKey = activityHintKey(active, 'admin.settings.approvals.inactive');
+  const rows = requests.data?.requests ?? [];
 
   return (
-    <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-          {t('admin.settings.approvals.title')}
-        </h2>
-        <p className="text-sm text-neutral-400">
-          {t('admin.settings.approvals.description')}
-          {hintKey ? ` ${t(hintKey)}` : null}
-        </p>
-      </div>
+    <Panel padded={false}>
+      <PanelHeader
+        title={t('admin.settings.approvals.title')}
+        description={`${t('admin.settings.approvals.description')}${hintKey ? ` ${t(hintKey)}` : ''}`}
+        actions={rows.length > 0 ? <Badge tone="sky">{rows.length}</Badge> : undefined}
+      />
 
-      {decide.error ? <Alert tone="error">{decide.error}</Alert> : null}
+      {decide.error ? (
+        <div className="px-4 pt-3">
+          <Alert tone="error">{decide.error}</Alert>
+        </div>
+      ) : null}
 
-      {requests.loading && !requests.data ? (
-        <Spinner label={t('admin.settings.approvals.loading')} />
-      ) : requests.error ? (
-        <Alert tone="error">
-          {requests.error}{' '}
-          <button className="underline" onClick={requests.reload}>
-            {t('common.retry')}
-          </button>
-        </Alert>
-      ) : requests.data && requests.data.requests.length > 0 ? (
-        <ul className="flex flex-col gap-2">
-          {requests.data.requests.map((req) => (
-            <li
-              key={req.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
-            >
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="truncate text-sm text-neutral-100">{req.username}</span>
-                <span className="break-words text-xs text-neutral-400">
-                  {req.email} ·{' '}
-                  {t('admin.settings.approvals.requested', {
-                    date: formatDateTime(req.createdAt),
-                  })}
-                </span>
-              </span>
-              <span className="flex items-center gap-2">
-                <Button
-                  onClick={() => void decide.runFor(req.id, req.id, 'approve')}
-                  disabled={decide.isPending(req.id)}
-                >
-                  {t('admin.settings.approvals.approve')}
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => void decide.runFor(req.id, req.id, 'reject')}
-                  disabled={decide.isPending(req.id)}
-                >
-                  {t('admin.settings.approvals.reject')}
-                </Button>
-              </span>
-            </li>
-          ))}
-        </ul>
+      {requests.loading || requests.error ? (
+        <div className="p-4">
+          <AsyncReadState
+            error={requests.error}
+            loading={requests.loading}
+            loadingLabel={t('admin.settings.approvals.loading')}
+            onRetry={requests.reload}
+            retryable={requests.retryable}
+          />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="p-4">
+          <EmptyState>{t('admin.settings.approvals.empty')}</EmptyState>
+        </div>
       ) : (
-        <EmptyState>{t('admin.settings.approvals.empty')}</EmptyState>
+        <DataTable minWidth="40rem">
+          <thead className="border-b border-neutral-800">
+            <tr>
+              <Th>{t('admin.registration.columns.applicant')}</Th>
+              <Th>{t('admin.registration.columns.applied')}</Th>
+              <Th>{t('admin.registration.columns.via')}</Th>
+              <Th className="w-48" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-800">
+            {rows.map((req) => (
+              <tr key={req.id}>
+                <Td>
+                  <span className="block font-medium text-neutral-100">{req.username}</span>
+                  <span className="block text-[12px] text-neutral-500">{req.email}</span>
+                </Td>
+                <Td className={cx('whitespace-nowrap text-neutral-400', TEXT_NUM)}>
+                  {formatDateTime(req.createdAt)}
+                </Td>
+                <Td>
+                  {/* `provider` is now on the wire (#1406 W2) — before it was
+                      stored but never exposed, so an operator could not tell a
+                      Google applicant from a password one. */}
+                  <Badge tone={req.provider ? 'sky' : 'neutral'}>
+                    {req.provider ?? t('admin.registration.viaPassword')}
+                  </Badge>
+                </Td>
+                <Td>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => void decide.runFor(req.id, req.id, 'approve')}
+                      disabled={decide.isPending(req.id)}
+                    >
+                      {t('admin.settings.approvals.approve')}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void decide.runFor(req.id, req.id, 'reject')}
+                      disabled={decide.isPending(req.id)}
+                    >
+                      {t('admin.settings.approvals.reject')}
+                    </Button>
+                  </div>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
       )}
-    </section>
+      <div className={cx('px-4 py-2.5', EDGE_TOP)}>
+        <p className={TEXT_MUTED}>{t('admin.registration.decisionEffect')}</p>
+      </div>
+    </Panel>
   );
 }
 
@@ -238,6 +452,7 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
   });
 
   const hintKey = activityHintKey(active, 'admin.settings.tokens.inactive');
+  const rows = tokens.data?.tokens ?? [];
 
   function onCreate(event: FormEvent) {
     event.preventDefault();
@@ -246,18 +461,16 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-          {t('admin.settings.tokens.title')}
-        </h2>
-        <p className="text-sm text-neutral-400">
-          {t('admin.settings.tokens.description')}
-          {hintKey ? ` ${t(hintKey)}` : null}
-        </p>
-      </div>
+    <Panel padded={false}>
+      <PanelHeader
+        title={t('admin.settings.tokens.title')}
+        description={`${t('admin.settings.tokens.description')}${hintKey ? ` ${t(hintKey)}` : ''}`}
+      />
 
-      <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3">
+      <form
+        onSubmit={onCreate}
+        className="flex flex-wrap items-end gap-3 border-b border-neutral-800 p-4"
+      >
         <TextField
           label={t('admin.settings.tokens.label')}
           name="token-label"
@@ -270,6 +483,7 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
           name="token-max-uses"
           type="number"
           min={1}
+          className="w-24"
           value={maxUses}
           onChange={(e) => setMaxUses(e.target.value)}
         />
@@ -278,100 +492,123 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
           name="token-expires"
           type="number"
           min={1}
+          className="w-32"
           value={expiresInDays}
           onChange={(e) => setExpiresInDays(e.target.value)}
           placeholder={t('admin.settings.tokens.never')}
         />
-        <Button type="submit" disabled={create.pending}>
+        <Button type="submit" size="sm" disabled={create.pending}>
           {create.pending ? t('common.creating') : t('admin.settings.tokens.create')}
         </Button>
       </form>
 
-      {create.error ? <Alert tone="error">{create.error}</Alert> : null}
-      {revoke.error ? <Alert tone="error">{revoke.error}</Alert> : null}
-      {createdUrl ? (
-        <CopyField label={t('admin.settings.tokens.urlLabel')} value={createdUrl} />
+      {create.error || revoke.error || createdUrl ? (
+        <div className="flex flex-col gap-3 border-b border-neutral-800 p-4">
+          {create.error ? <Alert tone="error">{create.error}</Alert> : null}
+          {revoke.error ? <Alert tone="error">{revoke.error}</Alert> : null}
+          {createdUrl ? (
+            <CopyField label={t('admin.settings.tokens.urlLabel')} value={createdUrl} />
+          ) : null}
+        </div>
       ) : null}
 
-      {tokens.loading && !tokens.data ? (
-        <Spinner label={t('admin.settings.tokens.loading')} />
-      ) : tokens.error ? (
-        <Alert tone="error">
-          {tokens.error}{' '}
-          <button className="underline" onClick={tokens.reload}>
-            {t('common.retry')}
-          </button>
-        </Alert>
-      ) : tokens.data && tokens.data.tokens.length > 0 ? (
-        <ul className="flex flex-col gap-2">
-          {tokens.data.tokens.map((token) => (
-            <li
-              key={token.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
-            >
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="flex items-center gap-2 text-sm text-neutral-100">
-                  <span className="truncate">
-                    {token.label ?? t('admin.settings.tokens.untitled')}
-                  </span>
+      {tokens.loading || tokens.error ? (
+        <div className="p-4">
+          <AsyncReadState
+            error={tokens.error}
+            loading={tokens.loading}
+            loadingLabel={t('admin.settings.tokens.loading')}
+            onRetry={tokens.reload}
+            retryable={tokens.retryable}
+          />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="p-4">
+          <EmptyState>{t('admin.settings.tokens.empty')}</EmptyState>
+        </div>
+      ) : (
+        <DataTable minWidth="44rem">
+          <thead className="border-b border-neutral-800">
+            <tr>
+              <Th>{t('admin.settings.tokens.label')}</Th>
+              <Th>{t('admin.users.columns.status')}</Th>
+              <Th>{t('admin.registration.columns.uses')}</Th>
+              <Th>{t('admin.registration.columns.expires')}</Th>
+              <Th className="w-56" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-800">
+            {rows.map((token) => (
+              <tr key={token.id}>
+                <Td className="font-medium text-neutral-100">
+                  {token.label ?? t('admin.settings.tokens.untitled')}
+                </Td>
+                <Td>
                   <Badge tone={TOKEN_STATUS_TONE[token.status]}>
                     {t(`admin.settings.tokens.status.${token.status}`)}
                   </Badge>
-                </span>
-                <span className="text-xs text-neutral-400">
-                  {t('admin.settings.tokens.uses', {
-                    used: token.useCount,
-                    max: token.maxUses,
-                  })}
+                </Td>
+                <Td className={TEXT_NUM}>
+                  {token.useCount} / {token.maxUses}
+                </Td>
+                <Td className={cx('whitespace-nowrap text-neutral-400', TEXT_NUM)}>
                   {token.expiresAt
-                    ? ` · ${t('admin.settings.tokens.expires', { date: formatDateTime(token.expiresAt) })}`
-                    : ` · ${t('admin.settings.tokens.noExpiry')}`}
-                </span>
-              </span>
-              {token.status === 'active' ? (
-                revokingId === token.id ? (
-                  <span className="flex flex-wrap items-center justify-end gap-2">
-                    <span className="text-xs text-neutral-400">
-                      {t('admin.confirmations.revokeRegistrationToken.prompt', {
-                        name: token.label ?? token.id,
-                      })}
-                    </span>
-                    <Button
-                      variant="secondary"
-                      disabled={revoke.busy}
-                      onClick={() => void revoke.runFor(token.id, token.id)}
-                    >
-                      {revoke.isPending(token.id)
-                        ? t('admin.confirmations.revokeRegistrationToken.pending')
-                        : t('admin.confirmations.revokeRegistrationToken.confirm')}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      disabled={revoke.busy}
-                      onClick={() => setRevokingId(null)}
-                    >
-                      {t('common.cancel')}
-                    </Button>
-                  </span>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    disabled={revokingId !== null || revoke.busy}
-                    onClick={() => {
-                      revoke.clearError();
-                      setRevokingId(token.id);
-                    }}
-                  >
-                    {t('admin.actions.revoke')}
-                  </Button>
-                )
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <EmptyState>{t('admin.settings.tokens.empty')}</EmptyState>
+                    ? formatDateTime(token.expiresAt)
+                    : t('admin.settings.tokens.noExpiry')}
+                </Td>
+                <Td>
+                  <div className="flex justify-end gap-2">
+                    {token.status === 'active' ? (
+                      revokingId === token.id ? (
+                        <>
+                          <span className={TEXT_MUTED}>
+                            {t('admin.confirmations.revokeRegistrationToken.prompt', {
+                              name: token.label ?? token.id,
+                            })}
+                          </span>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            disabled={revoke.busy}
+                            onClick={() => void revoke.runFor(token.id, token.id)}
+                          >
+                            {revoke.isPending(token.id)
+                              ? t('admin.confirmations.revokeRegistrationToken.pending')
+                              : t('admin.confirmations.revokeRegistrationToken.confirm')}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={revoke.busy}
+                            onClick={() => setRevokingId(null)}
+                          >
+                            {t('common.cancel')}
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={revokingId !== null || revoke.busy}
+                          onClick={() => {
+                            revoke.clearError();
+                            setRevokingId(token.id);
+                          }}
+                        >
+                          {t('admin.actions.revoke')}
+                        </Button>
+                      )
+                    ) : null}
+                  </div>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
       )}
-    </section>
+      <div className={cx('px-4 py-2.5', EDGE_TOP)}>
+        <p className={TEXT_MUTED}>{t('admin.registration.tokenUrlOnce')}</p>
+      </div>
+    </Panel>
   );
 }

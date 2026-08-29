@@ -2,22 +2,30 @@ import { randomBytes } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 
-import type {
-  AccountDefaultsResponse,
-  BulkUserActionRequest,
-  BulkUserActionResponse,
-  CreateInviteRequest,
-  CreateRegistrationTokenRequest,
-  CreateUserRequest,
-  UpdateAccountDefaultsRequest,
-  UpdateAdminSessionPolicyRequest,
-  UpdateAppSettingsRequest,
-  UpdateUserRequest,
+import {
+  ADMIN_USER_NOTE_PAGE_LIMIT,
+  type AccountDefaultsResponse,
+  type AdminUserListQuery,
+  type BulkUserActionRequest,
+  type BulkUserActionResponse,
+  type CreateInviteRequest,
+  type CreateRegistrationTokenRequest,
+  type CreateUserRequest,
+  type UpdateAccountDefaultsRequest,
+  type UpdateAdminSessionPolicyRequest,
+  type UpdateAppSettingsRequest,
+  type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
 import type { ApiKeyService } from '../apiKeys/apiKeyService';
 import type { OAuthService } from '../oauth/oauthService';
+import type {
+  AdminPeopleRepository,
+  AdminUserNoteRow,
+  AdminUserSharingCounts,
+  AdminUserSupportRow,
+} from '../../data/repositories/adminPeopleRepository';
 import type { EmailLogPage, EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { IdentityRepository } from '../../data/repositories/identityRepository';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
@@ -50,6 +58,8 @@ export interface AdminServiceDeps {
   config: AppConfig;
   redis: Redis;
   userRepo: UserRepository;
+  /** Cross-table reads + operator notes behind the People 360 tabs (#1406 W2). */
+  people: AdminPeopleRepository;
   inviteRepo: InviteRepository;
   /** Registration access tokens for the `invite_token` mode (§13.4 V4-P4a). */
   registrationTokenRepo: RegistrationTokenRepository;
@@ -95,6 +105,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     config,
     redis,
     userRepo,
+    people,
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,
@@ -277,6 +288,115 @@ export function createAdminService(deps: AdminServiceDeps) {
 
   return {
     listUsers: (search?: string) => userRepo.list(search),
+
+    /**
+     * The People list (#1406 W2): filtered, ordered and windowed in SQL rather
+     * than in the browser. `total` is the count for the FILTER, not the table,
+     * so the footer says how many rows the operator's question has.
+     */
+    listUsersPage: (query: AdminUserListQuery) =>
+      userRepo.listPage({
+        ...(query.search !== undefined ? { search: query.search } : {}),
+        ...(query.role !== undefined ? { role: query.role } : {}),
+        ...(query.status !== undefined ? { status: query.status } : {}),
+        ...(query.privacyMode !== undefined ? { privacyMode: query.privacyMode } : {}),
+        sort: query.sort,
+        direction: query.direction,
+        limit: query.limit,
+        offset: query.offset,
+      }),
+
+    /**
+     * One account (#1406 W2). Before this existed the detail page downloaded
+     * every user to find one row; on a real instance that is the whole table on
+     * every open. 404s through the shared `loadUser`, so an unknown id is
+     * indistinguishable from an id the caller may not see.
+     */
+    getUser: (id: string) => loadUser(id),
+
+    /**
+     * The Access tab in one read. Sessions come from Redis (the session service
+     * is the only place they live) and carry the PUBLIC revocation handle, never
+     * the session id itself — this response must not be replayable into a
+     * session. Passing `null` as the current session id is deliberate: an
+     * operator is not one of this user's devices, so nothing here is ever marked
+     * `current`.
+     */
+    async userAccess(id: string) {
+      await loadUser(id);
+      const [sessionList, apiKeyRows, grantRows, identityRows] = await Promise.all([
+        sessions.listForUser(id, null),
+        people.apiKeysFor(id),
+        people.oauthGrantsFor(id),
+        people.identitiesFor(id),
+      ]);
+      return {
+        sessions: sessionList,
+        apiKeys: apiKeyRows,
+        oauthGrants: grantRows,
+        identities: identityRows,
+      };
+    },
+
+    /** The Sharing tab — counts only; see the repository for why. */
+    async userSharing(id: string): Promise<AdminUserSharingCounts> {
+      await loadUser(id);
+      return people.sharingCountsFor(id);
+    },
+
+    /** The Support tab — this account's submissions, summarized (no bodies). */
+    async userSupport(
+      id: string,
+      limit: number,
+    ): Promise<{ rows: AdminUserSupportRow[]; total: number; openCount: number }> {
+      await loadUser(id);
+      return people.supportFor(id, limit);
+    },
+
+    /** The Notes tab. */
+    async listUserNotes(id: string): Promise<AdminUserNoteRow[]> {
+      await loadUser(id);
+      return people.listNotes(id, ADMIN_USER_NOTE_PAGE_LIMIT);
+    },
+
+    /**
+     * Write an operator note. Audited with the note id in `meta` and NEVER the
+     * body: copying operator prose into the audit log would create a second
+     * store of it that the delete route below cannot reach.
+     */
+    async createUserNote(id: string, body: string, actor: AdminActor): Promise<AdminUserNoteRow> {
+      await loadUser(id);
+      const note = await people.createNote({ userId: id, authorId: actor.id, body });
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.AdminUserNoteAdded,
+        targetType: 'user',
+        targetId: id,
+        ip: actor.ip,
+        meta: { noteId: note.id },
+      });
+      return note;
+    },
+
+    /**
+     * Remove an operator note. Any admin may remove any note — there is one
+     * operator today, RBAC is explicitly out (#1406), and an audit row already
+     * names who did it. 404 when the note is not on THIS account, so a stale id
+     * can never reach across accounts.
+     */
+    async deleteUserNote(id: string, noteId: string, actor: AdminActor): Promise<void> {
+      await loadUser(id);
+      const removed = await people.deleteNote(id, noteId);
+      if (!removed) throw notFound('That note no longer exists.', 'NOTE_NOT_FOUND');
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.AdminUserNoteDeleted,
+        targetType: 'user',
+        targetId: id,
+        ip: actor.ip,
+        meta: { noteId },
+      });
+    },
 
     async createUser(
       input: CreateUserRequest,

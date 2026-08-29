@@ -502,6 +502,10 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getBatch',
     'applyBatch',
     'discardBatch',
+    // Pinning a staged row to an asset (#964) reads and writes the batch's
+    // portfolio exactly as its siblings do, and takes the batch id in the same
+    // second position — so it is gated by the same binding.
+    'resolveRow',
   ]),
   serviceBinding('imports', 'expenseImports', 'userIdFirst', ['preview', 'apply']),
   serviceBinding('standingOrderExecution', 'standingOrders', 'optionalPortfolioIdOptionSecond', [

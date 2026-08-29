@@ -1,23 +1,50 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
-import type { AdminStats, CreateUserResponse } from '@bettertrack/contracts';
+import {
+  ADMIN_USER_PAGE_SIZE_DEFAULT,
+  ADMIN_USER_SORTS,
+  ADMIN_USER_SORT_DIRECTIONS,
+  type AdminStats,
+  type AdminUser,
+  type AdminUserSort,
+  type AdminUserSortDirection,
+  type CreateUserResponse,
+} from '@bettertrack/contracts';
 
 import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
   AsyncReadState,
   Badge,
   Button,
   CopyField,
+  DataTable,
   EmptyState,
   PageHeader,
+  Panel,
+  SelectField,
+  SortableTh,
+  StatTile,
+  Td,
   TextField,
+  Th,
+  cx,
 } from '../components/ui';
+import {
+  EDGE,
+  EDGE_TOP,
+  SURFACE_HEADER,
+  TEXT_MICRO,
+  TEXT_MUTED,
+  TEXT_NUM,
+} from '../components/tokens';
 
 type Dialog =
   | { type: 'create' }
@@ -29,41 +56,124 @@ function errorMessage(err: unknown, t: TranslateFn): string {
   return t('common.genericError');
 }
 
+const PAGE_SIZES = [25, 50, 100] as const;
+
+/** A filter's "no filter" sentinel. The empty string is what a `<select>` gives us. */
+const ANY = '';
+
+function isSort(value: string | null): value is AdminUserSort {
+  return value !== null && (ADMIN_USER_SORTS as readonly string[]).includes(value);
+}
+
+function isDirection(value: string | null): value is AdminUserSortDirection {
+  return value !== null && (ADMIN_USER_SORT_DIRECTIONS as readonly string[]).includes(value);
+}
+
 /**
- * Slimmed user list (PROJECTPLAN.md §6.12, §13.2): only the essential columns so
- * it remains usable on narrow screens. User details are opened through the
- * primary identity link, while bulk select drives bulk actions.
+ * People → Users (#1406 W2).
+ *
+ * The list the operator actually works from: server-side search, filters on kind
+ * / state / privacy mode, four sortable columns, a bounded page, and the one
+ * bulk action that exists. Everything that shapes the query lives in the URL, so
+ * a filtered view is bookmarkable, survives a reload and moves with the back
+ * button — an operator who found the three disabled accounts should be able to
+ * send that link to themselves tomorrow.
+ *
+ * `disabled` remains THE suspension (#1406): it already kills sessions, bearer
+ * credentials and realtime principals. No suspended/limited/locked proliferation
+ * is offered here, because none exists on the server.
  */
 export function UsersPage() {
   const t = useT();
-  const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
+  const [params, setParams] = useSearchParams();
+
+  // ── Query state, read from the URL ─────────────────────────────────────────
+  const search = params.get('q') ?? '';
+  const role = params.get('role') ?? ANY;
+  const status = params.get('status') ?? ANY;
+  const privacyMode = params.get('privacy') ?? ANY;
+  const sortParam = params.get('sort');
+  const sort: AdminUserSort = isSort(sortParam) ? sortParam : 'createdAt';
+  const directionParam = params.get('dir');
+  const direction: AdminUserSortDirection = isDirection(directionParam) ? directionParam : 'desc';
+  const limit = Number.parseInt(params.get('limit') ?? '', 10) || ADMIN_USER_PAGE_SIZE_DEFAULT;
+  const offset = Math.max(0, Number.parseInt(params.get('offset') ?? '', 10) || 0);
+
+  const [searchInput, setSearchInput] = useState(search);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [banner, setBanner] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  // Debounce the search box so each keystroke doesn't hit the API.
+  /**
+   * Write one or more query keys. Any change to a FILTER resets the offset:
+   * staying on page 3 of a result set that just shrank to one page shows an
+   * empty table and reads as "no results", which is a lie.
+   */
+  const patchQuery = useCallback(
+    (patch: Record<string, string | number | null>, keepOffset = false) => {
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          for (const [key, value] of Object.entries(patch)) {
+            if (value === null || value === '') next.delete(key);
+            else next.set(key, String(value));
+          }
+          if (!keepOffset) next.delete('offset');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
+
+  // Debounce the search box so each keystroke doesn't hit the API. The URL is
+  // the source of truth; the input is a local draft of it.
   useEffect(() => {
-    const id = setTimeout(() => setSearch(searchInput.trim()), 300);
+    if (searchInput === search) return;
+    const id = setTimeout(() => patchQuery({ q: searchInput.trim() }), 300);
     return () => clearTimeout(id);
-  }, [searchInput]);
+  }, [searchInput, search, patchQuery]);
+
+  // A back/forward navigation changes the URL under us; re-seed the draft.
+  useEffect(() => setSearchInput(search), [search]);
 
   const stats = useResource((signal) => api.getStats(signal), []);
-  const users = useResource((signal) => api.listUsers(search || undefined, signal), [search]);
+  const users = useResource(
+    (signal) =>
+      api.listUsers(
+        {
+          ...(search ? { search } : {}),
+          ...(role ? { role: role as 'user' | 'admin' } : {}),
+          ...(status ? { status: status as 'active' | 'disabled' } : {}),
+          ...(privacyMode ? { privacyMode: privacyMode as 'normal' | 'paranoid' } : {}),
+          sort,
+          direction,
+          limit,
+          offset,
+        },
+        signal,
+      ),
+    [search, role, status, privacyMode, sort, direction, limit, offset],
+  );
 
   const rows = useMemo(() => users.data?.users ?? [], [users.data]);
-  // Keep the selection in sync with what's actually on screen.
+  const page = users.data?.page ?? null;
+
+  // Keep the selection in sync with what's actually on screen: a bulk action
+  // must never reach a row the operator can no longer see.
   useEffect(() => {
     setSelected((prev) => {
       const ids = new Set(rows.map((u) => u.id));
       const next = new Set<string>();
       for (const id of prev) if (ids.has(id)) next.add(id);
-      return next;
+      return next.size === prev.size ? prev : next;
     });
   }, [rows]);
 
   const allSelected = rows.length > 0 && rows.every((u) => selected.has(u.id));
+  const filtersActive = Boolean(search || role || status || privacyMode);
 
   function toggleOne(id: string) {
     setSelected((prev) => {
@@ -78,15 +188,18 @@ export function UsersPage() {
     setSelected(allSelected ? new Set() : new Set(rows.map((u) => u.id)));
   }
 
+  function onSort(column: AdminUserSort) {
+    // Clicking the active column flips it; a new column starts descending,
+    // which is "most recent / highest first" for every column we offer.
+    patchQuery({ sort: column, dir: sort === column && direction === 'desc' ? 'asc' : 'desc' });
+  }
+
   async function bulkDisable(userIds: string[]) {
     if (userIds.length === 0 || bulkBusy) return;
     setBanner(null);
     setBulkBusy(true);
     try {
-      const result = await api.bulkUserAction({
-        action: 'disable',
-        userIds,
-      });
+      const result = await api.bulkUserAction({ action: 'disable', userIds });
       users.reload();
       stats.reload();
       setSelected(new Set());
@@ -113,11 +226,17 @@ export function UsersPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <PageHeader title={t('admin.users.title')} description={t('admin.users.subtitle')} />
-        <Button onClick={() => setDialog({ type: 'create' })}>{t('admin.users.create')}</Button>
-      </div>
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        eyebrow={t('admin.nav.sections.people')}
+        title={t('admin.users.title')}
+        description={t('admin.users.subtitle')}
+        actions={
+          <Button onClick={() => setDialog({ type: 'create' })}>{t('admin.users.create')}</Button>
+        }
+      />
+
+      <WorkspaceTabs counts={tabCounts(stats.data)} />
 
       {stats.loading || stats.error ? (
         <AsyncReadState
@@ -131,29 +250,39 @@ export function UsersPage() {
         <StatsStrip data={stats.data} />
       )}
 
-      <TextField
-        label={t('admin.users.searchLabel')}
-        name="search"
-        placeholder={t('admin.users.searchPlaceholder')}
-        value={searchInput}
-        onChange={(e) => setSearchInput(e.target.value)}
+      <Filters
+        search={searchInput}
+        onSearch={setSearchInput}
+        role={role}
+        status={status}
+        privacyMode={privacyMode}
+        limit={limit}
+        onChange={patchQuery}
+        filtersActive={filtersActive}
       />
 
       {banner ? <Alert tone={banner.tone}>{banner.text}</Alert> : null}
 
       {selected.size > 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
-          <span className="text-sm text-neutral-300">
+        <div
+          className={cx(
+            'flex flex-wrap items-center justify-between gap-3 px-4 py-2.5',
+            EDGE,
+            SURFACE_HEADER,
+          )}
+        >
+          <span className="text-[13px] text-neutral-300">
             {t(selected.size === 1 ? 'admin.users.selectedOne' : 'admin.users.selectedOther', {
               count: selected.size,
             })}
           </span>
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setSelected(new Set())}>
+            <Button variant="secondary" size="sm" onClick={() => setSelected(new Set())}>
               {t('admin.users.clear')}
             </Button>
             <Button
               variant="danger"
+              size="sm"
               disabled={bulkBusy || dialog?.type === 'bulkDisable'}
               onClick={() => {
                 setBanner(null);
@@ -175,63 +304,67 @@ export function UsersPage() {
           retryable={users.retryable}
         />
       ) : rows.length === 0 ? (
-        <EmptyState>{search ? t('admin.users.emptySearch') : t('admin.users.empty')}</EmptyState>
+        <EmptyState>
+          {filtersActive ? t('admin.users.emptySearch') : t('admin.users.empty')}
+        </EmptyState>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-neutral-800">
-          <table className="w-full min-w-[40rem] text-left text-sm">
-            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
+        <div className="flex flex-col gap-2">
+          <DataTable minWidth="56rem">
+            <thead className={cx(SURFACE_HEADER, 'border-b border-neutral-800')}>
               <tr>
-                <th className="w-10 px-3 py-3">
+                <Th className="w-8">
                   <input
                     type="checkbox"
                     aria-label={t('admin.users.selectAll')}
+                    className="accent-sky-500"
                     checked={allSelected}
                     onChange={toggleAll}
                   />
-                </th>
-                <th className="px-4 py-3 font-medium">{t('admin.users.columns.user')}</th>
-                <th className="px-4 py-3 font-medium">{t('admin.users.columns.role')}</th>
-                <th className="px-4 py-3 font-medium">{t('admin.users.columns.status')}</th>
+                </Th>
+                <SortableTh
+                  active={sort === 'username'}
+                  direction={direction}
+                  onSort={() => onSort('username')}
+                >
+                  {t('admin.users.columns.user')}
+                </SortableTh>
+                <Th>{t('admin.users.columns.role')}</Th>
+                <Th>{t('admin.users.columns.status')}</Th>
+                <Th>{t('admin.users.columns.privacy')}</Th>
+                <SortableTh
+                  active={sort === 'lastLoginAt'}
+                  direction={direction}
+                  onSort={() => onSort('lastLoginAt')}
+                >
+                  {t('admin.users.columns.lastLogin')}
+                </SortableTh>
+                <SortableTh
+                  active={sort === 'createdAt'}
+                  direction={direction}
+                  onSort={() => onSort('createdAt')}
+                >
+                  {t('admin.users.columns.created')}
+                </SortableTh>
+                <Th className="w-16" />
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-800">
               {rows.map((u) => (
-                <tr key={u.id} className="hover:bg-neutral-900/50">
-                  <td className="px-3 py-3">
-                    <input
-                      type="checkbox"
-                      aria-label={t('admin.users.selectUser', { username: u.username })}
-                      checked={selected.has(u.id)}
-                      onChange={() => toggleOne(u.id)}
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <Link
-                      to={`/admin/users/${u.id}`}
-                      className="block rounded-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-                    >
-                      <span className="block font-medium">{u.email}</span>
-                      <span className="block text-xs text-neutral-400">{u.username}</span>
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>
-                      {u.role === 'admin'
-                        ? t('admin.users.roles.admin')
-                        : t('admin.users.roles.user')}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge tone={u.status === 'active' ? 'green' : 'red'}>
-                      {u.status === 'active'
-                        ? t('admin.users.status.active')
-                        : t('admin.users.status.disabled')}
-                    </Badge>
-                  </td>
-                </tr>
+                <UserRow
+                  key={u.id}
+                  user={u}
+                  selected={selected.has(u.id)}
+                  onToggle={() => toggleOne(u.id)}
+                />
               ))}
             </tbody>
-          </table>
+          </DataTable>
+
+          <Pagination
+            page={page}
+            rowCount={rows.length}
+            onOffset={(next) => patchQuery({ offset: next }, true)}
+          />
         </div>
       )}
 
@@ -257,7 +390,7 @@ export function UsersPage() {
           dismissable={!bulkBusy}
         >
           <div className="flex flex-col gap-4">
-            <p className="text-sm text-neutral-400">
+            <p className="text-[13px] text-neutral-400">
               {t(
                 dialog.userIds.length === 1
                   ? 'admin.confirmations.bulkDisable.descriptionOne'
@@ -292,6 +425,224 @@ export function UsersPage() {
   );
 }
 
+/** Counts for the workspace strip, from the one stats read this page already makes. */
+function tabCounts(stats: AdminStats | null): Record<string, number> | undefined {
+  if (!stats) return undefined;
+  return {
+    '/admin/users': stats.userCount,
+    '/admin/registration': stats.pendingRegistrationCount,
+    '/admin/invites': stats.pendingInviteCount,
+  };
+}
+
+function UserRow({
+  user,
+  selected,
+  onToggle,
+}: {
+  user: AdminUser;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const t = useT();
+  return (
+    <tr className={cx('transition-colors', selected ? 'bg-sky-950/30' : 'hover:bg-neutral-900/60')}>
+      <Td>
+        <input
+          type="checkbox"
+          aria-label={t('admin.users.selectUser', { username: user.username })}
+          className="accent-sky-500"
+          checked={selected}
+          onChange={onToggle}
+        />
+      </Td>
+      <Td>
+        <Link
+          to={`/admin/users/${user.id}`}
+          className={cx(
+            'block text-sky-400 hover:text-sky-300 hover:underline',
+            'focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400',
+          )}
+        >
+          <span className="block font-medium text-neutral-100">{user.username}</span>
+          <span className="block text-[12px] text-neutral-500">{user.email}</span>
+        </Link>
+        {user.mustChangePassword ? (
+          <span className="mt-0.5 block text-[11px] text-amber-400">
+            {t('admin.users.flags.mustChangePassword')}
+          </span>
+        ) : null}
+        {user.chatBanned ? (
+          <span className="mt-0.5 block text-[11px] text-red-400">
+            {t('admin.users.flags.chatBanned')}
+          </span>
+        ) : null}
+      </Td>
+      <Td>
+        <Badge tone={user.role === 'admin' ? 'sky' : 'neutral'}>
+          {user.role === 'admin' ? t('admin.users.roles.admin') : t('admin.users.roles.user')}
+        </Badge>
+      </Td>
+      <Td>
+        <Badge tone={user.status === 'active' ? 'green' : 'red'}>
+          {user.status === 'active'
+            ? t('admin.users.status.active')
+            : t('admin.users.status.disabled')}
+        </Badge>
+      </Td>
+      <Td>
+        {user.privacyMode === 'paranoid' ? (
+          <Badge tone="amber">{t('admin.users.privacy.paranoid')}</Badge>
+        ) : (
+          <span className={TEXT_MUTED}>{t('admin.users.privacy.normal')}</span>
+        )}
+      </Td>
+      <Td className={cx('whitespace-nowrap text-neutral-400', TEXT_NUM)}>
+        {user.lastLoginAt ? formatDateTime(user.lastLoginAt) : '—'}
+      </Td>
+      <Td className={cx('whitespace-nowrap text-neutral-400', TEXT_NUM)}>
+        {formatDateTime(user.createdAt)}
+      </Td>
+      <Td className="text-right">
+        <Link
+          to={`/admin/users/${user.id}`}
+          className="text-[12px] text-sky-400 hover:text-sky-300 hover:underline focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"
+        >
+          {t('admin.users.open')}
+        </Link>
+      </Td>
+    </tr>
+  );
+}
+
+function Filters({
+  search,
+  onSearch,
+  role,
+  status,
+  privacyMode,
+  limit,
+  onChange,
+  filtersActive,
+}: {
+  search: string;
+  onSearch: (value: string) => void;
+  role: string;
+  status: string;
+  privacyMode: string;
+  limit: number;
+  onChange: (patch: Record<string, string | number | null>) => void;
+  filtersActive: boolean;
+}) {
+  const t = useT();
+  return (
+    <Panel className="flex flex-wrap items-end gap-3">
+      <div className="min-w-[14rem] flex-1">
+        <TextField
+          label={t('admin.users.searchLabel')}
+          name="search"
+          placeholder={t('admin.users.searchPlaceholder')}
+          value={search}
+          onChange={(e) => onSearch(e.target.value)}
+          className="w-full"
+        />
+      </div>
+      <SelectField
+        label={t('admin.users.columns.role')}
+        name="filter-role"
+        value={role}
+        onChange={(e) => onChange({ role: e.target.value })}
+        options={[
+          { value: ANY, label: t('admin.users.filters.anyRole') },
+          { value: 'user', label: t('admin.users.roles.user') },
+          { value: 'admin', label: t('admin.users.roles.admin') },
+        ]}
+      />
+      <SelectField
+        label={t('admin.users.columns.status')}
+        name="filter-status"
+        value={status}
+        onChange={(e) => onChange({ status: e.target.value })}
+        options={[
+          { value: ANY, label: t('admin.users.filters.anyStatus') },
+          { value: 'active', label: t('admin.users.status.active') },
+          { value: 'disabled', label: t('admin.users.status.disabled') },
+        ]}
+      />
+      <SelectField
+        label={t('admin.users.columns.privacy')}
+        name="filter-privacy"
+        value={privacyMode}
+        onChange={(e) => onChange({ privacy: e.target.value })}
+        options={[
+          { value: ANY, label: t('admin.users.filters.anyPrivacy') },
+          { value: 'normal', label: t('admin.users.privacy.normal') },
+          { value: 'paranoid', label: t('admin.users.privacy.paranoid') },
+        ]}
+      />
+      <SelectField
+        label={t('admin.users.filters.pageSize')}
+        name="filter-limit"
+        value={String(limit)}
+        onChange={(e) => onChange({ limit: e.target.value })}
+        options={PAGE_SIZES.map((size) => ({ value: String(size), label: String(size) }))}
+      />
+      {filtersActive ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onChange({ q: null, role: null, status: null, privacy: null })}
+        >
+          {t('admin.users.filters.reset')}
+        </Button>
+      ) : null}
+    </Panel>
+  );
+}
+
+function Pagination({
+  page,
+  rowCount,
+  onOffset,
+}: {
+  page: { total: number; limit: number; offset: number } | null;
+  rowCount: number;
+  onOffset: (offset: number) => void;
+}) {
+  const t = useT();
+  if (!page) return null;
+  const first = page.total === 0 ? 0 : page.offset + 1;
+  const last = page.offset + rowCount;
+  const hasPrev = page.offset > 0;
+  const hasNext = last < page.total;
+
+  return (
+    <div className={cx('flex flex-wrap items-center justify-between gap-3 px-1 pt-1', EDGE_TOP)}>
+      <span className={cx(TEXT_MICRO, TEXT_NUM)}>
+        {t('admin.users.pagination.range', { first, last, total: page.total })}
+      </span>
+      <div className="flex gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!hasPrev}
+          onClick={() => onOffset(Math.max(0, page.offset - page.limit))}
+        >
+          {t('admin.users.pagination.previous')}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!hasNext}
+          onClick={() => onOffset(page.offset + page.limit)}
+        >
+          {t('admin.users.pagination.next')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function CreatedUserDialog({
   result,
   onClose,
@@ -309,7 +660,7 @@ function CreatedUserDialog({
       dismissable={acknowledged}
     >
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">
+        <p className="text-[13px] text-neutral-400">
           {t('admin.oneTimeCredentials.temporaryPassword.description', {
             email: result.user.email,
           })}
@@ -335,23 +686,20 @@ function CreatedUserDialog({
 function StatsStrip({ data }: { data: AdminStats | null }) {
   const t = useT();
   if (!data) return null;
-  const cards = [
-    { label: t('admin.users.stats.users'), value: data.userCount },
-    { label: t('admin.users.stats.active'), value: data.activeUserCount },
-    { label: t('admin.users.stats.disabled'), value: data.disabledUserCount },
-    { label: t('admin.users.stats.pendingInvites'), value: data.pendingInviteCount },
-  ];
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {cards.map((c) => (
-        <div
-          key={c.label}
-          className="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3"
-        >
-          <div className="text-xs uppercase tracking-wide text-neutral-400">{c.label}</div>
-          <div className="mt-1 text-2xl font-semibold text-neutral-100">{c.value}</div>
-        </div>
-      ))}
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <StatTile label={t('admin.users.stats.users')} value={data.userCount} />
+      <StatTile label={t('admin.users.stats.active')} value={data.activeUserCount} tone="green" />
+      <StatTile
+        label={t('admin.users.stats.disabled')}
+        value={data.disabledUserCount}
+        tone={data.disabledUserCount > 0 ? 'red' : 'neutral'}
+      />
+      <StatTile
+        label={t('admin.users.stats.pendingInvites')}
+        value={data.pendingInviteCount}
+        tone={data.pendingInviteCount > 0 ? 'sky' : 'neutral'}
+      />
     </div>
   );
 }

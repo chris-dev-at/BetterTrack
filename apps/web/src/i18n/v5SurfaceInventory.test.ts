@@ -175,6 +175,9 @@ user/portfolio/cashflow/RecordCashButton.tsx
 user/portfolio/cashflow/RecordCashDialog.tsx
 user/portfolio/cashflow/SectionHead.tsx
 user/portfolio/cashflow/TagChip.tsx
+user/portfolio/import/ImportPreviewTable.tsx
+user/portfolio/import/ImportReview.tsx
+user/portfolio/import/ImportUnderstanding.tsx
 user/portfolio/taxReportRows.tsx
 user/portfolio/wizard/PortfolioWizard.tsx
 user/settings/taxModePicker.tsx

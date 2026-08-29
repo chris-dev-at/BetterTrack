@@ -5,6 +5,10 @@ import {
   type AdminInvite,
   type AdminSessionPolicyResponse,
   type AdminUser,
+  type AdminUserAccessResponse,
+  type AdminUserNote,
+  type AdminUserSharingResponse,
+  type AdminUserSupportItem,
   type Alert,
   type AppSettingsResponse,
   type AuditLogEntry,
@@ -19,6 +23,16 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AlertRecord } from '../data/repositories/alertRepository';
+import type {
+  AdminUserApiKeyRow,
+  AdminUserIdentityRow,
+  AdminUserNoteRow,
+  AdminUserOAuthGrantRow,
+  AdminUserSharingCounts,
+  AdminUserSupportRow,
+} from '../data/repositories/adminPeopleRepository';
+import type { SessionListEntry } from '../services/sessions/sessionService';
+import { describeUserAgent } from '../services/sessions/deviceLabel';
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
 import type {
   AuditLogRow,
@@ -182,6 +196,90 @@ export function toRegistrationRequest(row: RegistrationRequestRow): Registration
     id: row.id,
     email: row.email,
     username: row.username,
+    // Already stored and already read at approval time to link the identity —
+    // W2 only stops hiding it, so the operator can tell a Google applicant from
+    // a password one. The provider SUBJECT stays server-side (#1406 W2).
+    provider: row.provider ?? null,
+    createdAt: toIsoRequired(row.createdAt),
+  };
+}
+
+// ── People 360 (#1406 W2) ────────────────────────────────────────────────────
+
+/**
+ * One live session, for the Access tab. `entry.id` is already the PUBLIC handle
+ * (SHA-256 of the session id) minted by the session service — the raw session
+ * token never leaves Redis, so this response cannot be replayed into a session.
+ * The stored User-Agent is reduced to a coarse device label here rather than
+ * shipped raw: the operator needs "Safari on iPhone", not a fingerprint.
+ */
+export function toAdminUserSession(entry: SessionListEntry) {
+  return {
+    id: entry.id,
+    device: describeUserAgent(entry.userAgent),
+    createdAt: new Date(entry.createdAt).toISOString(),
+    lastSeenAt: new Date(entry.lastSeenAt).toISOString(),
+    persistent: entry.persistent,
+  };
+}
+
+export function toAdminUserAccess(input: {
+  sessions: SessionListEntry[];
+  apiKeys: AdminUserApiKeyRow[];
+  oauthGrants: AdminUserOAuthGrantRow[];
+  identities: AdminUserIdentityRow[];
+}): AdminUserAccessResponse {
+  return {
+    sessions: input.sessions.map(toAdminUserSession),
+    apiKeys: input.apiKeys.map((row) => ({
+      id: row.id,
+      name: row.name,
+      scopes: row.scopes,
+      lastUsedAt: toIso(row.lastUsedAt),
+      revokedAt: toIso(row.revokedAt),
+      createdAt: toIsoRequired(row.createdAt),
+    })),
+    oauthGrants: input.oauthGrants.map((row) => ({
+      id: row.id,
+      clientName: row.clientName,
+      firstParty: row.firstParty,
+      scopes: row.scopes,
+      lastUsedAt: toIso(row.lastUsedAt),
+      revokedAt: toIso(row.revokedAt),
+      createdAt: toIsoRequired(row.createdAt),
+    })),
+    identities: input.identities.map((row) => ({
+      provider: row.provider,
+      emailVerified: row.emailVerified,
+      linkedAt: toIsoRequired(row.linkedAt),
+    })),
+  };
+}
+
+export function toAdminUserSharing(counts: AdminUserSharingCounts): AdminUserSharingResponse {
+  return { ...counts };
+}
+
+export function toAdminUserSupportItem(row: AdminUserSupportRow): AdminUserSupportItem {
+  return {
+    id: row.id,
+    category: row.category,
+    subject: row.subject,
+    status: row.status,
+    deletedByUser: row.deletedByUser,
+    archived: row.archived,
+    unreadByAdmin: row.unreadByAdmin,
+    createdAt: toIsoRequired(row.createdAt),
+    updatedAt: toIsoRequired(row.updatedAt),
+  };
+}
+
+export function toAdminUserNote(row: AdminUserNoteRow): AdminUserNote {
+  return {
+    id: row.id,
+    body: row.body,
+    authorId: row.authorId,
+    authorUsername: row.authorUsername,
     createdAt: toIsoRequired(row.createdAt),
   };
 }
