@@ -1,7 +1,21 @@
-import { and, count, desc, eq, gt, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 
 import {
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
+  FEEDBACK_TERMINAL_STATUSES,
   type AdminFeedbackListQuery,
   type CreateFeedbackRequest,
   type FeedbackMessageAuthorSide,
@@ -260,7 +274,11 @@ export function createFeedbackRepository(
             and(
               eq(feedback.userId, userId),
               isNull(feedback.deletedByUserAt),
-              sql`${feedback.status} not in ('declined', 'shipped')`,
+              // The terminal set is the contract's, not a SQL literal list: a
+              // status added later is classified in `packages/contracts` (where
+              // the partition test forces the choice) instead of silently
+              // counting as open here, and a rename fails at compile time.
+              notInArray(feedback.status, [...FEEDBACK_TERMINAL_STATUSES]),
             ),
           );
         if ((open?.value ?? 0) >= FEEDBACK_OPEN_SUBMISSION_LIMIT) return null;
@@ -486,6 +504,11 @@ export function createFeedbackRepository(
 
         const [row] = await tx
           .update(feedback)
+          // Archiving is workspace hygiene, yet it bumps `updatedAt` — a column
+          // that otherwise tracks lifecycle edits. Harmless today (both sorts
+          // key on `createdAt`, and the submitter rail never carries the
+          // column), but a surface that renders "last updated" (#1341) would
+          // show a filing action as an edit and must decide deliberately.
           .set({ archivedAt: archived ? at : null, updatedAt: at })
           .where(eq(feedback.id, id))
           .returning();

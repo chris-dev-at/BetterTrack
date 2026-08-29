@@ -6158,7 +6158,7 @@
       "body": "Your feedback submission is back in the inbox."
     },
     "feedbackStatusTriaged": {
-      "title": "Feedback update",
+      "title": "Feedback under review",
       "body": "Your feedback submission is being reviewed."
     },
     "feedbackStatusWorkingOnIt": {
@@ -6170,7 +6170,7 @@
       "body": "Your feedback submission has been saved as a future idea."
     },
     "feedbackStatusDeclined": {
-      "title": "Feedback update",
+      "title": "Feedback declined",
       "body": "Your feedback submission was declined. Open it for details."
     },
     "feedbackStatusShipped": {
@@ -6272,7 +6272,7 @@
     "submitting": "Submitting…",
     "success": "Thanks — your feedback was submitted.",
     "submitError": "Couldn't submit your feedback. Please try again.",
-    "openLimit": "You already have 20 open requests. Please wait for triage or delete an open request before submitting another.",
+    "openLimit": "You already have {{limit}} open requests. Please wait for triage or delete an open request before submitting another.",
     "status": {
       "new": "Sent",
       "triaged": "Read / in review",

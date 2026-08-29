@@ -161,9 +161,12 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     // Text-only feedback creation is deliberately small-volume: five accepted
     // POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),
-    // Support-thread replies, per author — its own namespace and counter, so a
-    // spent capture allowance never closes a live conversation (and an owner
-    // working through the inbox is never throttled by the anti-spam budget).
+    // Support-thread replies and submitter tombstones, per author — its own
+    // namespace and counter, so a spent capture allowance never closes a live
+    // conversation (and an owner working through the inbox is never throttled by
+    // the anti-spam budget). DELETE rides here rather than on `feedback` so a
+    // delete cannot spend the allowance the open-cap 409 asks the submitter to
+    // reclaim; see `feedbackRoutes.ts` for the trade-off that buys.
     feedbackThread: guard([feedbackThreadLimiter], keyByUserOrIp),
     // Paranoid vault writes, per user — a modest dedicated write budget (§13.5
     // V5-P13, design §4).
