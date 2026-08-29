@@ -651,6 +651,57 @@ describe('DELETE /api/v1/feedback/:id', () => {
     expect(stored?.deletedByUserAt).toBeInstanceOf(Date);
   });
 
+  it('meters tombstones on the conversation budget, leaving the capture allowance whole', async () => {
+    harness = await createTestApp({ rateLimitsEnabled: true });
+    const user = await harness.seedUser({
+      email: 'feedback-delete-limited@bt.test',
+      username: 'feedbackdeletelimited',
+    });
+    const agent = await loginAgent(harness.app, user);
+    const rows = await seedOpenFeedback(user.id, 2);
+
+    await agent
+      .delete(`/api/v1/feedback/${rows[0]!.id}`)
+      .set(...XRW)
+      .expect(204);
+
+    // The delete counted against the conversation budget only. Metering it on
+    // the five-per-hour capture counter would spend the very allowance the
+    // open-cap 409 tells the submitter to reclaim by deleting.
+    const captureKeys = progressiveKeys('feedback', user.id);
+    const deleteKeys = progressiveKeys('feedback_thread', user.id);
+    expect(await harness.ctx.redis.get(deleteKeys.count)).toBe('1');
+    expect(await harness.ctx.redis.get(captureKeys.count)).toBeNull();
+
+    // Past the budget the loop closes: an unmetered DELETE was a session's
+    // unbounded single-row UPDATE.
+    const deleteLimit = harness.ctx.config.rateLimits.feedbackThread.limit;
+    await harness.ctx.redis.set(deleteKeys.count, String(deleteLimit), 'EX', 3600);
+    const limited = await agent
+      .delete(`/api/v1/feedback/${rows[1]!.id}`)
+      .set(...XRW)
+      .send();
+    expect(limited.status).toBe(429);
+    expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
+    expect(limited.headers['retry-after']).toBeDefined();
+
+    // Refused before the service ran: the second row is still live.
+    const [untouched] = await harness.db
+      .select()
+      .from(schema.feedback)
+      .where(eq(schema.feedback.id, rows[1]!.id));
+    expect(untouched?.deletedByUserAt).toBeNull();
+
+    // Capture stays open while deletes are closed: capture never shares a
+    // counter with the conversation rail. (Within that rail, deletes and thread
+    // replies deliberately DO share one — see `feedbackRoutes.ts`.)
+    const stillCapturing = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'bug', message: 'A new report while deletes are closed.' });
+    expect(stillCapturing.status).toBe(201);
+  });
+
   it('closes every submitter door on a tombstoned thread while admins keep the trail', async () => {
     const owner = await harness.seedUser({
       email: 'feedback-delete-thread@bt.test',
