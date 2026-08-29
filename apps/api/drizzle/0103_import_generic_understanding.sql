@@ -1,0 +1,26 @@
+-- Import epic (#964, §16 2026-07-31 "IMPORT IS A WIZARD THAT UNDERSTANDS A
+-- WHOLE FILE"): the generic staging path, and the human's ability to finish
+-- what it could not.
+--
+-- `import_batches.understanding` — what the generic pipeline worked out about
+-- the uploaded file: one labelled entry per column (with its evidence, its
+-- confidence and whether a human must look), the headers nothing could name,
+-- and the sniffed delimiter/encoding/date+number locales. It is PERSISTED
+-- rather than recomputed because the file itself is never stored: without this
+-- column, re-reading a staged batch could not say what it had understood.
+-- Null for every batch a broker mapper claimed (that path labels no columns)
+-- and for every batch staged before this change.
+--
+-- `import_rows.resolved_by` — provenance for `asset_id`. Null means the
+-- pipeline resolved the instrument by EXACT identity, which is every row unless
+-- a person intervened; 'user' means someone pinned it in the wizard through
+-- PATCH /imports/:batchId/rows/:rowId. There is deliberately no 'ai' value: a
+-- model never mints an asset id in this subsystem, and if that ever changed it
+-- would have to change here, visibly.
+--
+-- Both nullable, no default and no backfill, exactly like `candidates` (0100)
+-- and `rule_tag_ids` (0101): a staged batch is a short-lived preview rather
+-- than a record, so an older one simply carries neither.
+ALTER TABLE "import_batches" ADD COLUMN "understanding" jsonb;
+--> statement-breakpoint
+ALTER TABLE "import_rows" ADD COLUMN "resolved_by" text;
