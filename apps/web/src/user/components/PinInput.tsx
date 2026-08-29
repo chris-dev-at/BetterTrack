@@ -17,6 +17,12 @@ interface PinInputProps {
   autoFocus?: boolean;
   disabled?: boolean;
   hint?: string;
+  /**
+   * Field-level failure (FRONTEND-09). Marks every box `aria-invalid` and
+   * associates the message with them, so the first box is also what
+   * "focus the first invalid field" lands on.
+   */
+  error?: string;
 }
 
 /**
@@ -42,9 +48,12 @@ export function PinInput({
   autoFocus,
   disabled,
   hint,
+  error,
 }: PinInputProps) {
   const t = useT();
   const baseId = label.toLowerCase().replace(/\s+/g, '-');
+  const errorId = `${baseId}-error`;
+  const hasError = error !== undefined;
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
   function focusIndex(index: number) {
@@ -115,6 +124,8 @@ export function PinInput({
               aria-label={
                 index === 0 ? label : t('auth.pin.digitLabel', { label, position: index + 1 })
               }
+              aria-describedby={hasError ? errorId : undefined}
+              aria-invalid={hasError || undefined}
               type="text"
               inputMode="numeric"
               autoComplete="off"
@@ -139,6 +150,11 @@ export function PinInput({
           );
         })}
       </div>
+      {hasError ? (
+        <p className="bt-field__error" id={errorId} role="alert">
+          {error}
+        </p>
+      ) : null}
       {hint ? <p className="bt-field__hint">{hint}</p> : null}
     </div>
   );

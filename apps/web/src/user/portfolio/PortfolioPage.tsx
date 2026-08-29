@@ -1045,41 +1045,46 @@ function HoldingRow({
 
               <HoldingTransactions details={transactionDetails}>
                 {(transactions) => (
-                  <table className="bt-table" style={{ fontSize: 12.5 }}>
-                    <thead>
-                      <tr>
-                        <th scope="col">{t('portfolio.overview.field.date')}</th>
-                        <th scope="col">{t('portfolio.overview.field.side')}</th>
-                        <th className="is-num" scope="col">
-                          {t('portfolio.overview.field.qty')}
-                        </th>
-                        <th className="is-num" scope="col">
-                          {t('portfolio.overview.field.price')}
-                        </th>
-                        <th className="is-num" scope="col">
-                          {t('portfolio.overview.field.fee')}
-                        </th>
-                        <th scope="col">{t('portfolio.overview.field.note')}</th>
-                        <th
-                          aria-label={t('portfolio.overview.holdings.actionsAriaLabel')}
-                          className="is-num"
-                          scope="col"
-                        />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {transactions.map((txn) => (
-                        <TransactionRow
-                          key={txn.id}
-                          txn={txn}
-                          currency={asset.currency}
-                          onEdit={() => onEditTxn(txn)}
-                          onDelete={() => onDeleteTxn(txn)}
-                          deleting={deletingId === txn.id}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
+                  // V5-P13b (FRONTEND-12): seven columns inside an expanded
+                  // holding overflow a 390px viewport — scroll the detail table
+                  // locally instead of the page.
+                  <div className="bt-phone-scroll-table overflow-x-auto">
+                    <table className="bt-table" style={{ fontSize: 12.5 }}>
+                      <thead>
+                        <tr>
+                          <th scope="col">{t('portfolio.overview.field.date')}</th>
+                          <th scope="col">{t('portfolio.overview.field.side')}</th>
+                          <th className="is-num" scope="col">
+                            {t('portfolio.overview.field.qty')}
+                          </th>
+                          <th className="is-num" scope="col">
+                            {t('portfolio.overview.field.price')}
+                          </th>
+                          <th className="is-num" scope="col">
+                            {t('portfolio.overview.field.fee')}
+                          </th>
+                          <th scope="col">{t('portfolio.overview.field.note')}</th>
+                          <th
+                            aria-label={t('portfolio.overview.holdings.actionsAriaLabel')}
+                            className="is-num"
+                            scope="col"
+                          />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transactions.map((txn) => (
+                          <TransactionRow
+                            key={txn.id}
+                            txn={txn}
+                            currency={asset.currency}
+                            onEdit={() => onEditTxn(txn)}
+                            onDelete={() => onDeleteTxn(txn)}
+                            deleting={deletingId === txn.id}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </HoldingTransactions>
             </div>

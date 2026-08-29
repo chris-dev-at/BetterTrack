@@ -190,6 +190,13 @@ describe('SignInPanel — password', () => {
 
     expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
     expect(changePassword).not.toHaveBeenCalled();
+    // The confirmation is the box that disagrees, so it is the one marked and
+    // focused (FRONTEND-09) — the new password itself may well be fine.
+    const confirmField = within(form).getByLabelText('Confirm new password');
+    expect(confirmField).toHaveAttribute('aria-invalid', 'true');
+    expect(confirmField).toHaveAccessibleDescription(/do not match/i);
+    expect(confirmField).toHaveFocus();
+    expect(within(form).getByLabelText('New password')).not.toHaveAttribute('aria-invalid');
   });
 
   test('a wrong current password surfaces the credential error, not a generic one', async () => {
@@ -204,6 +211,28 @@ describe('SignInPanel — password', () => {
     await user.click(within(form).getByRole('button', { name: 'Update password' }));
 
     expect(await screen.findByText(/current password is incorrect/i)).toBeInTheDocument();
+    const currentField = within(form).getByLabelText('Current password');
+    expect(currentField).toHaveAttribute('aria-invalid', 'true');
+    expect(currentField).toHaveAccessibleDescription(/current password is incorrect/i);
+    expect(currentField).toHaveFocus();
+  });
+
+  test('an outage stays a form-level alert and leaves every field valid', async () => {
+    vi.mocked(changePassword).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+    const user = userEvent.setup();
+    renderPanel();
+
+    const form = group('Change password');
+    await user.type(within(form).getByLabelText('Current password'), 'oldpassword1');
+    await user.type(within(form).getByLabelText('New password'), 'newpassword123');
+    await user.type(within(form).getByLabelText('Confirm new password'), 'newpassword123');
+    await user.click(within(form).getByRole('button', { name: 'Update password' }));
+
+    const alert = await within(form).findByRole('alert');
+    for (const label of ['Current password', 'New password', 'Confirm new password']) {
+      expect(within(form).getByLabelText(label)).not.toHaveAttribute('aria-invalid');
+    }
+    expect(document.activeElement).toContainElement(alert);
   });
 });
 
@@ -473,6 +502,12 @@ describe('SignInPanel — the PIN app lock', () => {
 
     expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
     expect(setPin).not.toHaveBeenCalled();
+    // Every box of the disagreeing entry is marked and the first one takes focus.
+    const confirmBox = screen.getByLabelText('Confirm PIN');
+    expect(confirmBox).toHaveAttribute('aria-invalid', 'true');
+    expect(confirmBox).toHaveAccessibleDescription(/do not match/i);
+    expect(confirmBox).toHaveFocus();
+    expect(screen.getByLabelText('PIN')).not.toHaveAttribute('aria-invalid');
   });
 
   test('changes and disables an existing PIN', async () => {

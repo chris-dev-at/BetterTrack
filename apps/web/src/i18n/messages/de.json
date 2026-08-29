@@ -1196,7 +1196,7 @@
         "empty": {
           "title": "Keine autorisierten Apps"
         },
-        "canAccess": " kann:",
+        "canAccess": "kann:",
         "firstPartyBadge": "BetterTrack-App",
         "authorizedLastUsed": "Autorisiert {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
         "authorizedNeverUsed": "Autorisiert {{createdAt}} · nie verwendet",

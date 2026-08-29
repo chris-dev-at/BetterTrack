@@ -10,6 +10,7 @@ import { ApiError, classifyApiError, isApiOutage } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
 import { legalUrl } from '../legal';
+import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { Alert, AuthCard, Button, OrDivider, Spinner, TextField } from '../components/ui';
 import { GoogleButton } from './GoogleButton';
 import {
@@ -70,30 +71,46 @@ function usernameFromName(name: string | null): string {
   return cleaned.length >= 3 ? cleaned.slice(0, 40) : '';
 }
 
-/** Friendly message for the failure codes `POST /auth/register` can return. */
-function registerErrorMessage(t: TranslateFn, err: unknown): string {
+/** The controls a registration failure can be attributed to. */
+type RegisterField = 'inviteToken' | 'email' | 'username' | 'password';
+
+/**
+ * Friendly message for the failure codes `POST /auth/register` can return, with
+ * the field that owns it. A taken name, a taken address, a rejected password and
+ * a bad access token each point at their own box; a closed instance, an expired
+ * Google ticket, a rate limit and an outage belong to the submission.
+ *
+ * `emailLocked` (the Google-assisted form) keeps a taken address form-level:
+ * the field is read-only there, so blaming it would point at a box the user
+ * cannot edit.
+ */
+function registerErrorMessage(
+  t: TranslateFn,
+  err: unknown,
+  emailLocked: boolean,
+): AttributedError<RegisterField> {
   if (err instanceof ApiError) {
     switch (err.code) {
       case 'USERNAME_TAKEN':
-        return t('auth.register.usernameTaken');
+        return { field: 'username', message: t('auth.register.usernameTaken') };
       case 'EMAIL_TAKEN':
-        return t('auth.register.emailTaken');
+        return { field: emailLocked ? null : 'email', message: t('auth.register.emailTaken') };
       case 'WEAK_PASSWORD':
-        return err.message;
+        return { field: 'password', message: err.message };
       case 'REGISTRATION_TOKEN_REQUIRED':
-        return t('auth.register.tokenRequired');
+        return { field: 'inviteToken', message: t('auth.register.tokenRequired') };
       case 'INVALID_REGISTRATION_TOKEN':
-        return t('auth.register.invalidToken');
+        return { field: 'inviteToken', message: t('auth.register.invalidToken') };
       case 'REGISTRATION_CLOSED':
-        return t('auth.register.closedMessage');
+        return { field: null, message: t('auth.register.closedMessage') };
       case 'GOOGLE_REGISTER_TICKET_INVALID':
-        return t('auth.register.google.ticketExpired');
+        return { field: null, message: t('auth.register.google.ticketExpired') };
       default:
-        if (err.status === 429) return t('auth.register.rateLimited');
-        if (isApiOutage(err)) return t('common.genericError');
+        if (err.status === 429) return { field: null, message: t('auth.register.rateLimited') };
+        if (isApiOutage(err)) return { field: null, message: t('common.genericError') };
     }
   }
-  return t('auth.register.failed');
+  return { field: null, message: t('auth.register.failed') };
 }
 
 /**
@@ -139,7 +156,7 @@ export function RegisterPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [inviteToken, setInviteToken] = useState(() => searchParams.get('token') ?? '');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<RegisterField>();
   const [submitting, setSubmitting] = useState(false);
   // Set once an approval-mode request has been accepted — swaps the form for the
   // "awaiting approval" confirmation.
@@ -285,7 +302,7 @@ export function RegisterPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setSubmitting(true);
     try {
       // The connected form submits against the server-side ticket (email + the
@@ -331,7 +348,8 @@ export function RegisterPage() {
       // an approved applicant never passes through this form at all.
       navigate('/', { replace: true });
     } catch (err) {
-      setError(registerErrorMessage(t, err));
+      const attributed = registerErrorMessage(t, err, connected !== null);
+      fail(attributed.field, attributed.message);
     } finally {
       setSubmitting(false);
     }
@@ -351,8 +369,12 @@ export function RegisterPage() {
           <GoogleButton />
         </div>
       ) : null}
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         {google.phase === 'expired' ? (
           <Alert tone="error">{t('auth.register.google.ticketExpired')}</Alert>
         ) : null}
@@ -366,6 +388,7 @@ export function RegisterPage() {
         ) : null}
         {mode === 'invite_token' ? (
           <TextField
+            error={fieldError('inviteToken')}
             label={t('auth.register.tokenLabel')}
             name="inviteToken"
             autoFocus
@@ -376,6 +399,7 @@ export function RegisterPage() {
           />
         ) : null}
         <TextField
+          error={fieldError('email')}
           label={t('auth.register.emailLabel')}
           name="email"
           type="email"
@@ -390,6 +414,7 @@ export function RegisterPage() {
           hint={connected ? t('auth.register.google.emailLockedHint') : undefined}
         />
         <TextField
+          error={fieldError('username')}
           label={t('auth.register.usernameLabel')}
           name="username"
           autoComplete="username"
@@ -401,6 +426,7 @@ export function RegisterPage() {
           hint={t('auth.register.usernameHint')}
         />
         <TextField
+          error={fieldError('password')}
           label={t('auth.register.passwordLabel')}
           name="password"
           type="password"

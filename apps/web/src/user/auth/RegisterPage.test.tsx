@@ -378,3 +378,44 @@ test('the mirrored Sign-in box still ships when Google is disabled', async () =>
   // No Google → no Google button either.
   expect(screen.queryByRole('link', { name: 'Continue with Google' })).not.toBeInTheDocument();
 });
+
+async function submitOpenRegistration() {
+  setMode('open');
+  const u = userEvent.setup();
+  renderAt('/register');
+
+  await u.type(
+    await waitForColdStart(() => screen.getByLabelText('Email')),
+    'jane@bettertrack.test',
+  );
+  await u.type(screen.getByLabelText('Username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-pass-1');
+  await u.click(screen.getByRole('button', { name: 'Create account' }));
+}
+
+test('a taken username is attributed to the username field, which takes focus', async () => {
+  vi.mocked(api.register).mockRejectedValue(new ApiError(409, 'USERNAME_TAKEN', 'taken'));
+
+  await submitOpenRegistration();
+
+  const field = await screen.findByLabelText('Username');
+  expect(field).toHaveAttribute('aria-invalid', 'true');
+  expect(field).toHaveAccessibleDescription(/That username is already taken/);
+  expect(field).toHaveFocus();
+  // Only the blamed field is marked.
+  expect(screen.getByLabelText('Email')).not.toHaveAttribute('aria-invalid');
+  expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
+});
+
+test('a rate limit stays a form-level alert and leaves every field valid', async () => {
+  vi.mocked(api.register).mockRejectedValue(new ApiError(429, 'RATE_LIMITED', 'slow down'));
+
+  await submitOpenRegistration();
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/Too many attempts/);
+  for (const label of ['Email', 'Username', 'Password']) {
+    expect(screen.getByLabelText(label)).not.toHaveAttribute('aria-invalid');
+  }
+  expect(document.activeElement).toContainElement(alert);
+});

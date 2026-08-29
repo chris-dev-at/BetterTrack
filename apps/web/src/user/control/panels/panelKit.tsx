@@ -93,14 +93,17 @@ export function PanelForm({
   children,
   onSubmit,
   className,
+  formRef,
 }: {
   children: ReactNode;
   onSubmit?: (event: React.FormEvent) => void;
   className?: string;
+  /** The rendered `<form>`, for callers that scope a DOM query to it (`useFieldErrors`). */
+  formRef?: React.Ref<HTMLFormElement>;
 }) {
   if (onSubmit) {
     return (
-      <form className={cx('bt-cc-form', className)} onSubmit={onSubmit}>
+      <form className={cx('bt-cc-form', className)} onSubmit={onSubmit} ref={formRef}>
         {children}
       </form>
     );

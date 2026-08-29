@@ -137,3 +137,31 @@ test('a locked member leaves the share column unknown instead of inflating it to
   expect(screen.queryByText('100.00%')).not.toBeInTheDocument();
   expect(screen.getAllByText('—').length).toBeGreaterThan(0);
 });
+
+test('the table variant scrolls horizontally instead of widening the board (V5-P13b)', async () => {
+  const portfolios = [plain(1)];
+  mocks.getPortfolio.mockResolvedValue(totals(4_000));
+  mocks.getPortfolioHistory.mockResolvedValue({ points: [], baseCurrency: 'EUR' });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <PortfolioCardsWidget
+          onSettingsChange={() => {}}
+          portfolios={portfolios}
+          portfoliosLoading={false}
+          scopedPortfolio={null}
+          scopedPortfolios={portfolios}
+          settings={{ variant: 'table' }}
+          size="m"
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+  const table = await screen.findByRole('table');
+  const scroller = table.parentElement!;
+  expect(scroller).toHaveClass('bt-phone-scroll-table');
+  expect(scroller).toHaveClass('overflow-x-auto');
+});

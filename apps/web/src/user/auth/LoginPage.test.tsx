@@ -745,3 +745,56 @@ test('a failed passkey sign-in shows a graceful error', async () => {
 
   expect(await screen.findByText(/passkey sign-in didn't work/i)).toBeInTheDocument();
 });
+
+// ── Field-level error semantics (FRONTEND-09) ────────────────────────────────
+
+test('bad credentials stay a form-level alert that takes focus, blaming no field', async () => {
+  // §6.1: "no such user" and "wrong password" must stay indistinguishable, so
+  // neither box may be marked invalid — the alert is the error summary instead.
+  vi.mocked(api.login).mockRejectedValue(
+    new ApiError(401, 'INVALID_CREDENTIALS', 'Incorrect email/username or password.'),
+  );
+
+  await submitPassword();
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/incorrect email\/username or password/i);
+  expect(screen.getByLabelText('Email or username')).not.toHaveAttribute('aria-invalid');
+  expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid');
+  expect(document.activeElement).toContainElement(alert);
+});
+
+test('a rejected second factor is attributed to the code field, which takes focus', async () => {
+  vi.mocked(api.login).mockResolvedValue(challenge);
+  vi.mocked(api.verifyTwoFactor).mockRejectedValue(
+    new ApiError(401, 'TWO_FACTOR_INVALID_CODE', 'nope'),
+  );
+
+  const u = await submitPassword();
+  await screen.findByText('Two-factor authentication');
+
+  await u.type(screen.getByLabelText('Verification code'), '000000');
+  await u.click(screen.getByRole('button', { name: 'Verify' }));
+
+  const field = await screen.findByLabelText('Verification code');
+  expect(field).toHaveAttribute('aria-invalid', 'true');
+  expect(field).toHaveAccessibleDescription(/incorrect or has expired/i);
+  expect(field).toHaveFocus();
+});
+
+test('a lapsed challenge belongs to the submission, not to the code field', async () => {
+  vi.mocked(api.login).mockResolvedValue(challenge);
+  vi.mocked(api.verifyTwoFactor).mockRejectedValue(
+    new ApiError(401, 'TWO_FACTOR_PENDING_INVALID', 'expired'),
+  );
+
+  const u = await submitPassword();
+  await screen.findByText('Two-factor authentication');
+
+  await u.type(screen.getByLabelText('Verification code'), '000000');
+  await u.click(screen.getByRole('button', { name: 'Verify' }));
+
+  const alert = await screen.findByRole('alert');
+  expect(screen.getByLabelText('Verification code')).not.toHaveAttribute('aria-invalid');
+  expect(document.activeElement).toContainElement(alert);
+});

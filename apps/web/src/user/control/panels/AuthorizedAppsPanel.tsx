@@ -73,6 +73,10 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
                 {t('settings.api.grants.firstPartyBadge')}
               </Badge>
             ) : null}
+            {/* The separating space is emitted HERE, not carried as a leading
+                space inside the catalog value (#1473): an invisible significant
+                space in JSON is a plausible casualty of a translator tool or a
+                "trim the strings" edit, which would render "Charting Buddycan:". */}{' '}
             <span>{t('settings.api.grants.canAccess')}</span>
           </span>
           {/* The plain-language scope descriptions, not the raw scope strings —

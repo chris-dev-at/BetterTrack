@@ -125,12 +125,16 @@ describe('AuthorizedAppsPanel', () => {
       renderPanel(locale);
 
       const grantRow = (await screen.findByText('BetterTrackMobile')).closest('li')!;
-      const appName = within(grantRow).getByText('BetterTrackMobile');
-      const firstPartyBadge = within(grantRow).getByText(badge);
-      const accessLabel = within(grantRow).getByText(canAccess);
+      const label = within(grantRow).getByText('BetterTrackMobile').parentElement!;
 
-      expect(appName.nextElementSibling).toBe(firstPartyBadge);
-      expect(firstPartyBadge.nextElementSibling).toBe(accessLabel);
+      expect(within(grantRow).getByText(badge)).toBeInTheDocument();
+      // Ordering asserted through the rendered text rather than
+      // `nextElementSibling` identity (#1473), so a wrapper element inside
+      // `Badge` cannot break this panel's test for unrelated reasons. The
+      // exact string doubles as the separator guard: the space between the
+      // badge and the verb now comes from JSX, so the line has to stay
+      // character-identical to the catalog-owned version it replaced.
+      expect(label.textContent).toBe(`BetterTrackMobile${badge} ${canAccess}`);
       expect(screen.getByText(description)).toBeInTheDocument();
     },
   );

@@ -9,6 +9,7 @@ import type { TranslateFn } from '../../i18n';
 import { ApiError, classifyApiError, isApiOutage } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
+import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 
 type InviteState =
@@ -17,23 +18,31 @@ type InviteState =
   | { phase: 'invalid' }
   | { phase: 'valid'; email: string };
 
-/** Friendly message for the failure codes `POST /auth/accept-invite` can return. */
-function acceptErrorMessage(t: TranslateFn, err: unknown): string {
+/** The controls an accept failure can be attributed to. */
+type InviteField = 'username' | 'password';
+
+/**
+ * Friendly message for the failure codes `POST /auth/accept-invite` can return,
+ * with the field that owns it. A taken username and a rejected password point at
+ * their box; a spent invite and an outage belong to the submission — and so does
+ * a taken email, whose field is the invite's own read-only address.
+ */
+function acceptErrorMessage(t: TranslateFn, err: unknown): AttributedError<InviteField> {
   if (err instanceof ApiError) {
     switch (err.code) {
       case 'USERNAME_TAKEN':
-        return t('auth.invite.usernameTaken');
+        return { field: 'username', message: t('auth.invite.usernameTaken') };
       case 'WEAK_PASSWORD':
-        return err.message;
+        return { field: 'password', message: err.message };
       case 'EMAIL_TAKEN':
-        return t('auth.invite.emailTaken');
+        return { field: null, message: t('auth.invite.emailTaken') };
       case 'INVALID_INVITE':
-        return t('auth.invite.invalidInvite');
+        return { field: null, message: t('auth.invite.invalidInvite') };
       default:
-        if (isApiOutage(err)) return t('common.genericError');
+        if (isApiOutage(err)) return { field: null, message: t('common.genericError') };
     }
   }
-  return t('auth.invite.acceptFailed');
+  return { field: null, message: t('auth.invite.acceptFailed') };
 }
 
 /**
@@ -51,7 +60,7 @@ export function InvitePage() {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<InviteField>();
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -114,7 +123,7 @@ export function InvitePage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setSubmitting(true);
     try {
       await acceptInvite({ token, username, password });
@@ -122,7 +131,8 @@ export function InvitePage() {
       // (one trigger for every §6.12 mode — see RegisterPage).
       navigate('/', { replace: true });
     } catch (err) {
-      setError(acceptErrorMessage(t, err));
+      const attributed = acceptErrorMessage(t, err);
+      fail(attributed.field, attributed.message);
     } finally {
       setSubmitting(false);
     }
@@ -130,8 +140,12 @@ export function InvitePage() {
 
   return (
     <AuthCard subtitle={t('auth.invite.subtitle')}>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <TextField
           label={t('auth.invite.emailLabel')}
           name="email"
@@ -142,6 +156,7 @@ export function InvitePage() {
           hint={t('auth.invite.emailHint')}
         />
         <TextField
+          error={fieldError('username')}
           label={t('auth.invite.usernameLabel')}
           name="username"
           autoComplete="username"
@@ -153,6 +168,7 @@ export function InvitePage() {
           hint={t('auth.invite.usernameHint')}
         />
         <TextField
+          error={fieldError('password')}
           label={t('auth.invite.passwordLabel')}
           name="password"
           type="password"
