@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   renameVault: vi.fn(),
   deleteVault: vi.fn(),
   stateFor: vi.fn(),
+  unlock: vi.fn(),
+  openStoredVault: vi.fn(),
 }));
 
 vi.mock('../../../lib/vaultApi', () => ({
@@ -30,11 +32,25 @@ vi.mock('../../AuthContext', () => ({
   useAuth: () => ({ user: { id: '018f0000-0000-7000-8000-000000000099' } }),
 }));
 vi.mock('../keystore/runtime', () => ({
-  endpointVaultKeystore: { stateFor: mocks.stateFor },
+  endpointVaultKeystore: {
+    stateFor: mocks.stateFor,
+    unlock: mocks.unlock,
+    openStoredVault: mocks.openStoredVault,
+  },
 }));
 
 import { ApiError } from '../../../lib/apiClient';
+import { EndpointKeystoreError } from '../keystore/errors';
 import { VaultManager, type VaultManagerOperations } from './VaultManager';
+
+/** The live state a deep link can outlive: five wrong passwords, wait or reset. */
+function lockedOutState(retryAt: number) {
+  return {
+    status: 'stored+wrapped',
+    session: 'locked',
+    requiredAction: { kind: 'wait-or-reset', retryAt, alternative: 'reset-endpoint-keystore' },
+  } as const;
+}
 
 const VAULT: VaultConfig = {
   id: VAULT_ID,
@@ -99,6 +115,8 @@ beforeEach(() => {
   });
   mocks.renameVault.mockResolvedValue({ ...VAULT, name: 'Renamed' });
   mocks.deleteVault.mockResolvedValue(undefined);
+  mocks.unlock.mockResolvedValue({ unlockedVaultIds: [VAULT_ID] });
+  mocks.openStoredVault.mockResolvedValue(undefined);
 });
 
 describe('VaultManager', () => {
@@ -148,6 +166,58 @@ describe('VaultManager', () => {
     expect(screen.queryByText('vault.manager.access.whatever')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
     expect(await screen.findAllByRole('link', { name: 'Enter words' })).not.toHaveLength(0);
+  });
+
+  it('answers an unlock deep link on a locked-out vault with the wait-or-reset affordance', async () => {
+    // The link is a request, not a state: it was minted before the fifth wrong
+    // password and the row has since withdrawn "Unlock".
+    mocks.stateFor.mockResolvedValue(lockedOutState(Date.now() + 300_000));
+
+    renderManager(`/control/privacy?vault=${VAULT_ID}&action=unlock`);
+
+    const notice = await screen.findByText(/too many wrong device passwords/i);
+    // The retry instant, not a bare "temporarily locked".
+    expect(notice.textContent ?? '').toMatch(/\d{1,2}:\d{2}/);
+    expect(screen.queryByLabelText('Device password')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+    // The same next step the row offers, one click away.
+    expect(screen.getAllByRole('link', { name: 'Reset this device' })).not.toHaveLength(0);
+  });
+
+  it('still renders a deep-linked action the live state does offer', async () => {
+    renderManager(`/control/privacy?vault=${VAULT_ID}&action=provide-phrase`);
+
+    expect(await screen.findByLabelText('12 recovery words')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+    expect(screen.queryByText(/too many wrong device passwords/i)).not.toBeInTheDocument();
+  });
+
+  it('names the lockout an unlock attempt trips instead of a generic refusal', async () => {
+    const user = userEvent.setup();
+    const retryAt = Date.now() + 30_000;
+    mocks.stateFor.mockResolvedValue({
+      status: 'stored+wrapped',
+      session: 'locked',
+      requiredAction: { kind: 'unlock', credential: 'device-password' },
+    });
+    mocks.unlock.mockRejectedValue(
+      new EndpointKeystoreError(
+        'locked-out',
+        'Device-password verification is temporarily locked.',
+        { failures: 5, retryAt },
+      ),
+    );
+    renderManager(`/control/privacy?vault=${VAULT_ID}&action=unlock`);
+
+    await user.type(await screen.findByLabelText('Device password'), 'wrong-password');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/too many wrong device passwords/i);
+    expect(alert.textContent ?? '').toMatch(/\d{1,2}:\d{2}/);
+    expect(
+      screen.queryByText('That action could not be completed. The vault remains unchanged.'),
+    ).not.toBeInTheDocument();
   });
 
   it('names the Drive connection bound to a vault', async () => {
