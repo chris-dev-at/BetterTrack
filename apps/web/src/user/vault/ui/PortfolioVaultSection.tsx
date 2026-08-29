@@ -101,7 +101,11 @@ export function PortfolioVaultSection({
             vaultState: selectedIndex < 0 ? undefined : endpointStates[selectedIndex]?.data,
             capture,
           })}
-          vaults={vaults.map((vault) => ({ id: vault.id, name: vault.name }))}
+          vaults={vaults.map((vault) => ({
+            id: vault.id,
+            name: vault.name,
+            driveOnly: !vault.media.includes('server'),
+          }))}
         />
       ) : (
         <div className="bt-settings-row">

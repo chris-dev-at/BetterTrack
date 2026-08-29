@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { VaultStepUpCredential } from '@bettertrack/contracts';
+import { VAULT_SERVER_CANDIDATE_TTL_MS, type VaultStepUpCredential } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { Button, Field, Input, Select } from '../../../ui/origin';
 import { CHECKBOX_STYLE } from '../../components/ui';
+
+/** Stated in the copy, derived from the server's TTL so the two cannot drift. */
+const VAULT_SERVER_CANDIDATE_TTL_MINUTES = Math.round(VAULT_SERVER_CANDIDATE_TTL_MS / 60_000);
 
 export interface VaultMovePrecondition {
   id: string;
@@ -22,6 +25,12 @@ export interface VaultMovePrecondition {
 export interface VaultMoveTarget {
   id: string;
   name: string;
+  /**
+   * Drive is the target's only medium. The move-in then leaves a short-lived,
+   * inactive encrypted staging copy on the server until its TTL (#1491), and
+   * the ceremony says so before the destructive step rather than after it.
+   */
+  driveOnly?: boolean;
 }
 
 type MoveWizardProps = {
@@ -139,7 +148,16 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
       ) : null}
 
       {props.mode === 'in' ? (
-        <p className="bt-gold-note">{t('vault.portfolioMove.moveIn.warning')}</p>
+        <>
+          <p className="bt-gold-note">{t('vault.portfolioMove.moveIn.warning')}</p>
+          {props.vaults.find((vault) => vault.id === vaultId)?.driveOnly ? (
+            <p className="bt-row-sub">
+              {t('vault.portfolioMove.moveIn.driveOnlyRetention', {
+                minutes: VAULT_SERVER_CANDIDATE_TTL_MINUTES,
+              })}
+            </p>
+          ) : null}
+        </>
       ) : (
         <>
           {!props.unlocked ? (

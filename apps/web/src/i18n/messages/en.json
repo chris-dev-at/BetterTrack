@@ -3789,6 +3789,7 @@
       "moveIn": {
         "title": "Move portfolio into a vault",
         "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares. Those shares are not restored if you move it out later.",
+        "driveOnlyRetention": "This vault keeps its encrypted documents in Google Drive only. A short-lived encrypted staging copy stays on the BetterTrack server for {{minutes}} minutes, so a Drive write that never landed can still be recovered, and expires by itself. BetterTrack never reads it and never serves it as vault storage.",
         "action": "Move into vault",
         "working": "Moving portfolio into the vault…",
         "done": "The portfolio is encrypted in the vault and locked on the server.",

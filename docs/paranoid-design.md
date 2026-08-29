@@ -356,6 +356,27 @@ reconciliation (#895/#896) and is kept because it is right:
    (the leftover is the user's own ciphertext in their own Drive).
 3. The last medium can never be removed.
 
+**Staged-candidate lifetime — retained to TTL, never deleted at success
+(#1491, Chief 2026-08-22).** A staged batch (`vault_server_candidates`, 10-minute
+`expires_at` per row) is consumed only when it is PROMOTED into the active plane
+(`added = ['server']`, which copies the bytes into `vault_blobs`) or dropped by a
+gate that makes it unusable (retirement-pending refusal, a newer transition id
+replacing it, the signed purge). The destructive per-portfolio commits — move-in
+(§9) and move-out (§10) — no longer delete it: the rows live out their own
+`expires_at` and are disposed by the lazy expiry checks plus the bounded
+retention sweep (#1521). The reason is the §8 attestation boundary: the server's
+Drive attestation is a consistency check against its own rows and can never be
+evidence that bytes reached Drive, so deleting the batch at commit would turn a
+lying or buggy client into irrecoverable data loss. Retention converts that into
+"recoverable inside the window", and the window is the honest boundary — after
+`expires_at` a lost Drive write is gone. Throughout, the batch stays INACTIVE:
+`media` remains the only authority on where a vault is stored, reads resolve
+against `vault_blobs` only (a Drive-only vault answers `medium_inactive`), and
+the media state reports the rows as `inactive-candidates`, never as a data home.
+Consequence, accepted: while a retained batch is live, replacing the vault's
+Drive connection (below) still refuses with its existing state conflict; that
+refusal is bounded by the TTL.
+
 Changing a vault's **Drive connection** (Y → Z) is a media migration with the
 same discipline, and it starts one step earlier than a byte copy (E5): the
 header doc's §8 `driveConnection` identity echo is first rewritten to Z through
@@ -419,7 +440,14 @@ with zero user migration.
   id that Google does not document as a hint value, so it is kept for the
   post-consent principal check and the email is the hint.) Consequence (the binding Drive-only guarantee, carried
   over): for a Drive-only vault the server holds zero cleartext, zero active
-  ciphertext, and zero CAPABILITY to fetch the Drive copy. Refresh = GIS
+  ciphertext, and zero CAPABILITY to fetch the Drive copy. "Zero ACTIVE
+  ciphertext" is exact, and the §7 retention is what lives inside that word: a
+  staged batch stays as bounded, self-expiring INACTIVE rows for its 10-minute
+  TTL after a Drive-only move-in or move-out — never a medium, never served,
+  never a data home. The client is told so in the move-in ceremony, with the
+  TTL. That retention exists precisely BECAUSE this bullet is true: since the
+  server can never verify a Drive write, a client that attests one that did not
+  land must stay recoverable for a bounded window. Refresh = GIS
   re-mint (silent while the Google session lives, a user gesture otherwise).
   **Every re-mint repeats `about.get` and compares its `permissionId` with the
   connection's stored `google_sub`; a chooser switch fails closed as the

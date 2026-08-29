@@ -88,6 +88,33 @@ describe('PortfolioVaultMoveWizard', () => {
     });
   });
 
+  it('names the retained staging copy and its TTL only for a Drive-only target (#1491)', async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <PortfolioVaultMoveWizard
+          mode="in"
+          onCancel={() => {}}
+          onSubmit={vi.fn(async () => undefined)}
+          portfolioName="Daily"
+          vaults={[
+            { id: '018f0000-0000-7000-8000-000000000001', name: 'Private', driveOnly: false },
+            { id: '018f0000-0000-7000-8000-000000000002', name: 'Drive vault', driveOnly: true },
+          ]}
+        />
+      </MemoryRouter>,
+    );
+
+    const target = screen.getByLabelText('Target vault');
+    await user.selectOptions(target, '018f0000-0000-7000-8000-000000000001');
+    expect(screen.queryByText(/staging copy/i)).not.toBeInTheDocument();
+
+    await user.selectOptions(target, '018f0000-0000-7000-8000-000000000002');
+    expect(
+      screen.getByText(/A short-lived encrypted staging copy stays on the BetterTrack server for/i),
+    ).toHaveTextContent('for 10 minutes');
+  });
+
   it('states that move-out is server-readable again and refuses missing step-up', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn(async () => undefined);

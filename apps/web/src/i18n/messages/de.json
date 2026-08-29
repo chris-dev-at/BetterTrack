@@ -3789,6 +3789,7 @@
       "moveIn": {
         "title": "Portfolio in einen Tresor verschieben",
         "warning": "Nachdem jede verschlüsselte Kopie geprüft wurde, löscht BetterTrack die serverlesbaren Finanzdaten dieses Portfolios dauerhaft und widerruft seine bestehenden Freigaben. Diese Freigaben werden beim späteren Herausverschieben nicht wiederhergestellt.",
+        "driveOnlyRetention": "Dieser Tresor speichert seine verschlüsselten Dokumente nur in Google Drive. Eine kurzlebige verschlüsselte Zwischenkopie bleibt {{minutes}} Minuten auf dem BetterTrack-Server, damit ein nicht angekommener Drive-Schreibvorgang noch wiederherstellbar ist, und läuft dann von selbst ab. BetterTrack liest sie nie und liefert sie nie als Tresorspeicher aus.",
         "action": "In den Tresor verschieben",
         "working": "Portfolio wird in den Tresor verschoben…",
         "done": "Das Portfolio ist im Tresor verschlüsselt und auf dem Server gesperrt.",

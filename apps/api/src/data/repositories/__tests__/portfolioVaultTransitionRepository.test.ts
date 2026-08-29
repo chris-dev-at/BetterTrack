@@ -65,6 +65,7 @@ import {
   markPendingPortfolioVaultMoveOutFinalizationAttempt,
   readPendingPortfolioVaultMoveOutFinalization,
 } from '../portfolioVaultTransitionRepository';
+import { createVaultBlobRepository } from '../vaultBlobRepository';
 import { PARANOID_RETIRED_EXPORT_ERROR } from '../paranoidTransitionRepository';
 import { vaultedPortfolioStubName } from '../vaultedPortfolioProbe';
 
@@ -1689,5 +1690,208 @@ describe('portfolio vault transition receipts', () => {
         .from(portfolios)
         .where(eq(portfolios.id, TEST_VECTOR.targetPortfolioId)),
     ).toEqual([{ vaultId: null, vaultAlias: null }]);
+  });
+});
+
+/**
+ * #1491 (Chief ruling, 2026-08-22). A Drive-only move-in deletes the portfolio's
+ * last server-readable bytes, and the server's Drive attestation is only a
+ * consistency check against its own rows — §8/§22 deny it any Drive capability,
+ * so it can never be evidence that bytes reached Drive. The staged batch is
+ * therefore retained to its own `expires_at` instead of being deleted at commit:
+ * inactive the whole time, gone at the TTL.
+ */
+describe('Drive-only staged candidate retention', () => {
+  const RETENTION = {
+    transitionId: id(70),
+    headerCandidateId: id(71),
+    commonCandidateId: id(72),
+    portfolioCandidateId: id(73),
+    // Staged at TEST_VECTOR.at; VAULT_SERVER_CANDIDATE_TTL_MS is 10 minutes.
+    expiresAt: new Date('2026-08-21T10:10:00.000Z'),
+    insideWindow: new Date('2026-08-21T10:09:59.999Z'),
+  } as const;
+
+  const stagedDocs = [
+    { candidateId: RETENTION.headerCandidateId, docId: TEST_VECTOR.headerDocId, kind: 'header' },
+    { candidateId: RETENTION.commonCandidateId, docId: TEST_VECTOR.commonDocId, kind: 'common' },
+    {
+      candidateId: RETENTION.portfolioCandidateId,
+      docId: TEST_VECTOR.targetPortfolioId,
+      kind: 'portfolio',
+    },
+  ] as const;
+
+  const portfolioCiphertext = () => envelope(TEST_VECTOR.targetPortfolioId, 'portfolio', 7);
+
+  async function stagedDriveOnlyMoveIn(): Promise<void> {
+    await h.db.insert(driveConnections).values({
+      id: TEST_VECTOR.driveConnectionId,
+      userId,
+      googleSub: 'TEST_VECTOR_retention_drive_sub',
+      email: 'test-vector-retention-drive@example.test',
+    });
+    await h.db
+      .update(vaults)
+      .set({
+        media: ['drive'],
+        driveConnectionId: TEST_VECTOR.driveConnectionId,
+        mediaAttestedAt: TEST_VECTOR.at,
+        mediaAttestedDriveConnectionId: TEST_VECTOR.driveConnectionId,
+      })
+      .where(eq(vaults.id, TEST_VECTOR.vaultId));
+    await h.db
+      .update(portfolios)
+      .set({ vaultId: TEST_VECTOR.vaultId, vaultAlias: 'TEST VECTOR vault' })
+      .where(eq(portfolios.id, TEST_VECTOR.targetPortfolioId));
+    await h.db.insert(vaultServerCandidates).values(
+      stagedDocs.map(({ candidateId, docId, kind }) => {
+        const blob = envelope(docId, kind, kind === 'portfolio' ? 7 : 1);
+        return {
+          id: candidateId,
+          transitionId: RETENTION.transitionId,
+          vaultId: TEST_VECTOR.vaultId,
+          docId,
+          version: kind === 'portfolio' ? 7 : 1,
+          formatVersion: 2,
+          sizeBytes: blob.length,
+          blob,
+          createdAt: TEST_VECTOR.at,
+          expiresAt: RETENTION.expiresAt,
+        };
+      }),
+    );
+    await createPortfolioVaultTransitionTransactionRepository(h.db).completeMoveIn({
+      userId,
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      vaultId: TEST_VECTOR.vaultId,
+      docVersion: 7,
+      lifecycleGeneration: 1,
+      retiredCustomAssetIds: [],
+      completedAt: TEST_VECTOR.at,
+    });
+  }
+
+  async function stagedDocIds(): Promise<string[]> {
+    const rows = await h.db
+      .select({ docId: vaultServerCandidates.docId })
+      .from(vaultServerCandidates)
+      .where(eq(vaultServerCandidates.vaultId, TEST_VECTOR.vaultId))
+      .orderBy(vaultServerCandidates.docId);
+    return rows.map((row) => row.docId).sort();
+  }
+
+  it('keeps the batch after move-in as inactive rows that never serve a read', async () => {
+    await stagedDriveOnlyMoveIn();
+
+    expect(await stagedDocIds()).toEqual(
+      stagedDocs
+        .map(({ docId }) => docId)
+        .slice()
+        .sort() as string[],
+    );
+    // The `media` set stays the authority: server never joins it, and no
+    // candidate is promoted into the active `vault_blobs` plane.
+    expect(
+      await h.db
+        .select({ media: vaults.media, mediaAttestedAt: vaults.mediaAttestedAt })
+        .from(vaults)
+        .where(eq(vaults.id, TEST_VECTOR.vaultId)),
+    ).toEqual([{ media: ['drive'], mediaAttestedAt: TEST_VECTOR.at }]);
+    expect(
+      await h.db
+        .select({ docId: vaultBlobs.docId })
+        .from(vaultBlobs)
+        .where(eq(vaultBlobs.vaultId, TEST_VECTOR.vaultId)),
+    ).toEqual([]);
+
+    const blobs = createVaultBlobRepository(h.db);
+    // The read path resolves against the active plane only, so a retained
+    // candidate can never be served as this vault's document.
+    for (const { docId } of stagedDocs) {
+      await expect(blobs.readCurrent(userId, TEST_VECTOR.vaultId, docId)).resolves.toEqual({
+        status: 'medium_inactive',
+      });
+    }
+    // The probe: the vault reports Drive as its only medium and the retained
+    // rows as inactive candidates, never as a data home.
+    const state = await blobs.getMediaState(userId, TEST_VECTOR.vaultId, RETENTION.insideWindow);
+    expect(state).toMatchObject({
+      media: ['drive'],
+      driveConnectionId: TEST_VECTOR.driveConnectionId,
+      server: { disposition: 'inactive-candidates', retirement: null },
+    });
+    expect(state?.server.candidates.map(({ candidateId }) => candidateId).sort()).toEqual(
+      stagedDocs
+        .map(({ candidateId }) => candidateId)
+        .slice()
+        .sort(),
+    );
+  });
+
+  it('recovers the portfolio ciphertext inside the window and never after the TTL', async () => {
+    await stagedDriveOnlyMoveIn();
+    const blobs = createVaultBlobRepository(h.db);
+
+    // The failure this retention exists for: the client attested a Drive write
+    // that never landed. The server cannot detect that — it has no Drive
+    // capability — so recovery is exactly "the retained ciphertext is still
+    // readable and still byte-identical to what was moved in".
+    const recovered = await blobs.getServerCandidate(
+      userId,
+      TEST_VECTOR.vaultId,
+      RETENTION.portfolioCandidateId,
+      RETENTION.insideWindow,
+    );
+    expect(recovered).not.toBeNull();
+    expect(Buffer.from(recovered!.blob).equals(portfolioCiphertext())).toBe(true);
+
+    // The honest boundary: at `expires_at` the same read disposes the row and
+    // reports nothing. Past this point a lost Drive write is unrecoverable.
+    await expect(
+      blobs.getServerCandidate(
+        userId,
+        TEST_VECTOR.vaultId,
+        RETENTION.portfolioCandidateId,
+        RETENTION.expiresAt,
+      ),
+    ).resolves.toBeNull();
+    expect(await stagedDocIds()).toEqual(
+      [TEST_VECTOR.commonDocId, TEST_VECTOR.headerDocId].slice().sort(),
+    );
+    // The vault is never read again: the #1521 sweep is what makes the TTL real.
+    expect(await blobs.cleanupExpiredServerCandidates(RETENTION.expiresAt, 100)).toBe(2);
+    expect(await stagedDocIds()).toEqual([]);
+  });
+
+  it('keeps the batch on the move-out sibling path too', async () => {
+    await stagedDriveOnlyMoveIn();
+    await createPortfolioVaultTransitionTransactionRepository(h.db).completeMoveOut({
+      userId,
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      vaultId: TEST_VECTOR.vaultId,
+      moveOutId: id(74),
+      lifecycleGeneration: 1,
+      documentDigest: 'TEST_VECTOR_retention_restore_digest',
+      documentSetHash: 'TEST_VECTOR_retention_document_set_hash',
+      proofPublicKey: 'TEST VECTOR retention proof public key',
+      customAssetIds: [],
+      completedAt: new Date('2026-08-21T10:05:00.000Z'),
+    });
+
+    expect(await stagedDocIds()).toEqual(
+      stagedDocs
+        .map(({ docId }) => docId)
+        .slice()
+        .sort() as string[],
+    );
+    // Unchanged by the retention: the roster moved, so the vault stays stale
+    // until the client re-attests a fresh full set.
+    expect(
+      await h.db
+        .select({ mediaAttestedAt: vaults.mediaAttestedAt })
+        .from(vaults)
+        .where(eq(vaults.id, TEST_VECTOR.vaultId)),
+    ).toEqual([{ mediaAttestedAt: null }]);
   });
 });

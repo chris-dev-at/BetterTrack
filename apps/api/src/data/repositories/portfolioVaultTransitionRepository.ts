@@ -1220,7 +1220,16 @@ export function createPortfolioVaultTransitionTransactionRepository(
             updatedAt: completedAt,
           },
         });
-      await tx.delete(vaultServerCandidates).where(eq(vaultServerCandidates.vaultId, vaultId));
+      // #1491 (Chief, 2026-08-22): the staged batch is NOT deleted here. On a
+      // Drive-only vault the server's Drive attestation is a consistency check
+      // against its own rows, never evidence that bytes reached Drive (§8/§22
+      // deny the server any Drive capability), so a lying or buggy client could
+      // otherwise make this commit the last moment the ciphertext existed
+      // anywhere. Letting the rows live out their own `expires_at` converts
+      // "client bug ⇒ irrecoverable" into "client bug ⇒ recoverable inside the
+      // window". They stay INACTIVE throughout: `media` remains the authority,
+      // reads resolve against `vault_blobs` only, and the lazy checks plus the
+      // #1521 sweep dispose them at the TTL.
       await tx
         .update(vaults)
         .set({
@@ -1379,7 +1388,13 @@ export function createPortfolioVaultTransitionTransactionRepository(
       if (!restoredMembership) {
         throw new Error('portfolio vault move-out lost its locked membership');
       }
-      await tx.delete(vaultServerCandidates).where(eq(vaultServerCandidates.vaultId, vaultId));
+      // The same #1491 retention as the move-in sibling above: this batch is the
+      // last verified full-roster ciphertext of the vault, and the post-commit
+      // Drive work (delete the moved-out doc, re-sync the rest) still runs on
+      // the client. Keeping the inactive rows to their TTL keeps the vault's
+      // REMAINING portfolios recoverable if that client work goes wrong. The
+      // next staged batch carries a new transition id and replaces them
+      // wholesale, so a stale set can never pass an exact-roster proof.
       await tx
         .update(vaults)
         .set({
