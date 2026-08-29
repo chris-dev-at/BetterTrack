@@ -167,8 +167,10 @@ export function sessionEndSubscription(listener: () => void): () => void {
  * The other edge: a vault became openable on this endpoint. Without it an
  * unlock would leave every already-resolved roster stale — resolved while
  * locked, and never asked again — so the portfolio the user just unlocked would
- * keep rendering as a stub until the next full navigation.
+ * keep rendering as a stub until the next full navigation. The listener is told
+ * WHICH vault opened, so a consumer can tell an open it caused itself from a
+ * foreign one per vault rather than by the outcome of the run it interrupted.
  */
-export function vaultOpenedSubscription(listener: () => void): () => void {
+export function vaultOpenedSubscription(listener: (vaultId: string) => void): () => void {
   return endpointVaultKeystore.subscribeToVaultOpened(listener);
 }
