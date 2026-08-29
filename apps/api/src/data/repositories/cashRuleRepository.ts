@@ -71,14 +71,21 @@ export function createCashRuleRepository(db: Database) {
   /**
    * Tag sets for a set of rules, joined through `cash_tags.user_id` so a link row
    * pointing at a foreign tag could never surface in a response.
+   *
+   * TAKES ITS EXECUTOR. Called from inside `update`'s transaction, so it must
+   * read on that transaction's handle: issuing the query on the outer `db`
+   * instead deadlocks the request against its own open transaction under PGlite
+   * (one connection) and, in production, reads outside the transaction while
+   * holding two pool connections for one update.
    */
   async function tagIdsForRules(
+    executor: Database,
     userId: string,
     ruleIds: readonly string[],
   ): Promise<Map<string, string[]>> {
     const byRule = new Map<string, string[]>();
     if (ruleIds.length === 0) return byRule;
-    const rows = await db
+    const rows = await executor
       .select({ ruleId: cashRuleTags.ruleId, tagId: cashRuleTags.tagId, name: cashTags.name })
       .from(cashRuleTags)
       .innerJoin(cashTags, eq(cashTags.id, cashRuleTags.tagId))
@@ -104,6 +111,7 @@ export function createCashRuleRepository(db: Database) {
         .where(eq(cashRules.userId, userId))
         .orderBy(asc(cashRules.priority), asc(cashRules.createdAt), asc(cashRules.id));
       const tags = await tagIdsForRules(
+        db,
         userId,
         rows.map((row) => row.id),
       );
@@ -118,7 +126,7 @@ export function createCashRuleRepository(db: Database) {
         .limit(1);
       const row = rows[0];
       if (!row) return null;
-      const tags = await tagIdsForRules(userId, [row.id]);
+      const tags = await tagIdsForRules(db, userId, [row.id]);
       return toRule(row, tags.get(row.id) ?? []);
     },
 
@@ -201,7 +209,9 @@ export function createCashRuleRepository(db: Database) {
           return toRule(row, tagIds);
         }
 
-        const held = await tagIdsForRules(userId, [ruleId]);
+        // On `tx`, not `db`: the tag set this patch left untouched is read
+        // inside the same transaction that just wrote the rule's fields.
+        const held = await tagIdsForRules(tx as unknown as Database, userId, [ruleId]);
         return toRule(row, held.get(ruleId) ?? []);
       });
     },
