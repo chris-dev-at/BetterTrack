@@ -6316,5 +6316,11 @@
       "aborted": "Der Vorgang wurde vor Abschluss unterbrochen.",
       "generic": "Der Vorgang konnte nicht abgeschlossen werden."
     }
+  },
+  "paranoidFreshStart": {
+    "title": "Der Paranoid-Modus hat eine neue Form",
+    "body": "Deine alten Paranoid-Daten wurden gemeinsam mit dem alten System stillgelegt. Dein Konto ist wieder vollständig — sonst wurde nichts angetastet. Der Paranoid-Modus arbeitet jetzt pro Portfolio: Du legst einen Tresor an und verschiebst die gewünschten Portfolios hinein.",
+    "cta": "Tresor anlegen",
+    "dismiss": "Verstanden"
   }
 }

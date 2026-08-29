@@ -44,6 +44,42 @@ describe('problem capture (Sentry replacement)', () => {
     expect(rows[0]!.message).toBe('widget blew up');
   });
 
+  it('folds two errors that differ only in a redacted email into one row', async () => {
+    harness.ctx.problems.captureError(new Error('no user for alice@example.com'));
+    harness.ctx.problems.captureError(new Error('no user for bob@example.com'));
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.occurrenceCount).toBe(2);
+    expect(rows[0]!.message).toBe('no user for [redacted-email]');
+  });
+
+  it('folds two errors that differ only in a redacted token body into one row', async () => {
+    harness.ctx.problems.captureError(new Error('rejected key btk_supersecretvalue'));
+    harness.ctx.problems.captureError(new Error('rejected key btk_othersecretvalue'));
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.occurrenceCount).toBe(2);
+    expect(rows[0]!.message).toBe('rejected key [redacted-token]');
+  });
+
+  it('keeps genuinely different errors apart — folding is not over-broad', async () => {
+    harness.ctx.problems.captureError(new Error('no user for alice@example.com'));
+    harness.ctx.problems.captureError(new Error('no portfolio for alice@example.com'));
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.occurrenceCount)).toEqual([1, 1]);
+    expect(rows.map((r) => r.message).sort()).toEqual([
+      'no portfolio for [redacted-email]',
+      'no user for [redacted-email]',
+    ]);
+  });
+
   it('scrubs emails, tokens and credential keys before persisting (no PII)', async () => {
     harness.ctx.problems.captureError(
       new Error('failed for user alice@example.com with key btk_supersecretvalue'),

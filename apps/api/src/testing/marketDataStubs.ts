@@ -247,11 +247,19 @@ export function sampleDividendEvents(overrides: Partial<DividendEvents> = {}): D
   };
 }
 
-/** A canned {@link EarningsEvents} payload, overridable per field. */
+/**
+ * A canned {@link EarningsEvents} payload, overridable per field.
+ *
+ * `next` is dated 30 days ahead of the WALL CLOCK, not at a literal: the
+ * earnings calendar drops reports dated before today (§13.5 V5-P5), so a fixed
+ * date would quietly turn this fixture into "no upcoming report" once it
+ * passed, and every integration test built on it into a vacuous pass. Suites
+ * that pin their own clock override `next` outright.
+ */
 export function sampleEarningsEvents(overrides: Partial<EarningsEvents> = {}): EarningsEvents {
   return {
     next: {
-      date: '2026-07-30T00:00:00.000Z',
+      date: new Date(Date.now() + 30 * 86_400_000).toISOString(),
       epsEstimate: 1.42,
       epsActual: null,
       estimated: true,

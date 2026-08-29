@@ -1,5 +1,9 @@
 # STARTAUTOMATE.md — Autonomous Build Factory Runbook
 
+> **Historical note (2026-08-29):** this runbook launches the ORIGINAL single factory in `factory/`.
+> Day-to-day automation now runs the multi-factory — see `docs/multi-factory.md`. The single
+> factory still works and must never run at the same time as the multi-factory.
+
 **Audience: a future Claude Code session.** When the owner says "start automating — follow docs/STARTAUTOMATE.md", execute this document top to bottom. The end state: a Docker container ("the factory") running on this machine that continuously plans issues, implements them, reviews them, and merges them — pausing on its own when subscription tokens run out and resuming when they replenish. The owner leans back and watches.
 
 Do not execute this runbook unless the owner explicitly asked to start automating.
