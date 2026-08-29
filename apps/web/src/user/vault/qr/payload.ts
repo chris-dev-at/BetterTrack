@@ -23,18 +23,27 @@ export const VAULT_TRANSFER_PAYLOAD_MAX_BYTES = 220;
 export const VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES = [
   'not-a-bettertrack-code',
   'update-required',
+  // Our own scheme in an obsolete shape: a `btvault1:` body that is JSON (the
+  // pre-form-encoding wire format) rather than form-encoded data.
+  'legacy-code',
   // The structural residual: the prefix is ours and the version is one we
   // speak, but the body does not obey the grammar. Distinct from the
   // `missing-*` outcomes, which mean a well-formed body is short a key —
   // reporting a grammar break as a missing key makes the answer depend on
-  // which key the parser happened to read first.
+  // which key the parser happened to read first. Now that `duplicate-key`
+  // and `legacy-code` are split out, this is rare.
   'malformed',
   'missing-mnemonic',
   'missing-vault-id',
+  // A repeat of ANY known key (`m`, `v`, `n`, `f`) — the payload is
+  // untrustworthy as a whole, so this wins over every other outcome,
+  // including `missing-*`. Unknown keys stay ignored no matter how often
+  // they repeat.
+  'duplicate-key',
   'invalid-mnemonic',
   'invalid-vault-id',
-  'invalid-name',
   'invalid-fingerprint',
+  'name-too-long',
 ] as const;
 
 export type VaultTransferPayloadErrorOutcome =
@@ -88,6 +97,12 @@ export function parseVaultTransferPayload(payload: string): VaultTransferPayload
   }
 
   const body = payload.slice(separator + 1);
+  // A leading `{` (after optional whitespace) is our OWN pre-form-encoding
+  // wire shape, not foreign input — mirrors the Android heuristic (#83) so
+  // both clients agree on which bodies are `legacy-code` versus `malformed`.
+  if (/^\s*\{/.test(body)) {
+    throw new VaultTransferPayloadError('legacy-code');
+  }
   if (body.startsWith('?')) {
     // URLSearchParams strips one leading '?', which would silently accept a
     // URL-shaped body; the query delimiter is never form-encoded data. This is
@@ -97,18 +112,21 @@ export function parseVaultTransferPayload(payload: string): VaultTransferPayload
     throw new VaultTransferPayloadError('malformed');
   }
   const query = new URLSearchParams(body);
-  if (query.getAll('m').length > 1) {
-    throw new VaultTransferPayloadError('invalid-mnemonic');
-  }
-  if (query.getAll('v').length > 1) {
-    throw new VaultTransferPayloadError('invalid-vault-id');
+  // A repeat of any KNOWN key makes the whole payload untrustworthy, so this
+  // runs before every other check — including the missing-key checks below —
+  // and wins regardless of what else is wrong with the payload. Unknown keys
+  // are additive extensions and stay ignored no matter how often they repeat.
+  for (const knownKey of ['m', 'v', 'n', 'f']) {
+    if (query.getAll(knownKey).length > 1) {
+      throw new VaultTransferPayloadError('duplicate-key');
+    }
   }
   const rawMnemonic = query.get('m');
-  if (rawMnemonic == null || rawMnemonic === '') {
+  if (rawMnemonic == null || isBlankTransferToken(rawMnemonic)) {
     throw new VaultTransferPayloadError('missing-mnemonic');
   }
   const rawVaultId = query.get('v');
-  if (rawVaultId == null || rawVaultId === '') {
+  if (rawVaultId == null || isBlankTransferToken(rawVaultId)) {
     throw new VaultTransferPayloadError('missing-vault-id');
   }
 
@@ -159,7 +177,7 @@ export function serializeVaultTransferPayloadWithinBudget(input: VaultTransferPa
         return withHint;
       }
     } catch (cause) {
-      if (!(cause instanceof VaultTransferPayloadError) || cause.outcome !== 'invalid-name') {
+      if (!(cause instanceof VaultTransferPayloadError) || cause.outcome !== 'name-too-long') {
         throw cause;
       }
     }
@@ -213,6 +231,16 @@ function isNameTrimCodePoint(codePoint: string): boolean {
 }
 
 /**
+ * Same blank-is-absent principle as the `n` trim, applied to the two REQUIRED
+ * values: a whitespace-only `m` or `v` (e.g. `m=+`) is a missing key, not an
+ * invalid one — the sender wrote nothing meaningful, so the answer should
+ * name what is absent rather than what failed to validate.
+ */
+function isBlankTransferToken(value: string): boolean {
+  return [...value].every(isNameTrimCodePoint);
+}
+
+/**
  * Trim only the EDGES, counted in CODE POINTS (the same unit as the 64-code-
  * point cap). Interior code points are preserved verbatim — the wire carries
  * what the sender wrote, and stripping controls out of the middle is the
@@ -230,7 +258,7 @@ function trimTransferName(value: string): string {
 
 function validatedName(value: string): string {
   if ([...value].length > VAULT_TRANSFER_NAME_MAX_CHARS) {
-    throw new VaultTransferPayloadError('invalid-name');
+    throw new VaultTransferPayloadError('name-too-long');
   }
   return value;
 }
