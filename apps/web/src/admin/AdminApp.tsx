@@ -24,6 +24,7 @@ import { OverviewPage } from './pages/OverviewPage';
 import { ProblemsPage } from './pages/ProblemsPage';
 import { RegistrationPage } from './pages/RegistrationPage';
 import { SupportPage } from './pages/SupportPage';
+import { TestAccountsPage } from './pages/TestAccountsPage';
 import { UsageAnalyticsPage } from './pages/UsageAnalyticsPage';
 import { SecuritySettingsPage } from './pages/SecuritySettingsPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -73,6 +74,9 @@ function AdminShell() {
         <Route path="users/:userId" element={<UserDetailPage />} />
         <Route path="registration" element={<RegistrationPage />} />
         <Route path="invites" element={<InvitesPage />} />
+        {/* W6's home in the IA, holding a placeholder until the factory ships
+            (#1406, Chief ruling 2026-08-29). */}
+        <Route path="test-accounts" element={<TestAccountsPage />} />
         <Route path="feedback" element={<FeedbackPage />} />
         <Route path="oauth-apps" element={<OAuthAppsPage />} />
         <Route path="api-keys" element={<ApiKeysPage />} />

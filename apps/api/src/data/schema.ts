@@ -601,6 +601,35 @@ export const auditLog = pgTable(
 );
 
 /**
+ * Operator notes on an account (#1406 W2, People 360 "Notes" tab).
+ *
+ * Admin-private annotations — "prefers German copy", "reported the dividend
+ * rounding twice" — that give the next operator the context the audit log
+ * cannot carry. They are never exposed on any user-facing route, drive no
+ * behaviour anywhere in the product, and every write is audited with the
+ * operator as actor, so the table is purely additive: deleting all of it would
+ * leave every account byte-identical.
+ *
+ * `user_id` cascades (a deleted account takes its notes with it — they are
+ * about a person who no longer exists), while `author_id` set-nulls the way
+ * {@link auditLog.actorId} does, so a note survives the departure of the admin
+ * who wrote it and the trail stays readable.
+ */
+export const adminUserNotes = pgTable(
+  'admin_user_notes',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    authorId: uuid('author_id').references(() => users.id, { onDelete: 'set null' }),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('admin_user_notes_user_created_idx').on(t.userId, t.createdAt)],
+);
+
+/**
  * Admin "Problems" (§13.5 V5-P2 arc (d)): the DB-backed error/insight capture
  * that replaces Sentry. Unhandled request errors, permanently-failed jobs and
  * provider failures are folded by `fingerprint` (a stable hash of kind + name +

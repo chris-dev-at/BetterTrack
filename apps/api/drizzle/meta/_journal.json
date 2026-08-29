@@ -729,6 +729,13 @@
       "when": 1787970425386,
       "tag": "0103_import_generic_understanding",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1788028800000,
+      "tag": "0102_admin_user_notes",
+      "breakpoints": true
     }
   ]
 }

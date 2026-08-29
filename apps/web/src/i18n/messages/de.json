@@ -4318,7 +4318,8 @@
         "product": "Produkt & Kommunikation",
         "securityApi": "Sicherheit & API"
       },
-      "registration": "Registrierung"
+      "registration": "Registrierung",
+      "testAccounts": "Testkonten"
     },
     "settings": {
       "title": "Einstellungen",
@@ -4348,8 +4349,7 @@
             "description": "Automatische Registrierung — jeder kann ein Konto erstellen und sich direkt anmelden."
           }
         },
-        "manageLead": "Die Freigabeliste und die Zugangstoken für diesen Modus liegen im Bereich Personen.",
-        "manageLink": "Registrierung öffnen"
+        "movedLink": "In Personen → Registrierung ändern"
       },
       "features": {
         "title": "Funktionsschalter",
@@ -4391,7 +4391,8 @@
         "approve": "Freigeben",
         "reject": "Ablehnen",
         "empty": "Keine ausstehenden Registrierungen."
-      }
+      },
+      "saveError": "Die Einstellung konnte nicht gespeichert werden."
     },
     "users": {
       "title": "Nutzer",
@@ -4410,7 +4411,10 @@
       "columns": {
         "user": "Nutzer",
         "role": "Rolle",
-        "status": "Status"
+        "status": "Status",
+        "privacy": "Privatsphäre",
+        "lastLogin": "Letzte Anmeldung",
+        "created": "Erstellt"
       },
       "roles": {
         "admin": "Admin",
@@ -4433,6 +4437,27 @@
         "disabledOne": "{{count}} Nutzer deaktiviert",
         "disabledOther": "{{count}} Nutzer deaktiviert",
         "skipped": "{{count}} übersprungen"
+      },
+      "open": "Öffnen",
+      "privacy": {
+        "normal": "Normal",
+        "paranoid": "Paranoid"
+      },
+      "flags": {
+        "mustChangePassword": "Passwort muss geändert werden",
+        "chatBanned": "Chat gesperrt"
+      },
+      "filters": {
+        "anyRole": "Alle Kontoarten",
+        "anyStatus": "Alle Zustände",
+        "anyPrivacy": "Alle Privatsphäre-Modi",
+        "pageSize": "Pro Seite",
+        "reset": "Filter zurücksetzen"
+      },
+      "pagination": {
+        "range": "{{first}}–{{last}} von {{total}}",
+        "previous": "Zurück",
+        "next": "Weiter"
       }
     },
     "accountDefaults": {
@@ -5088,13 +5113,24 @@
       "title": "Registrierung",
       "subtitle": "Wer hereinkommt: die Freigabewarteschlange und die Zugangstoken für die Anmeldung.",
       "currentMode": "Aktueller Registrierungsmodus",
-      "changeMode": "Modus in den Einstellungen ändern",
       "decideError": "Diese Registrierungsanfrage konnte nicht aktualisiert werden.",
       "createTokenError": "Das Registrierungstoken konnte nicht erstellt werden.",
       "revokeTokenError": "Das Registrierungstoken konnte nicht widerrufen werden.",
       "modeUnknown": "Der aktive Registrierungsmodus konnte nicht gelesen werden, daher ist unklar, ob das hier gerade greift.",
       "requestGone": "Diese Anfrage steht nicht mehr in der Warteschlange — vielleicht hat sie jemand bereits bearbeitet.",
-      "tokenGone": "Dieses Token existiert nicht mehr; womöglich wurde es bereits widerrufen."
+      "tokenGone": "Dieses Token existiert nicht mehr; womöglich wurde es bereits widerrufen.",
+      "modeAppliesImmediately": "Gilt sofort. Kein Neustart, kein Deploy.",
+      "modeSaveError": "Der Registrierungsmodus konnte nicht geändert werden.",
+      "columns": {
+        "applicant": "Antragsteller",
+        "applied": "Beantragt",
+        "via": "Über",
+        "uses": "Verwendungen",
+        "expires": "Läuft ab"
+      },
+      "viaPassword": "Passwort",
+      "decisionEffect": "Beim Freigeben wird das Konto erstellt und die Person benachrichtigt. Beim Ablehnen wird der Antrag verworfen und ebenfalls benachrichtigt. Beides wird protokolliert.",
+      "tokenUrlOnce": "Die Registrierungs-URL wird nur einmal bei der Erstellung angezeigt. Gespeichert wird nur ihr Hash."
     },
     "backup": {
       "title": "Backup & Restore-Probe",
@@ -5132,7 +5168,193 @@
         "hourMinute": "{{hours}} Std. {{minutes}} Min.",
         "minuteSecond": "{{minutes}} Min. {{seconds}} Sek.",
         "second": "{{seconds}} Sek."
+      },
+      "soon": "Bald"
+    },
+    "userDetail": {
+      "back": "← Alle Personen",
+      "loading": "Konto wird geladen …",
+      "gone": "Dieses Konto existiert nicht mehr.",
+      "account": "Konto",
+      "profile": "Profil",
+      "saveProfile": "Änderungen speichern",
+      "profileSaved": "Profil aktualisiert.",
+      "disabled": "Konto deaktiviert. Sitzungen und Bearer-Zugangsdaten wurden widerrufen.",
+      "enabled": "Konto wieder aktiviert.",
+      "chatBanned": "Für den Chat gesperrt.",
+      "chatUnbanned": "Chat-Sperre aufgehoben.",
+      "testEmailSent": "Test-E-Mail an {{to}} gesendet.",
+      "testEmailFailed": "Die Test-E-Mail konnte nicht gesendet werden.",
+      "moreActions": "Weitere Aktionen",
+      "moreActionsHint": "Deaktivieren ist die einzige Sperre — sie beendet bereits jede Sitzung und alle Bearer-Zugangsdaten.",
+      "tabsLabel": "Kontobereiche",
+      "tabs": {
+        "summary": "Überblick",
+        "access": "Zugang",
+        "support": "Support",
+        "sharing": "Freigaben",
+        "activity": "Aktivität",
+        "notes": "Notizen"
+      },
+      "actions": {
+        "snapshot": "Support-Auszug kopieren",
+        "resetPassword": "Passwort zurücksetzen",
+        "disable": "Deaktivieren",
+        "enable": "Aktivieren",
+        "delete": "Löschen",
+        "chatBan": "Für den Chat sperren",
+        "chatUnban": "Chat-Sperre aufheben",
+        "testEmail": "Test-E-Mail senden",
+        "notYourself": "Das kannst du nicht mit deinem eigenen Konto tun."
+      },
+      "resetConfirm": "Ein neues temporäres Passwort für {{email}} erzeugen? Das bisherige Passwort funktioniert sofort nicht mehr.",
+      "deleteConfirm": "Damit werden {{email}} und alle zugehörigen Daten endgültig gelöscht; das lässt sich nicht rückgängig machen. Gib zur Bestätigung den Benutzernamen {{username}} ein.",
+      "confirmUsername": "Benutzernamen bestätigen",
+      "deleting": "Wird gelöscht …",
+      "paranoid": {
+        "title": "Paranoid-Konto",
+        "encrypted": "Verschlüsselt",
+        "mode": "Privatsphäre-Modus",
+        "media": "Speicherorte",
+        "version": "Tresor-Version",
+        "size": "Tresor-Größe",
+        "updated": "Tresor aktualisiert",
+        "history": "Verlaufseinträge",
+        "explainer": "Das ist alles, was der Server über dieses Paranoid-Konto weiß. Die Inhalte sind mit einem Schlüssel verschlüsselt, der die Geräte des Kontos nie verlässt — mehr gibt es nicht zu sehen, und keine Support-Aktion kann sie öffnen.",
+        "normal": "Dieses Konto speichert seine Daten normal. Es gibt keinen Tresor."
+      },
+      "access": {
+        "loading": "Zugang wird geladen …",
+        "readOnlyNotice": "Nur lesend. Das Deaktivieren des Kontos beendet seine Sitzungen und Bearer-Zugangsdaten; einen Widerruf einzelner Sitzungen oder Schlüssel gibt es hier noch nicht.",
+        "sessions": "Sitzungen & Geräte",
+        "sessionsHint": "Abgeleitet aus dem gespeicherten User-Agent. Die Sitzungskennungen sind undurchsichtig — das Sitzungstoken selbst verlässt den Server nie.",
+        "noSessions": "Keine aktiven Sitzungen.",
+        "device": "Gerät",
+        "lastSeen": "Zuletzt gesehen",
+        "started": "Begonnen",
+        "persistence": "Art",
+        "persistent": "Angemeldet bleiben",
+        "ephemeral": "Kurzlebig",
+        "credentials": "Schlüssel & verbundene Apps",
+        "noCredentials": "Keine API-Schlüssel und keine verbundenen Apps.",
+        "credential": "Zugangsdaten",
+        "scopes": "Berechtigungen",
+        "lastUsed": "Zuletzt verwendet",
+        "revoked": "Widerrufen",
+        "apiKey": "API-Schlüssel „{{name}}“",
+        "oauthGrant": "App · {{name}}",
+        "firstParty": "Eigene App",
+        "identities": "Verknüpfte Identitäten",
+        "noIdentities": "Mit diesem Konto ist keine externe Identität verknüpft.",
+        "verified": "E-Mail bestätigt",
+        "unverified": "E-Mail unbestätigt"
+      },
+      "support": {
+        "loading": "Support-Verlauf wird geladen …",
+        "total": "Anfragen",
+        "open": "Offen",
+        "empty": "Dieses Konto hat den Support nie kontaktiert.",
+        "submissions": "Anfragen",
+        "bodiesElsewhere": "Nur Zusammenfassungen — die Unterhaltung selbst liegt im Helpdesk.",
+        "openHelpdesk": "Helpdesk öffnen",
+        "subject": "Betreff",
+        "category": "Kategorie",
+        "noSubject": "(kein Betreff)",
+        "unread": "Ungelesen",
+        "deletedByUser": "Von der Person gelöscht",
+        "archived": "Archiviert"
+      },
+      "sharing": {
+        "loading": "Freigaben werden geladen …",
+        "boundary": "Nur Zahlen. Admins können die Portfolios oder Watchlists einer Person nicht ansehen — das ist eine bewusste Datenschutz-Entscheidung, kein fehlender Bildschirm.",
+        "portfolios": "Portfolios",
+        "sharedPortfolios": "Mit Freunden geteilt",
+        "audiences": "Freigabe-Zielgruppen",
+        "activeLinks": "Aktive Freigabelinks",
+        "revokedLinks": "{{count}} widerrufen",
+        "friends": "Freunde",
+        "followers": "Follower",
+        "following": "Folgt",
+        "inventoryDeferred": "Eine Freigabe-Übersicht pro Objekt samt Widerruf mit einem Klick ist bewusst zurückgestellt; diese Seite beantwortet, wie sichtbar das Konto ist — nicht, was es enthält."
+      },
+      "activity": {
+        "audit": "Audit-Verlauf",
+        "email": "E-Mail-Verlauf",
+        "loading": "Audit-Verlauf wird geladen …",
+        "empty": "Für dieses Konto gibt es noch keine Audit-Einträge.",
+        "when": "Wann",
+        "action": "Aktion",
+        "details": "Details",
+        "loadMore": "Mehr laden"
+      },
+      "notes": {
+        "add": "Operator-Notiz hinzufügen",
+        "privacy": "Nur für Admins. Das Konto sieht diese Notizen nie, und eine Notiz ändert nichts daran.",
+        "label": "Notiz",
+        "placeholder": "Was sollte der nächste Operator wissen?",
+        "remaining": "Noch {{count}} Zeichen",
+        "save": "Notiz speichern",
+        "loading": "Notizen werden geladen …",
+        "empty": "Zu diesem Konto gibt es noch keine Operator-Notizen.",
+        "remove": "Entfernen",
+        "removing": "Wird entfernt …",
+        "confirm": "Notiz entfernen",
+        "confirmRemove": "Diese Notiz entfernen?",
+        "unknownAuthor": "(Admin inzwischen gelöscht)",
+        "addError": "Die Notiz konnte nicht gespeichert werden.",
+        "removeError": "Die Notiz konnte nicht entfernt werden.",
+        "gone": "Diese Notiz ist bereits weg."
+      },
+      "snapshot": {
+        "title": "Support-Auszug",
+        "description": "Alles auf dieser Seite, das gefahrlos in eine Support-Unterhaltung kopiert werden kann. Er enthält nie Bestände, entschlüsselte Inhalte oder Speicher-Kennungen, weil diese Seite sie nie erhält.",
+        "label": "Auszug",
+        "heading": "BetterTrack Support-Auszug"
+      },
+      "deleteTitle": "Konto löschen",
+      "deleteAction": "Konto löschen"
+    },
+    "invites": {
+      "title": "Einladungen",
+      "subtitle": "Eine Person per E-Mail einladen und den einmaligen Link teilen.",
+      "create": "Neue Einladung",
+      "createHint": "An diese Adresse gebunden und sieben Tage gültig. Für einen ungebundenen, mehrfach nutzbaren Link nimm stattdessen ein Registrierungs-Zugangstoken.",
+      "createAction": "Einladung erstellen",
+      "emailPlaceholder": "person@example.com",
+      "listTitle": "Einladungen",
+      "loading": "Einladungen werden geladen …",
+      "empty": "Noch keine Einladungen. Erstelle oben eine.",
+      "ttlNote": "Einladungen laufen sieben Tage nach ihrer Erstellung ab.",
+      "createError": "Die Einladung konnte nicht erstellt werden.",
+      "revokeError": "Die Einladung konnte nicht widerrufen werden.",
+      "gone": "Diese Einladung ist bereits weg.",
+      "status": {
+        "pending": "Offen",
+        "used": "Eingelöst",
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
       }
+    },
+    "testAccounts": {
+      "title": "Testkonten",
+      "subtitle": "Wegwerfbar, markiert, aus der Auswertung ausgenommen, laufen immer ab.",
+      "comingSoonShort": "Geplant — die Erzeugung selbst ist ein späteres Paket.",
+      "notShipped": "Noch nicht gebaut. Dieser Tab hält den Platz frei, an dem die Testkonto-Erzeugung entstehen wird; hier wird kein Konto erstellt, verlängert oder gelöscht.",
+      "plannedTitle": "Was es können wird",
+      "plannedDescription": "Die folgenden Leitplanken sind bereits entschieden und müssen mitgeliefert werden.",
+      "rows": {
+        "lifetime": "Lebensdauer",
+        "lifetimeValue": "1 Stunde / 24 Stunden / 7 Tage, Standard 24 Stunden. Sieben Tage sind die harte Obergrenze — ein „nie“ gibt es nicht.",
+        "contents": "Inhalt",
+        "contentsValue": "Standardmäßig leer, oder eine klar benannte synthetische Vorlage. Nie aus einem echten Konto kopiert.",
+        "analytics": "Auswertung",
+        "analyticsValue": "Als Testkonto markiert und aus jedem Nutzungszähler ausgenommen.",
+        "notifications": "Benachrichtigungen",
+        "notificationsValue": "Unterdrückt, ebenso die Provider-Kontingentzählung. Es kann nie zum Admin gemacht werden.",
+        "cleanup": "Aufräumen",
+        "cleanupValue": "Der Ablauf löscht es im Job-Runner — dieselbe idempotente Bereinigung, ob sie einmal oder fünfmal läuft — und schreibt einen Audit-Eintrag."
+      },
+      "why": "Es gibt keine Staging-Umgebung: Produktion ist die einzige Umgebung, und die Einladungssperre macht echtes Durchtesten zum Token-Tanz. Genau dafür ist das hier da."
     }
   },
   "create": {

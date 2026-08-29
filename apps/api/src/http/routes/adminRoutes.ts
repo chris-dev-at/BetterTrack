@@ -3,6 +3,9 @@ import { Router, type Request } from 'express';
 import {
   adminHealthResponseSchema,
   adminUserListQuerySchema,
+  adminUserNoteParamSchema,
+  adminUserSupportQuerySchema,
+  createAdminUserNoteRequestSchema,
   aiSettingsResponseSchema,
   aiTestConnectionRequestSchema,
   aiTestConnectionResponseSchema,
@@ -28,8 +31,12 @@ import {
   updateOAuthClientRequestSchema,
   updateUserRequestSchema,
   usageAnalyticsResponseSchema,
+  type AdminUserListQuery,
+  type AdminUserNoteParam,
+  type AdminUserSupportQuery,
   type AuditQuery,
   type BulkUserActionRequest,
+  type CreateAdminUserNoteRequest,
   type CreateAnnouncementRequest,
   type UpdateAccountDefaultsRequest,
   type AiTestConnectionRequest,
@@ -68,6 +75,10 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import {
   toAdminInvite,
   toAdminUser,
+  toAdminUserAccess,
+  toAdminUserNote,
+  toAdminUserSharing,
+  toAdminUserSupportItem,
   toAppSettings,
   toAuditEntry,
   toEmailLogEntry,
@@ -143,19 +154,23 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   });
 
   router.get('/users', validateQuery(adminUserListQuerySchema), async (req, res) => {
-    const { search } = (req.valid?.query ?? {}) as { search?: string };
-    const users = await ctx.admin.listUsers(search);
+    const query = req.valid?.query as AdminUserListQuery;
+    const { rows, total } = await ctx.admin.listUsersPage(query);
     // ONE locked batch for the whole page. Fanning the per-user read out over an
     // unbounded list would hold one lock transaction per account while queueing
     // its own reads behind them, exhausting the pool on a real instance.
-    const metadata = await ctx.paranoidTransitions.adminMetadataMany(users.map((row) => row.id));
+    const metadata = await ctx.paranoidTransitions.adminMetadataMany(rows.map((row) => row.id));
     res.json({
-      users: users.flatMap((row) => {
+      users: rows.flatMap((row) => {
         // Deleted between the list read and this one: drop the single stale row
         // rather than failing the whole page.
         const paranoidMetadata = metadata.get(row.id);
         return paranoidMetadata ? [toAdminUser(row, paranoidMetadata)] : [];
       }),
+      // The count is for the FILTER, not the table — it is what the footer means
+      // by "47 accounts" when a filter is on. Deliberately NOT `users.length`:
+      // that would collapse to the page size and make paging unreadable.
+      page: { total, limit: query.limit, offset: query.offset },
     });
   });
 
@@ -168,6 +183,69 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     );
     res.json(result);
   });
+
+  // ── People 360 (#1406 W2) ──────────────────────────────────────────────────
+  // Read-only projections behind the detail page's tabs. Registered after
+  // `/users/bulk` so that literal can never be parsed as an id, and each one
+  // resolves the account first so an unknown id 404s the same way a
+  // non-admin caller does — no existence oracle either way.
+
+  router.get('/users/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    res.json(await serializeAdminUser(await ctx.admin.getUser(id)));
+  });
+
+  router.get('/users/:id/access', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    res.json(toAdminUserAccess(await ctx.admin.userAccess(id)));
+  });
+
+  router.get('/users/:id/sharing', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    res.json(toAdminUserSharing(await ctx.admin.userSharing(id)));
+  });
+
+  router.get(
+    '/users/:id/support',
+    validateParams(idParamSchema),
+    validateQuery(adminUserSupportQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { limit } = req.valid?.query as AdminUserSupportQuery;
+      const { rows, total, openCount } = await ctx.admin.userSupport(id, limit);
+      res.json({ items: rows.map(toAdminUserSupportItem), total, openCount });
+    },
+  );
+
+  // Operator notes: admin-private annotations on an account. The only write W2
+  // adds, and an additive one — a note changes nothing about the account.
+  router.get('/users/:id/notes', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    const notes = await ctx.admin.listUserNotes(id);
+    res.json({ notes: notes.map(toAdminUserNote) });
+  });
+
+  router.post(
+    '/users/:id/notes',
+    validateParams(idParamSchema),
+    validateBody(createAdminUserNoteRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { body } = req.valid?.body as CreateAdminUserNoteRequest;
+      const note = await ctx.admin.createUserNote(id, body, actorOf(req));
+      res.status(201).json(toAdminUserNote(note));
+    },
+  );
+
+  router.delete(
+    '/users/:id/notes/:noteId',
+    validateParams(adminUserNoteParamSchema),
+    async (req, res) => {
+      const { id, noteId } = req.valid?.params as AdminUserNoteParam;
+      await ctx.admin.deleteUserNote(id, noteId, actorOf(req));
+      res.json({ ok: true });
+    },
+  );
 
   router.post('/users', validateBody(createUserRequestSchema), async (req, res) => {
     const { user, tempPassword } = await ctx.admin.createUser(
