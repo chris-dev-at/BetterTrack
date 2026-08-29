@@ -169,6 +169,32 @@ export const CASH_EPSILON = 1e-9;
 export const CASH_DECIMALS = 2;
 
 /**
+ * Magnitude bound of the cent quantizer — `2^42` € (≈ €4.4 trillion), #1523.
+ *
+ * The formula in {@link floorCents} is trustworthy only while (a) its `×100`
+ * intermediate stays well inside the exact-integer range below `2^53` and
+ * (b) the `1 + 8ε` representation nudge stays below one cent. Both hold up to
+ * `2^42` (product ≤ 4.4e14, nudge ≤ 0.79 of a cent). Past it the nudge itself
+ * crosses whole cents (a €5e13 amount used to round UP ~9 cents), and past
+ * `2^53 / 100 ≈ 9e13` the product drifts off the integer grid entirely
+ * (`floorCents(1e14)` returned `100000000000000.19`). At these magnitudes the
+ * float64 grid is coarser than ~€0.001, too coarse to tell an intended decimal
+ * from genuine sub-cent residue — so quantization degrades to the identity:
+ * the amount passes through unchanged rather than being nudged onto a cent it
+ * may never have meant. Every admissible money *input* sits far below this
+ * bound (`MAX_CASH_AMOUNT_EUR` = 1e12), and vault-report figures up to the
+ * 1e15 row bound (#1514) pass through exact instead of gaining fabricated
+ * cents.
+ *
+ * The degradation applies to accumulations too, not only to single inputs:
+ * `floorCents` is also called on summed balances and tax pools, so enough
+ * near-ceiling rows can push a *total* past `2^42` and quantization becomes
+ * the identity there. That is the intended behavior at that magnitude — the
+ * float64 spacing is already ~€0.001, so there is no cent left to floor to.
+ */
+export const FLOOR_CENTS_EXACT_LIMIT_EUR = 2 ** 42;
+
+/**
  * Quantize a EUR amount **down** to whole cents — the money-rounding policy
  * (#370, generalising the V3-P0 withdraw-all fix #322).
  *
@@ -198,13 +224,19 @@ export const CASH_DECIMALS = 2;
  * residue (`100.006 → 10000.6`) still floors away. This is a **boundary
  * quantizer** for the service layer — the domain replay functions themselves
  * stay unrounded (§5.4).
+ *
+ * Quantization is bounded (#1523): at and above
+ * {@link FLOOR_CENTS_EXACT_LIMIT_EUR} the amount is returned unchanged — see
+ * the constant for why float64 cannot quantize cents there.
  */
 export function floorCents(amountEur: number): number {
   if (!Number.isFinite(amountEur)) {
     throw new CashLedgerError(`Cannot floor a non-finite EUR amount, got ${amountEur}.`);
   }
+  const abs = Math.abs(amountEur);
+  if (abs >= FLOOR_CENTS_EXACT_LIMIT_EUR) return amountEur;
   const sign = amountEur < 0 ? -1 : 1;
-  const cents = Math.floor(Math.abs(amountEur) * 100 * (1 + Number.EPSILON * 8));
+  const cents = Math.floor(abs * 100 * (1 + Number.EPSILON * 8));
   return cents === 0 ? 0 : (sign * cents) / 100;
 }
 
