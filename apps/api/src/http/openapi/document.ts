@@ -1036,6 +1036,14 @@ const endpoints: EndpointDef[] = [
     response: R.MeResponse,
   },
   {
+    method: 'post',
+    path: '/auth/fresh-start-notice/acknowledge',
+    tag: 'Auth',
+    summary: 'Acknowledge the one-time paranoid fresh-start notice (§17, idempotent, set-once).',
+    status: 200,
+    response: R.MeResponse,
+  },
+  {
     method: 'delete',
     path: '/auth/pin',
     tag: 'Auth',

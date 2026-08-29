@@ -29,6 +29,8 @@ import {
   mirrorChains,
   paranoidEnableTransitions,
   paranoidRehydrationReceipts,
+  paranoidV1BackupAttestations,
+  paranoidV1WipeReceipts,
   paranoidVaultHistory,
   paranoidVaultRetired,
   paranoidVaultRetirements,
@@ -1570,5 +1572,62 @@ describe('enable rollback at an outcome-ambiguous commit', () => {
       `prepare:${exportRow!.id}`,
       'commit',
     ]);
+  });
+
+  it('refuses to re-enable v1 paranoid mode on an account the §17 wipe already retired', async () => {
+    // PARANOID E9, Chief-ruled. The wipe is keyed on
+    // `paranoid_v1_wipe_receipts.user_id` and refuses a second run with
+    // ALREADY_WIPED. So an account that re-enters the v1 model after being wiped
+    // would accumulate fresh `paranoid_vaults` rows that NO later wipe can ever
+    // quarantine — permanently excluded by its own idempotency key, and left
+    // behind un-backed-up when the §19 train drops the v1 tables.
+    //
+    // The enable ROUTE deliberately survives (§19: the account-level pipeline
+    // "dies at the end of §17, not before" — un-wiped stragglers still need it).
+    // This is a targeted refusal for wiped accounts only.
+    const user = await harness.seedUser({
+      email: 'e9-reenable@example.test',
+      username: 'e9reenable',
+    });
+    const agent = await login(user);
+
+    const attestationId = '019756a0-0000-7000-8000-0000000e9cc1';
+    await harness.db.insert(paranoidV1BackupAttestations).values({
+      id: attestationId,
+      archiveFile: '/backups/e9.json',
+      archiveSha256: 'a'.repeat(64),
+      rowCounts: {},
+      userDigests: { [user.id]: 'd'.repeat(64) },
+      createdBy: 'owner',
+      offsiteConfirmedAt: new Date(),
+      offsiteConfirmedSha256: 'a'.repeat(64),
+    });
+    await harness.db.insert(paranoidV1WipeReceipts).values({
+      userId: user.id,
+      attestationId,
+      priorPrivacyMode: 'paranoid',
+      priorMediaSet: ['server'],
+    });
+
+    // A schema-valid body, so the route's `validateBody` passes and the refusal
+    // is proven to come from the service's own receipt check rather than from
+    // payload validation.
+    const refused = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({
+        mediaSet: ['server'],
+        vaultVersion: 1,
+        normalDataRevision: 'r'.repeat(32),
+      });
+
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe('PARANOID_LEGACY_WIPED');
+
+    // The refusal lands before any transition work: nothing was written.
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(0);
   });
 });

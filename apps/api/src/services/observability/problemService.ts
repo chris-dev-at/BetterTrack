@@ -16,7 +16,8 @@ import { redactString, scrubEvent, type ScrubbableValue } from './scrubber';
  * env): it plugs into the same error/observability seam the (env-dark) Sentry
  * SDK does. Every stored string is passed through the pure {@link scrubEvent} /
  * {@link redactString} scrubber first, so no email/token/cookie ever lands in a
- * row. Occurrences fold by fingerprint (kind + normalized title + message), and
+ * row. Occurrences fold by fingerprint (kind + normalized title + message, both
+ * taken AFTER scrubbing so the fold key matches what is stored and shown), and
  * writes are **rate-capped** to a fixed budget per window so a storm of
  * identical errors can never unbounded-write to the DB.
  *
@@ -71,7 +72,11 @@ export interface ProblemServiceDeps {
 const DEFAULT_MAX_WRITES_PER_WINDOW = 60;
 const DEFAULT_WINDOW_MS = 60_000;
 
-/** Collapse a message so trivial variants (ids, whitespace) fold together. */
+/**
+ * Collapse a message so trivial variants (ids, whitespace) fold together. Fed
+ * the REDACTED string, never the raw one — two captures that are identical once
+ * scrubbed (`no user for [redacted-email]`) must land on the same fold key.
+ */
 function normalizeForFingerprint(value: string): string {
   return value
     .toLowerCase()
@@ -130,7 +135,10 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     const title = redactString(rawTitle);
     const message = redactString(rawMessage);
     const scrubbedContext = context ? (scrubEvent(context) as unknown) : null;
-    const fingerprint = fingerprintOf(kind, rawTitle, rawMessage);
+    // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
+    // token bodies) that the stored row does not, so fingerprinting them would
+    // split one visible problem into a row per user.
+    const fingerprint = fingerprintOf(kind, title, message);
 
     const write = repo
       .upsert({

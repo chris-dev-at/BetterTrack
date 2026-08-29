@@ -715,6 +715,13 @@
       "when": 1787921939746,
       "tag": "0101_import_row_rule_tags",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1787961388311,
+      "tag": "0102_paranoid_v1_transition",
+      "breakpoints": true
     }
   ]
 }
