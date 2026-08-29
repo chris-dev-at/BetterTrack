@@ -149,7 +149,14 @@ export interface JobDefinition<N extends QueueName = QueueName> {
   handler(job: Job<JobPayload<N>>, ctx: JobContext): Promise<void>;
   /** Present → the job is registered as a repeatable schedule. */
   schedule?: RepeatSpec;
-  /** Per-job option overrides merged onto {@link DEFAULT_JOB_OPTIONS}. */
+  /**
+   * The non-default options jobs on this queue carry, stated next to the
+   * handler that relies on them. It must be the queue's entry from
+   * `QUEUE_JOB_OPTIONS` — that map is what the queue registry seeds queues
+   * with, and the worker refuses to assemble a definition that declares
+   * anything else, so this field can never again describe options that no
+   * enqueued job actually gets.
+   */
   jobOptions?: JobsOptions;
   /** Per-worker overrides (e.g. `concurrency`). */
   workerOptions?: Partial<WorkerOptions>;

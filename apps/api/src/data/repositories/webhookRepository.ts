@@ -1,4 +1,4 @@
-import { and, arrayContains, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, arrayContains, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -224,11 +224,22 @@ export function createWebhookDeliveryRepository(db: Database) {
         .limit(limit);
     },
 
-    /** Retention: delete deliveries older than `cutoff`; returns how many. */
-    async deleteOlderThan(cutoff: Date): Promise<number> {
+    /**
+     * Retention: delete at most `limit` oldest deliveries before `cutoff`;
+     * returns how many. The scheduled sweep repeats this bounded statement
+     * until it returns fewer than `limit`, avoiding one unbounded full-table
+     * delete over a log that grows with every event of every subscription.
+     */
+    async deleteOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: webhookDeliveries.id })
+        .from(webhookDeliveries)
+        .where(lt(webhookDeliveries.createdAt, cutoff))
+        .orderBy(asc(webhookDeliveries.createdAt), asc(webhookDeliveries.id))
+        .limit(limit);
       const rows = await db
         .delete(webhookDeliveries)
-        .where(lt(webhookDeliveries.createdAt, cutoff))
+        .where(inArray(webhookDeliveries.id, candidates))
         .returning({ id: webhookDeliveries.id });
       return rows.length;
     },

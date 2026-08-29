@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   adminApiKeyListResponseSchema,
@@ -356,6 +356,64 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     const remaining = await repo.listForKey(keyId, 50);
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.path).toBe('/fresh');
+  });
+
+  it('drains more rows than one batch holds without an unbounded delete', async () => {
+    // This is the highest-volume table in the app — one row per bearer request —
+    // so the sweep must converge in bounded statements, not one range delete.
+    const { userId, keyId } = await mintKey();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const expired = Date.now() - (API_KEY_REQUEST_LOG_RETENTION_DAYS + 2) * dayMs;
+
+    await harness.db.insert(apiKeyRequestLog).values([
+      ...Array.from({ length: 5 }, (_row, index) => ({
+        keyId,
+        userId,
+        method: 'GET',
+        path: `/old/${index}`,
+        status: 200,
+        createdAt: new Date(expired + index * 1000),
+      })),
+      { keyId, userId, method: 'GET', path: '/fresh', status: 200, createdAt: new Date() },
+    ]);
+
+    const requestLog = createApiKeyRequestLogRepository(harness.db, harness.db);
+    const deleteOlderThan = vi.spyOn(requestLog, 'deleteOlderThan');
+    const job = createApiKeyRequestLogCleanupJob({ requestLog, batchSize: 2 });
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+
+    // 2 + 2 + the short batch that proves the cutoff is drained.
+    expect(deleteOlderThan.mock.calls.map(([, limit]) => limit)).toEqual([2, 2, 2]);
+    const remaining = await requestLog.listForKey(keyId, 50);
+    expect(remaining.map((row) => row.path)).toEqual(['/fresh']);
+  });
+
+  it('defers rows past the per-run ceiling to the next run', async () => {
+    const { userId, keyId } = await mintKey();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const expired = Date.now() - (API_KEY_REQUEST_LOG_RETENTION_DAYS + 2) * dayMs;
+
+    await harness.db.insert(apiKeyRequestLog).values(
+      Array.from({ length: 5 }, (_row, index) => ({
+        keyId,
+        userId,
+        method: 'GET',
+        path: `/old/${index}`,
+        status: 200,
+        createdAt: new Date(expired + index * 1000),
+      })),
+    );
+
+    const requestLog = createApiKeyRequestLogRepository(harness.db, harness.db);
+    const job = createApiKeyRequestLogCleanupJob({ requestLog, batchSize: 2, maxRowsPerRun: 2 });
+
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+    // The ceiling stops this run; the remaining rows are still eligible.
+    expect(await requestLog.listForKey(keyId, 50)).toHaveLength(3);
+
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+    expect(await requestLog.listForKey(keyId, 50)).toHaveLength(0);
   });
 });
 
