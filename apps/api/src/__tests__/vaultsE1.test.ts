@@ -23,6 +23,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { newId } from '../data/ids';
+import { createPortfolioVaultTransitionTransactionRepository } from '../data/repositories/portfolioVaultTransitionRepository';
 import { createVaultBlobRepository } from '../data/repositories/vaultBlobRepository';
 import { createVaultRepository } from '../data/repositories/vaultRepository';
 import type { Database } from '../data/db';
@@ -916,6 +917,121 @@ describe('E1 per-vault blind document CAS', () => {
       docKind: 'portfolio',
       portfolioId: portfolio.id,
     });
+  });
+
+  /**
+   * #1491 at the route a real recovery would take. The repository proves the
+   * rows survive the destructive commit; this proves the OWNER can still fetch
+   * their ciphertext through `GET /media/server-candidate/:candidateId`
+   * afterwards — that read is gated by `expectedDoc`, which changes meaning at
+   * the exact moment of the move-in (prospective capture → committed member),
+   * so it is the part that could silently regress and leave "recoverable" true
+   * only for someone with database access.
+   */
+  it('still serves the retained candidate to the owner after the move-in commits, and stops at the TTL (#1491)', async () => {
+    const user = await h.seedUser({
+      email: 'e1-retained-candidate@bt.test',
+      username: 'e1_retained_candidate',
+    });
+    const agent = await login(h.app, user);
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-retained-candidate-sub',
+        email: 'retained-candidate@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['drive'],
+      driveConnectionId: connection.id,
+    });
+    await h.db
+      .update(vaults)
+      .set({
+        mediaAttestedAt: CAPTURE_ATTESTED_AT,
+        mediaAttestedDriveConnectionId: connection.id,
+      })
+      .where(eq(vaults.id, vault.id));
+    const [portfolio] = await h.db
+      .insert(portfolios)
+      .values({ userId: user.id, name: 'Retained candidate portfolio' })
+      .returning();
+    if (!portfolio) throw new Error('portfolio insert failed');
+    await h.db.insert(portfolioVaultTransitionStates).values({
+      portfolioId: portfolio.id,
+      userId: user.id,
+      captureRevision: `${CAPTURE_REVISION}-retained`,
+      captureExpiresAt: CAPTURE_EXPIRES_AT,
+    });
+    const transitionId = newId();
+    const portfolioBlob = envelope({
+      vaultId: vault.id,
+      docId: portfolio.id,
+      docKind: 'portfolio',
+      docVersion: 1,
+      writeId: WRITE_IDS[2],
+    });
+    const staged = await agent
+      .put(`/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${portfolio.id}`)
+      .set(...XRW)
+      .set(...OCTET)
+      .send(portfolioBlob);
+    expect(staged.status, JSON.stringify(staged.body)).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+
+    // The destructive commit: the portfolio becomes a locked member and the
+    // server-readable copy is gone. Pre-#1491 this deleted the staged batch.
+    await h.db
+      .update(portfolios)
+      .set({ vaultId: vault.id, vaultAlias: 'Retained candidate' })
+      .where(eq(portfolios.id, portfolio.id));
+    await createPortfolioVaultTransitionTransactionRepository(h.db).completeMoveIn({
+      userId: user.id,
+      portfolioId: portfolio.id,
+      vaultId: vault.id,
+      docVersion: 1,
+      lifecycleGeneration: 1,
+      retiredCustomAssetIds: [],
+      completedAt: new Date(),
+    });
+
+    const recovered = await agent
+      .get(`/api/v1/vaults/${vault.id}/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
+    expect(Buffer.from(recovered.body).equals(portfolioBlob)).toBe(true);
+    expect(recovered.headers['x-bettertrack-vault-candidate-id']).toBe(candidateId);
+    // Ciphertext only, and never presented as the vault's storage: the vault
+    // still reports Drive as its only medium, with the rows as inactive.
+    const media = await agent.get(`/api/v1/vaults/${vault.id}/media`);
+    expect(media.status).toBe(200);
+    expect(media.body.media).toEqual(['drive']);
+    expect(media.body.server.disposition).toBe('inactive-candidates');
+
+    // The honest boundary at the route too: past `expires_at` the recovery is
+    // gone, with the same not-found the route gives an unknown candidate.
+    await h.db
+      .update(vaultServerCandidates)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(vaultServerCandidates.id, candidateId));
+    const expired = await agent.get(
+      `/api/v1/vaults/${vault.id}/media/server-candidate/${candidateId}`,
+    );
+    expect(expired.status).toBe(404);
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultServerCandidates)
+            .where(eq(vaultServerCandidates.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(0);
   });
 
   it('uses the registered doc-kind guard so a header address cannot borrow the 8MiB portfolio cap', async () => {

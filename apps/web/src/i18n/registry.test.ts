@@ -362,6 +362,15 @@ test('paranoid custody and destructive copy keeps the binding tone in EN and DE'
     expect(localizedMessage(locale, 'vault.enable.media.driveOnly.body')).toMatch(
       locale === 'de' ? /nicht einmal verschlüsselt/i : /not even encrypted/i,
     );
+    // #1491: the moment of the CHOICE may not make an absolute claim that the
+    // staged-candidate retention then breaks — the exception and its TTL ship
+    // inside the same string, in both locales.
+    expect(localizedMessage(locale, 'vault.enable.media.driveOnly.body')).toMatch(
+      locale === 'de' ? /Zwischenkopie/i : /staging copy/i,
+    );
+    expect(localizedMessage(locale, 'vault.enable.media.driveOnly.body')).toMatch(
+      locale === 'de' ? /\{\{minutes\}\} Minuten/ : /\{\{minutes\}\} minutes/,
+    );
     expect(localizedMessage(locale, 'vault.settings.whatsOff')).toMatch(
       locale === 'de' ? /aus ist/i : /what.s off/i,
     );

@@ -5,6 +5,7 @@ import {
   MIN_PASSWORD_LENGTH,
   PARANOID_TRANSITION_ERROR_CODES,
   passwordSchema,
+  VAULT_SERVER_CANDIDATE_TTL_MS,
   vaultMediaSetSchema,
   type VaultMediaSet,
 } from '@bettertrack/contracts';
@@ -35,6 +36,16 @@ const KILL_LIST_KEYS = [
   'automation',
   'publicProfile',
 ] as const;
+
+/**
+ * The Drive-only radio is where the user DECIDES that BetterTrack keeps nothing,
+ * so it is where the one bounded exception has to be stated. This ceremony
+ * itself stages no server bytes (a Drive-only enable writes only the selected
+ * media), but a later portfolio move into or out of the vault does, and those
+ * rows now live out their own TTL instead of being deleted at the commit
+ * (#1491). Derived from the server's constant so the copy cannot drift from it.
+ */
+const VAULT_SERVER_CANDIDATE_TTL_MINUTES = Math.round(VAULT_SERVER_CANDIDATE_TTL_MS / 60_000);
 
 interface EnableErrorCopy {
   key: string;
@@ -364,7 +375,11 @@ export function ParanoidEnableWizard({
               />
               <span>
                 <span className="bt-row-title">{t('vault.enable.media.driveOnly.title')}</span>
-                <span className="bt-row-sub block">{t('vault.enable.media.driveOnly.body')}</span>
+                <span className="bt-row-sub block">
+                  {t('vault.enable.media.driveOnly.body', {
+                    minutes: VAULT_SERVER_CANDIDATE_TTL_MINUTES,
+                  })}
+                </span>
               </span>
             </label>
           </details>
