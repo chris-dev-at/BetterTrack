@@ -126,13 +126,13 @@ test('registration modes: invite-token mode consumes a single-use token', async 
 /**
  * Approval mode (§6.12 / #420, via issue #506). Two visitors self-register and
  * each lands `pending` — no session yet, and the `auth.register.pendingMessage`
- * copy confirms the request is queued. An admin drives the real Settings-page
- * approval queue (part of what shipped, so covered by e2e) and approves the
- * first applicant + rejects the second; the approved applicant then signs in
- * successfully, while the rejected one is still met with the generic
- * invalid-credentials error at /login. The admin browser context reuses the
- * API-authed session cookie via {@link newAdminBrowserContext}, so the admin
- * SPA lands directly on the console — no admin-login UI to drive.
+ * copy confirms the request is queued. An admin drives the real People →
+ * Registration approval queue (part of what shipped, so covered by e2e) and
+ * approves the first applicant + rejects the second; the approved applicant
+ * then signs in successfully, while the rejected one is still met with the
+ * generic invalid-credentials error at /login. The admin browser context
+ * reuses the API-authed session cookie via {@link newAdminBrowserContext}, so
+ * the admin SPA lands directly on the console — no admin-login UI to drive.
  */
 test('registration modes: approval mode gates on admin approve / reject via the admin UI', async ({
   browser,
@@ -181,12 +181,14 @@ test('registration modes: approval mode gates on admin approve / reject via the 
       timeout: 15_000,
     });
 
-    // (3) Admin drives the real Settings page — approve A, reject B. Each row
-    // is keyed on the applicant's username, so we scope by that to avoid a
-    // race between them.
+    // (3) Admin drives the real People → Registration page — approve A, reject
+    // B. ADMIN-W1 (#1406) moved the queue there from Settings; `RegistrationPage`
+    // is the only admin page that renders the Approve / Reject rows. Each row is
+    // keyed on the applicant's username, so we scope by that to avoid a race
+    // between them.
     adminCtx = await newAdminBrowserContext(browser, apiRequest);
     const adminPage = await adminCtx.newPage();
-    await adminPage.goto('/admin/settings');
+    await adminPage.goto('/admin/registration');
     const approveRow = adminPage.getByRole('listitem').filter({ hasText: approveUsername });
     await expect(approveRow).toBeVisible({ timeout: 30_000 });
     await approveRow.getByRole('button', { name: 'Approve' }).click();
