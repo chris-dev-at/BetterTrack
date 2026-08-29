@@ -8,12 +8,15 @@ type StateCase<State extends EndpointVaultState> = State extends {
 
 export type EndpointVaultStateCase = StateCase<EndpointVaultState>;
 
-export type VaultStateActionKind =
-  | 'unlock'
-  | 'open'
-  | 'provide-phrase'
-  | 'scan-qr'
-  | 'reset-endpoint';
+export const VAULT_STATE_ACTION_KINDS = [
+  'unlock',
+  'open',
+  'provide-phrase',
+  'scan-qr',
+  'reset-endpoint',
+] as const;
+
+export type VaultStateActionKind = (typeof VAULT_STATE_ACTION_KINDS)[number];
 
 export interface VaultStateAffordance {
   action: VaultStateActionKind;
@@ -85,6 +88,44 @@ function assertNeverVaultState(state: never): never {
 
 export function vaultStateAffordance(state: EndpointVaultState): VaultStateAffordance {
   return VAULT_STATE_AFFORDANCES[endpointVaultStateCase(state)];
+}
+
+export function isVaultStateActionKind(action: string): action is VaultStateActionKind {
+  return (VAULT_STATE_ACTION_KINDS as readonly string[]).includes(action);
+}
+
+/**
+ * The actions a state actually offers. `not-on-this-endpoint` offers two — the
+ * row renders "Enter words" next to "Scan QR" — every other state offers exactly
+ * the one its affordance names.
+ */
+export function vaultStateOfferedActions(
+  state: EndpointVaultState,
+): readonly VaultStateActionKind[] {
+  const { action } = vaultStateAffordance(state);
+  return action === 'provide-phrase' ? ['provide-phrase', 'scan-qr'] : [action];
+}
+
+/**
+ * Whether a requested action — typically one carried by a `?action=` deep link —
+ * is still on offer for this live state. A URL is a request, not a state: a link
+ * made before the fifth wrong password still says `unlock` long after the
+ * endpoint withdrew it.
+ */
+export function vaultStateOffersAction(state: EndpointVaultState, action: string): boolean {
+  return (
+    isVaultStateActionKind(action) &&
+    (vaultStateOfferedActions(state) as readonly string[]).includes(action)
+  );
+}
+
+/** The instant a locked-out endpoint accepts a device password again, if it is. */
+export function vaultStateRetryAt(state: EndpointVaultState): number | null {
+  return state.status === 'stored+wrapped' &&
+    state.session === 'locked' &&
+    state.requiredAction.kind === 'wait-or-reset'
+    ? state.requiredAction.retryAt
+    : null;
 }
 
 export function vaultStateActionHref(vaultId: string, action: VaultStateActionKind): string {

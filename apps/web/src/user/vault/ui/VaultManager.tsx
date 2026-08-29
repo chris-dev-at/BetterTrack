@@ -11,7 +11,7 @@ import type {
 } from '@bettertrack/contracts';
 import { PER_VAULT_ERROR_CODES } from '@bettertrack/contracts';
 
-import { useT } from '../../../i18n';
+import { useT, type TranslateVars } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
 import {
   deleteVault,
@@ -29,10 +29,17 @@ import { portfolioDisplayName } from '../../portfolio/lockedPortfolio';
 import { usePortfolioStore } from '../../portfolio/PortfolioStoreProvider';
 import { PER_VAULT_DRIVE_PROVISIONING_AVAILABLE } from '../capabilities';
 import type { EndpointVaultState } from '../keystore';
+import { EndpointKeystoreError } from '../keystore/errors';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import { provisionVault, type ProvisionVaultInput } from '../provisionVault';
 import type { RestoreCandidate } from '../restore';
-import { vaultStateAffordance } from '../vaultStateAffordance';
+import {
+  isVaultStateActionKind,
+  vaultStateAffordance,
+  vaultStateOffersAction,
+  vaultStateRetryAt,
+} from '../vaultStateAffordance';
+import { vaultRetryTimeLabel } from './retryTime';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
 import { VaultStateAction } from './VaultStateAction';
@@ -523,8 +530,16 @@ function VaultAccessAction({
   const [stepUpKind, setStepUpKind] = useState<'password' | 'code' | 'recoveryCode'>('password');
   const [stepUpValue, setStepUpValue] = useState('');
   const [working, setWorking] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<AccessFailure | null>(null);
   const effectiveAction = action;
+  // A URL is a request, not a state. This surface is the only one reachable
+  // without passing a row affordance, so it reconciles `?action=` against the
+  // live endpoint state exactly as `vaultStateAffordance` does for the rows —
+  // otherwise a link minted before the fifth wrong password keeps rendering a
+  // live unlock form that submission can only refuse.
+  const stateQuery = useVaultEndpointState(vault.id);
+  const liveState = stateQuery.data ?? null;
+  const stateGoverned = isVaultStateActionKind(effectiveAction);
   const restoreAvailable =
     operations.listRestoreCandidates != null && operations.restoreCandidate != null;
   const restoreCandidates = useQuery({
@@ -536,7 +551,7 @@ function VaultAccessAction({
 
   async function submit() {
     setWorking(true);
-    setFailed(false);
+    setFailure(null);
     try {
       const fetchHeaderEnvelope = () => operations.fetchHeader(vault);
       if (effectiveAction === 'unlock') {
@@ -576,8 +591,11 @@ function VaultAccessAction({
         throw new Error('vault-action-unavailable');
       }
       await onDone();
-    } catch {
-      setFailed(true);
+    } catch (cause) {
+      setFailure(accessFailure(cause));
+      // A lockout also changed this endpoint's state: re-read it so the surface
+      // stops offering the action the keystore just withdrew.
+      if (isLockedOut(cause)) void stateQuery.refetch();
     } finally {
       setWorking(false);
     }
@@ -611,10 +629,71 @@ function VaultAccessAction({
     );
   }
 
+  // A state-governed action is never rendered on a guess: until this endpoint's
+  // own state is known, the surface says it is checking rather than painting a
+  // form that the next tick may withdraw.
+  if (stateGoverned && liveState == null) {
+    return (
+      <section
+        aria-label={t('vault.manager.access.title', { name: vault.name })}
+        className="bt-panel flex flex-col gap-3 p-4"
+      >
+        <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
+        {stateQuery.isPending ? (
+          <p aria-live="polite" className="bt-row-sub">
+            {t('vault.manager.access.checkingState')}
+          </p>
+        ) : null}
+        {stateQuery.isError ? (
+          <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
+            <span>{t('vault.manager.access.stateError')}</span>
+            <Button onClick={() => void stateQuery.refetch()} size="sm" type="button">
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onClose} type="button" variant="quiet">
+            {t('common.cancel')}
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
+  // The reconciliation itself: an action this state no longer offers is answered
+  // with the affordance the row would give — and, in lockout, with the instant
+  // the endpoint accepts a password again instead of an invitation to type one.
+  if (liveState != null && stateGoverned && !vaultStateOffersAction(liveState, effectiveAction)) {
+    const retryAt = vaultStateRetryAt(liveState);
+    return (
+      <section
+        aria-label={t('vault.manager.access.title', { name: vault.name })}
+        className="bt-panel flex flex-col gap-3 p-4"
+      >
+        <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
+        <DeferredActionNotice
+          reasonKey={
+            retryAt == null
+              ? 'vault.manager.access.withdrawnAction'
+              : 'vault.manager.access.lockedOut'
+          }
+          reasonVars={retryAt == null ? undefined : { time: vaultRetryTimeLabel(retryAt) }}
+          vault={vault}
+        />
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onClose} type="button" variant="quiet">
+            {t('common.cancel')}
+          </Button>
+        </div>
+      </section>
+    );
+  }
+
   if (effectiveAction === 'open') {
     return (
       <SilentVaultOpen
-        failed={failed}
+        failure={failure}
         open={() => void submit()}
         title={t('vault.manager.access.title', { name: vault.name })}
       />
@@ -745,11 +824,7 @@ function VaultAccessAction({
           />
         </>
       ) : null}
-      {failed ? (
-        <p className="bt-neg text-sm" role="alert">
-          {t('vault.manager.access.error')}
-        </p>
-      ) : null}
+      {failure ? <AccessFailureNotice failure={failure} /> : null}
       <div className="flex flex-wrap justify-end gap-2">
         <Button disabled={working} onClick={onClose} type="button" variant="quiet">
           {t('common.cancel')}
@@ -780,12 +855,20 @@ function VaultAccessAction({
  * missing, and still offer the vault's own live next step. Never a silent
  * disabled control — "a state without a next action is a design bug".
  */
-function DeferredActionNotice({ reasonKey, vault }: { reasonKey: string; vault: VaultConfig }) {
+function DeferredActionNotice({
+  reasonKey,
+  reasonVars,
+  vault,
+}: {
+  reasonKey: string;
+  reasonVars?: TranslateVars;
+  vault: VaultConfig;
+}) {
   const t = useT();
   const stateQuery = useVaultEndpointState(vault.id);
   return (
     <div className="bt-soft flex flex-col items-start gap-2 text-sm">
-      <p>{t(reasonKey)}</p>
+      <p>{t(reasonKey, reasonVars)}</p>
       {stateQuery.data ? (
         <VaultStateAction state={stateQuery.data} vaultId={vault.id} />
       ) : (
@@ -803,13 +886,47 @@ function DeferredActionNotice({ reasonKey, vault }: { reasonKey: string; vault: 
   );
 }
 
+/**
+ * A refusal this surface can name. §12: a device-password lockout is not "that
+ * action could not be completed" — it has a code and a deadline, and the QR
+ * sender already says so. Collapsing it here would invite the user to retype a
+ * password no verification will look at, with the retry instant never shown.
+ */
+interface AccessFailure {
+  key: string;
+  vars?: TranslateVars;
+}
+
+function isLockedOut(cause: unknown): cause is EndpointKeystoreError {
+  return cause instanceof EndpointKeystoreError && cause.code === 'locked-out';
+}
+
+function accessFailure(cause: unknown): AccessFailure {
+  const retryAt = isLockedOut(cause) ? cause.details.retryAt : undefined;
+  return retryAt == null
+    ? { key: 'vault.manager.access.error' }
+    : {
+        key: 'vault.manager.access.lockedOut',
+        vars: { time: vaultRetryTimeLabel(retryAt) },
+      };
+}
+
+function AccessFailureNotice({ failure }: { failure: AccessFailure }) {
+  const t = useT();
+  return (
+    <p className="bt-neg text-sm" role="alert">
+      {t(failure.key, failure.vars)}
+    </p>
+  );
+}
+
 function SilentVaultOpen({
   open,
-  failed,
+  failure,
   title,
 }: {
   open(): void;
-  failed: boolean;
+  failure: AccessFailure | null;
   title: string;
 }) {
   const t = useT();
@@ -822,11 +939,7 @@ function SilentVaultOpen({
   return (
     <section aria-label={title} className="bt-panel flex flex-col gap-3 p-4">
       <p className="bt-row-sub">{t('vault.manager.access.opening')}</p>
-      {failed ? (
-        <p className="bt-neg text-sm" role="alert">
-          {t('vault.manager.access.error')}
-        </p>
-      ) : null}
+      {failure ? <AccessFailureNotice failure={failure} /> : null}
     </section>
   );
 }
