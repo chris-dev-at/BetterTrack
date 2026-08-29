@@ -355,6 +355,20 @@ export const meResponseSchema = z.object({
    * established user of an older server back through setup.
    */
   firstRunCompletedAt: z.string().datetime().nullable().optional(),
+  /**
+   * True while this account still owes the one-time paranoid fresh-start notice
+   * (`docs/paranoid-design.md` §17 step 3, PARANOID E9) — the account went through
+   * the owner-run backup + wipe and has not acknowledged the notice yet.
+   *
+   * It rides on the session payload rather than a poll of its own because §17
+   * words it as a notice "at next login", and because a login-scoped one-time
+   * flag is exactly the shape `firstRunCompletedAt` above already has.
+   *
+   * Optional, and read with the same doctrine: `undefined` means "unknown" (an
+   * older server), never "nothing owed". Absent for every account the transition
+   * never touched, which is almost all of them.
+   */
+  paranoidFreshStartPending: z.boolean().optional(),
   createdAt: z.string().datetime(),
 });
 export type MeResponse = z.infer<typeof meResponseSchema>;

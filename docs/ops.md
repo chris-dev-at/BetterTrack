@@ -445,6 +445,65 @@ schema. Then run `docker compose start api worker`, followed by
 drills a fresh post-restore recovery point. Do not use the automated drill for
 in-place recovery; it intentionally refuses the live database.
 
+## Retiring the account-level (v1) paranoid surface — §17
+
+`docs/paranoid-design.md` §17, ruled (C) "backup + wipe" on 2026-08-20. This is an
+**owner-run, irreversible** procedure: the legacy passphrase and recovery kit die
+with the wipe, and there is no port path into the per-portfolio vault model.
+
+Nothing here happens automatically. Migration `0102_paranoid_v1_transition` ships
+only the quarantine tables and the gate; deploying it wipes nobody. The wipe has
+no HTTP route at all — this runbook plus a shell on the prod host is its entire
+surface.
+
+**1. Back up and verify.** On the prod host, with `DATABASE_URL` set:
+
+```bash
+export BT_PARANOID_V1_BACKUP_DIR=/var/backups/bettertrack   # MUST be outside every git working tree
+node scripts/ops/export-paranoid-v1-backup.mjs
+```
+
+It dumps every v1 row, re-reads the archive from disk, matches the per-table row
+counts and a SHA-256 content digest, then records an attestation. It destroys
+nothing and prints the archive path and its SHA-256.
+
+**2. Take it offsite, then confirm it.** Copy the archive off the host, digest the
+copy **at its destination**, and hand that digest back:
+
+```bash
+sha256sum /path/to/the/copy            # on the offsite target
+node scripts/ops/export-paranoid-v1-backup.mjs --confirm-offsite <sha256> --archive <archive-path>
+```
+
+A mismatch refuses and changes nothing. This step is §17's "offsite copy
+confirmed", and the wipe requires it — an archive still sitting only on the prod
+host cannot authorize destruction.
+
+**3. Review the candidates.** Read-only:
+
+```bash
+pnpm --filter @bettertrack/api wipe:paranoid-v1
+```
+
+**4. Wipe.** Only after step 2 really happened:
+
+```bash
+pnpm --filter @bettertrack/api wipe:paranoid-v1 --execute
+```
+
+Per account, inside one transaction: locks the user and vault rows, re-checks that
+the attestation still describes the account (a vault that changed since the backup
+is **refused**, not destroyed), copies the seven v1 tables into
+`zz_paranoid_v1_backup_*`, deletes the live rows, flips `privacy_mode` to `normal`
+with the paranoid media columns cleared, and writes a wipe receipt. A refusal on
+one account never aborts the others.
+
+Each wiped account then owes the one-time fresh-start notice at its next login.
+
+**Afterwards.** The `zz_paranoid_v1_backup_*` quarantine and the dead v1 code are
+removed later by the §19 deletion train, as separate append-only migrations, once
+no straggler accounts remain. Do not drop the quarantine by hand.
+
 ## Market-data provider failover
 
 BetterTrack uses Yahoo as its primary market-data provider. The optional v5

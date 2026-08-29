@@ -1082,6 +1082,11 @@ export const NON_V5_SURFACES = [
     note: 'Owner-ordered FEEDBACK-3 web reporter (#1317), added outside the §13.5 P0–P13c plan.',
   },
   {
+    path: 'user/components/FreshStartNotice.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'PARANOID E9 §17 one-time fresh-start notice, outside the §13.5 P0–P13c plan.',
+  },
+  {
     path: 'user/components/LocalNav.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign local nav strip (#935).',
