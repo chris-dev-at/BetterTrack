@@ -358,6 +358,14 @@ export async function attemptUnlock(
 }
 
 /**
+ * The access surface's two refusals, distinct since #1526: a lockout carries the
+ * keystore's own code and deadline, so it must never read as the generic "that
+ * action could not be completed" a wrong password gets.
+ */
+export const ACCESS_REFUSAL_COPY = 'That action could not be completed.';
+export const ACCESS_LOCKOUT_COPY = 'Too many wrong device passwords.';
+
+/**
  * E3's first lockout tier: the 5th consecutive wrong device password arms a
  * 30 s window (`keystore/core.ts` LOCKOUT_INITIAL_MS). Mirrored rather than
  * imported — `core.ts` is a browser module, and importing it for one number
@@ -444,10 +452,12 @@ export async function ensureLockoutWindow(
   if (current.remainingMs >= minRemainingMs) return current;
   if (current.remainingMs > 0) await page.waitForTimeout(current.remainingMs + 250);
 
+  // Past the first tier every further failure arms the next window, so this
+  // refusal is itself a lockout and says so (#1526).
   const section = await attemptUnlock(page, vaultId, wrongPassword);
   await expect(
-    section.getByText('That action could not be completed.', { exact: false }),
-    're-arming the lockout must itself be refused',
+    section.getByText(ACCESS_LOCKOUT_COPY, { exact: false }),
+    're-arming the lockout must itself be refused, and named as a lockout',
   ).toBeVisible({ timeout: 60_000 });
 
   const rearmed = await readEndpointLockout(page);

@@ -14,6 +14,8 @@ import {
   dividendPlan,
   savingsPlanContribution,
   withdrawalHorizon,
+  FORECAST_CALC_MAX_YEARS,
+  FORECAST_CALC_MIN_YEARS,
   type CompoundInterestInput,
   type DividendPlanInput,
   type SavingsContributionInput,
@@ -231,7 +233,7 @@ function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn
     principal: safeNumber(principal),
     monthlyContribution: safeNumber(monthlyContribution),
     ratePctPerYear: safeNumber(ratePctPerYear),
-    years: safeNumber(years),
+    years: clampYears(years),
     compoundingPerYear: Math.max(1, safeNumber(compoundingPerYear, 12)),
   };
   const result = compoundInterest(input);
@@ -264,6 +266,8 @@ function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn
         <TextField
           type="number"
           inputMode="decimal"
+          min={FORECAST_CALC_MIN_YEARS}
+          max={FORECAST_CALC_MAX_YEARS}
           label={t('forecast.compound.years')}
           value={years}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setYears(e.target.value)}
@@ -404,7 +408,7 @@ function DividendCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
     positionValue: safeNumber(positionValue),
     yieldPctPerYear: safeNumber(yieldPctPerYear),
     growthPctPerYear: safeNumber(growthPctPerYear),
-    years: safeNumber(years),
+    years: clampYears(years),
   };
   const result = dividendPlan(input);
   const canPrefill = prefill.portfolioValueEur !== null;
@@ -436,6 +440,8 @@ function DividendCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
         <TextField
           type="number"
           inputMode="decimal"
+          min={FORECAST_CALC_MIN_YEARS}
+          max={FORECAST_CALC_MAX_YEARS}
           label={t('forecast.dividend.years')}
           value={years}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setYears(e.target.value)}
@@ -659,4 +665,15 @@ export function ForecastPage() {
 function safeNumber(raw: string, fallback = 0): number {
   const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Bound a raw "Years" field to the calculator horizon range — the same
+ * parse-then-clamp the projection horizon does at its own boundary. The fields
+ * are bare number inputs outside any form, so their `min`/`max` never validate
+ * anything on their own and a pasted `1000000000` would otherwise reach the
+ * math verbatim.
+ */
+function clampYears(raw: string): number {
+  return Math.max(FORECAST_CALC_MIN_YEARS, Math.min(FORECAST_CALC_MAX_YEARS, safeNumber(raw)));
 }

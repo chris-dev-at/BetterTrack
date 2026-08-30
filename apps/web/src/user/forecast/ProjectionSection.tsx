@@ -176,8 +176,15 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
   // ── Resolve the projection factors ──────────────────────────────────────────
   const startingNetWorthEur = portfolioQuery.data?.totals.totalValueEur ?? 0;
+  // `projectNetWorth` projects WHOLE years (it rounds its own input), so the
+  // horizon is resolved to that same integer here, once, at the section
+  // boundary: the label, the chart and the projected stat then all describe the
+  // horizon that was actually modelled. The field is a bare number input with no
+  // enclosing form, so constraint validation never fires and a typed or pasted
+  // "2.5" reaches this state verbatim — without the rounding it would headline
+  // the 3-year figure as "Projected in 2.5 years".
   const horizonYears = clamp(
-    safeNumber(horizon, FORECAST_HORIZON_MIN_YEARS),
+    Math.round(safeNumber(horizon, FORECAST_HORIZON_MIN_YEARS)),
     FORECAST_HORIZON_MIN_YEARS,
     FORECAST_HORIZON_MAX_YEARS,
   );

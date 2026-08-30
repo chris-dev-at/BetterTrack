@@ -39,10 +39,12 @@ vi.mock('../../lib/marketIntelApi', () => ({ getPortfolioDividendProjection: vi.
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { ApiError } from '../../lib/apiClient';
+import { formatMoney } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
+import { projectNetWorth } from './projection';
 import { ProjectionSection } from './ProjectionSection';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -161,6 +163,29 @@ function renderSection(portfolios = PORTFOLIOS, mode: 'normal' | 'paranoid' = 'n
       </ResolvedPrivacyModeProvider>
     </QueryClientProvider>,
   );
+}
+
+/** The card whose label names the horizon, so label and value are read together. */
+function projectedStat(): HTMLElement {
+  return screen.getByText(/^Projected in /).parentElement!;
+}
+
+/**
+ * The engine's own answer for a horizon, on the same factors the section runs
+ * with in these tests (50 000 € start, 5 %/yr, no orders, no dividends). `asOf`
+ * is irrelevant without standing orders — nothing is booked on a calendar day.
+ */
+function engineFinalValue(horizonYears: number): number {
+  const result = projectNetWorth({
+    asOf: '2026-01-01',
+    startingNetWorthEur: 50000,
+    horizonYears,
+    annualReturnPct: 5,
+    standingOrders: [],
+    monthlyDividendEur: 0,
+    whatIfPlans: [],
+  });
+  return result.base[result.base.length - 1]!.value;
 }
 
 beforeEach(() => {
@@ -346,6 +371,57 @@ test('clamps an out-of-range return rate instead of rendering NaN', async () => 
   expect(screen.getByRole('alert')).toHaveTextContent(
     'The return rate is limited to -100% to 100%. The nearest value is used for this projection.',
   );
+});
+
+test('an integer horizon reproduces the hand-computed compounded figure', async () => {
+  const user = userEvent.setup();
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await waitFor(() =>
+    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+  );
+
+  // 50 000 € compounded at the prefilled 5 %/yr (monthly steps at the annual
+  // rate's 12th root): 50 000·1,05² = 55 125,00 and 50 000·1,05³ = 57 881,25.
+  expect(engineFinalValue(2)).toBeCloseTo(55125, 2);
+  expect(engineFinalValue(3)).toBeCloseTo(57881.25, 2);
+
+  const horizon = screen.getByLabelText('Horizon (years)');
+  await user.clear(horizon);
+  await user.type(horizon, '2');
+  await waitFor(() => expect(projectedStat()).toHaveTextContent('Projected in 2 years'));
+  expect(projectedStat()).toHaveTextContent(formatMoney(55125));
+
+  await user.clear(horizon);
+  await user.type(horizon, '3');
+  await waitFor(() => expect(projectedStat()).toHaveTextContent('Projected in 3 years'));
+  expect(projectedStat()).toHaveTextContent(formatMoney(57881.25));
+});
+
+test('a fractional horizon labels the integer horizon the engine actually projects', async () => {
+  const user = userEvent.setup();
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await waitFor(() =>
+    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+  );
+
+  const horizon = screen.getByLabelText('Horizon (years)');
+  await user.clear(horizon);
+  await user.type(horizon, '2.5');
+  // The field is a bare number input with no enclosing form, so the fractional
+  // value does reach state — the bounding is what has to hold.
+  await waitFor(() => expect(horizon).toHaveValue(2.5));
+
+  // The engine projects whole years, and the label now names that same year:
+  // never "2.5 years" over a curve the engine never modelled.
+  const projected = engineFinalValue(2.5);
+  expect(projected).toBeCloseTo(57881.25, 2);
+  await waitFor(() => expect(projectedStat()).toHaveTextContent('Projected in 3 years'));
+  expect(screen.queryByText(/Projected in 2\.5 years/)).not.toBeInTheDocument();
+  // Label, headline stat and the chart's last point all state the same figure.
+  expect(projectedStat()).toHaveTextContent(formatMoney(projected));
+  expect(screen.getByTestId('projection-series-base')).toHaveTextContent(formatMoney(projected));
 });
 
 test('the dividend factor toggle is hidden when the provider is unconfigured', async () => {
