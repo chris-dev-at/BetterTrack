@@ -514,6 +514,7 @@
         "retryPreparation": "Retry Google sign-in",
         "preparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
         "readyToConnect": "Google sign-in is ready — click again to connect.",
+        "readyToContinue": "Google sign-in is ready — click again to continue.",
         "unlockRequired": "Unlock your encrypted vault to change its storage.",
         "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
         "passphraseLabel": "Vault passphrase",

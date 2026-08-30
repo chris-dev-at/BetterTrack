@@ -5,6 +5,8 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { DriveConnection } from '@bettertrack/contracts';
+
 import { base64ToBytes } from './bytes';
 import type { DataHomeReadResult } from './dataHome';
 import type { DriveAccessTokenResult, DriveDataHome, GoogleDriveTokenClient } from './drive';
@@ -531,6 +533,95 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     },
   );
 });
+
+/**
+ * The GIS `revoke` is GRANT-level: it drops every scope the app holds for the
+ * Google account, so it also kills the separately minted token client of any
+ * registered Drive connection (§8). Releasing an abandoned wizard consent must
+ * therefore never reach Google while the registry still has a row.
+ */
+describe('VaultRuntimeProvider abandoned-consent release', () => {
+  const userId = '018f0000-0000-7000-8000-0000000000f7';
+
+  function stubGisRevoke(): ReturnType<typeof vi.fn> {
+    const revoke = vi.fn((_accessToken: string, done?: (response?: unknown) => void) => done?.());
+    Object.defineProperty(window, 'google', {
+      configurable: true,
+      value: { accounts: { oauth2: { initTokenClient: vi.fn(), revoke } } },
+    });
+    return revoke;
+  }
+
+  function boundConnection(): DriveConnection {
+    return {
+      id: '018f0000-0000-7000-8000-0000000000c1',
+      googleSub: 'google-sub-y',
+      email: 'owner@example.com',
+      displayName: null,
+      createdAt: '2026-08-01T00:00:00.000Z',
+      lastVerifiedAt: '2026-08-01T00:00:00.000Z',
+    };
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'google');
+  });
+
+  async function release(connections: readonly DriveConnection[], tokens: GoogleDriveTokenClient) {
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId={userId}
+        dependencies={{
+          clientId: 'browser-client-id',
+          tokens,
+          listConnections: async () => connections,
+        }}
+      >
+        <ReleaseHarness />
+      </VaultRuntimeProvider>,
+    );
+    await userEvent.setup().click(screen.getByRole('button', { name: 'release drive' }));
+    expect(await screen.findByText('released')).toBeInTheDocument();
+  }
+
+  it('hands the grant back when nothing else in the account holds it', async () => {
+    const revoke = stubGisRevoke();
+    const tokens = memoryTokenClient();
+
+    await release([], tokens);
+
+    expect(revoke).toHaveBeenCalledWith('memory-only', expect.any(Function));
+    expect(tokens.markRevoked).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the Google grant while a registered Drive connection depends on it', async () => {
+    const revoke = stubGisRevoke();
+    const tokens = memoryTokenClient();
+
+    await release([boundConnection()], tokens);
+
+    expect(revoke).not.toHaveBeenCalled();
+    // The wizard's own capability still goes — only the shared grant survives.
+    expect(tokens.markRevoked).toHaveBeenCalledOnce();
+  });
+});
+
+function ReleaseHarness() {
+  const runtime = useVaultRuntime();
+  const [released, setReleased] = useState(false);
+  return (
+    <>
+      <button
+        onClick={() => void runtime.releaseDriveStorage().then(() => setReleased(true))}
+        type="button"
+      >
+        release drive
+      </button>
+      <span>{released ? 'released' : null}</span>
+    </>
+  );
+}
 
 function UnlockHarness({ driveOnly = true }: { driveOnly?: boolean }) {
   const runtime = useVaultRuntime();

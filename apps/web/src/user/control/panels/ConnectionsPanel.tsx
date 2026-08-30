@@ -416,6 +416,9 @@ function DriveAccountsSection({
     setMessage(null);
     if (!preparationEnabled) setConnectRequested(true);
     else if (preparation.state === 'failed') preparation.retry();
+    // Unreachable today — this section only renders behind a resolved registry,
+    // which needs a client id. Kept so the state stays exhaustively answered:
+    // the alternative is falling through to a wait that never ends.
     else if (preparation.state === 'unconfigured') {
       setMessage({ tone: 'error', text: t('settings.connections.drive.configMissing') });
       return true;
@@ -743,6 +746,9 @@ function DriveVaultSection({
       setDriveConnectionRequested(true);
     } else if (drivePreparation.state === 'failed') {
       drivePreparation.retry();
+      // Unreachable today — `drivePreparationEnabled` already requires
+      // `configured`. Kept for the same reason as its twin above: an
+      // unanswered state here would be a click that waits forever.
     } else if (drivePreparation.state === 'unconfigured') {
       setMessage({ tone: 'error', key: 'settings.connections.drive.configMissing' });
       return true;
@@ -981,7 +987,10 @@ function DriveVaultSection({
       ) : null}
       {awaitingPreparedClick && driveReady && !working ? (
         <Row stack>
-          <PanelNote>{t('settings.connections.drive.readyToConnect')}</PanelNote>
+          {/* Every gesture on this card routes through the same consumed click
+              — connect, sign in, disconnect, purge, unlock-and-continue — so the
+              note names the click, not one of the actions it can precede. */}
+          <PanelNote>{t('settings.connections.drive.readyToContinue')}</PanelNote>
         </Row>
       ) : null}
       {drivePreparation.state === 'failed' ? (

@@ -721,7 +721,7 @@ describe('ConnectionsPanel — paranoid Google Drive storage', () => {
     // The click that only started the preload now says so instead of leaving
     // the button looking like a dead control (#1519 F1).
     expect(
-      await screen.findByText('Google sign-in is ready — click again to connect.'),
+      await screen.findByText('Google sign-in is ready — click again to continue.'),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Connect Drive' })).toBeEnabled(),
@@ -730,7 +730,7 @@ describe('ConnectionsPanel — paranoid Google Drive storage', () => {
     expect(drive.connect).toHaveBeenCalledOnce();
     await waitFor(() =>
       expect(
-        screen.queryByText('Google sign-in is ready — click again to connect.'),
+        screen.queryByText('Google sign-in is ready — click again to continue.'),
       ).not.toBeInTheDocument(),
     );
   });

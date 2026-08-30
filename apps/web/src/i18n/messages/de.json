@@ -514,6 +514,7 @@
         "retryPreparation": "Google-Anmeldung erneut vorbereiten",
         "preparationFailed": "Die Google-Anmeldung konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut.",
         "readyToConnect": "Die Google-Anmeldung ist bereit — klicke erneut, um zu verbinden.",
+        "readyToContinue": "Die Google-Anmeldung ist bereit — klicke erneut, um fortzufahren.",
         "unlockRequired": "Entsperre deinen verschlüsselten Tresor, um den Speicher zu ändern.",
         "unlockPrompt": "Gib deine Tresor-Passphrase ein. Drive-Autorisierung und Migration werden mit dieser Aktion fortgesetzt.",
         "passphraseLabel": "Tresor-Passphrase",

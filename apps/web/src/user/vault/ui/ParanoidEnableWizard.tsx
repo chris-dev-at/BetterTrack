@@ -149,7 +149,10 @@ export function ParanoidEnableWizard({
     () => () => {
       // Early consent the user then walked away from grants `drive.file` access
       // to a vault that never existed. Nothing will ever use it, so hand it
-      // back instead of leaving it standing (#1519 F4).
+      // back instead of leaving it standing (#1519 F4). Known residual, left
+      // for the follow-up: authorizing Drive, unticking the add-on and then
+      // enabling a server-only vault keeps the same unused grant, because
+      // `enabledRef` cannot tell the two enable shapes apart here.
       if (driveGrantedRef.current && !enabledRef.current) void releaseDriveRef.current();
     },
     [],
