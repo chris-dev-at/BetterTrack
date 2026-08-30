@@ -1225,6 +1225,18 @@ export function serializePerVaultRetiredServerPurgeTranscript(
  *    mint a NEW `writeId` for the bytes it wants to store. A replay of the same
  *    `writeId` with byte-identical content is not an error at all — it stays an
  *    idempotent 204.
+ *
+ * The media-transition surface answers `412` for two facts as well (#1530):
+ *  - `VAULT_MEDIA_VERIFICATION_FAILED` — the submitted full-set readback does
+ *    not describe what the server holds. Nothing about it says why.
+ *  - `VAULT_MEDIA_CAPTURE_IN_FLIGHT` — the readback is correct for every
+ *    document EXCEPT the prospective ones an interrupted portfolio move-in
+ *    left staged in this vault (usually another portfolio's, but a client that
+ *    omits the document it just staged itself lands here too). The refusal is
+ *    unchanged (fail-closed, no mutation); the code and its `portfolioIds`
+ *    detail name the portfolios whose move must be finished or cancelled
+ *    first, so a client can say that instead of retrying a readback that can
+ *    never match.
  */
 export const PER_VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
@@ -1241,6 +1253,7 @@ export const PER_VAULT_ERROR_CODES = {
   malformed: 'VAULT_MALFORMED',
   mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
   mediaVerificationFailed: 'VAULT_MEDIA_VERIFICATION_FAILED',
+  mediaCaptureInFlight: 'VAULT_MEDIA_CAPTURE_IN_FLIGHT',
   mediaPartialSet: 'VAULT_MEDIA_PARTIAL_SET',
   serverCandidateNotFound: 'VAULT_SERVER_CANDIDATE_NOT_FOUND',
   retirementConflict: 'VAULT_RETIRED_SERVER_CONFLICT',
@@ -1273,6 +1286,24 @@ export const PER_VAULT_DOC_WRITE_ERROR_CODES = [
 export const PER_VAULT_DOC_READ_ERROR_CODES = [
   PER_VAULT_ERROR_CODES.notFound,
   PER_VAULT_ERROR_CODES.mediaStateConflict,
+] as const;
+
+/**
+ * The refusal vocabulary of one media transition, published as `x-error-codes`
+ * so a client can tell the retry-after-a-fresh-readback refusals apart from
+ * `VAULT_MEDIA_CAPTURE_IN_FLIGHT`, which no readback of THIS client's documents
+ * can ever satisfy (#1453, #1530).
+ */
+export const PER_VAULT_MEDIA_TRANSITION_ERROR_CODES = [
+  PER_VAULT_ERROR_CODES.notFound,
+  PER_VAULT_ERROR_CODES.reservedMedium,
+  PER_VAULT_ERROR_CODES.driveBindingInvalid,
+  PER_VAULT_ERROR_CODES.mediaStateConflict,
+  PER_VAULT_ERROR_CODES.mediaPartialSet,
+  PER_VAULT_ERROR_CODES.mediaVerificationFailed,
+  PER_VAULT_ERROR_CODES.mediaCaptureInFlight,
+  PER_VAULT_ERROR_CODES.retirementConflict,
+  PER_VAULT_ERROR_CODES.deleteRetirementPending,
 ] as const;
 
 // ── Per-portfolio revision token + move-in / move-out bodies (§9, §10) ───────
