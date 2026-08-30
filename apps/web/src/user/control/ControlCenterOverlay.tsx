@@ -22,6 +22,7 @@ import { OAuthAppsPanel } from './panels/OAuthAppsPanel';
 import { ProfilePanel } from './panels/ProfilePanel';
 import { SessionsPanel } from './panels/SessionsPanel';
 import { SignInPanel } from './panels/SignInPanel';
+import { TrustedDevicesPanel } from './panels/TrustedDevicesPanel';
 import { WebhooksPanel } from './panels/WebhooksPanel';
 import { usePhoneShell } from '../hooks/useCompactShell';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
@@ -163,6 +164,16 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
         ],
         icon: 'user-lock',
         Component: SessionsPanel,
+      },
+      {
+        id: 'trusted-devices',
+        labelKey: 'control.trustedDevices',
+        keywordKeys: [
+          'settings.security.trustedDevices.title',
+          'settings.security.trustedDevices.revokeAll',
+        ],
+        icon: 'user-lock',
+        Component: TrustedDevicesPanel,
       },
     ],
   },
