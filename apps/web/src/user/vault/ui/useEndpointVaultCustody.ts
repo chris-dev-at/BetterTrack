@@ -3,7 +3,11 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useOptionalAuth } from '../../AuthContext';
-import { bindEndpointKeystoreAccount, restoreEndpointCustodyOnce } from '../keystore/runtime';
+import {
+  bindEndpointKeystoreAccount,
+  endpointVaultKeystore,
+  restoreEndpointCustodyOnce,
+} from '../keystore/runtime';
 import { VAULT_ENDPOINT_STATE_QUERY_PREFIX } from './useVaultEndpointState';
 
 /**
@@ -44,4 +48,26 @@ export function useEndpointVaultCustody(): void {
       cancelled = true;
     };
   }, [accountId, queryClient]);
+
+  /**
+   * The other direction, and the half a cross-tab lock needs.
+   *
+   * `lockDevice()` revokes the session synchronously wherever it lands — this
+   * tab on a manual lock, every OTHER tab of the account through the storage
+   * signal — but the keystore has no way to repaint React. Without this,
+   * locking in one tab left the second tab's cached endpoint state reading
+   * "Ready on this device" for as long as nothing else invalidated it: the
+   * revocation had happened, and only the screen disagreed.
+   *
+   * It converges: an `endSession` triggered from inside `stateFor` (a custody
+   * or revision change) cannot fire twice, because the second read finds no
+   * session to end.
+   */
+  useEffect(
+    () =>
+      endpointVaultKeystore.subscribeToSessionEnd(() => {
+        void queryClient.invalidateQueries({ queryKey: VAULT_ENDPOINT_STATE_QUERY_PREFIX });
+      }),
+    [queryClient],
+  );
 }

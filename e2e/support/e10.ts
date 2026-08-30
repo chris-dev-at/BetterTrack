@@ -319,6 +319,11 @@ async function readChallengedWordNumber(ceremony: Locator): Promise<number> {
 /**
  * End every live endpoint session. E3 keeps the unwrapped device key only in
  * memory, so a fresh document IS the lock — see the module header.
+ *
+ * Still true here because nothing in this arc opts into device custody: the
+ * ceremony has no such choice and the settings access form does not offer one.
+ * A session unlocked through the in-place dialog WITH "keep unlocked on this
+ * device" survives a reload by design (VAULT-UX-B); that path has its own spec.
  */
 export async function lockVaultsByReload(page: Page): Promise<void> {
   await page.reload();

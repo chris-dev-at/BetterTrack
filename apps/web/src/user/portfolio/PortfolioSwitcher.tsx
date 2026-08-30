@@ -6,7 +6,7 @@ import type { PortfolioKind, PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { Icon } from '../../ui/origin';
-import { useOverlayEscape } from '../../ui/overlayStack';
+import { pointerInSeparateOverlay, useOverlayEscape } from '../../ui/overlayStack';
 import { restoreFocusTo } from '../../ui/useFocusTrap';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { cx } from '../components/ui';
@@ -248,7 +248,12 @@ export function PortfolioSwitcher() {
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      // A dialog this popover opened is portalled to <body>, so containment
+      // alone reads its first click as "outside" and dismisses the popover —
+      // taking the dialog down with it (see `pointerInSeparateOverlay`).
+      if (pointerInSeparateOverlay(target, rootRef.current)) return;
+      if (rootRef.current && !rootRef.current.contains(target)) {
         closeAndRestoreFocus();
       }
     }
