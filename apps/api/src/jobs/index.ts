@@ -12,7 +12,19 @@ export {
   type JobDefinition,
   type RepeatSpec,
 } from './types';
-export { DEFAULT_JOB_OPTIONS, BACKOFF_BASE_MS } from './options';
+export {
+  DEFAULT_JOB_OPTIONS,
+  BACKOFF_BASE_MS,
+  QUEUE_JOB_OPTIONS,
+  jobOptionsForQueue,
+} from './options';
+export {
+  assertBatchBounds,
+  deleteInBatches,
+  NOTHING_PRUNED,
+  type BatchedDeleteResult,
+  type BoundedDelete,
+} from './batchDelete';
 export { createJobConnection, jobConnectionFactory, type JobConnectionFactory } from './connection';
 export { createQueueRegistry, type QueueRegistry } from './queues';
 export {
@@ -79,6 +91,8 @@ export {
   WebhookDeliveryRetryError,
   WEBHOOK_DELIVER_ATTEMPTS,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
+  WEBHOOK_DELIVERY_DELETE_BATCH_SIZE,
+  WEBHOOK_DELIVERY_MAX_ROWS_PER_RUN,
   WEBHOOK_CLEANUP_SCHEDULER_ID,
   WEBHOOK_CLEANUP_CRON,
   WEBHOOK_CLEANUP_TZ,
@@ -86,6 +100,8 @@ export {
   type WebhookCleanupJobDeps,
   createApiKeyRequestLogCleanupJob,
   API_KEY_REQUEST_LOG_RETENTION_DAYS,
+  API_KEY_REQUEST_LOG_DELETE_BATCH_SIZE,
+  API_KEY_REQUEST_LOG_MAX_ROWS_PER_RUN,
   API_KEY_REQUEST_LOG_CLEANUP_SCHEDULER_ID,
   API_KEY_REQUEST_LOG_CLEANUP_CRON,
   API_KEY_REQUEST_LOG_CLEANUP_TZ,

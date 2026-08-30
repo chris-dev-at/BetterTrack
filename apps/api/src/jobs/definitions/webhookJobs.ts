@@ -1,6 +1,7 @@
 import type { WebhookDeliveryRepository } from '../../data/repositories/webhookRepository';
 import type { WebhookDispatcher } from '../../services/webhooks';
-import { BACKOFF_BASE_MS } from '../options';
+import { assertBatchBounds, deleteInBatches } from '../batchDelete';
+import { QUEUE_JOB_OPTIONS } from '../options';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -15,14 +16,33 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  *   from the logical event and is also the delivery-log primary key.
  * - `webhooks.deliveryCleanup` — a daily sweep that prunes delivery-log rows
  *   older than {@link WEBHOOK_DELIVERY_RETENTION_DAYS}, keeping the per-
- *   subscription log bounded (the `exportJobs` cleanup pattern).
+ *   subscription log bounded. It drains in bounded batches under a per-run
+ *   ceiling (`batchDelete.ts`), never as one full-range DELETE.
  */
 
-/** Max delivery attempts before a failure is terminal (feeds auto-disable). */
-export const WEBHOOK_DELIVER_ATTEMPTS = 5;
+/** The options every `webhooks.deliver` job carries (seeded onto the queue). */
+const DELIVER_JOB_OPTIONS = QUEUE_JOB_OPTIONS[QUEUE_NAMES.webhooksDeliver];
+
+/**
+ * Max delivery attempts before a failure is terminal (feeds auto-disable).
+ * Read from the queue declaration rather than restated, so this constant is
+ * always the number BullMQ actually stamps on the job.
+ */
+export const WEBHOOK_DELIVER_ATTEMPTS: number = DELIVER_JOB_OPTIONS.attempts;
 
 /** Delivery-log retention window enforced by the cleanup job. */
 export const WEBHOOK_DELIVERY_RETENTION_DAYS = 30;
+
+/** One bounded DELETE statement never removes more delivery rows than this. */
+export const WEBHOOK_DELIVERY_DELETE_BATCH_SIZE = 500;
+
+/**
+ * Ceiling on how many delivery rows one run may shed. A busy account can leave
+ * far more than this behind the 30-day cutoff; stopping here hands the worker
+ * slot back, and tomorrow's run continues from the same cutoff rule rather than
+ * dropping the remainder.
+ */
+export const WEBHOOK_DELIVERY_MAX_ROWS_PER_RUN = 50_000;
 
 export const WEBHOOK_CLEANUP_SCHEDULER_ID = 'webhooks.deliveryCleanup';
 /** Daily at 04:30 Europe/Vienna — off-peak, just after the export cleanup. */
@@ -60,29 +80,45 @@ export function createWebhookDeliverJob(
         throw new WebhookDeliveryRetryError(result.status, result.error);
       }
     },
-    jobOptions: {
-      attempts: WEBHOOK_DELIVER_ATTEMPTS,
-      backoff: { type: 'exponential', delay: BACKOFF_BASE_MS },
-    },
+    jobOptions: DELIVER_JOB_OPTIONS,
   };
 }
 
 export interface WebhookCleanupJobDeps {
-  deliveries: WebhookDeliveryRepository;
+  deliveries: Pick<WebhookDeliveryRepository, 'deleteOlderThan'>;
   /** Retention window in days; defaults to {@link WEBHOOK_DELIVERY_RETENTION_DAYS}. */
   retentionDays?: number;
+  batchSize?: number;
+  maxRowsPerRun?: number;
+  now?: () => Date;
 }
 
 export function createWebhookDeliveryCleanupJob(
   deps: WebhookCleanupJobDeps,
 ): JobDefinition<'webhooks.deliveryCleanup'> {
   const retentionDays = deps.retentionDays ?? WEBHOOK_DELIVERY_RETENTION_DAYS;
+  const batchSize = deps.batchSize ?? WEBHOOK_DELIVERY_DELETE_BATCH_SIZE;
+  const maxRowsPerRun = deps.maxRowsPerRun ?? WEBHOOK_DELIVERY_MAX_ROWS_PER_RUN;
+  const now = deps.now ?? (() => new Date());
+  assertBatchBounds('webhook delivery retention', batchSize, maxRowsPerRun);
   return {
     name: QUEUE_NAMES.webhooksDeliveryCleanup,
     async handler(_job, ctx) {
-      const cutoff = new Date(Date.now() - retentionDays * MS_PER_DAY);
-      const pruned = await deps.deliveries.deleteOlderThan(cutoff);
-      if (pruned > 0) ctx.logger.info({ pruned }, 'expired webhook deliveries pruned');
+      const cutoff = new Date(now().getTime() - retentionDays * MS_PER_DAY);
+      const { deleted, capped } = await deleteInBatches(
+        deps.deliveries.deleteOlderThan.bind(deps.deliveries),
+        cutoff,
+        batchSize,
+        maxRowsPerRun,
+      );
+      if (deleted > 0) {
+        ctx.logger.info(
+          // A capped run leaves eligible rows behind on purpose; the next
+          // scheduled run continues, so this must be visible in the log.
+          { pruned: deleted, deferredToNextRun: capped },
+          'expired webhook deliveries pruned',
+        );
+      }
     },
     schedule: {
       id: WEBHOOK_CLEANUP_SCHEDULER_ID,

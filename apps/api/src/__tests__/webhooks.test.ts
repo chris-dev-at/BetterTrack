@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
@@ -40,9 +40,15 @@ import type {
   WatchlistSharedEvent,
 } from '../events';
 import {
+  BACKOFF_BASE_MS,
+  QUEUE_NAMES,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
+  WEBHOOK_DELIVER_ATTEMPTS,
+  WebhookDeliveryRetryError,
   bindParanoidJob,
+  createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
+  jobOptionsForQueue,
   type JobDefinition,
 } from '../jobs';
 import { isParanoidKilledWebhookEvent } from '../services/account/paranoidEnforcement';
@@ -823,6 +829,74 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(log[0]!.attempts).toBe(3);
   });
 
+  it('spends the declared five attempts before a 500 receiver costs a failure', async () => {
+    const failing = recordingTransport(500);
+    const h = await createTestApp({ webhookTransport: failing.transport });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({ url: 'https://down.test/hook', eventTypes: ['alert.triggered'] });
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    const deliveries = createWebhookDeliveryRepository(h.db);
+    const job = createWebhookDeliverJob({
+      dispatcher: createWebhookDispatcher({
+        subscriptions: createWebhookSubscriptionRepository(h.db),
+        deliveries,
+        transport: failing.transport,
+        encryptionKey: h.ctx.config.twoFactor.encryptionKey,
+        audit: noopAudit,
+        logger: h.ctx.logger,
+        dnsResolver: publicTestResolver,
+      }),
+    });
+
+    // The options a job enqueued with no explicit opts actually carries — the
+    // queue seeding, not the constant the handler falls back to.
+    const opts = jobOptionsForQueue(QUEUE_NAMES.webhooksDeliver);
+    expect(opts.attempts).toBe(WEBHOOK_DELIVER_ATTEMPTS);
+    expect(opts.backoff).toEqual({ type: 'exponential', delay: BACKOFF_BASE_MS });
+
+    const data = {
+      subscriptionId: subId,
+      deliveryId: DELIVERY_A,
+      event: alertEvent(user.id),
+    };
+    // Replay BullMQ's retry loop: `attemptsMade` counts the attempts already
+    // spent, so run N sees N-1.
+    for (let attemptsMade = 0; attemptsMade < WEBHOOK_DELIVER_ATTEMPTS - 1; attemptsMade += 1) {
+      await expect(
+        job.handler({ data, opts, attemptsMade } as never, {} as never),
+      ).rejects.toBeInstanceOf(WebhookDeliveryRetryError);
+      // Nothing terminal is recorded while retries remain.
+      expect(await deliveries.listForSubscription(subId, 10)).toHaveLength(0);
+    }
+    const stillHealthy = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(stillHealthy.subscriptions[0]!.consecutiveFailures).toBe(0);
+
+    // The fifth attempt is terminal: one failed row, one failure on the streak.
+    await job.handler(
+      { data, opts, attemptsMade: WEBHOOK_DELIVER_ATTEMPTS - 1 } as never,
+      {} as never,
+    );
+    const log = await deliveries.listForSubscription(subId, 10);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.status).toBe('failed');
+    expect(log[0]!.attempts).toBe(WEBHOOK_DELIVER_ATTEMPTS);
+    expect(failing.requests).toHaveLength(WEBHOOK_DELIVER_ATTEMPTS);
+
+    const afterList = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(afterList.subscriptions[0]!.consecutiveFailures).toBe(1);
+    // Five attempts cost one failure, not five: the subscription stays enabled.
+    expect(afterList.subscriptions[0]!.enabled).toBe(true);
+  });
+
   it('auto-disables after N consecutive failures, records + audits it, and re-enables manually', async () => {
     const failing = recordingTransport(500);
     const h = await createTestApp({ webhookTransport: failing.transport });
@@ -947,6 +1021,45 @@ describe('delivery-log retention', () => {
     const remaining = await deliveries.listForSubscription(id, 100);
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.id).toBe('00000000-0000-7000-8000-0000000000f2');
+  });
+
+  it('drains more rows than one batch holds without an unbounded delete', async () => {
+    const { id } = await createSubscription(['alert.triggered']);
+    const deliveries = createWebhookDeliveryRepository(harness.db);
+    const old = new Date(Date.now() - (WEBHOOK_DELIVERY_RETENTION_DAYS + 10) * MS_PER_DAY);
+
+    for (let index = 0; index < 5; index += 1) {
+      await deliveries.record({
+        id: `00000000-0000-7000-8000-0000000001${String(index).padStart(2, '0')}`,
+        subscriptionId: id,
+        eventType: 'alert.triggered',
+        status: 'failed',
+        responseStatus: 500,
+        attempts: WEBHOOK_DELIVER_ATTEMPTS,
+        error: 'down',
+        createdAt: new Date(old.getTime() + index * 1000),
+      });
+    }
+    await deliveries.record({
+      id: '00000000-0000-7000-8000-000000000199',
+      subscriptionId: id,
+      eventType: 'alert.triggered',
+      status: 'success',
+      responseStatus: 200,
+      attempts: 1,
+      error: null,
+      createdAt: new Date(),
+    });
+
+    const deleteOlderThan = vi.spyOn(deliveries, 'deleteOlderThan');
+    const job = createWebhookDeliveryCleanupJob({ deliveries, batchSize: 2 });
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+
+    // Three bounded statements (2 + 2 + the short batch that proves convergence),
+    // never one DELETE over the whole eligible range.
+    expect(deleteOlderThan.mock.calls.map(([, limit]) => limit)).toEqual([2, 2, 2]);
+    const remaining = await deliveries.listForSubscription(id, 100);
+    expect(remaining.map((row) => row.id)).toEqual(['00000000-0000-7000-8000-000000000199']);
   });
 });
 
