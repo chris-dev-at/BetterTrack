@@ -22,6 +22,9 @@ vi.mock('./panels/SignInPanel', () => ({
 vi.mock('./panels/SessionsPanel', () => ({
   SessionsPanel: () => createElement('p', null, 'sessions-panel'),
 }));
+vi.mock('./panels/TrustedDevicesPanel', () => ({
+  TrustedDevicesPanel: () => createElement('p', null, 'trusted-devices-panel'),
+}));
 vi.mock('./panels/DefaultsPanel', () => ({
   DefaultsPanel: () => createElement('p', null, 'defaults-panel'),
 }));
@@ -152,6 +155,7 @@ describe('ControlCenterOverlay', () => {
     ['/control/profile', 'profile-panel', 'Public profile'],
     ['/control/sign-in', 'sign-in-panel', 'Sign-in'],
     ['/control/sessions', 'sessions-panel', 'Sessions'],
+    ['/control/trusted-devices', 'trusted-devices-panel', 'Trusted devices'],
     ['/control/defaults', 'defaults-panel', 'Portfolio defaults'],
     ['/control/notifications', 'notifications-panel', 'Notifications'],
     ['/control/notification-log', 'notification-log-panel', 'Notification log'],
@@ -182,7 +186,7 @@ describe('ControlCenterOverlay', () => {
     const ids = CONTROL_GROUPS.flatMap((group) => group.panels.map((panel) => panel.id));
     // The taxonomy and the deep-link table above must not drift apart (the
     // table covers all but `privacy`, whose stub is the nested-modal fixture).
-    expect(ids).toHaveLength(16);
+    expect(ids).toHaveLength(17);
     for (const id of ids) {
       const view = renderAt(`/control/${id}`);
       expect(
