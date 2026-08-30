@@ -513,6 +513,8 @@
         "preparing": "Preparing Google sign-in…",
         "retryPreparation": "Retry Google sign-in",
         "preparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+        "readyToConnect": "Google sign-in is ready — click again to connect.",
+        "readyToContinue": "Google sign-in is ready — click again to continue.",
         "unlockRequired": "Unlock your encrypted vault to change its storage.",
         "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
         "passphraseLabel": "Vault passphrase",
@@ -552,10 +554,6 @@
         "stayConnected": "Stays connected — syncs automatically."
       },
       "slots": {
-        "drive": {
-          "name": "Google Drive backup",
-          "purpose": "Keep an encrypted, off-site backup of your account on your own Drive."
-        },
         "bankCash": {
           "name": "Bank & broker cash sync",
           "purpose": "Keep your cash balances in step with your bank and broker accounts."
@@ -3957,6 +3955,7 @@
       },
       "errors": {
         "drivePreparation": "Google Drive could not be prepared. Check your connection and try again. Your account has not changed.",
+        "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so it cannot be used as vault storage here. Your connection is fine — choose BetterTrack encrypted storage, or ask the person running this deployment to configure Drive. Your account has not changed.",
         "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
         "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
@@ -3991,6 +3990,7 @@
       "preparingDrive": "Preparing Google sign-in…",
       "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
       "retryDrivePreparation": "Retry Google sign-in",
+      "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so this device cannot read the encrypted Drive copy. Your connection is fine — ask the person running this deployment to configure Drive.",
       "action": "Unlock vault",
       "unlocking": "Unlocking…",
       "stuck": {
@@ -4048,6 +4048,7 @@
       "preparingDrive": "Preparing Google sign-in…",
       "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
       "retryDrivePreparation": "Retry Google sign-in",
+      "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so synchronization cannot reach your Drive copy. Ask the person running this deployment to configure Drive.",
       "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"

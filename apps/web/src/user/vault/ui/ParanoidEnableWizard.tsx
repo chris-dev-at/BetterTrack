@@ -16,6 +16,7 @@ import { apiPortfolioStore } from '../../../lib/portfolioStore';
 import { enableParanoidMode } from '../../../lib/userApi';
 import { Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
 import { useAuth } from '../../AuthContext';
+import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 import { deliverClientDownload } from '../export/deliver';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
@@ -52,8 +53,6 @@ interface EnableErrorCopy {
   vars?: Record<string, string | number>;
 }
 
-type DrivePreparationState = 'idle' | 'preparing' | 'ready' | 'failed';
-
 export function ParanoidEnableWizard({
   onCancel,
   onEnabled,
@@ -69,7 +68,6 @@ export function ParanoidEnableWizard({
   const [advanced, setAdvanced] = useState(false);
   const [driveOnly, setDriveOnly] = useState(false);
   const [drive, setDrive] = useState<DataHome | null>(null);
-  const [drivePreparation, setDrivePreparation] = useState<DrivePreparationState>('idle');
   const [authorizingDrive, setAuthorizingDrive] = useState(false);
   const [passphrase, setPassphrase] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -80,8 +78,14 @@ export function ParanoidEnableWizard({
   const [stage, setStage] = useState<VaultEnableStage | null>(null);
   const [captureCompletedRequests, setCaptureCompletedRequests] = useState(0);
   const [error, setError] = useState<EnableErrorCopy | null>(null);
-  const drivePreparationGeneration = useRef(0);
   const enableOperationGeneration = useRef(0);
+  // Unmount-time facts, kept in refs because the cleanup below runs once.
+  const driveGrantedRef = useRef(false);
+  const enabledRef = useRef(false);
+  const releaseDriveRef = useRef(runtime.releaseDriveStorage);
+  useEffect(() => {
+    releaseDriveRef.current = runtime.releaseDriveStorage;
+  });
 
   const mediaSet = useMemo<VaultMediaSet>(
     () =>
@@ -121,46 +125,48 @@ export function ParanoidEnableWizard({
     setLostKeyAcknowledged(false);
   }
 
-  const prepareDrive = useCallback(() => {
-    const generation = ++drivePreparationGeneration.current;
+  // The shared hook owns preparation for all four Drive surfaces (#1519 F5):
+  // this one only adds what is specific to the wizard — a Drive home captured
+  // early must never outlive the preparation it was granted under.
+  const resetDriveCapability = useCallback(() => {
     setDrive(null);
     setError(null);
-    setDrivePreparation('preparing');
-    void runtime
-      .prepareDriveStorage()
-      .then(() => {
-        if (drivePreparationGeneration.current !== generation) return;
-        setDrivePreparation('ready');
-      })
-      .catch(() => {
-        if (drivePreparationGeneration.current !== generation) return;
-        setDrive(null);
-        setDrivePreparation('failed');
-        setError({ key: 'vault.enable.errors.drivePreparation' });
-      });
-  }, [runtime.prepareDriveStorage]);
+  }, []);
+  const drivePreparation = useDriveGisPreparation(driveSelected, runtime.prepareDriveStorage, {
+    onReset: resetDriveCapability,
+  });
+  // A deployment without a Drive client id is a server-side gap; blaming the
+  // user's connection for it sends them to fix a network that is fine (#1554).
+  const preparationError: EnableErrorCopy | null =
+    drivePreparation.state === 'failed'
+      ? { key: 'vault.enable.errors.drivePreparation' }
+      : drivePreparation.state === 'unconfigured'
+        ? { key: 'vault.enable.errors.driveNotConfigured' }
+        : null;
+  const shownError = error ?? preparationError;
 
-  useEffect(() => {
-    if (!driveSelected) {
-      drivePreparationGeneration.current += 1;
-      setDrive(null);
-      setDrivePreparation('idle');
-      return;
-    }
-    prepareDrive();
-    return () => {
-      drivePreparationGeneration.current += 1;
-    };
-  }, [driveSelected, prepareDrive]);
+  useEffect(
+    () => () => {
+      // Early consent the user then walked away from grants `drive.file` access
+      // to a vault that never existed. Nothing will ever use it, so hand it
+      // back instead of leaving it standing (#1519 F4). Known residual, left
+      // for the follow-up: authorizing Drive, unticking the add-on and then
+      // enabling a server-only vault keeps the same unused grant, because
+      // `enabledRef` cannot tell the two enable shapes apart here.
+      if (driveGrantedRef.current && !enabledRef.current) void releaseDriveRef.current();
+    },
+    [],
+  );
 
   async function authorizeDrive() {
-    if (drivePreparation !== 'ready') return;
+    if (drivePreparation.state !== 'ready') return;
     setError(null);
     setAuthorizingDrive(true);
     // Invoke the runtime before the first await so GIS starts from this explicit
     // medium-choice gesture, while no vault material or server transition exists.
     try {
       setDrive(await runtime.authorizeDriveStorage());
+      driveGrantedRef.current = true;
     } catch {
       setDrive(null);
       setError({ key: 'vault.enable.errors.driveAuthorization' });
@@ -213,6 +219,7 @@ export function ParanoidEnableWizard({
       // capture, encrypted write, or server transition starts.
       try {
         selectedDrive = await runtime.authorizeDriveStorage();
+        driveGrantedRef.current = true;
         if (!isCurrentOperation()) return;
         setDrive(selectedDrive);
       } catch {
@@ -280,6 +287,8 @@ export function ParanoidEnableWizard({
     // order is not negotiable: unlocking first would leave the cached mode at
     // 'normal' with a decrypted session live, which `AccountModeRoot` revokes
     // on sight as a cross-device disable.
+    // The grant now belongs to a live vault: unmounting must not release it.
+    enabledRef.current = true;
     onEnabled(result.receipt);
     try {
       await runtime.unlockWithPassphrase(passphrase, {
@@ -325,6 +334,11 @@ export function ParanoidEnableWizard({
               disabled={authorizingDrive}
               onChange={() => {
                 setDriveOnly(false);
+                // Backing out of Drive-only is ONE decision, so it clears the
+                // add-on the Drive-only radio switched on. Leaving it set kept
+                // Drive selected from a control the user cannot see while
+                // Drive-only is chosen (#1519 F2).
+                setIncludeDrive(false);
                 setError(null);
               }}
               type="radio"
@@ -386,7 +400,7 @@ export function ParanoidEnableWizard({
           {driveSelected ? (
             <div aria-live="polite" className="bt-soft flex flex-col gap-2 p-3 text-sm">
               <p>
-                {drivePreparation === 'idle' || drivePreparation === 'preparing'
+                {drivePreparation.state === 'idle' || drivePreparation.state === 'preparing'
                   ? t('vault.enable.media.preparingDrive')
                   : drive == null
                     ? t('vault.enable.media.driveAuthorizationRequired')
@@ -396,19 +410,25 @@ export function ParanoidEnableWizard({
                 <Button
                   disabled={
                     authorizingDrive ||
-                    drivePreparation === 'idle' ||
-                    drivePreparation === 'preparing'
+                    drivePreparation.state === 'idle' ||
+                    drivePreparation.state === 'preparing' ||
+                    // Nothing to retry: this deployment cannot do Drive at all.
+                    drivePreparation.state === 'unconfigured'
                   }
-                  onClick={() =>
-                    void (drivePreparation === 'failed' ? prepareDrive() : authorizeDrive())
-                  }
+                  onClick={() => {
+                    if (drivePreparation.state === 'failed') {
+                      drivePreparation.retry();
+                      return;
+                    }
+                    void authorizeDrive();
+                  }}
                   variant="secondary"
                 >
                   {authorizingDrive
                     ? t('vault.enable.media.connectingDrive')
-                    : drivePreparation === 'idle' || drivePreparation === 'preparing'
+                    : drivePreparation.state === 'idle' || drivePreparation.state === 'preparing'
                       ? t('vault.enable.media.preparingDrive')
-                      : drivePreparation === 'failed'
+                      : drivePreparation.state === 'failed'
                         ? t('vault.enable.media.retryDrivePreparation')
                         : drive == null
                           ? t('vault.enable.media.connectDrive')
@@ -507,9 +527,9 @@ export function ParanoidEnableWizard({
         </div>
       ) : null}
 
-      {error ? (
+      {shownError ? (
         <p className="bt-field__error" role="alert">
-          {t(error.key, error.vars)}
+          {t(shownError.key, shownError.vars)}
         </p>
       ) : null}
 
