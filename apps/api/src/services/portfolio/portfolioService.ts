@@ -2212,6 +2212,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // also probe the spot FX rate; if it is unavailable, drop the quote so the
       // pure derivation never throws mid-conversion.
       const assetInputs: HoldingAssetInput[] = [];
+      // Currencies whose spot rate the currency layer *typed* as unavailable —
+      // §5.3's staleness bound, not a flaky provider. Dropping the quote is the
+      // right degrade for a missing price, but for a missing rate it would hand
+      // the user a total that quietly omits the position (#1589), so these are
+      // collected and refused below once we know which are actually held.
+      const fxUnavailable = new Set<string>();
       for (const assetId of assetIds) {
         const asset = assetsById.get(assetId);
         if (!asset) continue;
@@ -2226,7 +2232,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             // Throws if no spot rate is available → degrade to no quote.
             await fx.getRate(asset.currency, fx.baseCurrency);
           }
-        } catch {
+        } catch (err) {
+          if (err instanceof FxRateUnavailableError) fxUnavailable.add(asset.currency);
           quote = null;
         }
         assetInputs.push({ assetId, currency: asset.currency, quote });
@@ -2236,6 +2243,28 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // The converter carries the caller's base (§5.4) — the pure domain never
       // learns where it came from.
       const holdings = await deriveHoldings(domainTxns, assetInputs, fx);
+
+      // A live position in a currency whose spot rate is past the §5.3 bound
+      // cannot be valued, and a valuation missing one of its positions is worse
+      // than no valuation: say so (422) instead of serving a total that is
+      // silently short. Scoped to `quantity > 0` — a fully-closed foreign
+      // position never needs the rate, so it must not break the page.
+      if (fxUnavailable.size > 0) {
+        const blocked = [
+          ...new Set(
+            holdings
+              .filter((h) => h.quantity > 0 && fxUnavailable.has(h.currency))
+              .map((h) => h.currency),
+          ),
+        ].sort();
+        if (blocked.length > 0) {
+          throw unprocessable(
+            `Exchange rates for ${blocked.join(', ')} → ${fx.baseCurrency} are currently ` +
+              `unavailable, so this portfolio cannot be valued right now.`,
+            'HOLDING_FX_UNAVAILABLE',
+          );
+        }
+      }
 
       const holdingDtos: HoldingDto[] = holdings.map((h) => {
         const asset = assetsById.get(h.assetId);

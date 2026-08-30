@@ -1,27 +1,36 @@
 import type { AssetRef, CachedResult, PricePoint, Quote } from '@bettertrack/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { MarketDataService } from '../../../providers';
+import { STALE_TTL_SECONDS, type MarketDataService } from '../../../providers';
 import { FxRateUnavailableError } from '../currencyService';
-import { createMarketDataFxSource } from '../marketDataFxSource';
+import { createMarketDataFxSource, FX_SPOT_MAX_AGE_MS } from '../marketDataFxSource';
 
 const FETCHED_AT = Date.parse('2026-06-20T10:00:00.000Z');
 
 /** Injected clock for the historical tests: Saturday 2026-06-20, midday UTC. */
 const NOW = Date.parse('2026-06-20T12:00:00.000Z');
 
-/** A `CachedResult<Quote>` whose price is the FX leg rate under test. */
-function fxQuote(price: number): CachedResult<Quote> {
+/**
+ * A `CachedResult<Quote>` whose price is the FX leg rate under test. The outer
+ * `asOf` is when the providers layer stored the copy — the spot bound
+ * ({@link FX_SPOT_MAX_AGE_MS}) is measured against it, so it defaults to "just
+ * fetched" on the wall clock these spot cases run against.
+ */
+function fxQuote(
+  price: number,
+  opts: { stale?: boolean; asOf?: number } = {},
+): CachedResult<Quote> {
+  const asOf = opts.asOf ?? Date.now();
   return {
     value: {
       price,
       currency: 'EUR',
       prevClose: price,
       dayChangePct: 0,
-      asOf: '2026-06-20T09:59:00.000Z',
+      asOf: new Date(asOf).toISOString(),
     },
-    stale: false,
-    asOf: FETCHED_AT,
+    stale: opts.stale ?? false,
+    asOf,
   };
 }
 
@@ -147,6 +156,131 @@ describe('createMarketDataFxSource', () => {
         await expect(source.getSpotRate('USD', 'EUR')).rejects.toThrowError(/invalid rate/);
       },
     );
+
+    /**
+     * The §5.3 staleness bound. Serve-stale is mandated and stays: what is
+     * pinned here is that the `stale`/`asOf` the cache produces are actually
+     * consumed, and that the ceiling on a spot rate's age is this layer's own
+     * named constant rather than the providers layer's Redis retention.
+     */
+    describe('spot staleness bound (§5.3)', () => {
+      /** Injected clock for the bound cases (the fixture stamps ages off it). */
+      const BOUND_NOW = Date.parse('2026-06-20T12:00:00.000Z');
+      const HOUR_MS = 60 * 60 * 1000;
+
+      /** A source whose only leg, `EURUSD=X`, is the given cached quote. */
+      function sourceWith(quote: CachedResult<Quote>) {
+        const getQuote = vi.fn(() => Promise.resolve(quote));
+        const service = {
+          getQuote,
+          getHistory: vi.fn(),
+          search: vi.fn(),
+          getMeta: vi.fn(),
+        } as unknown as MarketDataService;
+        return {
+          source: createMarketDataFxSource(service, { now: () => BOUND_NOW }),
+          getQuote,
+        };
+      }
+
+      it('the bound is an explicit currency-layer policy, strictly tighter than STALE_TTL_SECONDS', () => {
+        expect(FX_SPOT_MAX_AGE_MS).toBeGreaterThan(0);
+        expect(FX_SPOT_MAX_AGE_MS).toBeLessThan(STALE_TTL_SECONDS * 1000);
+      });
+
+      it('serves a stale-marked quote inside the bound — serve-stale is preserved', async () => {
+        const { source, getQuote } = sourceWith(
+          fxQuote(1.1, { stale: true, asOf: BOUND_NOW - 47 * HOUR_MS }),
+        );
+
+        // USD→EUR still converts off the stale copy: §5.3 wants exactly this.
+        await expect(source.getSpotRate('USD', 'EUR')).resolves.toBeCloseTo(1 / 1.1, 12);
+        expect(getQuote).toHaveBeenCalledTimes(1);
+      });
+
+      it('serves a stale quote sitting exactly on the bound (the bound is inclusive)', async () => {
+        const { source } = sourceWith(
+          fxQuote(1.1, { stale: true, asOf: BOUND_NOW - FX_SPOT_MAX_AGE_MS }),
+        );
+
+        await expect(source.getSpotRate('USD', 'EUR')).resolves.toBeCloseTo(1 / 1.1, 12);
+      });
+
+      it('past the bound it fails typed (FxRateUnavailableError), never a silent number', async () => {
+        const { source } = sourceWith(
+          fxQuote(1.1, { stale: true, asOf: BOUND_NOW - FX_SPOT_MAX_AGE_MS - 1 }),
+        );
+
+        const err = await source.getSpotRate('USD', 'EUR').then(
+          (rate) => rate,
+          (e: unknown) => e,
+        );
+        expect(err).toBeInstanceOf(FxRateUnavailableError);
+        const fxErr = err as FxRateUnavailableError;
+        // Named at the leg the historical path names, and flagged as spot.
+        expect(fxErr.from).toBe('EUR');
+        expect(fxErr.to).toBe('USD');
+        expect(fxErr.date).toBeNull();
+        expect(fxErr.message).toMatch(/EURUSD=X/);
+        expect(fxErr.message).toMatch(/72h spot bound/);
+      });
+
+      it('a week-old copy — the STALE_TTL_SECONDS ceiling the bound replaces — is refused', async () => {
+        const { source } = sourceWith(
+          fxQuote(1.1, { stale: true, asOf: BOUND_NOW - 7 * 24 * HOUR_MS }),
+        );
+
+        await expect(source.getSpotRate('USD', 'EUR')).rejects.toBeInstanceOf(
+          FxRateUnavailableError,
+        );
+      });
+
+      it('bounds the age whatever the cache marked: an ancient un-stale copy is refused too', async () => {
+        const { source } = sourceWith(
+          fxQuote(1.1, { stale: false, asOf: BOUND_NOW - 7 * 24 * HOUR_MS }),
+        );
+
+        await expect(source.getSpotRate('USD', 'EUR')).rejects.toBeInstanceOf(
+          FxRateUnavailableError,
+        );
+      });
+
+      it('the invalid-rate guard still runs first — a garbage price is a caller-visible Error', async () => {
+        const { source } = sourceWith(
+          fxQuote(0, { stale: true, asOf: BOUND_NOW - 30 * 24 * HOUR_MS }),
+        );
+
+        // Ordering matters: the pre-existing finite/>0 guard is unchanged and
+        // keeps classifying garbage as a bug, not as a staleness degrade.
+        const err = await source.getSpotRate('USD', 'EUR').catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(Error);
+        expect(err).not.toBeInstanceOf(FxRateUnavailableError);
+        expect((err as Error).message).toMatch(/invalid rate/);
+      });
+
+      it('the EUR identity leg needs no quote, so it can never age out', async () => {
+        const { source, getQuote } = sourceWith(
+          fxQuote(1.1, { stale: true, asOf: BOUND_NOW - 30 * 24 * HOUR_MS }),
+        );
+
+        await expect(source.getSpotRate('EUR', 'EUR')).resolves.toBe(1);
+        expect(getQuote).not.toHaveBeenCalled();
+      });
+
+      it('a cross rate is refused when either leg is past the bound', async () => {
+        const fresh = fxQuote(1.1, { asOf: BOUND_NOW - HOUR_MS });
+        const ancient = fxQuote(0.85, { stale: true, asOf: BOUND_NOW - 5 * 24 * HOUR_MS });
+        const getQuote = vi.fn((ref: AssetRef) =>
+          Promise.resolve(ref.providerRef === 'EURUSD=X' ? fresh : ancient),
+        );
+        const service = { getQuote } as unknown as MarketDataService;
+        const source = createMarketDataFxSource(service, { now: () => BOUND_NOW });
+
+        const err = await source.getSpotRate('USD', 'GBP').catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(FxRateUnavailableError);
+        expect((err as FxRateUnavailableError).to).toBe('GBP');
+      });
+    });
   });
 
   describe('getHistoricalRate', () => {
