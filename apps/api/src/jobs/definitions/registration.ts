@@ -1,4 +1,7 @@
+import { QUEUE_JOB_OPTIONS } from '../options';
 import { QUEUE_NAMES, type JobDefinition, type QueueName } from '../types';
+
+const DECLARED_QUEUE_JOB_OPTIONS: Partial<Record<QueueName, object>> = QUEUE_JOB_OPTIONS;
 
 export interface JobRegistrationSource {
   readonly file: string;
@@ -203,7 +206,14 @@ export type RegisteredJobDefinitions = {
 
 /**
  * Assemble definitions in registry order and fail closed if a factory returns
- * a queue other than the one attached to its production source identity.
+ * a queue other than the one attached to its production source identity, or
+ * declares job options the queue registry would not apply.
+ *
+ * The options check is by identity on purpose: the registry seeds queues from
+ * {@link QUEUE_JOB_OPTIONS}, so a definition may only restate its queue's entry
+ * from that map. An inline object here would look authoritative next to the
+ * handler while every enqueued job carried the plain defaults — which is
+ * exactly how `webhooks.deliver` came to retry 3 times against a documented 5.
  */
 export function assembleRegisteredJobDefinitions(
   definitions: RegisteredJobDefinitions,
@@ -213,6 +223,14 @@ export function assembleRegisteredJobDefinitions(
     if (definition.name !== registration.name) {
       throw new Error(
         `${registration.source.file}#${registration.source.symbol} returned ${definition.name}; expected ${registration.name}`,
+      );
+    }
+    if (
+      definition.jobOptions &&
+      definition.jobOptions !== DECLARED_QUEUE_JOB_OPTIONS[definition.name]
+    ) {
+      throw new Error(
+        `${registration.source.file}#${registration.source.symbol} declares jobOptions that are not the QUEUE_JOB_OPTIONS entry for ${definition.name}; enqueued jobs would not carry them`,
       );
     }
     return definition;

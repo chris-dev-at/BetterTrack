@@ -1,16 +1,20 @@
 import { type Job, type JobsOptions, Queue } from 'bullmq';
 import type { Redis } from 'ioredis';
 
-import { DEFAULT_JOB_OPTIONS } from './options';
+import { jobOptionsForQueue } from './options';
 import { type JobPayload, type QueueName } from './types';
 
 /**
  * Typed registry of BullMQ queues (PROJECTPLAN.md §9).
  *
- * Queues are created lazily and memoised, each pre-seeded with
- * {@link DEFAULT_JOB_OPTIONS} (3 attempts, exponential backoff). `enqueue` is
- * typed per queue, so the payload must match {@link JobPayload} for that queue.
- * Queues do not hold blocking connections, so they all share one connection.
+ * Queues are created lazily and memoised, each pre-seeded with the options its
+ * jobs carry: {@link DEFAULT_JOB_OPTIONS} (3 attempts, exponential backoff),
+ * with any per-queue deviation from {@link QUEUE_JOB_OPTIONS} merged over them.
+ * That seeding is the only thing that makes a declared per-queue option reach a
+ * job — an explicit per-call `opts` still wins, since BullMQ merges it over the
+ * queue's defaults. `enqueue` is typed per queue, so the payload must match
+ * {@link JobPayload} for that queue. Queues do not hold blocking connections,
+ * so they all share one connection.
  */
 export interface QueueRegistry {
   /** The (memoised) queue for `name`, typed to its payload. */
@@ -31,7 +35,7 @@ export function createQueueRegistry(connection: Redis): QueueRegistry {
   function get<N extends QueueName>(name: N): Queue<JobPayload<N>> {
     let queue = queues.get(name);
     if (!queue) {
-      queue = new Queue(name, { connection, defaultJobOptions: DEFAULT_JOB_OPTIONS });
+      queue = new Queue(name, { connection, defaultJobOptions: jobOptionsForQueue(name) });
       queues.set(name, queue);
     }
     return queue as Queue<JobPayload<N>>;

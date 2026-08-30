@@ -48,9 +48,22 @@ import { apiRequest } from './apiClient';
 export const CASH_TAGS_QUERY_KEY = ['cash', 'tags'] as const;
 export const CASH_RULES_QUERY_KEY = ['cash', 'rules'] as const;
 
-/** `['cash','budgets',portfolioId,month]` — `month` omitted ⇒ the current-month key. */
+/**
+ * `['cash','budgets',portfolioId,month]`, or the portfolio-wide PREFIX
+ * `['cash','budgets',portfolioId]` when `month` is omitted.
+ *
+ * THE OMITTED MONTH IS AN INVALIDATION PREFIX, NOT A KEY. Budgets are read one
+ * month at a time, so a create/edit/delete has to reach every month key the
+ * client is holding. TanStack matches prefixes positionally, so a trailing
+ * `undefined` segment matches only a query keyed with a literal `undefined` —
+ * which is nothing — and the new budget sat behind `No budgets yet` until the
+ * page was reloaded (#1370). Dropping the segment is what makes the prefix
+ * match. Callers that want one month's data pass it.
+ */
 export function cashBudgetsQueryKey(portfolioId: string, month?: string) {
-  return ['cash', 'budgets', portfolioId, month] as const;
+  return month === undefined
+    ? (['cash', 'budgets', portfolioId] as const)
+    : (['cash', 'budgets', portfolioId, month] as const);
 }
 
 /** `['cash','summary',portfolioId,month]` — `month` omitted ⇒ the current-month key. */

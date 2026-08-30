@@ -4,6 +4,7 @@ import type { ParanoidVaultRepository } from '../../data/repositories/paranoidVa
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { VaultBlobRepository } from '../../data/repositories/vaultBlobRepository';
 import { sweepLegacyRememberedDeviceBindings } from '../../services/auth/loginThrottle';
+import { assertBatchBounds, deleteInBatches, NOTHING_PRUNED } from '../batchDelete';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /** One bounded DELETE statement never removes more rows than this. */
@@ -23,30 +24,6 @@ export const DATA_RETENTION_CLEANUP_CRON = '50 4 * * *';
 export const DATA_RETENTION_CLEANUP_TZ = 'Europe/Vienna';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-type BoundedDelete = (cutoff: Date, limit: number) => Promise<number>;
-
-interface BatchedDeleteResult {
-  deleted: number;
-  /** True when the per-run ceiling stopped the drain before it converged. */
-  capped: boolean;
-}
-
-async function deleteInBatches(
-  deleteOlderThan: BoundedDelete,
-  cutoff: Date,
-  batchSize: number,
-  maxRows: number,
-): Promise<BatchedDeleteResult> {
-  let total = 0;
-  while (total < maxRows) {
-    const limit = Math.min(batchSize, maxRows - total);
-    const deleted = await deleteOlderThan(cutoff, limit);
-    total += deleted;
-    if (deleted < limit) return { deleted: total, capped: false };
-  }
-  return { deleted: total, capped: true };
-}
 
 export interface DataRetentionCleanupJobDeps {
   audit: Pick<AuditRepository, 'deleteOlderThan'>;
@@ -72,8 +49,6 @@ export interface DataRetentionCleanupJobDeps {
   now?: () => Date;
 }
 
-const NOTHING_PRUNED: BatchedDeleteResult = { deleted: 0, capped: false };
-
 /**
  * Daily, idempotent retention sweep for identifying operational trails. Each
  * repository call is bounded; the handler repeats until a short batch proves
@@ -88,12 +63,7 @@ export function createDataRetentionCleanupJob(
   const batchSize = deps.batchSize ?? DATA_RETENTION_DELETE_BATCH_SIZE;
   const maxRowsPerRun = deps.maxRowsPerRun ?? DATA_RETENTION_MAX_ROWS_PER_RUN;
   const now = deps.now ?? (() => new Date());
-  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
-    throw new Error('data retention batch size must be a positive integer');
-  }
-  if (!Number.isSafeInteger(maxRowsPerRun) || maxRowsPerRun < batchSize) {
-    throw new Error('data retention per-run ceiling must be an integer at least one batch wide');
-  }
+  assertBatchBounds('data retention', batchSize, maxRowsPerRun);
 
   return {
     name: QUEUE_NAMES.dataRetentionCleanup,
