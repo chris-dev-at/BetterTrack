@@ -518,7 +518,7 @@ function LockedSwitcherRow({
         {selected ? <Icon className="bt-gold" name="check" size={15} /> : null}
       </button>
       {state.data ? (
-        <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+        <VaultStateAction inPlace state={state.data} vaultId={portfolio.vaultId} />
       ) : (
         <button
           className="bt-link text-sm"

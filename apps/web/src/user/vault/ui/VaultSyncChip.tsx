@@ -330,7 +330,12 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
                       endpoint affordance rides alongside it rather than instead
                       of it, so a row that is BOTH needs-sign-in and locked on
                       this device still shows its unlock / enter-words step. */}
-                  <VaultStateAction state={row.endpointState} vaultId={row.vault.id} />
+                  <VaultStateAction
+                    inPlace
+                    state={row.endpointState}
+                    vaultId={row.vault.id}
+                    vaultName={row.vault.name}
+                  />
                 </li>
               ))}
             </ul>

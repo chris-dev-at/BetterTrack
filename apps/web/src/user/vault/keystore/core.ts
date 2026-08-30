@@ -4,7 +4,7 @@ import { equalBytes, zeroBytes } from '../bytes';
 import { type RandomBytes, secureRandomBytes } from '../crypto';
 import { entropyToMnemonic, mnemonicToEntropy } from '../bip39/mnemonic';
 import { openVaultHeaderWithMnemonic, type VerifiedVaultHeaderOpen } from '../keys/documents';
-import { VAULT_LOCK_REQUEST_EVENT } from '../lockSignal';
+import { VAULT_LOCK_REQUEST_EVENT, vaultLockSignalStorageKey } from '../lockSignal';
 import {
   consumePlainCustodyAcknowledgment,
   invalidatePlainCustodyAcknowledgments,
@@ -17,6 +17,14 @@ import {
   wrapMnemonicEntropy,
   type DevicePasswordArgon2,
 } from './deviceCrypto';
+import {
+  endpointCustodyId,
+  forgetEndpointDeviceLocked,
+  isEndpointDeviceLocked,
+  rememberEndpointDeviceLocked,
+  type EndpointDeviceCustody,
+  type EndpointDeviceKeyMaterial,
+} from './deviceCustody';
 import { decodeBase64Url, encodeBase64Url } from './encoding';
 import { EndpointKeystoreError } from './errors';
 import { parseEndpointPasswordMetadata, parseStoredPhraseEntry } from './records';
@@ -61,18 +69,39 @@ export interface EndpointVaultKeystoreOptions {
   argon2?: DevicePasswordArgon2;
   randomBytes?: RandomBytes;
   now?: () => number;
+  /**
+   * Optional "keep unlocked on this device" backing. Absent ⇒ the endpoint is
+   * memory-only, exactly as it was before, and the opt-in is refused rather
+   * than silently ignored.
+   */
+  custody?: EndpointDeviceCustody;
+  /**
+   * The authenticated account custody is scoped to, read at call time because a
+   * module singleton outlives every sign-in. Null ⇒ no account ⇒ no custody.
+   */
+  custodyAccount?: () => string | null;
 }
 
 /**
  * Headless E3 endpoint keystore. Passwords, K_dev, mnemonic entropy and K_c are
  * held only by this object and synchronously zeroed when the session ends.
+ *
+ * The one exception is opt-in device custody (`./deviceCustody`), which persists
+ * K_dev as a NON-EXTRACTABLE CryptoKey so a reload or a second tab resumes the
+ * session the user already established. That is the legacy account-level gate's
+ * construction, unchanged; see `deviceCustody.ts` for why K_dev is the right
+ * secret and what the concession is.
  */
 export class EndpointVaultKeystore {
   private readonly storage: EndpointKeystoreStorage;
   private readonly argon2: DevicePasswordArgon2 | undefined;
   private readonly randomBytes: RandomBytes;
   private readonly now: () => number;
-  private deviceKey: Uint8Array | null = null;
+  private readonly custody: EndpointDeviceCustody | undefined;
+  private readonly custodyAccount: (() => string | null) | undefined;
+  /** One restore per tab at a time; concurrent callers share its outcome. */
+  private custodyRestore: Promise<EndpointUnlockResult> | null = null;
+  private deviceKey: EndpointDeviceKeyMaterial | null = null;
   private devicePasswordMetadata: EndpointPasswordMetadataV1 | null = null;
   private readonly wrappedEntropy = new Map<string, Uint8Array>();
   private readonly contentKeys = new Map<string, CachedContentKey>();
@@ -87,6 +116,8 @@ export class EndpointVaultKeystore {
     this.argon2 = options.argon2;
     this.randomBytes = options.randomBytes ?? secureRandomBytes;
     this.now = options.now ?? Date.now;
+    this.custody = options.custody;
+    this.custodyAccount = options.custodyAccount;
   }
 
   async stateFor(vaultId: string): Promise<EndpointVaultState> {
@@ -153,7 +184,20 @@ export class EndpointVaultKeystore {
     }
   }
 
-  async unlock(devicePassword: string): Promise<EndpointUnlockResult> {
+  /**
+   * `keepUnlockedOnThisDevice` is the legacy gate's checkbox, verbatim: it is an
+   * opt-in, it is refused (never silently dropped) where custody cannot exist,
+   * and a custody write that fails FAILS THE UNLOCK — the user asked for a
+   * promise this endpoint could not keep, and must be told.
+   */
+  async unlock(
+    devicePassword: string,
+    options: { keepUnlockedOnThisDevice?: boolean } = {},
+  ): Promise<EndpointUnlockResult> {
+    const keepUnlocked = options.keepUnlockedOnThisDevice === true;
+    // Refuse BEFORE the KDF runs, so an endpoint that cannot hold custody does
+    // not spend a second on Argon2id only to reject at the end.
+    const custodyAccountId = keepUnlocked ? this.requireCustodyAccount() : null;
     const generation = this.beginSessionChange();
     const snapshot = await this.storage.readEndpointSnapshot();
     if (snapshot.metadata == null) {
@@ -208,20 +252,187 @@ export class EndpointVaultKeystore {
         );
       }
       this.requireCurrentGeneration(generation);
+      // Persist BEFORE the session is installed, exactly like the legacy
+      // `setUnlocked`: a custody write that cannot land must abort the unlock
+      // rather than hand back a session the next reload silently loses.
+      if (custodyAccountId != null) {
+        await this.custody!.persist(endpointCustodyId(custodyAccountId), candidate);
+        this.requireCurrentGeneration(generation);
+      }
       this.deviceKey = candidate;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
       candidate = undefined;
       for (const [vaultId, bytes] of entropy) this.wrappedEntropy.set(vaultId, bytes);
       entropy.clear();
-      return { unlockedVaultIds: [...this.wrappedEntropy.keys()].sort() };
+      // The §12 marker's ONLY clearing edge, mirroring `forgetDeviceLocked`:
+      // an unlock without the opt-in leaves a device that was locked locked, so
+      // a custody record left behind by an older session cannot resurrect it.
+      if (custodyAccountId != null) forgetEndpointDeviceLocked(custodyAccountId);
+      const unlockedVaultIds = [...this.wrappedEntropy.keys()].sort();
+      // Tell the store resolver, so an unlock is enough on its own.
+      //
+      // Until now only `openStoredVault` raised this edge, so every caller had
+      // to follow `unlock()` with an open of its own to make the page resolve —
+      // which the settings manager does and a surface holding nothing but a
+      // vault id (the locked stub, the switcher, the shield chip) cannot. Every
+      // id here is a real transition: `beginSessionChange` cleared the session
+      // at the top of this method.
+      this.notifyVaultsAvailable(unlockedVaultIds);
+      return { unlockedVaultIds };
     } catch (cause) {
       if (this.sessionGeneration === generation) this.clearSessionSecrets();
+      // A failed unlock revokes custody, as the legacy `failUnlock` → `lock()`
+      // does. The session this instance had is already gone; leaving a live
+      // custody record behind would let the next load silently resurrect it.
+      await this.revokeDeviceCustody().catch(() => undefined);
       throw cause;
     } finally {
       if (candidate != null) zeroBytes(candidate);
       for (const bytes of entropy.values()) zeroBytes(bytes);
     }
+  }
+
+  /**
+   * Resume a session this device was told to keep — the reload/second-tab path.
+   *
+   * Speculative and silent by design: every refusal (no custody, the §12 marker,
+   * a record that no longer matches this endpoint's password, an active lockout)
+   * resolves to "nothing restored" and leaves the surface asking for the
+   * password, which is what it would have done anyway. It never throws at a
+   * caller who merely wanted to read state.
+   */
+  async restoreFromDeviceCustody(): Promise<EndpointUnlockResult> {
+    if (this.deviceKey != null) {
+      return { unlockedVaultIds: [...this.wrappedEntropy.keys()].sort() };
+    }
+    this.custodyRestore ??= this.runCustodyRestore()
+      .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
+      .finally(() => {
+        this.custodyRestore = null;
+      });
+    return this.custodyRestore;
+  }
+
+  private async runCustodyRestore(): Promise<EndpointUnlockResult> {
+    const nothing: EndpointUnlockResult = { unlockedVaultIds: [] };
+    const accountId = this.custodyAccount?.() ?? null;
+    if (this.custody == null || accountId == null) return nothing;
+    // The independent second lock. It is read BEFORE IndexedDB so a lock whose
+    // record delete never landed still fails closed, and an unreadable
+    // localStorage reads as locked.
+    if (isEndpointDeviceLocked(accountId)) return nothing;
+    const custodyId = endpointCustodyId(accountId);
+    const deviceKey = await this.custody.read(custodyId).catch(() => null);
+    if (deviceKey == null) return nothing;
+
+    const generation = this.beginSessionChange();
+    const snapshot = await this.storage.readEndpointSnapshot();
+    this.requireCurrentGeneration(generation);
+    if (snapshot.metadata == null) {
+      // The endpoint was reset. The record can only ever be junk now.
+      await this.forgetDeviceCustody();
+      return nothing;
+    }
+    const metadata = parseEndpointPasswordMetadata(snapshot.metadata);
+    // A lockout is about the PASSWORD, and custody is not a password guess — but
+    // refusing here costs the user only the lockout window and keeps one rule
+    // for "this endpoint is not accepting device-password sessions right now".
+    // The record is deliberately kept: someone else's failed guesses must not
+    // destroy the custody its owner opted into.
+    if (metadata.lockout.lockedUntil != null && metadata.lockout.lockedUntil > this.now()) {
+      return nothing;
+    }
+    // THE AUTHORITATIVE BINDING. The wrapCheck is the same AES-GCM open
+    // `unlock` performs; a record minted under a different device password (an
+    // endpoint reset and re-created, a password change) cannot open it, and is
+    // dropped rather than retried.
+    if (!(await verifyEndpointPassword(metadata, deviceKey))) {
+      await this.forgetDeviceCustody();
+      return nothing;
+    }
+    this.requireCurrentGeneration(generation);
+
+    const listed = await this.storage.listEntries(snapshot.revision);
+    if (listed.status === 'stale') return nothing;
+    const entropy = new Map<string, Uint8Array>();
+    try {
+      for (const record of listed.entries) {
+        const entry = parseStoredPhraseEntry(record.value, record.vaultId);
+        if (entry.custody !== 'wrapped') continue;
+        if (entropy.has(entry.vaultId)) {
+          throw new EndpointKeystoreError(
+            'storage-invalid',
+            'Endpoint keystore contains duplicate vault entries.',
+          );
+        }
+        entropy.set(
+          entry.vaultId,
+          await unwrapMnemonicEntropy(entry.vaultId, entry.payload, deviceKey),
+        );
+      }
+      const finalSnapshot = await this.storage.readEndpointSnapshot();
+      if (
+        finalSnapshot.revision !== listed.revision ||
+        finalSnapshot.metadata == null ||
+        !sameEndpointPassword(parseEndpointPasswordMetadata(finalSnapshot.metadata), metadata)
+      ) {
+        return nothing;
+      }
+      this.requireCurrentGeneration(generation);
+      this.deviceKey = deviceKey;
+      this.devicePasswordMetadata = metadata;
+      this.sessionRevision = listed.revision;
+      for (const [vaultId, bytes] of entropy) this.wrappedEntropy.set(vaultId, bytes);
+      entropy.clear();
+      const unlockedVaultIds = [...this.wrappedEntropy.keys()].sort();
+      // The edge #1531/#1533 already built for exactly this question. A resolver
+      // that finished against the locked endpoint milliseconds ago has published
+      // stubs; without this ping nothing would ever tell it otherwise, and the
+      // user would stare at a locked portfolio they never locked.
+      this.notifyVaultsAvailable(unlockedVaultIds);
+      return { unlockedVaultIds };
+    } finally {
+      for (const bytes of entropy.values()) zeroBytes(bytes);
+    }
+  }
+
+  /**
+   * The user-intended lock: manual lock, sign-out, PIN idle lock. Everything
+   * `endSession` revokes, plus the persisted custody — which is what separates
+   * it from the internal consistency teardowns (a revision drift, a custody
+   * change) that must NOT throw away the user's "keep unlocked" choice.
+   */
+  lockDevice(): Promise<void> {
+    const accountId = this.custodyAccount?.() ?? null;
+    // Marker first, and before any await: a lock whose IndexedDB delete never
+    // lands must still fail closed on the next restore.
+    if (accountId != null) rememberEndpointDeviceLocked(accountId);
+    this.endSession();
+    return this.revokeDeviceCustody();
+  }
+
+  /** Drops the persisted record without claiming the session was locked. */
+  async forgetDeviceCustody(): Promise<void> {
+    const accountId = this.custodyAccount?.() ?? null;
+    if (this.custody == null || accountId == null) return;
+    await this.custody.clear(endpointCustodyId(accountId));
+  }
+
+  private async revokeDeviceCustody(): Promise<void> {
+    this.custodyRestore = null;
+    await this.forgetDeviceCustody();
+  }
+
+  private requireCustodyAccount(): string {
+    const accountId = this.custodyAccount?.() ?? null;
+    if (this.custody == null || accountId == null) {
+      throw new EndpointKeystoreError(
+        'custody-unavailable',
+        'This endpoint cannot keep a vault unlocked on this device.',
+      );
+    }
+    return accountId;
   }
 
   /**
@@ -695,14 +906,38 @@ export class EndpointVaultKeystore {
     };
   }
 
-  handleIdle(pinLockEnabled: boolean): void {
-    if (pinLockEnabled) this.endSession();
+  handleIdle(pinLockEnabled: boolean): Promise<void> {
+    return pinLockEnabled ? this.lockDevice() : Promise.resolve();
   }
 
-  bindToVaultLockSignal(target: EventTarget = globalThis): () => void {
-    const onLock = () => this.endSession();
+  /**
+   * The one seam every user-intended lock arrives on. `requestVaultLock` is
+   * dispatched by sign-out, the PIN idle lock, an account switch and a
+   * confirmed-unauthorized bootstrap; its account-scoped localStorage twin
+   * carries the same lock to the account's OTHER tabs, which is what makes a
+   * manual lock in one tab revoke this device's custody everywhere.
+   *
+   * Plaintext is revoked SYNCHRONOUSLY here — `lockDevice` ends the session and
+   * writes the §12 marker before its first await — so a slow IndexedDB delete
+   * can never leave decrypted state mounted while a sign-out is in flight.
+   */
+  bindToVaultLockSignal(
+    target: EventTarget = globalThis,
+    accountId?: () => string | null,
+  ): () => void {
+    const onLock = () => void this.lockDevice().catch(() => undefined);
+    const readAccountId = accountId ?? this.custodyAccount;
+    const onStorage = (event: Event) => {
+      const active = readAccountId?.() ?? null;
+      if (active == null) return;
+      if ((event as StorageEvent).key === vaultLockSignalStorageKey(active)) onLock();
+    };
     target.addEventListener(VAULT_LOCK_REQUEST_EVENT, onLock);
-    return () => target.removeEventListener(VAULT_LOCK_REQUEST_EVENT, onLock);
+    target.addEventListener('storage', onStorage);
+    return () => {
+      target.removeEventListener(VAULT_LOCK_REQUEST_EVENT, onLock);
+      target.removeEventListener('storage', onStorage);
+    };
   }
 
   /**
@@ -710,7 +945,9 @@ export class EndpointVaultKeystore {
    * touched; the words or E7 QR restore access without vault-data loss.
    */
   async reset(): Promise<KeystoreResetResult> {
-    this.endSession();
+    // A reset is the most deliberate lock there is: the persisted device key
+    // opens phrases that are about to stop existing.
+    await this.lockDevice();
     await this.storage.reset();
     return {
       scope: 'this-endpoint-only',
@@ -819,6 +1056,16 @@ export class EndpointVaultKeystore {
    * unguarded shape — there, a listener that cannot run is a revocation that
    * did not happen, and failing loudly is the safe direction.
    */
+  /**
+   * "Re-ask me about these vaults." Raised whenever a vault this endpoint could
+   * not serve a moment ago becomes servable — a password unlock, a custody
+   * restore — in addition to the content-key open below. Listeners still have to
+   * prove custody through `withContentKey`; nothing here hands one out.
+   */
+  private notifyVaultsAvailable(vaultIds: readonly string[]): void {
+    for (const vaultId of vaultIds) this.notifyVaultOpened(vaultId);
+  }
+
   private notifyVaultOpened(vaultId: string): void {
     for (const listener of [...this.vaultOpenedListeners]) {
       try {
@@ -834,7 +1081,7 @@ export class EndpointVaultKeystore {
     snapshot: { revision: number; metadata: unknown | null },
     initialGeneration: number,
     forcePassword = false,
-  ): Promise<{ deviceKey: Uint8Array; revision: number; generation: number }> {
+  ): Promise<{ deviceKey: EndpointDeviceKeyMaterial; revision: number; generation: number }> {
     if (!forcePassword && this.deviceKey != null) {
       this.requireCurrentGeneration(initialGeneration);
       if (snapshot.metadata == null) {
@@ -903,7 +1150,7 @@ export class EndpointVaultKeystore {
   }
 
   private requireUnlockedSession(): {
-    deviceKey: Uint8Array;
+    deviceKey: EndpointDeviceKeyMaterial;
     revision: number;
     generation: number;
   } {
@@ -1047,7 +1294,9 @@ export class EndpointVaultKeystore {
   }
 
   private clearSessionSecrets(): void {
-    if (this.deviceKey != null) zeroBytes(this.deviceKey);
+    // A custody-restored K_dev is an opaque, non-extractable CryptoKey: there
+    // are no bytes to zero, and dropping the reference is the whole teardown.
+    if (this.deviceKey instanceof Uint8Array) zeroBytes(this.deviceKey);
     this.deviceKey = null;
     this.devicePasswordMetadata = null;
     this.sessionRevision = null;

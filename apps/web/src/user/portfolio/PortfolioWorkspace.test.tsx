@@ -12,6 +12,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../vault/keystore/runtime', () => ({
   endpointVaultKeystore: { stateFor: mocks.stateFor },
+  // The endpoint keystore now resumes device custody before any state read.
+  restoreEndpointCustodyOnce: async () => ({ unlockedVaultIds: [] }),
+  bindEndpointKeystoreAccount: () => undefined,
 }));
 vi.mock('../../lib/vaultApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/vaultApi')>()),

@@ -4038,6 +4038,14 @@
         "unavailable": "Der verschlüsselte Tresor ist derzeit nicht verfügbar. Prüfe die Verbindung zum gewählten Speicher und versuche es erneut."
       }
     },
+    "unlockDialog": {
+      "title": "Diesen Tresor entsperren",
+      "titleNamed": "„{{name}}“ entsperren",
+      "body": "Gib das Gerätepasswort für diesen Tresor ein. Er öffnet sich direkt hier — du bleibst auf dieser Seite.",
+      "wrongPassword": "Dieses Gerätepasswort stimmt nicht. Es wurde nichts geändert — versuch es noch einmal.",
+      "custodyUnavailable": "Dieser Browser kann keinen Tresor auf diesem Gerät entsperrt lassen, deshalb wurde nichts entsperrt. Versuch es ohne diese Option noch einmal.",
+      "moreOptions": "Weitere Tresoroptionen"
+    },
     "sync": {
       "synced": "Verschlüsselter Tresor synchronisiert",
       "syncing": "Verschlüsselte Änderungen warten auf Synchronisierung",

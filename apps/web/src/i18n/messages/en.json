@@ -4038,6 +4038,14 @@
         "unavailable": "The encrypted vault is unavailable right now. Check the selected storage connection and retry."
       }
     },
+    "unlockDialog": {
+      "title": "Unlock this vault",
+      "titleNamed": "Unlock “{{name}}”",
+      "body": "Type the device password for this vault. It opens right here — you stay on this page.",
+      "wrongPassword": "That device password is not right. Nothing was changed — try again.",
+      "custodyUnavailable": "This browser cannot keep a vault unlocked on this device, so nothing was unlocked. Try again without that option.",
+      "moreOptions": "More vault options"
+    },
     "sync": {
       "synced": "Encrypted vault synced",
       "syncing": "Encrypted changes are waiting to sync",

@@ -27,8 +27,12 @@ import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/Portfoli
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
-import { endpointVaultKeystore } from '../vault/keystore/runtime';
-import { vaultEndpointStateQueryKey } from '../vault/ui/useVaultEndpointState';
+import { useEndpointVaultCustody } from '../vault/ui/useEndpointVaultCustody';
+import { useEndpointVaultLock, type EndpointVaultLock } from '../vault/ui/useEndpointVaultLock';
+import {
+  readVaultEndpointState,
+  vaultEndpointStateQueryKey,
+} from '../vault/ui/useVaultEndpointState';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -337,9 +341,16 @@ function RailBrand() {
 export function AccountMenu({
   collapsed,
   placement = 'rail',
+  vaultLock,
 }: {
   collapsed: boolean;
   placement?: 'rail' | 'topbar';
+  /**
+   * The per-portfolio manual lock, computed by the shell from the endpoint
+   * states it already reads. Passed in rather than hooked up here so this menu
+   * — which every account renders — needs neither a query client nor a vault.
+   */
+  vaultLock?: EndpointVaultLock;
 }) {
   const inTopbar = placement === 'topbar';
   const { t } = useI18n();
@@ -487,6 +498,25 @@ export function AccountMenu({
               {t('vault.lock.action')}
             </button>
           ) : null}
+          {/* The per-portfolio counterpart. It is the way OUT of "keep unlocked
+              on this device", so it is offered wherever the account-level lock
+              is — and only while a wrapped session is actually open, since a
+              lock that locks nothing is noise. A paranoid account already has
+              the item above, which raises the same signal. */}
+          {privacyMode !== 'paranoid' && vaultLock?.canLock === true ? (
+            <button
+              className="bt-menu-item"
+              onClick={() => {
+                closeAndRestoreFocus();
+                vaultLock.lock();
+              }}
+              role="menuitem"
+              type="button"
+            >
+              <Icon name="lock" size={15} />
+              {t('vault.lock.action')}
+            </button>
+          ) : null}
           <div className="bt-menu-rule" />
           <button
             className="bt-menu-item"
@@ -614,6 +644,11 @@ export function OriginShell() {
   const { t, locale } = useI18n();
   const { user } = useAuth();
   useDiscardUnknownCreateIntent();
+  // Binds the endpoint keystore to this account and resumes a session the user
+  // asked this device to keep — the reload / second-tab / post-deploy-reload
+  // path. Mounted here because this shell is the one thing every authenticated
+  // vault surface renders inside.
+  useEndpointVaultCustody();
   const privacy = useResolvedPrivacyModeState();
   // The cleartext vault directory feeds the shield chip. It is small, changes
   // only when the user creates/renames/deletes a vault (each of which
@@ -629,7 +664,7 @@ export function OriginShell() {
   const vaultStates = useQueries({
     queries: (vaultsQuery.data ?? []).map((vault) => ({
       queryKey: vaultEndpointStateQueryKey(vault.id),
-      queryFn: () => endpointVaultKeystore.stateFor(vault.id),
+      queryFn: () => readVaultEndpointState(vault.id),
       staleTime: 5_000,
     })),
   });
@@ -658,6 +693,10 @@ export function OriginShell() {
       }),
     [vaultStates, vaultsQuery.data],
   );
+  // The way OUT of "keep unlocked on this device", built from the states the
+  // shield chip already read — no extra query, no extra request.
+  const endpointStates = useMemo(() => vaultStates.map((state) => state.data), [vaultStates]);
+  const endpointLock = useEndpointVaultLock(endpointStates);
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -829,7 +868,7 @@ export function OriginShell() {
           {compactShell ? null : (
             <>
               <div className="bt-rail__rule" />
-              <AccountMenu collapsed={collapsed} />
+              <AccountMenu collapsed={collapsed} vaultLock={endpointLock} />
             </>
           )}
         </aside>
@@ -880,7 +919,9 @@ export function OriginShell() {
                   Settings, Discreet mode and Logout — is display:none, which left
                   a phone with no way to reach any of them, not even to sign out.
                   The account menu moves here instead so it stays persistent. */}
-              {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
+              {compactShell ? (
+                <AccountMenu collapsed={false} placement="topbar" vaultLock={endpointLock} />
+              ) : null}
             </div>
             {/* The wrapped second row — last in the DOM because it is last on
                 screen. See `portfolioSwitcher` above. */}

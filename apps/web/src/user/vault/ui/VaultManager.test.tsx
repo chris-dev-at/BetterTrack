@@ -49,6 +49,9 @@ vi.mock('../keystore/runtime', () => ({
     unlock: mocks.unlock,
     openStoredVault: mocks.openStoredVault,
   },
+  // The endpoint keystore now resumes device custody before any state read.
+  restoreEndpointCustodyOnce: async () => ({ unlockedVaultIds: [] }),
+  bindEndpointKeystoreAccount: () => undefined,
 }));
 
 import { ApiError } from '../../../lib/apiClient';
