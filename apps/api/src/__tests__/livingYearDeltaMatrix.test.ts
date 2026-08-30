@@ -9,7 +9,13 @@ import {
   yearOf,
 } from '../services/tax/__tests__/records';
 
-const YEAR = 2024;
+/**
+ * A backdated insert does not stop at its own year: the moving-average basis
+ * and the FIFO lot queue (with DE's loss pots) both propagate forward, so every
+ * LATER living year re-settles too. Settling more than one year here is what
+ * makes a cross-year regression fail this matrix (#1591).
+ */
+const YEARS = [2024, 2025];
 
 function rows(withBackdatedBuy: boolean) {
   return [
@@ -41,10 +47,19 @@ function rows(withBackdatedBuy: boolean) {
       price: 500,
       executedAt: new Date('2024-10-10T10:00:00.000Z'),
     }),
+    txRecord({
+      id: 'later-sell',
+      side: 'sell',
+      assetId: 'stock',
+      quantity: 5,
+      price: 500,
+      executedAt: new Date('2025-10-10T10:00:00.000Z'),
+    }),
   ];
 }
 
-function target(regime: Exclude<LiveRegime, { kind: 'manual' }>, withBackdatedBuy: boolean) {
+/** Every settled year's engine target, keyed by year. */
+function targets(regime: Exclude<LiveRegime, { kind: 'manual' }>, withBackdatedBuy: boolean) {
   const transactions = rows(withBackdatedBuy);
   const view: LiveYearRowView = {
     transactions,
@@ -53,48 +68,51 @@ function target(regime: Exclude<LiveRegime, { kind: 'manual' }>, withBackdatedBu
     categoryOf: categoryOfBuilder({ stock: 'stock' }),
     yearOf,
   };
-  const [settlement] = settleLiveYears({
+  const settlements = settleLiveYears({
     regime,
     view,
-    years: [YEAR],
+    years: YEARS,
     heldOf: () => 0,
   });
-  return settlement!.targetAfterEur;
+  return Object.fromEntries(settlements.map((s) => [s.year, s.targetAfterEur]));
 }
 
 describe('#1399 living-year delta matrix', () => {
   it.each<{
     name: string;
     regime: Exclude<LiveRegime, { kind: 'manual' }>;
-    before: number;
-    after: number;
+    before: Record<number, number>;
+    after: Record<number, number>;
   }>([
     {
       name: 'AT moving average',
       regime: { kind: 'country', country: TAX_COUNTRY_AT },
-      before: 550,
-      after: 137.5,
+      before: { 2024: 550, 2025: 550 },
+      after: { 2024: 137.5, 2025: 137.5 },
     },
     {
       name: 'DE FIFO',
       regime: { kind: 'country', country: TAX_COUNTRY_DE },
-      before: 263.75,
-      after: 0,
+      before: { 2024: 263.75, 2025: 263.75 },
+      after: { 2024: 0, 2025: 0 },
     },
     {
       name: 'FI FIFO',
       regime: { kind: 'country', country: TAX_COUNTRY_FI },
-      before: 600,
-      after: 0,
+      before: { 2024: 600, 2025: 600 },
+      after: { 2024: 0, 2025: 0 },
     },
     {
       name: 'custom moving average',
       regime: { kind: 'custom', params: AT_AS_CUSTOM_PARAMS },
-      before: 550,
-      after: 137.5,
+      before: { 2024: 550, 2025: 550 },
+      after: { 2024: 137.5, 2025: 137.5 },
     },
-  ])('recomputes a past $name year after a backdated insert', ({ regime, before, after }) => {
-    expect(target(regime, false)).toBe(before);
-    expect(target(regime, true)).toBe(after);
-  });
+  ])(
+    'recomputes every living $name year after a backdated insert, not just its own',
+    ({ regime, before, after }) => {
+      expect(targets(regime, false)).toEqual(before);
+      expect(targets(regime, true)).toEqual(after);
+    },
+  );
 });

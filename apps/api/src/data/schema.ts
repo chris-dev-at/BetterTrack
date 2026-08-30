@@ -2078,6 +2078,14 @@ export const userTaxSettings = pgTable(
  * marker is account-wide because tax-year documentation spans all of a user's
  * portfolios. Database triggers own the writes so imports, standing orders,
  * mirror replicas and every other repository caller share the same contract.
+ *
+ * A backdated edit re-settles LATER years too (DE loss pots carry forward, AT's
+ * moving-average basis propagates), and each of those years is re-settled by an
+ * unattached `tax_withholding`/`tax_refund` correction. Migration 0105 marks
+ * those years as well, attributing every cash row by
+ * `COALESCE(tax_year, executed_at)` so a January correction lands on the prior
+ * year it documents. Tax legs attached to a transaction or dividend stay
+ * excluded — their parent row's own trigger marks that year.
  */
 export const taxYearChanges = pgTable(
   'tax_year_changes',
