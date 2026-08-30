@@ -3727,6 +3727,7 @@
       "deferred": {
         "rotate": "Rotating the recovery words isn’t available yet: it needs a verified round trip on every storage this vault uses. Until then this vault and its words stay exactly as they are.",
         "startFresh": "Starting fresh isn’t available yet: discarding a vault’s encrypted copies needs the same verified storage round trip. To remove a vault today, move its portfolios out and delete it.",
+        "changeMedia": "Changing where a vault is stored isn’t available yet: this build can only store a vault on the BetterTrack server, so there is nothing to change it to. Your vault and everything in it stay exactly as they are.",
         "scanQr": "Scanning a transfer QR isn’t available yet. Enter the 12 words on this device instead.",
         "restore": "Choosing an older encrypted copy isn’t available yet. Every copy is kept — none is discarded — and this vault’s current copy stays usable."
       },
@@ -3885,7 +3886,9 @@
         "action": "Move into vault",
         "working": "Moving portfolio into the vault…",
         "done": "The portfolio is encrypted in the vault and locked on the server.",
-        "error": "The portfolio was not moved. Its server data is unchanged."
+        "error": "The portfolio was not moved. Its server data is unchanged.",
+        "captureInFlight": "The portfolio was not moved, and trying again will not help. This vault still holds an unfinished move of {{portfolios}}. Finish or cancel that move first, then move this portfolio in. Its server data is unchanged.",
+        "captureInFlightUnnamed": "The portfolio was not moved, and trying again will not help. This vault still holds another portfolio’s unfinished move. Finish or cancel that move first, then move this portfolio in. Its server data is unchanged."
       },
       "moveOut": {
         "title": "Move portfolio out of the vault",

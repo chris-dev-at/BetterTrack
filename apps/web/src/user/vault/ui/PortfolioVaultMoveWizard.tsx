@@ -10,6 +10,7 @@ import {
 import { useT } from '../../../i18n';
 import { Button, Field, Input, Select } from '../../../ui/origin';
 import { CHECKBOX_STYLE } from '../../components/ui';
+import { PortfolioMoveCaptureError } from '../portfolioMoveCapture';
 
 /** Stated in the copy, derived from the server's TTL so the two cannot drift. */
 const VAULT_SERVER_CANDIDATE_TTL_MINUTES = Math.round(VAULT_SERVER_CANDIDATE_TTL_MS / 60_000);
@@ -84,6 +85,14 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
   const [serverReadableAcknowledged, setServerReadableAcknowledged] = useState(false);
   const [working, setWorking] = useState(false);
   const [failed, setFailed] = useState(false);
+  /**
+   * The one refusal that must not read as "try again" (#1530). Everything else
+   * this ceremony can fail with is either transient or clears on a retry with a
+   * fresh readback; `VAULT_MEDIA_CAPTURE_IN_FLIGHT` clears only when SOMEBODY
+   * finishes or cancels another portfolio's move, so the copy names those
+   * portfolios and the commit button stays shut behind it.
+   */
+  const [blockedByMove, setBlockedByMove] = useState<readonly string[] | null>(null);
   const preconditions = props.preconditions ?? [];
   const blocked =
     preconditions.length > 0 || (props.mode === 'in' ? vaultId === '' : !props.unlocked);
@@ -94,12 +103,20 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
     if (value === '' || blocked || confirmationMissing) return;
     setWorking(true);
     setFailed(false);
+    setBlockedByMove(null);
     try {
       const stepUp = { [credentialKind]: value } as VaultStepUpCredential;
       if (props.mode === 'in') await props.onSubmit({ vaultId, stepUp });
       else await props.onSubmit({ stepUp });
-    } catch {
-      setFailed(true);
+    } catch (cause) {
+      if (
+        cause instanceof PortfolioMoveCaptureError &&
+        cause.code === 'VAULT_MOVE_CAPTURE_IN_FLIGHT'
+      ) {
+        setBlockedByMove(cause.blockingPortfolios);
+      } else {
+        setFailed(true);
+      }
     } finally {
       setWorking(false);
     }
@@ -237,13 +254,28 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
           {t(`vault.portfolioMove.move${props.mode === 'in' ? 'In' : 'Out'}.error`)}
         </p>
       ) : null}
+      {blockedByMove ? (
+        <p className="bt-neg text-sm" role="alert">
+          {blockedByMove.length > 0
+            ? t('vault.portfolioMove.moveIn.captureInFlight', {
+                portfolios: blockedByMove.join(', '),
+              })
+            : t('vault.portfolioMove.moveIn.captureInFlightUnnamed')}
+        </p>
+      ) : null}
 
       <div className="flex flex-wrap justify-end gap-2">
         <Button disabled={working} onClick={props.onCancel} type="button" variant="quiet">
           {t('common.cancel')}
         </Button>
         <Button
-          disabled={working || blocked || confirmationMissing || credential.trim() === ''}
+          disabled={
+            working ||
+            blocked ||
+            confirmationMissing ||
+            credential.trim() === '' ||
+            blockedByMove !== null
+          }
           onClick={() => void submit()}
           type="button"
           variant={props.mode === 'out' ? 'danger' : 'primary'}

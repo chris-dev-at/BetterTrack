@@ -119,9 +119,10 @@ import type {
   VaultAtomicMutation,
   VaultDocumentReconcileContext,
   VaultDocumentReconcileResult,
+  VaultMutationContext,
   VaultMutationEntityDelta,
-  VaultSyncEngine,
-  VaultSyncState,
+  VaultSyncCandidate,
+  VaultSyncStatus,
 } from './sync';
 
 /** The server stores transaction prices as numeric(20,6) (schema.ts). */
@@ -335,8 +336,55 @@ export interface VaultPortfolioStore {
   discardAllData(): Promise<void>;
 }
 
+/**
+ * Everything this store reads from the thing behind it, and nothing more
+ * (#1532).
+ *
+ * The projections below were written against `VaultSyncEngine`, but they only
+ * ever touch three of its members: the active document (`state`), the
+ * provenance stamp a written row carries (`deviceId`), and the CAS write path
+ * (`mutate`). `start`/`reconnect` belong to an account-wide sync coordinator
+ * and answer nothing a projection asks.
+ *
+ * Narrowing the parameter to those three is what lets a per-portfolio E6
+ * resolution — one authenticated document, no sync coordinator, no write path —
+ * back the SAME ~4000 lines of projection code instead of a second copy of it
+ * (#1531 follow-up). `VaultSyncEngine` still satisfies this structurally, so
+ * every account-level caller is unchanged. A source that cannot write says so
+ * from `mutate`, at the real write boundary, rather than by re-listing which
+ * operations are writes.
+ */
+export interface VaultPortfolioDocumentState {
+  status: VaultSyncStatus;
+  /**
+   * The authenticated document, or `null` when this source currently holds
+   * none. Deliberately narrower than `VaultSyncCandidate`: a resolution owns a
+   * decrypted document, not a data home and a re-encryptable envelope, and
+   * fabricating those two just to satisfy a type would be a lie in a structure
+   * whose whole job is provenance.
+   */
+  active: {
+    readonly document: VaultDocument;
+    /**
+     * The envelope identity a standing-order commit pins its expected candidate
+     * against. Optional because only a source that can actually write carries
+     * one; `assertStandingOrderCandidate` fails closed without it rather than
+     * skipping the check.
+     */
+    readonly header?: VaultSyncCandidate['header'];
+  } | null;
+}
+
+export interface VaultPortfolioDocumentSource {
+  readonly deviceId: string;
+  readonly state: VaultPortfolioDocumentState;
+  mutate(
+    mutator: (context: VaultMutationContext) => VaultDocument,
+  ): Promise<VaultPortfolioDocumentState>;
+}
+
 interface StoreContext {
-  engine: VaultSyncEngine;
+  engine: VaultPortfolioDocumentSource;
   now: () => string;
   newId: () => string;
   resolveMarketAsset: (assetId: string, signal?: AbortSignal) => Promise<AssetSummary | null>;
@@ -352,11 +400,12 @@ interface EffectivePortfolioTaxSettings {
 
 /**
  * PortfolioStore for paranoid accounts. The only mutable dependency is the
- * authenticated sync engine: reads use its in-memory active document and every
- * write goes through `mutate`, which persists the next encrypted CAS version.
+ * authenticated document source: reads use its in-memory active document and
+ * every write goes through `mutate`, which persists the next encrypted CAS
+ * version.
  */
 export function createVaultPortfolioStore(
-  engine: VaultSyncEngine,
+  engine: VaultPortfolioDocumentSource,
   options: VaultPortfolioStoreOptions = {},
 ): VaultPortfolioStore {
   const context: StoreContext = {
@@ -1071,7 +1120,7 @@ export function createVaultPortfolioStore(
 /** Public name used by the architecture note. */
 export const vaultPortfolioStore = createVaultPortfolioStore;
 
-function requireDocument(engine: VaultSyncEngine): VaultDocument {
+function requireDocument(engine: VaultPortfolioDocumentSource): VaultDocument {
   const state = engine.state;
   if (state.status === 'locked') {
     throw storeError('VAULT_LOCKED', 'The vault must be unlocked before portfolio data is read.');
@@ -2073,19 +2122,21 @@ function assertStandingOrderOccurrenceInput(input: VaultStandingOrderOccurrenceI
 }
 
 function assertStandingOrderCandidate(
-  engine: VaultSyncEngine,
+  engine: VaultPortfolioDocumentSource,
   document: VaultDocument,
   currentVersion: number | undefined,
   expected: VaultStandingOrderOccurrenceInput['expectedCandidate'],
 ): void {
   const active = engine.state.active;
+  const header = active?.header;
   if (
     active === null ||
+    header === undefined ||
     active.document !== document ||
     (currentVersion !== undefined && currentVersion !== expected.vaultVersion) ||
-    active.header.vaultVersion !== expected.vaultVersion ||
-    active.header.keyId !== expected.vaultKeyId ||
-    active.header.writeId !== expected.writeId
+    header.vaultVersion !== expected.vaultVersion ||
+    header.keyId !== expected.vaultKeyId ||
+    header.writeId !== expected.writeId
   ) {
     throw storeError(
       'VAULT_OPERATION_ABORTED',
@@ -2474,7 +2525,7 @@ function findLiveEntity(
 }
 
 function requireCommittedMutationEntity(
-  state: VaultSyncState,
+  state: VaultPortfolioDocumentState,
   kind: VaultEntityKind,
   id: string,
   expected: VaultEntity | null,
