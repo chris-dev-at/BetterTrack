@@ -302,7 +302,13 @@ function FailoverPanel({
           {chains.map((c) => {
             const failedOver = c.serving !== null && c.serving !== c.primaryId;
             return (
-              <li key={c.primaryId} className="flex flex-wrap items-center gap-2">
+              // A primary can report more than one chain when its asset classes
+              // route differently (equities → a secondary, FX/crypto → itself),
+              // so the candidate list is what makes the row unique.
+              <li
+                key={`${c.primaryId}:${c.providerIds.join('>')}`}
+                className="flex flex-wrap items-center gap-2"
+              >
                 <span className="font-mono text-neutral-200">{c.providerIds.join(' → ')}</span>
                 {c.serving ? (
                   <Badge tone={failedOver ? 'amber' : 'green'}>{c.serving}</Badge>
