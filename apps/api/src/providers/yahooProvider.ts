@@ -278,6 +278,13 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
 
   return {
     id: PROVIDER_ID,
+    // Daily-and-longer candles carry `adjclose`, i.e. a dividend/split-adjusted
+    // total-return series (§13.5 states portfolio history and backtests are
+    // total return). Intraday candles have no adjclose and fall back to the raw
+    // close, but they cover at most a few days, where the two bases coincide
+    // except across a corporate action. The declaration is what the failover
+    // chain compares, so only a secondary that is adjusted too may substitute.
+    historyBasis: 'adjusted',
     search,
     getQuote,
     getHistory,

@@ -1,4 +1,4 @@
-import type { AssetRef, CachedResult } from '@bettertrack/contracts';
+import type { AssetRef, CachedResult, PricePoint } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -707,5 +707,161 @@ describe('MarketDataService — an empty secondary history never poisons the cac
       value: lastKnownGood,
     });
     expect(service.failoverStatus().attribution).toEqual([]);
+  });
+});
+
+describe('MarketDataService — the breaker is scoped per capability (§13.5 V5-P1c)', () => {
+  /**
+   * One breaker per provider took every capability down together: repeated
+   * failures on a niche endpoint (fundamentals/news/history for symbols the
+   * upstream has no module for) fail-fast QUOTES for the whole open window —
+   * the opposite of "with the primary mocked dead, quotes keep flowing".
+   */
+  it('an open history breaker still lets quotes reach the same provider', async () => {
+    const provider = createFakeProvider('fake', {
+      history: () => Promise.reject(new Error('chart endpoint down')) as Promise<PricePoint[]>,
+    });
+    const service = createMarketDataService({
+      registry: createProviderRegistry([provider]),
+      redis,
+      options: { breaker: { failureThreshold: 3, openMs: 30_000 } },
+    });
+
+    // Three transient history failures (different ranges ⇒ different keys) open
+    // the HISTORY breaker; the fourth read never reaches upstream.
+    for (const range of ['1Y', '5Y', 'MAX'] as const) {
+      await expect(service.getHistory(REF, range)).rejects.toThrowError('chart endpoint down');
+    }
+    await expect(service.getHistory(REF, '3M')).rejects.toBeInstanceOf(CircuitOpenError);
+    const historyCalls = provider.calls.history;
+
+    // ...while quotes on the very same provider keep flowing upstream.
+    const quote = await service.getQuote(REF);
+    expect(quote.stale).toBe(false);
+    expect(quote.value.price).toBe(100);
+    expect(provider.calls.quote).toBe(1);
+    expect(provider.calls.history).toBe(historyCalls); // the open breaker held
+
+    // The admin surface still reports the provider as impaired (worst-of).
+    expect(service.breakerStates()).toEqual([{ providerId: 'fake', state: 'open' }]);
+  });
+
+  it('a 429 trips that capability immediately (§5.3) and leaves the others closed', async () => {
+    const rateLimited = createFakeProvider('fake', {
+      history: () =>
+        Promise.reject(Object.assign(new Error('HTTP 429'), { code: 429 })) as Promise<
+          PricePoint[]
+        >,
+    });
+    const service = createMarketDataService({
+      registry: createProviderRegistry([rateLimited]),
+      redis,
+    });
+
+    await expect(service.getHistory(REF, '1Y')).rejects.toThrowError('HTTP 429');
+    expect(rateLimited.calls.history).toBe(1); // definitive: never retried
+    // Immediately open — no threshold to reach: the next history read fails fast.
+    await expect(service.getHistory(REF, '5Y')).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(rateLimited.calls.history).toBe(1);
+    expect(service.breakerStates()).toEqual([{ providerId: 'fake', state: 'open' }]);
+
+    // The quote breaker is untouched, so the rate limit on one endpoint does not
+    // black out the app's hot read.
+    expect((await service.getQuote(REF)).value.price).toBe(100);
+    expect(rateLimited.calls.quote).toBe(1);
+  });
+});
+
+describe('MarketDataService — a failover never changes the history basis (§13.5 V5-P1c, money)', () => {
+  const AAPL: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
+  const HISTORY_KEY = cacheKey('yahoo', 'AAPL', 'history', '1Y@1d');
+  /** Yahoo's dividend/split-adjusted total-return series. */
+  const ADJUSTED: PricePoint[] = [
+    { time: '2026-07-14T00:00:00.000Z', close: 99 },
+    { time: '2026-07-15T00:00:00.000Z', close: 100 },
+  ];
+
+  /** Yahoo (adjusted) primary + the real Stooq provider (raw closes) as secondary. */
+  function basisFailoverService() {
+    const state = { yahooUp: true, stooqHistoryCalls: 0 };
+    const yahoo = createFakeProvider(
+      'yahoo',
+      {
+        history: () =>
+          state.yahooUp
+            ? Promise.resolve(ADJUSTED)
+            : (Promise.reject(new Error('yahoo history down')) as Promise<PricePoint[]>),
+        quote: () =>
+          state.yahooUp
+            ? Promise.resolve(sampleQuote({ price: 100 }))
+            : (Promise.reject(new Error('yahoo down')) as Promise<ReturnType<typeof sampleQuote>>),
+      },
+      { historyBasis: 'adjusted' },
+    );
+    const client: StooqClient = {
+      quote: async () => ({
+        symbol: 'AAPL.US',
+        date: '2026-07-16',
+        time: '22:00:04',
+        close: 209.05,
+      }),
+      history: async () => {
+        state.stooqHistoryCalls += 1;
+        // Raw, unadjusted closes — a different price basis for the same asset.
+        return [{ date: '2026-07-15', close: 140 }];
+      },
+    };
+    const stooq = createStooqProvider({
+      client,
+      queueOptions: { minSpacingMs: 0 },
+      now: () => Date.parse('2026-07-16T23:00:00Z'),
+    });
+    const service = createMarketDataService({
+      registry: createProviderRegistry([yahoo, stooq]),
+      redis,
+      options: { failover: { byClass: {}, default: ['stooq'] } },
+    });
+    return { service, state };
+  }
+
+  it('a Yahoo-then-Stooq sequence for the same ref keeps the adjusted series (quotes still fail over)', async () => {
+    const { service, state } = basisFailoverService();
+
+    // A backtest reads the adjusted total-return series while Yahoo is healthy.
+    expect((await service.getHistory(AAPL, '1Y')).value).toEqual(ADJUSTED);
+
+    // Yahoo dies and the fresh copy expires. The next read must NOT hand the
+    // backtest Stooq's raw closes under the very same (primary) cache key.
+    await redis.del(freshCacheKey(HISTORY_KEY));
+    state.yahooUp = false;
+    const served = await service.getHistory(AAPL, '1Y');
+    await service.settled();
+
+    expect(served).toMatchObject({ stale: true, value: ADJUSTED });
+    expect(state.stooqHistoryCalls).toBe(0); // a differing basis is never asked
+    expect(await redis.get(freshCacheKey(HISTORY_KEY))).toBeNull();
+    expect(JSON.parse((await redis.get(staleCacheKey(HISTORY_KEY))) ?? '{}')).toMatchObject({
+      value: ADJUSTED,
+    });
+
+    // Quotes for the SAME dead primary do fail over to Stooq: the gate is
+    // history-only, so "quotes keep flowing" still holds.
+    expect((await service.getQuote(AAPL)).value.price).toBe(209.05);
+    expect(service.failoverStatus().chains[0]).toMatchObject({
+      primaryId: 'yahoo',
+      serving: 'stooq',
+    });
+  });
+
+  it('with a cold cache the history read fails with the primary error rather than serving a raw series', async () => {
+    const { service, state } = basisFailoverService();
+    state.yahooUp = false;
+
+    await expect(service.getHistory(AAPL, '1Y')).rejects.toThrowError('yahoo history down');
+    expect(state.stooqHistoryCalls).toBe(0);
+    expect(await redis.get(freshCacheKey(HISTORY_KEY))).toBeNull();
+    expect(await redis.get(staleCacheKey(HISTORY_KEY))).toBeNull();
+    // Transient, so not negative-cached either: the next read retries upstream.
+    expect(await redis.get(negativeCacheKey(HISTORY_KEY))).toBeNull();
   });
 });
