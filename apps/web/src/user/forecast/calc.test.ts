@@ -7,6 +7,7 @@ import {
   savingsPlanYears,
   withdrawalHorizon,
   withdrawalRate,
+  FORECAST_CALC_MAX_YEARS,
 } from './calc';
 
 // Hand-computed fixtures for the four V5-P6b calculators. Every case ties an
@@ -86,6 +87,22 @@ describe('compoundInterest', () => {
     expect(result.finalBalance).toBeCloseTo(15446.87, 2);
     expect(result.totalContributions).toBe(12000);
   });
+
+  test('a negative horizon collapses to "no time passed", never below the principal', () => {
+    // Unfloored this discounted instead of compounding: 10 000 / 250 €/mo / 5 %
+    // at years = −1 reported a 6588.80 balance against 7000 contributed.
+    const result = compoundInterest({
+      principal: 10000,
+      monthlyContribution: 250,
+      ratePctPerYear: 5,
+      years: -1,
+      compoundingPerYear: 12,
+    });
+    expect(result.finalBalance).toBe(10000);
+    expect(result.totalContributions).toBe(10000);
+    expect(result.totalInterest).toBe(0);
+    expect(result.finalBalance).toBeGreaterThanOrEqual(10000);
+  });
 });
 
 describe('savingsPlanContribution', () => {
@@ -146,6 +163,27 @@ describe('savingsPlanContribution', () => {
     });
     expect(result.feasible).toBe(true);
     expect(result.monthlyContribution).toBe(0);
+  });
+
+  test('a negative horizon reads as the zero-horizon answer', () => {
+    const negative = savingsPlanContribution({
+      target: 5000,
+      principal: 1000,
+      ratePctPerYear: 5,
+      years: -3,
+      compoundingPerYear: 12,
+    });
+    expect(negative).toEqual(
+      savingsPlanContribution({
+        target: 5000,
+        principal: 1000,
+        ratePctPerYear: 5,
+        years: 0,
+        compoundingPerYear: 12,
+      }),
+    );
+    expect(negative.monthlyContribution).toBe(0);
+    expect(negative.feasible).toBe(false);
   });
 });
 
@@ -210,7 +248,10 @@ describe('dividendPlan', () => {
     // Year 4: 330.75·1.05 = 347.2875
     // Year 5: 347.2875·1.05 = 364.651875
     // Sum: 1657.689375
-    // Yield on cost @ y5 = 3·1.05^5 = 3·1.2762815625 = 3.828844687…
+    // Yield on cost in the FINAL year of the stream = that year's payment over
+    // cost: 364.651875 / 10 000 = 3.64651875 % — equivalently 3·1.05^4, since
+    // year 1 is seeded ungrown. (Superseded fixture: 3·1.05^5 = 3.8288…, which
+    // is a sixth year the projection never pays.)
     const result = dividendPlan({
       positionValue: 10000,
       yieldPctPerYear: 3,
@@ -224,7 +265,79 @@ describe('dividendPlan', () => {
     expect(result.yearlyDividends[3]).toBeCloseTo(347.2875, 10);
     expect(result.yearlyDividends[4]).toBeCloseTo(364.651875, 10);
     expect(result.totalDividends).toBeCloseTo(1657.689375, 8);
-    expect(result.yieldOnCostFinalPct).toBeCloseTo(3.828844687, 8);
+    expect(result.yieldOnCostFinalPct).toBeCloseTo(3.64651875, 8);
+  });
+
+  test('yield on cost reads the final payment of its own stream, not one year past it', () => {
+    // The card renders "Year 1 dividend" off `yearlyDividends[0]` and
+    // "Yield on cost, final year" off `yieldOnCostFinalPct`; the two sit in one
+    // stat row and must share a convention.
+    for (const years of [1, 2, 3, 5, 10, 30]) {
+      const result = dividendPlan({
+        positionValue: 10000,
+        yieldPctPerYear: 3,
+        growthPctPerYear: 5,
+        years,
+      });
+      const finalPayment = result.yearlyDividends[result.yearlyDividends.length - 1]!;
+      expect(result.yieldOnCostFinalPct).toBeCloseTo((finalPayment / 10000) * 100, 10);
+    }
+  });
+
+  test('single year — the one €300 payment is 3,00 % on cost, not 3,15 %', () => {
+    const result = dividendPlan({
+      positionValue: 10000,
+      yieldPctPerYear: 3,
+      growthPctPerYear: 5,
+      years: 1,
+    });
+    expect(result.yearlyDividends).toEqual([300]);
+    expect(result.totalDividends).toBeCloseTo(300, 10);
+    expect(result.yieldOnCostFinalPct).toBeCloseTo(3, 10);
+  });
+
+  test('ten years — 3·1.05^9 = 4.6540 %, not the 3·1.05^10 = 4.8867 % of the year after', () => {
+    const result = dividendPlan({
+      positionValue: 10000,
+      yieldPctPerYear: 3,
+      growthPctPerYear: 5,
+      years: 10,
+    });
+    // Year 10 pays 300·1.05^9 = 465.3984649…
+    expect(result.yearlyDividends[9]).toBeCloseTo(465.3984649, 6);
+    expect(result.yieldOnCostFinalPct).toBeCloseTo(4.653984649, 8);
+    expect(Number(result.yieldOnCostFinalPct.toFixed(2))).toBe(4.65);
+  });
+
+  test('an absurd horizon is bounded instead of allocating one element per year', () => {
+    const result = dividendPlan({
+      positionValue: 10000,
+      yieldPctPerYear: 3,
+      growthPctPerYear: 5,
+      years: 1_000_000_000,
+    });
+    expect(result.yearlyDividends).toHaveLength(FORECAST_CALC_MAX_YEARS);
+    // Nothing overflows to Infinity/NaN, so no stat degrades to an em-dash.
+    expect(Number.isFinite(result.totalDividends)).toBe(true);
+    expect(Number.isFinite(result.yieldOnCostFinalPct)).toBe(true);
+    expect(result.yieldOnCostFinalPct).toBeCloseTo(
+      3 * Math.pow(1.05, FORECAST_CALC_MAX_YEARS - 1),
+      8,
+    );
+  });
+
+  test('a negative or non-finite horizon pays nothing and keeps the current yield', () => {
+    for (const years of [-1, -1e9, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const result = dividendPlan({
+        positionValue: 10000,
+        yieldPctPerYear: 3,
+        growthPctPerYear: 5,
+        years,
+      });
+      expect(result.yearlyDividends).toEqual([]);
+      expect(result.totalDividends).toBe(0);
+      expect(result.yieldOnCostFinalPct).toBe(3);
+    }
   });
 
   test('zero growth — flat annuity of positionValue·yield/100', () => {
