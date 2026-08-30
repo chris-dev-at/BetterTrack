@@ -26,6 +26,7 @@ import { usePortfolioStore } from './PortfolioStoreProvider';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { VaultStateAction } from '../vault/ui/VaultStateAction';
 import { useVaultEndpointState } from '../vault/ui/useVaultEndpointState';
+import { useUnlockedPortfolioNames } from '../vault/useUnlockedPortfolioNames';
 import {
   isVaultedPortfolio,
   lockedPortfolioCount,
@@ -216,9 +217,16 @@ export function PortfolioSwitcher() {
   const portfolios = useMemo(() => activeQuery.data?.portfolios ?? [], [activeQuery.data]);
   const lockedCount = lockedPortfolioCount(portfolios);
   const lockedFallback = t('vault.lockedStub.fallbackAlias');
+  // A vault this device is holding open has already put the decrypted name on
+  // screen inside the workspace; the switcher naming the same portfolio after
+  // its VAULT was not privacy, it was two names for one thing — and two
+  // portfolios in one vault were indistinguishable here (failure map #6).
+  // Locked rows are untouched: they keep the alias, or the generic fallback.
+  const unlockedNames = useUnlockedPortfolioNames(portfolios);
   const displayName = useCallback(
-    (portfolio: PortfolioSummary) => portfolioDisplayName(portfolio, lockedFallback),
-    [lockedFallback],
+    (portfolio: PortfolioSummary) =>
+      portfolioDisplayName(portfolio, lockedFallback, unlockedNames.get(portfolio.id)),
+    [lockedFallback, unlockedNames],
   );
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);

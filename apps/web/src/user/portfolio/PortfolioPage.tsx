@@ -48,8 +48,14 @@ import { AsyncReadState } from '../components/AsyncReadState';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
-import { usePortfolioStore } from './PortfolioStoreProvider';
+import { isVaultedPortfolio, portfolioDisplayName } from './lockedPortfolio';
+import {
+  usePortfolioStore,
+  usePortfolioStoreCapabilities,
+  usePortfolioStoreScope,
+} from './PortfolioStoreProvider';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { useUnlockedPortfolioNames } from '../vault/useUnlockedPortfolioNames';
 import { usePhoneShell } from '../hooks/useCompactShell';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
@@ -187,6 +193,8 @@ function TotalsHeader({
   onWithdraw: () => void;
 }) {
   const t = useT();
+  // Cash moves are writes; see PageHeader for why they leave rather than grey out.
+  const { writes } = usePortfolioStoreCapabilities();
   const investedPct =
     totals.totalValueEur > 0
       ? Math.min(100, Math.max(0, (totals.marketValueEur / totals.totalValueEur) * 100))
@@ -232,14 +240,16 @@ function TotalsHeader({
         />
         <Stat
           delta={
-            <span className="flex gap-2">
-              <button className="bt-link" onClick={onDeposit} type="button">
-                {t('portfolio.overview.depositButton')}
-              </button>
-              <button className="bt-link" onClick={onWithdraw} type="button">
-                {t('portfolio.overview.withdrawButton')}
-              </button>
-            </span>
+            writes ? (
+              <span className="flex gap-2">
+                <button className="bt-link" onClick={onDeposit} type="button">
+                  {t('portfolio.overview.depositButton')}
+                </button>
+                <button className="bt-link" onClick={onWithdraw} type="button">
+                  {t('portfolio.overview.withdrawButton')}
+                </button>
+              </span>
+            ) : undefined
           }
           label={t('portfolio.overview.field.cash')}
           value={<MoneyText amount={totals.cashEur} />}
@@ -783,6 +793,7 @@ function HoldingCard({
   deletingId,
 }: HoldingRowProps) {
   const t = useT();
+  const { writes } = usePortfolioStoreCapabilities();
   const { asset } = holding;
   const dialogAsset: TransactionDialogAsset = {
     id: asset.id,
@@ -870,28 +881,30 @@ function HoldingCard({
         <div className="mt-4 border-t pt-4" style={{ borderColor: 'var(--bt-border)' }}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
-            <div className="flex flex-wrap gap-2">
-              {asset.isCustom ? (
-                <Button
-                  onClick={() =>
-                    onEditValuePoints({
-                      id: asset.id,
-                      symbol: asset.symbol,
-                      name: asset.name,
-                      currency: asset.currency,
-                      category: asset.category ?? 'other',
-                      smoothing: asset.smoothing ?? false,
-                    })
-                  }
-                  size="sm"
-                >
-                  {t('portfolio.overview.holdings.editValuePoints')}
+            {writes ? (
+              <div className="flex flex-wrap gap-2">
+                {asset.isCustom ? (
+                  <Button
+                    onClick={() =>
+                      onEditValuePoints({
+                        id: asset.id,
+                        symbol: asset.symbol,
+                        name: asset.name,
+                        currency: asset.currency,
+                        category: asset.category ?? 'other',
+                        smoothing: asset.smoothing ?? false,
+                      })
+                    }
+                    size="sm"
+                  >
+                    {t('portfolio.overview.holdings.editValuePoints')}
+                  </Button>
+                ) : null}
+                <Button onClick={() => onRecord(dialogAsset)} size="sm">
+                  {t('portfolio.overview.recordButton')}
                 </Button>
-              ) : null}
-              <Button onClick={() => onRecord(dialogAsset)} size="sm">
-                {t('portfolio.overview.recordButton')}
-              </Button>
-            </div>
+              </div>
+            ) : null}
           </div>
           {holding.realizedPnl !== 0 ? (
             <p className="bt-meta mt-3">
@@ -933,6 +946,7 @@ function HoldingRow({
   deletingId,
 }: HoldingRowProps) {
   const t = useT();
+  const { writes } = usePortfolioStoreCapabilities();
   const { asset } = h;
   const dialogAsset: TransactionDialogAsset = {
     id: asset.id,
@@ -1010,30 +1024,32 @@ function HoldingRow({
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
-                <div className="flex gap-2">
-                  {asset.isCustom ? (
-                    <Button
-                      onClick={() =>
-                        onEditValuePoints({
-                          id: asset.id,
-                          symbol: asset.symbol,
-                          name: asset.name,
-                          currency: asset.currency,
-                          // Custom holdings always carry a category (V3-P2);
-                          // fall back defensively so the editor seeds cleanly.
-                          category: asset.category ?? 'other',
-                          smoothing: asset.smoothing ?? false,
-                        })
-                      }
-                      size="sm"
-                    >
-                      {t('portfolio.overview.holdings.editValuePoints')}
+                {writes ? (
+                  <div className="flex gap-2">
+                    {asset.isCustom ? (
+                      <Button
+                        onClick={() =>
+                          onEditValuePoints({
+                            id: asset.id,
+                            symbol: asset.symbol,
+                            name: asset.name,
+                            currency: asset.currency,
+                            // Custom holdings always carry a category (V3-P2);
+                            // fall back defensively so the editor seeds cleanly.
+                            category: asset.category ?? 'other',
+                            smoothing: asset.smoothing ?? false,
+                          })
+                        }
+                        size="sm"
+                      >
+                        {t('portfolio.overview.holdings.editValuePoints')}
+                      </Button>
+                    ) : null}
+                    <Button onClick={() => onRecord(dialogAsset)} size="sm">
+                      {t('portfolio.overview.recordButton')}
                     </Button>
-                  ) : null}
-                  <Button onClick={() => onRecord(dialogAsset)} size="sm">
-                    {t('portfolio.overview.recordButton')}
-                  </Button>
-                </div>
+                  </div>
+                ) : null}
               </div>
 
               {h.realizedPnl !== 0 ? (
@@ -1484,6 +1500,11 @@ export function PortfolioPage() {
   const t = useT();
   const queryClient = useQueryClient();
   const store = usePortfolioStore();
+  // What the store under this subtree can serve, and which cache keyspace its
+  // answers belong in (see PortfolioStoreProvider). Both are the account-level
+  // defaults everywhere except inside an unlocked vault portfolio.
+  const capabilities = usePortfolioStoreCapabilities();
+  const storeScope = usePortfolioStoreScope();
   const [range, setRange] = useState<PriceRange>('1M');
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
   // Remembered per device for this surface (board #68 item 4) — the default is
@@ -1509,8 +1530,13 @@ export function PortfolioPage() {
   const [searchParams] = useSearchParams();
 
   // Global create actions land on the overview because this is the surface
-  // that owns the transaction dialog.
-  useCreateIntent(CREATE_INTENT.trade, () => setTxnDialog({ kind: 'create' }));
+  // that owns the transaction dialog — unless the store below cannot write, in
+  // which case the palette/shell entry must not open a dialog that can only
+  // refuse (failure map #7). The intent is still consumed, so the query flag
+  // does not stay in the URL waiting to fire on the next portfolio.
+  useCreateIntent(CREATE_INTENT.trade, () => {
+    if (capabilities.writes) setTxnDialog({ kind: 'create' });
+  });
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
@@ -1530,15 +1556,31 @@ export function PortfolioPage() {
   const recentSourceFilter =
     recentSourceSelection?.portfolioId === portfolioId ? recentSourceSelection.source : 'all';
 
+  // The decrypted names of whatever this device holds open, so a vaulted
+  // portfolio is named by what it IS rather than by the vault it sits in
+  // (failure map #6). Empty for every normal account — the roster carries no
+  // vaulted row, so the hook resolves nothing and imports nothing.
+  const unlockedNames = useUnlockedPortfolioNames(
+    useMemo(() => portfoliosQuery.data?.portfolios ?? [], [portfoliosQuery.data]),
+  );
+  const displayName =
+    portfolio == null
+      ? null
+      : portfolioDisplayName(
+          portfolio,
+          t('vault.lockedStub.fallbackAlias'),
+          unlockedNames.get(portfolio.id),
+        );
+
   const portfolioQuery = useQuery({
-    queryKey: ['portfolio', portfolioId],
+    queryKey: ['portfolio', portfolioId, ...storeScope],
     queryFn: ({ signal }) => store.getPortfolio(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
 
   const historyQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
+    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range), ...storeScope],
     queryFn: ({ signal }) =>
       store.getPortfolioHistory(portfolioId!, toHistoryRange(range), false, signal),
     enabled: portfolioId !== null,
@@ -1556,6 +1598,7 @@ export function PortfolioPage() {
       'recent',
       'executedAt',
       recentSourceFilter,
+      ...storeScope,
     ],
     queryFn: ({ signal }) =>
       store.listTransactions(
@@ -1586,7 +1629,7 @@ export function PortfolioPage() {
   );
   const holdingTransactionQueries = useQueries({
     queries: expandedAssetIds.map((assetId) => ({
-      queryKey: ['portfolio', portfolioId, 'transactions', 'asset', assetId],
+      queryKey: ['portfolio', portfolioId, 'transactions', 'asset', assetId, ...storeScope],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
         store.listTransactions(
           portfolioId!,
@@ -1601,7 +1644,7 @@ export function PortfolioPage() {
   // Active cash sources (V3-P3): fed to the cash + transaction dialogs so their
   // source picker appears once a second source exists (defaulting to Main).
   const cashSourcesQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'cash-sources', false],
+    queryKey: ['portfolio', portfolioId, 'cash-sources', false, ...storeScope],
     queryFn: ({ signal }) => store.listCashSources(portfolioId!, false, signal),
     enabled: portfolioId !== null,
     staleTime: 30_000,
@@ -1695,13 +1738,30 @@ export function PortfolioPage() {
     portfolioQuery.isError ||
     !portfolioQuery.data
   ) {
+    // A VAULTED portfolio never gets told to refresh the page. The unlock
+    // session is memory-only, so a reload is the one action that turns a
+    // transient read failure into a locked stub and a second password prompt
+    // (failure map #1/#3). Retry re-runs the read in place instead, which is
+    // what the copy offers.
+    const vaulted = isVaultedPortfolio(portfolio);
     return (
       <div className="flex flex-col gap-4">
         <PageHeader
           onRecord={() => setTxnDialog({ kind: 'create' })}
           onNewCustom={() => setCustomOpen(true)}
         />
-        <Alert tone="error">{t('portfolio.overview.loadError')}</Alert>
+        <Alert tone="error">
+          {vaulted ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t('portfolio.overview.vaultedLoadError')}</span>
+              <Button onClick={() => void portfolioQuery.refetch()} size="sm">
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : (
+            t('portfolio.overview.loadError')
+          )}
+        </Alert>
         {renderDialogs()}
       </div>
     );
@@ -1735,7 +1795,11 @@ export function PortfolioPage() {
                   asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
                   defaultPayFromCash={portfolio?.defaultPayFromCash ?? false}
                   cashSources={cashSources}
-                  portfolioName={portfolio?.name}
+                  // NEVER `portfolio.name`: a vaulted row's name column holds
+                  // E4's content-free sentinel, which this dialog printed as its
+                  // subtitle (failure map #6). One seam decides what a portfolio
+                  // is called, everywhere.
+                  portfolioName={displayName ?? undefined}
                   availableCashEur={cashSources.find((s) => s.isMain)?.balanceEur}
                   heldQuantity={heldQuantity}
                   onClose={() => setTxnDialog(null)}
@@ -1783,15 +1847,23 @@ export function PortfolioPage() {
       />
 
       {/* Both supporting reads are classified separately: whichever of them is a
-          recoverable outage keeps its Retry, and that Retry re-runs only it. */}
-      <AsyncReadState
-        loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
-        reads={[
-          { error: transactionsQuery.error, refetch: () => transactionsQuery.refetch() },
-          { error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() },
-        ]}
-        errorLabel={t('portfolio.overview.detailsLoadError')}
-      />
+          recoverable outage keeps its Retry, and that Retry re-runs only it.
+          A store that refuses these rows BY DESIGN states nothing here at all:
+          the refusal is not an outage and not news, and announcing it painted a
+          permanent "This information isn't available." over the net-worth
+          headline of a portfolio that was rendering perfectly (failure map #7).
+          The places that would otherwise show an empty list — the recent ledger,
+          the expanded holding rows — keep saying so where the rows would be. */}
+      {capabilities.rowReads ? (
+        <AsyncReadState
+          loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
+          reads={[
+            { error: transactionsQuery.error, refetch: () => transactionsQuery.refetch() },
+            { error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() },
+          ]}
+          errorLabel={t('portfolio.overview.detailsLoadError')}
+        />
+      ) : null}
 
       <NormalModeOnly>
         {/* This migration flag exists only on server-side custom-asset rows.
@@ -1823,12 +1895,18 @@ export function PortfolioPage() {
           description={t('portfolio.overview.emptyState.description')}
           cta={
             <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setTxnDialog({ kind: 'create' })} variant="primary">
-                {t('portfolio.overview.emptyState.recordButton')}
-              </Button>
-              <Button onClick={() => setCustomOpen(true)}>
-                {t('portfolio.overview.emptyState.newCustomButton')}
-              </Button>
+              {/* The two writes leave when the store has none; the Assets link
+                  stays because browsing the catalog works either way. */}
+              {capabilities.writes ? (
+                <>
+                  <Button onClick={() => setTxnDialog({ kind: 'create' })} variant="primary">
+                    {t('portfolio.overview.emptyState.recordButton')}
+                  </Button>
+                  <Button onClick={() => setCustomOpen(true)}>
+                    {t('portfolio.overview.emptyState.newCustomButton')}
+                  </Button>
+                </>
+              ) : null}
               <Link className="bt-btn bt-btn--quiet" to="/assets/search">
                 {t('portfolio.overview.emptyState.searchLink')}
               </Link>
@@ -1978,15 +2056,22 @@ export function PortfolioPage() {
  */
 function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCustom: () => void }) {
   const t = useT();
+  // A store that cannot write is not offered write actions. Hidden rather than
+  // disabled: a disabled "+ Transaction" invites a hover, a tooltip and a
+  // theory, and the honest answer here is that this surface has no writes at
+  // all — not that this one is temporarily out of reach (failure map #7).
+  const { writes } = usePortfolioStoreCapabilities();
   return (
     <PageHead
       actions={
-        <>
-          <Button onClick={onNewCustom}>{t('portfolio.overview.newCustomButton')}</Button>
-          <Button onClick={onRecord} variant="primary">
-            {t('portfolio.overview.recordButton')}
-          </Button>
-        </>
+        writes ? (
+          <>
+            <Button onClick={onNewCustom}>{t('portfolio.overview.newCustomButton')}</Button>
+            <Button onClick={onRecord} variant="primary">
+              {t('portfolio.overview.recordButton')}
+            </Button>
+          </>
+        ) : null
       }
       title={t('portfolio.overview.title')}
     />

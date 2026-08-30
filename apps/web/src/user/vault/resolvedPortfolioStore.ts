@@ -37,6 +37,24 @@ import { VaultPortfolioStoreError, type VaultPortfolioStore } from './vaultPortf
 
 /** Everything a surface needs from one unlocked, resolver-backed portfolio. */
 export interface UnlockedVaultPortfolioAccess {
+  /**
+   * Identity of THIS access object — the store instance behind it, not the
+   * documents it opened.
+   *
+   * Deliberately NOT `resolution.snapshotId`, which is content-derived and
+   * therefore identical across two resolutions of the same unchanged documents
+   * (`documentSetSnapshotId`). That is precisely the case this id exists for:
+   * unlocking fires the vault-opened edge, the registry disposes the batch and
+   * re-resolves the SAME documents, and the disposed access's in-flight
+   * `getPortfolio` rejects. Keyed by snapshot the rejection would land on the
+   * live store's cache entry and paint a fat error over a perfectly readable
+   * portfolio (paranoid-UX failure map #1); keyed by access it lands on the
+   * dead store's own entry, where nothing reads it.
+   *
+   * Cache scoping only. It is minted client-side, means nothing to the server,
+   * and carries no vault or account material.
+   */
+  accessId: string;
   portfolioId: string;
   vaultId: string;
   /** The TRUE portfolio fields, decrypted — not the stub's alias. */
@@ -58,6 +76,14 @@ export interface UnlockedVaultPortfolioAccess {
   /** Drops the decrypted references this access object holds. */
   dispose(): void;
 }
+
+/**
+ * Monotonic per-tab counter behind {@link UnlockedVaultPortfolioAccess.accessId}.
+ * A counter, not a random id: it never collides within a tab, it costs nothing,
+ * and reading `vault-access-3` in React Query devtools tells you which
+ * resolution an entry belongs to.
+ */
+let accessSequence = 0;
 
 export interface ResolvedPortfolioStoreOptions {
   /**
@@ -110,6 +136,7 @@ export function createUnlockedVaultPortfolioAccess(
   }
 
   return {
+    accessId: `vault-access-${(accessSequence += 1)}`,
     portfolioId,
     vaultId: resolution.vault.id,
     portfolio: resolution.portfolio,

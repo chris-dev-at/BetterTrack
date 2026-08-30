@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
@@ -32,6 +32,7 @@ import type { EndpointVaultState } from '../keystore';
 import { EndpointKeystoreError } from '../keystore/errors';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import { provisionVault, type ProvisionVaultInput } from '../provisionVault';
+import { useUnlockedPortfolioNames } from '../useUnlockedPortfolioNames';
 import type { RestoreCandidate } from '../restore';
 import {
   isVaultStateActionKind,
@@ -150,6 +151,12 @@ export function VaultManager({
     queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
+  // Resolved over the WHOLE roster, never per row: the resolution registry is
+  // keyed by roster, so asking per vault would open each vault and decrypt its
+  // documents once per row instead of once per panel.
+  const unlockedNames = useUnlockedPortfolioNames(
+    useMemo(() => portfoliosQuery.data?.portfolios ?? [], [portfoliosQuery.data]),
+  );
   const endpointQueries = useQueries({
     queries: vaults.map((vault) => ({
       queryKey: vaultEndpointStateQueryKey(vault.id),
@@ -270,6 +277,7 @@ export function VaultManager({
               membershipReady={portfoliosQuery.isSuccess}
               onChanged={refreshVaults}
               operations={operations}
+              unlockedNames={unlockedNames}
               vault={vault}
             />
           ))}
@@ -300,6 +308,7 @@ function VaultManagerRow({
   membershipReady,
   onChanged,
   operations,
+  unlockedNames,
 }: {
   vault: VaultConfig;
   endpointQuery: UseQueryResult<EndpointVaultState, Error> | undefined;
@@ -308,6 +317,8 @@ function VaultManagerRow({
   membershipReady: boolean;
   onChanged(): Promise<void>;
   operations: VaultManagerOperations;
+  /** Decrypted names for the portfolios this device currently holds open. */
+  unlockedNames: ReadonlyMap<string, string>;
 }) {
   const t = useT();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -403,7 +414,15 @@ function VaultManagerRow({
           <ul className="mt-1 flex flex-wrap gap-2">
             {memberships.map((portfolio) => (
               <li className="bt-badge" key={portfolio.id}>
-                {portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias'))}
+                {/* "Private Holdings · Private Holdings" — the vault named after
+                    itself — is what this chip read while the vault was open
+                    (failure map #6). With the name in hand it says which
+                    portfolio; locked, it stays the alias. */}
+                {portfolioDisplayName(
+                  portfolio,
+                  t('vault.lockedStub.fallbackAlias'),
+                  unlockedNames.get(portfolio.id),
+                )}
               </li>
             ))}
           </ul>
@@ -531,21 +550,21 @@ function VaultAccessAction({
   const [stepUpValue, setStepUpValue] = useState('');
   const [working, setWorking] = useState(false);
   const [failure, setFailure] = useState<AccessFailure | null>(null);
-  const effectiveAction = action;
   // A URL is a request, not a state. This surface is the only one reachable
   // without passing a row affordance, so it reconciles `?action=` against the
-  // live endpoint state exactly as `vaultStateAffordance` does for the rows —
-  // otherwise a link minted before the fifth wrong password keeps rendering a
-  // live unlock form that submission can only refuse.
+  // live endpoint state below (see the withdrawn-action branch) exactly as
+  // `vaultStateAffordance` does for the rows — otherwise a link minted before
+  // the fifth wrong password keeps rendering a live unlock form that submission
+  // can only refuse (#1526).
   const stateQuery = useVaultEndpointState(vault.id);
   const liveState = stateQuery.data ?? null;
-  const stateGoverned = isVaultStateActionKind(effectiveAction);
+  const stateGoverned = isVaultStateActionKind(action);
   const restoreAvailable =
     operations.listRestoreCandidates != null && operations.restoreCandidate != null;
   const restoreCandidates = useQuery({
     queryKey: ['vaults', vault.id, 'restore-candidates'],
     queryFn: () => operations.listRestoreCandidates!(vault),
-    enabled: effectiveAction === 'restore' && restoreAvailable,
+    enabled: action === 'restore' && restoreAvailable,
     retry: false,
   });
 
@@ -554,20 +573,20 @@ function VaultAccessAction({
     setFailure(null);
     try {
       const fetchHeaderEnvelope = () => operations.fetchHeader(vault);
-      if (effectiveAction === 'unlock') {
+      if (action === 'unlock') {
         await endpointVaultKeystore.unlock(secret);
         await endpointVaultKeystore.openStoredVault(
           vault.id,
           fetchHeaderEnvelope,
           vault.keyFingerprint,
         );
-      } else if (effectiveAction === 'open') {
+      } else if (action === 'open') {
         await endpointVaultKeystore.openStoredVault(
           vault.id,
           fetchHeaderEnvelope,
           vault.keyFingerprint,
         );
-      } else if (effectiveAction === 'provide-phrase') {
+      } else if (action === 'provide-phrase') {
         await endpointVaultKeystore.storeAfterVerifiedOpen({
           vaultId: vault.id,
           mnemonic: secret,
@@ -575,17 +594,17 @@ function VaultAccessAction({
           expectedFingerprint: vault.keyFingerprint,
           fetchHeaderEnvelope,
         });
-      } else if (effectiveAction === 'reset-endpoint') {
+      } else if (action === 'reset-endpoint') {
         if (!resetAcknowledged) return;
         await endpointVaultKeystore.reset();
-      } else if (effectiveAction === 'rotate' && operations.rotate) {
+      } else if (action === 'rotate' && operations.rotate) {
         await operations.rotate(vault);
-      } else if (effectiveAction === 'start-fresh' && operations.startFresh) {
+      } else if (action === 'start-fresh' && operations.startFresh) {
         if (!destructionAcknowledged || stepUpValue.trim() === '') return;
         await operations.startFresh(vault, {
           [stepUpKind]: stepUpValue.trim(),
         } as VaultStepUpCredential);
-      } else if (effectiveAction === 'scan-qr' && operations.scanQr) {
+      } else if (action === 'scan-qr' && operations.scanQr) {
         await operations.scanQr(vault);
       } else {
         throw new Error('vault-action-unavailable');
@@ -601,18 +620,18 @@ function VaultAccessAction({
     }
   }
 
-  const needsPhrase = effectiveAction === 'provide-phrase';
-  const needsSecret = effectiveAction === 'unlock' || needsPhrase;
-  const isReset = effectiveAction === 'reset-endpoint';
-  const isStartFresh = effectiveAction === 'start-fresh';
+  const needsPhrase = action === 'provide-phrase';
+  const needsSecret = action === 'unlock' || needsPhrase;
+  const isReset = action === 'reset-endpoint';
+  const isStartFresh = action === 'start-fresh';
   // A deep link can still reach a deferred action. It gets the reason and the
   // vault's live next step — never a Continue button that can only refuse.
-  const deferredKey = deferredReasonKey(effectiveAction, operations);
+  const deferredKey = deferredReasonKey(action, operations);
 
   // A stale or hand-edited `?action=` never becomes a raw key on screen with a
   // Continue that can only throw: it gets named as unknown, plus this vault's
   // own live next step.
-  if (!ACCESS_ACTIONS.has(effectiveAction)) {
+  if (!ACCESS_ACTIONS.has(action)) {
     return (
       <section
         aria-label={t('vault.manager.access.title', { name: vault.name })}
@@ -664,7 +683,7 @@ function VaultAccessAction({
   // The reconciliation itself: an action this state no longer offers is answered
   // with the affordance the row would give — and, in lockout, with the instant
   // the endpoint accepts a password again instead of an invitation to type one.
-  if (liveState != null && stateGoverned && !vaultStateOffersAction(liveState, effectiveAction)) {
+  if (liveState != null && stateGoverned && !vaultStateOffersAction(liveState, action)) {
     const retryAt = vaultStateRetryAt(liveState);
     return (
       <section
@@ -690,7 +709,7 @@ function VaultAccessAction({
     );
   }
 
-  if (effectiveAction === 'open') {
+  if (action === 'open') {
     return (
       <SilentVaultOpen
         failure={failure}
@@ -700,7 +719,7 @@ function VaultAccessAction({
     );
   }
 
-  if (effectiveAction === 'restore') {
+  if (action === 'restore') {
     return (
       <section
         aria-label={t('vault.manager.access.title', { name: vault.name })}
@@ -745,7 +764,7 @@ function VaultAccessAction({
       <div>
         <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
         <p className={isStartFresh ? 'bt-gold-note' : 'bt-row-sub'}>
-          {t(`vault.manager.access.${effectiveAction}`)}
+          {t(`vault.manager.access.${action}`)}
         </p>
       </div>
       {deferredKey ? <DeferredActionNotice reasonKey={deferredKey} vault={vault} /> : null}
