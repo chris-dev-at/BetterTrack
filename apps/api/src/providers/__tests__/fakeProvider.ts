@@ -8,7 +8,7 @@ import type {
   Quote,
 } from '@bettertrack/contracts';
 
-import type { AssetProvider } from '../AssetProvider';
+import type { AssetProvider, HistoryBasis } from '../AssetProvider';
 
 /** A manually-resolvable promise, for driving coalescing/timing tests. */
 export interface Deferred<T> {
@@ -84,6 +84,12 @@ export interface FakeProvider extends AssetProvider {
   readonly calls: { quote: number; search: number; history: number; meta: number };
 }
 
+/** Declarations (not behaviour) a fake provider can carry. */
+export interface FakeProviderDeclarations {
+  /** Price basis of `getHistory`; undeclared by default (§13.5 V5-P1c). */
+  historyBasis?: HistoryBasis;
+}
+
 /**
  * A configurable provider for tests. Each method delegates to a controllable
  * behaviour function and records its call count, so tests can assert exactly how
@@ -92,6 +98,7 @@ export interface FakeProvider extends AssetProvider {
 export function createFakeProvider(
   id = 'fake',
   controls: Partial<FakeProviderControls> = {},
+  declarations: FakeProviderDeclarations = {},
 ): FakeProvider {
   const calls = { quote: 0, search: 0, history: 0, meta: 0 };
   const behaviour: FakeProviderControls = {
@@ -104,6 +111,7 @@ export function createFakeProvider(
   return {
     id,
     calls,
+    ...(declarations.historyBasis ? { historyBasis: declarations.historyBasis } : {}),
     search(_query: string): Promise<AssetSearchResult[]> {
       calls.search += 1;
       return behaviour.search();
