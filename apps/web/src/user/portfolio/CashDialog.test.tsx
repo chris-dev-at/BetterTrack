@@ -100,12 +100,43 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.depositCash).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T12:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 500 }),
       ),
     );
+    // Today carries NO `executedAt`: the server stamps it on the clock it also
+    // judges solvency by (#1371).
+    expect(vi.mocked(portfolioApi.depositCash).mock.calls[0]![1]).not.toHaveProperty('executedAt');
     expect(onSubmitted).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.getByText('Deposit recorded.')).toBeInTheDocument();
+  });
+
+  test('a same-day deposit made before noon UTC is not stamped into the future (#1371)', async () => {
+    // The nightly failure happened at 03:54Z: the dialog stamped today at
+    // 12:00Z, the immediate transfer was evaluated at the real instant, and
+    // solvency therefore could not see the money that was already on screen.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-07-02T03:54:00.000Z'));
+    try {
+      vi.mocked(portfolioApi.depositCash).mockResolvedValue({
+        movement: { id: 'm-early' },
+      } as Awaited<ReturnType<typeof portfolioApi.depositCash>>);
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      // No injected `today` — the dialog reads the (early-UTC) wall clock, the
+      // way it does in the browser.
+      renderDialog('deposit', { today: undefined });
+
+      await user.type(screen.getByLabelText('Amount'), '1000');
+      expect(screen.getByLabelText('Date')).toHaveValue('2026-07-02');
+      await user.click(screen.getByRole('button', { name: 'Deposit cash' }));
+
+      await waitFor(() => expect(portfolioApi.depositCash).toHaveBeenCalled());
+      expect(vi.mocked(portfolioApi.depositCash).mock.calls[0]![1]).not.toHaveProperty(
+        'executedAt',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('stamps backdated cash at noon UTC, after same-day trades', async () => {
@@ -233,8 +264,11 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.chargeCashFee).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T12:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 12.5 }),
       ),
+    );
+    expect(vi.mocked(portfolioApi.chargeCashFee).mock.calls[0]![1]).not.toHaveProperty(
+      'executedAt',
     );
     expect(portfolioApi.withdrawCash).not.toHaveBeenCalled();
     expect(portfolioApi.depositCash).not.toHaveBeenCalled();

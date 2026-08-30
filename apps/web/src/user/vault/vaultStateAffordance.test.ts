@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import type { EndpointVaultState } from './keystore';
 import {
   endpointVaultStateCase,
+  VAULT_STATE_ACTION_KINDS,
   VAULT_STATE_AFFORDANCES,
   vaultStateAffordance,
+  vaultStateOffersAction,
+  vaultStateRetryAt,
 } from './vaultStateAffordance';
 
 const STATES: EndpointVaultState[] = [
@@ -50,5 +53,28 @@ describe('vault state affordances', () => {
         stateKey: expect.stringMatching(/^vault\.manager\.state\./),
       });
     }
+  });
+
+  it('offers exactly the actions the state names, so a deep link can be reconciled', () => {
+    const offered = STATES.map((state) =>
+      VAULT_STATE_ACTION_KINDS.filter((action) => vaultStateOffersAction(state, action)),
+    );
+
+    expect(offered).toEqual([
+      ['unlock'],
+      // Locked out: the password form is withdrawn, only the reset remains.
+      ['reset-endpoint'],
+      ['open'],
+      ['open'],
+      // The one state with two: the row renders "Enter words" beside "Scan QR".
+      ['provide-phrase', 'scan-qr'],
+      ['reset-endpoint'],
+    ]);
+    // A hand-edited or stale `?action=` is never on offer by accident.
+    expect(STATES.some((state) => vaultStateOffersAction(state, 'rotate'))).toBe(false);
+  });
+
+  it('carries the retry instant only for a live lockout', () => {
+    expect(STATES.map(vaultStateRetryAt)).toEqual([null, 1, null, null, null, null]);
   });
 });

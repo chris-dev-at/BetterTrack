@@ -513,6 +513,8 @@
         "preparing": "Preparing Google sign-in…",
         "retryPreparation": "Retry Google sign-in",
         "preparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+        "readyToConnect": "Google sign-in is ready — click again to connect.",
+        "readyToContinue": "Google sign-in is ready — click again to continue.",
         "unlockRequired": "Unlock your encrypted vault to change its storage.",
         "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
         "passphraseLabel": "Vault passphrase",
@@ -552,10 +554,6 @@
         "stayConnected": "Stays connected — syncs automatically."
       },
       "slots": {
-        "drive": {
-          "name": "Google Drive backup",
-          "purpose": "Keep an encrypted, off-site backup of your account on your own Drive."
-        },
         "bankCash": {
           "name": "Bank & broker cash sync",
           "purpose": "Keep your cash balances in step with your bank and broker accounts."
@@ -3772,6 +3770,10 @@
         "rotate": "Rotation replaces the recovery words after every selected copy passes a verified round trip.",
         "start-fresh": "Starting fresh permanently discards this vault’s encrypted contents. Other vaults and account data stay unchanged.",
         "unknownAction": "This link asks for a vault step that does not exist. Nothing was changed — continue with this vault’s current step below.",
+        "withdrawnAction": "This link asks for a vault step this device has moved past. Nothing was changed — continue with this vault’s current step below.",
+        "lockedOut": "Too many wrong device passwords. This device accepts the password again at {{time}}; nothing was changed. Wait, or reset the words stored on this device — your encrypted copies on server and Drive stay untouched.",
+        "checkingState": "Checking what this vault needs on this device…",
+        "stateError": "This device’s state for this vault could not be read, so no step is offered yet.",
         "devicePassword": "Device password",
         "newDevicePassword": "New device password",
         "words": "12 recovery words",
@@ -3879,6 +3881,7 @@
       "moveIn": {
         "title": "Move portfolio into a vault",
         "warning": "After every encrypted copy is verified, BetterTrack permanently deletes this portfolio’s server-readable money data and revokes its existing shares. Those shares are not restored if you move it out later.",
+        "driveOnlyRetention": "This vault keeps its encrypted documents in Google Drive only. A short-lived encrypted staging copy stays on the BetterTrack server for up to {{minutes}} minutes from when the copies are staged — the move itself uses part of that window — so a Drive write that never landed can still be recovered, and it expires by itself. BetterTrack never reads it and never serves it as vault storage.",
         "action": "Move into vault",
         "working": "Moving portfolio into the vault…",
         "done": "The portfolio is encrypted in the vault and locked on the server.",
@@ -3888,6 +3891,7 @@
         "title": "Move portfolio out of the vault",
         "unlockRequired": "Unlock this vault on this device before moving the portfolio out.",
         "warning": "Moving this portfolio out makes it server-readable again. BetterTrack restores its decrypted money data under the same portfolio ID; previous shares stay revoked.",
+        "driveOnlyRetention": "This vault keeps its encrypted documents in Google Drive only. Its remaining documents stay on the BetterTrack server as a short-lived encrypted staging copy for up to {{minutes}} minutes from when the copies are staged, so a Drive write that never landed can still be recovered, and it expires by itself. BetterTrack never reads it and never serves it as vault storage.",
         "confirm": "I understand that this portfolio becomes server-readable again.",
         "action": "Restore as a normal portfolio",
         "working": "Restoring the portfolio…",
@@ -3937,7 +3941,7 @@
         "advanced": "Advanced",
         "driveOnly": {
           "title": "Google Drive only",
-          "body": "Nothing on BetterTrack servers — not even encrypted."
+          "body": "Nothing is kept on BetterTrack servers — not even encrypted. This setup writes to Drive only; later, moving a portfolio into or out of this vault does leave its encrypted staging copy on the server, so a Drive write that never landed can still be recovered. That copy expires by itself after up to {{minutes}} minutes and is never served as vault storage."
         }
       },
       "passphraseDistinct": "Create a new vault passphrase. It must be different from your BetterTrack login password and never goes to the server.",
@@ -3967,6 +3971,7 @@
       },
       "errors": {
         "drivePreparation": "Google Drive could not be prepared. Check your connection and try again. Your account has not changed.",
+        "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so it cannot be used as vault storage here. Your connection is fine — choose BetterTrack encrypted storage, or ask the person running this deployment to configure Drive. Your account has not changed.",
         "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
         "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
@@ -4001,6 +4006,7 @@
       "preparingDrive": "Preparing Google sign-in…",
       "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
       "retryDrivePreparation": "Retry Google sign-in",
+      "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so this device cannot read the encrypted Drive copy. Your connection is fine — ask the person running this deployment to configure Drive.",
       "action": "Unlock vault",
       "unlocking": "Unlocking…",
       "stuck": {
@@ -4058,6 +4064,7 @@
       "preparingDrive": "Preparing Google sign-in…",
       "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
       "retryDrivePreparation": "Retry Google sign-in",
+      "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so synchronization cannot reach your Drive copy. Ask the person running this deployment to configure Drive.",
       "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"
@@ -4162,12 +4169,14 @@
         "errors": {
           "notABettertrackCode": "This QR code is not a BetterTrack transfer code.",
           "updateRequired": "This transfer code uses an unsupported version. Update the app before trying again.",
+          "legacyCode": "This code came from an older version of BetterTrack; create a new one on the sending device.",
           "malformed": "This transfer code is damaged and was rejected. Ask the other device to show it again.",
           "missingMnemonic": "The transfer code has no seed phrase and was rejected.",
           "missingVaultId": "The transfer code has no vault ID and was rejected.",
+          "duplicateKey": "This transfer code repeats a piece of information and was rejected. Ask the other device to show it again.",
           "invalidMnemonic": "The seed phrase must be 12 valid English BIP39 words with a valid checksum.",
           "invalidVaultId": "The transfer code contains an invalid vault ID.",
-          "invalidName": "The vault-name hint is longer than 64 characters.",
+          "nameTooLong": "The vault-name hint is longer than 64 characters.",
           "invalidFingerprint": "The transfer code contains an invalid key fingerprint.",
           "verification": "The phrase did not open the authenticated vault header. Nothing was saved on this device.",
           "password": "That device password is incorrect. Nothing was saved on this device.",

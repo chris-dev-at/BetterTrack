@@ -59,10 +59,18 @@ interface RegistryEntry {
    */
   resolving: boolean;
   /**
-   * A vault-opened edge that arrived mid-resolution, waiting to be judged when
-   * the run settles. `consumeRerunRequest` decides what it was really about.
+   * The vaults whose open edge arrived mid-resolution, waiting to be judged when
+   * the run settles. `consumeVaultOpenEdges` decides what each one was about.
+   * A SET, not a flag: two vaults unlocked inside one resolution window are two
+   * independent pieces of news, and collapsing them into one dropped the second
+   * (#1533).
    */
-  rerunRequested: boolean;
+  pendingVaultOpens: Set<string>;
+  /**
+   * Vaults whose edge already bought a re-run in the current chain. The chain
+   * bound (see `consumeVaultOpenEdges`), per vault instead of per run.
+   */
+  rerunVaultIds: Set<string>;
   /**
    * Id of the newest resolution on this entry. A run whose id is no longer
    * current has been superseded (a re-acquire, a re-run) and must publish
@@ -204,7 +212,8 @@ function placeholderEntry(): RegistryEntry {
     releaseKeystoreListeners: null,
     released: false,
     resolving: false,
-    rerunRequested: false,
+    pendingVaultOpens: new Set(),
+    rerunVaultIds: new Set(),
     loadSeq: 0,
   };
 }
@@ -249,6 +258,9 @@ async function load(
   const seq = (entry.loadSeq += 1);
   const superseded = () => entry.released || entry.loadSeq !== seq;
   entry.resolving = true;
+  // A fresh resolution starts a new edge chain, so the per-vault bound below
+  // starts over with it.
+  if (!isRerun) entry.rerunVaultIds.clear();
   try {
     const {
       listVaults,
@@ -265,14 +277,18 @@ async function load(
         entry.batch = null;
         publish(entry, NO_UNLOCKED_PORTFOLIOS);
       });
-      const releaseVaultOpened = vaultOpenedSubscription(() => {
+      const releaseVaultOpened = vaultOpenedSubscription((vaultId: string) => {
         if (entry.released) return;
+        // A vault no portfolio in THIS roster lives in cannot change this
+        // snapshot, however it was opened: re-resolving for it would decrypt
+        // the same documents again for nothing.
+        if (!rosterHoldsVault(portfolios, vaultId)) return;
         // Our own `openStoredVault` fires this too, so an edge that lands while
-        // a resolution is in flight cannot be acted on blind. Remember it and
-        // let `consumeRerunRequest` judge it once the run has settled and its
-        // outcome is known.
+        // a resolution is in flight cannot be acted on blind. Remember which
+        // vault it named and let `consumeVaultOpenEdges` judge it once the run
+        // has settled and its outcome is known.
         if (entry.resolving) {
-          entry.rerunRequested = true;
+          entry.pendingVaultOpens.add(vaultId);
           return;
         }
         entry.batch?.dispose();
@@ -310,39 +326,72 @@ async function load(
   } finally {
     if (entry.loadSeq === seq) {
       entry.resolving = false;
-      consumeRerunRequest(entry, accountId, portfolios, isRerun);
+      consumeVaultOpenEdges(entry, accountId, portfolios);
     }
   }
 }
 
+/** Does any portfolio in this roster live in that vault? */
+function rosterHoldsVault(portfolios: readonly PortfolioSummary[], vaultId: string): boolean {
+  return portfolios.some((portfolio) => portfolio.vaultId === vaultId);
+}
+
 /**
- * Decide what a vault-opened edge that arrived MID-RESOLUTION was about, now
- * that the run it interrupted has settled.
+ * Did the settled run leave that vault's portfolios stale?
  *
- * The signal itself is ambiguous: the resolver's own `openStoredVault` raises
- * it, and so does the user unlocking through the access surface a moment later.
- * The OUTCOME disambiguates it. This resolution can only have raised the edge
- * if it opened a vault — and a run that opened one publishes a non-empty batch.
- * So a run that opened nothing and still saw an edge is the real case (#1531
- * F2): the vault was locked when the resolver looked, the user unlocked while
- * documents were in flight, and the empty batch just published is already
- * stale. Dropping that edge left the portfolio a stub until a reload.
- *
- * Bounded twice over. A re-run never queues another, so an edge chain is at
- * most two resolutions whatever the keystore notifies; and the keystore only
- * raises the edge on a REAL key transition, so the no-op re-open inside the
- * second run is silent anyway.
+ * The question the edge really asks. A run that opened the vault itself ends
+ * with every one of its portfolios in the published batch, so its own edge
+ * answers no; an unlock that landed WHILE the resolver was looking at a locked
+ * vault leaves them missing, and that is the news worth another resolution.
  */
-function consumeRerunRequest(
+function vaultLeftStale(
+  entry: RegistryEntry,
+  portfolios: readonly PortfolioSummary[],
+  vaultId: string,
+): boolean {
+  const unlocked = entry.batch?.unlocked;
+  return portfolios.some(
+    (portfolio) => portfolio.vaultId === vaultId && unlocked?.has(portfolio.id) !== true,
+  );
+}
+
+/**
+ * Decide what the vault-opened edges that arrived MID-RESOLUTION were about,
+ * now that the run they interrupted has settled.
+ *
+ * Each signal on its own is ambiguous: the resolver's own `openStoredVault`
+ * raises one, and so does the user unlocking through the access surface a
+ * moment later. The vault id disambiguates it PER VAULT. This resolution can
+ * only have raised the edge for a vault it opened — and a vault it opened has
+ * its portfolios in the batch just published. So an edge naming a vault whose
+ * portfolios are still missing is the real case (#1531 F2): the vault was
+ * locked when the resolver looked, the user unlocked while documents were in
+ * flight, and what was just published is already stale.
+ *
+ * Judging that by the RUN's outcome instead — "opened nothing, saw an edge" —
+ * was right for one vault and wrong for two (#1533): a re-run that unlocks the
+ * first vault publishes a non-empty batch, and a second vault unlocked inside
+ * that window was then indistinguishable from the re-run's own open, so its
+ * portfolios stayed stubs until the next remount.
+ *
+ * STILL BOUNDED, now per vault: a vault's edge buys at most one re-run per
+ * chain, so a chain is at most one resolution per roster vault however the
+ * keystore notifies. The keystore's own silence on a no-op re-open (#1531)
+ * keeps the ordinary case at two.
+ */
+function consumeVaultOpenEdges(
   entry: RegistryEntry,
   accountId: string,
   portfolios: readonly PortfolioSummary[],
-  isRerun: boolean,
 ): void {
-  if (!entry.rerunRequested) return;
-  entry.rerunRequested = false;
-  if (entry.released || isRerun) return;
-  if ((entry.batch?.unlocked.size ?? 0) > 0) return;
+  const pending = [...entry.pendingVaultOpens];
+  entry.pendingVaultOpens.clear();
+  if (pending.length === 0 || entry.released) return;
+  const stale = pending.filter(
+    (vaultId) => !entry.rerunVaultIds.has(vaultId) && vaultLeftStale(entry, portfolios, vaultId),
+  );
+  if (stale.length === 0) return;
+  for (const vaultId of stale) entry.rerunVaultIds.add(vaultId);
   entry.batch?.dispose();
   entry.batch = null;
   void load(entry, accountId, portfolios, true);
@@ -354,7 +403,8 @@ function release(token: string): void {
   entry.refs -= 1;
   if (entry.refs > 0) return;
   entry.released = true;
-  entry.rerunRequested = false;
+  entry.pendingVaultOpens.clear();
+  entry.rerunVaultIds.clear();
   entry.abort.abort();
   entry.releaseKeystoreListeners?.();
   entry.releaseKeystoreListeners = null;

@@ -3,18 +3,20 @@ import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
   PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_DELIVERY_REFUSED_ERROR,
   WEBHOOK_EVENT_HEADER,
   WEBHOOK_EVENT_TYPES,
   WEBHOOK_SECRET_PREFIX,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
+  WEBHOOK_URL_BLOCKED_CODE,
   createWebhookSubscriptionResponseSchema,
   isParanoidKilledWebhookEventType,
   webhookDeliveryListResponseSchema,
@@ -38,15 +40,22 @@ import type {
   WatchlistSharedEvent,
 } from '../events';
 import {
+  BACKOFF_BASE_MS,
+  QUEUE_NAMES,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
+  WEBHOOK_DELIVER_ATTEMPTS,
+  WebhookDeliveryRetryError,
   bindParanoidJob,
+  createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
+  jobOptionsForQueue,
   type JobDefinition,
 } from '../jobs';
 import { isParanoidKilledWebhookEvent } from '../services/account/paranoidEnforcement';
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
+import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard';
 import {
   createWebhookBridge,
   createWebhookDispatcher,
@@ -54,7 +63,7 @@ import {
   type WebhookDeliveryJob,
   type WebhookTransport,
 } from '../services/webhooks';
-import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { createTestApp, publicTestResolver, type TestHarness } from '../testing/createTestApp';
 
 /** A no-op audit sink for directly-constructed dispatchers in unit-style tests. */
 const noopAudit: Pick<AuditService, 'record'> = { record: async () => undefined };
@@ -797,6 +806,7 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
       encryptionKey: h.ctx.config.twoFactor.encryptionKey,
       audit: noopAudit,
       logger: h.ctx.logger,
+      dnsResolver: publicTestResolver,
     });
 
     // Attempt 1 of 3 → still retryable; nothing is written to the log yet.
@@ -817,6 +827,74 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(log).toHaveLength(1);
     expect(log[0]!.status).toBe('failed');
     expect(log[0]!.attempts).toBe(3);
+  });
+
+  it('spends the declared five attempts before a 500 receiver costs a failure', async () => {
+    const failing = recordingTransport(500);
+    const h = await createTestApp({ webhookTransport: failing.transport });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({ url: 'https://down.test/hook', eventTypes: ['alert.triggered'] });
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    const deliveries = createWebhookDeliveryRepository(h.db);
+    const job = createWebhookDeliverJob({
+      dispatcher: createWebhookDispatcher({
+        subscriptions: createWebhookSubscriptionRepository(h.db),
+        deliveries,
+        transport: failing.transport,
+        encryptionKey: h.ctx.config.twoFactor.encryptionKey,
+        audit: noopAudit,
+        logger: h.ctx.logger,
+        dnsResolver: publicTestResolver,
+      }),
+    });
+
+    // The options a job enqueued with no explicit opts actually carries — the
+    // queue seeding, not the constant the handler falls back to.
+    const opts = jobOptionsForQueue(QUEUE_NAMES.webhooksDeliver);
+    expect(opts.attempts).toBe(WEBHOOK_DELIVER_ATTEMPTS);
+    expect(opts.backoff).toEqual({ type: 'exponential', delay: BACKOFF_BASE_MS });
+
+    const data = {
+      subscriptionId: subId,
+      deliveryId: DELIVERY_A,
+      event: alertEvent(user.id),
+    };
+    // Replay BullMQ's retry loop: `attemptsMade` counts the attempts already
+    // spent, so run N sees N-1.
+    for (let attemptsMade = 0; attemptsMade < WEBHOOK_DELIVER_ATTEMPTS - 1; attemptsMade += 1) {
+      await expect(
+        job.handler({ data, opts, attemptsMade } as never, {} as never),
+      ).rejects.toBeInstanceOf(WebhookDeliveryRetryError);
+      // Nothing terminal is recorded while retries remain.
+      expect(await deliveries.listForSubscription(subId, 10)).toHaveLength(0);
+    }
+    const stillHealthy = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(stillHealthy.subscriptions[0]!.consecutiveFailures).toBe(0);
+
+    // The fifth attempt is terminal: one failed row, one failure on the streak.
+    await job.handler(
+      { data, opts, attemptsMade: WEBHOOK_DELIVER_ATTEMPTS - 1 } as never,
+      {} as never,
+    );
+    const log = await deliveries.listForSubscription(subId, 10);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.status).toBe('failed');
+    expect(log[0]!.attempts).toBe(WEBHOOK_DELIVER_ATTEMPTS);
+    expect(failing.requests).toHaveLength(WEBHOOK_DELIVER_ATTEMPTS);
+
+    const afterList = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(afterList.subscriptions[0]!.consecutiveFailures).toBe(1);
+    // Five attempts cost one failure, not five: the subscription stays enabled.
+    expect(afterList.subscriptions[0]!.enabled).toBe(true);
   });
 
   it('auto-disables after N consecutive failures, records + audits it, and re-enables manually', async () => {
@@ -879,6 +957,7 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
       encryptionKey: Buffer.alloc(32, 0xff),
       audit: noopAudit,
       logger: harness.ctx.logger,
+      dnsResolver: publicTestResolver,
     });
 
     for (let index = 0; index < WEBHOOK_AUTO_DISABLE_THRESHOLD; index += 1) {
@@ -943,6 +1022,45 @@ describe('delivery-log retention', () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.id).toBe('00000000-0000-7000-8000-0000000000f2');
   });
+
+  it('drains more rows than one batch holds without an unbounded delete', async () => {
+    const { id } = await createSubscription(['alert.triggered']);
+    const deliveries = createWebhookDeliveryRepository(harness.db);
+    const old = new Date(Date.now() - (WEBHOOK_DELIVERY_RETENTION_DAYS + 10) * MS_PER_DAY);
+
+    for (let index = 0; index < 5; index += 1) {
+      await deliveries.record({
+        id: `00000000-0000-7000-8000-0000000001${String(index).padStart(2, '0')}`,
+        subscriptionId: id,
+        eventType: 'alert.triggered',
+        status: 'failed',
+        responseStatus: 500,
+        attempts: WEBHOOK_DELIVER_ATTEMPTS,
+        error: 'down',
+        createdAt: new Date(old.getTime() + index * 1000),
+      });
+    }
+    await deliveries.record({
+      id: '00000000-0000-7000-8000-000000000199',
+      subscriptionId: id,
+      eventType: 'alert.triggered',
+      status: 'success',
+      responseStatus: 200,
+      attempts: 1,
+      error: null,
+      createdAt: new Date(),
+    });
+
+    const deleteOlderThan = vi.spyOn(deliveries, 'deleteOlderThan');
+    const job = createWebhookDeliveryCleanupJob({ deliveries, batchSize: 2 });
+    await job.handler({} as never, { logger: harness.ctx.logger } as never);
+
+    // Three bounded statements (2 + 2 + the short batch that proves convergence),
+    // never one DELETE over the whole eligible range.
+    expect(deleteOlderThan.mock.calls.map(([, limit]) => limit)).toEqual([2, 2, 2]);
+    const remaining = await deliveries.listForSubscription(id, 100);
+    expect(remaining.map((row) => row.id)).toEqual(['00000000-0000-7000-8000-000000000199']);
+  });
 });
 
 describe('subscribable catalog', () => {
@@ -994,5 +1112,198 @@ describe('subscribable catalog', () => {
     expect(isParanoidKilledWebhookEventType('constructor')).toBe(false);
     expect(isParanoidKilledWebhookEventType('toString')).toBe(false);
     expect(isParanoidKilledWebhookEventType('__proto__')).toBe(false);
+  });
+});
+
+/**
+ * Outbound safety (PROJECTPLAN.md §8) for the one user-supplied URL in the
+ * product. The destination is guarded at create/update AND re-resolved on every
+ * delivery attempt, so neither a literal internal address nor a hostname that
+ * rebinds after creation can turn a subscription into a blind-SSRF probe of the
+ * deployment. Plain http and RFC1918 LAN receivers stay allowed — that is the
+ * self-hosted case the contract records.
+ */
+describe('destination guard: user-supplied webhook URLs cannot reach the deployment', () => {
+  const loopbackResolver: OutboundUrlResolver = async () => [{ address: '127.0.0.1', family: 4 }];
+
+  async function postSubscription(agent: Agent, url: string) {
+    return agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({ url, eventTypes: ['alert.triggered'] });
+  }
+
+  it.each([
+    ['IPv4 loopback', 'http://127.0.0.1:3000/api/health'],
+    ['loopback by name', 'http://localhost:3000/api/health'],
+    ['cloud metadata', 'http://169.254.169.254/latest/meta-data/'],
+    ['IPv6 loopback', 'http://[::1]:3000/api/health'],
+    ['unspecified address', 'http://0.0.0.0:8080/hook'],
+    ['broadcast address', 'http://255.255.255.255/hook'],
+    ['IPv4-mapped loopback', 'http://[::ffff:127.0.0.1]/hook'],
+  ])('refuses %s at create and writes no row', async (_label, url) => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const res = await postSubscription(agent, url);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(WEBHOOK_URL_BLOCKED_CODE);
+
+    const list = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(list.subscriptions).toHaveLength(0);
+    expect(await harness.db.select().from(schema.webhookSubscriptions)).toHaveLength(0);
+  });
+
+  it('refuses a hostname that resolves to loopback at create time', async () => {
+    const h = await createTestApp({ webhookUrlResolver: loopbackResolver });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await postSubscription(agent, 'https://rebind.test/hook');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(WEBHOOK_URL_BLOCKED_CODE);
+    expect(await h.db.select().from(schema.webhookSubscriptions)).toHaveLength(0);
+  });
+
+  it('still accepts a plain-http RFC1918 LAN receiver', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const res = await postSubscription(agent, 'http://192.168.1.50:9000/hook');
+    expect(res.status).toBe(201);
+    expect(createWebhookSubscriptionResponseSchema.parse(res.body).subscription.url).toBe(
+      'http://192.168.1.50:9000/hook',
+    );
+  });
+
+  it('refuses an update to a blocked destination and leaves the stored URL intact', async () => {
+    const { agent, id } = await createSubscription(['alert.triggered']);
+
+    const res = await agent
+      .patch(`/api/v1/settings/webhooks/${id}`)
+      .set(...XRW)
+      .send({ url: 'http://127.0.0.1:3000/api/health' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(WEBHOOK_URL_BLOCKED_CODE);
+
+    const list = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(list.subscriptions[0]!.url).toBe('https://receiver.test/hook');
+  });
+
+  it('refuses at DELIVERY a host that was public at create time and now rebinds', async () => {
+    let rebound = false;
+    const rebinding: OutboundUrlResolver = async () =>
+      rebound ? [{ address: '127.0.0.1', family: 4 }] : [{ address: '93.184.216.34', family: 4 }];
+    const delivering = recordingTransport(200);
+    const h = await createTestApp({
+      webhookTransport: delivering.transport,
+      webhookUrlResolver: rebinding,
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await postSubscription(agent, 'https://rebind.test/hook');
+    expect(created.status).toBe(201);
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    // Public at create time → the first delivery goes out normally.
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+    expect(delivering.requests).toHaveLength(1);
+
+    // The hostname now points at loopback: the next attempt is refused BEFORE
+    // anything is signed or sent, proving the check is re-resolved per attempt.
+    rebound = true;
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+    expect(delivering.requests).toHaveLength(1);
+
+    const log = await h.ctx.webhooks.listDeliveries(user.id, subId);
+    expect(log).toHaveLength(2);
+    const refused = log.find((delivery) => delivery.status === 'failed');
+    expect(refused).toBeDefined();
+    expect(refused!.responseStatus).toBeNull();
+    expect(refused!.error).toBe(WEBHOOK_DELIVERY_REFUSED_ERROR);
+  });
+
+  it('records a refusal as terminal — it consumes no retry attempt', async () => {
+    const h = await createTestApp();
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await postSubscription(agent, 'https://rebind.test/hook');
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    // Same subscription, but the destination now resolves to loopback.
+    const sending = recordingTransport(200);
+    const deliveries = createWebhookDeliveryRepository(h.db);
+    const dispatcher = createWebhookDispatcher({
+      subscriptions: createWebhookSubscriptionRepository(h.db),
+      deliveries,
+      transport: sending.transport,
+      encryptionKey: h.ctx.config.twoFactor.encryptionKey,
+      audit: noopAudit,
+      logger: h.ctx.logger,
+      dnsResolver: loopbackResolver,
+    });
+
+    // Attempt 1 of 3: a transport failure would be 'retry' here — a refusal is
+    // terminal immediately, so BullMQ never re-runs it against the internal host.
+    const result = await dispatcher.deliver(
+      { subscriptionId: subId, deliveryId: DELIVERY_A, event: alertEvent(user.id) },
+      { attempt: 1, maxAttempts: 3 },
+    );
+    expect(result.outcome).toBe('failed');
+    expect(result.status).toBeNull();
+    expect(sending.requests).toHaveLength(0);
+
+    const log = await deliveries.listForSubscription(subId, 10);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.status).toBe('failed');
+    expect(log[0]!.attempts).toBe(1);
+    expect(log[0]!.responseStatus).toBeNull();
+    expect(log[0]!.error).toBe(WEBHOOK_DELIVERY_REFUSED_ERROR);
+  });
+
+  it('leaves the delivery log useless as an internal port scanner', async () => {
+    // Two destinations that differ only in what they would have hit: a service
+    // that is listening (the API itself) and one that is not. Both are refused
+    // before any connection, so the log rows are byte-identical in shape.
+    let rebound = false;
+    const perHost: OutboundUrlResolver = async (hostname) => {
+      if (!rebound) return [{ address: '93.184.216.34', family: 4 }];
+      return hostname === 'open.rebind.test'
+        ? [{ address: '127.0.0.1', family: 4 }]
+        : [{ address: '169.254.169.254', family: 4 }];
+    };
+    const probing = recordingTransport(200);
+    const h = await createTestApp({
+      webhookTransport: probing.transport,
+      webhookUrlResolver: perHost,
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const openSub = createWebhookSubscriptionResponseSchema.parse(
+      (await postSubscription(agent, 'https://open.rebind.test/probe')).body,
+    ).subscription.id;
+    const closedSub = createWebhookSubscriptionResponseSchema.parse(
+      (await postSubscription(agent, 'https://closed.rebind.test/probe')).body,
+    ).subscription.id;
+
+    rebound = true;
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+    expect(probing.requests).toHaveLength(0);
+
+    const shape = async (id: string) =>
+      (await h.ctx.webhooks.listDeliveries(user.id, id)).map((delivery) => ({
+        status: delivery.status,
+        responseStatus: delivery.responseStatus,
+        error: delivery.error,
+      }));
+    const expected = [
+      { status: 'failed', responseStatus: null, error: WEBHOOK_DELIVERY_REFUSED_ERROR },
+    ];
+    expect(await shape(openSub)).toEqual(expected);
+    expect(await shape(closedSub)).toEqual(expected);
   });
 });

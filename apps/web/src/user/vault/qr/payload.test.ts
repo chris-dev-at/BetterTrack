@@ -13,11 +13,27 @@ import {
   serializeVaultTransferPayload,
   serializeVaultTransferPayloadWithinBudget,
   VAULT_TRANSFER_NAME_MAX_CHARS,
+  VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES,
   VAULT_TRANSFER_PAYLOAD_MAX_BYTES,
   vaultTransferPayloadByteLength,
   VaultTransferPayloadError,
   type VaultTransferPayloadErrorOutcome,
 } from './payload';
+
+/** The `btvault1:` rejection vocabulary, frozen 2026-08-26, minus `ok`. */
+const FROZEN_ERROR_OUTCOMES: readonly VaultTransferPayloadErrorOutcome[] = [
+  'not-a-bettertrack-code',
+  'update-required',
+  'legacy-code',
+  'malformed',
+  'missing-mnemonic',
+  'missing-vault-id',
+  'duplicate-key',
+  'invalid-mnemonic',
+  'invalid-vault-id',
+  'invalid-fingerprint',
+  'name-too-long',
+];
 
 function rejectedOutcome(payload: string): VaultTransferPayloadErrorOutcome | null {
   try {
@@ -27,6 +43,11 @@ function rejectedOutcome(payload: string): VaultTransferPayloadErrorOutcome | nu
     return error instanceof VaultTransferPayloadError ? error.outcome : null;
   }
 }
+
+it('matches the frozen rejection vocabulary exactly, minus ok', () => {
+  expect(new Set(VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES)).toEqual(new Set(FROZEN_ERROR_OUTCOMES));
+  expect(VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES).toHaveLength(FROZEN_ERROR_OUTCOMES.length);
+});
 
 describe('btvault1 payload conformance vectors', () => {
   it('round-trips the valid vector', () => {
@@ -151,7 +172,7 @@ describe('btvault1 payload conformance vectors', () => {
       rejectedOutcome(
         `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=%20${'a'.repeat(VAULT_TRANSFER_NAME_MAX_CHARS + 1)}%20`,
       ),
-    ).toBe('invalid-name');
+    ).toBe('name-too-long');
   });
 
   it('preserves a normal display hint through parse unchanged', () => {
@@ -168,15 +189,57 @@ describe('btvault1 payload conformance vectors', () => {
     expect(rejectedOutcome(VECTORS.missingVaultId.payload)).toBe(VECTORS.missingVaultId.outcome);
   });
 
-  it('rejects duplicate mnemonic keys', () => {
+  it('rejects duplicate mnemonic keys as duplicate-key', () => {
     expect(rejectedOutcome(VECTORS.duplicateMnemonic.payload)).toBe(
       VECTORS.duplicateMnemonic.outcome,
     );
   });
 
-  it('rejects duplicate vault-id keys', () => {
+  it('rejects duplicate vault-id keys as duplicate-key', () => {
     expect(rejectedOutcome(VECTORS.duplicateVaultId.payload)).toBe(
       VECTORS.duplicateVaultId.outcome,
+    );
+  });
+
+  it('rejects duplicate name keys as duplicate-key', () => {
+    expect(rejectedOutcome(VECTORS.duplicateName.payload)).toBe(VECTORS.duplicateName.outcome);
+  });
+
+  it('rejects duplicate fingerprint keys as duplicate-key', () => {
+    expect(rejectedOutcome(VECTORS.duplicateFingerprint.payload)).toBe(
+      VECTORS.duplicateFingerprint.outcome,
+    );
+  });
+
+  it('rejects a blank-then-real duplicate name instead of silently keeping the blank', () => {
+    // The #1508 review proved this live: first-wins would pick the blank `n`,
+    // the trim would drop it, and the real name would be discarded silently.
+    expect(rejectedOutcome(VECTORS.duplicateNameBlankFirst.payload)).toBe(
+      VECTORS.duplicateNameBlankFirst.outcome,
+    );
+  });
+
+  it('lets duplicate-key win over a missing required key', () => {
+    expect(rejectedOutcome(VECTORS.duplicateVaultIdMissingMnemonic.payload)).toBe(
+      VECTORS.duplicateVaultIdMissingMnemonic.outcome,
+    );
+  });
+
+  it('treats a whitespace-only mnemonic as missing, not invalid', () => {
+    expect(rejectedOutcome(VECTORS.blankMnemonic.payload)).toBe(VECTORS.blankMnemonic.outcome);
+  });
+
+  it('treats a whitespace-only vault id as missing, not invalid', () => {
+    expect(rejectedOutcome(VECTORS.blankVaultId.payload)).toBe(VECTORS.blankVaultId.outcome);
+  });
+
+  it('rejects a JSON-shaped body as legacy-code', () => {
+    expect(rejectedOutcome(VECTORS.legacyJsonBody.payload)).toBe(VECTORS.legacyJsonBody.outcome);
+  });
+
+  it('rejects a JSON-shaped body preceded by whitespace as legacy-code', () => {
+    expect(rejectedOutcome(VECTORS.legacyJsonBodyLeadingWhitespace.payload)).toBe(
+      VECTORS.legacyJsonBodyLeadingWhitespace.outcome,
     );
   });
 

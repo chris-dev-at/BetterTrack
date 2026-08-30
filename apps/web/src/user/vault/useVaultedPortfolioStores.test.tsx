@@ -39,6 +39,8 @@ import {
 
 const VAULT_ID = '018f0000-0000-7000-8000-000000000701';
 const ACCOUNT_ID = '018f0000-0000-7000-8000-000000000702';
+const VAULT_ID_B = '018f0000-0000-7000-8000-000000000703';
+const FOREIGN_VAULT_ID = '018f0000-0000-7000-8000-000000000704';
 
 const PLAIN: PortfolioSummary = {
   id: 'p-plain',
@@ -50,6 +52,7 @@ const PLAIN: PortfolioSummary = {
   archivedAt: null,
 };
 const VAULTED: PortfolioSummary = { ...PLAIN, id: 'p-vaulted', vaultId: VAULT_ID };
+const VAULTED_B: PortfolioSummary = { ...PLAIN, id: 'p-vaulted-b', vaultId: VAULT_ID_B };
 
 function Probe({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const { unlocked } = useVaultedPortfolioStores(portfolios);
@@ -68,6 +71,13 @@ function renderProbe(portfolios: PortfolioSummary[]) {
 function batchFor(portfolioId: string) {
   return {
     unlocked: new Map([[portfolioId, { portfolioId, vaultId: VAULT_ID } as never]]),
+    dispose: vi.fn(),
+  };
+}
+
+function batchOf(...portfolioIds: readonly string[]) {
+  return {
+    unlocked: new Map(portfolioIds.map((id) => [id, { portfolioId: id } as never])),
     dispose: vi.fn(),
   };
 }
@@ -148,8 +158,8 @@ describe('useVaultedPortfolioStores', () => {
       unlocked: new Map(),
       dispose: vi.fn(),
     });
-    let vaultOpened = () => {};
-    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
       vaultOpened = listener;
       return () => {};
     });
@@ -160,22 +170,22 @@ describe('useVaultedPortfolioStores', () => {
 
     mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
     await act(async () => {
-      vaultOpened();
+      vaultOpened(VAULT_ID);
     });
 
     await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
   });
 
   it('ignores the vault-opened edge raised by its own in-flight resolution', async () => {
-    let vaultOpened = () => {};
-    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
       vaultOpened = listener;
       return () => {};
     });
     // The resolver opens the vault, which fires the edge from INSIDE the
     // resolution. Reacting to it would restart the resolution forever.
     mocks.resolveVaultedPortfolioStores.mockImplementation(async () => {
-      vaultOpened();
+      vaultOpened(VAULT_ID);
       return batchFor(VAULTED.id);
     });
 
@@ -352,8 +362,8 @@ describe('useVaultedPortfolioStores', () => {
    * genuinely new, and dropping it left the portfolio a stub until a reload.
    */
   it('re-resolves an unlock that lands while the first resolution is still running', async () => {
-    let vaultOpened = () => {};
-    mocks.vaultOpenedSubscription.mockImplementation((listener: () => void) => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
       vaultOpened = listener;
       return () => {};
     });
@@ -361,7 +371,7 @@ describe('useVaultedPortfolioStores', () => {
     // Resolution #1 finds the vault LOCKED (empty batch). The user unlocks
     // while it is still running, i.e. strictly inside `entry.resolving`.
     mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
-      vaultOpened();
+      vaultOpened(VAULT_ID);
       return locked;
     });
     mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
@@ -371,5 +381,70 @@ describe('useVaultedPortfolioStores', () => {
     await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
     expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(2);
     expect(locked.dispose).toHaveBeenCalled();
+  });
+
+  /**
+   * THE SECOND VAULT'S EDGE (#1533).
+   *
+   * Judging a mid-resolution edge by the RUN's outcome — "opened nothing and
+   * still saw one" — could only ever describe one vault. The re-run that opens
+   * the first vault publishes a non-empty batch, so a second vault unlocked
+   * inside that window looked exactly like the re-run's own open and was
+   * dropped: its portfolios stayed stubs until the next remount. The vault id
+   * on the edge is what tells the two apart.
+   */
+  it('renders both vaults when a second one is unlocked during the re-run window', async () => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
+      vaultOpened = listener;
+      return () => {};
+    });
+    mocks.listVaults.mockImplementation(async () => [
+      { id: VAULT_ID, keyFingerprint: 'TESTVECTOR000000' },
+      { id: VAULT_ID_B, keyFingerprint: 'TESTVECTOR000001' },
+    ]);
+    const locked = emptyBatch();
+    // #1: both vaults locked; the user unlocks A while documents are in flight.
+    mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
+      vaultOpened(VAULT_ID);
+      return locked;
+    });
+    // #2: the re-run opens A — and the user unlocks B while IT is in flight.
+    mocks.resolveVaultedPortfolioStores.mockImplementationOnce(async () => {
+      vaultOpened(VAULT_ID_B);
+      return batchOf(VAULTED.id);
+    });
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchOf(VAULTED.id, VAULTED_B.id));
+
+    renderProbe([PLAIN, VAULTED, VAULTED_B]);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted,p-vaulted-b'),
+    );
+    expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * The other half of the id: an open this roster has no portfolio in cannot
+   * change this snapshot, so it must not cost a resolution — decrypting the
+   * same document set again for a vault nobody here reads.
+   */
+  it('ignores a vault-opened edge for a vault outside its roster', async () => {
+    let vaultOpened = (_vaultId: string) => {};
+    mocks.vaultOpenedSubscription.mockImplementation((listener: (vaultId: string) => void) => {
+      vaultOpened = listener;
+      return () => {};
+    });
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batchFor(VAULTED.id));
+
+    renderProbe([PLAIN, VAULTED]);
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+
+    await act(async () => {
+      vaultOpened(FOREIGN_VAULT_ID);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(mocks.resolveVaultedPortfolioStores).toHaveBeenCalledTimes(1);
   });
 });

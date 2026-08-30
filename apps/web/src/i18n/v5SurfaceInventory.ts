@@ -1926,8 +1926,16 @@ export type V5AsyncStateDebtLedger = Readonly<
  * `AsyncReadState` group — the tag read as a fourth classified reference read,
  * the search rendering its own loading and empty states inline beside the input
  * it belongs to — so the debt ceiling stays at zero.
+ *
+ * 206 → 207 with the deep-link state reconciliation (#1526). Exactly one NEW
+ * read site: `VaultAccessAction`'s own endpoint-state read, which is what lets a
+ * URL-addressed `?action=` be checked against the live vault state instead of
+ * being trusted — a locked-out vault deep-linked to `unlock` must not render a
+ * live password form. It handles both states itself (a "checking" line while the
+ * state loads, a retryable error card when it cannot be read) rather than
+ * offering an action nobody verified, so the debt ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 206;
+export const V5_ASYNC_READ_SITE_BASELINE = 207;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

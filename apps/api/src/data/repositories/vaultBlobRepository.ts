@@ -45,12 +45,24 @@ export type VaultBlobReadResult =
   | { status: 'not_found' }
   | { status: 'medium_inactive' };
 
+/**
+ * Why one CAS refusal lost: `stale` is retryable after a re-read/re-merge,
+ * `write_id_replayed` never is — that `(vaultId, docId, writeId)` already names
+ * different committed bytes, so only a NEW `writeId` can ever be accepted
+ * (#1498). The HTTP status stays 412 for both; only the code differs.
+ */
+export type VaultBlobPreconditionReason = 'stale' | 'write_id_replayed';
+
 export type VaultBlobWriteResult =
   | { status: 'ok'; row: VaultBlobRow; idempotent: boolean }
   | { status: 'not_found' }
   | { status: 'portfolio_binding_mismatch' }
   | { status: 'doc_kind_mismatch' }
-  | { status: 'precondition_failed'; currentVersion: number | null }
+  | {
+      status: 'precondition_failed';
+      currentVersion: number | null;
+      reason: VaultBlobPreconditionReason;
+    }
   | { status: 'medium_inactive' };
 
 export type VaultBlobHistoryResult<T> = { status: 'ok'; value: T } | { status: 'not_found' };
@@ -70,6 +82,14 @@ export type VaultMediaTransitionResult =
   | { status: 'retirement_pending'; current: PerVaultMediaState }
   | { status: 'partial_set'; current: PerVaultMediaState }
   | { status: 'verification_failed'; current: PerVaultMediaState }
+  /**
+   * A `verification_failed` whose ONLY discrepancy is the prospective documents
+   * another portfolio's interrupted move-in left staged in this vault (#1530).
+   * Same fail-closed refusal, no mutation — but it names the portfolios, because
+   * no readback the caller can produce will ever satisfy the check until those
+   * moves are finished or cancelled.
+   */
+  | { status: 'capture_in_flight'; current: PerVaultMediaState; portfolioIds: string[] }
   | { status: 'drive_not_found'; current: PerVaultMediaState }
   | { status: 'retirement_conflict'; current: PerVaultMediaState };
 
@@ -172,6 +192,13 @@ interface ExpectedDoc {
    * admitted write, so a refused CAS never consumes a capture target.
    */
   bindProspectiveCapture?: true;
+  /**
+   * This roster entry exists because a live capture window binds a still-PLAIN
+   * portfolio to the vault, not because the portfolio is a member. Used only to
+   * classify an otherwise-correct readback that omits exactly these documents
+   * (#1530); it never relaxes what the roster or the attestation require.
+   */
+  prospective?: true;
 }
 
 type ExpectedDocVault = Pick<
@@ -293,6 +320,42 @@ function attestationsEqual(
   });
 }
 
+/**
+ * Classify an already-failed full-set attestation (#1530). Answers the ids of
+ * the portfolios whose in-flight capture documents the caller left out — but
+ * ONLY when the submitted readback is otherwise byte-exact for every remaining
+ * stored row. That is the provable shape of "an interrupted move-in is staged in
+ * this vault": the caller cannot attest documents it has no key material or
+ * plaintext for, so no retry of its own readback can ever match. The staged
+ * capture is same-account by construction and is usually another portfolio's,
+ * but a client that omits the document it just staged itself classifies here
+ * too — which is why the ids are returned rather than assumed.
+ *
+ * This is diagnosis, never permission. It runs only after `attestationsEqual`
+ * has already refused, it mutates nothing, and every other discrepancy — a
+ * wrong writeId, a stale docVersion, an omitted MEMBER document, an extra
+ * document, a supplied attestation for a prospective doc — answers null and
+ * stays the undifferentiated `verification_failed`.
+ */
+function omittedInFlightCaptures(
+  supplied: readonly PerVaultMediaDocAttestation[],
+  rows: readonly { docId: string; version: number; blob: Buffer }[],
+  roster: readonly ExpectedDoc[],
+): string[] | null {
+  const prospective = roster.filter(
+    (doc): doc is ExpectedDoc & { portfolioId: string } =>
+      doc.prospective === true && doc.portfolioId !== null,
+  );
+  if (prospective.length === 0) return null;
+  const prospectiveDocIds = new Set(prospective.map((doc) => doc.docId));
+  if (supplied.some((doc) => prospectiveDocIds.has(doc.docId))) return null;
+  const remaining = rows.filter((row) => !prospectiveDocIds.has(row.docId));
+  // Nothing prospective is actually stored, so the omission cannot be the cause.
+  if (remaining.length === rows.length) return null;
+  if (!attestationsEqual(supplied, remaining)) return null;
+  return prospective.map((doc) => doc.portfolioId).sort();
+}
+
 function attestationRosterEqual(
   supplied: readonly PerVaultMediaDocAttestation[],
   roster: readonly ExpectedDoc[],
@@ -355,9 +418,8 @@ async function expectedDocs(
       )
       .orderBy(asc(portfolios.id)),
   ]);
-  const portfolioIds = [
-    ...members.map(({ id }) => id),
-    ...prospectiveCaptures
+  const prospectiveIds = new Set(
+    prospectiveCaptures
       .filter(
         ({ captureRevision, captureExpiresAt, captureMediaAttestedAt }) =>
           captureRevision !== null &&
@@ -366,7 +428,8 @@ async function expectedDocs(
           captureMediaAttestedAt !== null,
       )
       .map(({ id }) => id),
-  ].sort();
+  );
+  const portfolioIds = [...members.map(({ id }) => id), ...prospectiveIds].sort();
   return [
     { docId: vault.headerDocId, docKind: 'header', portfolioId: null },
     { docId: vault.commonDocId, docKind: 'common', portfolioId: null },
@@ -375,6 +438,7 @@ async function expectedDocs(
       docId: id,
       docKind: 'portfolio' as const,
       portfolioId: id,
+      ...(prospectiveIds.has(id) ? { prospective: true as const } : {}),
     })),
   ];
 }
@@ -718,9 +782,12 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
                 await bindProspectiveCapture(tx, vault, doc, input.now);
                 return { status: 'ok', row: current, idempotent: true } as const;
               }
+              // Same token, different bytes: no retry of THIS request can ever
+              // be accepted, so the caller must learn that from the code.
               return {
                 status: 'precondition_failed',
                 currentVersion: current.version,
+                reason: 'write_id_replayed',
               } as const;
             }
           }
@@ -764,9 +831,12 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               await bindProspectiveCapture(tx, vault, doc, input.now);
               return { status: 'ok', row: current, idempotent: true } as const;
             }
+            // Retained receipt for the same token naming different bytes (or a
+            // document that has since gone): terminal for this writeId too.
             return {
               status: 'precondition_failed',
               currentVersion: current?.version ?? null,
+              reason: 'write_id_replayed',
             } as const;
           }
 
@@ -780,9 +850,13 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             (row) => row?.version === input.header.docVersion,
           );
           if (versionReceipt && !sameBytes(versionReceipt.blob, input.blob)) {
+            // Retryable: this write's own `writeId` is still unused, so the
+            // client's normal re-read/re-merge (which mints a fresh docVersion)
+            // converges. Only the token collision is refused, not the client.
             return {
               status: 'precondition_failed',
               currentVersion: current?.version ?? null,
+              reason: 'stale',
             } as const;
           }
 
@@ -791,7 +865,7 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
           // `docVersion` is client-owned merge state (and can move non-linearly
           // after a client merge); the blind store records it but never gates it.
           if (currentVersion !== input.expectedVersion) {
-            return { status: 'precondition_failed', currentVersion } as const;
+            return { status: 'precondition_failed', currentVersion, reason: 'stale' } as const;
           }
 
           await bindProspectiveCapture(tx, vault, doc, input.now);
@@ -1265,10 +1339,20 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
               if (
                 verification.kind !== requiredKind ||
                 (verification.kind === 'drive' &&
-                  verification.driveConnectionId !== vault.driveConnectionId) ||
-                !attestationsEqual(verification.docs, activeRows)
+                  verification.driveConnectionId !== vault.driveConnectionId)
               ) {
                 return { status: 'verification_failed', current } as const;
+              }
+              if (!attestationsEqual(verification.docs, activeRows)) {
+                // #1530: the same-selection refresh a capture runs to re-earn
+                // its full-set proof is the ONE place a caller is routinely
+                // asked to attest documents it cannot read — another
+                // portfolio's staged, still-uncommitted move-in. Name them so
+                // the refusal is actionable; the refusal itself is unchanged.
+                const inFlight = omittedInFlightCaptures(verification.docs, activeRows, roster);
+                return inFlight
+                  ? ({ status: 'capture_in_flight', current, portfolioIds: inFlight } as const)
+                  : ({ status: 'verification_failed', current } as const);
               }
             } else {
               if (!exactDriveOnlyRefreshCandidates) {
