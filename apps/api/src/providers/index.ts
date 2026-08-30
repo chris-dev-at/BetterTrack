@@ -3,7 +3,7 @@
  * outside this folder import only from here: the registry, the market-data
  * service and the provider interface — never a concrete provider.
  */
-export type { AssetProvider } from './AssetProvider';
+export type { AssetProvider, HistoryBasis, ProviderCapability } from './AssetProvider';
 export { createProviderRegistry, providerCapabilities, type ProviderRegistry } from './registry';
 export {
   createMarketDataService,
@@ -18,6 +18,7 @@ export {
   classifyRefClass,
   NO_FAILOVER,
   DEFAULT_MAX_SWITCH_EVENTS,
+  DEFAULT_MAX_TRACKED_ASSETS,
   type FailoverChains,
   type FailoverResolver,
   type FailoverStatus,
