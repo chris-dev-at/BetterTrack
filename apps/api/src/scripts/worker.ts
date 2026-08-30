@@ -284,6 +284,9 @@ const digestService = createDigestService({
   // Quiet hours (V5-P3): a digest whose delivery moment lands inside the user's
   // window is deferred to window end via the deferral store.
   quietHours: notificationDigestRepo,
+  // Release-time matrix re-check (#1590): a channel switched off after the
+  // enqueue drops the queued item instead of delivering it.
+  routing: notificationRepo,
   logger,
 });
 

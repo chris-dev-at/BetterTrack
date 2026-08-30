@@ -6,7 +6,7 @@ import { createNotificationRepository } from '../../../data/repositories/notific
 import { createUserRepository } from '../../../data/repositories/userRepository';
 import type { AlertNotificationContext } from '../../../data/repositories/alertRepository';
 import type { Database } from '../../../data/db';
-import { notificationDigestQueue, notifications } from '../../../data/schema';
+import { notificationDigestQueue, notificationSettings, notifications } from '../../../data/schema';
 import type { AlertTriggeredEvent, FriendRequestEvent } from '../../../events';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createDigestService, type DigestService } from '../digestService';
@@ -83,6 +83,8 @@ function makeDeferredDelivery(): DigestService {
       },
     },
     quietHours: digestRepo,
+    // Release-time matrix re-check (#1590).
+    routing: createNotificationRepository(db),
     now: () => clock,
     logger: harness.ctx.logger,
   });
@@ -109,6 +111,10 @@ async function deferredRows(userId: string) {
         isNotNull(notificationDigestQueue.deliverAfter),
       ),
     );
+}
+
+async function pendingDeferredRows(userId: string) {
+  return (await deferredRows(userId)).filter((row) => row.deliveredAt === null);
 }
 
 async function visibleInappRows(userId: string) {
@@ -458,5 +464,178 @@ describe('quiet hours — digest deferral + local-day bucketing (§13.5 V5-P3)',
         message: 'quiet-hours digest defer failed',
       },
     ]);
+  });
+});
+
+describe('quiet hours — release-time re-evaluation (§13.5 V5-P3, #1590)', () => {
+  it('re-derives the release instant when the recipient changes TIMEZONE mid-deferral', async () => {
+    const user = await harness.seedUser({ email: 'tz@bt.test', username: 'tzmover' });
+    await enableQuietHours(user.id); // 22:00→07:00, UTC (no timezone set)
+
+    clock = new Date('2026-07-18T23:00:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'tz-1'));
+    const queued = await pendingDeferredRows(user.id);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.deliverAfter?.toISOString()).toBe('2026-07-19T07:00:00.000Z');
+
+    // The user moves to New York (EDT, UTC−4) — the SAME 22:00→07:00 window now
+    // ends at 11:00 UTC, four hours after the frozen `deliver_after`.
+    await userRepo.setQuietHours(user.id, { timezone: 'America/New_York' });
+
+    // The stored instant says "due"; the recipient's CURRENT window says 03:00
+    // local. Nothing may be delivered inside that new window.
+    clock = new Date('2026-07-19T07:00:30.000Z');
+    expect(await makeDeferredDelivery().deliverDeferred()).toMatchObject({
+      claimed: 1,
+      sent: 0,
+      requeued: 1,
+    });
+    expect(fcmCalls).toHaveLength(0);
+    const requeued = await pendingDeferredRows(user.id);
+    expect(requeued).toHaveLength(1);
+    expect(requeued[0]!.deliverAfter?.toISOString()).toBe('2026-07-19T11:00:00.000Z');
+
+    // Still inside the new window an hour later: still held, still not sent.
+    clock = new Date('2026-07-19T10:00:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(0);
+    expect(fcmCalls).toHaveLength(0);
+
+    // At the NEW window end it is delivered — exactly once.
+    clock = new Date('2026-07-19T11:00:30.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(1);
+    expect(fcmCalls).toHaveLength(1);
+    expect(fcmCalls[0]!.message.type).toBe('friend.request');
+    expect(await pendingDeferredRows(user.id)).toHaveLength(0);
+  });
+
+  it('re-derives the release instant when the recipient widens the WINDOW mid-deferral', async () => {
+    const user = await harness.seedUser({ email: 'win@bt.test', username: 'windowmover' });
+    await enableQuietHours(user.id);
+
+    clock = new Date('2026-07-18T23:00:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'win-1'));
+    expect((await pendingDeferredRows(user.id))[0]!.deliverAfter?.toISOString()).toBe(
+      '2026-07-19T07:00:00.000Z',
+    );
+
+    // "Let me sleep in": the window now runs 22:00→09:00.
+    await userRepo.setQuietHours(user.id, { endMinute: 9 * 60 });
+
+    clock = new Date('2026-07-19T07:00:30.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(0);
+    expect(fcmCalls).toHaveLength(0);
+    const requeued = await pendingDeferredRows(user.id);
+    expect(requeued).toHaveLength(1);
+    expect(requeued[0]!.deliverAfter?.toISOString()).toBe('2026-07-19T09:00:00.000Z');
+
+    clock = new Date('2026-07-19T09:00:30.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(1);
+    expect(fcmCalls).toHaveLength(1);
+  });
+
+  it('drops a deferred item the recipient globally MUTED after it was queued', async () => {
+    const user = await harness.seedUser({ email: 'mute@bt.test', username: 'mutelater' });
+    await enableQuietHours(user.id);
+
+    clock = new Date('2026-07-18T23:00:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'mute-1'));
+    expect(await pendingDeferredRows(user.id)).toHaveLength(1);
+
+    await userRepo.setNotificationsMuted(user.id, true);
+
+    clock = new Date('2026-07-19T07:00:30.000Z');
+    expect(await makeDeferredDelivery().deliverDeferred()).toMatchObject({
+      claimed: 1,
+      sent: 0,
+      dropped: 1,
+      requeued: 0,
+    });
+    expect(fcmCalls).toHaveLength(0);
+    // Dropped, not re-queued: the in-app bell already holds the record.
+    expect(await pendingDeferredRows(user.id)).toHaveLength(0);
+  });
+
+  it('drops a deferred item whose CHANNEL the recipient switched off after it was queued', async () => {
+    const user = await harness.seedUser({ email: 'chan@bt.test', username: 'channeloff' });
+    await enableQuietHours(user.id);
+
+    clock = new Date('2026-07-18T23:00:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'chan-1'));
+    expect(await pendingDeferredRows(user.id)).toHaveLength(1);
+
+    // Push for friend.request goes off while the item sits in the queue.
+    await db.insert(notificationSettings).values({
+      userId: user.id,
+      channel: 'push',
+      enabled: true,
+      config: { 'friend.request': false },
+    });
+
+    clock = new Date('2026-07-19T07:00:30.000Z');
+    expect(await makeDeferredDelivery().deliverDeferred()).toMatchObject({
+      claimed: 1,
+      sent: 0,
+      dropped: 1,
+    });
+    expect(fcmCalls).toHaveLength(0);
+    expect(await pendingDeferredRows(user.id)).toHaveLength(0);
+  });
+});
+
+describe('urgent class outranks a digest cadence (§16 2026-07-18, #1590)', () => {
+  it('delivers an urgent type set to WEEKLY instantly while a price alert is still batched', async () => {
+    const user = await harness.seedUser({ email: 'urgent-w@bt.test', username: 'urgentweekly' });
+    await enableQuietHours(user.id);
+    // Both types are parked on the slowest cadence the settings surface allows.
+    await digestRepo.setCadences(user.id, {
+      'account.temp_password': 'weekly',
+      'alert.triggered': 'weekly',
+    });
+
+    const dispatcher = createNotificationDispatcher({
+      bus: harness.ctx.events,
+      repo: createNotificationRepository(db),
+      users: userRepo,
+      resolveAlert: async () => alertContext(user.id),
+      fcm: {
+        async deliver(userId: string, message: PushMessage) {
+          fcmCalls.push({ userId, message });
+        },
+      } as never,
+      digest: {
+        cadenceFor: (uid, type) => digestRepo.cadenceFor(uid, type),
+        enqueue: (item) => digestRepo.enqueue(item),
+      },
+      quietHours: { enqueueDeferred: (item) => digestRepo.enqueueDeferred(item) },
+      now: () => clock,
+      logger: harness.ctx.logger,
+    });
+
+    clock = new Date('2026-07-18T23:00:00.000Z'); // inside the quiet window too
+    await dispatcher.dispatch({
+      type: 'account.temp_password',
+      userId: user.id,
+      occurredAt: OCCURRED_AT,
+    });
+
+    // §16: the urgent class is "delivered instantly" — a weekly cadence must not
+    // hold it for seven days any more than the quiet window may hold it.
+    expect(fcmCalls).toHaveLength(1);
+    expect(fcmCalls[0]!.message.type).toBe('account.temp_password');
+    expect(await db.select().from(notificationDigestQueue)).toHaveLength(0);
+
+    // The non-urgent price alert on the same cadence is still batched.
+    await dispatcher.dispatch({
+      type: 'alert.triggered',
+      userId: user.id,
+      alertId: 'alert-1',
+      assetId: 'asset-1',
+      occurredAt: OCCURRED_AT,
+    });
+    expect(fcmCalls).toHaveLength(1);
+    const queued = await db.select().from(notificationDigestQueue);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ type: 'alert.triggered', cadence: 'weekly' });
+    expect(queued[0]!.deliverAfter).toBeNull();
   });
 });
