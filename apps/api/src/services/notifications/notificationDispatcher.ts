@@ -1,5 +1,5 @@
 import {
-  isAccountSecurityNotificationType,
+  isUrgentNotification,
   type DigestCadence,
   type NotificationMessage,
   type NotificationCadence,
@@ -415,7 +415,7 @@ export interface NotificationDispatcherDeps {
   /**
    * Quiet hours (§13.5 V5-P3). When the recipient is inside their quiet-hours
    * window and the event is NOT in the urgent-bypass class
-   * ({@link isAccountSecurityNotificationType}), an INSTANT-cadence outbound
+   * ({@link isUrgentNotification}), an INSTANT-cadence outbound
    * notification is deferred into the deferral store instead of sent now, and
    * delivered at window end by the deferred-delivery job. The in-app bell is
    * NEVER affected (it already landed above). Digest-cadence items keep deferring
@@ -1000,14 +1000,22 @@ export function createNotificationDispatcher(
 
     if (muted || suppressedByPresence) return;
 
-    // Outbound delivery cadence (V5-P3). `instant` (default, and always when no
-    // digest wiring is present) delivers now — byte-identical to the pre-digest
-    // fan-out below; `daily`/`weekly` defer the outbound channels into the
-    // digest queue instead. The in-app row above already landed instantly
-    // regardless: the bell is the record a digest summarizes.
-    const cadence: NotificationCadence = digest
-      ? await digest.cadenceFor(event.userId, event.type)
-      : 'instant';
+    // The urgent-bypass class (§16 2026-07-18), resolved through the canonical
+    // `isUrgentNotification` so the class is encoded exactly once. It outranks
+    // BOTH deferral mechanisms (#1590): a `weekly` cadence on
+    // `account.temp_password` must not sit in a queue for seven days any more
+    // than a quiet-hours window may hold it overnight — the §16 class is
+    // "delivered instantly", full stop.
+    const urgent = isUrgentNotification({ type: event.type });
+
+    // Outbound delivery cadence (V5-P3). `instant` (default, always for the
+    // urgent class, and always when no digest wiring is present) delivers now —
+    // byte-identical to the pre-digest fan-out below; `daily`/`weekly` defer the
+    // outbound channels into the digest queue instead. The in-app row above
+    // already landed instantly regardless: the bell is the record a digest
+    // summarizes.
+    const cadence: NotificationCadence =
+      digest && !urgent ? await digest.cadenceFor(event.userId, event.type) : 'instant';
     // Non-null only when the outbound channels defer (daily/weekly) AND a digest
     // sink is wired; a single UTC period stamp per dispatch keeps every channel's
     // row in the same group (computed per user so quiet-hours can align later).
@@ -1023,10 +1031,9 @@ export function createNotificationDispatcher(
 
     // Quiet hours (V5-P3): an INSTANT outbound notification fired inside the
     // recipient's window is deferred to window end — UNLESS it is in the urgent-
-    // bypass class (account/security types). Digest-cadence items keep deferring
-    // into the digest queue above; quiet hours handles them at delivery time. So
-    // this only ever fires when the item is NOT already a digest deferral.
-    const urgent = isAccountSecurityNotificationType(event.type);
+    // bypass class resolved above. Digest-cadence items keep deferring into the
+    // digest queue above; quiet hours handles them at delivery time. So this only
+    // ever fires when the item is NOT already a digest deferral.
     let quietDeferUntil: Date | null = null;
     if (quietHours && !urgent && deferredCadence === null) {
       const cfg = quietHoursConfigForUser(recipient);
