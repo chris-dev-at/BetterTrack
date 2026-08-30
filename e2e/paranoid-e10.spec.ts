@@ -1202,6 +1202,20 @@ test.describe('PARANOID E10 per-vault gate', () => {
         // The buy itself: two shares, from bytes the server cannot read.
         await expect(sapRow.getByRole('cell').nth(2)).toHaveText(/^2([.,]0+)?$/);
 
+        // ROW-LEVEL READ through the #1532 document seam. Holdings are a
+        // DERIVATION — the client engine computes them and never touches the
+        // row projections — so a passing holdings assertion says nothing about
+        // whether `listTransactions` works. This one does: the ledger row
+        // itself, rendered from the same ~4000-line projection set the account
+        // store uses, now pointed at the resolution's authenticated document.
+        //
+        // Asserted on the OVERVIEW's recent-transactions section rather than on
+        // an Activity tab: that tab is still a Coming-Soon placeholder, and the
+        // overview is where the store's `listTransactions` actually renders.
+        const recent = page.getByRole('region', { name: 'Recent transactions' });
+        await expect(recent).toBeVisible({ timeout: 60_000 });
+        await expect(recent.getByText('SAP.DE').first()).toBeVisible({ timeout: 60_000 });
+
         await page.waitForTimeout(2_000);
         expect(serverMoneyReads, 'the unlocked view must read the vault, not the server').toEqual(
           [],
