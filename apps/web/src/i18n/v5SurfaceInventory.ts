@@ -1137,6 +1137,11 @@ export const NON_V5_SURFACES = [
     note: 'V2 session list, re-housed by the R2 Control Center.',
   },
   {
+    path: 'user/control/panels/TrustedDevicesPanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 mobile-parity remembered-device manager (#1391).',
+  },
+  {
     path: 'user/control/panels/panelKit.tsx',
     reason: 'no-user-copy',
     note: 'R2 Control Center panel primitives; every string is caller-supplied.',
@@ -1967,7 +1972,10 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 //     strip renders its tabs with no chip rather than a zero, so a failed count
 //     can never be mistaken for "nothing is waiting".
 // The debt ceiling below is unchanged: none of the seven adds a state gap.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 74;
+//
+// 74 → 75 with the Trusted devices read (#1391). It renders `AsyncReadState`
+// for both loading and error, so it adds no state gap either.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 75;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

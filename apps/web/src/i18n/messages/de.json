@@ -841,6 +841,22 @@
         "loggingOut": "Wird abgemeldet…",
         "logOutAllOthers": "Alle anderen Geräte abmelden"
       },
+      "trustedDevices": {
+        "title": "Vertrauenswürdige Geräte",
+        "description": "Gespeicherte Geräte können deine PIN zur Anmeldung verwenden. Widerrufe Geräte, die du nicht mehr nutzt.",
+        "loadError": {
+          "title": "Deine vertrauenswürdigen Geräte konnten nicht geladen werden"
+        },
+        "empty": "Keine vertrauenswürdigen Geräte",
+        "device": "Vertrauenswürdiges Gerät",
+        "timestamps": "Hinzugefügt {{createdAt}} · zuletzt aktiv {{lastSeenAt}} · läuft ab {{expiresAt}}",
+        "revoke": "Widerrufen",
+        "revokeError": "Dieses vertrauenswürdige Gerät konnte nicht widerrufen werden. Bitte versuche es erneut.",
+        "revokeAll": "Alle vertrauenswürdigen Geräte widerrufen",
+        "confirmRevokeAll": "Alle vertrauenswürdigen Geräte widerrufen? Sie stehen danach nicht mehr für die PIN-Anmeldung zur Verfügung.",
+        "revoking": "Wird widerrufen…",
+        "revokeAllError": "Deine vertrauenswürdigen Geräte konnten nicht widerrufen werden. Bitte versuche es erneut."
+      },
       "pin": {
         "genericError": "Deine PIN konnte nicht aktualisiert werden. Bitte versuche es erneut.",
         "pinLabel": "PIN",
@@ -6246,6 +6262,7 @@
     "leavesPopup": "Öffnet sich als eigene Seite",
     "signIn": "Anmeldung",
     "sessions": "Sitzungen",
+    "trustedDevices": "Vertrauenswürdige Geräte",
     "notificationLog": "Benachrichtigungsprotokoll",
     "profile": "Öffentliches Profil",
     "authorizedApps": "Autorisierte Apps",
