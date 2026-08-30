@@ -1135,14 +1135,16 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
           );
         // Same 412, same refusal, different fact (#1530, and the #1498 rule
         // that two meanings never share one code): the readback is exact for
-        // everything this caller can read, and the only gap is another
-        // portfolio's interrupted move-in. Retrying is futile until that move
-        // is finished or cancelled, so the code and the ids say so.
+        // everything this caller can read, and the only gap is an interrupted
+        // move-in. That move is usually another portfolio's, but a client that
+        // omits the document it just staged itself lands here too — so the
+        // copy stays neutral and lets `portfolioIds` name which one it is.
+        // Retrying is futile until that move is finished or cancelled.
         case 'capture_in_flight':
           throw new ApiError(
             412,
             PER_VAULT_ERROR_CODES.mediaCaptureInFlight,
-            'Another portfolio move into this vault is still in flight, so its staged documents cannot be attested from here. Finish or cancel that move first.',
+            'A portfolio move into this vault is still in flight, so its staged documents cannot be attested from here. Finish or cancel that move first.',
             { portfolioIds: result.portfolioIds },
           );
         case 'retirement_conflict':

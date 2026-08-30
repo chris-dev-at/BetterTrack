@@ -324,9 +324,12 @@ function attestationsEqual(
  * Classify an already-failed full-set attestation (#1530). Answers the ids of
  * the portfolios whose in-flight capture documents the caller left out — but
  * ONLY when the submitted readback is otherwise byte-exact for every remaining
- * stored row. That is the provable shape of "someone else's interrupted move-in
- * is staged in this vault": the caller cannot attest documents it has no key
- * material or plaintext for, so no retry of its own readback can ever match.
+ * stored row. That is the provable shape of "an interrupted move-in is staged in
+ * this vault": the caller cannot attest documents it has no key material or
+ * plaintext for, so no retry of its own readback can ever match. The staged
+ * capture is same-account by construction and is usually another portfolio's,
+ * but a client that omits the document it just staged itself classifies here
+ * too — which is why the ids are returned rather than assumed.
  *
  * This is diagnosis, never permission. It runs only after `attestationsEqual`
  * has already refused, it mutates nothing, and every other discrepancy — a

@@ -2433,6 +2433,14 @@ describe('E1 R3/R4 media transitions and purge', () => {
    * that can never match. Everything else stays the undifferentiated
    * VAULT_MEDIA_VERIFICATION_FAILED, and re-opening P's capture window (the
    * documented recovery) clears the block for real.
+   *
+   * NOTE on level: #1530 asked for an "e2e" test and this is deliberately an
+   * HTTP integration test instead — the real router over real CAS state, not
+   * Playwright. The wedge is a server-side attestation semantic between two
+   * interleaved capture windows, and no UI consumes VAULT_MEDIA_CAPTURE_IN_FLIGHT
+   * yet (that copy is carried into the vault-UI batch), so a browser driver
+   * could not reach this shape today. The browser-level pass rides along when
+   * that batch adds the consumer.
    */
   it('names the interrupted move-in that blocks another capture, and refuses everything else the same way', async () => {
     const user = await h.seedUser({

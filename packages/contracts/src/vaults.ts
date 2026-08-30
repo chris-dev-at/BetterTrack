@@ -1230,11 +1230,13 @@ export function serializePerVaultRetiredServerPurgeTranscript(
  *  - `VAULT_MEDIA_VERIFICATION_FAILED` — the submitted full-set readback does
  *    not describe what the server holds. Nothing about it says why.
  *  - `VAULT_MEDIA_CAPTURE_IN_FLIGHT` — the readback is correct for every
- *    document EXCEPT the prospective ones another portfolio's interrupted
- *    move-in left staged in this vault. The refusal is unchanged (fail-closed,
- *    no mutation); the code and its `portfolioIds` detail name the portfolios
- *    whose move must be finished or cancelled first, so a client can say that
- *    instead of retrying a readback that can never match.
+ *    document EXCEPT the prospective ones an interrupted portfolio move-in
+ *    left staged in this vault (usually another portfolio's, but a client that
+ *    omits the document it just staged itself lands here too). The refusal is
+ *    unchanged (fail-closed, no mutation); the code and its `portfolioIds`
+ *    detail name the portfolios whose move must be finished or cancelled
+ *    first, so a client can say that instead of retrying a readback that can
+ *    never match.
  */
 export const PER_VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',

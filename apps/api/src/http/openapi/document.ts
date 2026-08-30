@@ -4922,12 +4922,13 @@ const endpoints: EndpointDef[] = [
     summary:
       'Commit one verified full-document-set media transition; removing server retires bytes instead of purging them.',
     description:
-      'The two 412 meanings carry DIFFERENT codes: VAULT_MEDIA_VERIFICATION_FAILED is worth retrying with a fresh readback, while VAULT_MEDIA_CAPTURE_IN_FLIGHT is terminal for this caller — the readback is exact except for documents another portfolio’s interrupted move-in staged in the vault, whose ids are listed in error.details.portfolioIds. That move must be finished or cancelled first.',
+      'The two 412 meanings carry DIFFERENT codes: VAULT_MEDIA_VERIFICATION_FAILED is worth retrying with a fresh readback, while VAULT_MEDIA_CAPTURE_IN_FLIGHT is terminal for this caller — the readback is exact except for documents an interrupted portfolio move-in staged in the vault, whose ids are listed in error.details.portfolioIds. That move must be finished or cancelled first.',
     params: contracts.vaultIdParamSchema,
     body: R.PerVaultMediaTransitionRequest,
     status: 200,
     response: R.PerVaultMediaTransitionResponse,
     errorResponses: {
+      400: 'The requested selection names the reserved local medium (VAULT_MEDIA_RESERVED).',
       404: 'No such caller-owned vault (VAULT_NOT_FOUND).',
       409: 'The durable media state, Drive binding, or a pending retirement refuses this transition (VAULT_MEDIA_STATE_CONFLICT / VAULT_DRIVE_BINDING_INVALID / VAULT_RETIRED_SERVER_CONFLICT / VAULT_RETIREMENT_PENDING).',
       412: 'The submitted full-document-set readback does not cover or does not match what the server holds (VAULT_MEDIA_PARTIAL_SET / VAULT_MEDIA_VERIFICATION_FAILED / VAULT_MEDIA_CAPTURE_IN_FLIGHT).',
