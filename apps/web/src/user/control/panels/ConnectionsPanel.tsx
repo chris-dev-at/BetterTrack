@@ -295,6 +295,8 @@ function DriveIdentityRow({
   registry,
   vaults,
   working,
+  signInDisabled,
+  signInLabel,
   onAuthorize,
   onDisconnect,
 }: {
@@ -302,6 +304,9 @@ function DriveIdentityRow({
   registry: DriveConnectionRegistry;
   vaults: readonly VaultConfig[];
   working: boolean;
+  /** Preparation state decides this: the popup must open from the click. */
+  signInDisabled: boolean;
+  signInLabel: string;
   onAuthorize: () => void;
   onDisconnect: () => void;
 }) {
@@ -332,8 +337,13 @@ function DriveIdentityRow({
         )}
       </Badge>
       {authorization !== 'connected' ? (
-        <Button disabled={working} onClick={onAuthorize} size="sm" variant="primary">
-          {t('settings.connections.driveAccounts.signIn', { email: connection.email })}
+        <Button
+          disabled={working || signInDisabled}
+          onClick={onAuthorize}
+          size="sm"
+          variant="primary"
+        >
+          {signInLabel}
         </Button>
       ) : null}
       <Button disabled={working} onClick={onDisconnect} size="sm" variant="quiet">
@@ -374,6 +384,45 @@ function DriveAccountsSection({
     queryFn: ({ signal }) => listVaultConfigs(signal),
     staleTime: 15_000,
   });
+  const [connectRequested, setConnectRequested] = useState(false);
+  const [awaitingPreparedClick, setAwaitingPreparedClick] = useState(false);
+  // Loading GIS contacts Google, so an account with no Drive identity at all
+  // waits for an explicit gesture — the same rule the vault Drive card follows.
+  // Once one identity exists, this IS an intended Drive flow and the registry
+  // prepares every client its buttons can fire, including the next connect.
+  const preparationEnabled = (connections.data?.length ?? 0) > 0 || connectRequested;
+  const prepareRegistry = useCallback(() => registry.prepare(), [registry]);
+  const preparation = useDriveGisPreparation(preparationEnabled, prepareRegistry);
+  const preparing =
+    preparationEnabled && (preparation.state === 'idle' || preparation.state === 'preparing');
+  const preparedForGesture = preparation.state === 'ready';
+
+  function actionLabel(key: string, vars?: Record<string, string | number>): string {
+    if (preparing) return t('settings.connections.drive.preparing');
+    if (preparation.state === 'failed') return t('settings.connections.drive.retryPreparation');
+    return t(key, vars);
+  }
+
+  /**
+   * True when this click was spent on preparation instead of a popup. Nothing
+   * here is a silent no-op: the click either starts/retries preparation with a
+   * visible state, or says why it cannot (#1518).
+   */
+  function preparationConsumedClick(): boolean {
+    if (preparedForGesture) {
+      setAwaitingPreparedClick(false);
+      return false;
+    }
+    setMessage(null);
+    if (!preparationEnabled) setConnectRequested(true);
+    else if (preparation.state === 'failed') preparation.retry();
+    else if (preparation.state === 'unconfigured') {
+      setMessage({ tone: 'error', text: t('settings.connections.drive.configMissing') });
+      return true;
+    }
+    setAwaitingPreparedClick(true);
+    return true;
+  }
 
   async function refresh(): Promise<void> {
     await Promise.all([
@@ -383,12 +432,16 @@ function DriveAccountsSection({
   }
 
   async function connect(): Promise<void> {
+    if (preparationConsumedClick()) return;
     setWorking('new');
     setMessage(null);
     const result = await registry.connect();
     if (result.status === 'ok') {
       setMessage({ tone: 'success', text: t('settings.connections.driveAccounts.added') });
       await refresh();
+      // The prepared client now belongs to the account it just registered, so
+      // the next "add another" gesture needs a freshly prepared one.
+      preparation.retry();
     } else {
       // Closing the Google consent popup is the common outcome here, and it is
       // actionable: say what to do instead of "could not be changed".
@@ -405,6 +458,7 @@ function DriveAccountsSection({
   }
 
   async function authorize(connection: DriveConnection): Promise<void> {
+    if (preparationConsumedClick()) return;
     setWorking(connection.id);
     setMessage(null);
     const result = await registry.authorize(connection);
@@ -501,20 +555,38 @@ function DriveAccountsSection({
                 onAuthorize={() => void authorize(connection)}
                 onDisconnect={() => void disconnect(connection, false)}
                 registry={registry}
+                signInDisabled={preparing || preparation.state === 'unconfigured'}
+                signInLabel={actionLabel('settings.connections.driveAccounts.signIn', {
+                  email: connection.email,
+                })}
                 vaults={vaults.data}
                 working={working === connection.id}
               />
             ))
           )}
           <Row stack>
-            <Button disabled={working !== null} onClick={() => void connect()} size="sm">
-              {t(
+            <Button
+              disabled={working !== null || preparing || preparation.state === 'unconfigured'}
+              onClick={() => void connect()}
+              size="sm"
+            >
+              {actionLabel(
                 connections.data.length === 0
                   ? 'settings.connections.driveAccounts.addFirst'
                   : 'settings.connections.driveAccounts.add',
               )}
             </Button>
           </Row>
+          {awaitingPreparedClick && preparedForGesture ? (
+            <Row stack>
+              <PanelNote>{t('settings.connections.drive.readyToConnect')}</PanelNote>
+            </Row>
+          ) : null}
+          {preparation.state === 'failed' ? (
+            <Row stack>
+              <PanelNote warn>{t('settings.connections.drive.preparationFailed')}</PanelNote>
+            </Row>
+          ) : null}
 
           {moveVault && connections.data.length > 1 ? (
             <PanelFold summary={t('settings.connections.driveAccounts.bindings')}>
@@ -624,6 +696,7 @@ function DriveVaultSection({
   const [unlockAction, setUnlockAction] = useState<DriveCardAction | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const [driveConnectionRequested, setDriveConnectionRequested] = useState(false);
+  const [awaitingPreparedClick, setAwaitingPreparedClick] = useState(false);
   const authorization = useDriveAuthorization(connection);
   const mediaQueryKey = vaultMediaQueryKey(accountId);
   const query = useQuery({
@@ -653,6 +726,29 @@ function DriveVaultSection({
       return t('settings.connections.drive.retryPreparation');
     }
     return t(key);
+  }
+
+  /**
+   * True when this click was spent preparing GIS instead of opening the popup.
+   * The first click on a server-only vault's **Connect Drive** can only start
+   * the preload — the reply is the explicit "ready, click again" note below, so
+   * the button no longer reverts with nothing said (#1519 F1).
+   */
+  function drivePreparationConsumedClick(): boolean {
+    if (driveReady) {
+      setAwaitingPreparedClick(false);
+      return false;
+    }
+    if (!drivePreparationEnabled) {
+      setDriveConnectionRequested(true);
+    } else if (drivePreparation.state === 'failed') {
+      drivePreparation.retry();
+    } else if (drivePreparation.state === 'unconfigured') {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.configMissing' });
+      return true;
+    }
+    setAwaitingPreparedClick(true);
+    return true;
   }
 
   if (!configured && (query.isError || query.isPending)) return null;
@@ -792,14 +888,7 @@ function DriveVaultSection({
   }
 
   async function run(action: DriveCardAction): Promise<void> {
-    if (!driveReady) {
-      if (!drivePreparationEnabled) {
-        setDriveConnectionRequested(true);
-      } else if (drivePreparation.state === 'failed') {
-        drivePreparation.retry();
-      }
-      return;
-    }
+    if (drivePreparationConsumedClick()) return;
     if (requireUnlocked(action)) return;
     setWorking(true);
     setMessage(null);
@@ -820,14 +909,7 @@ function DriveVaultSection({
 
   async function unlockAndContinue(): Promise<void> {
     if (!unlock || !unlockAction || passphrase.length === 0) return;
-    if (!driveReady) {
-      if (!drivePreparationEnabled) {
-        setDriveConnectionRequested(true);
-      } else if (drivePreparation.state === 'failed') {
-        drivePreparation.retry();
-      }
-      return;
-    }
+    if (drivePreparationConsumedClick()) return;
     setWorking(true);
     setMessage(null);
     let activeConnection: DriveConnectionController;
@@ -895,6 +977,11 @@ function DriveVaultSection({
       {message ? (
         <Row stack>
           <Alert tone={message.tone}>{t(message.key)}</Alert>
+        </Row>
+      ) : null}
+      {awaitingPreparedClick && driveReady && !working ? (
+        <Row stack>
+          <PanelNote>{t('settings.connections.drive.readyToConnect')}</PanelNote>
         </Row>
       ) : null}
       {drivePreparation.state === 'failed' ? (

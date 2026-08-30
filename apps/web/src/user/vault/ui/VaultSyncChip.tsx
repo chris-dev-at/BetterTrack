@@ -152,12 +152,19 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                     {t('vault.sync.drivePreparationFailed')}
                   </p>
                 ) : null}
+                {/* A deployment gap, not a connection problem: nothing to retry. */}
+                {drivePreparation.state === 'unconfigured' ? (
+                  <p className="bt-neg text-xs" role="alert">
+                    {t('vault.sync.driveNotConfigured')}
+                  </p>
+                ) : null}
                 <button
                   className="bt-link text-left text-sm"
                   disabled={
                     resumePending ||
                     drivePreparation.state === 'preparing' ||
-                    drivePreparation.state === 'idle'
+                    drivePreparation.state === 'idle' ||
+                    drivePreparation.state === 'unconfigured'
                   }
                   onClick={() => {
                     if (drivePreparation.state === 'failed') drivePreparation.retry();

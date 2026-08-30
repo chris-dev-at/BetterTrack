@@ -171,6 +171,12 @@ export function VaultUnlockGate({
                 </Button>
               </div>
             ) : null}
+            {/* A deployment gap, not a connection problem: no retry to offer. */}
+            {drivePreparation.state === 'unconfigured' ? (
+              <p className="bt-neg text-xs" role="alert">
+                {t('vault.unlock.driveNotConfigured')}
+              </p>
+            ) : null}
           </>
         ) : null}
         {errorKey ? <Alert tone="error">{t(errorKey)}</Alert> : null}

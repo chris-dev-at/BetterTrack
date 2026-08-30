@@ -15,6 +15,8 @@ import { createIndexedDbVaultCustody, type DeviceVaultCustody } from './custody'
 import {
   createDriveDataHome,
   createGoogleDriveTokenClient,
+  DriveNotConfiguredError,
+  revokeDriveGrant,
   type DriveDataHome,
   type DriveAuthorizationState,
   type GoogleDriveTokenClient,
@@ -115,9 +117,9 @@ export function VaultRuntimeProvider({
 
   const tokens = useCallback(
     (requireConfigured = false): GoogleDriveTokenClient => {
-      if (requireConfigured && !clientId) {
-        throw new VaultCryptoError('locked', 'Google Drive is not configured for this deployment.');
-      }
+      // A typed failure, not a generic locked one: a deployment without a
+      // client id must not be reported to the user as a connection problem.
+      if (requireConfigured && !clientId) throw new DriveNotConfiguredError();
       tokensRef.current ??= createGoogleDriveTokenClient({ clientId: clientId ?? '' });
       return tokensRef.current;
     },
@@ -126,9 +128,7 @@ export function VaultRuntimeProvider({
 
   const drive = useCallback(
     (accountId: string, requireConfigured = false): DriveDataHome => {
-      if (requireConfigured && !clientId) {
-        throw new VaultCryptoError('locked', 'Google Drive is not configured for this deployment.');
-      }
+      if (requireConfigured && !clientId) throw new DriveNotConfiguredError();
       if (dependencies?.drive) return dependencies.drive;
       if (driveRef.current?.userId !== accountId) {
         driveRef.current = {
@@ -429,6 +429,15 @@ export function VaultRuntimeProvider({
     return drive(userId, true);
   }, [authenticated, drive, tokens, userId]);
 
+  const releaseDriveStorage = useCallback(async (): Promise<void> => {
+    // Consent taken for a flow the user then abandoned. Nothing here can touch
+    // an unlocked vault's capability: the caller only releases a grant IT took.
+    const tokenClient = tokensRef.current;
+    if (tokenClient == null) return;
+    await revokeDriveGrant(tokenClient);
+    setDriveAuthorization(tokenClient.state);
+  }, []);
+
   const cleanupAfterDisable = useCallback(async (): Promise<void> => {
     if (userId == null) return;
     const active = runtimeRef.current?.sync.state.active ?? null;
@@ -549,6 +558,7 @@ export function VaultRuntimeProvider({
       unlockFromDevice,
       prepareDriveStorage,
       authorizeDriveStorage,
+      releaseDriveStorage,
       reconnect,
       downloadRecoveryKit,
       changePassphrase,
@@ -569,6 +579,7 @@ export function VaultRuntimeProvider({
       phase,
       prepareDriveStorage,
       reconnect,
+      releaseDriveStorage,
       rotateKey,
       sync,
       syncState,

@@ -513,6 +513,7 @@
         "preparing": "Google-Anmeldung wird vorbereitet…",
         "retryPreparation": "Google-Anmeldung erneut vorbereiten",
         "preparationFailed": "Die Google-Anmeldung konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut.",
+        "readyToConnect": "Die Google-Anmeldung ist bereit — klicke erneut, um zu verbinden.",
         "unlockRequired": "Entsperre deinen verschlüsselten Tresor, um den Speicher zu ändern.",
         "unlockPrompt": "Gib deine Tresor-Passphrase ein. Drive-Autorisierung und Migration werden mit dieser Aktion fortgesetzt.",
         "passphraseLabel": "Tresor-Passphrase",
@@ -552,10 +553,6 @@
         "stayConnected": "Bleibt verbunden — synchronisiert automatisch."
       },
       "slots": {
-        "drive": {
-          "name": "Google-Drive-Backup",
-          "purpose": "Halte ein verschlüsseltes Off-site-Backup deines Kontos auf deinem eigenen Drive."
-        },
         "bankCash": {
           "name": "Bank- & Broker-Cash-Sync",
           "purpose": "Halte deine Barbestände mit deinen Bank- und Broker-Konten im Einklang."
@@ -3957,6 +3954,7 @@
       },
       "errors": {
         "drivePreparation": "Google Drive konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut. Dein Konto wurde nicht geändert.",
+        "driveNotConfigured": "Google Drive ist in dieser BetterTrack-Installation nicht eingerichtet und kann hier nicht als Tresorspeicher dienen. Deine Verbindung ist in Ordnung — wähle den verschlüsselten BetterTrack-Speicher oder bitte die Person, die diese Installation betreibt, Drive einzurichten. Dein Konto wurde nicht verändert.",
         "driveAuthorization": "Google Drive konnte nicht verbunden werden. Erlaube das Google-Anmelde-Popup, wähle das richtige Konto und versuche es erneut. Dein Konto wurde nicht geändert.",
         "driveReauthorization": "Google Drive muss erneut verbunden werden, bevor die Übertragung starten kann. Erlaube das Google-Anmelde-Popup und versuche es erneut. Dein Konto wurde nicht geändert.",
         "migrate": "Deine aktuellen Daten konnten nicht vollständig gesammelt werden. Es wurde nichts geändert; versuche es nach Wiederherstellung der Verbindung erneut.",
@@ -3991,6 +3989,7 @@
       "preparingDrive": "Google-Anmeldung wird vorbereitet…",
       "drivePreparationFailed": "Die Google-Anmeldung konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut.",
       "retryDrivePreparation": "Google-Anmeldung erneut vorbereiten",
+      "driveNotConfigured": "Google Drive ist in dieser BetterTrack-Installation nicht eingerichtet, daher kann dieses Gerät die verschlüsselte Drive-Kopie nicht lesen. Deine Verbindung ist in Ordnung — bitte die Person, die diese Installation betreibt, Drive einzurichten.",
       "action": "Tresor entsperren",
       "unlocking": "Wird entsperrt…",
       "stuck": {
@@ -4048,6 +4047,7 @@
       "preparingDrive": "Google-Anmeldung wird vorbereitet…",
       "drivePreparationFailed": "Die Google-Anmeldung konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut.",
       "retryDrivePreparation": "Google-Anmeldung erneut vorbereiten",
+      "driveNotConfigured": "Google Drive ist in dieser BetterTrack-Installation nicht eingerichtet, daher erreicht die Synchronisierung deine Drive-Kopie nicht. Bitte die Person, die diese Installation betreibt, Drive einzurichten.",
       "restore": "Speicher- und Wiederherstellungsoptionen",
       "drive": {
         "signIn": "Bei Google anmelden, um zu synchronisieren"
