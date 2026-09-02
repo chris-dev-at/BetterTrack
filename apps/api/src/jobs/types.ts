@@ -142,11 +142,27 @@ export interface RepeatSpec {
  * repeat schedule, and option overrides. The worker bootstrap turns a list of
  * these into BullMQ workers and registers their schedules.
  */
+/**
+ * What a handler may report about the run it just finished (#1406 W4).
+ *
+ * **Numbers only, by design.** BullMQ persists a handler's return value as the
+ * job's `returnvalue`, and the admin operations cockpit reads it to answer
+ * "what did last night's retention sweep actually delete?". Constraining the
+ * type to counts is what makes that safe: a sweep reports HOW MANY rows it
+ * touched, never WHICH, so no identifier can reach an operator screen through a
+ * job's return value — the same reason Bull Board redacts `returnValue`
+ * wholesale. The projection re-checks this at the boundary; the type is the
+ * first of the two gates, not the only one.
+ */
+export type JobRunSummary = Readonly<Record<string, number>>;
+
 export interface JobDefinition<N extends QueueName = QueueName> {
   name: N;
   // Method syntax (bivariant) so a concrete `JobDefinition<'system.heartbeat'>`
   // is assignable to `JobDefinition<QueueName>` in the definitions collection.
-  handler(job: Job<JobPayload<N>>, ctx: JobContext): Promise<void>;
+  // A handler may return a {@link JobRunSummary}; returning nothing stays valid
+  // and is what almost every handler does.
+  handler(job: Job<JobPayload<N>>, ctx: JobContext): Promise<void | JobRunSummary>;
   /** Present → the job is registered as a repeatable schedule. */
   schedule?: RepeatSpec;
   /**

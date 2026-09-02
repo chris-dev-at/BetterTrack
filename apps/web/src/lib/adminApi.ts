@@ -8,6 +8,8 @@ import {
   adminBackupStatusResponseSchema,
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
+  adminOpsJobsResponseSchema,
+  adminOpsProvidersResponseSchema,
   adminStatsSchema,
   adminTwoFactorStatusResponseSchema,
   adminUserListResponseSchema,
@@ -57,6 +59,8 @@ import {
   versionResponseSchema,
   type AdminBackupStatusResponse,
   type AdminHealthResponse,
+  type AdminOpsJobsResponse,
+  type AdminOpsProvidersResponse,
   type AdminFeedbackListResponse,
   type AdminFeedbackSubmission,
   type AdminFeedbackListQuery,
@@ -697,6 +701,24 @@ export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthR
 export async function getBackupStatus(signal?: AbortSignal): Promise<AdminBackupStatusResponse> {
   const data = await apiRequest<unknown>('/admin/ops/backup-status', { signal });
   return adminBackupStatusResponseSchema.parse(data);
+}
+
+/**
+ * Queue depths, repeatable schedules and the §9 dead-letter list (#1406 W4).
+ * Read-only — there is no retry/discard companion, by decision.
+ */
+export async function getOpsJobs(signal?: AbortSignal): Promise<AdminOpsJobsResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/jobs', { signal });
+  return adminOpsJobsResponseSchema.parse(data);
+}
+
+/**
+ * Per-capability breaker state, provider call outcomes and market-cache rates
+ * (#1406 W4). The counters are process-local; `sampledSince` is their epoch.
+ */
+export async function getOpsProviders(signal?: AbortSignal): Promise<AdminOpsProvidersResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/providers', { signal });
+  return adminOpsProvidersResponseSchema.parse(data);
 }
 
 export async function updateAccountDefaults(

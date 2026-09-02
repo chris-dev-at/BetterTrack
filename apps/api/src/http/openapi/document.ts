@@ -314,6 +314,10 @@ const componentSchemas = {
   AdminStats: contracts.adminStatsSchema,
   AdminHealthResponse: contracts.adminHealthResponseSchema,
   AdminBackupStatusResponse: contracts.adminBackupStatusResponseSchema,
+  // Operations cockpit (#1406 W4) — read-only projections of counters the
+  // process already keeps. Neither has a request body: there is no write here.
+  AdminOpsJobsResponse: contracts.adminOpsJobsResponseSchema,
+  AdminOpsProvidersResponse: contracts.adminOpsProvidersResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -1789,6 +1793,30 @@ const endpoints: EndpointDef[] = [
       'Backup and restore-drill readiness, projected read-only from the scheduler status file.',
     status: 200,
     response: R.AdminBackupStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/jobs',
+    tag: 'Admin',
+    summary: 'Queue depths, repeatable schedules with next/last run, and the dead-letter list.',
+    description:
+      'Read-only operations cockpit projection (#1406 W4). Job payloads are never included; ' +
+      'a scheduled run reports its own counts only as numbers. `available: false` means this ' +
+      'process holds no queue registry — not that the queues are empty.',
+    status: 200,
+    response: R.AdminOpsJobsResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/providers',
+    tag: 'Admin',
+    summary: 'Per-capability circuit-breaker state, provider call outcomes and market-cache rates.',
+    description:
+      'Read-only (#1406 W4). Counters are process-local and reset on restart — `sampledSince` ' +
+      'is their epoch. There is no upstream quota gauge: the provider is keyless and no ' +
+      'authoritative quota exists to report.',
+    status: 200,
+    response: R.AdminOpsProvidersResponse,
   },
   {
     method: 'get',

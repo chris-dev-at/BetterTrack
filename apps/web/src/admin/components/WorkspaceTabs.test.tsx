@@ -17,8 +17,9 @@ function renderStrip(path: string, counts?: Record<string, number>, locale: 'en'
 }
 
 const people = ADMIN_WORKSPACES.find((workspace) => workspace.key === 'people');
+const operations = ADMIN_WORKSPACES.find((workspace) => workspace.key === 'operations');
 
-test('the People workspace is the one folded workspace, and it declares its tabs', () => {
+test('the People workspace is folded, and it declares its tabs', () => {
   expect(people?.tabs?.map((tab) => tab.to)).toEqual([
     '/admin/users',
     '/admin/registration',
@@ -27,21 +28,51 @@ test('the People workspace is the one folded workspace, and it declares its tabs
   ]);
   // Folding means the rail stops listing the child pages.
   expect(people?.pages).toEqual([]);
-  // W7 is cut: the other workspaces keep W1's shape and must not be folded here.
+});
+
+// W4 folds the SECOND workspace. Every path Operations owned before the fold is
+// still one of its tabs, which is what makes the fold cost no bookmark.
+test('the Operations workspace is folded, and every pre-fold path survives as a tab', () => {
+  expect(operations?.tabs?.map((tab) => tab.to)).toEqual([
+    '/admin/health',
+    '/admin/problems',
+    '/admin/providers',
+    '/admin/monitoring',
+    '/admin/email',
+    '/admin/usage-analytics',
+    '/admin/market-data',
+  ]);
+  expect(operations?.pages).toEqual([]);
+  // The W1 page rows this workspace used to list, none of them lost.
+  for (const path of [
+    '/admin/health',
+    '/admin/problems',
+    '/admin/monitoring',
+    '/admin/email',
+    '/admin/usage-analytics',
+  ]) {
+    expect(operations?.tabs?.some((tab) => tab.to === path)).toBe(true);
+  }
+});
+
+// W7 stays cut: only the two workspaces their own packages folded are folded.
+test('no workspace beyond People and Operations is folded', () => {
   for (const workspace of ADMIN_WORKSPACES) {
-    if (workspace.key !== 'people') expect(workspace.tabs).toBeUndefined();
+    if (workspace.key === 'people' || workspace.key === 'operations') continue;
+    expect(workspace.tabs).toBeUndefined();
   }
 });
 
 test('folding costs no reachability: every real tab stays a ⌘K destination', () => {
   const destinations = new Set(ADMIN_DESTINATIONS.map((destination) => destination.to));
-  for (const tab of people?.tabs ?? []) {
+  for (const tab of [...(people?.tabs ?? []), ...(operations?.tabs ?? [])]) {
     if (tab.comingSoon) continue;
     expect(destinations).toContain(tab.to);
   }
   // A placeholder is deliberately NOT a palette destination — jumping to a page
   // that only says "not built yet" is noise in a navigation palette.
   expect(destinations).not.toContain('/admin/test-accounts');
+  expect(destinations).not.toContain('/admin/market-data');
 });
 
 // The strip navigates between ROUTES. Announcing it as an ARIA tablist would
