@@ -54,15 +54,12 @@ the server uses** (`packages/domain` — never reimplemented), reading through
 the `PortfolioStore` seam, so day to day a vaulted portfolio looks like a
 normal one on an unlocked device.
 
-Glossary: _vault_ = one storage config + one seed phrase + the encrypted doc
-set of its member portfolios; _doc_ = one encrypted blob of that set (header /
-common / one per portfolio); _medium_ = a place docs sync to (server / a Drive
-connection); _Drive connection_ = one separately-OAuth'd Google account usable
-as a medium, N per account; _move-in / move-out_ = a portfolio entering or
-leaving a vault; _endpoint_ = one installed client; _endpoint keystore_ = the
-device-local store of seed phrases; _device password_ = the per-endpoint
-password wrapping stored phrases; _K_c_ = a vault's random 256-bit content key;
-_locked stub_ = the content-free server row a vaulted portfolio keeps.
+Glossary: _doc_ = one encrypted blob of a vault's set (header / common / one
+per portfolio); _medium_ = a place docs sync to; _Drive connection_ = one
+separately-OAuth'd Google account usable as a medium, N per account; _endpoint_
+= one installed client; _endpoint keystore_ = its device-local store of seed
+phrases; _K_c_ = a vault's random 256-bit content key; _locked stub_ = the
+content-free server row a vaulted portfolio keeps.
 
 ## 2. The owner's 2026-08-19 ruling (verbatim, binding)
 
@@ -114,13 +111,14 @@ Shipped in `apps/api/src/data/schema.ts` (migration `0091_paranoid_vaults_keysto
   `retirement_proof_public_key` (the per-vault Ed25519 purge verifier, §7),
   `key_fingerprint` (a non-secret HKDF tag of K_c that lets a client confirm
   "these words open THIS vault" before destructive steps, §4),
-  `header_doc_id`/`common_doc_id`, `retirement_generation`, `media_attested_at` plus
-  `media_attested_drive_connection_id` (§7 consequence 3). One CHECK carries
-  the whole media contract (`vaults_media_state`, `:4250`): the set is exactly
-  `{server}`, `{drive}` or `{server,drive}` — non-empty and duplicate-free by
-  enumeration, `local` refused at the deepest boundary, drive ⇔ connection
-  binding as its second half. `local` is RESERVED in the contract enum
-  (`packages/contracts/src/vaults.ts:113`), rejected as `reserved_medium`.
+  `header_doc_id`/`common_doc_id`, `retirement_generation`, `media_attested_at`
+  plus `media_attested_drive_connection_id` (§7 consequence 3). One CHECK
+  carries the whole media contract (`vaults_media_state`, `:4250`): the set is
+  exactly `{server}`, `{drive}` or `{server,drive}` — non-empty and
+  duplicate-free by enumeration, `local` refused at the deepest boundary, the
+  drive ⇔ connection binding as its second half. `local` is RESERVED in the
+  contract enum (`packages/contracts/src/vaults.ts:113`), rejected as
+  `reserved_medium`.
 - **`vault_blobs`** (`:4304`) — `(vault_id, doc_id)` PK, `doc_kind`
   (`header`|`common`|`portfolio`), `portfolio_id` (set iff `portfolio`,
   CHECK-pinned equal to `doc_id`), `version` (the per-doc CAS token),
@@ -130,21 +128,20 @@ Shipped in `apps/api/src/data/schema.ts` (migration `0091_paranoid_vaults_keysto
 - **`vault_blob_history`** (`:4376`), **`vault_server_candidates`** (`:4404`)
   and **`vault_retired`** (`:4472`) are per doc; **`vault_retirements`**
   (`:4452`) is keyed by `vault_id` ALONE — one record per vault. Bounded
-  history (10 versions / 30 days) is the bad-write safety net; the retirement
-  set + signed purge gate (§7) carry over per vault.
+  history (10 versions / 30 days) is the bad-write safety net.
 - **`drive_connections`** (`:4132`, §8) — `google_sub` is unique per user, not
   globally: two users may connect the same Google account.
-- **`portfolios.vault_id`** (`:1383`) + **`vault_alias`** (`:1386`, the locked-
-  row label; the true name travels inside the ciphertext). NULL ⇒ normal
+- **`portfolios.vault_id`** (`:1383`) + **`vault_alias`** (`:1386`, the
+  locked-row label; the true name travels inside the ciphertext). NULL ⇒ normal
   portfolio, today's behavior byte-for-byte; NOT NULL ⇒ the locked stub: zero
-  content rows (probed), only identity + alias + membership. The stub exists
-  for (a) enforcement keying, (b) same-UUID move-out, (c) rendering "N locked
+  content rows (probed), only identity + alias + membership. The stub exists for
+  (a) enforcement keying, (b) same-UUID move-out, (c) rendering "N locked
   portfolios" and the unlock affordance.
 
-**Mounted routes** under `/api/v1` — `http/routes/vaultRoutes.ts`: `GET`/`POST
-/vaults` and `GET`/`PATCH`/`DELETE /vaults/:vaultId` (`:847`–`:924`);
-`GET`/`PUT /vaults/:vaultId/docs/:docId` + `/history[/:version]`
-(`:958`–`:1069`); `GET`/`PATCH /vaults/:vaultId/media` (`:1086`); `PUT
+**Mounted routes** under `/api/v1` — `vaultRoutes.ts`: `GET`/`POST /vaults` and
+`GET`/`PATCH`/`DELETE /vaults/:vaultId` (`:847`–`:924`); `GET`/`PUT
+/vaults/:vaultId/docs/:docId` + `/history[/:version]` (`:958`–`:1069`);
+`GET`/`PATCH /vaults/:vaultId/media` (`:1086`); `PUT
 /vaults/:vaultId/media/server-candidate/:transitionId/docs/:docId` (`:1166`)
 and its `GET` readback (`:1219`); `POST /vaults/:vaultId/media/retired/purge`
 and `/challenge` (`:1249`); the `drive-connections` family (`:755`–`:791`).
@@ -159,8 +156,7 @@ precondition.
 **Deliberately NOT a server fact:** seed phrases, the endpoint keystore, the
 device password, unlock state, and which endpoints hold which phrases. There is
 no server table for endpoint custody, ever. `users.privacy_mode` and the
-account-level media columns (`:230`–`:264`) retire at the end of §17; until
-then they serve the live accounts.
+account-level media columns (`:230`–`:264`) retire at the end of §17.
 
 ## 4. Seed phrase → keys (BIP39, derivation, rotation)
 
@@ -196,28 +192,26 @@ byte-for-byte and fail closed on malformed length or authentication
 Notes, each deliberate: **no Argon2id on the mnemonic** — stretching defends
 low-entropy human secrets, a 128-bit random mnemonic needs none, and the
 standard PBKDF2 step keeps us vector-compatible with every BIP39 tool; Argon2id
-stays exactly where a human secret exists, the §12 device password. The
-**`keySlots[]` indirection stays** (header-carried): K_c is random and wrapped
-by K_wrap, which is what makes rotation and any far-future sharing possible
-without re-issuing words. The phrase is **per vault** — two vaults never share
-key material, and the `vaultId` in the HKDF info domain-separates even a
-re-used mnemonic (which the UI never offers). **Rotation** re-encrypts under
-fresh words (new mnemonic → new K_wrap → new K_c → full doc-set re-encrypt +
-verified round trips + history invalidation), offered in vault settings, never
-forced; there is no "change phrase but keep K_c" path, because if the words
-leaked K_c must go too — **planned, not built.** The v1 recovery kit (raw-VK
-download) is RETIRED by ruling: the phrase is the sole credential and the
-write-it-down ceremony replaces the kit, one credential and one mental model.
-The v1 kit itself still ships for live account-level accounts until §17 runs.
+stays where a human secret exists, the §12 device password. The **`keySlots[]`
+indirection stays** (header-carried): K_c is random and wrapped by K_wrap,
+which is what makes rotation and any far-future sharing possible without
+re-issuing words. The phrase is **per vault** — the `vaultId` in the HKDF info
+domain-separates even a re-used mnemonic (which the UI never offers).
+**Rotation** re-encrypts under fresh words (full doc-set re-encrypt + verified
+round trips + history invalidation), never forced; there is no "change phrase
+but keep K_c" path, because if the words leaked K_c must go too — **planned,
+not built.** The v1 recovery kit (raw-VK download) is RETIRED by ruling: the
+phrase is the sole credential and the write-it-down ceremony replaces it. The
+v1 kit still ships for live account-level accounts until §17 runs.
 
 ## 5. Blob format + versioning (envelope v2, the per-vault doc set)
 
 **One envelope format for every medium**, evolved from the shipped `BTVAULT1`
 (`packages/contracts/src/vault.ts`, `apps/web/src/user/vault/envelope.ts`).
 What it got right is kept: magic + 4-byte header length + cleartext JSON header
-then ciphertext; the **full serialized header bound as AES-GCM AAD** so any header
-tamper (version rollback included) fails decryption; deflate before encryption;
-strict fail-closed versioning.
+then ciphertext; the **full serialized header bound as AES-GCM AAD** so any
+header tamper (version rollback included) fails decryption; deflate before
+encryption; strict fail-closed versioning.
 
 **Envelope v2 header** — cleartext, counters/ids/crypto parameters only, never
 portfolio information (`packages/contracts/src/vaults.ts:463`, `.strict()`):
@@ -264,11 +258,10 @@ from `VAULT_TABLE_ENTITY_KINDS` × `VAULT_ENTITY_DOC_BUCKETS` —
 portfolio-scoped → portfolio doc, account-scoped-but-vault-referenced → common
 doc) and the **rehydration policy** (`:424` — `restore(entity)` vs
 `purge-only`). `PARANOID_PURGED_TABLE_NAMES` and `PARANOID_PURGE_REASONS`
-(`:454`, membership pinned in `paranoidClassification.test.ts`) are
-portfolio-scoped — `usage_events` capture suppression keys on "does the request
-target a vaulted portfolio / does the account own any vault" for the client
-engine's quote reads (the #1344 holdings-roster leak must not reopen per
-portfolio).
+(`:454`, pinned in `paranoidClassification.test.ts`) are portfolio-scoped —
+`usage_events` capture suppression keys on "does the request target a vaulted
+portfolio / does the account own any vault" for the client engine's quote reads
+(the #1344 holdings-roster leak must not reopen per portfolio).
 
 ## 6. Sync, CAS and the merge protocol
 
@@ -290,10 +283,9 @@ The v1 storage protocol carries over **per doc**:
   devices; the merge repairs races). Drive revisions are that medium's history.
 - **Local cache:** a per-endpoint encrypted cache of last-known docs — a cache,
   not a medium; the future phone-local-only medium arrives through the
-  `DataHome` seam (§18), not by promoting this cache.
-- **Write path:** local commit → encrypt affected docs (docVersion + 1) → CAS
-  to primary (server when present, else Drive) → replicate identical bytes to
-  the secondary.
+  `DataHome` seam (§18), not by promoting it. **Write path:** local commit →
+  encrypt affected docs (docVersion + 1) → CAS to primary (server when present,
+  else Drive) → replicate identical bytes to the secondary.
 - **Conflict rule (binding, unchanged):** entity granularity, never field
   granularity; higher `rev` wins → later `editedAt` → lexicographically higher
   `deviceId`; tombstone vs concurrent edit → the edit wins; merged docVersion =
@@ -413,11 +405,11 @@ NORMAL replicated write path — every active medium, server included — and on
 then is the (now Z-naming) doc set written to Z's namespace, verified, the
 binding PATCHed, and Y best-effort deleted. A byte-only copy would leave the
 encrypted header naming Y, so words + the right Google login would no longer
-discover the vault; and for a replicated vault the server's per-doc attestation
-rows would disagree with the new Drive bytes, which is exactly what `PATCH
+discover the vault; and for a replicated vault the server's attestation rows
+would disagree with the new Drive bytes, which is what `PATCH
 /vaults/:vaultId/media` verifies. Source and target must differ — a
 same-connection "move" resolves both homes to one object, so the copy is
-skipped as already-equal and the cleanup would then delete the only copy while
+skipped as already-equal and the cleanup would delete the only copy while
 reporting success. **Built but deliberately unwired**
 (`vault/media/driveMigration.ts:91`): production still composes the v1
 account-scoped Drive home, and the per-vault client media switcher
@@ -428,19 +420,17 @@ belongs to E6 (#1416) / E8 (#1418).
 
 **Drive is authenticated separately from the login identity, by construction.**
 A **Drive connection** is its own end-user OAuth consent to whichever Google
-account the user picks in Google's chooser, decoupled from how they log in to
-BetterTrack. Login with X, back up to Drive Y, put another vault on Drive Z:
-supported natively.
+account the user picks in Google's chooser, decoupled from how they log in.
+Login with X, back up to Drive Y, put another vault on Drive Z: supported.
 
 **Not yet provisionable.** `PER_VAULT_DRIVE_PROVISIONING_AVAILABLE = false`
 (`apps/web/src/user/vault/capabilities.ts:27`) — a plain constant, deliberately
 not an env or feature flag, so nothing an operator can flip brings the missing
 epic's code with it. `provisionVault.ts:52` refuses any `media` containing
 `drive`, the create ceremony renders the option disabled and names the gap, and
-`[E10-A9]` is a `test.fixme` on the same flag. The `drive_connections`
-directory, the transport and the namespace discipline below all ship; the
-per-vault provisioning path does not (**planned, E5 residual — no open issue
-tracks it; nearest are #1597 and #1598**).
+`[E10-A9]` is a `test.fixme` on the same flag. The registry, the transport and
+the namespace discipline below all ship; the per-vault provisioning path does
+not (**planned, E5 residual — no open issue tracks it; nearest #1597, #1598**).
 
 - **Connection identity.** GIS mints ephemeral tokens with no durable notion of
   "connection Y vs Z", so the client captures identity at connect time: after
@@ -495,24 +485,23 @@ tracks it; nearest are #1597 and #1598**).
   twice: the user could never SEE that the backup exists ("i am not sure if the
   google drive stuff works" — a visible file is the proof), and the bytes were
   reachable only through our OAuth client, which fights autonomy. Under
-  `drive.file` the app touches ONLY files it created (still least-privilege),
-  the docs sit where the user can eyeball and hand-download them (ciphertext +
-  their words = a recovery path needing nothing from us), and rename/move is
-  harmless because lookups go by cached fileId + `appProperties`, never by
-  name. Risks named honestly: the user can delete their own backup (the sync
-  indicator flags it; Drive trash holds 30 days), and co-users of a shared
-  Google account see the folder (they share the whole Drive anyway; the names
-  carry no PII, below).
+  `drive.file` the app touches ONLY files it created, the docs sit where the
+  user can eyeball and hand-download them (ciphertext + their words = a
+  recovery path needing nothing from us), and rename/move is harmless because
+  lookups go by cached fileId + `appProperties`, never by name. Risks named
+  honestly: the user can delete their own backup (the sync indicator flags it;
+  Drive trash holds 30 days), and co-users of a shared Google account see the
+  folder (they share the whole Drive anyway; the names carry no PII).
 - **Revocation.** The user can revoke at Google at any time (the app detects
   `invalid_grant`-class failures and flags the connection); in-app
   **disconnect** refuses while any vault is bound unless the vault first
   migrates off it (§7) — or, behind an explicit acknowledgment, the user
-  accepts that the app loses reach to that copy (the files stay their property
-  in their Drive). **A Drive-ONLY vault is the one case the acknowledgment
-  cannot cover** (PROJECTPLAN §16 2026-08-21): dropping its last medium would
-  leave the empty media set `vaults_media_state` rejects, and the only copy of
-  every doc behind a binding that no longer exists — so the refusal
-  (`DRIVE_CONNECTION_LAST_MEDIUM`) is decided BEFORE the acknowledgment is read
+  accepts that the app loses reach to that copy. **A Drive-ONLY vault is the
+  one case the acknowledgment cannot cover** (PROJECTPLAN §16 2026-08-21):
+  dropping its last medium would leave the empty media set
+  `vaults_media_state` rejects, and the only copy of every doc behind a binding
+  that no longer exists — so the refusal (`DRIVE_CONNECTION_LAST_MEDIUM`) is
+  decided BEFORE the acknowledgment is read
   (`driveConnectionRepository.ts:171`), and the owner is never offered a loss
   of reach that was never on the table. Add and attest the server medium first.
 - **Collision-safe namespace (two users, one physical Drive).** Both users'
@@ -532,19 +521,18 @@ tracks it; nearest are #1597 and #1598**).
   alongside until §19 drops the v1 surface. **Cannot clobber:** names are
   digests over (account, vault, doc), so two users' names never collide; a
   client lists by its own `ownerDigest` filter (rename/move-proof), NEVER
-  writes a file whose `ownerDigest` is not its own (checked before every
-  update), and concurrent creates dedupe by re-querying before first write.
-  **The folder is reconciled, not assumed unique:** lookup-then-create is not
-  atomic on Drive, so two devices can both create one — every creator re-lists,
-  adopts the same deterministic winner (lowest folder id) and discards its own
-  if it lost and is still empty (`:850`); objects are always found by
-  `appProperties`, never by parent, so a stray folder never hides a doc.
-  **Cannot read each other:** contents are AEAD ciphertext under different K_c,
-  and even a renamed or copied file fails decryption because
-  `accountBinding`/`vaultId`/`docId` sit in the AAD (§5); names and
-  appProperties are digests, so no emails, vault names or portfolio hints are
-  visible to a co-user. **Bounded paged lookup:** `docId` stays out of
-  `appProperties`, so every document sharing (`ownerDigest`, `vaultDigest`,
+  writes a file whose `ownerDigest` is not its own, and concurrent creates
+  dedupe by re-querying before first write. **The folder is reconciled, not
+  assumed unique:** lookup-then-create is not atomic on Drive, so two devices
+  can both create one — every creator re-lists, adopts the deterministic winner
+  (lowest folder id) and discards its own if it lost and is still empty
+  (`:850`); objects are always found by `appProperties`, never by parent, so a
+  stray folder never hides a doc. **Cannot read each other:** contents are AEAD
+  ciphertext under different K_c, and even a renamed or copied file fails
+  decryption because `accountBinding`/`vaultId`/`docId` sit in the AAD (§5);
+  names and appProperties are digests, so no emails, vault names or portfolio
+  hints are visible to a co-user. **Bounded paged lookup:** `docId` stays out
+  of `appProperties`, so every document sharing (`ownerDigest`, `vaultDigest`,
   `docKind`) shares one list address; the resolution is pagination, not a new
   `docDigest` field — 100 objects per page, at most **1,000 candidate objects
   per address** (`:26`–`:27`), every page read before declaring a document
@@ -655,7 +643,7 @@ narrow `GET /vaults` projection.
 **Killed for a VAULTED portfolio** — each enforced server-side at the portfolio
 boundary with one stable error code, `VAULTED_PORTFOLIO`
 (`services/account/vaultedPortfolioGuard.ts:5`); hidden client-side as absent
-affordances on that portfolio; every row covered by the matrix test:
+affordances; every row covered by the matrix test:
 
 1. Sharing/public: cannot be shared, added to any audience, or included in the
    public profile; existing grants revoked at move-in (§9).
@@ -669,8 +657,7 @@ affordances on that portfolio; every row covered by the matrix test:
 4. Imports targeting it server-side.
 5. Portfolio-scoped API access to it: a bearer or session request addressing
    the vaulted portfolio gets the portfolio-scoped refusal; **the scope itself
-   stays valid account-wide.** `vault:sync` remains the deliberate ciphertext
-   path.
+   stays valid account-wide.** `vault:sync` remains the ciphertext path.
 6. Mirrorchain: cannot create/join/be invited while vaulted; mutual exclusion
    is portfolio-scoped.
 7. Webhooks: no portfolio-content events for it (nothing server-side to fire).
@@ -689,8 +676,7 @@ stats, bearer `cash:write`, imports, a mirrorchain membership, expense pages —
 byte-identical to a vault-free account
 (`__tests__/vaultedPortfolioFullFunctionality.test.ts`), with `usage_events`
 capture suppressed only for vaulted-portfolio-driven reads. **Discreet mode is
-untouched** — it composes (hiding amounts the client just computed) and is not
-part of this arc's diff.
+untouched** and is not part of this arc's diff.
 
 ## 12. Device custody — password, plain storage, lockout
 
@@ -724,16 +710,15 @@ part of this arc's diff.
   production caller, so the PIN idle-lock signal still reaches only the legacy
   v1 runtime and there is no "Lock vaults" control in the UI yet — planned with
   the remaining E8 UX (#1599).
-- **Plain (the warned option):** the mnemonic entropy sits unwrapped in the
-  keystore and the vault opens without any prompt. Choosing it requires the
-  friction ladder's strong rung — an explicit acknowledgment that a compromised
-  end device exposes the phrase outright, and that the protection is then ONLY
-  "encrypted and unreadable for BetterTrack"
-  (`ui/VaultCreationCeremony.tsx:266`, `ui/VaultReceivePhrase.tsx:385`).
-  Default is always wrapped; the toggle is per stored phrase and changeable
-  both ways (re-wrap prompts for the password). On platforms with native
-  custody (Android Keystore / iOS keychain) "plain" still means "not protected
-  by the device password" — the platform baseline applies underneath.
+- **Plain (the warned option):** the mnemonic entropy sits unwrapped and the
+  vault opens without any prompt. Choosing it requires the friction ladder's
+  strong rung — an explicit acknowledgment that a compromised end device
+  exposes the phrase outright, and that the protection is then ONLY "encrypted
+  and unreadable for BetterTrack" (`ui/VaultCreationCeremony.tsx:266`,
+  `ui/VaultReceivePhrase.tsx:385`). Default is always wrapped; the toggle is
+  per stored phrase and changeable both ways. On platforms with native custody
+  (Android Keystore / iOS keychain) "plain" still means "not protected by the
+  device password" — the platform baseline applies underneath.
 - **Wrong password / lockout:** verification is local (wrap-check,
   `core.ts:963`). Failures escalate a client-side delay — 5 wrong → 30 s,
   doubling, capped at 5 min (`core.ts:38`, `:1089`) — and there is no server
@@ -751,220 +736,26 @@ part of this arc's diff.
 
 ## 13. QR seed-phrase transfer
 
-**Sender (the device holding the phrase):** Vault settings → "Show transfer
-QR". Requires a live unlock AND, for wrapped custody, a fresh password entry
-(≤ 60 s old) — the QR displays the master secret, so showing it is itself a
-step-up act (`qr/senderSource.ts:61`, `qr/encoding.ts:14`). It renders
-full-screen with an explicit banner ("Anyone who captures this code owns this
-vault — no screenshots, no screen sharing, mind who can see your screen"), a
-60-second auto-expiry that blanks the code (manual re-show), no clipboard path,
-no network transmission of any kind (display→camera is the whole channel), and
-nothing logged or persisted. The native apps additionally set the platform
-secure-screen flag (FLAG_SECURE / iOS capture detection) on both the show and
-scan screens — recorded as a mobile-board contract item.
+The owner wants a scan that instantly moves the phrase to the phone, designed
+safely rather than refused. **The normative wire contract lives in
+`docs/vault-qr-contract.md`** — extracted verbatim from this section on
+2026-09-02 because a third client must be buildable from it alone. That file is
+the tie-breaker for every rule; nothing below narrows it.
 
-**Payload format — normative.** This section, not any README, is the ONE
-specification the web renderer, the phone scanner, and any future client are
-built against (requested by the mobile dev 2026-08-19; made normative and
-closed against cross-client conformance testing 2026-08-23 through
-2026-08-27). Every rule below is stated so that a third implementation could
-satisfy it without reading either shipped client's source;
-`apps/web/src/user/vault/qr/README.md` restates none of it normatively — it
-is implementation notes and defers here for every rule.
-
-```
-btvault<N>:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprint>]
-```
-
-- **Scheme, not URL — and every client decodes it itself.** Deliberately
-  `scheme:query`, no `//` authority — platform URL parsers disagree about
-  custom-scheme authorities. Split at the first `:`; everything after it is
-  one `application/x-www-form-urlencoded` query string, decoded by a
-  **self-contained decoder that every client implements itself**, never the
-  platform's URL/URI type. This is not a style preference: Android's
-  `URLDecoder` and OpenJDK's `URLDecoder` disagree with each other on `+` and
-  on malformed percent-escapes, so even a same-language client cannot safely
-  delegate; and a client built on `Uri.parse`/the `URL` type would
-  additionally strip a trailing `#fragment` before the query string is ever
-  read, silently accepting a payload every conformant client currently
-  rejects. Both failure modes come from reusing a general-purpose URL type
-  for a format that is deliberately not one.
-- **Version token — canonical decimal integer.** `N` matches
-  `^[1-9][0-9]*$`: no leading zeros, no zero. Validate the SHAPE before any
-  integer conversion — `Number("02")` and Kotlin `"007".toInt()` both
-  silently accept padded forms no BetterTrack client ever mints, which is
-  exactly the divergence this rule closes. `btvault1:` is this
-  specification. A canonical token above 1 (`btvault2:`, `btvault14:`) names
-  a future BetterTrack version this client doesn't speak yet →
-  `update-required`. Any other `btvault<token>:`-shaped input whose token is
-  NOT a canonical decimal integer (`btvault0:`, `btvault01:`,
-  `btvault007:`), and any input without a `btvaultN:` prefix at all, →
-  `not-a-bettertrack-code` — `update-required` is reserved for a token this
-  client recognizes as ours but doesn't yet speak, never for a token no
-  BetterTrack client has ever emitted.
-- **A `btvault1:` body that is JSON, not form-encoded** — the
-  pre-form-encoding wire shape used before this specification existed — is
-  our scheme in an obsolete body shape, not foreign input: `legacy-code`.
-  Its remedy is unique ("this code came from an older version of
-  BetterTrack; create a new one on the sending device"), which is why it is
-  its own outcome rather than folding into `malformed` or
-  `not-a-bettertrack-code`.
-- **Structural grammar: a leading `?` is `malformed`.** A body starting with
-  `?` is REJECTED, never best-effort parsed — `?` is the URL query
-  delimiter, never part of form-encoded data, and a decoder that strips one
-  leading `?` (as `URLSearchParams` does) would silently accept a URL-shaped
-  body. This is the ruling as it stands after the 2026-08-27 review, and it
-  SUPERSEDES an earlier draft that answered `missing-mnemonic` here: which
-  key reads as "missing" from a `?v=…&m=…` body depends on which key a given
-  implementation happens to check first, so that answer was
-  order-dependent. A structural grammar violation must have an
-  order-independent outcome across every implementation, which is why
-  `malformed` exists in the vocabulary as a distinct, order-independent
-  bucket.
-- **Duplicate keys — reject, don't resolve.** A repeat of any KNOWN key —
-  `m`, `v`, `n`, or `f` — anywhere in the body is REJECTED as
-  `duplicate-key`, never resolved by first-wins, last-wins, or collect-all.
-  All three behaviors are live across implementations that disagree with
-  each other about which occurrence should win; a payload that repeats a
-  known key is untrustworthy as a whole, so the outcome must not depend on
-  interpretation. Unknown keys are additive extension and stay ignored no
-  matter how many times they repeat.
-- **Required keys: `m` checked before `v`.** `m` and `v` are both required.
-  A body missing BOTH answers `missing-mnemonic`, never `missing-vault-id` —
-  the phrase is the payload's entire reason for existing, so reporting its
-  absence first is also the honest support answer. A conformant
-  implementation checks `m` before `v` so this holds regardless of the
-  order the keys appear on the wire.
-- **A whitespace-only required value is ABSENT, not invalid.** `m=+` (one
-  encoded space) answers `missing-mnemonic`, not `invalid-mnemonic` — a
-  mnemonic made only of whitespace is not a mnemonic, and the honest remedy
-  is "this code carries no phrase," not "check the words" (there are no
-  words to check). The identical rule applies to `v` → `missing-vault-id`.
-- **`m` (required):** the 12 BIP39 English-wordlist words themselves —
-  lowercase, NFKD, single-space separated, percent-encoded (spaces become
-  `%20` or `+`). Words, not entropy bytes and not wordlist indices: the BIP39
-  checksum already rides IN the words (the last word carries the 4 checksum
-  bits), so the scanner validates integrity against the standard wordlist
-  with zero extra fields; words are what the user wrote down, so a generic QR
-  reader shows a human-recoverable payload (worst case: type the words); and
-  there is no entropy-encoding/endianness/checksum-recompute step where two
-  implementations can silently diverge — which is the whole two-guesses risk
-  this spec exists to remove. A value that is present, non-blank, and fails
-  the BIP39 checksum → `invalid-mnemonic`.
-- **`v` (required):** the vault UUID, lowercase hyphenated. A value that is
-  present, non-blank, and not a well-formed vault id → `invalid-vault-id`.
-- **`n` (optional) — display-name hint:**
-  - _Length, unit named._ The cap is **64 Unicode code points**, counted as
-    code points — not UTF-16 code units, not bytes. Naming the unit IS the
-    rule: 64 emoji are 64 code points but well over 64 UTF-16 units, so a
-    client that counts units instead of points accepts what a code-point
-    counter refuses (the exact web/Android divergence conformance testing
-    found). The derived wire bound is **≤ 256 UTF-8 bytes** (4 bytes ×
-    64 code points, worst case). A trimmed value over the cap →
-    `name-too-long` — the only rule `n` can violate, which is why the
-    vocabulary names it directly instead of a generic `invalid-name`.
-  - _Trim, then treat blank as absent._ Trim the edges; a blank result is
-    absent, identically to an unset `n`.
-  - _The trim set, named explicitly:_ **Unicode `White_Space` ∪ `Cc` (the
-    C0/C1 control category) ∪ U+FEFF.** Not "whatever the host runtime's
-    `trim()` does": ECMAScript's `String.prototype.trim` strips U+FEFF but
-    leaves U+001C–U+001F standing, while Kotlin's `trim()` /
-    `Char.isWhitespace()` does the exact opposite — each built-in disagrees
-    with the other in the opposite direction, so either one alone makes the
-    two clients disagree about whether a scanned code carries a name at
-    all. U+FEFF is named by hand because it is category `Cf` with
-    `White_Space=No` — no single Unicode property covers it, so it belongs
-    to neither `White_Space` nor `Cc` and must be listed explicitly. This
-    set is the union of what JS's and Kotlin's built-ins each strip, so no
-    client's default trim removes a code point this spec keeps. A name made
-    only of trim-set code points comes back empty and is therefore ABSENT.
-  - _Trim before cap._ The 64-code-point limit applies to the TRIMMED value.
-    A name already at 64 significant code points must survive being padded
-    with trim-set characters on the wire, not fail the whole transfer.
-  - _Every character is legal at parse; sanitize at RENDER, not parse._
-    Rejecting `n` content at parse would discard an entire phrase transfer
-    over a cosmetic display hint, and would only protect the clients that
-    implement the rejection while every other client still renders whatever
-    arrived — so parsing accepts any code point, and interior control and
-    bidi characters are preserved on the wire verbatim (only the trimmed
-    edges are touched at parse). Before any `n` value reaches a screen,
-    strip C0/C1 controls and U+2028/U+2029 (line/paragraph separators);
-    strip or Unicode-isolate the explicit bidi-control ranges
-    U+202A–U+202E and U+2066–U+2069 (an unisolated bidi override can
-    visually reorder surrounding UI chrome, not just the name); collapse
-    whitespace runs; render as a single line; ellipsize on overflow. This
-    is a display concern that lives wherever `n` is painted, independent of
-    the parser.
-- **`f` (optional, recommended) — key fingerprint:**
-  - _At parse:_ validate SHAPE only — 16-character base64url. A present
-    value that fails the shape check → `invalid-fingerprint`.
-  - _Never compared before fetch._ The value is compared only AFTER the
-    receiver fetches the vault header envelope and unwraps it with the
-    phrase-derived key: fetch → unwrap → compare → verified-open (the #1500
-    ruling). An offline fingerprint pre-check is cryptographically
-    impossible, not merely unimplemented: the fingerprint is derived from
-    the content key stored INSIDE the envelope that has not been fetched
-    yet, so there is nothing to compare against before the network
-    round-trip completes.
-- **QR encoding:** byte mode, UTF-8, error-correction level M. The payload is
-  ~150–220 wire bytes — a comfortably scannable version-7-ish code. A sender
-  must never emit an `n` that would push the code past this budget; a
-  receiver must still be able to PARSE whatever another client sent, up to
-  the 64-code-point / 256-byte cap.
-
-**Rejection vocabulary — the closed set.** FROZEN 2026-08-26 after the
-cross-client pushback round. Every parse outcome is exactly one of these
-twelve literals; there is no thirteenth, and no client may invent, narrow, or
-widen the set:
-
-`ok` · `not-a-bettertrack-code` · `update-required` · `legacy-code` ·
-`malformed` · `missing-mnemonic` · `missing-vault-id` · `duplicate-key` ·
-`invalid-mnemonic` · `invalid-vault-id` · `invalid-fingerprint` ·
-`name-too-long`
-
-Why the set has this shape, recorded so a reviewer can accept or challenge a
-future addition against the same reasoning:
-
-- Granular missing-key codes (`missing-mnemonic`, `missing-vault-id`) win
-  over one generic `missing-key`, because granular → generic is always
-  derivable by a client that only needs the generic answer, while generic →
-  granular is not derivable by a client that needs the granular one.
-- `invalid-mnemonic` — a well-formed payload whose phrase fails the BIP39
-  checksum — is the single most common real failure, and its remedy ("check
-  the words, not rescan") is unique: every other outcome's remedy is "get a
-  new code."
-- `name-too-long` is the only rule `n` can violate, so the vocabulary names
-  the rule directly instead of hiding it inside a generic `invalid-name`.
-- `legacy-code` exists because its remedy — "create a new code on the
-  sending device" — differs from every other outcome's remedy; folding it
-  into `malformed` would send a user with a perfectly good but outdated
-  sender down the wrong path.
-- `malformed` is the structural residual: what remains after every more
-  specific outcome above has had first refusal. It should be rare.
-
-**Receiver (the phone):** camera scan → version-token check → BIP39 checksum
-validation of `m` → the vault id/name hint pre-fills → custody choice
-(wrapped default — set/enter the device password; plain behind the §12
-warning) → **verified open**: the client fetches the vault header doc from
-any reachable medium, unwraps it with the phrase-derived key, and compares
-the `f`/key_fingerprint when present, all BEFORE saving to the keystore, so a
-mis-scan can never store dead words.
-
-Manual word entry remains the fallback everywhere the QR is offered.
-
-**Shipped-client conformance** (`apps/web/src/user/vault/qr/payload.ts`, whose
-vectors in `qr/conformanceVectors.ts` are the cross-client oracle): the closed
-vocabulary, the version-token shape check, the leading-`?` refusal,
-duplicate-key rejection, `m`-before-`v`, blank-is-absent, the trim set,
-trim-before-cap, render-time sanitization and the fetch-then-compare `f` rule
-all match this specification. **One deviation is recorded, not blessed:** the
-web decoder calls `new URLSearchParams(body)` (`payload.ts:113`) instead of the
-self-contained decoder this section requires. It compensates by refusing a
-leading `?` first (`:105`), closing the one divergence the spec names for that
-type, but the rule as written is stricter than the shipped client. The `n` byte
-bound is a wire budget rather than a parse rule — the parser enforces only the
-64-code-point cap, and the sender enforces a 220-byte whole-payload budget
-(`payload.ts:21`).
+In summary: the sender needs a live unlock plus, for wrapped custody, a fresh
+password entry (the QR shows the master secret, so displaying it is a step-up
+act), and the code is full-screen, banner-warned, 60-second-expiring,
+clipboard-free and never transmitted over any network — display→camera is the
+whole channel. The payload is `btvault<N>:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprint>]`,
+a scheme-plus-query that every client decodes itself rather than through a
+platform URL type, carrying the 12 BIP39 words themselves so the checksum rides
+in the payload. Parsing answers exactly one of a **frozen twelve-outcome
+vocabulary** and no client may widen, narrow or invent an outcome. The receiver
+validates the checksum, then performs a **verified open** — fetch the vault
+header from any reachable medium, unwrap it with the phrase-derived key, and
+compare the fingerprint BEFORE saving to the keystore, so a mis-scan can never
+store dead words. Custody choice follows §12 (wrapped default, plain behind the
+warning). Manual word entry remains the fallback everywhere the QR is offered.
 
 ## 14. Client engine & cross-portfolio composition
 
@@ -999,14 +790,13 @@ bound is a wire budget rather than a parse rule — the parser enforces only the
   up top with the current paranoid mode. its really cool design stuff." Its
   visual design is NOT redesigned; what generalizes is the projection beneath
   it. With N vaults on different media the chip renders one **aggregate
-  state** — `all synced ✓` / `syncing` / `locked (N)` / `attention: <vault
-name>` — as the worst state across vaults (attention > syncing > locked >
-  synced, `media/status.ts:149`), and its popover gains one row per vault
-  (state, per-medium detail, last-write time, and the state's §12 affordance
-  inline). One chip, never one per vault (anti-bloat). `DirectoryVaultSyncChip`
-  ships (`ui/VaultSyncChip.tsx:227`, mounted `components/OriginShell.tsx:870`);
-  the account-singleton `LegacyVaultSyncChip` is still mounted beside it
-  until §19.
+  state** — `all synced ✓` / `syncing` / `locked (N)` / `attention: <name>` —
+  as the worst state across vaults (attention > syncing > locked > synced,
+  `media/status.ts:149`), and its popover gains one row per vault (state,
+  per-medium detail, last-write time, the state's §12 affordance inline). One
+  chip, never one per vault. `DirectoryVaultSyncChip` ships
+  (`ui/VaultSyncChip.tsx:227`, mounted `components/OriginShell.tsx:870`); the
+  account-singleton `LegacyVaultSyncChip` is mounted beside it until §19.
 
 ## 15. Step-up re-auth on destructive operations (#1326 carry-over)
 
@@ -1023,11 +813,10 @@ riding session must not be an erasure primitive:
 - **The credential rides IN the request body** — `{ password?, code?,
 recoveryCode? }`, at least one required via schema `.refine`
   (`packages/contracts/src/vaults.ts:319`), mirroring
-  `deleteAccountRequestSchema` / `passkeyDeleteRequestSchema`. It is verified
-  inside the same account lock as the transition (no check-then-act race);
-  failure rides the progressive per-account throttle plus an audit record with
-  generic error text. The in-body credential is what replaces CSRF +
-  same-origin on the bearer path — say so in the code comment.
+  `deleteAccountRequestSchema`. It is verified inside the same account lock as
+  the transition (no check-then-act race); failure rides the progressive
+  per-account throttle plus an audit record with generic error text. The
+  in-body credential replaces CSRF + same-origin on the bearer path.
 - **Both paths, same rule:** the web wizard sends it too; a bearer path is
   never stricter or looser than the browser path. Bearer reachability follows
   the owner's 2026-08-17 shared-control-layer ruling under `account:security`,
@@ -1094,12 +883,10 @@ behind that gate once the owner-run `scripts/ops/export-paranoid-v1-backup.mjs`
 has recorded a verified, offsite-confirmed attestation. The wipe is reachable
 from no HTTP route and no job. Merge is deploy, so a migration body runs
 unattended the instant a PR lands — putting the wipe there would execute the
-destructive step BEFORE the backup that step 1 makes its precondition, the
-exact inversion the (C) ruling forbids. The same row's second ruling: an
-account the wipe has already retired is REFUSED by the v1 enable path
-(`PARANOID_LEGACY_WIPED`, 409) — a targeted per-account refusal, NOT a
-retirement of the enable route, which §19 keeps alive until the end of §17 for
-un-wiped stragglers.
+destructive step BEFORE the backup step 1 makes its precondition, the exact
+inversion the (C) ruling forbids. The row's second ruling: an account the wipe
+has already retired is REFUSED by the v1 enable path (`PARANOID_LEGACY_WIPED`, 409) — a targeted per-account refusal, NOT a retirement of the enable route,
+which §19 keeps alive until the end of §17 for un-wiped stragglers.
 
 **Status: not executed.** The machinery shipped with E9 (#1419) and the
 three-step owner runbook lives in `docs/ops.md` ("Retiring the account-level

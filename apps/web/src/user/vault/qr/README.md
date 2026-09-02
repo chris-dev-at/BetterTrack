@@ -1,16 +1,18 @@
 # `btvault1:` native handoff contract — implementation notes
 
-`docs/paranoid-design.md` §13 is the normative spec for this wire format — the ONE
-document a third client is built against. **This file is not the spec.** It is
-implementation notes for an engineer already holding §13, collecting the file
-references, gotchas, and shipped-client detail that don't belong in the prose
-specification itself. Where anything below reads as a restatement of a rule,
-§13 is the tie-breaker if the two ever disagree.
+`docs/vault-qr-contract.md` is the normative spec for this wire format — the ONE
+document a third client is built against. (It was extracted verbatim from
+`docs/paranoid-design.md` §13 on 2026-09-02; that section now summarises and
+points there.) **This file is not the spec.** It is implementation notes for an
+engineer already holding the contract, collecting the file references, gotchas,
+and shipped-client detail that don't belong in the prose specification itself.
+Where anything below reads as a restatement of a rule, the contract is the
+tie-breaker if the two ever disagree.
 
 The binding payload is `btvault1:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprint>]`.
 There is deliberately no `//` authority: split at the first colon and parse the remainder as one
 `application/x-www-form-urlencoded` query, with a self-contained decoder — never the platform
-URL/URI type (§13 records why: Android's and OpenJDK's `URLDecoder` disagree on `+` and on
+URL/URI type (the contract records why: Android's and OpenJDK's `URLDecoder` disagree on `+` and on
 malformed escapes, and `Uri.parse` additionally strips a trailing `#fragment`).
 
 The version token `N` is a **canonical decimal integer** — `^[1-9][0-9]*$`, so no leading zeros and
@@ -39,11 +41,11 @@ the QR as UTF-8 byte mode with exact error-correction level M. Native clients mu
 conformance vectors against their scanner before shipping.
 
 The full rejection vocabulary (twelve literals, frozen 2026-08-26) and the reasoning behind each
-one lives in §13, not here.
+one lives in the contract, not here.
 
 ### Implementation notes for `n`
 
-§13 is the normative home for both of these rules; they are restated here because a client author
+`docs/vault-qr-contract.md` is the normative home for both of these rules; they are restated here because a client author
 reads this file first, and both are places where two correct-looking implementations disagree.
 
 - **Trim set.** The set is **Unicode `White_Space` ∪ the C0/C1 controls ∪ U+FEFF** — named
