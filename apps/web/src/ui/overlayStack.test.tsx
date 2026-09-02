@@ -204,3 +204,46 @@ test('pointerInSeparateOverlay leaves containment cases alone', () => {
   expect(pointerInSeparateOverlay(outside, null)).toBe(false);
   outside.remove();
 });
+
+/**
+ * The containment branches, with a REGISTERED overlay actually on the stack.
+ *
+ * Without one the predicate short-circuits in `stack.some` and every assertion
+ * passes for the wrong reason — the test above cannot tell a correct answer from
+ * an empty registry. Here a real dialog is registered and each of the three
+ * outcomes at the containment check is reached deliberately.
+ */
+test('pointerInSeparateOverlay distinguishes nesting from a separate overlay', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <TestDialog onClose={() => undefined} title="Host">
+        <button type="button">inside the dialog</button>
+      </TestDialog>
+      <span>page content</span>
+    </>,
+  );
+  // Force the registry's connected-element read to see a mounted overlay.
+  await user.click(screen.getByText('inside the dialog'));
+
+  const dialog = screen.getByRole('dialog', { name: 'Host' });
+  const target = screen.getByText('inside the dialog');
+  const unrelated = screen.getByText('page content');
+
+  // (a) No container to compare against ⇒ the target's overlay is "separate".
+  expect(pointerInSeparateOverlay(target, null)).toBe(true);
+
+  // (b) `element.contains(container)`: the click landed in the dialog and the
+  // asking overlay IS the dialog (or lives inside it) ⇒ NOT separate, so a
+  // click on a dialog's own content must never dismiss that dialog.
+  expect(pointerInSeparateOverlay(target, dialog)).toBe(false);
+  expect(pointerInSeparateOverlay(target, target)).toBe(false);
+
+  // (c) `container.contains(element)`: the asking container wraps the
+  // registered overlay — a portalled child clicked from its host ⇒ NOT separate.
+  expect(pointerInSeparateOverlay(target, document.body)).toBe(false);
+
+  // (d) Neither contains the other ⇒ genuinely separate. `unrelated` sits
+  // outside every registered overlay, so no entry matches at all.
+  expect(pointerInSeparateOverlay(unrelated, dialog)).toBe(false);
+});

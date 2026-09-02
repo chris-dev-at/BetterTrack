@@ -18,6 +18,7 @@ import { deriveDeviceKey, verifyEndpointPassword, type DevicePasswordArgon2 } fr
 import { isEndpointDeviceLocked, rememberEndpointDeviceLocked } from './deviceLock';
 import {
   endpointSessionChannelName,
+  importShareableDeviceKey,
   type CreateEndpointSessionTransport,
   type EndpointSessionMessage,
   type EndpointSessionTransport,
@@ -441,6 +442,75 @@ describe('the guards that survived unpinned (reviewer finding B5)', () => {
   });
 
   /**
+   * G5c — the keystore's OWN account check on every inbound message
+   * (`onSessionMessage`), pinned independently of the channel naming.
+   *
+   * Today two things keep accounts apart: the channel is named per account, and
+   * the keystore re-checks the stamp on what arrives. The first makes the second
+   * unreachable through the shipped transport — which is exactly why it needs a
+   * test that does NOT go through the shipped transport. If the channel is ever
+   * shared, coarsened, or replaced by an adapter that fans out more widely, this
+   * check becomes the only account boundary left, and a silent one.
+   *
+   * So: deliver foreign-account messages straight to the listener the keystore
+   * registered, as a shared channel would, and prove all three kinds bounce.
+   */
+  it('G5c: a message stamped with another account is ignored on every kind', async () => {
+    let deliver!: (message: EndpointSessionMessage) => void;
+    const captured: CreateEndpointSessionTransport = (_accountId, onMessage) => {
+      deliver = onMessage;
+      return { post: () => undefined, close: () => undefined };
+    };
+    const keystore = tab({ transport: captured, grantTimeoutMs: 20 });
+    await seedWrappedVault(keystore);
+    await keystore.unlock(PASSWORD);
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+
+    // (a) A foreign LOCK must not revoke this account's session.
+    deliver({ kind: 'session-lock', accountId: ACCOUNT_B });
+    await bus.settle();
+    expect(isEndpointDeviceLocked(ACCOUNT_ID)).toBe(false);
+    expect(await keystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    await expect(keystore.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+
+    // (b) A foreign REQUEST must not be answered with this account's session.
+    const posted: EndpointSessionMessage[] = [];
+    const speaking = tab({
+      transport: (_accountId, onMessage) => {
+        deliver = onMessage;
+        return { post: (message) => posted.push(message), close: () => undefined };
+      },
+      grantTimeoutMs: 20,
+    });
+    await speaking.unlock(PASSWORD);
+    deliver({ kind: 'session-request', accountId: ACCOUNT_B, requestId: 'foreign-request' });
+    await bus.settle();
+    expect(posted.some((message) => message.kind === 'session-grant')).toBe(false);
+
+    // (c) A foreign GRANT must not settle a pending request of ours. The resume
+    // times out and resolves to nothing rather than installing the stranger.
+    const joining = tab({
+      transport: (_accountId, onMessage) => {
+        deliver = onMessage;
+        return { post: () => undefined, close: () => undefined };
+      },
+      grantTimeoutMs: 60,
+    });
+    const resuming = joining.resumeSessionFromOpenTabs();
+    const foreignKey = await importShareableDeviceKey(new Uint8Array(32).fill(0x5a));
+    const requestId = pendingRequestIds(joining)[0];
+    expect(requestId, 'the resume must really be waiting on a request').toBeDefined();
+    deliver({
+      kind: 'session-grant',
+      accountId: ACCOUNT_B,
+      requestId: requestId!,
+      deviceKey: foreignKey,
+    });
+    await expect(resuming).resolves.toEqual({ unlockedVaultIds: [] });
+    await expect(joining.readMnemonic(VAULT_1)).rejects.toThrow();
+  });
+
+  /**
    * G5 — the reviewer's P5, and the one guard nothing defended before: on a
    * shared browser profile, user A's live session must never reach user B.
    */
@@ -700,6 +770,11 @@ function closeTab(keystore: EndpointVaultKeystore): void {
 /** Read-only access to the private counter the race guards are built on. */
 function sessionGeneration(keystore: EndpointVaultKeystore): number {
   return (keystore as unknown as { sessionGeneration: number }).sessionGeneration;
+}
+
+/** The request ids this keystore is currently waiting on a grant for. */
+function pendingRequestIds(keystore: EndpointVaultKeystore): string[] {
+  return [...(keystore as unknown as { pendingGrants: Map<string, unknown> }).pendingGrants.keys()];
 }
 
 interface TestSessionBus {

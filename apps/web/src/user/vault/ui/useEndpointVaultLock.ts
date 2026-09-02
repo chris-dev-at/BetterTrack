@@ -14,18 +14,20 @@ export interface EndpointVaultLock {
 }
 
 /**
- * The manual lock for per-portfolio vaults — the affordance that makes "keep
- * unlocked on this device" a door the user can close again.
+ * The manual lock for per-portfolio vaults — §12's explicit "Lock vaults"
+ * action, and the door the user can close without waiting for a tab to die.
  *
  * The account-level gate has always offered one (the shield menu's "Lock vault",
  * `privacyMode === 'paranoid'`); the endpoint keystore had none, which was
- * survivable only while its session died with the tab anyway. With device
- * custody on disk it is load-bearing: an opt-in with no opt-out is a trap.
+ * survivable only while its session died with the tab that held it. Now that one
+ * session is shared across every tab of the device (`keystore/sessionChannel`),
+ * it is load-bearing: closing one tab no longer ends the session, so the user
+ * needs a way to end it on purpose.
  *
  * It locks through `requestVaultLock`, NOT through the keystore directly, so it
  * raises exactly the signal sign-out and the PIN idle lock raise — one
  * revocation path with one set of listeners, reaching this tab synchronously and
- * the account's other tabs through the storage twin.
+ * the account's other tabs through the session channel and the storage twin.
  *
  * The states are passed IN rather than queried here: the shell has already read
  * them for the shield chip, and a hook that fetched its own would put a query

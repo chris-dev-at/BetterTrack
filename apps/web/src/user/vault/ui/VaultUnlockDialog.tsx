@@ -98,7 +98,14 @@ export function VaultUnlockDialog({
       onUnlocked?.();
       onClose();
     } catch (cause) {
-      setFailure(unlockFailure(cause));
+      const next = unlockFailure(cause);
+      // A WITHDRAWN failure unmounts the password field, so nothing will ever
+      // clear it again — the typed plaintext would sit in React state for as
+      // long as the dialog stays open (a §12 lockout is up to five minutes).
+      // A retryable failure deliberately keeps the value: the field is still
+      // there and the user is mid-correction.
+      if (next.withdrawn) setPassword('');
+      setFailure(next);
     } finally {
       setWorking(false);
     }

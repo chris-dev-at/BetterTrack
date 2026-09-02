@@ -82,6 +82,12 @@ test.describe('per-vault endpoint session', () => {
       sensitive.push({ name: 'session-mnemonic', value: created.mnemonic });
 
       await test.step('§12: a RELOAD re-locks, because K_dev is never persisted', async () => {
+        // PROVE THE PRECONDITION FIRST. The ceremony leaves the vault open, and
+        // without this assertion the reload below would pass just as happily
+        // against a vault that was never unlocked at all — a locked-stays-locked
+        // tautology dressed up as a revocation test.
+        await expectVaultState(page, name, 'Ready on this device');
+
         // This is the only tab, so there is no live session anywhere on the
         // device to rejoin. A1's claim, restated for this arc.
         await page.reload();
