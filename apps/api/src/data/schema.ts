@@ -3760,8 +3760,9 @@ export type NewExpenseBudgetFireRow = typeof expenseBudgetFires.$inferInsert;
 // User-defined URLs subscribed to user-scoped domain event types. The signing
 // secret is stored ONLY as an AES-256-GCM envelope (secretBox) so deliveries can
 // HMAC-sign — the plaintext is shown once at creation and never persisted. A
-// receiver that fails `consecutive_failures` times in a row auto-disables
-// (disabled_reason = 'auto'); a manual pause sets 'manual'. Deleting a user
+// receiver that fails `consecutive_failures` times in a row WITHIN the streak
+// window (`failure_window_started_at`) auto-disables (disabled_reason =
+// 'auto'); a manual pause sets 'manual'. Deleting a user
 // cascades to their subscriptions and thence their deliveries.
 
 /** A recorded delivery outcome (one row per delivered / permanently-failed event). */
@@ -3791,6 +3792,12 @@ export const webhookSubscriptions = pgTable(
     // Consecutive terminally-failed deliveries; reset to 0 on any success or
     // manual re-enable, incremented on each permanently-failed delivery.
     consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    // When the current streak started — the timestamp of its FIRST failure, and
+    // the anchor of the auto-disable window (WEBHOOK_AUTO_DISABLE_WINDOW_MS). A
+    // failure landing after the window has passed restarts the streak at 1
+    // instead of extending it, so failures spread over months never add up to a
+    // disable. Null exactly when `consecutive_failures` is 0.
+    failureWindowStartedAt: timestamp('failure_window_started_at', { withTimezone: true }),
     lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
     lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

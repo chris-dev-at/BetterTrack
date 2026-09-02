@@ -224,8 +224,31 @@ export const WEBHOOK_SECRET_PREFIX = 'whsec_';
  * Consecutive terminally-failed deliveries after which a subscription
  * auto-disables (`disabledReason: 'auto'`). Shared so the UI can name the
  * threshold in its copy. Re-enabling resets the counter.
+ *
+ * Counted only inside {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} — the threshold
+ * alone is a lifetime tally, which cannot tell a dead receiver from a healthy
+ * one that has blipped five times over five months.
  */
 export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
+
+/**
+ * The bounded window the {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} terminal
+ * failures must fall inside for a subscription to auto-disable: the streak is
+ * anchored at its FIRST failure and a failure arriving more than this long
+ * after that anchor starts a fresh streak at 1 rather than adding to a stale
+ * one.
+ *
+ * 24 hours, and the trade is deliberate in both directions. Each terminal
+ * failure has already burned the whole retry ladder, so five of them inside one
+ * day is a receiver that has been unreachable for a day, not a blip — while an
+ * outage that ends inside the window leaves the streak to expire on its own,
+ * with no user action. The cost is the other end: a receiver that is genuinely
+ * dead but only subscribed to rare events never accumulates five failures in a
+ * day and stays enabled, paying the retry ladder per event. Keeping a quiet
+ * subscription alive is the cheaper mistake — the loud one is disabling a
+ * working receiver, which silently drops every later event.
+ */
+export const WEBHOOK_AUTO_DISABLE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Hard cap on active subscriptions per user (anti-abuse / anti-bloat). */
 export const WEBHOOK_MAX_SUBSCRIPTIONS = 20;

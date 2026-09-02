@@ -36,6 +36,7 @@ export interface UpdateWebhookSubscriptionPatch {
   disabledReason?: string | null;
   disabledAt?: Date | null;
   consecutiveFailures?: number;
+  failureWindowStartedAt?: Date | null;
 }
 
 export function createWebhookSubscriptionRepository(db: Database) {
@@ -143,18 +144,38 @@ export function createWebhookSubscriptionRepository(db: Database) {
     async recordSuccess(id: string, at: Date): Promise<void> {
       await db
         .update(webhookSubscriptions)
-        .set({ consecutiveFailures: 0, lastDeliveryAt: at, lastSuccessAt: at, updatedAt: at })
+        .set({
+          consecutiveFailures: 0,
+          // The streak is gone, so its window anchor goes with it — the column
+          // is null exactly when the counter is 0.
+          failureWindowStartedAt: null,
+          lastDeliveryAt: at,
+          lastSuccessAt: at,
+          updatedAt: at,
+        })
         .where(eq(webhookSubscriptions.id, id));
     },
 
-    /** A permanently-failed delivery: bump the streak, returning the new count. */
-    async incrementFailure(id: string, at: Date): Promise<number> {
+    /**
+     * A permanently-failed delivery: advance the WINDOWED streak, returning the
+     * new count.
+     *
+     * The streak is anchored at its first failure. A failure landing while that
+     * anchor is still inside `windowMs` extends the streak; one landing after
+     * it starts a fresh streak at 1 with a new anchor, so failures spread over
+     * months never accumulate into an auto-disable.
+     */
+    async incrementFailure(id: string, at: Date, windowMs: number): Promise<number> {
+      const windowStart = new Date(at.getTime() - windowMs);
+      // Decided in SQL, not in JS: the whole read-decide-write is one atomic
+      // statement, so concurrent failed deliveries for one subscription can
+      // neither lose a bump nor race on restarting the window.
+      const withinWindow = sql`${webhookSubscriptions.failureWindowStartedAt} is not null and ${webhookSubscriptions.failureWindowStartedAt} > ${windowStart}`;
       const [row] = await db
         .update(webhookSubscriptions)
         .set({
-          // `consecutive_failures = consecutive_failures + 1`, atomic in SQL so
-          // concurrent failed deliveries for one subscription never lose a bump.
-          consecutiveFailures: sql`${webhookSubscriptions.consecutiveFailures} + 1`,
+          consecutiveFailures: sql`case when ${withinWindow} then ${webhookSubscriptions.consecutiveFailures} + 1 else 1 end`,
+          failureWindowStartedAt: sql`case when ${withinWindow} then ${webhookSubscriptions.failureWindowStartedAt} else ${at} end`,
           lastDeliveryAt: at,
           updatedAt: at,
         })
