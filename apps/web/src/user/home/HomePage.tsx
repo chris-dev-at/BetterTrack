@@ -7,6 +7,7 @@ import { useAuth } from '../AuthContext';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
 import { portfolioDisplayName } from '../portfolio/lockedPortfolio';
+import { useUnlockedPortfolioNames } from '../vault/useUnlockedPortfolioNames';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
@@ -152,6 +153,11 @@ function HomeBoard() {
 
   const portfoliosQuery = usePortfoliosQuery();
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
+  // Resolved over the WHOLE roster, once, and passed down: the resolution
+  // registry is keyed by roster, so asking again with a widget's FILTERED
+  // `availablePortfolios` would open the same vaults a second time and
+  // materialize the same plaintext twice (see `useVaultedPortfolioStores`).
+  const unlockedNames = useUnlockedPortfolioNames(portfolios);
 
   const disarm = useCallback(() => setArmedId(null), []);
 
@@ -274,14 +280,24 @@ function HomeBoard() {
     if (scope.mode === 'single') {
       return {
         label: scope.single
-          ? portfolioDisplayName(scope.single, t('vault.lockedStub.fallbackAlias'))
+          ? portfolioDisplayName(
+              scope.single,
+              t('vault.lockedStub.fallbackAlias'),
+              unlockedNames.get(scope.single.id),
+            )
           : '',
         detail: null,
       };
     }
     if (scope.mode !== 'subset') return null;
     const names = scope.portfolios
-      .map((portfolio) => portfolioDisplayName(portfolio, t('vault.lockedStub.fallbackAlias')))
+      .map((portfolio) =>
+        portfolioDisplayName(
+          portfolio,
+          t('vault.lockedStub.fallbackAlias'),
+          unlockedNames.get(portfolio.id),
+        ),
+      )
       .join(', ');
     return {
       label: t('home.builder.scopeCount', { count: scope.portfolios.length }),
@@ -377,6 +393,7 @@ function HomeBoard() {
                 placeBefore={target(index)}
                 portfolios={availablePortfolios}
                 scopeTag={scopeTag(scope)}
+                unlockedNames={unlockedNames}
                 widget={widget}
               >
                 <Component

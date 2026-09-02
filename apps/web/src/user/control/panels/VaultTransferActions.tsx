@@ -262,7 +262,20 @@ function VaultTransferRow({
       main={
         <>
           <span className="bt-row-title">{vault.name}</span>
-          <span className="bt-meta bt-num break-all">{vault.id}</span>
+          {/* The raw vault UUID used to stand here, wrapped across two lines of
+              hex (paranoid-UX failure map #6). It disambiguated nothing a user
+              could read and told them nothing they could act on. Where the
+              vault is STORED does both, and it is the same line the manager
+              row shows for the same vault. The id itself stays where it has a
+              job: inside the sender's manual-words disclosure, which the
+              receiving device needs in order to type it in. */}
+          <span className="bt-meta">
+            {t(
+              vault.media.length === 2
+                ? 'vault.manager.media.both'
+                : `vault.manager.media.${vault.media[0] ?? 'server'}`,
+            )}
+          </span>
         </>
       }
     >

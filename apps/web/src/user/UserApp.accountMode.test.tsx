@@ -191,7 +191,11 @@ test('opening Privacy mid-session keeps the whole authenticated subtree mounted'
   expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
 });
 
-test('the explicit setup request is what mounts the vault runtime for a normal account', async () => {
+test('a stale ?enable=1 still swaps the gate, but there is no wizard left to show', async () => {
+  // The account-level enable ENTRY POINT was retired client-side (Chief ruling,
+  // PROJECTPLAN §16 2026-08-30). This param is the mount seam that entry used;
+  // links minted before the ruling still carry it, so the gate must land on the
+  // ordinary panel rather than on the deprecated ceremony — or on nothing.
   vi.mocked(api.getParanoidMediaState).mockResolvedValue({
     privacyMode: 'normal',
     mediaState: null,
@@ -199,13 +203,16 @@ test('the explicit setup request is what mounts the vault runtime for a normal a
 
   renderAt('/control/privacy?enable=1');
 
-  // The wizard only renders with the providers above it (`useVaultRuntime`
-  // throws otherwise), so its heading IS the assertion that the gate swapped.
-  // The request rides in the URL precisely because that swap unmounts whoever
-  // asked for it.
   expect(
-    await waitForColdStart(() => screen.getByRole('heading', { name: 'What changes' })),
+    await waitForColdStart(() => screen.getByRole('switch', { name: 'Discreet mode' })),
   ).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'What changes' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+  // And with nothing left to ask the runtime for, the param no longer costs a
+  // data home either — the seam in `AccountModeRoot` is now inert. It is left
+  // in place deliberately: removing it is an `AccountModeRoot` change, and the
+  // in-place-unlock lane is working next door in that gate.
+  expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
 });
 
 test('the mode read failing closed shows the retry card, never a money page', async () => {

@@ -421,6 +421,10 @@ const ANALYZED_REACT_QUERY_READS = new Set(['useInfiniteQuery', 'useQueries', 'u
 
 const DECLARED_NON_READ_REACT_QUERY_EXPORTS: Readonly<Record<string, string>> = {
   QueryClient: 'The cache instance itself; constructing it reads nothing.',
+  QueryClientContext:
+    'The raw context behind `useQueryClient`, read directly only where a missing provider must ' +
+    'be `undefined` rather than a throw (`useVaultedPortfolioStores`, which sits under every ' +
+    'Home widget). Same non-read status as the handle it yields.',
   QueryClientProvider: 'Context plumbing that hands the cache to the tree.',
   keepPreviousData:
     'A placeholder-data marker passed INTO an analyzed read; it never reads on its own.',

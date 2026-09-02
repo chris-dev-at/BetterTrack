@@ -60,12 +60,18 @@ function Probe({ portfolios }: { portfolios: PortfolioSummary[] }) {
 }
 
 function renderProbe(portfolios: PortfolioSummary[]) {
+  return renderProbeWithClient(portfolios).view;
+}
+
+/** Same tree, with the cache handed back so a test can look inside it. */
+function renderProbeWithClient(portfolios: PortfolioSummary[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <Probe portfolios={portfolios} />
     </QueryClientProvider>,
   );
+  return { view, client };
 }
 
 function batchFor(portfolioId: string) {
@@ -145,6 +151,55 @@ describe('useVaultedPortfolioStores', () => {
 
     expect(screen.getByTestId('unlocked')).toHaveTextContent('none');
     expect(batch.dispose).toHaveBeenCalled();
+  });
+
+  it('sweeps the DERIVED plaintext out of the query cache when the session ends', async () => {
+    // Disposing the batch releases the decrypted DOCUMENTS. Every figure
+    // already derived from them has been copied into React Query — the
+    // portfolio response, its history, Home's `readTotals` — and those entries
+    // outlive the lock by `gcTime`, servable to the next mount while the vault
+    // itself is correctly closed. The account-level v1 stack always swept on
+    // its lock; the per-portfolio model had no equivalent.
+    const batch = batchFor(VAULTED.id);
+    mocks.resolveVaultedPortfolioStores.mockResolvedValue(batch);
+    let endSession = () => {};
+    mocks.sessionEndSubscription.mockImplementation((listener: () => void) => {
+      endSession = listener;
+      return () => {};
+    });
+
+    const { client } = renderProbeWithClient([PLAIN, VAULTED]);
+    await waitFor(() => expect(screen.getByTestId('unlocked')).toHaveTextContent('p-vaulted'));
+
+    // Exactly the shapes this lane's two keyspaces produce, plus one entry that
+    // must SURVIVE: the sweep has to be precise, not merely thorough.
+    const holdings = { holdings: [{ symbol: 'MSFT', quantity: 5 }] };
+    client.setQueryData(['portfolio', VAULTED.id, { vaultAccess: 'vault-access-1' }], holdings);
+    client.setQueryData(['portfolio', VAULTED.id, 'vaulted-unlocked', 'vault-access-1'], {
+      totals: { totalValueEur: 4147.19 },
+      snapshotId: 's1',
+    });
+    client.setQueryData(['vaults', 'configs'], [{ id: VAULT_ID, name: 'Private Holdings' }]);
+
+    act(() => endSession());
+
+    expect(
+      client.getQueryData(['portfolio', VAULTED.id, { vaultAccess: 'vault-access-1' }]),
+    ).toBeUndefined();
+    expect(
+      client.getQueryData(['portfolio', VAULTED.id, 'vaulted-unlocked', 'vault-access-1']),
+    ).toBeUndefined();
+    // Nothing anywhere in the cache still holds a decrypted figure.
+    const surviving = client
+      .getQueryCache()
+      .getAll()
+      .map((query) => JSON.stringify(query.state.data ?? null));
+    expect(surviving.filter((data) => data.includes('MSFT') || data.includes('4147.19'))).toEqual(
+      [],
+    );
+    // The vault DIRECTORY is cleartext by design (§21 Q4) and is what the
+    // locked stub routes by — sweeping it would blank the manager on every lock.
+    expect(client.getQueryData(['vaults', 'configs'])).toBeDefined();
   });
 
   /**

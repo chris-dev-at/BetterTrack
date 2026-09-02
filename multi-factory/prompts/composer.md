@@ -59,8 +59,8 @@ Do, in order:
      - `diff:easy` — trivial/mechanical: docs, config/CI, copy tweaks, Coming-Soon placeholders, tiny isolated CRUD.
      - `diff:normal` — standard well-scoped feature work: plain UI pages, simple endpoints, templates, e2e specs.
      - `diff:intermediate` — cross-cutting or stateful: auth/sessions/PIN/rate-limits, admin/registration modes, DB schema/migrations, BullMQ jobs, realtime gateway, import/export, sharing-privacy boundaries.
-     - `diff:hard` — complex engine/architecture work: domain core (allocation/backtest/holdings), provider/caching/request-coalescing core, local search-index core, deployment-topology config.
-     - `diff:max` — keystone/critical-path work where a subtle bug poisons everything downstream, and plan-deviation design decisions.
+     - `diff:hard` — complex engine/architecture work: the money-math domain core, i.e. anything touching `apps/api/src/domain/**` (allocation, backtest, shims) or `packages/domain/src/**` (tax, holdings, cashLedger, seriesStats, settingsScope, vaultVectors); provider/caching/request-coalescing core; local search-index core; deployment-topology config.
+     - `diff:max` — keystone/critical-path work where a subtle bug poisons everything downstream, and plan-deviation design decisions. Any `touches:` claim matching either domain glob above is `diff:hard` at minimum, never lower.
      - Unsure → the HIGHER difficulty.
    - **The body MUST END with a machine-readable mf-meta block** (HTML comment, exactly this shape):
 

@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+
+import { QueryClientContext, type QueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useOptionalAuth } from '../AuthContext';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
+import { removePlaintextQueries } from './plaintextQueries';
 import type { UnlockedVaultPortfolioAccess } from './resolvedPortfolioStore';
 import type { VaultedPortfolioStoresBatch } from './vaultedPortfolioStores';
 
@@ -82,6 +85,42 @@ interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>();
 
+/**
+ * The query caches to sweep when a vault session ends.
+ *
+ * DROPPING THE BATCH IS NOT ENOUGH. `dispose()` releases the decrypted
+ * documents this module holds, but every figure derived from them has already
+ * been copied into React Query — the portfolio response, its history, Home's
+ * `readTotals` — and those entries outlive the lock by `gcTime`. The
+ * account-level v1 stack always swept on its lock (`AccountModeRoot` →
+ * `removePlaintextQueries`); the per-portfolio model had no equivalent, so a
+ * lock left decrypted holdings sitting in the cache, servable to the next
+ * mount, with the vault itself correctly closed.
+ *
+ * Registered by the hook rather than imported: the app owns exactly one
+ * `QueryClient`, but importing it here would pull the whole `UserApp` graph
+ * into the module that exists to stay light, and every test builds its own.
+ *
+ * REFERENCE-COUNTED, like the resolution registry above and for the same
+ * reason: the hook runs in the workspace, the switcher, the manager and every
+ * Home widget at once, so a plain Set would let the first of them to unmount
+ * deregister the cache the others are still filling.
+ */
+const plaintextCaches = new Map<QueryClient, number>();
+
+function retainPlaintextCache(cache: QueryClient): () => void {
+  plaintextCaches.set(cache, (plaintextCaches.get(cache) ?? 0) + 1);
+  return () => {
+    const refs = (plaintextCaches.get(cache) ?? 1) - 1;
+    if (refs <= 0) plaintextCaches.delete(cache);
+    else plaintextCaches.set(cache, refs);
+  };
+}
+
+function sweepPlaintextCaches(): void {
+  for (const cache of [...plaintextCaches.keys()]) removePlaintextQueries(cache);
+}
+
 interface VaultGraph {
   listVaults: typeof import('../../lib/vaultApi').listVaults;
   resolveVaultedPortfolioStores: typeof import('./vaultedPortfolioStores').resolveVaultedPortfolioStores;
@@ -131,6 +170,17 @@ export function useVaultedPortfolioStores(
   // authenticated account there is no vault to open.
   const auth = useOptionalAuth();
   const accountId = auth?.status === 'authenticated' ? (auth.user?.id ?? null) : null;
+
+  // Read through the CONTEXT rather than `useQueryClient()`, which throws when
+  // there is no provider above. Same reason `useOptionalAuth` is used above:
+  // this hook sits under every Home widget, and "no query client in this thin
+  // tree" must not become a crashed board. No client simply means there is no
+  // derived plaintext here to sweep.
+  const queryClient = useContext(QueryClientContext);
+  useEffect(() => {
+    if (queryClient === undefined) return;
+    return retainPlaintextCache(queryClient);
+  }, [queryClient]);
 
   /**
    * Identity of the ROSTER, not of the array.
@@ -276,6 +326,12 @@ async function load(
         entry.batch?.dispose();
         entry.batch = null;
         publish(entry, NO_UNLOCKED_PORTFOLIOS);
+        // Evict the DERIVED plaintext too, not just the documents it came from
+        // (see `plaintextCaches`). Ordered after `publish` so the surfaces have
+        // already been told to fall back to their stubs: the sweep then removes
+        // entries nothing is reading, rather than yanking data out from under a
+        // render that is still showing it.
+        sweepPlaintextCaches();
       });
       const releaseVaultOpened = vaultOpenedSubscription((vaultId: string) => {
         if (entry.released) return;
@@ -425,6 +481,9 @@ function release(token: string): void {
  * listeners — so its ONLY symptom is that it is still there.
  */
 export function resetVaultedPortfolioStoreRegistry(): number {
+  // A retained cache outliving its suite would let one test's `QueryClient` be
+  // swept by the next test's lock.
+  plaintextCaches.clear();
   const cleared = registry.size;
   for (const token of [...registry.keys()]) {
     const entry = registry.get(token)!;

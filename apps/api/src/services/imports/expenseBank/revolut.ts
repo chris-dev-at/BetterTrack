@@ -11,7 +11,9 @@ import {
 /**
  * Revolut account-statement mapper (PROJECTPLAN.md §13.5 V5-P9). The Revolut CSV
  * export is comma-separated English with `YYYY-MM-DD HH:MM:SS` timestamps and
- * plain (`-9.99`) decimals:
+ * ENGLISH-notation (`-9.99`, `"2,400.00"`) decimals — parsed by
+ * `parseEnglishAmount` (`./amount`), never the German-notation framework
+ * helper, which would read `1,200` as 1.2:
  *
  *   Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,
  *     State,Balance
@@ -77,6 +79,8 @@ export const revolutMapper: BankStatementMapper = {
         // Prefer the completion day (when it settled); fall back to the start.
         dateRaw: firstNonEmpty(cell(record, completed), cell(record, started)),
         amountRaw: cell(record, amount),
+        // ENGLISH notation: `1,200` is 1200, not 1.2.
+        notation: 'english',
         currencyRaw: cell(record, currency),
         description: firstNonEmpty(cell(record, description), cell(record, type)),
       });
