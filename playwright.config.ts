@@ -144,8 +144,8 @@ export default defineConfig({
     {
       name: 'chromium',
       // These files define their own touch contexts (the overflow gate owns an
-      // exact EN/DE × 390px/600px matrix) and should run once in the phone
-      // project rather than duplicate identical work here.
+      // exact locale × 360px/390px/600px matrix) and should run once in the
+      // phone project rather than duplicate identical work here.
       testIgnore: /mobile-(?:happy-path|overflow)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },

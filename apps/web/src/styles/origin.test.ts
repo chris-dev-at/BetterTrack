@@ -138,6 +138,13 @@ describe('Origin phone chrome', () => {
     expect(originCss).toContain(`@media (max-width: ${PHONE_SHELL_MAX_WIDTH}px)`);
   });
 
+  /**
+   * Half one of two. This asserts the 44px rule is DECLARED for the contracted
+   * selectors; it cannot see whether the rendered box survives layout. The
+   * measuring half runs in `e2e/mobile-overflow.spec.ts` (#1663), which takes a
+   * real `boundingBox()` for these exact selectors on every swept phone surface
+   * — so this stays as the fast text guard rather than being narrowed away.
+   */
   it('reserves safe areas and 44px targets at the phone breakpoint', () => {
     const phoneCss = phoneBlock();
 
