@@ -348,7 +348,7 @@ export function VaultTransferQr({
             <div
               aria-labelledby={titleId}
               aria-modal="true"
-              className="bt-app fixed inset-0 z-[90] flex min-h-0 flex-col overflow-y-auto bg-neutral-950 px-4 py-5 sm:px-8"
+              className="bt-app fixed inset-0 z-[90] flex min-h-0 flex-col overflow-y-auto px-4 py-5 sm:px-8"
               data-vault-transfer-screen="sender"
               onKeyDown={onKeyDown}
               ref={containerRef}

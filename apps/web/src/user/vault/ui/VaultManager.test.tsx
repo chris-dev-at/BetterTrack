@@ -452,6 +452,35 @@ describe('VaultManager', () => {
     expect(container.querySelector('.bt-link')).toBeNull();
   });
 
+  it('points each live maintenance action at its OWN deep link', async () => {
+    // Both rows are deferred in the shipped configuration, so the link branch
+    // ships untested: swapping `action=rotate` for `action=start-fresh` passed
+    // the whole suite. Supply the operations that make them live, then pin the
+    // targets — one of these sends a user to a destructive flow.
+    const managerOperations: VaultManagerOperations = {
+      ...operations,
+      rotate: vi.fn(async () => undefined),
+      startFresh: vi.fn(async () => undefined),
+    };
+    renderManager('/control/privacy', managerOperations);
+    await screen.findByText('Long-term vault');
+
+    expect(screen.getByRole('link', { name: 'Rotate recovery words' })).toHaveAttribute(
+      'href',
+      `/control/privacy?vault=${VAULT_ID}&action=rotate`,
+    );
+    expect(screen.getByRole('link', { name: 'Start fresh' })).toHaveAttribute(
+      'href',
+      `/control/privacy?vault=${VAULT_ID}&action=start-fresh`,
+    );
+    // The fold stays — "Change storage" is deferred unconditionally in this
+    // build — but it must no longer claim the two actions that just went live.
+    const fold = screen.getByText('Why some actions aren’t available yet').closest('details');
+    expect(fold?.textContent).toContain('Changing where a vault is stored isn’t available yet');
+    expect(fold?.textContent).not.toContain('Rotating the recovery words');
+    expect(fold?.textContent).not.toContain('Starting fresh isn’t available yet');
+  });
+
   it('names an open portfolio in the membership chip instead of repeating the vault', async () => {
     // FAILURE MAP #6: the chip read "Private Holdings" under a vault called
     // "Private Holdings" — the vault named after itself. Locked stays alias.

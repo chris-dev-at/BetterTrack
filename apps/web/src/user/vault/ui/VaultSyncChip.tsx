@@ -310,7 +310,7 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
                           : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
                       )}
                     </span>
-                    <dl className="bt-kv gap-x-3 gap-y-0.5">
+                    <dl className="bt-kv">
                       {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
                         row.vault.media.includes(medium),
                       ).map((medium) => (

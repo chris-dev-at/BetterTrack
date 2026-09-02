@@ -502,7 +502,7 @@ function VaultManagerRow({
           three explainer paragraphs. Now it is one ruled action bar with real
           hierarchy, and the paragraphs are folded into the single disclosure
           below it. */}
-      <div className="bt-t-rule bt-row-actions flex flex-wrap items-center gap-2 pt-3">
+      <div className="bt-action-bar bt-t-rule bt-row-actions flex flex-wrap items-center gap-2 pt-3">
         <Button
           icon="pen"
           onClick={() => setRenameOpen((open) => !open)}

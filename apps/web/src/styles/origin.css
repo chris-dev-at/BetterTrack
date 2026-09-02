@@ -1408,7 +1408,12 @@
   font-weight: 570;
 }
 
-.bt-choice:focus-within {
+/* `:not(.is-selected)` is load-bearing, not decoration. `.bt-choice:focus-within`
+   and `.bt-choice.is-selected` are both (0,2,0), and this rule is the later of
+   the two — so tabbing onto the CHECKED radio repainted its row as unselected
+   and the group briefly showed no selection at all. Excluding the selected row
+   hands it back; its own radio still draws the platform focus ring. */
+.bt-choice:not(.is-selected):focus-within {
   background: var(--bt-surface-hover);
 }
 
@@ -1505,6 +1510,13 @@
   background: var(--bt-gold-soft);
 }
 
+/* `.bt-check:focus-within` is (0,2,0) and `.bt-check--gold` only (0,1,0), so
+   source order could never have saved it: tabbing to an UNTICKED gold consent
+   row dropped the gold wash that marks it as the consequence you must read. */
+.bt-check--gold:focus-within {
+  background: var(--bt-gold-soft);
+}
+
 .bt-check__control {
   width: 14px;
   height: 14px;
@@ -1517,6 +1529,21 @@
 .bt-check__body {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* An action bar: quiet buttons sitting together as peers.
+ *
+ * `.bt-btn--quiet` is borderless by design — it is the app's least-weight
+ * control, right for a lone action against a busy surface. Line five of them up
+ * and that same absence reads as a sentence of grey words, which is precisely
+ * what the vault row was accused of. Inside a bar, they get a resting hairline
+ * so the eye counts controls instead of reading text. */
+.bt-action-bar .bt-btn--quiet {
+  border-color: var(--bt-border);
+}
+
+.bt-action-bar .bt-btn--quiet:hover {
+  border-color: var(--bt-border-strong);
 }
 
 /* Keyboard hint */

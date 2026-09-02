@@ -341,7 +341,7 @@ export function VaultReceivePhrase({
         </form>
       ) : (
         <form className="flex flex-col gap-5" onSubmit={(event) => void save(event)}>
-          <div className="rounded-lg border border-neutral-800 p-4">
+          <div className="bt-panel p-4">
             <p className="bt-row-title">{t('vault.transfer.receiver.checked')}</p>
             <dl className="mt-3 grid gap-2 text-sm">
               <div>
