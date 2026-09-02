@@ -54,6 +54,8 @@ if [ "$WORKERS" -gt 2 ]; then
       MF_CLAUDE_TOKEN_FILE: /home/factory/.claude-auth/oauth-token
       MF_CLAUDE_PROFILE_FILE: /home/factory/.claude-auth/profile.json
       MF_CLAUDE_PROFILE_REQUIRED: '1'
+      MF_OPENCODE_HOME: /home/factory/.opencode
+      MF_OPENCODE_CONFIG: /work/mf/opencode-factory.json
       WORKER_ID: '$w'
     volumes:
       - mf-w$w-work:/work/state
@@ -68,6 +70,7 @@ if [ "$WORKERS" -gt 2 ]; then
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
       - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
+      - ./opencode-factory.json:/work/mf/opencode-factory.json:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
@@ -76,6 +79,7 @@ if [ "$WORKERS" -gt 2 ]; then
       - ./auth/worker-$w/codex:/home/factory/.codex
       - ./auth/worker-$w/ccr:/home/factory/.claude-code-router
       - ./auth/worker-$w/gemini:/home/factory/.gemini
+      - ./auth/worker-$w/opencode:/home/factory/.opencode
 EXTRA
       w=$((w+1))
     done
@@ -129,14 +133,34 @@ GEMINI_PRIMARY=master
 AGY_TOKEN_REL=antigravity-cli/antigravity-oauth-token
 gemini_container_authed(){ [ -s "auth/$GEMINI_PRIMARY/gemini/$AGY_TOKEN_REL" ]; }
 
+# opencode keeps its credential in a plain JSON keystore (auth.json). Unlike the
+# other providers this is an API KEY, not a refreshable subscription token, so
+# there is nothing for the container to write back — the host copy is always
+# authoritative and sync_file's "newer wins" rule is a no-op in practice.
+#
+# The owner's isolated opencode sandbox is the source of truth for that keystore
+# because the host user account may also run opencode interactively with a
+# different (or no) key. OPENCODE_AUTH_SRC overrides it.
+OPENCODE_AUTH_SRC=${OPENCODE_AUTH_SRC:-$HOME/.bettertrack-factory/opencode-sandbox/home/.local/share/opencode/auth.json}
+# Warm the models.dev catalog from the host. This is ONLY a cold-start warm-up:
+# opencode replaces this file with its own fetch on the first run, and that
+# in-container fetch has been observed returning a SHORT catalog (176 vs 367
+# entries) that omits preview models. The authoritative fix is therefore the
+# explicit provider.openrouter.models block in opencode-factory.json, which is
+# bind-mounted read-only and cannot be overwritten. Do not rely on this copy.
+OPENCODE_MODELS_SRC=${OPENCODE_MODELS_SRC:-$HOME/.bettertrack-factory/opencode-sandbox/home/.cache/opencode/models.json}
+opencode_authed(){ [ -s "$OPENCODE_AUTH_SRC" ]; }
+
 sync_provider_auth(){
   local services="master" w c
   for w in $(seq 1 "$WORKERS"); do services="$services worker-$w"; done
   for c in $services; do
     mkdir -p "auth/$c/claude" "auth/$c/codex" "auth/$c/ccr" \
-      "auth/$c/gemini/antigravity-cli" "auth/$c/gemini/config"
+      "auth/$c/gemini/antigravity-cli" "auth/$c/gemini/config" \
+      "auth/$c/opencode/share/opencode" "auth/$c/opencode/cache/opencode" \
+      "auth/$c/opencode/config"
     chmod 700 "auth/$c/claude" "auth/$c/codex" "auth/$c/ccr" \
-      "auth/$c/gemini" 2>/dev/null || true
+      "auth/$c/gemini" "auth/$c/opencode" 2>/dev/null || true
     # codex (ChatGPT subscription): auth.json is the credential; config.toml is
     # GENERATED for the container (trust the factory clone), never copied.
     sync_file "$HOME/.codex/auth.json" "auth/$c/codex/auth.json"
@@ -155,6 +179,12 @@ sync_provider_auth(){
     printf '{\n  "security": { "auth": { "selectedType": "oauth-personal" } }\n}\n' > "auth/$c/gemini/settings.json"
     printf '{\n  "/work/state/repo": "TRUST_FOLDER"\n}\n' > "auth/$c/gemini/trustedFolders.json"
     printf '{\n  "enableTelemetry": false,\n  "trustedWorkspaces": ["/work/state/repo"]\n}\n' > "auth/$c/gemini/antigravity-cli/settings.json"
+    # opencode (OpenRouter API key): one keystore per container, mode 600. The
+    # container mounts auth/$c/opencode at $MF_OPENCODE_HOME and mflib.sh points
+    # opencode's three XDG dirs inside it, so share/opencode/auth.json is exactly
+    # where opencode looks. Never echoed, never committed (auth/ is gitignored).
+    sync_file "$OPENCODE_AUTH_SRC"   "auth/$c/opencode/share/opencode/auth.json"
+    sync_file "$OPENCODE_MODELS_SRC" "auth/$c/opencode/cache/opencode/models.json"
   done
   # Fan the in-container login token out from the primary to every other container.
   if gemini_container_authed; then
@@ -169,6 +199,11 @@ sync_provider_auth(){
     echo "! antigravity/gemini not authorized for the containers yet."
     echo "  On macOS the agy token lives in the keychain and can't be copied — run ONE-TIME:"
     echo "    ./multi-factory/autorun.sh --login-gemini"
+  fi
+  if ! opencode_authed; then
+    echo "! opencode auth not found ($OPENCODE_AUTH_SRC) — opencode provider unavailable."
+    echo "  Create it once on the host (the key is never printed or committed):"
+    echo "    HOME=\$HOME/.bettertrack-factory/opencode-sandbox/home opencode auth login"
   fi
 }
 

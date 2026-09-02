@@ -184,6 +184,7 @@ runnable_issues(){
     grep -qx "$n" "$CONTROL/composer-quarantine" 2>/dev/null && continue
     issue_has_label "$n" autopilot || continue
     issue_has_label "$n" awaiting-owner && continue
+    issue_has_label "$n" mf:bad-meta && continue
     issue_schedule_contract_valid "$n" || continue
     # Dry-run cycles don't close real issues; skip ones already fake-completed.
     [ "$MF_DRY_RUN" = 1 ] && grep -qx "$n" "$CONTROL/dry-done" 2>/dev/null && continue
@@ -914,6 +915,22 @@ composer_step(){ # $1=mode
   fi
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
+  # Merge lane first (2026-08-29): a successful composer run blocks this tick for
+  # ~45 min, freezing scheduling AND merging. Never spend that while PRs wait in
+  # the merge queue. Owner-brief requests are exempt — they were explicitly asked
+  # for — and BOTH shapes of "there is an owner brief" must be checked here:
+  #   - COMPOSER_REQUEST_LOADED=1 — an already-claimed request (.composer-request-
+  #     active.json / .composer-request-claim), reconciled above the mode gate;
+  #   - composer-request.json — a FRESH, owner-written request that is not claimed
+  #     until composer_request_prepare runs BELOW this guard.
+  # Testing only the flag would let a stuck queue record silently swallow every
+  # new brief, since a fresh request never reaches its claim.
+  if [ "$COMPOSER_REQUEST_LOADED" -ne 1 ] \
+    && [ ! -f "$CONTROL/composer-request.json" ] \
+    && find "$QUEUE" -maxdepth 1 -type f -name '[0-9]*-pr*.json' -print -quit 2>/dev/null | grep -q .; then
+    log "composer deferred: merge queue non-empty"
+    return 0
+  fi
   if ! composer_protocol_ready; then
     # A claimed owner request remains a scheduler fence while its protocol
     # cooldown is active. Returning ordinary success here could expose artifacts
@@ -1160,6 +1177,18 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
     [ "$wphase" = idle ] || continue
     for n in $runnable; do
       claims=$(issue_claims "$n")
+      if [ "$claims" = '**' ]; then
+        # Empty/absent mf-meta touches claims '**' and conflicts with EVERYTHING,
+        # silently serializing the fleet. Surface it and skip. Drop it from
+        # $runnable in the same breath: the label is what keeps it out on LATER
+        # ticks, but within THIS tick every remaining idle worker would otherwise
+        # re-reach it and repeat the API call — and if the edit fails (it is
+        # best-effort), that repeat becomes WORKERS calls every tick forever.
+        gh issue edit "$n" --add-label mf:bad-meta >/dev/null 2>&1 || true
+        log "scheduler: issue #$n has empty mf-meta touches — labeled mf:bad-meta, skipped"
+        runnable=$(grep -vx "$n" <<<"$runnable" || true)
+        continue
+      fi
       claimsets_conflict "$claims" "$inflight" && continue
       local touches payload
       touches=$(printf '%s\n' "$claims" | jq -R . | jq -cs 'map(select(length>0))')
@@ -1187,19 +1216,45 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
 # backoff) and refused merges may continue the scan. LLM work and the rare
 # BEHIND re-gate remain blocking by design (single sequential merger).
 requeue_for_review(){ # $1=queue file $2=issue $3=reason
-  local f=$1 n=$2 why=$3
-  log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review"
+  local f=$1 n=$2 why=$3 rq pr
+  # Requeue budget (2026-08-29): the assignment payload carries no attempt
+  # counter, so a first-pass-approved issue whose approval keeps invalidating
+  # re-entered review forever (#1232: 140 reviewer runs). Bound it durably.
+  # Idempotency key: $CONTROL/requeue-count/<issue> — one counter per ISSUE, so
+  # the budget survives the PR churn (new head, new PR) that the requeue causes.
+  # It is deliberately never cleared: the budget is a lifetime bound on how often
+  # one issue may re-enter review, not a per-cycle allowance.
+  mkdir -p "$CONTROL/requeue-count"
+  rq=$(cat "$CONTROL/requeue-count/$n" 2>/dev/null || echo 0)
+  case "$rq" in ''|*[!0-9]*) rq=0;; esac
+  rq=$((rq+1)); printf '%s' "$rq" >"$CONTROL/requeue-count/$n"
+  if [ "$rq" -gt "${MF_REQUEUE_MAX:-3}" ]; then
+    # This path retires the PR from the queue for good, so it owes the same
+    # cleanup every other park does. The PR number is only reachable through the
+    # queue record — resolve it BEFORE unlinking, or the refusal counter and the
+    # CI-fix state outlive the record they belong to.
+    pr=$(jq -r '.pr // empty' "$f" 2>/dev/null || true)
+    rm -f "$f"
+    if [ -n "$pr" ]; then
+      rm -f "$(ci_fix_state_file "$n" "$pr")"
+      mergefail_clear "$pr"
+    fi
+    mark_human "$n" "review requeued $rq times (budget ${MF_REQUEUE_MAX:-3}) — last: $why"
+    return 0
+  fi
+  log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review ($rq/${MF_REQUEUE_MAX:-3})"
   rm -f "$f"
   gh issue edit "$n" --remove-label in-progress >/dev/null 2>&1 || true
 }
 
 # The merge-refusal budget is keyed per PR, not per head, so it survives the
-# update-branch head churn that used to reset it. It is deliberately NOT cleared
-# by requeue_for_review (a PR that keeps earning refusals across review cycles
-# must still reach the park bound) and has no age-based decay — but it IS cleared
-# on every path that retires the PR from the queue for good, so the queue dir
-# stays self-cleaning. Legacy `-<head>`-suffixed files predating the re-key are
-# swept alongside.
+# update-branch head churn that used to reset it. A requeue that sends the PR
+# back for a fresh review deliberately does NOT clear it (a PR that keeps earning
+# refusals across review cycles must still reach the park bound), and it has no
+# age-based decay — but it IS cleared on every path that retires the PR from the
+# queue for good, INCLUDING requeue_for_review's over-budget park, so the queue
+# dir stays self-cleaning. Legacy `-<head>`-suffixed files predating the re-key
+# are swept alongside.
 mergefail_clear(){ # $1=pr $2=legacy-only (optional; preserve the current counter)
   [ "${2:-}" = legacy-only ] || rm -f "$QUEUE/.mergefail-pr$1" 2>/dev/null || true
   rm -f "$QUEUE"/.mergefail-pr"$1"-* 2>/dev/null || true
@@ -1734,7 +1789,7 @@ set_phase running
 [ -f "$PROMPTS/writer.md" ] || { notify "FATAL: factory prompts missing in $PROMPTS"; exit 1; }
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
+git config user.name "Christian Wiesinger"; git config user.email "chris.dev.at@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 for w in $(seq 1 "$WORKERS"); do
