@@ -1121,6 +1121,7 @@ function restoreDocument(portfolioId = TEST_VECTOR.targetPortfolioId): VaultStri
         contentHash: null,
         result: null,
         resultMessage: null,
+        kindUndecided: false,
       }),
       strictEntity(TEST_VECTOR.cashTagId, 'cashTag', {
         userId: user.id,
