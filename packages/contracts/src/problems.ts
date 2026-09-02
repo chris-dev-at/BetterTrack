@@ -39,6 +39,13 @@ export const problemSchema = z.object({
   lastSeenAt: z.string().datetime(),
   resolvedAt: z.string().datetime().nullable(),
   resolvedBy: z.string().uuid().nullable(),
+  /**
+   * A REGRESSION: this problem was resolved and then happened again, so the
+   * capture reopened it. Derived server-side from `resolved_at` vs
+   * `last_seen_at` (no column of its own), and true only while that earlier
+   * resolution still stands — resolving or manually reopening clears it.
+   */
+  regressed: z.boolean(),
 });
 export type Problem = z.infer<typeof problemSchema>;
 
@@ -48,6 +55,8 @@ export const problemListQuerySchema = z
     kind: problemKindSchema.optional(),
     status: problemStatusSchema.optional(),
     limit: z.coerce.number().int().min(1).max(200).default(50),
+    /** Rows to skip — the paging cursor, in `lastSeenAt desc` order. */
+    offset: z.coerce.number().int().min(0).default(0),
   })
   .strict();
 export type ProblemListQuery = z.infer<typeof problemListQuerySchema>;
@@ -56,5 +65,9 @@ export const problemListResponseSchema = z.object({
   problems: z.array(problemSchema),
   /** Open-problem count regardless of the current filter — the badge source. */
   openCount: z.number().int().nonnegative(),
+  /** How many rows match the CURRENT filter, ignoring limit/offset. */
+  total: z.number().int().nonnegative(),
+  /** Whether another page exists past this one (`offset + rows < total`). */
+  hasMore: z.boolean(),
 });
 export type ProblemListResponse = z.infer<typeof problemListResponseSchema>;

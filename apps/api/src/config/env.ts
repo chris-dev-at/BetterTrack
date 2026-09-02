@@ -223,6 +223,14 @@ const envSchema = z.object({
   // that table forever and disables its branch of the scheduled purge.
   BT_AUDIT_RETENTION_DAYS: retentionDays(400),
   BT_EMAIL_LOG_RETENTION_DAYS: retentionDays(180),
+  // Captured problems age out on `last_seen_at`: a quarter without a single
+  // recurrence is the point at which a row is history, not an operational
+  // signal — and the admin Problems page is only useful while it is bounded.
+  BT_PROBLEM_RETENTION_DAYS: retentionDays(90),
+  // Raw usage events are a per-user viewing history. The analytics windows read
+  // at most the last 30 days, so half a year keeps every counter honest while
+  // the history stops being indefinite.
+  BT_USAGE_EVENT_RETENTION_DAYS: retentionDays(180),
 
   // ── Telegram notification channel (§13.4 V4-P10) ───────────────────────────
   // Owner-provided bot token that lets the API deliver notifications through
@@ -847,6 +855,10 @@ export interface AppConfig {
   retention: {
     auditDays: number;
     emailLogDays: number;
+    /** Age since the LAST occurrence at which a captured problem is pruned. */
+    problemDays: number;
+    /** Age at which raw usage events are pruned (the rollup is kept). */
+    usageEventDays: number;
   };
   /**
    * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the
@@ -1244,6 +1256,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     retention: {
       auditDays: e.BT_AUDIT_RETENTION_DAYS,
       emailLogDays: e.BT_EMAIL_LOG_RETENTION_DAYS,
+      problemDays: e.BT_PROBLEM_RETENTION_DAYS,
+      usageEventDays: e.BT_USAGE_EVENT_RETENTION_DAYS,
     },
     // V5-P0 kill-switch: the SAME flag controls Telegram AND Discord — either
     // both channels are offered by this build or neither. Default OFF so an
