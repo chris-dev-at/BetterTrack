@@ -27,10 +27,19 @@ export function createPasswordResetTokenRepository(db: Database) {
      * no-account branch. The per-address advisory lock equalizes concurrent
      * probes; the stable user-row lock still coordinates a real issue with
      * account mutations when no prior token row exists.
+     *
+     * `onIssued` runs on this transaction's executor, after the insert and
+     * before commit. The known branch's success audit goes through it rather
+     * than through a second, separately pooled write: a follow-up write has to
+     * *acquire* a connection, and under a saturated pool that acquisition — not
+     * the statement — is the cost the no-account branch never pays, which is
+     * what let response time drift into an account-existence oracle (§6.1).
+     * Committing the audit row with the token also makes the two atomic.
      */
     async issueOrEqualize(
       input: CreatePasswordResetTokenInput | null,
       serializationKey: string,
+      onIssued?: (executor: Database) => Promise<void>,
     ): Promise<PasswordResetTokenRow | null> {
       return db.transaction(async (tx) => {
         // Both known and unknown addresses take the same per-address lock, so a
@@ -63,6 +72,7 @@ export function createPasswordResetTokenRepository(db: Database) {
           })
           .returning();
         if (!row) throw new Error('Failed to insert password reset token');
+        await onIssued?.(tx);
         return row;
       });
     },

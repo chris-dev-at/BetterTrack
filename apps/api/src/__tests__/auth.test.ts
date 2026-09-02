@@ -11,7 +11,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
-import { emailLog, passwordResetTokens, users, vaults } from '../data/schema';
+import { auditLog, emailLog, passwordResetTokens, users, vaults } from '../data/schema';
 import { PASSWORD_RESET_RESPONSE_FLOOR_MS } from '../services/auth/authService';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
@@ -438,6 +438,19 @@ describe('self-service password-reset concurrency', () => {
         .from(passwordResetTokens)
         .where(eq(passwordResetTokens.userId, user.id)),
     ).toHaveLength(1);
+
+    // The success audit commits with the token it describes rather than as a
+    // second pooled write on the response path (that second write is what made
+    // response time an account-existence oracle under a saturated pool). Both
+    // accepted requests must still be answerable in the audit log.
+    expect(
+      await harness.db
+        .select()
+        .from(auditLog)
+        .where(
+          and(eq(auditLog.action, 'password.reset_requested'), eq(auditLog.targetId, user.id)),
+        ),
+    ).toHaveLength(2);
   });
 
   it('normalizes concurrent reset-request timing distributions for known and unknown addresses', async () => {
@@ -449,15 +462,32 @@ describe('self-service password-reset concurrency', () => {
       return { response, elapsedMs: performance.now() - startedAt };
     };
     const pairCount = 8;
+    const burstCount = 3;
+    const probeCount = pairCount * burstCount;
 
     // Launch N pairs together against the same known and same unknown address.
     // This exercises the per-address serialization distribution, not one quiet
     // database request whose fixed 250 ms floor can hide the row-lock branch.
-    const pairs = await Promise.all(
-      Array.from({ length: pairCount }, () =>
-        Promise.all([timedRequest(user.email), timedRequest('nobody-here@test.dev')]),
-      ),
-    );
+    //
+    // Pool several bursts rather than sampling one. `percentile` indexes at
+    // ceil(n * fraction) - 1, so on a single burst of 8 the 0.9 quantile lands
+    // on index 7 of 7 — the maximum — and one scheduler stall on a loaded
+    // runner becomes the entire measured tail. Three bursts put that quantile
+    // two samples inside the top, where it describes the distribution the
+    // equalization is actually about instead of the worst outlier in it. Each
+    // burst still goes out concurrently, so the queue depth under test is
+    // unchanged; only the number of observations of it grows.
+    const bursts = [];
+    for (let burst = 0; burst < burstCount; burst += 1) {
+      bursts.push(
+        await Promise.all(
+          Array.from({ length: pairCount }, () =>
+            Promise.all([timedRequest(user.email), timedRequest('nobody-here@test.dev')]),
+          ),
+        ),
+      );
+    }
+    const pairs = bursts.flat();
     const known = pairs.map(([sample]) => sample);
     const unknown = pairs.map(([, sample]) => sample);
     const knownTimes = known.map(({ elapsedMs }) => elapsedMs).sort((a, b) => a - b);
@@ -473,7 +503,7 @@ describe('self-service password-reset concurrency', () => {
     // Both branches enter at least one repository transaction per probe. Audit
     // or detached-email persistence may legitimately add calls on this shared
     // seam, so only assert the lower bound relevant to equalization.
-    expect(transactionSpy.mock.calls.length).toBeGreaterThanOrEqual(pairCount * 2);
+    expect(transactionSpy.mock.calls.length).toBeGreaterThanOrEqual(probeCount * 2);
     expect(Math.abs(percentile(knownTimes, 0.5) - percentile(unknownTimes, 0.5))).toBeLessThan(75);
     expect(Math.abs(percentile(knownTimes, 0.9) - percentile(unknownTimes, 0.9))).toBeLessThan(100);
     transactionSpy.mockRestore();
