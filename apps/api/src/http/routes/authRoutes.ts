@@ -338,12 +338,24 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // Enable or change the PIN.
-  router.put('/pin', requireAuth, validateBody(setPinRequestSchema), async (req, res) => {
-    const body = req.valid?.body as SetPinRequest;
-    const user = await ctx.auth.setPin(req.authUser!.id, body.pin, req.ip);
-    res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
-  });
+  // Enable or change the PIN. Rate-limited on the SAME strict login schedule as
+  // `/pin/verify` above (§10): setting a PIN runs an argon2id hash at 64 MiB of
+  // memory per request, so an authenticated caller looping this route is an
+  // amplification door — one cheap HTTP request buys 64 MiB and a deliberately
+  // slow KDF. It sat under the general per-user limiter alone, which after the
+  // 2026-09-02 re-sizing allows 600 req/min; the credential-shaped ladder is the
+  // right home for a credential-shaped cost, and it matches the sibling verify.
+  router.put(
+    '/pin',
+    requireAuth,
+    limiters.login,
+    validateBody(setPinRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as SetPinRequest;
+      const user = await ctx.auth.setPin(req.authUser!.id, body.pin, req.ip);
+      res.json(await withFreshStartNotice(toMeResponseFromRow(user)));
+    },
+  );
 
   // Disable the PIN.
   router.delete('/pin', requireAuth, async (req, res) => {

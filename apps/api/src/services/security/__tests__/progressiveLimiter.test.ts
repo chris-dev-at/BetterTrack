@@ -334,7 +334,11 @@ describe('progressive limiter — configured schedules meet §10', () => {
     expect(cfg.general.cooldownsSec[0]).toBeGreaterThanOrEqual(10);
     expect(cfg.general.cooldownsSec[0]).toBeLessThanOrEqual(30);
     expect(cfg.general.cooldownsSec.at(-1)).toBe(600);
-    expect(cfg.general.limit).toBeGreaterThanOrEqual(4500);
+    // A FLOOR, not the value: the steady-state allowance must clear the
+    // modelled worst realistic 15 minutes for one user with two tabs (1576
+    // requests) by 3× (§16, 2026-09-02). The exact number is pinned in
+    // `config/__tests__/rateLimitTable.test.ts`.
+    expect(cfg.general.limit).toBeGreaterThanOrEqual(1576 * 3);
   });
 
   it('login is stricter: ~10 account failures → 30 s, escalating to 10 min+', () => {
@@ -350,12 +354,20 @@ describe('progressive limiter — configured schedules meet §10', () => {
   });
 
   it('general burst window is short and tight but feeds the SAME ladder (#202)', () => {
-    // A tight short window a reload flood trips fast...
-    expect(cfg.generalBurst.windowSec).toBeLessThanOrEqual(15);
+    // A SHORT window, so a reload flood trips it long before the 15-minute
+    // steady state notices. Widened from 10 s to 30 s on 2026-09-02 (§16): the
+    // ceiling this bound used to protect — 60 requests — was smaller than the
+    // app's own cold load, so the window was not catching floods, it was
+    // catching page loads. A wider window at a higher rate raises SPIKE
+    // tolerance without raising the sustained rate as far, which is the shape
+    // of the real traffic; a minute or more would stop being a burst dimension
+    // at all and start duplicating the steady-state window.
+    expect(cfg.generalBurst.windowSec).toBeLessThanOrEqual(30);
     expect(cfg.generalBurst.limit).toBeLessThan(cfg.general.limit);
-    // ...yet generous enough to clear a multi-tab refetch burst (3 tabs × ~6
-    // endpoints = ~18), and it escalates/decays exactly like the steady state.
-    expect(cfg.generalBurst.limit).toBeGreaterThanOrEqual(60);
+    // ...yet generous enough to clear the modelled normal-use bar — two tabs
+    // cold-loading a widget board, a navigation and a search, 188 requests — by
+    // 3×, and it escalates/decays exactly like the steady state.
+    expect(cfg.generalBurst.limit).toBeGreaterThanOrEqual(188 * 3);
     expect(cfg.generalBurst.cooldownsSec).toEqual(cfg.general.cooldownsSec);
     expect(cfg.generalBurst.decaySec).toBe(cfg.general.decaySec);
   });
