@@ -102,7 +102,12 @@ beforeEach(() => {
     pendingRegistrationCount: 0,
   });
   vi.mocked(api.getAdminHealth).mockResolvedValue(healthyHealth);
-  vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 0 });
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [],
+    openCount: 0,
+    total: 0,
+    hasMore: false,
+  });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: true });
   vi.mocked(api.getBackupStatus).mockResolvedValue(readyBackup);
   vi.mocked(api.getVersion).mockResolvedValue({
@@ -137,7 +142,12 @@ test('ranks the attention queue with the worst signal first and links each row t
     pendingInviteCount: 1,
     pendingRegistrationCount: 2,
   });
-  vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 4 });
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [],
+    openCount: 4,
+    total: 4,
+    hasMore: false,
+  });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: false });
   vi.mocked(api.getAdminHealth).mockResolvedValue({
     ...healthyHealth,

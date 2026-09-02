@@ -277,16 +277,32 @@ describe('market-intelligence gate (§13.5 V5-P5)', () => {
 
 describe('operational data retention (§13.5 V5-P14, PL-01)', () => {
   it('uses conservative defaults when the owner leaves the variables unset or blank', () => {
-    expect(config({}).retention).toEqual({ auditDays: 400, emailLogDays: 180 });
+    const defaults = {
+      auditDays: 400,
+      emailLogDays: 180,
+      problemDays: 90,
+      usageEventDays: 180,
+    };
+    expect(config({}).retention).toEqual(defaults);
     expect(
-      config({ BT_AUDIT_RETENTION_DAYS: '', BT_EMAIL_LOG_RETENTION_DAYS: '   ' }).retention,
-    ).toEqual({ auditDays: 400, emailLogDays: 180 });
+      config({
+        BT_AUDIT_RETENTION_DAYS: '',
+        BT_EMAIL_LOG_RETENTION_DAYS: '   ',
+        BT_PROBLEM_RETENTION_DAYS: '',
+        BT_USAGE_EVENT_RETENTION_DAYS: '  ',
+      }).retention,
+    ).toEqual(defaults);
   });
 
   it('accepts owner-adjusted whole-day windows and explicit zero as retain forever', () => {
     expect(
-      config({ BT_AUDIT_RETENTION_DAYS: '730', BT_EMAIL_LOG_RETENTION_DAYS: '0' }).retention,
-    ).toEqual({ auditDays: 730, emailLogDays: 0 });
+      config({
+        BT_AUDIT_RETENTION_DAYS: '730',
+        BT_EMAIL_LOG_RETENTION_DAYS: '0',
+        BT_PROBLEM_RETENTION_DAYS: '30',
+        BT_USAGE_EVENT_RETENTION_DAYS: '0',
+      }).retention,
+    ).toEqual({ auditDays: 730, emailLogDays: 0, problemDays: 30, usageEventDays: 0 });
   });
 
   it('rejects negative and fractional retention windows', () => {
