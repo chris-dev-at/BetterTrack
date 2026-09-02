@@ -602,7 +602,10 @@ describe('mirrorchain M4 — repair sweep', () => {
    * to find), and an update that changed the money while leaving every link
    * intact. Both are permanent, silent money divergence without a detector.
    */
-  async function syncedTransaction(h: TestHarness) {
+  async function syncedTransaction(
+    h: TestHarness,
+    money?: { quantity?: number; price?: number; fee?: number },
+  ) {
     const { owner, chainId, ownerPortfolioId } = await ownerChain(h);
     const member = await join(h, chainId, 'member');
     const asset = await seedAsset(h);
@@ -610,9 +613,9 @@ describe('mirrorchain M4 — repair sweep', () => {
       {
         assetId: asset.id,
         side: 'buy',
-        quantity: 5,
-        price: 100,
-        fee: 0,
+        quantity: money?.quantity ?? 5,
+        price: money?.price ?? 100,
+        fee: money?.fee ?? 0,
         executedAt: new Date('2026-03-02T10:00:00.000Z').toISOString(),
       },
     ]);
@@ -677,13 +680,42 @@ describe('mirrorchain M4 — repair sweep', () => {
     expect((await repoOf(h).getChain(chainId))!.lastSeq).toBeGreaterThan(0);
   });
 
+  it('a sub-cent row the columns round is converged, not divergence', async () => {
+    // The whole real write path with more decimals than the columns keep
+    // (numeric(20,8) quantity, numeric(20,6) price/fee): every copy stores the
+    // same rounded number while the op keeps the raw one. Comparing raw would
+    // report this — and every crypto row, and every >8 dp broker quantity — as
+    // money divergence on every run forever, drowning the real thing.
+    const { mirrorId } = await syncedTransaction(h, {
+      quantity: 0.000000125,
+      price: 0.00000892,
+      fee: 0.0000005,
+    });
+    const [stored] = await h.db
+      .select()
+      .from(schema.transactions)
+      .where(eq(schema.transactions.id, mirrorId));
+    expect(Number(stored!.price)).toBe(0.000009); // rounded on the way in, on EVERY copy
+
+    const result = await h.ctx.mirror.runConsistencySweep();
+
+    expect(result.divergentTransactionRows).toEqual([]);
+    await runSweep(h);
+    const { problems } = await h.ctx.problems.list({ limit: 100 });
+    expect(problems.some((p) => p.title.includes('diverges from its op'))).toBe(false);
+  });
+
   it('pages past the row limit instead of re-reporting the same residuals forever', async () => {
     const repo = repoOf(h);
     const { chainId, ownerPortfolioId } = await ownerChain(h);
-    // Three (a)-residuals, one page of two: the tail must surface on the NEXT
+    // FOUR (a)-residuals, one page of two: the tail must surface on the NEXT
     // run rather than the first page repeating until an admin fixes it by hand.
+    // An exact multiple of the limit is the strict case — the cycle ends on a
+    // FULL page, so the wrap runs off an empty read rather than the short-page
+    // branch, and a cursor that advances from the empty offset instead of from
+    // the page it actually read would pin every later run to page 1 forever.
     const seeded: string[] = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const mirrorId = randomUUID();
       seeded.push(mirrorId);
       await repo.insertMirrorRow({
@@ -700,10 +732,11 @@ describe('mirrorchain M4 — repair sweep', () => {
     const first = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
     const second = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
     const third = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
+    const fourth = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
 
     const ids = (rows: { mirrorId: string }[]) => rows.map((r) => r.mirrorId);
     expect(first.danglingOriginRows).toHaveLength(2);
-    expect(second.danglingOriginRows).toHaveLength(1);
+    expect(second.danglingOriginRows).toHaveLength(2);
     // Disjoint pages: run two surfaced the tail, not the same rows again.
     expect(
       ids(second.danglingOriginRows).some((id) => ids(first.danglingOriginRows).includes(id)),
@@ -711,8 +744,11 @@ describe('mirrorchain M4 — repair sweep', () => {
     expect([...ids(first.danglingOriginRows), ...ids(second.danglingOriginRows)].sort()).toEqual(
       [...seeded].sort(),
     );
-    // The short page wrapped the cursor, so the scan keeps covering the set.
+    // Run three read past the end, wrapped, and REBASED the cursor to the page
+    // it actually read — so run four covers the tail again instead of the scan
+    // walking off the end and re-reporting page 1 for the rest of time.
     expect(ids(third.danglingOriginRows)).toEqual(ids(first.danglingOriginRows));
+    expect(ids(fourth.danglingOriginRows)).toEqual(ids(second.danglingOriginRows));
   });
 
   it('a clean database yields no Problems', async () => {

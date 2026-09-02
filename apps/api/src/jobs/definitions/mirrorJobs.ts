@@ -25,7 +25,9 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * redundant jobs are safe and no-op cheaply off the watermark — the same
  * pattern as `snapshots.recompute`. The tail-catch re-enqueue this handler does
  * itself IS bounded, on two axes: it carries a delay, and it only happens after
- * a pass that moved a watermark (see the handler). A copy that keeps failing makes the run
+ * a pass that moved a watermark — or one whose only lag appeared while it ran
+ * (`stagnant === 0`), which the NEXT pass then resolves either way (see the
+ * handler). A copy that keeps failing makes the run
  * throw AFTER the sweep (the other copies still catch up — a stalled copy lags,
  * never diverges); the standard retry → dead-letter path then lands it on the
  * admin Problems page via the worker's `onPermanentFailure` hook, and any later
@@ -97,7 +99,18 @@ export function createMirrorReplicateJob(
         await deps.enqueue(chainId, { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
         return;
       }
-      // No forward progress: an identical pass would do exactly this again.
+      // Nothing moved, but nothing was STUCK when the pass began either: the
+      // outstanding lag is an op appended (or a member who joined) while the
+      // pass ran, and their own scheduleReplicate is already on its way. Chain
+      // one more pass instead of escalating — the notice must signal a genuine
+      // stall, never a transient blip. Still bounded: on the next pass that copy
+      // is behind at pass start, so it either advances or counts as stagnant.
+      if (result.stagnant <= 0) {
+        await deps.enqueue(chainId, { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
+        return;
+      }
+      // No forward progress on a copy that was already behind when the pass
+      // started: an identical pass would do exactly this again.
       // Escalate to the stalled path instead — the members are marked stalled
       // (so their copies stop pretending to sync and offer Retry sync) and the
       // notice fires once, on the transition into that state.

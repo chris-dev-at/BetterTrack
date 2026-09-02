@@ -194,9 +194,11 @@ describe('MirrorchainPanel — stalled sync', () => {
     wrap(<MemberSheet chainId={CHAIN} onClose={() => {}} />);
     await user.click(await screen.findByRole('button', { name: 'Retry sync' }));
 
+    // No promise of an automatic recovery: nothing re-attempts a chain after it
+    // escalated — only another member's write, or another Retry sync, does.
     expect(
       await screen.findByText(
-        'Sync still cannot continue. It will resume on its own once the block clears.',
+        'Sync still cannot continue. Try again later, or ask another member to make an entry — that restarts syncing for everyone.',
       ),
     ).toBeInTheDocument();
   });

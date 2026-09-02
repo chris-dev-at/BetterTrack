@@ -3632,7 +3632,7 @@
       "pending": "Wird wiederholt…",
       "synced": "Deine Kopie ist wieder auf dem aktuellen Stand.",
       "syncing": "Synchronisierung läuft wieder — die restlichen Einträge folgen.",
-      "stalled": "Die Synchronisierung kommt weiterhin nicht weiter. Sie läuft von selbst weiter, sobald die Blockade weg ist.",
+      "stalled": "Die Synchronisierung kommt weiterhin nicht weiter. Versuche es später erneut oder bitte ein anderes Mitglied um einen Eintrag — das startet die Synchronisierung für alle neu.",
       "notStalled": "Diese Kopie ist bereits auf dem aktuellen Stand.",
       "error": "Die Synchronisierung konnte nicht wiederholt werden. Bitte versuche es erneut."
     },

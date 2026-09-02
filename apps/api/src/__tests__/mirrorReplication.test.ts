@@ -1127,12 +1127,14 @@ describe('mirrorchain M2 — replication core', () => {
       lagging: 0,
       skipped: 0,
       advanced: 0,
+      stagnant: 0,
     });
     await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
       applied: 0,
       lagging: 0,
       skipped: 0,
       advanced: 0,
+      stagnant: 0,
     });
 
     const membershipAfter = await mirrorRepo.findActiveMembership(chain.id, bob.id);
@@ -1224,6 +1226,9 @@ describe('mirrorchain — no-progress escalation + retry sync (#1611)', () => {
     expect(result.advanced).toBe(0);
     expect(result.skipped).toBe(2);
     expect(result.lagging).toBe(2);
+    // Both copies were ALREADY behind when the pass began — a genuine stall,
+    // not lag that appeared mid-pass, so the job may escalate on it.
+    expect(result.stagnant).toBe(2);
     // Idempotent: a second pass is just as fruitless, and just as quiet.
     await expect(h.ctx.mirror.replicateChain(chain.id)).resolves.toEqual(result);
   });

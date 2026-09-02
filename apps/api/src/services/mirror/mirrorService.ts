@@ -226,6 +226,16 @@ export interface ReplicateChainResult {
    * watermark without applying anything to the copy, and that is progress.
    */
   advanced: number;
+  /**
+   * Copies that were ALREADY behind the `last_seq` this pass started from and
+   * still have not moved — the hysteresis on the member-facing stall notice.
+   * `lagging` alone cannot carry it: an op appended (or a member joined) while
+   * the pass ran leaves a caught-up chain at `advanced === 0, lagging > 0`,
+   * which is a transient blip whose own `scheduleReplicate` is already on its
+   * way, not the genuine stall `mirror.sync_stalled` promises. Only a copy
+   * counted here was stuck before this pass began.
+   */
+  stagnant: number;
 }
 
 /** What {@link MirrorService.escalateStalledChain} did with a no-progress chain. */
@@ -2781,10 +2791,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
     async replicateChain(chainId) {
       const chain = await repo.getChain(chainId);
-      if (!chain) return { applied: 0, lagging: 0, skipped: 0, advanced: 0 };
+      if (!chain) return { applied: 0, lagging: 0, skipped: 0, advanced: 0, stagnant: 0 };
       const members = await repo.listActiveMembers(chainId);
       if (await hasUnavailableActiveMemberPortfolio(members)) {
-        return { applied: 0, lagging: 0, skipped: 0, advanced: 0 };
+        return { applied: 0, lagging: 0, skipped: 0, advanced: 0, stagnant: 0 };
       }
       // Watermarks as they stood BEFORE the sweep: the only honest measure of
       // forward progress, since an op that applies nothing locally (a
@@ -2818,7 +2828,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const after = await repo.getChain(chainId);
       const membersAfter = await repo.listActiveMembers(chainId);
       if (await hasUnavailableActiveMemberPortfolio(membersAfter)) {
-        return { applied, lagging: 0, skipped, advanced: 0 };
+        return { applied, lagging: 0, skipped, advanced: 0, stagnant: 0 };
       }
       const lagging = membersAfter.filter(
         (m) => m.userId && m.portfolioId && m.appliedSeq < (after?.lastSeq ?? 0),
@@ -2826,6 +2836,17 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const advanced = membersAfter.filter((m) => {
         const before = seqBefore.get(m.id);
         return before !== undefined && m.appliedSeq > before;
+      }).length;
+      // Hysteresis for the escalation decision (see `stagnant`): measured
+      // against the watermarks and `last_seq` as they stood BEFORE the sweep, so
+      // an op appended mid-pass — or a member who joined inside the window and
+      // has no `seqBefore` entry — cannot make a healthy chain look stalled.
+      const stagnant = membersAfter.filter((m) => {
+        if (!m.userId || !m.portfolioId) return false;
+        const before = seqBefore.get(m.id);
+        // Joined mid-pass, or was already caught up when the pass started.
+        if (before === undefined || before >= chain.lastSeq) return false;
+        return m.appliedSeq <= before;
       }).length;
       if (failures.length > 0) {
         // Throw AFTER the sweep so BullMQ retry/backoff → dead-letter takes over
@@ -2841,7 +2862,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           }`,
         );
       }
-      return { applied, lagging, skipped, advanced };
+      return { applied, lagging, skipped, advanced, stagnant };
     },
 
     async escalateStalledChain(chainId) {
@@ -3921,11 +3942,19 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         category: SweepCategory,
         read: (limit: number, offset: number) => Promise<T[]>,
       ): Promise<T[]> => {
-        const offset = await readSweepCursor(category);
+        let offset = await readSweepCursor(category);
         let rows = await read(limit, offset);
-        // The set shrank below the cursor (residuals repaired) — restart at the
-        // top rather than reporting an empty page for a non-empty backlog.
-        if (rows.length === 0 && offset > 0) rows = await read(limit, 0);
+        // Nothing at the cursor: either the set shrank below it (residuals
+        // repaired) or the previous run ended exactly on the tail. Restart at
+        // the top rather than reporting an empty page for a non-empty backlog —
+        // and REBASE the offset to 0, because the cursor now describes the page
+        // actually read. Advancing from the empty offset instead would walk the
+        // cursor further past the end on every run, so each run would re-read
+        // page 1 and the tail would go permanently invisible again.
+        if (rows.length === 0 && offset > 0) {
+          offset = 0;
+          rows = await read(limit, 0);
+        }
         await writeSweepCursor(category, offset, rows.length, limit);
         return rows;
       };

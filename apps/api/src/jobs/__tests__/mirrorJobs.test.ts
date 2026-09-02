@@ -72,7 +72,7 @@ function makeDeps(
       mirror: {
         replicateChain: vi
           .fn()
-          .mockResolvedValue({ applied: 0, lagging: 0, skipped: 0, advanced: 0 }),
+          .mockResolvedValue({ applied: 0, lagging: 0, skipped: 0, advanced: 0, stagnant: 0 }),
         notifyChainStalled: vi.fn().mockResolvedValue(undefined),
         escalateStalledChain: vi.fn().mockResolvedValue({ escalated: true, stalled: 1 }),
         ...mirror,
@@ -90,7 +90,7 @@ describe('mirror.replicate job — sync_stalled fires only on permanent failure'
     const { deps, enqueue } = makeDeps({
       replicateChain: vi
         .fn()
-        .mockResolvedValue({ applied: 2, lagging: 1, skipped: 0, advanced: 2 }),
+        .mockResolvedValue({ applied: 2, lagging: 1, skipped: 0, advanced: 2, stagnant: 0 }),
     });
     const def = createMirrorReplicateJob(deps);
 
@@ -106,7 +106,7 @@ describe('mirror.replicate job — sync_stalled fires only on permanent failure'
     const { deps, enqueue } = makeDeps({
       replicateChain: vi
         .fn()
-        .mockResolvedValue({ applied: 3, lagging: 0, skipped: 0, advanced: 2 }),
+        .mockResolvedValue({ applied: 3, lagging: 0, skipped: 0, advanced: 2, stagnant: 0 }),
     });
     const def = createMirrorReplicateJob(deps);
 
@@ -122,7 +122,7 @@ describe('mirror.replicate job — sync_stalled fires only on permanent failure'
     const { deps, enqueue, captureError } = makeDeps({
       replicateChain: vi
         .fn()
-        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 1, advanced: 0 }),
+        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 1, advanced: 0, stagnant: 1 }),
     });
     const def = createMirrorReplicateJob(deps);
 
@@ -139,11 +139,35 @@ describe('mirror.replicate job — sync_stalled fires only on permanent failure'
     expect((captureError.mock.calls[0]![0] as Error).name).toBe('mirror: chain cannot replicate');
   });
 
+  it('lag that only appeared DURING the pass chains one more run instead of escalating', async () => {
+    // The blip: every copy was caught up when the pass started (`stagnant: 0`),
+    // then a write landed (or a member joined) while it swept — so nothing
+    // advanced and a copy lags, but nobody is stuck. Escalating here would mail
+    // the member "could not finish syncing… choose Retry sync" about a chain
+    // whose own scheduleReplicate is already on its way.
+    const { deps, enqueue, captureError } = makeDeps({
+      replicateChain: vi
+        .fn()
+        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 0, advanced: 0, stagnant: 0 }),
+    });
+    const def = createMirrorReplicateJob(deps);
+
+    await def.handler(makeJob('chain-1', { attemptsMade: 0, attempts: 3 }), makeCtx());
+
+    expect(deps.mirror.escalateStalledChain).not.toHaveBeenCalled();
+    expect(deps.mirror.notifyChainStalled).not.toHaveBeenCalled();
+    expect(captureError).not.toHaveBeenCalled();
+    // Bounded: ONE spaced follow-up, which either advances or reports the copy
+    // as stagnant (it is behind at that pass's start) and escalates then.
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith('chain-1', { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
+  });
+
   it('escalation without a stalled copy (the chain healed meanwhile) reports nothing', async () => {
     const { deps, enqueue, captureError } = makeDeps({
       replicateChain: vi
         .fn()
-        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 0, advanced: 0 }),
+        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 0, advanced: 0, stagnant: 1 }),
       escalateStalledChain: vi.fn().mockResolvedValue({ escalated: false, stalled: 0 }),
     });
     const def = createMirrorReplicateJob(deps);

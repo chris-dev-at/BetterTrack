@@ -1154,6 +1154,15 @@ export function createMirrorchainRepository(db: Database) {
      * active copy whose watermark has already passed that op MUST carry the link
      * unless the op is a terminal delete. A copy that is merely behind is not a
      * finding — that is ordinary lag. Vaulted copies are never surfaced.
+     *
+     * Two states satisfy that rule, both worth reporting. The first is the lost
+     * `*.delete` above. The second is the SANCTIONED skip in `applyLedgerOp`:
+     * `tx.update` / `cash.update` on a copy whose link is already gone return
+     * `{ applied: false }` ("LWW keeps the delete") and still advance the
+     * watermark, so the latest op is an update, not a removing kind, and this
+     * scan names that copy. That is deliberate: the copy really has lost a row
+     * the oplog keeps alive for everyone else, and only a human can decide
+     * whether the delete or the entry should win.
      */
     async listDivergentMissingRows(limit: number, offset = 0): Promise<MirrorDivergentRow[]> {
       const result = await db.execute(sql`
@@ -1206,8 +1215,16 @@ export function createMirrorchainRepository(db: Database) {
      * because the link itself is intact on every copy.
      *
      * Only copies whose watermark has passed the op are compared, so ordinary
-     * lag is not a finding. `executed_at` is compared at millisecond precision
-     * because that is the resolution an ISO-8601 payload round-trips.
+     * lag is not a finding. Every comparison is made at the resolution the two
+     * sides actually share, or the detector cries wolf on ordinary data: the
+     * payload carries the submitted JS number unrounded, while the write path
+     * stores it through `numeric(20,8)` (quantity) / `numeric(20,6)` (price,
+     * fee) — so a crypto row priced `0.00000892` sits at `0.000009` on EVERY
+     * copy and a raw `is distinct from` would report the whole (converged)
+     * chain forever. Rounding the payload to the column's scale reproduces
+     * exactly what the insert did, so only a real difference survives.
+     * `executed_at` is compared at millisecond precision for the same reason —
+     * that is the resolution an ISO-8601 payload round-trips.
      */
     async listDivergentTransactionRows(
       limit: number,
@@ -1238,9 +1255,9 @@ export function createMirrorchainRepository(db: Database) {
         join portfolios p on p.id = r.portfolio_id and p.vault_id is null
         join transactions t on t.id = r.local_id
         where t.side::text is distinct from (l.payload ->> 'side')
-           or t.quantity is distinct from (l.payload ->> 'quantity')::numeric
-           or t.price is distinct from (l.payload ->> 'price')::numeric
-           or t.fee is distinct from coalesce((l.payload ->> 'fee')::numeric, 0)
+           or t.quantity is distinct from round((l.payload ->> 'quantity')::numeric, 8)
+           or t.price is distinct from round((l.payload ->> 'price')::numeric, 6)
+           or t.fee is distinct from coalesce(round((l.payload ->> 'fee')::numeric, 6), 0)
            or date_trunc('milliseconds', t.executed_at)
               is distinct from (l.payload ->> 'executedAt')::timestamptz
         order by l.chain_id, l.mirror_id, r.portfolio_id
