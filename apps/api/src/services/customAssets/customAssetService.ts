@@ -60,7 +60,10 @@ export interface CustomAssetService {
    * lossless seam the per-portfolio move needs in both directions. Ids that
    * are not the caller's manual assets are simply absent (no oracle).
    */
-  vaultSnapshots(userId: string, ids: readonly string[]): Promise<CustomAssetVaultSnapshotsResponse>;
+  vaultSnapshots(
+    userId: string,
+    ids: readonly string[],
+  ): Promise<CustomAssetVaultSnapshotsResponse>;
   /** How many of the user's custom assets still need re-categorizing (V3-P2). */
   recategorizationStatus(userId: string): Promise<{ pending: number }>;
   /** Dismiss the re-categorize banner: clear every flag the user owns (V3-P2). */

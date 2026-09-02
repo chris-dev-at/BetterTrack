@@ -137,8 +137,10 @@ describe('rowTaxEngine (shared #1512 classifier, server replay)', () => {
 
 describe('reportCostBasisStrategy (#1512 — the report basis both engines render)', () => {
   const manual: LiveRegime = { kind: 'manual' };
-  const sell = (taxMode: 'country_specific' | 'custom' | 'none' | 'manual_per_trade' | null, taxCountry: string | null) =>
-    txRecord({ id: 's', side: 'sell', taxMode, taxCountry });
+  const sell = (
+    taxMode: 'country_specific' | 'custom' | 'none' | 'manual_per_trade' | null,
+    taxCountry: string | null,
+  ) => txRecord({ id: 's', side: 'sell', taxMode, taxCountry });
 
   it.each([
     ['AT', 'moving-average'],
@@ -182,7 +184,11 @@ describe('reportCostBasisStrategy (#1512 — the report basis both engines rende
   });
 
   it('never renders an unwired frozen country, under any regime', () => {
-    for (const regime of [manual, { kind: 'none' }, { kind: 'country', country: TAX_COUNTRY_AT }] as LiveRegime[]) {
+    for (const regime of [
+      manual,
+      { kind: 'none' },
+      { kind: 'country', country: TAX_COUNTRY_AT },
+    ] as LiveRegime[]) {
       expect(() => reportCostBasisStrategy(sell('country_specific', 'US'), regime, null)).toThrow(
         TaxRowClassificationError,
       );

@@ -354,7 +354,10 @@ async function readAllImportBatches(
     try {
       page = await read(
         portfolioId,
-        { ...(cursor === undefined ? {} : { cursor }), limit: PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX },
+        {
+          ...(cursor === undefined ? {} : { cursor }),
+          limit: PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX,
+        },
         signal,
       );
     } catch (cause) {
@@ -724,7 +727,12 @@ async function buildPortfolioCaptureRows(input: {
         throw conflict(`The import-capture read served batch ${batch.id} twice.`);
       }
       batchCreatedAt.set(batch.id, batch.data.createdAt);
-      appendLossless('importBatch', batch.id, batch.data, batch.data.appliedAt ?? batch.data.createdAt);
+      appendLossless(
+        'importBatch',
+        batch.id,
+        batch.data,
+        batch.data.appliedAt ?? batch.data.createdAt,
+      );
     }
     for (const row of captured.rows) {
       const createdAt = batchCreatedAt.get(row.data.batchId);
@@ -748,7 +756,8 @@ async function buildPortfolioCaptureRows(input: {
   // ── #1529: owner-manual assets fold as the EXACT server row + value set.
   const manualAssets = new Map<string, CustomAssetVaultSnapshot>();
   if (manualAssetIds.size > 0) {
-    if (manualCapture === undefined) throw new Error('unreachable: manual assets were refused above');
+    if (manualCapture === undefined)
+      throw new Error('unreachable: manual assets were refused above');
     const ids = [...manualAssetIds].sort();
     const snapshots = await readManualAssetSnapshots(manualCapture, ids, signal);
     const present = new Map(snapshots.present.map((snapshot) => [snapshot.id, snapshot]));
@@ -829,7 +838,8 @@ function foldCommonDocument(input: {
     }
     changed = true;
   };
-  const sortedIds = (ids: Iterable<string>) => [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const sortedIds = (ids: Iterable<string>) =>
+    [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   for (const assetId of sortedIds(input.referencedAssets.keys())) {
     upsertAsset(
       assetId,

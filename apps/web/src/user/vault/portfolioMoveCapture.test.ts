@@ -252,7 +252,11 @@ function manualSnapshotFixture(): CustomAssetVaultSnapshot {
       exchange: null,
       currency: 'EUR',
       // Exactly what jsonb holds — more than the rounded DTO ever showed.
-      meta: { category: 'property', smoothing: false, valuation: { source: 'owner', nested: [1, null] } },
+      meta: {
+        category: 'property',
+        smoothing: false,
+        valuation: { source: 'owner', nested: [1, null] },
+      },
       searchText: `HOUSE House ${CLEARTEXT_CANARY}`,
     },
     values: [
@@ -528,7 +532,8 @@ function createHarness(): Harness {
       return {
         batches: structuredClone(state.importBatches),
         rows: structuredClone(page),
-        nextCursor: hasMore && last ? `${last.data.batchId}:${last.data.rowIndex}:${last.id}` : null,
+        nextCursor:
+          hasMore && last ? `${last.data.batchId}:${last.data.rowIndex}:${last.id}` : null,
       };
     }) as PortfolioMoveCaptureApi['listPortfolioVaultImportBatches'],
     getCustomAssetVaultSnapshots: (async (ids: readonly string[]) => {
@@ -1281,7 +1286,9 @@ describe('lossless capture (#1529)', () => {
       served.rows,
     );
     // The imported transaction rides as an ordinary row now, its provenance intact.
-    expect(document.entities.transaction!.find(({ id }) => id === TRANSACTION_ID)!.data).toMatchObject({
+    expect(
+      document.entities.transaction!.find(({ id }) => id === TRANSACTION_ID)!.data,
+    ).toMatchObject({
       source: 'import:generic',
     });
   });
@@ -1323,7 +1330,10 @@ describe('lossless capture (#1529)', () => {
   });
 
   it('maps the snapshot seam’s typed refusals (unservable, too large) to the manual-asset refusal, before any write (review F2)', async () => {
-    for (const code of ['CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE', 'CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE']) {
+    for (const code of [
+      'CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE',
+      'CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE',
+    ]) {
       harness = createHarness();
       await seedVaultDocuments(harness);
       withManualAsset();
@@ -1388,7 +1398,9 @@ describe('lossless capture (#1529)', () => {
         .sort((left, right) => String(left.date).localeCompare(String(right.date))),
     ).toEqual(served.values);
     // The market asset still folds as the client-only catalog snapshot.
-    expect(liveRows(common.entities.customAsset).find(({ id }) => id === ASSET_ID)!.data).toMatchObject({
+    expect(
+      liveRows(common.entities.customAsset).find(({ id }) => id === ASSET_ID)!.data,
+    ).toMatchObject({
       ownerId: null,
       providerId: 'yahoo',
     });
@@ -1433,7 +1445,11 @@ describe('lossless capture (#1529)', () => {
     expect(asset.data).toEqual(manualSnapshotFixture().asset);
     const values = common.entities.customAssetValue!;
     const stale = values.find(({ id }) => id === STALE_ID)!;
-    expect(stale).toMatchObject({ rev: 4, deletedAt: null, data: { date: '2026-07-01', close: '98765432109876.654321' } });
+    expect(stale).toMatchObject({
+      rev: 4,
+      deletedAt: null,
+      data: { date: '2026-07-01', close: '98765432109876.654321' },
+    });
     const extra = values.find(({ id }) => id === EXTRA_ID)!;
     expect(extra.rev).toBe(4);
     expect(extra.deletedAt).not.toBeNull();
@@ -1501,10 +1517,14 @@ describe('lossless capture (#1529)', () => {
       const served = importFixture();
       const entities = first.document.entities;
       expect(
-        entities.filter((entity) => entity.kind === 'importBatch').map(({ id, data }) => ({ id, data })),
+        entities
+          .filter((entity) => entity.kind === 'importBatch')
+          .map(({ id, data }) => ({ id, data })),
       ).toEqual(served.batches);
       expect(
-        entities.filter((entity) => entity.kind === 'importRow').map(({ id, data }) => ({ id, data })),
+        entities
+          .filter((entity) => entity.kind === 'importRow')
+          .map(({ id, data }) => ({ id, data })),
       ).toEqual(served.rows);
       const snapshot = manualSnapshotFixture();
       const assets = entities.filter((entity) => entity.kind === 'customAsset');
@@ -1517,7 +1537,10 @@ describe('lossless capture (#1529)', () => {
           .sort((left, right) => String(left.date).localeCompare(String(right.date))),
       ).toEqual(snapshot.values);
       // The imported transaction restores under its own id with its provenance.
-      expect(entities.find((entity) => entity.kind === 'transaction' && entity.id === TRANSACTION_ID)!.data).toMatchObject({
+      expect(
+        entities.find((entity) => entity.kind === 'transaction' && entity.id === TRANSACTION_ID)!
+          .data,
+      ).toMatchObject({
         source: 'import:generic',
       });
     });
@@ -1528,7 +1551,10 @@ describe('lossless capture (#1529)', () => {
       vaultThePortfolio(harness);
       harness.state.manualAssets.clear(); // exclusive asset: purged by E4 at move-in
 
-      const draft = await capture(harness).captureMoveOut({ portfolioId: PORTFOLIO_ID, vault: VAULT });
+      const draft = await capture(harness).captureMoveOut({
+        portfolioId: PORTFOLIO_ID,
+        vault: VAULT,
+      });
       const asset = draft.document.entities.find(
         (entity) => entity.kind === 'customAsset' && entity.id === MANUAL_ASSET_ID,
       )!;

@@ -15,7 +15,12 @@ import {
 } from '@bettertrack/domain/taxVectors';
 
 import { VaultMoneyEngineError } from './errors';
-import { taxEngineOfRegime, taxRegimeForRow, type TaxRegime, type TaxRowRegimeFacts } from './taxEngine';
+import {
+  taxEngineOfRegime,
+  taxRegimeForRow,
+  type TaxRegime,
+  type TaxRowRegimeFacts,
+} from './taxEngine';
 
 /**
  * #1512 — the committed row-engine truth table replayed through the CLIENT
@@ -76,9 +81,11 @@ describe('taxRegimeForRow (shared #1512 classifier, client replay)', () => {
         expect(taxCountrySchema.safeParse(vector.expected.engine).success, vector.id).toBe(true);
       }
     }
-    expect(TAX_ROW_ENGINE_VECTOR_LIVING_REGIMES.map((engine) => taxEngineOfRegime(activeRegimeFor(engine)))).toEqual(
-      [...TAX_ROW_ENGINE_VECTOR_LIVING_REGIMES],
-    );
+    expect(
+      TAX_ROW_ENGINE_VECTOR_LIVING_REGIMES.map((engine) =>
+        taxEngineOfRegime(activeRegimeFor(engine)),
+      ),
+    ).toEqual([...TAX_ROW_ENGINE_VECTOR_LIVING_REGIMES]);
   });
 
   it.each(TAX_ROW_ENGINE_VECTORS.map((vector) => [vector.id, vector] as const))(
@@ -113,7 +120,11 @@ describe('taxRegimeForRow (shared #1512 classifier, client replay)', () => {
 
   it('carries the LIVING custom parameters onto a derivable row and the FROZEN ones onto a frozen row', () => {
     const living: TaxRegime = { kind: 'custom', params: CUSTOM_PARAMS };
-    const frozenParams: CustomTaxParams = { ...CUSTOM_PARAMS, ratePct: 33, costBasis: 'moving-average' };
+    const frozenParams: CustomTaxParams = {
+      ...CUSTOM_PARAMS,
+      ratePct: 33,
+      costBasis: 'moving-average',
+    };
     const row: TaxRowRegimeFacts = {
       taxMode: 'custom',
       taxCountry: null,

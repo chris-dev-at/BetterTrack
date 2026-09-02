@@ -672,8 +672,9 @@ describe('GET /api/v1/custom-assets/vault-snapshots (#1529 lossless manual-asset
       (await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: 'not-a-uuid' }))
         .status,
     ).toBe(400);
-    const tooMany = Array.from({ length: 201 }, (_, index) =>
-      `019c8400-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
+    const tooMany = Array.from(
+      { length: 201 },
+      (_, index) => `019c8400-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
     ).join(',');
     expect(
       (await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: tooMany })).status,
@@ -823,12 +824,14 @@ describe('GET /api/v1/custom-assets/vault-snapshots (#1529 lossless manual-asset
     const first = await agent
       .get('/api/v1/custom-assets/vault-snapshots')
       .query({ ids: `${b},${a},${b}` });
-    const second = await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: `${a},${b}` });
+    const second = await agent
+      .get('/api/v1/custom-assets/vault-snapshots')
+      .query({ ids: `${a},${b}` });
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(first.body).toEqual(second.body);
-    expect(customAssetVaultSnapshotsResponseSchema.parse(first.body).present.map(({ id }) => id)).toEqual(
-      [a, b].sort(),
-    );
+    expect(
+      customAssetVaultSnapshotsResponseSchema.parse(first.body).present.map(({ id }) => id),
+    ).toEqual([a, b].sort());
   });
 });

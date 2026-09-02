@@ -3988,21 +3988,16 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
     expect(beyond.rows).toEqual([]);
     expect(beyond.nextCursor).toBeNull();
     await expect(
-      h.ctx.portfolioVaultTransitions.captureImportBatches(
-        user.id,
-        TEST_VECTOR.targetPortfolioId,
-        { cursor: 'not-a-cursor' },
-      ),
+      h.ctx.portfolioVaultTransitions.captureImportBatches(user.id, TEST_VECTOR.targetPortfolioId, {
+        cursor: 'not-a-cursor',
+      }),
     ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
     // A row index past int4 is refused as a bad cursor, never cast into a 500 (review F3).
     await expect(
-      h.ctx.portfolioVaultTransitions.captureImportBatches(
-        user.id,
-        TEST_VECTOR.targetPortfolioId,
-        { cursor: `${RICH_BATCH_ID}:9999999999:${id(9_999)}` },
-      ),
+      h.ctx.portfolioVaultTransitions.captureImportBatches(user.id, TEST_VECTOR.targetPortfolioId, {
+        cursor: `${RICH_BATCH_ID}:9999999999:${id(9_999)}`,
+      }),
     ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
-
   });
 
   it('refuses a stored row the strict contract cannot serve losslessly with a TYPED 409, never a client 400 (review F2)', async () => {

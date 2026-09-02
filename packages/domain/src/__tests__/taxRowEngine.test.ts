@@ -10,10 +10,7 @@ import {
   TaxRowClassificationError,
   type TaxRowEngine,
 } from '../tax';
-import {
-  TAX_ROW_ENGINE_VECTOR_LIVING_REGIMES,
-  TAX_ROW_ENGINE_VECTORS,
-} from '../taxVectors';
+import { TAX_ROW_ENGINE_VECTOR_LIVING_REGIMES, TAX_ROW_ENGINE_VECTORS } from '../taxVectors';
 
 /**
  * The single row-engine classifier (#1512) — the oracle both the server
@@ -43,9 +40,7 @@ describe('taxEngineForRow (shared classifier)', () => {
     'reproduces the committed vector: %s',
     (_id, vector) => {
       if ('throws' in vector.expected) {
-        expect(() => taxEngineForRow(vector.row, vector.living)).toThrow(
-          TaxRowClassificationError,
-        );
+        expect(() => taxEngineForRow(vector.row, vector.living)).toThrow(TaxRowClassificationError);
         return;
       }
       expect(taxEngineForRow(vector.row, vector.living)).toBe(vector.expected.engine);
@@ -69,10 +64,7 @@ describe('taxEngineForRow (shared classifier)', () => {
 
   it('rejects an unknown frozen mode rather than guessing an engine', () => {
     expect(() =>
-      taxEngineForRow(
-        { taxMode: 'flat_rate' as unknown as 'none', taxCountry: null },
-        'manual',
-      ),
+      taxEngineForRow({ taxMode: 'flat_rate' as unknown as 'none', taxCountry: null }, 'manual'),
     ).toThrow(TaxRowClassificationError);
   });
 });

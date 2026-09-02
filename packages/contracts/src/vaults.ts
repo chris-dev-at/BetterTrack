@@ -1393,12 +1393,7 @@ export const PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX = 1000;
 export const portfolioVaultImportCaptureQuerySchema = z
   .object({
     cursor: z.string().min(1).max(200).optional(),
-    limit: z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX)
-      .optional(),
+    limit: z.coerce.number().int().min(1).max(PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX).optional(),
   })
   .strict();
 export type PortfolioVaultImportCaptureQuery = z.infer<
@@ -1412,9 +1407,10 @@ export type PortfolioVaultImportCaptureQuery = z.infer<
  * the response (500) instead of degrading silently: the capture must refuse
  * what it cannot prove lossless.
  */
-export const portfolioVaultImportBatchCaptureRowSchema = VAULT_ENTITY_ROW_SCHEMAS.importBatch.extend({
-  understanding: importUnderstandingSchema.nullable(),
-});
+export const portfolioVaultImportBatchCaptureRowSchema =
+  VAULT_ENTITY_ROW_SCHEMAS.importBatch.extend({
+    understanding: importUnderstandingSchema.nullable(),
+  });
 export type PortfolioVaultImportBatchCaptureRow = z.infer<
   typeof portfolioVaultImportBatchCaptureRowSchema
 >;
@@ -1489,7 +1485,9 @@ export const customAssetVaultSnapshotsQuerySchema = z
     ids: z
       .string()
       .regex(
-        new RegExp(`^${UUID_PATTERN}(?:,${UUID_PATTERN}){0,${CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_MAX - 1}}$`),
+        new RegExp(
+          `^${UUID_PATTERN}(?:,${UUID_PATTERN}){0,${CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_MAX - 1}}$`,
+        ),
       ),
   })
   .strict();

@@ -529,7 +529,12 @@ describe('paranoid client money engine', () => {
       const market = createClientMoneyMarket();
       const manual = await createVaultMoneyEngine(
         createMutableTestSync(
-          withTaxSettings(twoLotDocument(fixture.document, 'FI', true), 'manual_per_trade', null, null),
+          withTaxSettings(
+            twoLotDocument(fixture.document, 'FI', true),
+            'manual_per_trade',
+            null,
+            null,
+          ),
           fixture.header,
         ),
         market.market,
@@ -563,7 +568,9 @@ describe('paranoid client money engine', () => {
     it('still refuses an unwired frozen country loudly at the snapshot boundary, before any market read', async () => {
       const fixture = await decryptClientMoneyFixture();
       const document = structuredClone(fixture.document);
-      const sell = document.entities.transaction?.find((candidate) => candidate.data.side === 'sell');
+      const sell = document.entities.transaction?.find(
+        (candidate) => candidate.data.side === 'sell',
+      );
       if (sell === undefined) throw new Error('Fixture sell is missing.');
       sell.data.taxMode = 'country_specific';
       (sell.data as { taxCountry: unknown }).taxCountry = 'US';

@@ -165,78 +165,86 @@ const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 describe('E4 portfolio-vault HTTP boundary', () => {
   // The seeded principal costs an argon2 hash and this arc now carries the
   // #1529 read's happy/400/409 probes as well: its own budget, not the suite's.
-  it('mounts all five cookie-session routes and marks every successful response no-store', { timeout: 60_000 }, async () => {
-    const harness = await createTestApp();
-    const { user, portfolioId, agent } = await seedPrincipal(harness, 'cookie');
-    const spies = stubTransitions(harness, portfolioId);
+  it(
+    'mounts all five cookie-session routes and marks every successful response no-store',
+    { timeout: 60_000 },
+    async () => {
+      const harness = await createTestApp();
+      const { user, portfolioId, agent } = await seedPrincipal(harness, 'cookie');
+      const spies = stubTransitions(harness, portfolioId);
 
-    const revision = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/revision`);
-    expect(revision.status, JSON.stringify(revision.body)).toBe(200);
-    expect(revision.headers['cache-control']).toContain('no-store');
-    expect(revision.body).toEqual({ portfolioDataRevision: REVISION, importBatchCount: 0 });
+      const revision = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/revision`);
+      expect(revision.status, JSON.stringify(revision.body)).toBe(200);
+      expect(revision.headers['cache-control']).toContain('no-store');
+      expect(revision.body).toEqual({ portfolioDataRevision: REVISION, importBatchCount: 0 });
 
-    const lifecycle = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/lifecycle`);
-    expect(lifecycle.status, JSON.stringify(lifecycle.body)).toBe(200);
-    expect(lifecycle.headers['cache-control']).toContain('no-store');
-    expect(lifecycle.body).toEqual({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
+      const lifecycle = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/lifecycle`);
+      expect(lifecycle.status, JSON.stringify(lifecycle.body)).toBe(200);
+      expect(lifecycle.headers['cache-control']).toContain('no-store');
+      expect(lifecycle.body).toEqual({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
 
-    // #1529: the lossless import-capture read — paged, no-store, query-validated.
-    const captured = await agent
-      .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
-      .query({ limit: 2 });
-    expect(captured.status, JSON.stringify(captured.body)).toBe(200);
-    expect(captured.headers['cache-control']).toContain('no-store');
-    expect(captured.body).toEqual({ batches: [], rows: [], nextCursor: null });
-    expect(spies.captureImportBatches).toHaveBeenCalledWith(user.id, portfolioId, { limit: 2 });
-    const badLimit = await agent
-      .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
-      .query({ limit: 0 });
-    expect(badLimit.status).toBe(400);
-    // Review F2: an unservable STORED row is a typed 409, never the request
-    // validator's 400 — the request was fine, the data is not exactly servable.
-    spies.captureImportBatches.mockRejectedValueOnce(
-      new PortfolioVaultTransitionError('CAPTURE_UNSERVABLE', 'TEST VECTOR unservable row'),
-    );
-    const unservable = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`);
-    expect(unservable.status).toBe(409);
-    expect(unservable.body.error.code).toBe('PORTFOLIO_VAULT_CAPTURE_UNSERVABLE');
-    expect(unservable.headers['cache-control']).toContain('no-store');
+      // #1529: the lossless import-capture read — paged, no-store, query-validated.
+      const captured = await agent
+        .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+        .query({ limit: 2 });
+      expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+      expect(captured.headers['cache-control']).toContain('no-store');
+      expect(captured.body).toEqual({ batches: [], rows: [], nextCursor: null });
+      expect(spies.captureImportBatches).toHaveBeenCalledWith(user.id, portfolioId, { limit: 2 });
+      const badLimit = await agent
+        .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+        .query({ limit: 0 });
+      expect(badLimit.status).toBe(400);
+      // Review F2: an unservable STORED row is a typed 409, never the request
+      // validator's 400 — the request was fine, the data is not exactly servable.
+      spies.captureImportBatches.mockRejectedValueOnce(
+        new PortfolioVaultTransitionError('CAPTURE_UNSERVABLE', 'TEST VECTOR unservable row'),
+      );
+      const unservable = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`);
+      expect(unservable.status).toBe(409);
+      expect(unservable.body.error.code).toBe('PORTFOLIO_VAULT_CAPTURE_UNSERVABLE');
+      expect(unservable.headers['cache-control']).toContain('no-store');
 
-    const movedIn = await agent
-      .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
-      .set(...XRW)
-      .send(moveInBody(user.password));
-    expect(movedIn.status, JSON.stringify(movedIn.body)).toBe(200);
-    expect(movedIn.headers['cache-control']).toContain('no-store');
-    expect(movedIn.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, docVersion: 7 });
+      const movedIn = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
+        .set(...XRW)
+        .send(moveInBody(user.password));
+      expect(movedIn.status, JSON.stringify(movedIn.body)).toBe(200);
+      expect(movedIn.headers['cache-control']).toContain('no-store');
+      expect(movedIn.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, docVersion: 7 });
 
-    const challenge = await agent
-      .post(`/api/v1/portfolios/${portfolioId}/vault/move-out/challenge`)
-      .set(...XRW)
-      .send(moveOutChallengeBody());
-    expect(challenge.status, JSON.stringify(challenge.body)).toBe(200);
-    expect(challenge.headers['cache-control']).toContain('no-store');
-    expect(challenge.body).toMatchObject({
-      portfolioId,
-      vaultId: VAULT_ID,
-      documentDigest: DOCUMENT_DIGEST,
-      documentSetHash: DOCUMENT_SET_HASH,
-    });
+      const challenge = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-out/challenge`)
+        .set(...XRW)
+        .send(moveOutChallengeBody());
+      expect(challenge.status, JSON.stringify(challenge.body)).toBe(200);
+      expect(challenge.headers['cache-control']).toContain('no-store');
+      expect(challenge.body).toMatchObject({
+        portfolioId,
+        vaultId: VAULT_ID,
+        documentDigest: DOCUMENT_DIGEST,
+        documentSetHash: DOCUMENT_SET_HASH,
+      });
 
-    const movedOut = await agent
-      .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
-      .set(...XRW)
-      .send(moveOutBody(user.id, portfolioId, user.password));
-    expect(movedOut.status, JSON.stringify(movedOut.body)).toBe(200);
-    expect(movedOut.headers['cache-control']).toContain('no-store');
-    expect(movedOut.body).toMatchObject({ portfolioId, vaultId: VAULT_ID, moveOutId: MOVE_OUT_ID });
+      const movedOut = await agent
+        .post(`/api/v1/portfolios/${portfolioId}/vault/move-out`)
+        .set(...XRW)
+        .send(moveOutBody(user.id, portfolioId, user.password));
+      expect(movedOut.status, JSON.stringify(movedOut.body)).toBe(200);
+      expect(movedOut.headers['cache-control']).toContain('no-store');
+      expect(movedOut.body).toMatchObject({
+        portfolioId,
+        vaultId: VAULT_ID,
+        moveOutId: MOVE_OUT_ID,
+      });
 
-    expect(spies.revision).toHaveBeenCalledWith(user.id, portfolioId);
-    expect(spies.lifecycle).toHaveBeenCalledWith(user.id, portfolioId);
-    expect(spies.moveIn).toHaveBeenCalledOnce();
-    expect(spies.moveOutChallenge).toHaveBeenCalledOnce();
-    expect(spies.moveOut).toHaveBeenCalledOnce();
-  });
+      expect(spies.revision).toHaveBeenCalledWith(user.id, portfolioId);
+      expect(spies.lifecycle).toHaveBeenCalledWith(user.id, portfolioId);
+      expect(spies.moveIn).toHaveBeenCalledOnce();
+      expect(spies.moveOutChallenge).toHaveBeenCalledOnce();
+      expect(spies.moveOut).toHaveBeenCalledOnce();
+    },
+  );
 
   it('strictly rejects a missing stepUp on both commits before any service or database mutation', async () => {
     const harness = await createTestApp();

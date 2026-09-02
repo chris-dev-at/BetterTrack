@@ -195,7 +195,8 @@ export function frozenTaxCountryEngine(taxCountry: string | null): SupportedTaxC
  */
 export function taxEngineForRow(row: TaxRowEngineFacts, living: TaxRowEngine): TaxRowEngine {
   if (row.taxMode === 'manual_per_trade') return 'manual';
-  const frozenCountry = row.taxMode === 'country_specific' ? frozenTaxCountryEngine(row.taxCountry) : null;
+  const frozenCountry =
+    row.taxMode === 'country_specific' ? frozenTaxCountryEngine(row.taxCountry) : null;
   if (living !== 'manual') return living;
   if (row.taxMode === null || row.taxMode === 'none') return 'none';
   if (row.taxMode === 'country_specific') return frozenCountry!;

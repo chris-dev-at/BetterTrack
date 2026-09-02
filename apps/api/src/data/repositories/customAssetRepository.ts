@@ -136,7 +136,11 @@ export function createCustomAssetRepository(db: Database) {
         presentIds.length === 0
           ? []
           : await db
-              .select({ assetId: priceHistory.assetId, date: priceHistory.date, close: priceHistory.close })
+              .select({
+                assetId: priceHistory.assetId,
+                date: priceHistory.date,
+                close: priceHistory.close,
+              })
               .from(priceHistory)
               .where(inArray(priceHistory.assetId, presentIds))
               .orderBy(asc(priceHistory.assetId), asc(priceHistory.date));

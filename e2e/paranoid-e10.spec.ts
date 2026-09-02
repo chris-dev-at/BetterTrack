@@ -1375,9 +1375,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
         },
       });
       expect(manualBuy.ok(), await manualBuy.text()).toBeTruthy();
-      const manualTransactionId = ((await manualBuy.json()) as {
-        transactions: Array<{ id: string }>;
-      }).transactions[0]!.id;
+      const manualTransactionId = (
+        (await manualBuy.json()) as {
+          transactions: Array<{ id: string }>;
+        }
+      ).transactions[0]!.id;
 
       // 3. … and a HISTORICAL import batch: staged through the real generic
       // pipeline, then applied. One row resolves to nothing on purpose so the
