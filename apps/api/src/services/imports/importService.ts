@@ -40,6 +40,7 @@ import type { PortfolioRepository } from '../../data/repositories/portfolioRepos
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
+import type { ProblemService } from '../observability/problemService';
 import { createRequestQueue, type RequestQueue } from '../../providers/requestQueue';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
@@ -100,6 +101,18 @@ export interface ImportServiceDeps {
   tax: TaxService;
   mappers: readonly BrokerMapper[];
   logger?: Logger;
+  /**
+   * The problems fold behind the admin cockpit (§13.5 V5-P2 arc (d)).
+   *
+   * Apply catches EVERY per-row failure so one bad row can never strand a
+   * claimed batch — which would quietly turn a programming bug into a row that
+   * merely "failed". This is where such a fault stays loud: an unexpected error
+   * is captured with the batch/row ids, scrubbed and folded by the service
+   * itself. Optional, because a caller without observability wiring must still
+   * be able to import; absent, the failure is still reported on the row and
+   * logged.
+   */
+  problems?: Pick<ProblemService, 'captureError'>;
   paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
   /**
    * Shared process-local budget for import-driven catalog/provider resolution.
@@ -1807,15 +1820,39 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           // an ApiError, and it walked straight through the branch above.
           //
           // Per-row tolerance is the framework's promise (§13.4) and it cannot
-          // be conditional on the failure having been anticipated. So the row
-          // is reported `failed` and the loop continues; the cause is LOGGED
-          // rather than returned, because a driver message is not something a
-          // user can act on and §10 keeps internals out of API responses.
+          // be conditional on the failure having been anticipated.
+          //
+          // ── SURVIVING THE BUG MUST NOT SILENCE IT ───────────────────────────
+          //
+          // Catching everything buys recoverability with loudness, and a
+          // swallowed TypeError is a defect that now looks like a business
+          // refusal. So the error is CAPTURED into the problems fold the ops
+          // cockpit reads (`captureError` scrubs every string, folds by
+          // fingerprint and rate-caps, so a storm costs one row with an
+          // occurrence count), carrying the batch/row ids an operator needs to
+          // find the line again.
+          //
+          // The user is told something different from the operator, on purpose:
+          // the row names itself an UNEXPECTED fault rather than borrowing the
+          // wording of a refusal someone could talk them through, and the
+          // driver text stays out of the API response (§10).
+          const unexpected = err instanceof Error ? err : new Error('Unknown import row failure');
+          deps.problems?.captureError(unexpected, {
+            batchId: batch.id,
+            rowId: row.id,
+            rowIndex: row.rowIndex,
+            brokerId: batch.brokerId,
+            kind: row.kind,
+          });
           deps.logger?.error?.(
             { err, batchId: batch.id, rowId: row.id, rowIndex: row.rowIndex },
             'import: row failed with an unexpected error; reported as failed',
           );
-          record(row, 'failed', 'This row could not be recorded. Nothing was booked for it.');
+          record(
+            row,
+            'failed',
+            'This row hit an unexpected error, reported to the team. Nothing was booked for it.',
+          );
         }
       }
 

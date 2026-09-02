@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import request from 'supertest';
 import type { Application } from 'express';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { importPreviewResponseSchema } from '@bettertrack/contracts';
 import type { ApplyImportResponse, ImportPreviewResponse, ImportRow } from '@bettertrack/contracts';
@@ -444,7 +444,7 @@ describe('a zero amount is not a direction, and cannot be confirmed as one', () 
     expect(rowByRaw(preview, 'MIETE JAENNER').confirmableKinds).toEqual(['withdrawal']);
   });
 
-  it('never lets one bad row strand a batch, whatever the failure is', async () => {
+  it('reports an unexpected row failure AND captures it where operators look', async () => {
     const { agent, user, pid } = await setup();
     await fundMain(agent, pid, 1000);
     const staged = await upload(agent, pid);
@@ -457,9 +457,12 @@ describe('a zero amount is not a direction, and cannot be confirmed as one', () 
       ).toBe(200);
     }
 
-    // A RAW failure — a DB constraint, a driver error, anything that is not an
-    // ApiError — on one row. Before the fix this escaped `applyRow`'s catch and
-    // left the batch claimed-but-unapplied.
+    // A PROGRAMMING BUG — a TypeError, the loudest kind of "we did not expect
+    // this" — inside one row's apply. TWO things have to be true at once, and
+    // before this round neither was: the batch must survive (it was left
+    // claimed-but-unapplied, terminally `applied` with its remaining rows never
+    // attempted), and the bug must not go quiet just because the batch survived.
+    const captureError = vi.fn();
     const imports = createImportService({
       importRepo: createImportRepository(harness.db),
       portfolioRepo: createPortfolioRepository(harness.db),
@@ -471,19 +474,39 @@ describe('a zero amount is not a direction, and cannot be confirmed as one', () 
       portfolio: {
         ...harness.ctx.portfolio,
         withdrawCash: async () => {
-          throw new Error('new row for relation violates check constraint');
+          throw new TypeError("Cannot read properties of undefined (reading 'id')");
         },
       } as typeof harness.ctx.portfolio,
       tax: harness.ctx.tax,
       mappers: [],
+      problems: { captureError },
     });
 
     const report = await imports.applyBatch(user.id, staged.batch.id, {});
-    // The batch completed. The failing row is REPORTED, its neighbour booked.
-    expect(report.rows.find((r) => r.kind === 'withdrawal')?.result).toBe('failed');
+
+    // The batch completed: the failing row is REPORTED, its neighbour booked.
+    const failed = report.rows.find((r) => r.kind === 'withdrawal');
+    expect(failed?.result).toBe('failed');
     expect(report.rows.find((r) => r.kind === 'deposit')?.result).toBe('applied');
     expect(report.applied).toBe(1);
     expect(report.failed).toBe(1);
+
+    // The row says it is a MYSTERY rather than pretending to explain itself, so
+    // an unexplained fault is never mistaken for a business refusal an operator
+    // could talk a user through.
+    expect(failed?.message).toMatch(/unexpected error.*reported/i);
+
+    // …and exactly one problem reached the fold the ops cockpit reads, carrying
+    // the ids that find the row again. The driver text is what the OPERATOR
+    // gets; it is deliberately not what the user was shown.
+    expect(captureError).toHaveBeenCalledTimes(1);
+    const [err, context] = captureError.mock.calls[0]!;
+    expect((err as Error).message).toMatch(/Cannot read properties of undefined/);
+    expect(context).toMatchObject({
+      batchId: staged.batch.id,
+      rowId: failed!.id,
+      rowIndex: failed!.rowIndex,
+    });
   });
 });
 
