@@ -496,6 +496,16 @@ function JobsBody({ data }: { data: AdminOpsJobsResponse }) {
           description={t('admin.ops.failures.subtitle', { total: data.failureTotal })}
           title={t('admin.ops.failures.title')}
         />
+        {/* A shorter list that looks complete is the failure mode worth naming:
+            say how many rows could not be read rather than quietly omitting
+            them. */}
+        {data.malformed > 0 ? (
+          <div className="px-4 pt-4">
+            <Alert tone="info">
+              {t('admin.ops.failures.malformed', { count: data.malformed })}
+            </Alert>
+          </div>
+        ) : null}
         {data.failures.length === 0 ? (
           <div className="p-4">
             <EmptyState>{t('admin.ops.failures.empty')}</EmptyState>

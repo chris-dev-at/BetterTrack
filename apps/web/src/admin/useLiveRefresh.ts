@@ -20,8 +20,12 @@ import { useSearchParams } from 'react-router-dom';
  *  - **A hidden tab polls nothing.** A console left open on a second monitor
  *    overnight is exactly the "quietly hammers the box" case, so the interval
  *    stops on `visibilitychange` and fires once on return.
- *  - **Never overlapping.** The timer is cleared and re-armed around each tick,
- *    so a slow read cannot stack requests on a struggling box.
+ *  - **A slow read cannot pile up.** This is a plain `setInterval`, so a tick
+ *    can fire while the previous read is still in flight — but each tick bumps
+ *    `useResource`'s reload nonce, and that hook aborts the in-flight request
+ *    (`AbortController`) before starting the next. The guarantee is
+ *    "at most one live request per resource", enforced there rather than here;
+ *    the interval is not self-throttling and does not claim to be.
  */
 
 /** The cadences offered, in seconds. `0` is off. */

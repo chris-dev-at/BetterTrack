@@ -1494,7 +1494,7 @@
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
-      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Ger\u00e4t offen \u2014 versuche es erneut.",
+      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Gerät offen — versuche es erneut.",
       "detailsLoadError": "Einige Portfolio-Details konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyState": {
         "title": "Dein Portfolio ist leer",
@@ -5603,7 +5603,8 @@
         "reason": "Grund",
         "attempts": "Versuche",
         "empty": "Kein Job ist endgültig fehlgeschlagen.",
-        "readOnlyNote": "Nur lesend. Job-Inhalte werden nie angezeigt, und es gibt kein erneutes Ausführen oder Verwerfen: was gefahrlos wiederholbar ist, unterscheidet sich je Job – eine gemeinsame Schaltfläche könnte das nicht abbilden."
+        "readOnlyNote": "Nur lesend. Job-Inhalte werden nie angezeigt, und es gibt kein erneutes Ausführen oder Verwerfen: was gefahrlos wiederholbar ist, unterscheidet sich je Job – eine gemeinsame Schaltfläche könnte das nicht abbilden.",
+        "malformed": "{{count}} aufbewahrte Einträge konnten nicht gelesen werden und sind nicht aufgeführt."
       },
       "providers": {
         "title": "Anbieter",

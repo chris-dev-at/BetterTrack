@@ -143,6 +143,7 @@ const jobs: AdminOpsJobsResponse = {
     },
   ],
   failureTotal: 1,
+  malformed: 0,
 };
 
 const backupStatus: AdminBackupStatusResponse = {
@@ -341,6 +342,26 @@ test('shows a sweep’s own counts and when it next runs', async () => {
   // The retention job's return value, carried through BullMQ to the operator.
   expect(within(row).getByText(/auditPruned: 120/)).toBeInTheDocument();
   expect(within(row).getByText('4000 ms')).toBeInTheDocument();
+});
+
+// A shorter list that looks complete is the failure worth naming: an unreadable
+// row must be declared, not quietly omitted.
+test('says how many retained entries could not be read', async () => {
+  vi.mocked(api.getOpsJobs).mockResolvedValue({ ...jobs, failureTotal: 4, malformed: 3 });
+  renderPage();
+
+  expect(
+    await screen.findByText('3 retained entries could not be read and are not listed.'),
+  ).toBeInTheDocument();
+  // The good row is still listed alongside the warning.
+  expect(screen.getByText('notifications.dispatch')).toBeInTheDocument();
+});
+
+test('shows no unreadable-entries banner when every row parsed', async () => {
+  renderPage();
+
+  await screen.findByText('notifications.dispatch');
+  expect(screen.queryByText(/could not be read/)).not.toBeInTheDocument();
 });
 
 // "No jobs waiting" and "I cannot see the jobs" are different facts.

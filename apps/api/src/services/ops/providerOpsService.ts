@@ -7,6 +7,8 @@ import type {
 import { cacheEventsTotal, providerCallsTotal, readCounter } from '../../metrics';
 import type { MarketDataService } from '../../providers';
 
+import { scrubOpsError } from './opsText';
+
 /**
  * The provider half of the admin operations cockpit (#1406 W4).
  *
@@ -100,7 +102,10 @@ export async function readProviderOps(deps: ProviderOpsDeps): Promise<AdminOpsPr
       failureThreshold: capability.failureThreshold,
       openedAt: iso(capability.openedAtMs),
       retryAt: iso(capability.retryAtMs),
-      lastError: capability.lastError,
+      // Scrubbed and bounded at the WIRE, not trusted from the breaker's own
+      // in-memory cap: the two are independently reachable, and only this one is
+      // the contract's guarantee.
+      lastError: capability.lastError === null ? null : scrubOpsError(capability.lastError),
       lastErrorAt: iso(capability.lastErrorAtMs),
     })),
     calls: calls.get(snapshot.providerId) ?? { success: 0, error: 0, circuitOpen: 0 },

@@ -123,8 +123,20 @@ export const adminOpsJobsResponseSchema = z
     queues: z.array(adminOpsQueueSchema),
     schedules: z.array(adminOpsScheduleSchema),
     failures: z.array(adminOpsJobFailureSchema),
-    /** Total retained dead-letter entries, of which `failures` is the newest page. */
+    /**
+     * Total retained dead-letter entries, of which `failures` is the newest
+     * page. Read from Redis's own list length, INDEPENDENTLY of whether any row
+     * could be projected — a list that cannot be parsed must never report
+     * `0`, which reads as "nothing has failed".
+     */
     failureTotal: z.number().int().nonnegative(),
+    /**
+     * Retained rows in the requested page that could not be read (corrupt JSON,
+     * or a shape this version does not understand). Counted rather than silently
+     * dropped, so the panel can say "N unreadable" instead of showing a shorter
+     * list that looks complete.
+     */
+    malformed: z.number().int().nonnegative(),
   })
   .strict();
 export type AdminOpsJobsResponse = z.infer<typeof adminOpsJobsResponseSchema>;

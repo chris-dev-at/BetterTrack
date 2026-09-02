@@ -9,6 +9,8 @@
  * value as `stale` (stale-while-revalidate), so an open breaker degrades to
  * stale data rather than an error wherever a cached value exists.
  */
+import { ADMIN_OPS_ERROR_MAX_LENGTH } from '@bettertrack/contracts';
+
 import { providerCallsTotal } from '../metrics';
 
 export type CircuitState = 'closed' | 'open' | 'half-open';
@@ -56,8 +58,14 @@ export class CircuitOpenError extends Error {
 const DEFAULT_FAILURE_THRESHOLD = 5;
 const DEFAULT_OPEN_MS = 30_000;
 
-/** Longest error note the breaker will retain, so a huge message cannot be pinned. */
-const LAST_ERROR_MAX_LENGTH = 300;
+/**
+ * Longest error note the breaker will retain, so a huge message cannot be
+ * pinned in memory. Deliberately the SAME constant the admin contract caps its
+ * error strings at: two independent 300s would drift the moment one moved, and
+ * the projection would then either double-truncate or overflow its own schema.
+ * The wire still re-applies it — this bound is about what the process holds.
+ */
+const LAST_ERROR_MAX_LENGTH = ADMIN_OPS_ERROR_MAX_LENGTH;
 
 /**
  * A one-line note about a failure: its error class, or its message when the

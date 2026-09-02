@@ -1,4 +1,5 @@
 import type { Redis } from 'ioredis';
+import { z } from 'zod';
 
 import type {
   AdminOpsJobFailure,
@@ -6,16 +7,17 @@ import type {
   AdminOpsQueue,
   AdminOpsSchedule,
 } from '@bettertrack/contracts';
-import { ADMIN_OPS_ERROR_MAX_LENGTH } from '@bettertrack/contracts';
 
 import {
   ALL_QUEUE_NAMES,
-  createDeadLetter,
+  DEAD_LETTER_KEY,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_LAST_KEY,
   type QueueName,
   type QueueRegistry,
 } from '../../jobs';
+
+import { scrubOpsError } from './opsText';
 
 /**
  * The job half of the admin operations cockpit (#1406 W4).
@@ -67,11 +69,6 @@ export interface JobOpsDeps {
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
-const truncate = (value: string): string =>
-  value.length > ADMIN_OPS_ERROR_MAX_LENGTH
-    ? `${value.slice(0, ADMIN_OPS_ERROR_MAX_LENGTH - 1)}…`
-    : value;
-
 /**
  * A completed job's `returnvalue`, reduced to the counts contract.
  *
@@ -105,31 +102,78 @@ async function heartbeatAgeSeconds(redis: Redis, now: number): Promise<number | 
   }
 }
 
-/** Newest-first dead-letter entries, payload stripped. */
+/**
+ * The shape a dead-letter row must have to be projectable.
+ *
+ * `deadLetter.record()` writes exactly this today, but the list is a Redis
+ * value written by a SEPARATE process across deploys: an older format, a
+ * half-written row, or a future field change all reach this reader, and none of
+ * them is a reason to blank the panel. Unknown keys are stripped rather than
+ * passed through — which is also a third gate on the payload, since `data`
+ * cannot survive a parse that does not declare it.
+ */
+const deadLetterRowSchema = z.object({
+  queue: z.string(),
+  jobId: z.string().optional(),
+  name: z.string(),
+  failedReason: z.string(),
+  attemptsMade: z.number().int().nonnegative(),
+  timestamp: z.number().int().nonnegative(),
+});
+
+/**
+ * Newest-first dead-letter entries, payload stripped and every row validated.
+ *
+ * Reads the raw list rather than going through `deadLetter.list()`, because that
+ * helper swallows a corrupt row silently — which is the right call for its other
+ * callers and the wrong one here: an operator looking at a failure panel needs
+ * to know the panel is incomplete. `total` comes from `LLEN` and is settled
+ * independently of the projection, so a page that cannot be read still reports
+ * how many rows are retained.
+ */
 async function readFailures(
   redis: Redis,
   limit: number,
-): Promise<{ failures: AdminOpsJobFailure[]; total: number }> {
-  const deadLetter = createDeadLetter(redis);
-  try {
-    const [entries, total] = await Promise.all([deadLetter.list(limit), deadLetter.size()]);
-    return {
-      failures: entries.map((entry) => ({
-        queue: entry.queue,
-        jobId: entry.jobId ?? null,
-        name: entry.name,
-        // `failedReason` is an error message, not a payload — the same class of
-        // text the Problems page already shows an admin. Bounded so a message
-        // that has swallowed a request body cannot come through whole.
-        failedReason: truncate(entry.failedReason),
-        attemptsMade: entry.attemptsMade,
-        at: iso(entry.timestamp),
-      })),
-      total,
-    };
-  } catch {
-    return { failures: [], total: 0 };
+): Promise<{ failures: AdminOpsJobFailure[]; total: number; malformed: number }> {
+  const [rawResult, totalResult] = await Promise.allSettled([
+    redis.lrange(DEAD_LETTER_KEY, 0, limit > 0 ? limit - 1 : -1),
+    redis.llen(DEAD_LETTER_KEY),
+  ]);
+
+  const total = totalResult.status === 'fulfilled' ? totalResult.value : 0;
+  if (rawResult.status !== 'fulfilled') return { failures: [], total, malformed: 0 };
+
+  const failures: AdminOpsJobFailure[] = [];
+  let malformed = 0;
+
+  for (const raw of rawResult.value) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      malformed += 1;
+      continue;
+    }
+    const parsed = deadLetterRowSchema.safeParse(decoded);
+    if (!parsed.success) {
+      malformed += 1;
+      continue;
+    }
+    const entry = parsed.data;
+    failures.push({
+      queue: entry.queue,
+      jobId: entry.jobId ?? null,
+      name: entry.name,
+      // An error message, not a payload — the same class of text the Problems
+      // page already shows an admin, and scrubbed the same way before it is
+      // bounded (see `scrubOpsError`).
+      failedReason: scrubOpsError(entry.failedReason),
+      attemptsMade: entry.attemptsMade,
+      at: iso(entry.timestamp),
+    });
   }
+
+  return { failures, total, malformed };
 }
 
 /** Depths for every declared queue, including `paused` (which health omits). */
@@ -159,19 +203,28 @@ async function readQueues(queues: QueueRegistry): Promise<AdminOpsQueue[]> {
  * the cron pattern in the browser: the scheduler is the thing that will
  * actually fire, so it is the only honest source for "next run" and for the
  * overdue judgement the cockpit draws from it.
+ *
+ * COST, stated because this is an operator surface that may poll: BullMQ's
+ * `Queue` API has no batched form, so this is one round-trip per queue for the
+ * scheduler records, plus one more for each queue that actually HAS a schedule.
+ * The last-run read is deliberately sequenced AFTER the scheduler read rather
+ * than issued alongside it — most of the ~26 queues are on-demand and have no
+ * schedule at all, and fetching their newest completed job only to discard it
+ * doubled the round-trips for nothing. Pipelining the rest would mean reaching
+ * past the `Queue` API into its key layout, which is not worth owning here;
+ * the honest fix if this ever bites is a cached snapshot, not a private
+ * reimplementation of BullMQ's reads.
  */
 async function readSchedules(queues: QueueRegistry): Promise<AdminOpsSchedule[]> {
   const perQueue = await Promise.all(
     ALL_QUEUE_NAMES.map(async (name: QueueName) => {
       const queue = queues.get(name);
-      const [schedulers, completed] = await Promise.all([
-        queue.getJobSchedulers(),
-        // Newest completed job on this queue. `removeOnComplete: { count: 1000 }`
-        // means one is retained for every queue that has ever run.
-        queue.getJobs(['completed'], 0, 0, false),
-      ]);
+      const schedulers = await queue.getJobSchedulers();
       if (schedulers.length === 0) return [];
 
+      // Newest completed job on this queue. `removeOnComplete: { count: 1000 }`
+      // means one is retained for every queue that has ever run.
+      const completed = await queue.getJobs(['completed'], 0, 0, false);
       const newest = completed[0];
       const finishedOn = newest?.finishedOn ?? null;
       const processedOn = newest?.processedOn ?? null;
@@ -221,6 +274,7 @@ export async function readJobOps(deps: JobOpsDeps): Promise<AdminOpsJobsResponse
     heartbeatIntervalSeconds: Math.round(HEARTBEAT_INTERVAL_MS / 1000),
     failures: failurePage.failures,
     failureTotal: failurePage.total,
+    malformed: failurePage.malformed,
   };
 
   if (!deps.queues) {
