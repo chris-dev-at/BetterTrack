@@ -1494,6 +1494,7 @@
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
+      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Ger\u00e4t offen \u2014 versuche es erneut.",
       "detailsLoadError": "Einige Portfolio-Details konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyState": {
         "title": "Dein Portfolio ist leer",

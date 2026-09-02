@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   listVaults: vi.fn(),
   listConnections: vi.fn(),
   listPortfolios: vi.fn(),
+  useVaultedPortfolioStores: vi.fn(),
   renameVault: vi.fn(),
   deleteVault: vi.fn(),
   stateFor: vi.fn(),
@@ -28,8 +29,19 @@ vi.mock('../../../lib/vaultApi', () => ({
   readVaultHeaderDocument: vi.fn(),
 }));
 vi.mock('../../../lib/portfolioApi', () => ({ listPortfolios: mocks.listPortfolios }));
+// Which of this account's vaulted portfolios are OPEN on this device. Nothing
+// is open by default, so every other case here still sees the locked alias.
+vi.mock('../useVaultedPortfolioStores', () => ({
+  useVaultedPortfolioStores: mocks.useVaultedPortfolioStores,
+}));
 vi.mock('../../AuthContext', () => ({
   useAuth: () => ({ user: { id: '018f0000-0000-7000-8000-000000000099' } }),
+  // Read by the resolution registry the membership chips consult; the registry
+  // itself is stubbed above, so this only keeps the module surface complete.
+  useOptionalAuth: () => ({
+    status: 'authenticated',
+    user: { id: '018f0000-0000-7000-8000-000000000099' },
+  }),
 }));
 vi.mock('../keystore/runtime', () => ({
   endpointVaultKeystore: {
@@ -105,6 +117,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.listVaults.mockResolvedValue([VAULT]);
   mocks.listConnections.mockResolvedValue([]);
+  mocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map() });
   mocks.listPortfolios.mockResolvedValue({
     portfolios: [LOCKED_PORTFOLIO],
     defaultPortfolioId: LOCKED_PORTFOLIO.id,
@@ -392,5 +405,25 @@ describe('VaultManager', () => {
     await user.type(screen.getByLabelText('Account confirmation'), 'account-password');
     await user.click(screen.getByRole('button', { name: 'Delete empty vault' }));
     expect(await screen.findByText(/still contains a portfolio/i)).toBeInTheDocument();
+  });
+
+  it('names an open portfolio in the membership chip instead of repeating the vault', async () => {
+    // FAILURE MAP #6: the chip read "Private Holdings" under a vault called
+    // "Private Holdings" — the vault named after itself. Locked stays alias.
+    mocks.useVaultedPortfolioStores.mockReturnValue({
+      unlocked: new Map([
+        [
+          LOCKED_PORTFOLIO.id,
+          {
+            portfolio: { ...LOCKED_PORTFOLIO, name: 'Secret real portfolio name' },
+            isCurrent: () => true,
+          },
+        ],
+      ]),
+    });
+    renderManager();
+
+    expect(await screen.findByText('Secret real portfolio name')).toBeInTheDocument();
+    expect(screen.queryByText('Vault portfolio 1')).not.toBeInTheDocument();
   });
 });
