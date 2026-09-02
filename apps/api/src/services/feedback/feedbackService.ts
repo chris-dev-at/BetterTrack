@@ -59,6 +59,10 @@ function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
     deletedByUser: row.deletedByUserAt !== null,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     submitter: row.submitter,
+    unreadCount: row.unreadCount,
+    messageCount: row.messageCount,
+    lastMessageAt: row.lastMessageAt ? row.lastMessageAt.toISOString() : null,
+    lastAuthorSide: row.lastAuthorSide,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -142,6 +146,8 @@ export interface FeedbackService {
   markReadForSubmitter(userId: string, id: string): Promise<boolean>;
   /** Owner-only queue read; authorization is enforced by the parent admin router. */
   listForAdmin(input: AdminFeedbackListQuery): Promise<AdminFeedbackListResponse>;
+  /** One submission for the helpdesk pane; null when the row is gone. */
+  getForAdmin(id: string): Promise<AdminFeedbackSubmission | null>;
   getThreadForAdmin(id: string, input: FeedbackThreadQuery): Promise<FeedbackThreadResult>;
   sendMessageForAdmin(
     adminUserId: string,
@@ -229,6 +235,11 @@ export function createFeedbackService({
           totalPages: Math.ceil(total / input.limit),
         },
       };
+    },
+
+    async getForAdmin(id) {
+      const row = await repo.getForAdmin(id);
+      return row ? toAdminSubmission(row) : null;
     },
 
     async getThreadForAdmin(id, input) {

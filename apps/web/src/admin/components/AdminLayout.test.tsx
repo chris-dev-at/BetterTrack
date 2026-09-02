@@ -34,7 +34,6 @@ import { Modal } from './Modal';
 // ADMIN_WORKSPACE_LANDING_KEYS below, and the People workspace's pages are no
 // longer rows at all — see ADMIN_PEOPLE_TAB_KEYS.
 const ADMIN_NAV_KEYS = [
-  'admin.nav.feedback',
   'admin.nav.health',
   'admin.nav.problems',
   'admin.nav.monitoring',
@@ -362,16 +361,15 @@ test.each(['en', 'de'] as const)(
     const column = people.closest('div')!;
     expect(within(column).getAllByRole('link')).toEqual([people]);
 
-    // Control, same query: Support has NOT folded (that is W7's package), so its
-    // column still carries its label plus its one child row. Without this, "one
-    // link in the column" could just mean the query never sees child rows.
-    const support = within(nav).getByRole('link', {
-      name: localizedMessage(locale, 'admin.nav.sections.support'),
+    // Control, same query: Operations has NOT folded (that is W7's package), so
+    // its column still carries child rows. Without this, "one link in the
+    // column" could just mean the query never sees child rows at all. Its label
+    // is a heading rather than a link because that workspace has no landing
+    // route of its own — only folded workspaces put a link on the label.
+    const operations = within(nav).getByRole('heading', {
+      name: localizedMessage(locale, 'admin.nav.sections.operations'),
     });
-    expect(within(support.closest('div')!).getAllByRole('link')).toEqual([
-      support,
-      within(nav).getByRole('link', { name: localizedMessage(locale, 'admin.nav.feedback') }),
-    ]);
+    expect(within(operations.closest('div')!).getAllByRole('link').length).toBeGreaterThan(1);
 
     for (const key of ADMIN_PEOPLE_TAB_KEYS) {
       expect(
