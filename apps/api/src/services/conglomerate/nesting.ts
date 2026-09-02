@@ -1,9 +1,10 @@
-import { MAX_NESTING_DEPTH } from '@bettertrack/contracts';
+import { MAX_FLATTENED_POSITIONS, MAX_NESTING_DEPTH } from '@bettertrack/contracts';
 
 import type {
   ConglomerateDetailRow,
   ConglomerateConstituentRow,
 } from '../../data/repositories/conglomerateRepository';
+import { unprocessable } from '../../errors';
 
 /**
  * Nested-conglomerate rules (PROJECTPLAN.md §13.5 V5-P6, issue #592).
@@ -27,7 +28,69 @@ import type {
  * canonical fixture — a 50 % child holding a 40/60 split — that yields 20/30.
  */
 
-export { MAX_NESTING_DEPTH };
+export { MAX_FLATTENED_POSITIONS, MAX_NESTING_DEPTH };
+
+/**
+ * The read-time refusals of the flatten. Both are MAPPED (422) rather than bare
+ * `Error`s: a persisted structure the write-time rules should have prevented —
+ * a cycle that slipped through a race, or a tree past the depth cap — used to
+ * surface as a plain throw, which `http/errorHandler` reports as an unexpected
+ * **500**. `GET /:id/resolved`, `POST /:id/allocate` and `POST /backtest/compare`
+ * now answer with a clear 4xx code instead. Both messages are identity-free so
+ * the shared-sandbox path (which must never name a descendant) can let them
+ * through unchanged.
+ */
+const nestingUnresolvable = () =>
+  unprocessable(
+    `This blueprint's nesting cannot be resolved — it is nested deeper than the cap of ${MAX_NESTING_DEPTH} levels, or one of its constituents forms a cycle. Edit its constituents to fix it.`,
+    'NESTING_UNRESOLVABLE',
+  );
+
+const tooManyFlattenedAssets = () =>
+  unprocessable(
+    `This blueprint resolves to more than ${MAX_FLATTENED_POSITIONS} assets — simplify its nesting before valuing or backtesting it.`,
+    'NESTING_TOO_MANY_ASSETS',
+  );
+
+/**
+ * Bounded fan-out over a flattened basket. The flatten resolves up to
+ * {@link MAX_FLATTENED_POSITIONS} assets and each consumer does per-asset I/O
+ * (an owner-scoped row read plus a quote or a history window), so the loads run
+ * through a small pool instead of one sequential round trip each — or all at
+ * once, which would hand the provider layer a 250-deep burst.
+ *
+ * Output order is the input order, and the LOWEST-INDEX failure is the one that
+ * throws — exactly the error the sequential `for` loop this replaces would have
+ * surfaced, so a basket's failure message stays deterministic instead of being
+ * decided by whichever provider call happened to reject first.
+ */
+export const FLATTEN_LOAD_CONCURRENCY = 8;
+
+export async function mapFlattened<T, R>(
+  items: readonly T[],
+  load: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  const failures: Array<{ index: number; error: unknown }> = [];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    // `next++` is claimed synchronously, so two workers never take one item.
+    for (let index = next++; index < items.length; index = next++) {
+      try {
+        out[index] = await load(items[index]!, index);
+      } catch (error) {
+        failures.push({ index, error });
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(FLATTEN_LOAD_CONCURRENCY, items.length) }, () => worker()),
+  );
+  if (failures.length > 0) {
+    throw failures.reduce((first, f) => (f.index < first.index ? f : first)).error;
+  }
+  return out;
+}
 
 /** One parent → child nesting edge of the owner-local graph. */
 export interface NestingEdge {
@@ -118,6 +181,15 @@ export interface FlattenedConglomerate {
   positions: FlattenedAsset[];
   /** True when the ROOT basket has at least one nested-conglomerate constituent. */
   nested: boolean;
+  /**
+   * The share of the root's weight, in percent, that resolved to NO asset —
+   * a nested constituent that is empty (directly or through its own empty
+   * children). `positions` is normalized to 100 over what *did* resolve, so
+   * this is the part of the basket the normalization would otherwise hand to
+   * the survivors. Money consumers must withhold it rather than spend it; the
+   * activation gate rejects it outright.
+   */
+  unresolvedPct: number;
 }
 
 export interface FlattenConglomerateOptions {
@@ -136,13 +208,24 @@ function constituentId(position: ConglomerateConstituentRow): string {
 }
 
 /**
+ * Float-noise floor for {@link FlattenedConglomerate.unresolvedPct}: summing
+ * products of fractions lands a fully-resolved tree a few ULPs off 1, which is
+ * not an empty child. One part in 10⁹ of the basket is far below any weight the
+ * three-decimal contract can express.
+ */
+const UNRESOLVED_EPSILON = 1e-9;
+
+/**
  * Flatten a conglomerate to effective asset weights (the shared resolution
  * function — see the module doc for the math). `load` is the owner-scoped
  * detail loader; each basket in the closure is loaded once. Returns null when
- * the root does not exist (or is not the caller's). An empty child contributes
- * nothing — its slice is redistributed by the final normalization. The
- * recursion is bounded by {@link MAX_NESTING_DEPTH}; deeper data would violate
- * the write-time invariant and throws rather than resolving silently wrong.
+ * the root does not exist (or is not the caller's). An empty child resolves to
+ * nothing: the surviving assets are normalized to 100 among themselves and the
+ * dropped slice is reported as {@link FlattenedConglomerate.unresolvedPct} —
+ * money consumers withhold it instead of silently redistributing it. The
+ * recursion is bounded by {@link MAX_NESTING_DEPTH} and the result by
+ * {@link MAX_FLATTENED_POSITIONS}; either breach is a mapped 422, never a bare
+ * throw that would surface as a 500.
  * {@link FlattenConglomerateOptions.rootWeights} lets read-only what-if callers
  * change only the root allocation while retaining the stored recursive
  * structure and internal child weights.
@@ -166,11 +249,10 @@ export async function flattenConglomerate(
   const shareByAsset = new Map<string, { share: number; asset: FlattenedAsset['asset'] }>();
 
   async function walk(row: ConglomerateDetailRow, fraction: number, depth: number): Promise<void> {
-    if (depth > MAX_NESTING_DEPTH) {
-      throw new Error(
-        `Conglomerate nesting exceeds the depth cap of ${MAX_NESTING_DEPTH} — write-time invariant violated.`,
-      );
-    }
+    // Deeper than the write-time invariant allows — an over-deep tree, or a
+    // cycle that a concurrent write slipped past the graph check (the recursion
+    // hits the cap rather than looping). Refuse with a mapped code.
+    if (depth > MAX_NESTING_DEPTH) throw nestingUnresolvable();
     const weightOf = (position: ConglomerateConstituentRow): number =>
       depth === 1
         ? (options?.rootWeights?.get(constituentId(position)) ?? position.weightPct)
@@ -182,7 +264,10 @@ export async function flattenConglomerate(
       if (pos.kind === 'asset') {
         const existing = shareByAsset.get(pos.assetId);
         if (existing) existing.share += share;
-        else shareByAsset.set(pos.assetId, { share, asset: pos.asset });
+        else {
+          if (shareByAsset.size >= MAX_FLATTENED_POSITIONS) throw tooManyFlattenedAssets();
+          shareByAsset.set(pos.assetId, { share, asset: pos.asset });
+        }
       } else {
         const child = await loadOnce(pos.childId);
         if (child) await walk(child, share, depth + 1);
@@ -202,8 +287,14 @@ export async function flattenConglomerate(
         }))
       : [];
 
+  // Every fully-resolved path contributes its fraction, so a tree that resolves
+  // completely totals exactly 1 (modulo float noise). Whatever is missing is the
+  // slice of empty children the normalization above just handed to the
+  // survivors — report it so money consumers can withhold it instead.
+  const unresolved = 1 - total;
   return {
     positions,
     nested: root.positions.some((p) => p.kind === 'conglomerate'),
+    unresolvedPct: unresolved > UNRESOLVED_EPSILON ? unresolved * 100 : 0,
   };
 }
