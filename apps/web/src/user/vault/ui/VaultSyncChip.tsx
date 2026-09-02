@@ -8,6 +8,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
+import { pointerInSeparateOverlay } from '../../../ui/overlayStack';
 import { formatDateTime } from '../../../lib/format';
 import { Icon } from '../../../ui/origin';
 import { cx } from '../../components/ui';
@@ -61,7 +62,12 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   useEffect(() => {
     if (!open) return;
     const onPointer = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // A dialog this popover opened is portalled to <body>, so containment
+      // alone reads its first click as "outside" and dismisses the popover —
+      // taking the dialog down with it (see `pointerInSeparateOverlay`).
+      if (pointerInSeparateOverlay(target, rootRef.current)) return;
+      if (!rootRef.current?.contains(target)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
@@ -234,7 +240,12 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
   useEffect(() => {
     if (!open) return;
     const onPointer = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // A dialog this popover opened is portalled to <body>, so containment
+      // alone reads its first click as "outside" and dismisses the popover —
+      // taking the dialog down with it (see `pointerInSeparateOverlay`).
+      if (pointerInSeparateOverlay(target, rootRef.current)) return;
+      if (!rootRef.current?.contains(target)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
@@ -330,7 +341,12 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
                       endpoint affordance rides alongside it rather than instead
                       of it, so a row that is BOTH needs-sign-in and locked on
                       this device still shows its unlock / enter-words step. */}
-                  <VaultStateAction state={row.endpointState} vaultId={row.vault.id} />
+                  <VaultStateAction
+                    inPlace
+                    state={row.endpointState}
+                    vaultId={row.vault.id}
+                    vaultName={row.vault.name}
+                  />
                 </li>
               ))}
             </ul>

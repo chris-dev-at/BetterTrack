@@ -1,9 +1,11 @@
 import {
   and,
+  asc,
   count,
   desc,
   eq,
   gt,
+  ilike,
   isNotNull,
   isNull,
   lt,
@@ -12,6 +14,7 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import {
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
@@ -35,6 +38,22 @@ import {
 
 export interface AdminFeedbackRow extends FeedbackRow {
   submitter: Pick<UserRow, 'id' | 'username' | 'email'>;
+  /** Thread state for the helpdesk inbox (#1406 W3); never a message body. */
+  unreadCount: number;
+  messageCount: number;
+  lastMessageAt: Date | null;
+  lastAuthorSide: FeedbackMessageAuthorSide | null;
+}
+
+/**
+ * Escape the `LIKE` metacharacters before an operator's search text becomes a
+ * pattern. Without this a query of `%` matches the entire queue and `_` matches
+ * any single character — the operator typed a literal, so they get a literal.
+ * Backslash is Postgres's default `LIKE` escape, so no `ESCAPE` clause is
+ * needed; it is escaped first so it cannot double-escape the two that follow.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
 }
 
 export interface MyFeedbackRow extends FeedbackRow {
@@ -110,6 +129,11 @@ export interface FeedbackRepository {
   listForAdmin(
     params: AdminFeedbackListQuery,
   ): Promise<{ rows: AdminFeedbackRow[]; total: number }>;
+  /**
+   * One submission by id for the helpdesk, unconstrained by the inbox filters
+   * so a shared thread link resolves for any operator. Null when it is gone.
+   */
+  getForAdmin(id: string): Promise<AdminFeedbackRow | null>;
   setStatus(id: string, input: UpdateFeedbackStatusRequest): Promise<FeedbackStatusWrite | null>;
   /** Idempotently set the admin-only workspace archive state for any submission. */
   setArchived(id: string, archived: boolean, at: Date): Promise<FeedbackArchiveMutation | null>;
@@ -254,6 +278,105 @@ export function createFeedbackRepository(
     });
   }
 
+  // ── The admin projection, shared by the list and the single-row read ───────
+  // One aliased self-reference drives every thread-derived column, so the
+  // correlated subqueries render real schema identifiers rather than hand-typed
+  // table and column names that a rename would not catch.
+  const msg = alias(feedbackMessages, 'thread_msg');
+  // Interpolating an aliased table renders the ALIAS alone, which is what a
+  // WHERE clause wants and what a FROM clause cannot use — hence the explicit
+  // `table alias` pair here, spelled once.
+  const msgFrom = sql`${feedbackMessages} ${msg}`;
+  const correlated = eq(msg.feedbackId, feedback.id);
+  /**
+   * "A submitter message the admin side has not seen." The marker is a single
+   * shared `adminLastReadAt`, so this is per-install unread, not per-operator —
+   * see the contract note on `unreadCount`.
+   */
+  const unreadPredicate = and(
+    correlated,
+    eq(msg.authorSide, 'submitter'),
+    or(isNull(feedback.adminLastReadAt), gt(msg.createdAt, feedback.adminLastReadAt)),
+  );
+  /** `EXISTS` form of the same predicate, for the inbox's unread filter. */
+  const anyUnread = sql`exists (select 1 from ${msgFrom} where ${unreadPredicate})`;
+
+  /**
+   * The admin row shape. Thread state is four correlated subqueries rather than
+   * extra round trips: the page is bounded at 100 rows, and one statement keeps
+   * the counters consistent with the page they describe.
+   */
+  const adminSelection = {
+    id: feedback.id,
+    userId: feedback.userId,
+    category: feedback.category,
+    subject: feedback.subject,
+    message: feedback.message,
+    context: feedback.context,
+    status: feedback.status,
+    lastStatusChangeAt: feedback.lastStatusChangeAt,
+    declinedReason: feedback.declinedReason,
+    shippedVersion: feedback.shippedVersion,
+    submitterLastReadAt: feedback.submitterLastReadAt,
+    adminLastReadAt: feedback.adminLastReadAt,
+    deletedByUserAt: feedback.deletedByUserAt,
+    archivedAt: feedback.archivedAt,
+    createdAt: feedback.createdAt,
+    updatedAt: feedback.updatedAt,
+    submitterId: users.id,
+    submitterUsername: users.username,
+    submitterEmail: users.email,
+    // `count(*)` is a bigint; postgres-js hands bigints back as strings while
+    // PGlite yields numbers. The cast makes both drivers agree on `number`
+    // instead of leaking a string into a contract typed as an integer.
+    unreadCount: sql<number>`(select count(*)::int from ${msgFrom} where ${unreadPredicate})`,
+    messageCount: sql<number>`(select count(*)::int from ${msgFrom} where ${correlated})`,
+    lastMessageAt: sql<Date | null>`(
+      select ${msg.createdAt} from ${msgFrom} where ${correlated}
+      order by ${desc(msg.createdAt)}, ${desc(msg.id)} limit 1
+    )`,
+    lastAuthorSide: sql<FeedbackMessageAuthorSide | null>`(
+      select ${msg.authorSide} from ${msgFrom} where ${correlated}
+      order by ${desc(msg.createdAt)}, ${desc(msg.id)} limit 1
+    )`,
+  };
+
+  /** The selected row is structurally `FeedbackRow` plus the joined/derived columns. */
+  type AdminSelectionRow = FeedbackRow & {
+    submitterId: string;
+    submitterUsername: string;
+    submitterEmail: string;
+    unreadCount: number;
+    messageCount: number;
+    lastMessageAt: Date | null;
+    lastAuthorSide: FeedbackMessageAuthorSide | null;
+  };
+
+  function toAdminRow({
+    submitterId,
+    submitterUsername,
+    submitterEmail,
+    lastMessageAt,
+    unreadCount,
+    messageCount,
+    ...rest
+  }: AdminSelectionRow): AdminFeedbackRow {
+    return {
+      ...rest,
+      unreadCount: Number(unreadCount),
+      messageCount: Number(messageCount),
+      // Drivers disagree on timestamp shape for a raw-SQL column: PGlite
+      // returns a Date, postgres-js a string. Normalise here so the service's
+      // `.toISOString()` cannot throw in production only.
+      lastMessageAt: lastMessageAt === null ? null : new Date(lastMessageAt),
+      submitter: {
+        id: submitterId,
+        username: submitterUsername,
+        email: submitterEmail,
+      },
+    };
+  }
+
   return {
     async create(userId, input) {
       return db.transaction(async (tx) => {
@@ -386,9 +509,40 @@ export function createFeedbackRepository(
       return row ?? null;
     },
 
+    async getForAdmin(id) {
+      // Id-addressed, deliberately unfiltered: a helpdesk link must open its
+      // thread whatever the operator's saved filters say, including an archived
+      // or user-tombstoned row the inbox is currently hiding.
+      const [row] = await db
+        .select(adminSelection)
+        .from(feedback)
+        .innerJoin(users, eq(feedback.userId, users.id))
+        .where(eq(feedback.id, id))
+        .limit(1);
+      return row ? toAdminRow(row as AdminSelectionRow) : null;
+    },
+
     async listForAdmin(params) {
       const conditions: SQL[] = [];
       if (params.category) conditions.push(eq(feedback.category, params.category));
+      if (params.status) conditions.push(eq(feedback.status, params.status));
+      if (params.version) conditions.push(eq(feedback.shippedVersion, params.version));
+      if (params.q) {
+        const pattern = `%${escapeLikePattern(params.q)}%`;
+        // Submitter identity is searchable because "the ticket from martin.k"
+        // is how an operator remembers a thread. Both columns are already on
+        // this join and already rendered in the row.
+        const match = or(
+          ilike(feedback.subject, pattern),
+          ilike(feedback.message, pattern),
+          ilike(users.username, pattern),
+          ilike(users.email, pattern),
+        );
+        if (match) conditions.push(match);
+      }
+      if (params.unread !== undefined) {
+        conditions.push(params.unread ? anyUnread : sql`not ${anyUnread}`);
+      }
       conditions.push(
         params.archived ? isNotNull(feedback.archivedAt) : isNull(feedback.archivedAt),
       );
@@ -402,49 +556,40 @@ export function createFeedbackRepository(
         else 5
       end`;
 
+      /**
+       * Every ordering ends on the `id` tiebreak. Without it two rows sharing
+       * the leading key can swap between page 1 and page 2 under a stable
+       * filter, and one of them is then never shown to the operator at all.
+       */
+      const orderBy =
+        params.sort === 'category'
+          ? [priorityOrder, desc(feedback.createdAt), desc(feedback.id)]
+          : params.sort === 'aging'
+            ? // Longest-untouched first: the aging clock is the last lifecycle
+              // move, not the filing date.
+              [asc(feedback.lastStatusChangeAt), asc(feedback.id)]
+            : [desc(feedback.createdAt), desc(feedback.id)];
+
       const rows = await db
-        .select({
-          id: feedback.id,
-          userId: feedback.userId,
-          category: feedback.category,
-          subject: feedback.subject,
-          message: feedback.message,
-          context: feedback.context,
-          status: feedback.status,
-          lastStatusChangeAt: feedback.lastStatusChangeAt,
-          declinedReason: feedback.declinedReason,
-          shippedVersion: feedback.shippedVersion,
-          submitterLastReadAt: feedback.submitterLastReadAt,
-          adminLastReadAt: feedback.adminLastReadAt,
-          deletedByUserAt: feedback.deletedByUserAt,
-          archivedAt: feedback.archivedAt,
-          createdAt: feedback.createdAt,
-          updatedAt: feedback.updatedAt,
-          submitterId: users.id,
-          submitterUsername: users.username,
-          submitterEmail: users.email,
-        })
+        .select(adminSelection)
         .from(feedback)
         .innerJoin(users, eq(feedback.userId, users.id))
         .where(where)
-        .orderBy(
-          ...(params.sort === 'category'
-            ? [priorityOrder, desc(feedback.createdAt), desc(feedback.id)]
-            : [desc(feedback.createdAt), desc(feedback.id)]),
-        )
+        .orderBy(...orderBy)
         .limit(params.limit)
         .offset((params.page - 1) * params.limit);
 
-      const [totalRow] = await db.select({ value: count() }).from(feedback).where(where);
+      // The total must be scoped by the SAME predicate as the page. `q` and the
+      // unread filter reach through the users join, so the count carries it too
+      // — counting the bare table would report a total the filter never returns
+      // and page the operator into empty results.
+      const [totalRow] = await db
+        .select({ value: count() })
+        .from(feedback)
+        .innerJoin(users, eq(feedback.userId, users.id))
+        .where(where);
       return {
-        rows: rows.map(({ submitterId, submitterUsername, submitterEmail, ...row }) => ({
-          ...row,
-          submitter: {
-            id: submitterId,
-            username: submitterUsername,
-            email: submitterEmail,
-          },
-        })),
+        rows: rows.map((row) => toAdminRow(row as AdminSelectionRow)),
         total: totalRow?.value ?? 0,
       };
     },

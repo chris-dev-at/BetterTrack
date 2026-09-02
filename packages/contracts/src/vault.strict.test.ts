@@ -387,6 +387,11 @@ const fixtures: VaultStrictEntity[] = [
           type: 'stock',
         },
       ],
+      // TRUE on purpose: the column's own default is `false`, so a fixture
+      // carrying `false` would round-trip identically whether the field
+      // survived the document or was silently re-defaulted on the way back.
+      // Only a `true` proves the value itself made the trip.
+      kindUndecided: true,
     },
   },
   {

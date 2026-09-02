@@ -11,9 +11,36 @@ interface ResourceState<T> {
   retryable: boolean;
 }
 
-interface Resource<T> extends ResourceState<T> {
+export interface Resource<T> extends ResourceState<T> {
   /** Re-run the fetch (e.g. after a mutation). */
   reload: () => void;
+}
+
+/**
+ * What a 404 means for this particular read. The mirror of
+ * {@link AdminMutationNotFoundPolicy} on the write seam, and for the same reason.
+ *
+ * `apiClient`'s `isNotAuthorized` is `401 || 404`, because the admin API answers
+ * 404 to non-admins on purpose (§6.12 — no information leak). For a read that
+ * addresses a WHOLE surface — the user list, the health page — that conflation
+ * is right: a 404 there means the caller is no longer an admin.
+ *
+ * For a read addressed by a ROW ID it is not. `GET /admin/feedback/:id` 404s
+ * when that one submission is gone, which is exactly what a stale helpdesk link
+ * produces — and treating it as auth loss signs a working admin out for clicking
+ * an old link.
+ *
+ *  - `session` (default) — a 404 is auth loss, and the session is cleared.
+ *  - `gone` — a 404 resolves to `data: null` with no error, so the surface can
+ *    say "this row no longer exists". Only for id-addressed reads, and only
+ *    where some OTHER read on the same screen still carries the `session`
+ *    policy — otherwise a revoked admin would sit on a stale pane forever.
+ */
+export type AdminResourceNotFoundPolicy = 'session' | 'gone';
+
+export interface UseResourceOptions {
+  /** How to read a 404. Defaults to `session`; see the type's docs. */
+  notFound?: AdminResourceNotFoundPolicy;
 }
 
 /**
@@ -27,6 +54,7 @@ interface Resource<T> extends ResourceState<T> {
 export function useResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   deps: readonly unknown[],
+  options: UseResourceOptions = {},
 ): Resource<T> {
   const { locale } = useI18n();
   const localeRef = useRef(locale);
@@ -38,6 +66,12 @@ export function useResource<T>(
     retryable: false,
   });
   const [nonce, setNonce] = useState(0);
+  // Call sites pass an inline options object every render; a ref keeps it out
+  // of the effect's dependency list without going stale.
+  const optionsRef = useRef(options);
+  useEffect(() => {
+    optionsRef.current = options;
+  });
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
@@ -57,6 +91,16 @@ export function useResource<T>(
       } catch (err) {
         if (controller.signal.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
+        // A row-scoped 404 under the `gone` policy is an ANSWER, not auth loss:
+        // resolve to null and let the surface say the row is no longer there.
+        if (
+          err instanceof ApiError &&
+          err.status === 404 &&
+          optionsRef.current.notFound === 'gone'
+        ) {
+          setState({ data: null, loading: false, error: null, retryable: false });
+          return;
+        }
         if (err instanceof ApiError && err.isNotAuthorized) {
           clearSession();
           return;

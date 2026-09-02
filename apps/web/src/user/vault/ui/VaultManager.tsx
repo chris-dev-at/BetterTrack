@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
@@ -44,7 +44,11 @@ import { vaultRetryTimeLabel } from './retryTime';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
 import { VaultStateAction } from './VaultStateAction';
-import { useVaultEndpointState, vaultEndpointStateQueryKey } from './useVaultEndpointState';
+import {
+  readVaultEndpointState,
+  useVaultEndpointState,
+  vaultEndpointStateQueryKey,
+} from './useVaultEndpointState';
 
 export interface VaultManagerOperations {
   provision(input: ProvisionVaultInput): Promise<VaultConfig>;
@@ -160,7 +164,7 @@ export function VaultManager({
   const endpointQueries = useQueries({
     queries: vaults.map((vault) => ({
       queryKey: vaultEndpointStateQueryKey(vault.id),
-      queryFn: () => endpointVaultKeystore.stateFor(vault.id),
+      queryFn: () => readVaultEndpointState(vault.id),
       staleTime: 5_000,
     })),
   });
@@ -285,16 +289,18 @@ export function VaultManager({
       ) : null}
 
       {activeVault && activeAction ? (
-        <VaultAccessAction
-          action={activeAction}
-          onClose={closeAction}
-          onDone={async () => {
-            await refreshVaults();
-            closeAction();
-          }}
-          operations={operations}
-          vault={activeVault}
-        />
+        <ArrivedFromDeepLink>
+          <VaultAccessAction
+            action={activeAction}
+            onClose={closeAction}
+            onDone={async () => {
+              await refreshVaults();
+              closeAction();
+            }}
+            operations={operations}
+            vault={activeVault}
+          />
+        </ArrivedFromDeepLink>
       ) : null}
     </section>
   );
@@ -534,6 +540,45 @@ function VaultManagerRow({
       ) : null}
     </li>
   );
+}
+
+/**
+ * The settings side of #4: a `?vault=…&action=…` deep link must LAND on its
+ * form, not somewhere above it.
+ *
+ * The Control Center opens on the Privacy panel with the access section far
+ * down the page, under the deferred-capability paragraphs — which is how the
+ * old bare `Unlock` link stranded users on a screen whose password field was
+ * below the fold. The in-place dialog is now the primary path; this keeps the
+ * secondary one honest.
+ *
+ * The focus deliberately does NOT run on mount: the section renders
+ * "Checking what this vault needs…" first and only grows its field once the
+ * live endpoint state arrives. So it waits for a field to exist, takes it once,
+ * and never fights the user for the caret afterwards.
+ */
+function ArrivedFromDeepLink({ children }: { children: ReactNode }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const claimed = useRef(false);
+
+  useEffect(() => {
+    if (claimed.current) return;
+    const container = containerRef.current;
+    if (container == null) return;
+    // Never steal focus from a checkbox or a button — only the credential the
+    // link came for.
+    const field = container.querySelector<HTMLInputElement>(
+      'input[type="password"], input[type="text"]',
+    );
+    if (field == null) return;
+    claimed.current = true;
+    if (typeof container.scrollIntoView === 'function') {
+      container.scrollIntoView({ block: 'center' });
+    }
+    field.focus();
+  });
+
+  return <div ref={containerRef}>{children}</div>;
 }
 
 function VaultAccessAction({

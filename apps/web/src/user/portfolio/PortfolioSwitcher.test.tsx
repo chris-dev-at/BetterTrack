@@ -29,6 +29,9 @@ const vaultMocks = vi.hoisted(() => ({
 }));
 vi.mock('../vault/keystore/runtime', () => ({
   endpointVaultKeystore: { stateFor: vaultMocks.stateFor },
+  // The endpoint keystore now resumes device custody before any state read.
+  resumeEndpointSessionOnce: async () => ({ unlockedVaultIds: [] }),
+  bindEndpointKeystoreAccount: () => undefined,
 }));
 // Which vaulted portfolios this device is holding OPEN. Empty by default, so
 // every existing assertion here is still about a locked roster.
