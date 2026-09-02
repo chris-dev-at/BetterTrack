@@ -35,7 +35,7 @@ non-empty` — whenever any `<epoch>-prNN.json` record is waiting. Owner briefs
 are exempt in **both** their states: an already-claimed one
 (`.composer-request-active.json`, reconciled above the mode gate) and a fresh
 `control/composer-request.json` that has not been claimed yet — the claim
-happens *below* this guard, so the guard has to test the file, not just the
+happens _below_ this guard, so the guard has to test the file, not just the
 loaded flag. Consequence worth knowing: a permanently stuck queue record stops
 ordinary composition, which is intended (drain the lane, then compose), but it
 never blocks a brief you write yourself.
@@ -210,7 +210,7 @@ session, so a moved lockfile does not make the writer install on model time. It
 is bounded by `MF_PNPM_PRIME_TIMEOUT` (default 600 s) and is non-fatal either
 way — the writer installs if it failed. The timeout is not optional: this runs
 before the role loop, outside every heartbeat-refreshing `cc()` call, so an
-unreachable registry would otherwise hang with a *fresh* heartbeat, which the
+unreachable registry would otherwise hang with a _fresh_ heartbeat, which the
 stall detector cannot see (the 2026-08-19 DNS-wedge failure class).
 
 ## The protocol dir (`multi-factory/state/`, bind-mounted at `/work/mfstate`)

@@ -72,7 +72,11 @@ test('opencode routes validate as an API-key provider with slashed model ids', (
   // No variant is verified for this provider, so any effort must be refused
   // rather than silently dropped by the CLI.
   assert.equal(
-    validateRouteEntry({ provider: 'opencode', model: 'openrouter/stealth/ox-alpha', effort: 'high' }),
+    validateRouteEntry({
+      provider: 'opencode',
+      model: 'openrouter/stealth/ox-alpha',
+      effort: 'high',
+    }),
     false,
   );
   // Same selector guard as cc_opencode in mflib.sh.
