@@ -11,6 +11,7 @@ import {
   check,
   customType,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -319,6 +320,8 @@ export const apiKeys = pgTable(
   (t) => [
     uniqueIndex('api_keys_token_hash_unique').on(t.tokenHash),
     index('api_keys_user_idx').on(t.userId),
+
+    index('api_keys_tier_id_idx').on(t.tierId),
   ],
 );
 
@@ -377,6 +380,8 @@ export const apiKeyRequestLog = pgTable(
   (t) => [
     index('api_key_request_log_key_created_idx').on(t.keyId, t.createdAt),
     index('api_key_request_log_created_idx').on(t.createdAt),
+
+    index('api_key_request_log_user_id_idx').on(t.userId),
   ],
 );
 
@@ -395,6 +400,8 @@ export const invites = pgTable(
   (t) => [
     uniqueIndex('invites_token_hash_unique').on(t.tokenHash),
     index('invites_email_idx').on(t.email),
+
+    index('invites_created_by_idx').on(t.createdBy),
   ],
 );
 
@@ -447,7 +454,10 @@ export const registrationTokens = pgTable(
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('registration_tokens_token_hash_unique').on(t.tokenHash)],
+  (t) => [
+    uniqueIndex('registration_tokens_token_hash_unique').on(t.tokenHash),
+    index('registration_tokens_created_by_idx').on(t.createdBy),
+  ],
 );
 
 /**
@@ -597,7 +607,10 @@ export const auditLog = pgTable(
     meta: jsonb('meta'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('audit_log_created_at_idx').on(t.createdAt)],
+  (t) => [
+    index('audit_log_created_at_idx').on(t.createdAt),
+    index('audit_log_actor_id_idx').on(t.actorId),
+  ],
 );
 
 /**
@@ -639,6 +652,8 @@ export const adminUserNotes = pgTable(
     // two cannot drift apart silently.
     check('admin_user_notes_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
     check('admin_user_notes_body_length', sql`char_length(${t.body}) <= 2000`),
+
+    index('admin_user_notes_author_id_idx').on(t.authorId),
   ],
 );
 
@@ -671,6 +686,8 @@ export const problems = pgTable(
     uniqueIndex('problems_fingerprint_unique').on(t.fingerprint),
     index('problems_status_last_seen_idx').on(t.status, t.lastSeenAt),
     index('problems_kind_idx').on(t.kind),
+
+    index('problems_resolved_by_idx').on(t.resolvedBy),
   ],
 );
 
@@ -761,6 +778,8 @@ export const feedbackMessages = pgTable(
     index('feedback_messages_feedback_idx').on(t.feedbackId, t.createdAt, t.id),
     check('feedback_messages_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
     check('feedback_messages_body_length', sql`char_length(${t.body}) <= 4000`),
+
+    index('feedback_messages_author_user_id_idx').on(t.authorUserId),
   ],
 );
 
@@ -914,6 +933,8 @@ export const assets = pgTable(
     uniqueIndex('assets_global_provider_ref_unique')
       .on(t.providerId, t.providerRef)
       .where(sql`${t.ownerId} is null`),
+
+    index('assets_owner_id_idx').on(t.ownerId),
   ],
 );
 
@@ -980,7 +1001,11 @@ export const workboardItems = pgTable(
     sortOrder: integer('sort_order').notNull(),
     note: text('note'),
   },
-  (t) => [uniqueIndex('workboard_items_watchlist_asset_unique').on(t.watchlistId, t.assetId)],
+  (t) => [
+    uniqueIndex('workboard_items_watchlist_asset_unique').on(t.watchlistId, t.assetId),
+    index('workboard_items_asset_id_idx').on(t.assetId),
+    index('workboard_items_user_id_idx').on(t.userId),
+  ],
 );
 
 export const alertKindEnum = pgEnum('alert_kind', [
@@ -993,22 +1018,26 @@ export const alertKindEnum = pgEnum('alert_kind', [
 ]);
 export const alertStatusEnum = pgEnum('alert_status', ['active', 'triggered', 'disabled']);
 
-export const alerts = pgTable('alerts', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  assetId: uuid('asset_id')
-    .notNull()
-    .references(() => assetIdentities.id, { onDelete: 'cascade' }),
-  kind: alertKindEnum('kind').notNull(),
-  threshold: numeric('threshold').notNull(),
-  // Captured at creation for the *_from_ref kinds.
-  refPrice: numeric('ref_price'),
-  repeat: boolean('repeat').notNull().default(false),
-  status: alertStatusEnum('status').notNull(),
-  lastTriggeredAt: timestamp('last_triggered_at', { withTimezone: true }),
-});
+export const alerts = pgTable(
+  'alerts',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => assetIdentities.id, { onDelete: 'cascade' }),
+    kind: alertKindEnum('kind').notNull(),
+    threshold: numeric('threshold').notNull(),
+    // Captured at creation for the *_from_ref kinds.
+    refPrice: numeric('ref_price'),
+    repeat: boolean('repeat').notNull().default(false),
+    status: alertStatusEnum('status').notNull(),
+    lastTriggeredAt: timestamp('last_triggered_at', { withTimezone: true }),
+  },
+  (t) => [index('alerts_asset_id_idx').on(t.assetId), index('alerts_user_id_idx').on(t.userId)],
+);
 
 // --- Notifications ---------------------------------------------------------
 
@@ -1044,6 +1073,8 @@ export const notifications = pgTable(
     uniqueIndex('notifications_user_event_key_unique')
       .on(t.userId, sql`(${t.payload} ->> 'eventKey')`)
       .where(sql`(${t.payload} ->> 'eventKey') is not null`),
+
+    index('notifications_user_id_idx').on(t.userId),
   ],
 );
 
@@ -1233,21 +1264,25 @@ export const emailLog = pgTable(
 
 export const conglomerateStatusEnum = pgEnum('conglomerate_status', ['draft', 'active']);
 
-export const conglomerates = pgTable('conglomerates', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  ownerId: uuid('owner_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  description: text('description'),
-  status: conglomerateStatusEnum('status').notNull(),
-  // Friend-sharing visibility (§6.9, §13.2 V2-P9): `private` (default) or
-  // `friends` — a read-only copy exposed to the owner's friends via Shared With
-  // Me. Mirrors the portfolio model; revocable, no tokens.
-  visibility: portfolioVisibilityEnum('visibility').notNull().default('private'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const conglomerates = pgTable(
+  'conglomerates',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    status: conglomerateStatusEnum('status').notNull(),
+    // Friend-sharing visibility (§6.9, §13.2 V2-P9): `private` (default) or
+    // `friends` — a read-only copy exposed to the owner's friends via Shared With
+    // Me. Mirrors the portfolio model; revocable, no tokens.
+    visibility: portfolioVisibilityEnum('visibility').notNull().default('private'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('conglomerates_owner_id_idx').on(t.ownerId)],
+);
 
 /**
  * One constituent of a conglomerate: an asset position OR — since V5-P6 — a
@@ -1284,6 +1319,8 @@ export const conglomeratePositions = pgTable(
       'conglomerate_positions_exactly_one_ref',
       sql`(${t.assetId} is null) <> (${t.childConglomerateId} is null)`,
     ),
+
+    index('conglomerate_positions_asset_id_idx').on(t.assetId),
   ],
 );
 
@@ -1298,7 +1335,10 @@ export const shareLinks = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
   },
-  (t) => [uniqueIndex('share_links_token_unique').on(t.token)],
+  (t) => [
+    uniqueIndex('share_links_token_unique').on(t.token),
+    index('share_links_conglomerate_id_idx').on(t.conglomerateId),
+  ],
 );
 
 /**
@@ -1478,6 +1518,8 @@ export const transactions = pgTable(
       'transactions_uncovered_entry_price_requires_flag',
       sql`${t.uncoveredEntryPrice} IS NULL OR ${t.allowUncovered} = true`,
     ),
+
+    index('transactions_asset_id_idx').on(t.assetId),
   ],
 );
 
@@ -1596,6 +1638,9 @@ export const dividends = pgTable(
   (t) => [
     index('dividends_portfolio_idx').on(t.portfolioId, t.executedAt),
     check('dividends_gross_positive', sql`${t.grossAmountEur} > 0`),
+
+    index('dividends_asset_id_idx').on(t.assetId),
+    index('dividends_cash_source_id_idx').on(t.cashSourceId),
   ],
 );
 
@@ -1671,6 +1716,13 @@ export const portfolioCashMovements = pgTable(
     // amount's sign must match the kind, and never zero (the ledger never guesses).
     // A kind in NEITHER list fails the CHECK, so a future kind is rejected at the
     // DB until it declares its direction here as well as in the domain.
+    //
+    // #1619: grepping the migration chain shows this constraint DROPped three
+    // times (0019, 0021, 0077) and that is not a retirement — each of those
+    // migrations extends `cash_movement_kind` by recreating the enum, which
+    // requires dropping every CHECK whose expression pins the old type's OIDs,
+    // and each re-adds it (extended) in the same transaction. It is live, and
+    // `check:schema-drift` proves it against a migrated database.
     check(
       'portfolio_cash_movements_sign',
       sql`(${t.kind} in ('deposit','sell_proceeds','transfer_in','dividend','tax_refund') and ${t.amountEur} > 0)
@@ -1707,6 +1759,10 @@ export const portfolioCashMovements = pgTable(
       'portfolio_cash_movements_fee_standalone',
       sql`${t.kind} <> 'fee' or (${t.transactionId} is null and ${t.dividendId} is null)`,
     ),
+
+    index('portfolio_cash_movements_counterpart_source_id_idx').on(t.counterpartSourceId),
+    index('portfolio_cash_movements_dividend_id_idx').on(t.dividendId),
+    index('portfolio_cash_movements_transaction_id_idx').on(t.transactionId),
   ],
 );
 
@@ -2052,6 +2108,10 @@ export const userTaxSettings = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // #1619: the single DROP of this constraint in the chain (0061) is the same
+    // enum-recreation dance as `portfolio_cash_movements_sign` — 0061 adds
+    // 'custom' to `tax_mode` by recreating the type and re-adds this CHECK
+    // verbatim at the end of the same migration. Live, not retired.
     check(
       'user_tax_settings_country',
       sql`(${t.mode} = 'country_specific') = (${t.country} is not null)`,
@@ -2199,6 +2259,9 @@ export const friendRequests = pgTable(
     uniqueIndex('friend_requests_pending_pair_unique')
       .on(t.fromUser, t.toUser)
       .where(sql`${t.status} = 'pending'`),
+
+    index('friend_requests_from_user_idx').on(t.fromUser),
+    index('friend_requests_to_user_idx').on(t.toUser),
   ],
 );
 
@@ -2215,7 +2278,10 @@ export const friendships = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ name: 'friendships_pk', columns: [t.userA, t.userB] })],
+  (t) => [
+    primaryKey({ name: 'friendships_pk', columns: [t.userA, t.userB] }),
+    index('friendships_user_b_idx').on(t.userB),
+  ],
 );
 
 /**
@@ -2366,6 +2432,8 @@ export const shareAudiences = pgTable(
   (t) => [
     uniqueIndex('share_audiences_kind_subject_unique').on(t.kind, t.subjectId),
     index('share_audiences_owner_idx').on(t.ownerId),
+
+    index('share_audiences_group_id_idx').on(t.groupId),
   ],
 );
 
@@ -2501,6 +2569,8 @@ export const itemComments = pgTable(
     // Thread read: every live comment on one item, oldest-first at read time.
     index('item_comments_subject_idx').on(t.kind, t.subjectId),
     index('item_comments_author_idx').on(t.authorId),
+
+    index('item_comments_deleted_by_idx').on(t.deletedBy),
   ],
 );
 
@@ -2547,6 +2617,8 @@ export const itemReactions = pgTable(
     index('item_reactions_item_idx').on(t.kind, t.subjectId),
     // Aggregate one comment's reactions.
     index('item_reactions_comment_idx').on(t.commentId),
+
+    index('item_reactions_user_id_idx').on(t.userId),
   ],
 );
 
@@ -2631,6 +2703,8 @@ export const chatMessages = pgTable(
       'chat_messages_chip_complete',
       sql`(${t.chipKind} IS NULL) = (${t.chipSubjectId} IS NULL)`,
     ),
+
+    index('chat_messages_sender_id_idx').on(t.senderId),
   ],
 );
 
@@ -2747,7 +2821,11 @@ export const oauthAuthCodes = pgTable(
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('oauth_auth_codes_code_hash_unique').on(t.codeHash)],
+  (t) => [
+    uniqueIndex('oauth_auth_codes_code_hash_unique').on(t.codeHash),
+    index('oauth_auth_codes_client_id_idx').on(t.clientId),
+    index('oauth_auth_codes_user_id_idx').on(t.userId),
+  ],
 );
 
 export const oauthAccessTokens = pgTable(
@@ -2765,7 +2843,10 @@ export const oauthAccessTokens = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('oauth_access_tokens_token_hash_unique').on(t.tokenHash)],
+  (t) => [
+    uniqueIndex('oauth_access_tokens_token_hash_unique').on(t.tokenHash),
+    index('oauth_access_tokens_grant_id_idx').on(t.grantId),
+  ],
 );
 
 export const oauthRefreshTokens = pgTable(
@@ -2781,7 +2862,10 @@ export const oauthRefreshTokens = pgTable(
     consumedAt: timestamp('consumed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('oauth_refresh_tokens_token_hash_unique').on(t.tokenHash)],
+  (t) => [
+    uniqueIndex('oauth_refresh_tokens_token_hash_unique').on(t.tokenHash),
+    index('oauth_refresh_tokens_grant_id_idx').on(t.grantId),
+  ],
 );
 
 /**
@@ -2835,6 +2919,8 @@ export const announcements = pgTable(
       'announcements_window_order',
       sql`${t.startsAt} is null or ${t.endsAt} is null or ${t.startsAt} <= ${t.endsAt}`,
     ),
+
+    index('announcements_created_by_idx').on(t.createdBy),
   ],
 );
 
@@ -2861,6 +2947,8 @@ export const announcementDismissals = pgTable(
       name: 'announcement_dismissals_pk',
       columns: [t.userId, t.announcementId],
     }),
+
+    index('announcement_dismissals_announcement_id_idx').on(t.announcementId),
   ],
 );
 
@@ -2959,12 +3047,16 @@ export type NewSharedItemActivityPrefRow = typeof sharedItemActivityPrefs.$infer
  * (bool, default false); future app-wide toggles live here too. `updated_by`
  * points at the admin who last wrote the key (nulled if that account is deleted).
  */
-export const appSettings = pgTable('app_settings', {
-  key: text('key').primaryKey(),
-  value: jsonb('value').notNull(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
-});
+export const appSettings = pgTable(
+  'app_settings',
+  {
+    key: text('key').primaryKey(),
+    value: jsonb('value').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => [index('app_settings_updated_by_idx').on(t.updatedBy)],
+);
 
 export type AppSettingRow = typeof appSettings.$inferSelect;
 export type NewAppSettingRow = typeof appSettings.$inferInsert;
@@ -3197,7 +3289,11 @@ export const importBatches = pgTable(
      */
     understanding: jsonb('understanding').$type<ImportUnderstanding>(),
   },
-  (t) => [index('import_batches_owner_idx').on(t.ownerId)],
+  (t) => [
+    index('import_batches_owner_idx').on(t.ownerId),
+    index('import_batches_cash_source_id_idx').on(t.cashSourceId),
+    index('import_batches_portfolio_id_idx').on(t.portfolioId),
+  ],
 );
 
 /**
@@ -3278,7 +3374,10 @@ export const importRows = pgTable(
      */
     kindUndecided: boolean('kind_undecided').notNull().default(false),
   },
-  (t) => [index('import_rows_batch_idx').on(t.batchId)],
+  (t) => [
+    index('import_rows_batch_idx').on(t.batchId),
+    index('import_rows_asset_id_idx').on(t.assetId),
+  ],
 );
 
 export type ImportBatchRow = typeof importBatches.$inferSelect;
@@ -3359,6 +3458,8 @@ export const standingOrders = pgTable(
       'standing_orders_end_after_start',
       sql`${t.endDate} is null or ${t.endDate} >= ${t.startDate}`,
     ),
+
+    index('standing_orders_asset_id_idx').on(t.assetId),
   ],
 );
 
@@ -3437,16 +3538,20 @@ export const mirrorRowKindEnum = pgEnum('mirror_row_kind', [
  * active members flips to `dissolved`. `created_by` SET-NULLs on account
  * deletion while `created_by_username` keeps the denormalized display name.
  */
-export const mirrorChains = pgTable('mirror_chains', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  name: text('name').notNull(),
-  status: mirrorChainStatusEnum('status').notNull().default('active'),
-  lastSeq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
-  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
-  createdByUsername: text('created_by_username').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  dissolvedAt: timestamp('dissolved_at', { withTimezone: true }),
-});
+export const mirrorChains = pgTable(
+  'mirror_chains',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    name: text('name').notNull(),
+    status: mirrorChainStatusEnum('status').notNull().default('active'),
+    lastSeq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdByUsername: text('created_by_username').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    dissolvedAt: timestamp('dissolved_at', { withTimezone: true }),
+  },
+  (t) => [index('mirror_chains_created_by_idx').on(t.createdBy)],
+);
 
 /**
  * `mirror_chain_members` — one row per (chain, member), kept forever as a
@@ -3491,6 +3596,9 @@ export const mirrorChainMembers = pgTable(
     uniqueIndex('mirror_chain_members_active_portfolio_unique')
       .on(t.portfolioId)
       .where(sql`${t.status} = 'active'`),
+
+    index('mirror_chain_members_invited_by_idx').on(t.invitedBy),
+    index('mirror_chain_members_portfolio_id_idx').on(t.portfolioId),
   ],
 );
 
@@ -3520,6 +3628,9 @@ export const mirrorChainInvites = pgTable(
     uniqueIndex('mirror_chain_invites_pending_unique')
       .on(t.chainId, t.toUser)
       .where(sql`${t.status} = 'pending'`),
+
+    index('mirror_chain_invites_chain_id_idx').on(t.chainId),
+    index('mirror_chain_invites_from_user_idx').on(t.fromUser),
   ],
 );
 
@@ -3555,6 +3666,9 @@ export const mirrorChainOps = pgTable(
   (t) => [
     uniqueIndex('mirror_chain_ops_chain_seq_unique').on(t.chainId, t.seq),
     index('mirror_chain_ops_entity_idx').on(t.chainId, t.mirrorId, t.seq),
+
+    index('mirror_chain_ops_actor_user_id_idx').on(t.actorUserId),
+    index('mirror_chain_ops_origin_portfolio_id_idx').on(t.originPortfolioId),
   ],
 );
 
@@ -3587,6 +3701,9 @@ export const mirrorRows = pgTable(
     primaryKey({ name: 'mirror_rows_pk', columns: [t.kind, t.mirrorId, t.portfolioId] }),
     uniqueIndex('mirror_rows_kind_local_unique').on(t.kind, t.localId),
     index('mirror_rows_portfolio_idx').on(t.portfolioId),
+
+    index('mirror_rows_chain_id_idx').on(t.chainId),
+    index('mirror_rows_created_by_idx').on(t.createdBy),
   ],
 );
 
@@ -4062,32 +4179,46 @@ export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipt
  * explicit that unverifiable assertions may never destroy: only a fact the
  * server established itself may authorise the wipe.
  */
-export const paranoidV1BackupAttestations = pgTable('paranoid_v1_backup_attestations', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  /** Absolute path of the archive on the prod host, for the operator's audit trail. */
-  archiveFile: text('archive_file').notNull(),
-  /** SHA-256 of the archive file's bytes, lowercase hex (CHECK-enforced shape). */
-  archiveSha256: text('archive_sha256').notNull(),
-  /** `{ "<table>": <rowCount> }` as dumped and verified. */
-  rowCounts: jsonb('row_counts').notNull(),
-  /**
-   * `{ "<userId>": "<sha256>" }` — the digest of THAT account's legacy rows at
-   * dump time. The wipe recomputes it per account inside its own transaction, so
-   * a vault that changed after the backup is refused instead of destroyed
-   * against a stale archive.
-   */
-  userDigests: jsonb('user_digests').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  createdBy: text('created_by').notNull(),
-  /**
-   * §17's "offsite copy confirmed", turned into a checked fact: the operator
-   * digests the copy that left the host and hands it back; only a match sets
-   * these two. The wipe requires them, so an archive still sitting on the prod
-   * host cannot authorise destruction.
-   */
-  offsiteConfirmedAt: timestamp('offsite_confirmed_at', { withTimezone: true }),
-  offsiteConfirmedSha256: text('offsite_confirmed_sha256'),
-});
+export const paranoidV1BackupAttestations = pgTable(
+  'paranoid_v1_backup_attestations',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    /** Absolute path of the archive on the prod host, for the operator's audit trail. */
+    archiveFile: text('archive_file').notNull(),
+    /** SHA-256 of the archive file's bytes, lowercase hex (CHECK-enforced shape). */
+    archiveSha256: text('archive_sha256').notNull(),
+    /** `{ "<table>": <rowCount> }` as dumped and verified. */
+    rowCounts: jsonb('row_counts').notNull(),
+    /**
+     * `{ "<userId>": "<sha256>" }` — the digest of THAT account's legacy rows at
+     * dump time. The wipe recomputes it per account inside its own transaction, so
+     * a vault that changed after the backup is refused instead of destroyed
+     * against a stale archive.
+     */
+    userDigests: jsonb('user_digests').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: text('created_by').notNull(),
+    /**
+     * §17's "offsite copy confirmed", turned into a checked fact: the operator
+     * digests the copy that left the host and hands it back; only a match sets
+     * these two. The wipe requires them, so an archive still sitting on the prod
+     * host cannot authorise destruction.
+     */
+    offsiteConfirmedAt: timestamp('offsite_confirmed_at', { withTimezone: true }),
+    offsiteConfirmedSha256: text('offsite_confirmed_sha256'),
+  },
+  (t) => [
+    check(
+      'paranoid_v1_backup_attestations_offsite_pair',
+      sql`(${t.offsiteConfirmedAt} is null) = (${t.offsiteConfirmedSha256} is null)`,
+    ),
+    check(
+      'paranoid_v1_backup_attestations_sha_shape',
+      sql`${t.archiveSha256} ~ '^[0-9a-f]{64}$'
+        and (${t.offsiteConfirmedSha256} is null or ${t.offsiteConfirmedSha256} ~ '^[0-9a-f]{64}$')`,
+    ),
+  ],
+);
 
 /**
  * One row per wiped account — three jobs in one table.
@@ -4111,9 +4242,7 @@ export const paranoidV1WipeReceipts = pgTable(
     userId: uuid('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'cascade' }),
-    attestationId: uuid('attestation_id')
-      .notNull()
-      .references(() => paranoidV1BackupAttestations.id, { onDelete: 'restrict' }),
+    attestationId: uuid('attestation_id').notNull(),
     wipedAt: timestamp('wiped_at', { withTimezone: true }).notNull().defaultNow(),
     priorPrivacyMode: text('prior_privacy_mode').notNull(),
     priorMediaSet: text('prior_media_set').array(),
@@ -4124,6 +4253,19 @@ export const paranoidV1WipeReceipts = pgTable(
     index('paranoid_v1_wipe_receipts_notice_pending_idx')
       .on(t.userId)
       .where(sql`${t.noticeAcknowledgedAt} is null`),
+
+    index('paranoid_v1_wipe_receipts_attestation_id_idx').on(t.attestationId),
+
+    /**
+     * Named explicitly: 0102 gave this FK a hand-picked short name because
+     * Drizzle's generated one (`..._attestation_id_paranoid_v1_backup_attestations_id_fk`)
+     * exceeds Postgres' 63-byte identifier limit and would be stored truncated.
+     */
+    foreignKey({
+      name: 'paranoid_v1_wipe_receipts_attestation_id_fk',
+      columns: [t.attestationId],
+      foreignColumns: [paranoidV1BackupAttestations.id],
+    }).onDelete('restrict'),
   ],
 );
 
@@ -4258,9 +4400,7 @@ export const vaults = pgTable(
      * The migration makes this FK DEFERRABLE INITIALLY DEFERRED for the same
      * account-deletion ordering reason as `drive_connection_id`.
      */
-    mediaAttestedDriveConnectionId: uuid('media_attested_drive_connection_id').references(
-      () => driveConnections.id,
-    ),
+    mediaAttestedDriveConnectionId: uuid('media_attested_drive_connection_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -4321,6 +4461,21 @@ export const vaults = pgTable(
           )
         )`,
     ),
+
+    index('vaults_media_attested_drive_connection_id_idx').on(t.mediaAttestedDriveConnectionId),
+
+    /**
+     * Named explicitly: 0097 gave this FK a hand-picked short name (Drizzle's
+     * generated `vaults_media_attested_drive_connection_id_drive_connections_id_fk`
+     * is past Postgres' 63-byte identifier limit). The migration also makes it
+     * DEFERRABLE INITIALLY DEFERRED, which Drizzle cannot express — the
+     * declaration here carries the name and the reference, not the timing.
+     */
+    foreignKey({
+      name: 'vaults_media_attested_drive_connection_fk',
+      columns: [t.mediaAttestedDriveConnectionId],
+      foreignColumns: [driveConnections.id],
+    }),
   ],
 );
 
@@ -4399,6 +4554,8 @@ export const vaultBlobs = pgTable(
       'vault_blobs_portfolio_doc_id',
       sql`${t.docKind} <> 'portfolio' or ${t.docId} = ${t.portfolioId}`,
     ),
+
+    index('vault_blobs_portfolio_id_idx').on(t.portfolioId),
   ],
 );
 
