@@ -22,6 +22,7 @@ superseded designs move to [`history/`](history/) instead of being deleted.
 | [`ops.md`](ops.md)                               | Ops runbook: backups, restore drills, offsite upload, retention, provider failover, troubleshooting |
 | [`paranoid-design.md`](paranoid-design.md)       | Binding design note for client-encrypted paranoid vaults (V5-P13)                                   |
 | [`supply-chain.md`](supply-chain.md)             | Container image scanning (Trivy) and CycloneDX SBOM generation                                      |
+| [`vault-qr-contract.md`](vault-qr-contract.md)   | The normative `btvault1:` QR seed-phrase wire contract, extracted from `paranoid-design.md` §13     |
 
 ## Archive
 
@@ -33,6 +34,11 @@ verification), the Origin redesign record (`history/redesign/`;
 the v6 ground-up redesign is tracked in #544), the single-factory and
 Fable-outage runbooks, broker-integration research, and the local Ollama setup
 runbook ([`history/ollama-runbook.md`](history/ollama-runbook.md) — still the
-reference for provisioning the LAN Ollama box, issue #657). Each archived file
+reference for provisioning the LAN Ollama box, issue #657), the paranoid-vaults
+design narrative superseded by the post-E9 condensation
+([`history/paranoid-design-history.md`](history/paranoid-design-history.md)) and
+the V1-era `PROJECTPLAN.md` §6/§7 text with its folded §13.2–§13.5 milestone
+tables ([`history/PROJECTPLAN-V1-sections.md`](history/PROJECTPLAN-V1-sections.md)) —
+both append-only. Each archived file
 carries a one-line header stating when it was archived and what supersedes it;
 nothing in `history/` is authoritative for current behaviour.
