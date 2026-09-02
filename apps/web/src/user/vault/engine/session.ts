@@ -419,6 +419,24 @@ function validatePersistedTaxFacts(document: VaultDocument): void {
   }
 }
 
+/**
+ * The frozen-fact shape gate. `country_specific` REQUIRES a country here — the
+ * legacy V3-P4 rows that carry the mode with `taxCountry = null`
+ * (`drizzle/0021_tax_engine.sql` shipped the column with no backfill) are
+ * VAULT_CORRUPT on this side by design: the vault document is the only copy
+ * left, so the client cannot lean on the server engine's legacy reading
+ * (`frozenTaxCountryEngine(null)` → AT, pinned by the #1512 classifier vectors)
+ * without silently inventing a fact the document does not state.
+ *
+ * That shape can therefore never legitimately reach a vault: the capture
+ * refuses it up front with `VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED` and zero
+ * writes (`portfolioMoveCapture.ts refuseLegacyNullCountryTaxRows`, which also
+ * records the recommended migration path — a one-off
+ * `tax_country = 'AT' WHERE tax_mode = 'country_specific' AND tax_country IS NULL`
+ * backfill; `docs/paranoid-design.md` §9). This gate stays strict either way:
+ * after the backfill there is nothing left for it to reject, and before it a
+ * document holding the shape came from somewhere other than the capture.
+ */
 function validateFrozenTaxShape(
   kind: 'transaction' | 'dividend',
   id: string,
