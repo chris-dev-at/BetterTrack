@@ -1120,6 +1120,11 @@ function TransactionRow({
   deleting: boolean;
 }) {
   const t = useT();
+  // Editing and deleting a transaction are writes. They are unreachable today
+  // only because the store that refuses writes also refuses the row READ that
+  // renders this table — luck, not a guard, and #1532's document-source seam
+  // is about to make those rows render.
+  const { writes } = usePortfolioStoreCapabilities();
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -1147,7 +1152,7 @@ function TransactionRow({
         {txn.note ?? EM_DASH}
       </td>
       <td className="is-num">
-        {confirming ? (
+        {!writes ? null : confirming ? (
           <span className="inline-flex items-center gap-1">
             <span className="bt-muted">{t('portfolio.overview.transaction.deleteConfirm')}</span>
             <button
@@ -1210,6 +1215,9 @@ function TransactionCard({
   deleting: boolean;
 }) {
   const t = useT();
+  // Same guard as TransactionRow: a store that cannot write offers no edit or
+  // delete, whatever renders the rows.
+  const { writes } = usePortfolioStoreCapabilities();
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -1252,7 +1260,7 @@ function TransactionCard({
         </div>
       </dl>
       <div className="bt-phone-card__actions">
-        {confirming ? (
+        {!writes ? null : confirming ? (
           <>
             <span className="bt-muted self-center">
               {t('portfolio.overview.transaction.deleteConfirm')}

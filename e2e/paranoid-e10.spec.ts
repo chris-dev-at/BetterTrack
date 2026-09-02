@@ -59,8 +59,10 @@ import { provisionUser, provisionUserInContext, type E2EUser } from './support/u
  *     refuses in `provisionVault.ts`. The e2e web config does not override the
  *     flag and this spec does not either; what the flag DOES ship — an honest,
  *     disabled option that names the missing epic — is asserted in [E10-A5].
- *     The account-level v1 Drive-only round trip keeps its coverage in
- *     `e2e/paranoid.spec.ts` ([PD9-A3]).
+ *     The account-level v1 Drive-only round trip ([PD9-A3] in
+ *     `e2e/paranoid.spec.ts`) USED to carry this coverage; it is quarantined
+ *     since the §16 2026-08-30 ruling retired the v1 enable entry point, so the
+ *     product currently has NO Drive-medium e2e at all. Stated, not hidden.
  *
  * The former third carve-out — executable move-in / move-out — closed with the
  * E6 capture residual (#1525): [E10-A10] runs the full
@@ -773,7 +775,26 @@ test.describe('PARANOID E10 per-vault gate', () => {
     }
   });
 
-  test('[E10-A11] the enable wizard asks for Drive consent before the passphrase', async ({
+  /**
+   * [E10-A11] — the #1354 ORDERING property, carried over to the surface that
+   * still exists.
+   *
+   * #1354 ruled that the storage/medium consent is collected BEFORE the
+   * passphrase, so it can never be asked for after the point of no return. It
+   * was asserted on the account-level enable wizard, whose entry point the §16
+   * 2026-08-30 ruling retired (see `V1_ENABLE_ENTRY_RETIRED` in
+   * `e2e/paranoid.spec.ts`) — so the assertion moves to the per-portfolio
+   * ceremony, which is the ceremony a user can actually reach.
+   *
+   * The property survives the move intact and is, if anything, stronger here:
+   * `VaultCreationCeremony.nextFromMedia()` generates the seed phrase only
+   * after the medium is settled, so at the storage step no key material exists
+   * at all — not merely "is not on screen yet". The Drive-CONSENT half of
+   * #1354 cannot be asserted on this path because per-vault Drive is off at
+   * build level; [E10-A5] pins that it is refused honestly instead, and the
+   * account-level consent ordering is the fixme below.
+   */
+  test('[E10-A11] storage is chosen before any key material exists', async ({
     context,
   }, testInfo) => {
     skipOnPhone(testInfo);
@@ -790,69 +811,69 @@ test.describe('PARANOID E10 per-vault gate', () => {
       collectSanitizedDiagnostics(page, diagnostics);
       await openPrivacyPanel(page);
 
-      // The ONE paranoid entry point. "Set up" also exists in the first-run
-      // security step, so the count is asserted rather than assumed unique.
-      const setUp = page.getByRole('button', { name: 'Set up', exact: true });
-      await expect(setUp).toHaveCount(1);
-      await setUp.click();
-
-      const wizard = page.getByLabel('Enable Paranoid mode');
-      await expect(wizard).toBeVisible({ timeout: 60_000 });
-      await expect(wizard.getByText('Step 1 of 4')).toBeVisible();
-      await expect(
-        wizard.getByRole('heading', { name: 'What changes', exact: true }),
-      ).toBeVisible();
-      await wizard.getByRole('button', { name: 'Continue', exact: true }).click();
-
-      await test.step('[E10-A11 proof] storage + Drive consent is step 2, the passphrase is not', async () => {
-        // #1354: consent moved AHEAD of the passphrase so it can never be
-        // collected after the point of no return. The ordering is the security
-        // property, so it is asserted as an ordering — the consent control is
-        // on screen while the passphrase field does not exist yet.
-        await expect(wizard.getByText('Step 2 of 4')).toBeVisible();
+      await test.step('the retired account-level entry is gone, not merely unused', async () => {
+        // The §16 ruling's own regression pin. "Set up" also exists in the
+        // first-run security step, so this asserts the count on THIS panel
+        // rather than assuming the string is unique app-wide.
+        await expect(page.getByRole('button', { name: 'Set up', exact: true })).toHaveCount(0);
         await expect(
-          wizard.getByRole('heading', { name: 'Choose encrypted storage', exact: true }),
+          page.getByRole('button', { name: 'Create vault', exact: true }),
+          'the per-portfolio ceremony is what a normal account is offered instead',
         ).toBeVisible();
+      });
+
+      await page.getByRole('button', { name: 'Create vault', exact: true }).click();
+      const ceremony = page.getByRole('region', { name: 'Create a vault' });
+      await expect(ceremony.getByText('Step 1 of 6')).toBeVisible();
+      await ceremony.locator('#vault-create-name').fill('E10 ordering');
+      await ceremony.getByRole('button', { name: 'Continue', exact: true }).click();
+
+      await test.step('[E10-A11 proof] storage is step 2 and NO secret exists yet', async () => {
+        // The ordering IS the security property, so it is asserted as an
+        // ordering: the medium is on screen while neither the recovery words
+        // nor the device password exist anywhere in the DOM.
+        await expect(ceremony.getByText('Step 2 of 6')).toBeVisible();
+        await expect(ceremony.getByRole('heading', { name: 'Storage', exact: true })).toBeVisible();
         await expect(
-          wizard.getByText('Also keep a verified copy in my Google Drive'),
-          'the Drive consent must be offered here',
-        ).toBeVisible();
+          ceremony.getByRole('radio'),
+          'the storage choice must be offered here',
+        ).toHaveCount(3);
         await expect(
-          wizard.locator('#vault-passphrase'),
-          'the passphrase must NOT be collectable before the storage consent',
+          ceremony.locator('ol li'),
+          'the recovery words must NOT exist before the storage choice is settled',
+        ).toHaveCount(0);
+        await expect(
+          ceremony.locator('#vault-device-password'),
+          'the device password must NOT be collectable before the storage choice',
         ).toHaveCount(0);
       });
 
-      await test.step('the passphrase step follows, and cannot commit unacknowledged', async () => {
-        await wizard.getByRole('button', { name: 'Continue', exact: true }).click();
-        await expect(wizard.getByText('Step 3 of 4')).toBeVisible();
+      await test.step('the key material follows, and only then', async () => {
+        await ceremony.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(ceremony.getByText('Step 3 of 6')).toBeVisible();
         await expect(
-          wizard.getByRole('heading', { name: 'Protect your vault', exact: true }),
+          ceremony.getByRole('heading', { name: 'Recovery words', exact: true }),
         ).toBeVisible();
-        await expect(wizard.locator('#vault-passphrase')).toBeVisible();
-        // The one-way commit stays blocked until the kit is downloaded and both
-        // acknowledgments are given — nothing about this test enables the mode.
-        await expect(
-          wizard.getByRole('button', { name: 'Enable Paranoid mode', exact: true }),
-        ).toBeDisabled();
+        await expect(ceremony.locator('ol li')).toHaveCount(12);
+        // Still nothing irreversible: the vault is created at step 6, and the
+        // words are only ever displayed once the medium is decided.
+        await expect(ceremony.locator('#vault-device-password')).toHaveCount(0);
       });
 
-      await test.step('and walking the wizard changed nothing', async () => {
-        // The commit is the ONLY thing that flips the mode; reaching step 3 and
-        // leaving must not. (Step 3's footer offers Back and the commit — the
-        // quiet exit lives on step 1 — so this leaves by navigation.)
+      await test.step('and walking the ceremony changed nothing', async () => {
+        // Reaching the words and leaving must create no vault — the commit is
+        // the only thing that does.
         await page.goto('/portfolio');
         await expectUserShellReady(page);
+        expect(await listVaultsApi(owner!)).toHaveLength(0);
         const me = await owner!.context.request.get(apiV1('/auth/me'));
         expect(((await me.json()) as { privacyMode?: string }).privacyMode).toBe('normal');
-        expect(await listVaultsApi(owner!)).toHaveLength(0);
       });
     } catch (error) {
       bodyFailure = error;
       // Drop the matcher's aria snapshot before the runner turns this into
-      // `error-context.md`: it prints input VALUES, this arc types a real device
-      // password, and the artifact is uploaded by the nightly. See
-      // `e2e/support/artifactHygiene.ts`.
+      // `error-context.md`: it prints input VALUES, and the artifact is
+      // uploaded by the nightly. See `e2e/support/artifactHygiene.ts`.
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {
@@ -861,6 +882,21 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await assertNoE10Secrets(testInfo, diagnostics, [], bodyFailure);
       }
     }
+  });
+
+  /**
+   * CARVE-OUT 3 — the ACCOUNT-LEVEL half of #1354's ordering.
+   *
+   * "Drive consent is collected before the passphrase" was proven end to end on
+   * the v1 enable wizard until its entry point was retired (§16, 2026-08-30);
+   * the wizard component still exists and `POST /vault/enable` still serves the
+   * accounts that already took it, but nothing renders it, so there is nothing
+   * to drive. [E10-A11] above keeps the ORDERING property alive on the
+   * per-portfolio ceremony. Promote this only if the account-level entry
+   * returns; otherwise it retires with the v1 stack in §17/§19.
+   */
+  test.fixme('[E10-A11b] account-level Drive consent precedes the passphrase (blocked: the v1 enable entry point is retired)', () => {
+    // Intentionally empty: see the block comment above.
   });
 
   /**
