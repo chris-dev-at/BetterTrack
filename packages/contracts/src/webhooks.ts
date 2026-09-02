@@ -224,8 +224,43 @@ export const WEBHOOK_SECRET_PREFIX = 'whsec_';
  * Consecutive terminally-failed deliveries after which a subscription
  * auto-disables (`disabledReason: 'auto'`). Shared so the UI can name the
  * threshold in its copy. Re-enabling resets the counter.
+ *
+ * Counted only inside {@link WEBHOOK_AUTO_DISABLE_WINDOW_MS} — the threshold
+ * alone is a lifetime tally, which cannot tell a dead receiver from a healthy
+ * one that has blipped five times over five months.
  */
 export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
+
+/**
+ * The bounded window the {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} terminal
+ * failures must fall inside for a subscription to auto-disable: the streak is
+ * anchored at its FIRST failure and a failure arriving more than this long
+ * after that anchor starts a fresh streak at 1 rather than adding to a stale
+ * one.
+ *
+ * 24 hours, and the trade is deliberate in both directions. An outage that ends
+ * inside the window leaves the streak to expire on its own, with no user
+ * action, and a streak can no longer be assembled out of blips months apart.
+ *
+ * Two things this window does NOT do, named so neither reads as solved (#1646
+ * carries both):
+ *
+ * - It bounds only the MAXIMUM span of a streak, never a minimum. The retry
+ *   ladder is well under a minute, so five events delivered during one
+ *   five-minute 503 still burn five terminal failures inside the window and
+ *   still auto-disable. A minimum-span rule (or a half-open probe before the
+ *   disable) is the separate half of that problem.
+ * - A genuinely dead receiver subscribed to events rarer than the window
+ *   (gaps > 24 h) resets to 1 forever and never auto-disables, paying the retry
+ *   ladder per event. Closing that needs a second, slower trip — e.g. N
+ *   failures with no success since `last_success_at` for X days — not a longer
+ *   window.
+ *
+ * Both residuals err the same way, which is the intended one: keeping a quiet
+ * or briefly-unreachable subscription alive is the cheaper mistake — the loud
+ * one is disabling a working receiver, which silently drops every later event.
+ */
+export const WEBHOOK_AUTO_DISABLE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Hard cap on active subscriptions per user (anti-abuse / anti-bloat). */
 export const WEBHOOK_MAX_SUBSCRIPTIONS = 20;

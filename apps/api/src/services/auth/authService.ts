@@ -1185,17 +1185,31 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         // response deadline below masks the known-account writes (§6.1). Both
         // branches also take the repository's per-address issue lock, so a burst
         // of concurrent requests cannot distinguish the row-locking branch.
+        //
+        // The success audit rides *inside* the issue transaction. It used to be a
+        // second awaited write on the response path, and a second write has to
+        // *acquire* its own pooled connection — an acquisition the no-account
+        // branch never makes. Under a saturated pool that extra wait is unbounded
+        // and lands on the known branch only, so it can overrun the fixed response
+        // floor that is supposed to hide the difference and leave response time an
+        // account-existence oracle (CI saw a ~146 ms p90 split on a loaded runner).
+        // Same row, same content, now on the connection this request already
+        // holds: both branches make one pooled acquisition per issue, and the
+        // audit becomes atomic with the token it describes.
         await passwordResetRepo.issueOrEqualize(
           resetUser ? { userId: resetUser.id, tokenHash, expiresAt } : null,
           address.trim().toLowerCase(),
+          resetUser
+            ? (executor) =>
+                audit.recordInTransaction(executor, {
+                  action: AuditAction.PasswordResetRequested,
+                  targetType: 'user',
+                  targetId: resetUser.id,
+                  ip,
+                })
+            : undefined,
         );
         if (resetUser) {
-          await audit.record({
-            action: AuditAction.PasswordResetRequested,
-            targetType: 'user',
-            targetId: resetUser.id,
-            ip,
-          });
           // Best-effort send after the token is committed. SMTP latency must never
           // become an account-existence oracle; the detached send still owns the
           // normal email_log and failure-audit semantics (§6.10/§6.11).

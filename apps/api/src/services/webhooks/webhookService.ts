@@ -185,8 +185,11 @@ export function createWebhookService(deps: WebhookServiceDeps): WebhookService {
       if (enabled !== undefined && enabled !== current.enabled) {
         patch.enabled = enabled;
         if (enabled) {
-          // Manual re-enable clears the whole failure state (§13.5 V5-P10).
+          // Manual re-enable clears the whole failure state (§13.5 V5-P10) —
+          // including the streak's window anchor, so the next failure opens a
+          // fresh window rather than resuming the one that disabled it.
           patch.consecutiveFailures = 0;
+          patch.failureWindowStartedAt = null;
           patch.disabledReason = null;
           patch.disabledAt = null;
         } else {

@@ -9,6 +9,7 @@ import {
   PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
   PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
+  WEBHOOK_AUTO_DISABLE_WINDOW_MS,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_DELIVERY_REFUSED_ERROR,
   WEBHOOK_EVENT_HEADER,
@@ -52,7 +53,7 @@ import {
   type JobDefinition,
 } from '../jobs';
 import { isParanoidKilledWebhookEvent } from '../services/account/paranoidEnforcement';
-import type { AuditService } from '../services/audit/auditService';
+import { AuditAction, type AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
 import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard';
@@ -113,8 +114,26 @@ function recordingTransport(status = 200): {
   };
 }
 
+/** A uuid-shaped delivery id from a counter (the log column is a uuid). */
+function deliveryId(n: number): string {
+  return `00000000-0000-8000-8000-${String(n).padStart(12, '0')}`;
+}
+
 let harness: TestHarness;
 let recorder: ReturnType<typeof recordingTransport>;
+
+/** The stored subscription row — the failure streak + its window anchor. */
+async function subscriptionRow(
+  db: TestHarness['db'],
+  id: string,
+): Promise<typeof schema.webhookSubscriptions.$inferSelect> {
+  const [row] = await db
+    .select()
+    .from(schema.webhookSubscriptions)
+    .where(eq(schema.webhookSubscriptions.id, id));
+  expect(row).toBeDefined();
+  return row!;
+}
 
 async function loginAgent(app: Application, identifier: string, password: string): Promise<Agent> {
   const agent = request.agent(app);
@@ -171,13 +190,9 @@ describe('webhook subscription CRUD + one-time secret', () => {
 
     // Stored form is the AES-256-GCM envelope, never the plaintext — and it
     // decrypts back to exactly the secret shown once.
-    const [row] = await harness.db
-      .select()
-      .from(schema.webhookSubscriptions)
-      .where(eq(schema.webhookSubscriptions.id, id));
-    expect(row).toBeDefined();
-    expect(row!.secretEncrypted).not.toContain(secret);
-    expect(decryptSecret(row!.secretEncrypted, harness.ctx.config.twoFactor.encryptionKey)).toBe(
+    const row = await subscriptionRow(harness.db, id);
+    expect(row.secretEncrypted).not.toContain(secret);
+    expect(decryptSecret(row.secretEncrypted, harness.ctx.config.twoFactor.encryptionKey)).toBe(
       secret,
     );
 
@@ -785,6 +800,32 @@ describe('signed delivery', () => {
 });
 
 describe('failure handling: retry decision, auto-disable, re-enable', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+
+  /**
+   * A dispatcher on an injectable clock, so a test can place terminal failures
+   * at chosen instants and exercise the auto-disable WINDOW rather than merely
+   * their adjacency in a loop.
+   */
+  function clockedDispatcher(options: {
+    h: TestHarness;
+    transport: WebhookTransport;
+    now: () => number;
+    audit?: Pick<AuditService, 'record'>;
+    encryptionKey?: Buffer;
+  }): ReturnType<typeof createWebhookDispatcher> {
+    return createWebhookDispatcher({
+      subscriptions: createWebhookSubscriptionRepository(options.h.db),
+      deliveries: createWebhookDeliveryRepository(options.h.db),
+      transport: options.transport,
+      encryptionKey: options.encryptionKey ?? options.h.ctx.config.twoFactor.encryptionKey,
+      audit: options.audit ?? noopAudit,
+      logger: options.h.ctx.logger,
+      dnsResolver: publicTestResolver,
+      now: options.now,
+    });
+  }
+
   it('is retryable on a non-final attempt (logging nothing) and terminal on the last', async () => {
     const failing = recordingTransport(500);
     const h = await createTestApp({ webhookTransport: failing.transport });
@@ -897,7 +938,147 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(afterList.subscriptions[0]!.enabled).toBe(true);
   });
 
-  it('auto-disables after N consecutive failures, records + audits it, and re-enables manually', async () => {
+  it('survives a transient outage: a streak older than the window restarts instead of tripping', async () => {
+    const { id, userId } = await createSubscription(['alert.triggered']);
+    const failing = recordingTransport(500);
+    const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
+    const opened = clock.ms;
+    const dispatcher = clockedDispatcher({
+      h: harness,
+      transport: failing.transport,
+      now: () => clock.ms,
+    });
+    let sent = 0;
+    const failOnce = async (): Promise<string> => {
+      sent += 1;
+      const result = await dispatcher.deliver(
+        { subscriptionId: id, deliveryId: deliveryId(sent), event: alertEvent(userId) },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      return result.outcome;
+    };
+
+    // A blip: N-1 terminal failures an hour apart, comfortably inside the window.
+    for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD - 1; i += 1) {
+      expect(await failOnce()).toBe('failed');
+      clock.ms += HOUR_MS;
+    }
+    const duringOutage = await subscriptionRow(harness.db, id);
+    expect(duringOutage.enabled).toBe(true);
+    expect(duringOutage.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD - 1);
+    expect(duringOutage.failureWindowStartedAt?.getTime()).toBe(opened);
+
+    // The receiver then behaves for longer than the window before blipping once
+    // more. Under the old lifetime counter that lone failure was the fifth and
+    // killed the subscription; it must now open a fresh streak instead.
+    clock.ms += WEBHOOK_AUTO_DISABLE_WINDOW_MS + 1_000;
+    const reopened = clock.ms;
+    expect(await failOnce()).toBe('failed');
+    const afterQuiet = await subscriptionRow(harness.db, id);
+    expect(afterQuiet.enabled).toBe(true);
+    expect(afterQuiet.disabledReason).toBeNull();
+    expect(afterQuiet.consecutiveFailures).toBe(1);
+    expect(afterQuiet.failureWindowStartedAt?.getTime()).toBe(reopened);
+
+    // The restarted streak still trips: the window decays failures, it does not
+    // exempt a receiver that keeps failing.
+    for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD - 2; i += 1) {
+      clock.ms += HOUR_MS;
+      expect(await failOnce()).toBe('failed');
+    }
+    clock.ms += HOUR_MS;
+    expect(await failOnce()).toBe('disabled');
+    expect((await subscriptionRow(harness.db, id)).enabled).toBe(false);
+  });
+
+  it('disables on N failures inside the window and audits the windowed count', async () => {
+    const { id, userId } = await createSubscription(['alert.triggered']);
+    const failing = recordingTransport(500);
+    const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
+    const opened = clock.ms;
+    const audited: Parameters<AuditService['record']>[0][] = [];
+    const dispatcher = clockedDispatcher({
+      h: harness,
+      transport: failing.transport,
+      now: () => clock.ms,
+      audit: {
+        record: async (entry) => {
+          audited.push(entry);
+        },
+      },
+    });
+
+    // Spread across four hours apiece — never adjacent, but all inside one window.
+    const step = Math.floor(WEBHOOK_AUTO_DISABLE_WINDOW_MS / (WEBHOOK_AUTO_DISABLE_THRESHOLD + 1));
+    for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD; i += 1) {
+      if (i > 0) clock.ms += step;
+      const result = await dispatcher.deliver(
+        { subscriptionId: id, deliveryId: deliveryId(i + 1), event: alertEvent(userId) },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      expect(result.outcome).toBe(i === WEBHOOK_AUTO_DISABLE_THRESHOLD - 1 ? 'disabled' : 'failed');
+    }
+    expect(clock.ms - opened).toBeLessThan(WEBHOOK_AUTO_DISABLE_WINDOW_MS);
+
+    const disabled = await subscriptionRow(harness.db, id);
+    expect(disabled.enabled).toBe(false);
+    expect(disabled.disabledReason).toBe('auto');
+    expect(disabled.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+    // The anchor stays at the FIRST failure of the streak, not the last.
+    expect(disabled.failureWindowStartedAt?.getTime()).toBe(opened);
+
+    expect(audited.map((entry) => entry.action)).toEqual([AuditAction.WebhookAutoDisabled]);
+    expect(audited[0]!.targetId).toBe(id);
+    expect(audited[0]!.meta).toMatchObject({ failures: WEBHOOK_AUTO_DISABLE_THRESHOLD });
+  });
+
+  it('a successful delivery clears the streak and its window anchor', async () => {
+    const { id, userId } = await createSubscription(['alert.triggered']);
+    const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
+    const failing = clockedDispatcher({
+      h: harness,
+      transport: recordingTransport(500).transport,
+      now: () => clock.ms,
+    });
+    const healthy = clockedDispatcher({
+      h: harness,
+      transport: recordingTransport(200).transport,
+      now: () => clock.ms,
+    });
+
+    for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD - 1; i += 1) {
+      await failing.deliver(
+        { subscriptionId: id, deliveryId: deliveryId(i + 1), event: alertEvent(userId) },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      clock.ms += HOUR_MS;
+    }
+    expect((await subscriptionRow(harness.db, id)).consecutiveFailures).toBe(
+      WEBHOOK_AUTO_DISABLE_THRESHOLD - 1,
+    );
+
+    const ok = await healthy.deliver(
+      { subscriptionId: id, deliveryId: deliveryId(50), event: alertEvent(userId) },
+      { attempt: 1, maxAttempts: 1 },
+    );
+    expect(ok.outcome).toBe('delivered');
+    const cleared = await subscriptionRow(harness.db, id);
+    expect(cleared.consecutiveFailures).toBe(0);
+    expect(cleared.failureWindowStartedAt).toBeNull();
+
+    // And the next failure opens a brand-new window rather than resuming the old.
+    clock.ms += HOUR_MS;
+    const resumed = await failing.deliver(
+      { subscriptionId: id, deliveryId: deliveryId(51), event: alertEvent(userId) },
+      { attempt: 1, maxAttempts: 1 },
+    );
+    expect(resumed.outcome).toBe('failed');
+    const restarted = await subscriptionRow(harness.db, id);
+    expect(restarted.consecutiveFailures).toBe(1);
+    expect(restarted.failureWindowStartedAt?.getTime()).toBe(clock.ms);
+  });
+
+  it('auto-disables after N failures within the window, records + audits it, and re-enables manually', async () => {
     const failing = recordingTransport(500);
     const h = await createTestApp({ webhookTransport: failing.transport });
     const user = await h.seedUser();
@@ -908,7 +1089,8 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
       .send({ url: 'https://down.test/hook', eventTypes: ['alert.triggered'] });
     const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
 
-    // Each fire is one terminal failure (test seam runs a single attempt).
+    // Each fire is one terminal failure (test seam runs a single attempt), and
+    // all N land back-to-back on the real clock — i.e. inside one window.
     for (let i = 0; i < WEBHOOK_AUTO_DISABLE_THRESHOLD; i += 1) {
       await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
     }
@@ -920,6 +1102,15 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(afterList.subscriptions[0]!.enabled).toBe(false);
     expect(afterList.subscriptions[0]!.disabledReason).toBe('auto');
     expect(afterList.subscriptions[0]!.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+
+    // Windowed, not a lifetime tally: the N failures share one streak whose
+    // anchor is set and whose span ended well inside the window.
+    const disabledRow = await subscriptionRow(h.db, subId);
+    expect(disabledRow.failureWindowStartedAt).not.toBeNull();
+    expect(disabledRow.disabledAt).not.toBeNull();
+    expect(
+      disabledRow.disabledAt!.getTime() - disabledRow.failureWindowStartedAt!.getTime(),
+    ).toBeLessThan(WEBHOOK_AUTO_DISABLE_WINDOW_MS);
 
     // The disable is audit-logged.
     const actions = (
@@ -941,30 +1132,37 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(reenabled.body.subscription.enabled).toBe(true);
     expect(reenabled.body.subscription.disabledReason).toBeNull();
     expect(reenabled.body.subscription.consecutiveFailures).toBe(0);
+    // A clean slate includes the window anchor, so the next failure opens a
+    // fresh window instead of resuming the one that disabled the subscription.
+    expect((await subscriptionRow(h.db, subId)).failureWindowStartedAt).toBeNull();
 
     // And it delivers again.
     await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
     expect(failing.requests).toHaveLength(1);
   });
 
-  it('counts an undecryptable secret toward auto-disable', async () => {
+  it('counts an undecryptable secret toward auto-disable, within the same window', async () => {
     const { agent, id, userId } = await createSubscription(['alert.triggered']);
     const deliveries = createWebhookDeliveryRepository(harness.db);
-    const dispatcher = createWebhookDispatcher({
-      subscriptions: createWebhookSubscriptionRepository(harness.db),
-      deliveries,
+    const clock = { ms: Date.parse('2026-08-01T09:00:00.000Z') };
+    const opened = clock.ms;
+    const dispatcher = clockedDispatcher({
+      h: harness,
       transport: recorder.transport,
+      // A key the subscription's envelope was not sealed with → every delivery
+      // fails at decrypt, terminally.
       encryptionKey: Buffer.alloc(32, 0xff),
-      audit: noopAudit,
-      logger: harness.ctx.logger,
-      dnsResolver: publicTestResolver,
+      now: () => clock.ms,
     });
 
+    // An hour apart rather than back-to-back: what disables the subscription is
+    // that the N failures share a window, not that they are adjacent calls.
     for (let index = 0; index < WEBHOOK_AUTO_DISABLE_THRESHOLD; index += 1) {
+      if (index > 0) clock.ms += HOUR_MS;
       const result = await dispatcher.deliver(
         {
           subscriptionId: id,
-          deliveryId: `00000000-0000-8000-8000-${String(index + 1).padStart(12, '0')}`,
+          deliveryId: deliveryId(index + 1),
           event: alertEvent(userId),
         },
         { attempt: 1, maxAttempts: 1 },
@@ -980,6 +1178,7 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(afterList.subscriptions[0]!.enabled).toBe(false);
     expect(afterList.subscriptions[0]!.disabledReason).toBe('auto');
     expect(afterList.subscriptions[0]!.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+    expect((await subscriptionRow(harness.db, id)).failureWindowStartedAt?.getTime()).toBe(opened);
 
     const log = await deliveries.listForSubscription(id, WEBHOOK_AUTO_DISABLE_THRESHOLD);
     expect(log).toHaveLength(WEBHOOK_AUTO_DISABLE_THRESHOLD);
