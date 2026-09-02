@@ -1494,7 +1494,7 @@
       "newCustomButton": "+ Custom investment",
       "recordButton": "+ Transaction",
       "loadError": "Could not load your portfolio. Please refresh the page.",
-      "vaultedLoadError": "This portfolio could not be read from its vault just now. The vault stays open on this device \u2014 try again.",
+      "vaultedLoadError": "This portfolio could not be read from its vault just now. The vault stays open on this device — try again.",
       "detailsLoadError": "Some portfolio details couldn't be loaded. Please try again.",
       "emptyState": {
         "title": "Your portfolio is empty",
@@ -2166,6 +2166,7 @@
       },
       "startOver": "Import another file",
       "resolveFailed": "That row couldn't be pinned to the asset. Please try again.",
+      "confirmFailed": "That row's kind couldn't be confirmed. Please try again.",
       "pinnedByYou": "Pinned by you",
       "unknownTag": "Deleted tag",
       "step": {
@@ -2236,7 +2237,17 @@
         "unresolvedTitleOne": "{{count}} row without a matched instrument",
         "unresolvedTitleOther": "{{count}} rows without a matched instrument",
         "skippedTitleOne": "{{count}} row we can't import without you",
-        "skippedTitleOther": "{{count}} rows we can't import without you"
+        "skippedTitleOther": "{{count}} rows we can't import without you",
+        "undecidedTitleOne": "{{count}} row we can import once you say what it is",
+        "undecidedTitleOther": "{{count}} rows we can import once you say what they are",
+        "undecidedBody": "We read these rows completely — the file just never says whether they are money in, money out or a trade, and we don't guess about money. Tell us what a row is and it joins the import; the amount and the date stay exactly as the file wrote them.",
+        "undecidedBadge": "Your call",
+        "kindLabel": "What is this row?",
+        "kindPlaceholder": "Choose…",
+        "confirmCta": "Confirm",
+        "bulkTitle": "All the same kind?",
+        "bulkCtaOne": "Confirm {{count}} row as {{kind}}",
+        "bulkCtaOther": "Confirm {{count}} rows as {{kind}}"
       }
     },
     "tabs": {
@@ -4415,7 +4426,6 @@
       "ai": "AI",
       "users": "Users",
       "invites": "Invites",
-      "feedback": "Feedback",
       "settings": "Settings",
       "accountDefaults": "Account defaults",
       "announcements": "Announcements",
@@ -4431,7 +4441,10 @@
         "securityApi": "Security & API"
       },
       "registration": "Registration",
-      "testAccounts": "Test accounts"
+      "testAccounts": "Test accounts",
+      "opsHealth": "Health & queues",
+      "providers": "Providers",
+      "marketData": "Market data"
     },
     "settings": {
       "title": "Settings",
@@ -4953,24 +4966,13 @@
       "reopen": "Reopen"
     },
     "feedback": {
-      "title": "Feedback",
-      "subtitle": "Feature ideas, bugs, help requests, improvements, and other submissions.",
-      "refresh": "Refresh",
-      "loading": "Loading feedback…",
-      "loadError": "Could not load feedback.",
-      "actionError": "Could not update the feedback status.",
-      "empty": "No feedback yet.",
       "archive": "Archive",
       "unarchive": "Unarchive",
       "archived": "Archived",
-      "filters": {
-        "category": "Category",
-        "sort": "Sort",
-        "all": "All categories"
-      },
       "sort": {
         "category": "Priority: features first",
-        "newest": "Newest first"
+        "newest": "Newest first",
+        "aging": "Longest untouched first"
       },
       "category": {
         "feature": "Feature idea",
@@ -4987,12 +4989,8 @@
         "declined": "Declined",
         "shipped": "Shipped"
       },
-      "statusControl": "Status for feedback from {{user}}",
       "deletedByUser": "Deleted by user",
       "fields": {
-        "status": "Status",
-        "message": "Message",
-        "submittedBy": "Submitted by",
         "createdAt": "Submitted at"
       },
       "diagnostics": {
@@ -5003,12 +5001,6 @@
         "device": "Device",
         "locale": "Locale",
         "screen": "Screen"
-      },
-      "pagination": {
-        "navigation": "Feedback pages",
-        "summary": "Page {{page}} of {{pages}} · {{total}} total",
-        "previous": "Previous",
-        "next": "Next"
       }
     },
     "featureFlags": {
@@ -5214,8 +5206,90 @@
     "support": {
       "title": "Support",
       "subtitle": "Where user reports land and get answered.",
-      "comingSoon": "The helpdesk console — threads, internal notes, tags and saved views — arrives with W3.",
-      "openInbox": "Open the feedback inbox"
+      "refresh": "Refresh",
+      "stats": {
+        "needsReply": "Waiting on you",
+        "counting": "…",
+        "unavailable": "unavailable"
+      },
+      "keyboardHint": "j / k to move · Enter to open · Esc to close",
+      "filters": {
+        "search": "Search",
+        "searchPlaceholder": "Subject, message or submitter",
+        "status": "Status",
+        "allStatuses": "Any status",
+        "category": "Category",
+        "allCategories": "Any category",
+        "unread": "Unread",
+        "unreadOption": {
+          "all": "Read and unread",
+          "unread": "Unread only",
+          "read": "Read only"
+        },
+        "sort": "Sort",
+        "version": "Shipped version",
+        "versionPlaceholder": "e.g. 5.2.0",
+        "queue": "Queue",
+        "queueActive": "Active",
+        "queueArchived": "Archived",
+        "reset": "Clear filters"
+      },
+      "inbox": {
+        "label": "Support submissions",
+        "loading": "Loading the inbox…",
+        "empty": "Nothing has been submitted yet.",
+        "emptyFiltered": "No submission matches these filters.",
+        "emptyArchived": "Nothing has been archived.",
+        "noSubject": "(no subject)",
+        "unread": "Unread reply",
+        "noReplies": "no replies yet",
+        "lastWordYou": "you replied last",
+        "lastWordSubmitter": "they replied last",
+        "pagination": {
+          "navigation": "Inbox pages",
+          "range": "Page {{page}} of {{pages}} · {{total}} total",
+          "previous": "Previous",
+          "next": "Next"
+        }
+      },
+      "thread": {
+        "none": "Select a submission to read and answer it.",
+        "loading": "Loading the submission…",
+        "gone": "This submission no longer exists.",
+        "backToInbox": "Back to the inbox",
+        "opened": "opened {{age}} ago",
+        "lastChange": "status changed {{age}} ago",
+        "copyAsIssue": "Copy as issue",
+        "copied": "Copied",
+        "archiveError": "Could not change the archive state.",
+        "deletedByUserNote": "The submitter deleted this from their side. It is kept here for the record, and a reply would arrive somewhere they can no longer read.",
+        "statusLabel": "Set status",
+        "applyStatus": "Apply",
+        "statusError": "Could not update the status.",
+        "declinedReason": "Reason for declining",
+        "shippedVersion": "Shipped in version",
+        "submitterWillSee": "This is what the submitter will see.",
+        "reasonRequired": "Declining needs a reason before it can be saved.",
+        "versionRequired": "Shipping needs a version before it can be saved.",
+        "currentlyShown": "Shown to the submitter right now: {{text}}",
+        "messagesLoading": "Loading the conversation…",
+        "noReplies": "No replies yet.",
+        "authorYou": "You",
+        "olderTruncated": "Older messages are not shown here yet.",
+        "replyLabel": "Reply to {{user}}",
+        "replyPlaceholder": "Write a reply…",
+        "replyCount": "{{count}} / {{max}}",
+        "sendReply": "Send reply",
+        "replyError": "Could not send the reply.",
+        "submitter": "Submitter",
+        "account": "Account",
+        "openTickets": "Open",
+        "totalTickets": "Submissions",
+        "openInPeople": "Open in People →",
+        "history": "Their other submissions",
+        "historyEmpty": "This is their only submission.",
+        "diagnosticsNote": "Only these keys are ever shown. Anything else the client sent is dropped."
+      }
     },
     "registration": {
       "title": "Registration",
@@ -5482,6 +5556,111 @@
         "cleanupValue": "Expiry deletes it on the job runner — the same idempotent cleanup whether it fires once or five times — and writes an audit row."
       },
       "why": "There is no staging estate: production is the only estate, and the invite gate makes real smoke testing a token dance. That is what this is for."
+    },
+    "ops": {
+      "refresh": "Refresh",
+      "live": {
+        "label": "Live refresh",
+        "off": "Off",
+        "seconds": "{{seconds}} s",
+        "every": "Refreshing every {{seconds}} s",
+        "manualOnly": "Manual refresh only",
+        "pausedHidden": "Paused — this tab is in the background",
+        "updatedAt": "read at {{time}}"
+      },
+      "health": {
+        "title": "Health & queues",
+        "subtitle": "What the API depends on, what is queued, and what has failed for good."
+      },
+      "system": {
+        "title": "System",
+        "components": "Dependencies",
+        "build": "Deployed build",
+        "versionDetail": "The commit this API process was built from.",
+        "versionUnavailable": "The deploy marker could not be read."
+      },
+      "queues": {
+        "title": "Queues",
+        "queue": "Queue",
+        "waiting": "Waiting",
+        "active": "Active",
+        "delayed": "Delayed",
+        "failed": "Failed",
+        "paused": "Paused",
+        "heartbeat": "Worker heartbeat",
+        "heartbeatBudget": "expected every {{seconds}} s",
+        "idleHidden": "{{count}} idle queues are not listed.",
+        "allIdle": "Every queue is idle.",
+        "unavailable": "This API process holds no queue registry, so it cannot see the queues. This is not the same as the queues being empty."
+      },
+      "schedules": {
+        "title": "Scheduled work",
+        "subtitle": "Cadence, last run and what the sweep reported. Times come from the scheduler itself.",
+        "job": "Job",
+        "cadence": "Cadence",
+        "lastRun": "Last run",
+        "duration": "Took",
+        "next": "Next",
+        "every": "every {{age}}",
+        "in": "in {{age}}",
+        "overdue": "overdue by {{age}}",
+        "neverRun": "never run",
+        "empty": "No repeatable schedules are registered.",
+        "milliseconds": "{{ms}} ms"
+      },
+      "failures": {
+        "title": "Permanent failures",
+        "subtitle": "{{total}} retained. Newest first.",
+        "when": "When",
+        "queue": "Queue",
+        "reason": "Reason",
+        "attempts": "Attempts",
+        "empty": "No job has failed permanently.",
+        "readOnlyNote": "Read-only. Job payloads are never shown, and there is no retry or discard: what is safe to re-run differs per job, so one shared button could not be.",
+        "malformed": "{{count}} retained entries could not be read and are not listed."
+      },
+      "providers": {
+        "title": "Providers",
+        "subtitle": "Circuit breakers per capability, call outcomes and how much the cache absorbs.",
+        "capability": "Capability",
+        "breaker": "Breaker",
+        "failures": "Failures",
+        "lastError": "Last error",
+        "retryAt": "Retry from",
+        "callsSummary": "{{success}} served · {{error}} errored · {{shortCircuited}} short-circuited",
+        "noCapabilityCalls": "Nothing has called this provider yet, so it has no breakers to report.",
+        "sampledSince": "counting since {{time}}",
+        "processLocalNote": "These counters belong to the API process answering this request and reset when it restarts; the worker counts its own separately. There is no upstream quota figure — the provider is keyless, so no authoritative quota exists to show."
+      },
+      "cache": {
+        "hitRate": "Cache hit rate",
+        "hitDetail": "Served from the fresh copy.",
+        "staleRate": "Served stale",
+        "staleDetail": "Last-known-good, refreshed in the background.",
+        "lookups": "Cache lookups",
+        "negative": "Negative hits"
+      }
+    },
+    "marketData": {
+      "title": "Market data",
+      "subtitle": "An inspector for instrument, FX and import-mapping integrity. Not built yet.",
+      "comingSoonShort": "Planned — the inspector itself is a later package.",
+      "notShipped": "This tab is where the financial-data inspector will live. Nothing here reads an instrument, enqueues a job or touches a price.",
+      "plannedTitle": "What it will do, and what it will never do",
+      "plannedDescription": "The guardrails below are already decided and are not open for reinterpretation.",
+      "rows": {
+        "inspector": "Inspector",
+        "inspectorValue": "Provider mapping, latest and as-of values, history coverage and gaps, cache and breaker state, and recent job outcomes for one instrument or FX pair.",
+        "detection": "Detection",
+        "detectionValue": "Stale quotes, FX gaps and outliers, surfaced as findings rather than fixes.",
+        "imports": "Imports",
+        "importsValue": "Unresolved import mappings grouped by importer and error code — aggregates only, never a raw broker file.",
+        "writes": "The only writes",
+        "writesValue": "A guarded, audited enqueue of the existing per-symbol backfill and cache refresh. Both jobs are already idempotent; that is what makes the button safe.",
+        "never": "Never",
+        "neverValue": "No direct price-row edits, no blind duplicate merges, and no per-user data — only affected-user counts."
+      },
+      "why": "Editing a price by hand would put money math behind a browser session, and merging duplicates without provenance, a dry run and a rollback is a change nobody can undo. Both need a domain answer first, so this package ships the reading and stops there."
     }
   },
   "create": {

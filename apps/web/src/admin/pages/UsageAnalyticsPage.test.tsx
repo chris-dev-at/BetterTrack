@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse, UsageAnalyticsResponse } from '@bettertrack/contracts';
@@ -44,7 +45,11 @@ const usage: UsageAnalyticsResponse = {
 function renderPage() {
   return render(
     <AuthProvider>
-      <UsageAnalyticsPage />
+      {/* W4 folded Operations: the page renders the workspace tab strip, which
+          needs a router. */}
+      <MemoryRouter initialEntries={['/admin/usage-analytics']}>
+        <UsageAnalyticsPage />
+      </MemoryRouter>
     </AuthProvider>,
   );
 }

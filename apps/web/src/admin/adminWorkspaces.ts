@@ -9,12 +9,12 @@
  * Route paths are deliberately unchanged from the pre-W1 console: only the
  * grouping moved, so every bookmark still resolves.
  *
- * **W2 folds ONE workspace.** People now declares `tabs`, and its rail entry
- * collapses to a single "People" item: the tab strip on the page carries the
- * in-workspace navigation the child rows used to, so nothing became
- * unreachable. Workspaces that still list `pages` keep W1's shape — the nav
- * fold for Product & Comms and Security & API is a separate package (W7) and is
- * deliberately not smuggled in here.
+ * **W2 folded People; W4 folds Operations.** A folded workspace declares
+ * `tabs`, and its rail entry collapses to a single item: the tab strip on the
+ * page carries the in-workspace navigation the child rows used to, so nothing
+ * became unreachable. Workspaces that still list `pages` keep W1's shape — the
+ * nav fold for Product & Comms and Security & API was CUT as a package (W7,
+ * §16 2026-08-29) and is deliberately not smuggled in here.
  */
 
 export interface AdminDestination {
@@ -71,8 +71,14 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
   {
     key: 'support',
     labelKey: 'admin.nav.sections.support',
+    // W3 folded the workspace: the helpdesk IS the Support page, so the
+    // separate `/admin/feedback` row is gone and its URL redirects here. One
+    // live inbox, not two.
     to: '/admin/support',
-    pages: [{ to: '/admin/feedback', labelKey: 'admin.nav.feedback' }],
+    // A split pane needs the room: a queue column plus a conversation does not
+    // fit the narrow reading column.
+    wide: true,
+    pages: [],
   },
   {
     key: 'people',
@@ -94,15 +100,31 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
     ],
   },
   {
+    // W4 folds the second workspace. The landing is the health-and-queues
+    // cockpit; every pre-fold path stays a real route, so nothing that was
+    // bookmarked before the fold stopped resolving — the same contract W2 kept
+    // when it folded People.
     key: 'operations',
     labelKey: 'admin.nav.sections.operations',
+    to: '/admin/health',
     wide: true,
-    pages: [
-      { to: '/admin/health', labelKey: 'admin.nav.health' },
+    pages: [],
+    tabs: [
+      { to: '/admin/health', labelKey: 'admin.nav.opsHealth' },
       { to: '/admin/problems', labelKey: 'admin.nav.problems' },
+      { to: '/admin/providers', labelKey: 'admin.nav.providers' },
       { to: '/admin/monitoring', labelKey: 'admin.nav.monitoring' },
       { to: '/admin/email', labelKey: 'admin.nav.email' },
       { to: '/admin/usage-analytics', labelKey: 'admin.nav.usageAnalytics' },
+      {
+        // W5 (financial-data integrity) lives here as a tab — the §16 ruling of
+        // 2026-08-29. W4 ships the tab and a page that states the shape and the
+        // guardrails; the inspector itself is a later package.
+        to: '/admin/market-data',
+        labelKey: 'admin.nav.marketData',
+        comingSoon: true,
+        comingSoonKey: 'admin.marketData.comingSoonShort',
+      },
     ],
   },
   {

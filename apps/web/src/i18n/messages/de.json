@@ -1494,7 +1494,7 @@
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
-      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Ger\u00e4t offen \u2014 versuche es erneut.",
+      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Gerät offen — versuche es erneut.",
       "detailsLoadError": "Einige Portfolio-Details konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyState": {
         "title": "Dein Portfolio ist leer",
@@ -2166,6 +2166,7 @@
       },
       "startOver": "Weitere Datei importieren",
       "resolveFailed": "Die Zeile konnte nicht mit der Anlage verknüpft werden. Bitte versuche es erneut.",
+      "confirmFailed": "Der Typ dieser Zeile konnte nicht bestätigt werden. Bitte versuche es erneut.",
       "pinnedByYou": "Von dir zugeordnet",
       "unknownTag": "Gelöschter Tag",
       "step": {
@@ -2236,7 +2237,17 @@
         "unresolvedTitleOne": "{{count}} Zeile ohne zugeordnete Anlage",
         "unresolvedTitleOther": "{{count}} Zeilen ohne zugeordnete Anlage",
         "skippedTitleOne": "{{count}} Zeile können wir ohne dich nicht importieren",
-        "skippedTitleOther": "{{count}} Zeilen können wir ohne dich nicht importieren"
+        "skippedTitleOther": "{{count}} Zeilen können wir ohne dich nicht importieren",
+        "undecidedTitleOne": "{{count}} Zeile können wir importieren, sobald du sagst, was sie ist",
+        "undecidedTitleOther": "{{count}} Zeilen können wir importieren, sobald du sagst, was sie sind",
+        "undecidedBody": "Diese Zeilen haben wir vollständig gelesen — in der Datei steht nur nicht, ob es Geld ein, Geld aus oder ein Handel ist, und bei Geld raten wir nicht. Sag uns, was eine Zeile ist, dann kommt sie mit; Betrag und Datum bleiben genau so, wie sie in der Datei stehen.",
+        "undecidedBadge": "Deine Entscheidung",
+        "kindLabel": "Was ist diese Zeile?",
+        "kindPlaceholder": "Bitte wählen…",
+        "confirmCta": "Bestätigen",
+        "bulkTitle": "Alle vom selben Typ?",
+        "bulkCtaOne": "{{count}} Zeile als {{kind}} bestätigen",
+        "bulkCtaOther": "{{count}} Zeilen als {{kind}} bestätigen"
       }
     },
     "tabs": {
@@ -4415,7 +4426,6 @@
       "ai": "KI",
       "users": "Nutzer",
       "invites": "Einladungen",
-      "feedback": "Feedback",
       "settings": "Einstellungen",
       "accountDefaults": "Kontovorgaben",
       "announcements": "Ankündigungen",
@@ -4431,7 +4441,10 @@
         "securityApi": "Sicherheit & API"
       },
       "registration": "Registrierung",
-      "testAccounts": "Testkonten"
+      "testAccounts": "Testkonten",
+      "opsHealth": "Zustand & Warteschlangen",
+      "providers": "Anbieter",
+      "marketData": "Marktdaten"
     },
     "settings": {
       "title": "Einstellungen",
@@ -4953,24 +4966,13 @@
       "reopen": "Wieder öffnen"
     },
     "feedback": {
-      "title": "Feedback",
-      "subtitle": "Funktionsideen, Fehler, Hilfeanfragen, Verbesserungen und sonstige Rückmeldungen.",
-      "refresh": "Aktualisieren",
-      "loading": "Feedback wird geladen…",
-      "loadError": "Feedback konnte nicht geladen werden.",
-      "actionError": "Der Feedback-Status konnte nicht aktualisiert werden.",
-      "empty": "Noch kein Feedback vorhanden.",
       "archive": "Archivieren",
       "unarchive": "Wiederherstellen",
       "archived": "Archiviert",
-      "filters": {
-        "category": "Kategorie",
-        "sort": "Sortierung",
-        "all": "Alle Kategorien"
-      },
       "sort": {
         "category": "Priorität: Funktionen zuerst",
-        "newest": "Neueste zuerst"
+        "newest": "Neueste zuerst",
+        "aging": "Am längsten unberührt zuerst"
       },
       "category": {
         "feature": "Funktionsidee",
@@ -4987,12 +4989,8 @@
         "declined": "Abgelehnt",
         "shipped": "Veröffentlicht"
       },
-      "statusControl": "Status für Feedback von {{user}}",
       "deletedByUser": "Vom Benutzer gelöscht",
       "fields": {
-        "status": "Status",
-        "message": "Nachricht",
-        "submittedBy": "Eingereicht von",
         "createdAt": "Eingereicht am"
       },
       "diagnostics": {
@@ -5003,12 +5001,6 @@
         "device": "Gerät",
         "locale": "Sprache/Region",
         "screen": "Ansicht"
-      },
-      "pagination": {
-        "navigation": "Feedback-Seiten",
-        "summary": "Seite {{page}} von {{pages}} · {{total}} insgesamt",
-        "previous": "Zurück",
-        "next": "Weiter"
       }
     },
     "featureFlags": {
@@ -5214,8 +5206,90 @@
     "support": {
       "title": "Support",
       "subtitle": "Wo Meldungen von Nutzern ankommen und beantwortet werden.",
-      "comingSoon": "Die Helpdesk-Konsole — Verläufe, interne Notizen, Tags und gespeicherte Ansichten — kommt mit W3.",
-      "openInbox": "Feedback-Postfach öffnen"
+      "refresh": "Aktualisieren",
+      "stats": {
+        "needsReply": "Wartet auf dich",
+        "counting": "…",
+        "unavailable": "nicht verfügbar"
+      },
+      "keyboardHint": "j / k zum Wechseln · Enter zum Öffnen · Esc zum Schließen",
+      "filters": {
+        "search": "Suche",
+        "searchPlaceholder": "Betreff, Nachricht oder Absender",
+        "status": "Status",
+        "allStatuses": "Beliebiger Status",
+        "category": "Kategorie",
+        "allCategories": "Beliebige Kategorie",
+        "unread": "Ungelesen",
+        "unreadOption": {
+          "all": "Gelesen und ungelesen",
+          "unread": "Nur ungelesene",
+          "read": "Nur gelesene"
+        },
+        "sort": "Sortierung",
+        "version": "Veröffentlicht in Version",
+        "versionPlaceholder": "z. B. 5.2.0",
+        "queue": "Liste",
+        "queueActive": "Aktiv",
+        "queueArchived": "Archiviert",
+        "reset": "Filter zurücksetzen"
+      },
+      "inbox": {
+        "label": "Support-Meldungen",
+        "loading": "Postfach wird geladen…",
+        "empty": "Es wurde noch nichts eingereicht.",
+        "emptyFiltered": "Keine Meldung passt zu diesen Filtern.",
+        "emptyArchived": "Es wurde noch nichts archiviert.",
+        "noSubject": "(kein Betreff)",
+        "unread": "Ungelesene Antwort",
+        "noReplies": "noch keine Antworten",
+        "lastWordYou": "du hast zuletzt geantwortet",
+        "lastWordSubmitter": "sie haben zuletzt geantwortet",
+        "pagination": {
+          "navigation": "Postfach-Seiten",
+          "range": "Seite {{page}} von {{pages}} · {{total}} insgesamt",
+          "previous": "Zurück",
+          "next": "Weiter"
+        }
+      },
+      "thread": {
+        "none": "Wähle eine Meldung aus, um sie zu lesen und zu beantworten.",
+        "loading": "Meldung wird geladen…",
+        "gone": "Diese Meldung existiert nicht mehr.",
+        "backToInbox": "Zurück zum Postfach",
+        "opened": "vor {{age}} eingereicht",
+        "lastChange": "Status vor {{age}} geändert",
+        "copyAsIssue": "Als Issue kopieren",
+        "copied": "Kopiert",
+        "archiveError": "Der Archivstatus konnte nicht geändert werden.",
+        "deletedByUserNote": "Der Absender hat das auf seiner Seite gelöscht. Es bleibt hier für die Nachvollziehbarkeit erhalten; eine Antwort käme dort an, wo er sie nicht mehr lesen kann.",
+        "statusLabel": "Status setzen",
+        "applyStatus": "Übernehmen",
+        "statusError": "Der Status konnte nicht aktualisiert werden.",
+        "declinedReason": "Begründung für die Ablehnung",
+        "shippedVersion": "Veröffentlicht in Version",
+        "submitterWillSee": "Genau das bekommt der Absender zu sehen.",
+        "reasonRequired": "Eine Ablehnung braucht eine Begründung, bevor sie gespeichert werden kann.",
+        "versionRequired": "Eine Veröffentlichung braucht eine Version, bevor sie gespeichert werden kann.",
+        "currentlyShown": "Wird dem Absender aktuell angezeigt: {{text}}",
+        "messagesLoading": "Verlauf wird geladen…",
+        "noReplies": "Noch keine Antworten.",
+        "authorYou": "Du",
+        "olderTruncated": "Ältere Nachrichten werden hier noch nicht angezeigt.",
+        "replyLabel": "Antwort an {{user}}",
+        "replyPlaceholder": "Antwort schreiben…",
+        "replyCount": "{{count}} / {{max}}",
+        "sendReply": "Antwort senden",
+        "replyError": "Die Antwort konnte nicht gesendet werden.",
+        "submitter": "Absender",
+        "account": "Konto",
+        "openTickets": "Offen",
+        "totalTickets": "Meldungen",
+        "openInPeople": "In Personen öffnen →",
+        "history": "Weitere Meldungen",
+        "historyEmpty": "Das ist die einzige Meldung dieses Kontos.",
+        "diagnosticsNote": "Nur diese Schlüssel werden je angezeigt. Alles andere, was der Client gesendet hat, wird verworfen."
+      }
     },
     "registration": {
       "title": "Registrierung",
@@ -5482,6 +5556,111 @@
         "cleanupValue": "Der Ablauf löscht es im Job-Runner — dieselbe idempotente Bereinigung, ob sie einmal oder fünfmal läuft — und schreibt einen Audit-Eintrag."
       },
       "why": "Es gibt keine Staging-Umgebung: Produktion ist die einzige Umgebung, und die Einladungssperre macht echtes Durchtesten zum Token-Tanz. Genau dafür ist das hier da."
+    },
+    "ops": {
+      "refresh": "Aktualisieren",
+      "live": {
+        "label": "Live-Aktualisierung",
+        "off": "Aus",
+        "seconds": "{{seconds}} s",
+        "every": "Aktualisiert alle {{seconds}} s",
+        "manualOnly": "Nur manuelle Aktualisierung",
+        "pausedHidden": "Pausiert – dieser Tab ist im Hintergrund",
+        "updatedAt": "gelesen um {{time}}"
+      },
+      "health": {
+        "title": "Zustand & Warteschlangen",
+        "subtitle": "Wovon die API abhängt, was in der Warteschlange liegt und was endgültig fehlgeschlagen ist."
+      },
+      "system": {
+        "title": "System",
+        "components": "Abhängigkeiten",
+        "build": "Ausgelieferter Build",
+        "versionDetail": "Der Commit, aus dem dieser API-Prozess gebaut wurde.",
+        "versionUnavailable": "Die Deploy-Markierung konnte nicht gelesen werden."
+      },
+      "queues": {
+        "title": "Warteschlangen",
+        "queue": "Warteschlange",
+        "waiting": "Wartend",
+        "active": "Aktiv",
+        "delayed": "Verzögert",
+        "failed": "Fehlgeschlagen",
+        "paused": "Pausiert",
+        "heartbeat": "Worker-Heartbeat",
+        "heartbeatBudget": "erwartet alle {{seconds}} s",
+        "idleHidden": "{{count}} leere Warteschlangen sind nicht aufgeführt.",
+        "allIdle": "Alle Warteschlangen sind leer.",
+        "unavailable": "Dieser API-Prozess hält keine Queue-Registry und kann die Warteschlangen daher nicht einsehen. Das ist nicht dasselbe wie leere Warteschlangen."
+      },
+      "schedules": {
+        "title": "Geplante Läufe",
+        "subtitle": "Takt, letzter Lauf und was der Lauf gemeldet hat. Die Zeiten kommen vom Scheduler selbst.",
+        "job": "Job",
+        "cadence": "Takt",
+        "lastRun": "Letzter Lauf",
+        "duration": "Dauer",
+        "next": "Nächster",
+        "every": "alle {{age}}",
+        "in": "in {{age}}",
+        "overdue": "überfällig seit {{age}}",
+        "neverRun": "nie gelaufen",
+        "empty": "Es sind keine wiederkehrenden Läufe registriert.",
+        "milliseconds": "{{ms}} ms"
+      },
+      "failures": {
+        "title": "Endgültige Fehlschläge",
+        "subtitle": "{{total}} aufbewahrt. Neueste zuerst.",
+        "when": "Wann",
+        "queue": "Warteschlange",
+        "reason": "Grund",
+        "attempts": "Versuche",
+        "empty": "Kein Job ist endgültig fehlgeschlagen.",
+        "readOnlyNote": "Nur lesend. Job-Inhalte werden nie angezeigt, und es gibt kein erneutes Ausführen oder Verwerfen: was gefahrlos wiederholbar ist, unterscheidet sich je Job – eine gemeinsame Schaltfläche könnte das nicht abbilden.",
+        "malformed": "{{count}} aufbewahrte Einträge konnten nicht gelesen werden und sind nicht aufgeführt."
+      },
+      "providers": {
+        "title": "Anbieter",
+        "subtitle": "Schutzschalter je Fähigkeit, Aufrufergebnisse und wie viel der Cache abfängt.",
+        "capability": "Fähigkeit",
+        "breaker": "Schutzschalter",
+        "failures": "Fehler",
+        "lastError": "Letzter Fehler",
+        "retryAt": "Erneut ab",
+        "callsSummary": "{{success}} bedient · {{error}} fehlerhaft · {{shortCircuited}} kurzgeschlossen",
+        "noCapabilityCalls": "Dieser Anbieter wurde noch nicht aufgerufen und hat daher keine Schutzschalter zu melden.",
+        "sampledSince": "gezählt seit {{time}}",
+        "processLocalNote": "Diese Zähler gehören zu dem API-Prozess, der diese Anfrage beantwortet, und werden bei einem Neustart zurückgesetzt; der Worker zählt getrennt. Eine Kontingentanzeige gibt es nicht – der Anbieter arbeitet ohne Schlüssel, es existiert also kein verbindliches Kontingent."
+      },
+      "cache": {
+        "hitRate": "Cache-Trefferquote",
+        "hitDetail": "Aus der frischen Kopie bedient.",
+        "staleRate": "Veraltet bedient",
+        "staleDetail": "Letzter guter Stand, im Hintergrund erneuert.",
+        "lookups": "Cache-Abfragen",
+        "negative": "Negativtreffer"
+      }
+    },
+    "marketData": {
+      "title": "Marktdaten",
+      "subtitle": "Ein Prüfwerkzeug für Instrumente, Wechselkurse und Import-Zuordnungen. Noch nicht gebaut.",
+      "comingSoonShort": "Geplant — das Prüfwerkzeug selbst ist ein späteres Paket.",
+      "notShipped": "In diesem Tab wird das Prüfwerkzeug für Finanzdaten leben. Hier wird kein Instrument gelesen, kein Job eingereiht und kein Kurs verändert.",
+      "plannedTitle": "Was es tun wird – und was niemals",
+      "plannedDescription": "Die folgenden Leitplanken sind bereits entschieden und stehen nicht zur Neuauslegung.",
+      "rows": {
+        "inspector": "Prüfwerkzeug",
+        "inspectorValue": "Anbieterzuordnung, aktuelle und Stichtagswerte, Abdeckung und Lücken der Historie, Cache- und Schutzschalterzustand sowie die letzten Job-Ergebnisse zu einem Instrument oder Währungspaar.",
+        "detection": "Erkennung",
+        "detectionValue": "Veraltete Kurse, Kurslücken und Ausreißer – als Befund gemeldet, nicht als Korrektur.",
+        "imports": "Importe",
+        "importsValue": "Ungelöste Import-Zuordnungen nach Importquelle und Fehlercode gruppiert – nur Summen, nie eine rohe Broker-Datei.",
+        "writes": "Die einzigen Schreibvorgänge",
+        "writesValue": "Ein abgesichertes, protokolliertes Einreihen des bestehenden Nachladens je Symbol und der Cache-Erneuerung. Beide Jobs sind bereits idempotent; genau das macht die Schaltfläche vertretbar.",
+        "never": "Niemals",
+        "neverValue": "Keine direkte Bearbeitung von Kurszeilen, kein blindes Zusammenführen von Dubletten und keine personenbezogenen Daten – nur Anzahlen betroffener Konten."
+      },
+      "why": "Einen Kurs von Hand zu ändern würde Geldrechnung hinter eine Browser-Sitzung stellen, und Dubletten ohne Herkunft, Probelauf und Rücknahme zusammenzuführen ist eine Änderung, die niemand rückgängig machen kann. Beides braucht zuerst eine Antwort in der Domäne – deshalb liefert dieses Paket das Lesen und hört dort auf."
     }
   },
   "create": {

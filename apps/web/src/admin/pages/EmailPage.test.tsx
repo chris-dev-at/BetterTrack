@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -27,7 +28,11 @@ const admin: MeResponse = {
 function renderPage() {
   return render(
     <AuthProvider>
-      <EmailPage />
+      {/* W4 folded Operations: the page renders the workspace tab strip, which
+          needs a router. */}
+      <MemoryRouter initialEntries={['/admin/email']}>
+        <EmailPage />
+      </MemoryRouter>
     </AuthProvider>,
   );
 }

@@ -1,12 +1,15 @@
 import {
   adminApiKeyListResponseSchema,
   adminFeedbackListResponseSchema,
+  adminFeedbackSubmissionSchema,
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
   adminBackupStatusResponseSchema,
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
+  adminOpsJobsResponseSchema,
+  adminOpsProvidersResponseSchema,
   adminStatsSchema,
   adminTwoFactorStatusResponseSchema,
   adminUserListResponseSchema,
@@ -37,6 +40,9 @@ import {
   problemSchema,
   problemListResponseSchema,
   updateFeedbackStatusResponseSchema,
+  updateFeedbackArchiveResponseSchema,
+  feedbackThreadResponseSchema,
+  sendFeedbackMessageResponseSchema,
   monitoringStatusResponseSchema,
   aiSettingsResponseSchema,
   aiTestConnectionResponseSchema,
@@ -53,7 +59,10 @@ import {
   versionResponseSchema,
   type AdminBackupStatusResponse,
   type AdminHealthResponse,
+  type AdminOpsJobsResponse,
+  type AdminOpsProvidersResponse,
   type AdminFeedbackListResponse,
+  type AdminFeedbackSubmission,
   type AdminFeedbackListQuery,
   type AdminInviteListResponse,
   type AdminStats,
@@ -86,6 +95,12 @@ import {
   type ProblemListResponse,
   type ProblemStatus,
   type UpdateFeedbackStatusRequest,
+  type UpdateFeedbackArchiveRequest,
+  type UpdateFeedbackArchiveResponse,
+  type FeedbackThreadQuery,
+  type FeedbackThreadResponse,
+  type SendFeedbackMessageRequest,
+  type SendFeedbackMessageResponse,
   type UpdateFeedbackStatusResponse,
   type MonitoringStatusResponse,
   type AiSettingsResponse,
@@ -464,6 +479,14 @@ export async function listAdminFeedback(
   const data = await apiRequest<unknown>('/admin/feedback', {
     query: {
       category: params.category,
+      status: params.status,
+      version: params.version,
+      q: params.q,
+      // `archived` and `unread` are booleans on the wire's TEXT side: the query
+      // builder drops `undefined`, so an omitted `unread` stays "don't filter",
+      // while an explicit `false` must still be sent as the string "false".
+      archived: params.archived === undefined ? undefined : String(params.archived),
+      unread: params.unread === undefined ? undefined : String(params.unread),
       sort: params.sort,
       page: params.page,
       limit: params.limit,
@@ -471,6 +494,52 @@ export async function listAdminFeedback(
     signal,
   });
   return adminFeedbackListResponseSchema.parse(data);
+}
+
+/**
+ * One submission by id (#1406 W3). The split pane opens whatever `?thread=`
+ * names even when the current filters exclude it, so the thread pane reads this
+ * rather than hunting the row inside the paged list.
+ *
+ * A 404 here means "this submission is gone", not "you are not an admin" — that
+ * distinction is made by the caller through `useResource`'s `notFound: 'gone'`
+ * policy, not by swallowing the error in the client.
+ */
+export async function getAdminFeedback(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminFeedbackSubmission> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, { signal });
+  return adminFeedbackSubmissionSchema.parse(data);
+}
+
+export async function getAdminFeedbackThread(
+  id: string,
+  params: FeedbackThreadQuery = {},
+  signal?: AbortSignal,
+): Promise<FeedbackThreadResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
+  });
+  return feedbackThreadResponseSchema.parse(data);
+}
+
+export async function sendAdminFeedbackReply(
+  id: string,
+  body: SendFeedbackMessageRequest,
+): Promise<SendFeedbackMessageResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+    method: 'POST',
+    body,
+  });
+  return sendFeedbackMessageResponseSchema.parse(data);
+}
+
+/** Idempotent: the route advances the shared admin marker on every open. */
+export async function markAdminFeedbackRead(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/read`, { method: 'POST' });
+  okResponseSchema.parse(data);
 }
 
 export async function updateFeedbackStatus(
@@ -482,6 +551,18 @@ export async function updateFeedbackStatus(
     body,
   });
   return updateFeedbackStatusResponseSchema.parse(data);
+}
+
+/** Workspace hygiene, not a lifecycle transition — and never a delete. */
+export async function setAdminFeedbackArchived(
+  id: string,
+  archived: boolean,
+): Promise<UpdateFeedbackArchiveResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, {
+    method: 'PATCH',
+    body: { archived } satisfies UpdateFeedbackArchiveRequest,
+  });
+  return updateFeedbackArchiveResponseSchema.parse(data);
 }
 
 // --- Admin: Usage analytics (§13.5 V5-P2 arc (b), first-party only) --------
@@ -620,6 +701,24 @@ export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthR
 export async function getBackupStatus(signal?: AbortSignal): Promise<AdminBackupStatusResponse> {
   const data = await apiRequest<unknown>('/admin/ops/backup-status', { signal });
   return adminBackupStatusResponseSchema.parse(data);
+}
+
+/**
+ * Queue depths, repeatable schedules and the §9 dead-letter list (#1406 W4).
+ * Read-only — there is no retry/discard companion, by decision.
+ */
+export async function getOpsJobs(signal?: AbortSignal): Promise<AdminOpsJobsResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/jobs', { signal });
+  return adminOpsJobsResponseSchema.parse(data);
+}
+
+/**
+ * Per-capability breaker state, provider call outcomes and market-cache rates
+ * (#1406 W4). The counters are process-local; `sampledSince` is their epoch.
+ */
+export async function getOpsProviders(signal?: AbortSignal): Promise<AdminOpsProvidersResponse> {
+  const data = await apiRequest<unknown>('/admin/ops/providers', { signal });
+  return adminOpsProvidersResponseSchema.parse(data);
 }
 
 export async function updateAccountDefaults(

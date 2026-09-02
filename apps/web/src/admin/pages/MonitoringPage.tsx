@@ -7,6 +7,7 @@ import * as api from '../../lib/adminApi';
 import { apiBaseUrl } from '../../lib/runtimeConfig';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
 /**
@@ -84,6 +85,7 @@ export function MonitoringPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <PageHeader
+          eyebrow={t('admin.nav.sections.operations')}
           title={t('admin.monitoring.title')}
           description={t('admin.monitoring.subtitle')}
         />
@@ -97,6 +99,9 @@ export function MonitoringPage() {
           {t('admin.monitoring.refresh')}
         </Button>
       </div>
+
+      {/* W4 folds Operations into one tab strip; this page is a tab of it. */}
+      <WorkspaceTabs />
 
       {actionError ? <Alert tone="error">{actionError}</Alert> : null}
 

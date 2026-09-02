@@ -113,6 +113,34 @@ export function renderMetrics(): Promise<string> {
   return metricsRegistry.metrics();
 }
 
+/** One labelled sample of a counter, as {@link readCounter} returns it. */
+export interface CounterSample {
+  labels: Readonly<Record<string, string | number>>;
+  value: number;
+}
+
+/**
+ * Read a counter's current labelled values (#1406 W4).
+ *
+ * The admin operations cockpit reports cache hit rate and provider call
+ * outcomes as JSON, and these counters are already the place those are counted
+ * — re-counting them in a second, parallel accumulator is how two numbers that
+ * are supposed to agree stop agreeing.
+ *
+ * The values are **process-local**: prom-client counters live in the process
+ * that increments them and reset when it restarts, so an API process reports
+ * its own calls and not the worker's. The cockpit's payload says so
+ * (`sampledSince`) rather than implying a deployment-wide total. Reading is
+ * pure — nothing here scrapes, resets or mutates the registry.
+ */
+export async function readCounter(counter: Counter<string>): Promise<CounterSample[]> {
+  const metric = await counter.get();
+  return metric.values.map((entry) => ({
+    labels: entry.labels as Readonly<Record<string, string | number>>,
+    value: entry.value,
+  }));
+}
+
 /** The `Content-Type` Prometheus expects for the exposition above. */
 export const metricsContentType = metricsRegistry.contentType;
 
