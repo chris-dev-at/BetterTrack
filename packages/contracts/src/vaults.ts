@@ -1424,6 +1424,9 @@ export const portfolioVaultImportRowCaptureRowSchema = VAULT_ENTITY_ROW_SCHEMAS.
   candidates: z.array(importRowCandidateSchema).max(IMPORT_ROW_CANDIDATE_LIMIT).nullable(),
   ruleTagIds: z.array(z.string().uuid()).max(CASH_TAGS_PER_ITEM_MAX).nullable(),
   resolvedBy: importRowResolvedBySchema.nullable(),
+  // #1629: the document tolerates an absent/malformed flag as `false`; the
+  // capture read serves the stored boolean exactly.
+  kindUndecided: z.boolean(),
 });
 export type PortfolioVaultImportRowCaptureRow = z.infer<
   typeof portfolioVaultImportRowCaptureRowSchema

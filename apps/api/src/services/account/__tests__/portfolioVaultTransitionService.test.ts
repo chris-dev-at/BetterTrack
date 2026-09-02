@@ -3787,6 +3787,7 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
         candidates: null,
         ruleTagIds: null,
         resolvedBy: 'user',
+        kindUndecided: false,
       },
       {
         id: RICH_ROW_IDS[1],
@@ -3822,6 +3823,7 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
         ],
         ruleTagIds: null,
         resolvedBy: null,
+        kindUndecided: false,
       },
       {
         id: RICH_ROW_IDS[2],
@@ -3848,6 +3850,7 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
         candidates: null,
         ruleTagIds: [RULE_TAG_ID],
         resolvedBy: null,
+        kindUndecided: true,
       },
     ]);
   }
@@ -3934,6 +3937,7 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
       resolvedBy: 'user',
       candidates: null,
       ruleTagIds: null,
+      kindUndecided: false,
     });
     expect(unresolved).toMatchObject({
       flag: 'unmapped',
@@ -3951,7 +3955,12 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
       ],
       resolvedBy: null,
     });
-    expect(cash).toMatchObject({ kind: 'deposit', amountEur: '-0.000001', ruleTagIds: [RULE_TAG_ID] });
+    expect(cash).toMatchObject({
+      kind: 'deposit',
+      amountEur: '-0.000001',
+      ruleTagIds: [RULE_TAG_ID],
+      kindUndecided: true,
+    });
     // Exact decimals never pass through Number: a float would have printed 1e-6.
     expect(JSON.stringify(page)).not.toContain('1e-6');
   });

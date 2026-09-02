@@ -386,6 +386,8 @@ export function importRowCaptureData(row: ImportRowRow) {
     candidates: row.candidates ?? null,
     ruleTagIds: row.ruleTagIds ?? null,
     resolvedBy: row.resolvedBy ?? null,
+    // #1629: whether the generic pipeline left the row's kind undecided.
+    kindUndecided: row.kindUndecided,
   };
 }
 

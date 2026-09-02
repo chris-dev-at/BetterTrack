@@ -194,6 +194,7 @@ function importFixture(): {
           candidates: null,
           ruleTagIds: null,
           resolvedBy: 'user',
+          kindUndecided: false,
         },
       },
       {
@@ -231,6 +232,7 @@ function importFixture(): {
           ],
           ruleTagIds: null,
           resolvedBy: null,
+          kindUndecided: true,
         },
       },
     ],

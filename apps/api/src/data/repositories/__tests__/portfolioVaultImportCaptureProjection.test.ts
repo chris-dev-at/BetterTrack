@@ -82,6 +82,7 @@ const ROW: ImportRowRow = {
   ],
   ruleTagIds: ['019c8400-0000-7000-8000-000000000108'],
   resolvedBy: 'user',
+  kindUndecided: false,
 };
 
 describe('import-capture projection completeness (#1529)', () => {
@@ -120,6 +121,7 @@ describe('import-capture projection completeness (#1529)', () => {
       candidates: ROW.candidates,
       ruleTagIds: ROW.ruleTagIds,
       resolvedBy: 'user',
+      kindUndecided: false,
     });
   });
 
