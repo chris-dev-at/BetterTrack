@@ -3606,7 +3606,7 @@ const endpoints: EndpointDef[] = [
     path: '/imports/{batchId}/rows/{rowId}',
     tag: 'Imports',
     summary:
-      "Pin an unresolved staged row to an asset the USER picked (#964): the row flips to mapped (or duplicate, if the pin collides with data already recorded), is stamped resolvedBy=user, and the refreshed preview is returned. The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted.",
+      "Finish one staged row a person had to decide about — exactly one of assetId or kind per request; the refreshed preview is returned either way, and the row is stamped resolvedBy=user. assetId (#964) pins an unresolved row to an asset the USER picked: the row flips to mapped (or duplicate, if the pin collides with data already recorded). The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted. kind (§16 2026-08-29) confirms what an UNDECIDED row is — one member of that row's confirmableKinds, and nothing else: no amount, date or id is accepted from the client, because the server re-derives every value it books from the fields staging already parsed. A kind the row's own contents (or the direction its file states) will not support is refused with the reason; confirmation is one-shot, and both paths require the batch to still be pending.",
     params: contracts.importRowIdParamSchema,
     body: R.ResolveImportRowRequest,
     status: 200,
