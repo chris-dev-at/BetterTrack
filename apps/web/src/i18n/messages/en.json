@@ -1494,6 +1494,7 @@
       "newCustomButton": "+ Custom investment",
       "recordButton": "+ Transaction",
       "loadError": "Could not load your portfolio. Please refresh the page.",
+      "vaultedLoadError": "This portfolio could not be read from its vault just now. The vault stays open on this device \u2014 try again.",
       "detailsLoadError": "Some portfolio details couldn't be loaded. Please try again.",
       "emptyState": {
         "title": "Your portfolio is empty",

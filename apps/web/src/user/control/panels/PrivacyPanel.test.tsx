@@ -1,5 +1,3 @@
-import type { ReactNode } from 'react';
-
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -65,33 +63,13 @@ vi.mock('../../vault/engine/VaultMoneyEngineContext', () => ({
 }));
 
 /**
- * The wizard renders for real by default (the killed-surface review below is
- * the live component crossing its own lazy boundary). A test that needs the
- * post-enable bookkeeping installs a stub instead, because reaching `onEnabled`
- * for real means running the whole key ceremony — which the wizard's own suite
- * already covers.
+ * NOT mocked away: `ParanoidEnableWizard` is deliberately left unstubbed so the
+ * "no new enable entry" assertions below fail loudly if the real component ever
+ * finds its way back onto this panel through any path (§16 2026-08-30 ruling).
  */
-type ParanoidEnableWizardProps = Parameters<
-  typeof import('../../vault/ui/ParanoidEnableWizard').ParanoidEnableWizard
->[0];
-let enableStub: ((props: ParanoidEnableWizardProps) => ReactNode) | null = null;
-vi.mock('../../vault/ui/ParanoidEnableWizard', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../vault/ui/ParanoidEnableWizard')>();
-  return {
-    ParanoidEnableWizard: (props: ParanoidEnableWizardProps) =>
-      enableStub ? enableStub(props) : <actual.ParanoidEnableWizard {...props} />,
-  };
-});
 vi.mock('../../vault/ui/VaultManager', () => ({
   VaultManager: () => <section aria-label="Vaults">Vault manager</section>,
 }));
-const RECEIPT: Parameters<ParanoidEnableWizardProps['onEnabled']>[0] = {
-  mode: 'paranoid',
-  mediaSet: ['server'],
-  vaultVersion: 1,
-  completedAt: '2026-08-05T10:00:00.000Z',
-  idempotent: false,
-};
 
 import { PrivacyPanel } from './PrivacyPanel';
 
@@ -115,7 +93,6 @@ function renderPanel(entry = '/control/privacy') {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  enableStub = null;
   privacyMode = 'normal';
   mediaState = null;
   syncStatus = null;
@@ -165,71 +142,55 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     renderPanel();
 
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
     expect(await screen.findByText('Transfer between devices')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Open portfolio settings' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Read' })).not.toBeInTheDocument();
   });
 
-  test('the setup request rides in the URL, so the gate above can act on it', async () => {
-    // `AccountModeRoot` mounts the vault providers from this param and replaces
-    // the subtree doing it — local `useState` would not survive that.
-    vaultRuntime = null;
-    const user = userEvent.setup();
+  test('offers a normal account no way to newly enable account-level paranoid mode', async () => {
+    // CHIEF RULING (PROJECTPLAN §16, 2026-08-30). The panel used to carry TWO
+    // paranoid models: the per-portfolio vaults section, and under it a
+    // "Paranoid mode — Set up" row launching the account-level wizard whose
+    // step 1 still promises the account-wide feature kill the 2026-08-19
+    // redefinition replaced. The wizard entry is gone; per-portfolio vaults are
+    // what a normal account is offered.
     renderPanel();
 
-    await user.click(screen.getByRole('button', { name: 'Set up' }));
-
-    expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy?enable=1');
+    expect(await screen.findByText('Transfer between devices')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Vaults' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Paranoid mode/i })).not.toBeInTheDocument();
   });
 
-  test('opens the paranoid setup wizard with the compact killed-surface review', async () => {
-    const user = userEvent.setup();
+  test('a stale ?enable=1 link opens the panel, not the retired wizard', async () => {
+    // Links minted before the ruling (and `AccountModeRoot`'s own mount seam)
+    // still carry the param. It must land on the ordinary panel rather than on
+    // the deprecated ceremony — and never on a raw key or a blank space.
+    renderPanel('/control/privacy?enable=1');
+
+    expect(await screen.findByText('Transfer between devices')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Vaults' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'What changes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Loading…' })).not.toBeInTheDocument();
+  });
+
+  test('an EXISTING account-level user keeps every management surface', async () => {
+    // The ruling removed the way IN, not the feature: `POST /vault/enable`
+    // stays live per §19 and this section is what the accounts that already
+    // took it still depend on.
+    privacyMode = 'paranoid';
+    mediaState = {
+      mediaSet: ['server'],
+      driveAttestedVersion: null,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+    syncStatus = 'synced';
+
     renderPanel();
 
-    expect(screen.getByRole('heading', { name: /Paranoid mode/i })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Set up' }));
-
-    // The wizard is its own chunk (#1089), so it arrives a tick later.
-    expect(await screen.findByRole('heading', { name: 'What changes' })).toBeInTheDocument();
-    expect(screen.getByText(/Sharing, shared items, comments/i)).toBeInTheDocument();
-    expect(screen.getByText(/Server portfolio analytics/i)).toBeInTheDocument();
-    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
-  });
-
-  test('the setup entry reads as pending while its chunk is still on the way', async () => {
-    // `?enable=1` is set but the vault providers are not mounted yet: the row
-    // must not offer the same click again as if nothing had happened.
-    vaultRuntime = null;
-    renderPanel('/control/privacy?enable=1');
-
-    const entry = screen.getByRole('button', { name: 'Loading…' });
-    expect(entry).toBeDisabled();
-    expect(entry).toHaveAttribute('aria-busy', 'true');
-  });
-
-  test('a succeeded setup request leaves the URL, so a later disable lands on the entry row', async () => {
-    // Enable → disable inside ONE overlay session: with `?enable=1` still in
-    // the URL the panel would re-open the setup wizard instead of the row. The
-    // real key ceremony is driven by the wizard's own suite; reaching
-    // `onEnabled` is all this assertion needs.
-    enableStub = ({ onEnabled }) => (
-      <button onClick={() => onEnabled(RECEIPT)} type="button">
-        finish
-      </button>
-    );
-    const user = userEvent.setup();
-    renderPanel('/control/privacy?enable=1');
-
-    await user.click(await screen.findByRole('button', { name: 'finish' }));
-
-    expect(acceptEnabled).toHaveBeenCalledWith(RECEIPT);
-    await waitFor(() => expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy'));
-    expect(screen.getByTestId('url')).not.toHaveTextContent('enable=1');
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'Paranoid mode is on. Your encrypted vault is ready.',
-    );
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(await screen.findByText('Change vault passphrase')).toBeInTheDocument();
+    expect(screen.getByText('Disable Paranoid mode')).toBeInTheDocument();
   });
 
   test('keeps paranoid management compact while exposing storage, security, and destructive flows', async () => {

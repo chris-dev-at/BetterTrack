@@ -8,17 +8,18 @@ Written 2026-07-07 by the Fable-5 Chief of Development on its last interactive d
 
 - **What v4 is:** `PROJECTPLAN.md` **§13.4** — the authoritative build order and per-phase specs. Do not re-derive scope; deviations go through the owner and land in §16.
 - **How to operate:** `factory/CHIEF.md` — role, authority, context economy, 45-minute heartbeat supervision, milestone endgame protocol. This file does not repeat it; read both.
-- **What this file adds:** the v4 arc (stage detection A–F), the prep checklist, the Fable-succession rules, mobile-track coordination, and the operational gotchas the v1–v3 arcs paid to learn.
+- **What this file adds:** the v4 arc (stage detection A–F), the prep checklist, the Fable-status note (its succession rules superseded 2026-09-02, see below), mobile-track coordination, and the operational gotchas the v1–v3 arcs paid to learn.
 
 If anything here contradicts live state, trust live state and memory (`bettertrack-project`, `bettertrack-multifactory`, `bettertrack-golive`, `bettertrack-mobile-app`, `bettertrack-chief-of-development`) — this file was frozen on 2026-07-07.
 
-## Fable succession (binding)
+## Fable status (this section's succession rules were SUPERSEDED on 2026-09-02)
 
-Claude Fable 5 retired from interactive/subscription use after 2026-07-07 (API-only since; §16 entry exists).
+> **Superseded — do not follow the struck rules below.** This file was written on 2026-07-07 believing Claude Fable 5 had retired from interactive use. It had not, and Fable is in daily use. The **2026-09-02 ruling (PROJECTPLAN §16)** restores the plain ladder: **T1 = Fable** (`fable-core`), **T2 = Opus** (`opus-engineer`), **T3 = Sonnet at `high` effort — the floor**, per `CLAUDE.md` (authoritative) and `MODELUSE.md`. "Fable" and "T1" in any doc mean **Fable**, not "the top available tier". The T1 money-math paths are `apps/api/src/domain/**` **and** `packages/domain/src/**`.
 
-- Top tier everywhere = **Opus 4.8**. `multi-factory/state/control/models.json` is **owner-managed** — the owner runs the remaining Fable window on it and sets the post-Fable routing himself (owner directive 2026-07-08). Do not edit, "verify-fix", or prescribe it.
-- Wherever any doc says "Fable" / "T1" (MODELUSE.md, CHIEF.md, §13.x "pre-release Fable review"), read: **the top available tier — today Opus 4.8 at max**.
-- The escalation ladder ("bug survives two fix attempts → up one tier") now ends at opus max. Beyond that: decompose the issue or re-scope via the checker, don't loop.
+What survives from the original section, still binding:
+
+- `multi-factory/state/control/models.json` is **owner-managed** — the owner sets the routing himself (owner directive 2026-07-08). Do not edit, "verify-fix", or prescribe it. Its current top-difficulty routing to Opus is the owner's **Fable-conservation usage policy**, not a re-tiering: it does not authorize writing T1 code on a T2 model.
+- The escalation ladder ("bug survives two fix attempts → up one tier") ends at T1. Beyond that: decompose the issue or re-scope via the checker, don't loop.
 - Optional levers, owner's call only: codex `gpt-5.5` / gemini via the ControlWebView **Models** tab are wired and verified (docs/multi-factory.md). Non-claude runs log `cost_usd: 0` in the ledger — remember that when reporting spend.
 
 ## Boot & stage detection

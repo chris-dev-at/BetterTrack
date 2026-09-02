@@ -736,6 +736,13 @@
       "when": 1787971639103,
       "tag": "0104_admin_user_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1788065008781,
+      "tag": "0105_living_tax_year_correction_fanout",
+      "breakpoints": true
     }
   ]
 }

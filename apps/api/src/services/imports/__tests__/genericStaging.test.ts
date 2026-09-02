@@ -115,10 +115,10 @@ describe('a file no broker mapper claims is understood, not refused', () => {
     expect(byField.get('amount')).toBe('Amount (EUR)');
     expect(byField.get('kindHint')).toBe('Transaction type');
 
-    // Every one of the three statement lines is accounted for — nothing is
+    // Every one of the four statement lines is accounted for — nothing is
     // dropped, which is the property that matters most here.
-    expect(preview.rows).toHaveLength(3);
-    expect(preview.batch.counts.total).toBe(3);
+    expect(preview.rows).toHaveLength(4);
+    expect(preview.batch.counts.total).toBe(4);
 
     // The row whose `Transaction type` says "Direct Debit" is classified
     // structurally and books: a real withdrawal at the file's own magnitude.

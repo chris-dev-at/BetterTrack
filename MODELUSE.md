@@ -2,21 +2,35 @@
 
 Which model + effort level to use for each kind of work. The per-phase tables below are the V1-era originals, kept for the tier-to-work mapping they encode; **from V3 on, every `PROJECTPLAN.md` §13.3 phase row carries its difficulty label directly** (`diff:easy…diff:max` per `docs/multi-factory.md`; T1 → `diff:max`/`diff:hard`, T2 → `diff:intermediate`, T3 → `diff:easy`/`diff:normal`), and `state/control/models.json` resolves difficulties to providers/models/effort. The ladder and ground rules here remain binding. Ground rules, per the owner:
 
+- **`CLAUDE.md` is authoritative on the tiers.** Its "Model routing (binding)" block states the three tiers and their path rules; this file expands them into the ladder, the T1 path list, and the per-phase mapping. If the two ever disagree, CLAUDE.md wins and this file gets corrected.
 - **When in doubt, go one tier up** — slightly over-spec is the policy.
-- **The floor (owner decision 2026-07-08): Opus 4.8 at `low` effort for easy work** — Opus replaces Sonnet on the easy tier (better cost/usage/output). No Haiku, nothing below `opus low`.
+- **The floor: T3 — Sonnet at `high` effort** (owner ruling 2026-09-02, §16). Nothing in this project ever runs below Sonnet at `high`: no Haiku, no `low`/`medium` effort tier.
 - Set per session in Claude Code with `/model` and `/effort`. One work package per session keeps the prompt cache warm and the model consistent.
 
 ## The ladder
 
 | Tier | Model (`/model`) | Effort (`/effort`) | Use for |
 |---|---|---|---|
-| **T1 — Fable** | Claude Fable 5 (`claude-fable-5`) | `max` for first implementation of the money-math cores; `xhigh` otherwise | Correctness-critical algorithms, architectural keystones, final reviews |
-| **T2 — Opus** | Claude Opus 4.8 (`claude-opus-4-8`) | `xhigh` | Security boundaries, concurrency/caching, complex interactive UI, anything subtle |
-| **T3 — Sonnet (floor)** | Claude Sonnet 5 (`claude-sonnet-5`) | `high` | CRUD pages, config files, boilerplate, docs, straightforward UI |
+| **T1 — Fable** | `fable` (`claude-fable-5`) — agent `fable-core` | `max` for first implementation of the money-math cores and for pre-release/destructive reviews; `xhigh` otherwise | Correctness-critical algorithms (money math), architectural keystones, final reviews |
+| **T2 — Opus** | `opus` (`claude-opus-5`) — agent `opus-engineer` | `xhigh` | Security boundaries, concurrency/caching, complex interactive UI, anything subtle |
+| **T3 — Sonnet (the floor)** | `sonnet` (`claude-sonnet-5`) — agent `sonnet-builder` | `high` | CRUD pages, config files, boilerplate, docs, straightforward UI |
 
 > If your Claude Code build only offers `high`/`max` in `/effort`, read `xhigh` as `max`.
 
-> **Fable succession (2026-07-07, permanent — §16):** Claude Fable 5 retired from interactive/subscription use after 2026-07-07 (API-only since). **Every "T1 — Fable" reference in this file and elsewhere now reads: the top available tier — today Opus 4.8 (`claude-opus-4-8`), `max` for money-math first implementations and final reviews, `xhigh` otherwise.** `multi-factory/state/control/models.json` is **owner-managed**: the owner runs the remaining Fable window on it and flips the routing himself when Fable access ends — sessions do not prescribe or edit it. The escalation ladder ends at Opus max: beyond that, decompose or re-scope instead of looping. Unlike the 2026-06-15 outage, there is no automatic revert.
+> The concrete model ids above are the ones the factory resolves today; the authoritative mapping for factory runs is the **owner-managed** `state/control/models.json` (dashboard Models tab). Sessions do not prescribe or edit that file — if an id here ever drifts from it, models.json is right.
+
+## T1 paths (binding)
+
+Money math lives in **two** places since the `packages/domain` extraction; both are T1, and so is anything importing-and-reimplementing them:
+
+- `apps/api/src/domain/**` — `allocation.ts`, `backtest.ts` and their `__tests__`. The remaining files there (`holdings.ts`, `tax.ts`, `cashLedger.ts`, `seriesStats.ts`, `settingsScope.ts`) are one-line re-export shims; editing a shim is still T1, because its whole job is to point at T1 code.
+- `packages/domain/src/**` — the money math itself: `tax.ts`, `holdings.ts`, `cashLedger.ts`, `seriesStats.ts`, `settingsScope.ts`, `vaultVectors/`, and their `__tests__`.
+
+Plus the two non-`domain` keystones: the provider/caching/request-coalescing/currency core (§5.3) and the local search-index core (§6.2), and every plan-deviation design decision.
+
+**Factory routing:** an issue whose `mf-meta` `touches:` claim matches either glob is `diff:max`/`diff:hard` — the same path list, no second rule.
+
+> **Fable availability & conservation (owner ruling 2026-09-02, §16 — supersedes the 2026-07-07 "Fable succession" note, which claimed retirement and is void).** Fable is **not** retired: T1 is Fable, run through the `fable-core` agent or a dedicated `/model fable` session. What the owner does apply is a **usage policy, not a tier change** — spend Fable only where T1 genuinely applies (money-math first implementations, destructive/pre-release reviews), one pass rather than a loop, and let T2 carry everything the tier rules do not reserve for T1. The owner-managed `state/control/models.json` currently resolves `diff:hard`/`diff:max` to Opus for exactly that reason; that is conservation in effect, not a re-tiering, and it does not license writing T1 code on a T2 model. If Fable is genuinely unavailable for a piece of T1 work, that is an availability fallback: decompose or re-scope rather than looping, and say so in the report.
 
 ## Per-phase assignments
 
@@ -46,13 +60,13 @@ Which model + effort level to use for each kind of work. The per-phase tables be
 |---|---|
 | `portfolio_id`-scoping migration of schema/repositories/services + default-portfolio invariants (§6.8) | **T2 Opus xhigh** (migrations + ownership scoping) |
 | Overview blocks (winners/losers, donuts, recent transactions), switcher placeholder, visibility toggle UI | T3 Sonnet high |
-| Any change to `domain/holdings` or the value-over-time math while rescoping | **T1 Fable xhigh** |
+| Any change to `packages/domain/src/holdings.ts` or the value-over-time math while rescoping | **T1 Fable xhigh** |
 
 ### P4 — Workboard playground: Conglomerates + calculator
 | Work | Tier |
 |---|---|
-| `domain/allocation` — the never-overshoot budget algorithm, edge cases, tests (§6.7) | **T1 Fable max** |
-| Backtest wiring/regressions in `domain/backtest` (§6.6) | **T1 Fable xhigh** |
+| `apps/api/src/domain/allocation.ts` — the never-overshoot budget algorithm, edge cases, tests (§6.7) | **T1 Fable max** |
+| Backtest wiring/regressions in `apps/api/src/domain/backtest.ts` (§6.6) | **T1 Fable xhigh** |
 | **The Builder** — sliders/locks/auto-balance/normalize, autosave, debounced live preview (§6.5); flagship UX, gnarly frontend state | T2 Opus xhigh |
 | Conglomerate CRUD, list/detail scaffolding, calculator UI + buy-flow dialogs, Workboard subnav + stubs | T3 Sonnet high |
 
@@ -96,12 +110,12 @@ Which model + effort level to use for each kind of work. The per-phase tables be
 
 ## Cross-cutting rules
 
-1. **`domain/` is Fable territory, always.** Any file under `apps/api/src/domain/` (holdings, backtest, allocation; later alertEval) — first implementation at `max`, later edits at `xhigh`, never below T1. This is where a silent off-by-one costs real money.
+1. **Money math is Fable territory, always.** Any file under `apps/api/src/domain/**` (allocation, backtest, the shims) **or** `packages/domain/src/**` (tax, holdings, cashLedger, seriesStats, settingsScope, vaultVectors; later alertEval) — first implementation at `max`, later edits at `xhigh`, never below T1. This is where a silent off-by-one costs real money. See "T1 paths (binding)" above for the full list.
 2. **The provider/caching/coalescing/currency keystone and the local search-index core are T1.** `providers/` cache mechanics and `services/search` ranking/orchestration carry the owner's top complaints — same rule as domain code.
 3. **Security floor is Opus.** Anything touching auth, sessions, PIN, rate limiting, account kinds, admin routes, registration modes, friendship/sharing privacy boundaries, tokens, or migrations never drops to T3 — not even "trivial" edits.
 4. **Escalate instead of looping.** If the same bug survives two fix attempts, move up one tier (and effort) immediately. Three Sonnet retry loops cost more than one Fable turn.
 5. **Plan deviations go through T1.** If implementation reveals PROJECTPLAN needs changing, discuss with Fable at `xhigh` and update the Decision Log (§16) before coding around it.
-6. **Reviews:** quick `/code-review` per PR on whatever model the session runs; money-math PRs (domain code) additionally get a Fable review before merge.
+6. **Reviews:** quick `/code-review` per PR on whatever model the session runs; money-math PRs (the T1 paths above) additionally get **one** Fable review before merge — one pass, not a review loop, per the conservation policy.
 7. **Unsure which tier? Take the higher one.** That's the policy, codified.
 8. Subagents Claude Code spawns on its own (Explore etc.) pick their own cheaper models — leave them be.
 

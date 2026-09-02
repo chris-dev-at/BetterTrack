@@ -23,9 +23,17 @@ vi.mock('../../lib/socialApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/socialApi')>()),
   listFriends: vi.fn(),
 }));
-const vaultMocks = vi.hoisted(() => ({ stateFor: vi.fn() }));
+const vaultMocks = vi.hoisted(() => ({
+  stateFor: vi.fn(),
+  useVaultedPortfolioStores: vi.fn(),
+}));
 vi.mock('../vault/keystore/runtime', () => ({
   endpointVaultKeystore: { stateFor: vaultMocks.stateFor },
+}));
+// Which vaulted portfolios this device is holding OPEN. Empty by default, so
+// every existing assertion here is still about a locked roster.
+vi.mock('../vault/useVaultedPortfolioStores', () => ({
+  useVaultedPortfolioStores: vaultMocks.useVaultedPortfolioStores,
 }));
 
 import { MIRROR_MAX_MEMBERS } from '@bettertrack/contracts';
@@ -164,6 +172,7 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   resetPortfolioKindCache();
+  vaultMocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map() });
   vaultMocks.stateFor.mockResolvedValue({
     status: 'not-on-this-endpoint',
     requiredAction: { kind: 'provide-phrase', methods: ['enter-words', 'scan-qr'] },
@@ -275,6 +284,45 @@ describe('PortfolioSwitcher', () => {
       'href',
       '/control/privacy?vault=018f0000-0000-7000-8000-000000000002&action=provide-phrase',
     );
+  });
+
+  test('names an UNLOCKED vaulted portfolio by the decrypted name, not by its vault', async () => {
+    // FAILURE MAP #6. With the vault open on this device the workspace already
+    // shows the real name; the switcher naming the same portfolio after its
+    // VAULT bought no privacy and made two portfolios in one vault
+    // indistinguishable. Locked rows above are unchanged.
+    const first = summary({
+      id: '018f0000-0000-7000-8000-000000000001',
+      name: '__vaulted_portfolio__:018f0000-0000-7000-8000-000000000001',
+      vaultId: '018f0000-0000-7000-8000-000000000002',
+      vaultAlias: 'Private Holdings',
+      sortOrder: 1,
+    });
+    const second = summary({
+      id: '018f0000-0000-7000-8000-000000000003',
+      name: '__vaulted_portfolio__:018f0000-0000-7000-8000-000000000003',
+      vaultId: '018f0000-0000-7000-8000-000000000002',
+      vaultAlias: 'Private Holdings',
+      sortOrder: 2,
+    });
+    vaultMocks.useVaultedPortfolioStores.mockReturnValue({
+      unlocked: new Map([
+        [first.id, { portfolio: { ...first, name: 'Vault Test PF' }, isCurrent: () => true }],
+        // Open in the same vault, but its currency check says otherwise: it
+        // keeps the alias, so a revoked access can never leak a name.
+        [second.id, { portfolio: { ...second, name: 'Retirement' }, isCurrent: () => false }],
+      ]),
+    });
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, first, second] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    await user.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    const menu = await findPopover();
+    expect(await within(menu).findByRole('button', { name: 'Vault Test PF' })).toBeInTheDocument();
+    expect(within(menu).getByRole('button', { name: 'Private Holdings' })).toBeInTheDocument();
+    expect(within(menu).queryByText('Retirement')).not.toBeInTheDocument();
+    expect(screen.queryByText(/__vaulted_portfolio__/)).not.toBeInTheDocument();
   });
 
   test('keeps the cached portfolio choices visible after a failed background refetch', async () => {
