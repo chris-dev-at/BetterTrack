@@ -44,12 +44,44 @@ test('composer accepts only Fable, Opus, or Sol routes', () => {
     { provider: 'claudex', model: 'gpt-5.6-terra', effort: 'xhigh' },
     { provider: 'codex', model: 'gpt-5.6-luna', effort: 'high' },
     { provider: 'gemini', model: 'Gemini 3.1 Pro (High)' },
+    { provider: 'opencode', model: 'openrouter/stealth/ox-alpha' },
   ])
     assert.equal(composerRouteAllowed(route), false, `${route.provider}/${route.model}`);
 });
 
-test('registry exposes four stable providers and explicit route metadata', () => {
-  assert.deepEqual(PROVIDER_IDS, ['claude', 'claudex', 'codex', 'gemini']);
+test('opencode routes validate as an API-key provider with slashed model ids', () => {
+  const opencode = publicProviderRegistry().find((entry) => entry.id === 'opencode');
+  assert.equal(opencode.providerFamily, 'openrouter');
+  assert.equal(opencode.harness, 'opencode-cli');
+  // NOT "subscription": OpenRouter bills per token and the preview is only
+  // temporarily free, so a $0 ledger row must never read as structural.
+  assert.equal(opencode.billing, 'free-preview');
+  assert.equal(opencode.experimental, true);
+  assert.equal(opencode.capabilities.retainsPrompts, true);
+  assert.deepEqual(opencode.efforts, []);
+
+  // The provider separator makes slashes legal here, unlike every other route.
+  assert.equal(
+    validateRouteEntry({ provider: 'opencode', model: 'openrouter/stealth/ox-alpha' }),
+    true,
+  );
+  assert.deepEqual(
+    normalizeRouteEntry({ provider: 'opencode', model: 'openrouter/stealth/ox-alpha' }),
+    { provider: 'opencode', model: 'openrouter/stealth/ox-alpha' },
+  );
+  // No variant is verified for this provider, so any effort must be refused
+  // rather than silently dropped by the CLI.
+  assert.equal(
+    validateRouteEntry({ provider: 'opencode', model: 'openrouter/stealth/ox-alpha', effort: 'high' }),
+    false,
+  );
+  // Same selector guard as cc_opencode in mflib.sh.
+  for (const model of ['openrouter/a|b', 'openrouter/a b', '/leading-slash', 'a\nb'])
+    assert.equal(validateRouteEntry({ provider: 'opencode', model }), false, model);
+});
+
+test('registry exposes five stable providers and explicit route metadata', () => {
+  assert.deepEqual(PROVIDER_IDS, ['claude', 'claudex', 'codex', 'gemini', 'opencode']);
   const entries = publicProviderRegistry();
   const claudex = entries.find((entry) => entry.id === 'claudex');
   assert.equal(claudex.label, 'ClaudeX (Claude Code + Codex OAuth)');

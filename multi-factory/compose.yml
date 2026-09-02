@@ -10,10 +10,15 @@
 # guards both directions.
 #
 # Provider auth: autorun.sh syncs/materializes credentials into gitignored
-# per-container copies under ./auth/<service>/. Codex/ClaudeX and Gemini need
-# writable homes for refresh state. Native Claude gets only its selected
-# inference token through a read-only service-local mount; if no named profile
-# is selected, mflib keeps the legacy CLAUDE_CODE_OAUTH_TOKEN from factory/.env.
+# per-container copies under ./auth/<service>/. Codex/ClaudeX, Gemini and
+# opencode need writable homes for refresh/cache/session state. Native Claude
+# gets only its selected inference token through a read-only service-local
+# mount; if no named profile is selected, mflib keeps the legacy
+# CLAUDE_CODE_OAUTH_TOKEN from factory/.env.
+# ./auth/<service>/opencode is opencode's whole XDG footprint in ONE directory
+# (share/ = auth.json + session DB, cache/ = the models.dev catalog, config/);
+# mflib.sh points XDG_DATA_HOME / XDG_CACHE_HOME / XDG_CONFIG_HOME at it per run,
+# so nothing else in the container HOME is touched.
 # Nothing under ./auth or ./state is ever committed.
 name: bettertrack-multifactory
 
@@ -30,11 +35,17 @@ x-common: &common
     MF_CLAUDE_TOKEN_FILE: /home/factory/.claude-auth/oauth-token
     MF_CLAUDE_PROFILE_FILE: /home/factory/.claude-auth/profile.json
     MF_CLAUDE_PROFILE_REQUIRED: '1'
+    MF_OPENCODE_HOME: /home/factory/.opencode
+    MF_OPENCODE_CONFIG: /work/mf/opencode-factory.json
+    MF_LIMIT_NAPS_MAX: '8'
 
 services:
   master:
     <<: *common
     entrypoint: ['bash', '/work/mf/master.sh']
+    environment:
+      <<: *common-env
+      MF_REQUEUE_MAX: '3'
     volumes:
       - mf-master-work:/work/state
       - ./state:/work/mfstate
@@ -48,6 +59,7 @@ services:
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
       - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
+      - ./opencode-factory.json:/work/mf/opencode-factory.json:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
@@ -56,6 +68,7 @@ services:
       - ./auth/master/codex:/home/factory/.codex
       - ./auth/master/ccr:/home/factory/.claude-code-router
       - ./auth/master/gemini:/home/factory/.gemini
+      - ./auth/master/opencode:/home/factory/.opencode
 
   worker-1:
     <<: *common
@@ -76,6 +89,7 @@ services:
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
       - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
+      - ./opencode-factory.json:/work/mf/opencode-factory.json:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
@@ -84,6 +98,7 @@ services:
       - ./auth/worker-1/codex:/home/factory/.codex
       - ./auth/worker-1/ccr:/home/factory/.claude-code-router
       - ./auth/worker-1/gemini:/home/factory/.gemini
+      - ./auth/worker-1/opencode:/home/factory/.opencode
 
   worker-2:
     <<: *common
@@ -104,6 +119,7 @@ services:
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
       - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
+      - ./opencode-factory.json:/work/mf/opencode-factory.json:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
@@ -112,6 +128,7 @@ services:
       - ./auth/worker-2/codex:/home/factory/.codex
       - ./auth/worker-2/ccr:/home/factory/.claude-code-router
       - ./auth/worker-2/gemini:/home/factory/.gemini
+      - ./auth/worker-2/opencode:/home/factory/.opencode
 
 volumes:
   mf-master-work:

@@ -184,6 +184,7 @@ runnable_issues(){
     grep -qx "$n" "$CONTROL/composer-quarantine" 2>/dev/null && continue
     issue_has_label "$n" autopilot || continue
     issue_has_label "$n" awaiting-owner && continue
+    issue_has_label "$n" mf:bad-meta && continue
     issue_schedule_contract_valid "$n" || continue
     # Dry-run cycles don't close real issues; skip ones already fake-completed.
     [ "$MF_DRY_RUN" = 1 ] && grep -qx "$n" "$CONTROL/dry-done" 2>/dev/null && continue
@@ -914,6 +915,14 @@ composer_step(){ # $1=mode
   fi
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
+  # Merge lane first (2026-08-29): a successful composer run blocks this tick for
+  # ~45 min, freezing scheduling AND merging. Never spend that while PRs wait in
+  # the merge queue. Owner-brief requests are exempt — they were explicitly asked for.
+  if [ "$COMPOSER_REQUEST_LOADED" -ne 1 ] \
+    && find "$QUEUE" -maxdepth 1 -type f -name '[0-9]*-pr*.json' -print -quit 2>/dev/null | grep -q .; then
+    log "composer deferred: merge queue non-empty"
+    return 0
+  fi
   if ! composer_protocol_ready; then
     # A claimed owner request remains a scheduler fence while its protocol
     # cooldown is active. Returning ordinary success here could expose artifacts
@@ -1160,6 +1169,13 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
     [ "$wphase" = idle ] || continue
     for n in $runnable; do
       claims=$(issue_claims "$n")
+      if [ "$claims" = '**' ]; then
+        # Empty/absent mf-meta touches claims '**' and conflicts with EVERYTHING,
+        # silently serializing the fleet. Surface it and skip.
+        gh issue edit "$n" --add-label mf:bad-meta >/dev/null 2>&1 || true
+        log "scheduler: issue #$n has empty mf-meta touches — labeled mf:bad-meta, skipped"
+        continue
+      fi
       claimsets_conflict "$claims" "$inflight" && continue
       local touches payload
       touches=$(printf '%s\n' "$claims" | jq -R . | jq -cs 'map(select(length>0))')
@@ -1187,8 +1203,24 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
 # backoff) and refused merges may continue the scan. LLM work and the rare
 # BEHIND re-gate remain blocking by design (single sequential merger).
 requeue_for_review(){ # $1=queue file $2=issue $3=reason
-  local f=$1 n=$2 why=$3
-  log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review"
+  local f=$1 n=$2 why=$3 rq
+  # Requeue budget (2026-08-29): the assignment payload carries no attempt
+  # counter, so a first-pass-approved issue whose approval keeps invalidating
+  # re-entered review forever (#1232: 140 reviewer runs). Bound it durably.
+  # Idempotency key: $CONTROL/requeue-count/<issue> — one counter per ISSUE, so
+  # the budget survives the PR churn (new head, new PR) that the requeue causes.
+  # It is deliberately never cleared: the budget is a lifetime bound on how often
+  # one issue may re-enter review, not a per-cycle allowance.
+  mkdir -p "$CONTROL/requeue-count"
+  rq=$(cat "$CONTROL/requeue-count/$n" 2>/dev/null || echo 0)
+  case "$rq" in ''|*[!0-9]*) rq=0;; esac
+  rq=$((rq+1)); printf '%s' "$rq" >"$CONTROL/requeue-count/$n"
+  if [ "$rq" -gt "${MF_REQUEUE_MAX:-3}" ]; then
+    rm -f "$f"
+    mark_human "$n" "review requeued $rq times (budget ${MF_REQUEUE_MAX:-3}) — last: $why"
+    return 0
+  fi
+  log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review ($rq/${MF_REQUEUE_MAX:-3})"
   rm -f "$f"
   gh issue edit "$n" --remove-label in-progress >/dev/null 2>&1 || true
 }
@@ -1734,7 +1766,7 @@ set_phase running
 [ -f "$PROMPTS/writer.md" ] || { notify "FATAL: factory prompts missing in $PROMPTS"; exit 1; }
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
+git config user.name "Christian Wiesinger"; git config user.email "chris.dev.at@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 for w in $(seq 1 "$WORKERS"); do

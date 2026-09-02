@@ -949,6 +949,11 @@ run_cycle(){ # $1=issue $2=relocated
   ( cd "$REPO_DIR" \
     && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
     && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "pre-cycle sync failed (non-fatal)"
+  # Prime dependencies OUTSIDE the billed model session: when the lockfile moved,
+  # the writer/fixer otherwise discovers a broken node_modules inside its own run
+  # and installs on model time. Warm case is seconds; failure is non-fatal.
+  ( cd "$REPO_DIR" && pnpm install --frozen-lockfile --prefer-offline >>"$LOG" 2>&1 ) \
+    || log "pre-cycle pnpm prime failed (non-fatal — the writer will install)"
 
   # Requeued/head-invalidated work may already have a valid PR.  Resume it
   # directly instead of asking a writer to recreate it.
@@ -1069,7 +1074,7 @@ mkdir -p "$ASSIGN" "$STATUS" "$QUEUE" "$LOGS" "$TRIAGE"
 [ -f "$PROMPTS/writer.md" ] || { notify "FATAL: factory prompts missing in $PROMPTS (worker $WORKER_ID)"; exit 1; }
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
+git config user.name "Christian Wiesinger"; git config user.email "chris.dev.at@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 if [ -f "$AF" ]; then
