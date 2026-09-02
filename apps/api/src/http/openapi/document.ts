@@ -462,6 +462,7 @@ const componentSchemas = {
   SendFeedbackMessageRequest: contracts.sendFeedbackMessageRequestSchema,
   SendFeedbackMessageResponse: contracts.sendFeedbackMessageResponseSchema,
   AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
+  AdminFeedbackSubmission: contracts.adminFeedbackSubmissionSchema,
   UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
   UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
   UpdateFeedbackArchiveRequest: contracts.updateFeedbackArchiveRequestSchema,
@@ -2069,6 +2070,15 @@ const endpoints: EndpointDef[] = [
     query: contracts.adminFeedbackListQuerySchema,
     status: 200,
     response: R.AdminFeedbackListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/feedback/{id}',
+    tag: 'Admin',
+    summary: 'Read one feedback submission for the helpdesk split pane.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminFeedbackSubmission,
   },
   {
     method: 'patch',

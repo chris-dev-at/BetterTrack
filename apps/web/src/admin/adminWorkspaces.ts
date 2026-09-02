@@ -71,8 +71,14 @@ export const ADMIN_WORKSPACES: readonly AdminWorkspace[] = [
   {
     key: 'support',
     labelKey: 'admin.nav.sections.support',
+    // W3 folded the workspace: the helpdesk IS the Support page, so the
+    // separate `/admin/feedback` row is gone and its URL redirects here. One
+    // live inbox, not two.
     to: '/admin/support',
-    pages: [{ to: '/admin/feedback', labelKey: 'admin.nav.feedback' }],
+    // A split pane needs the room: a queue column plus a conversation does not
+    // fit the narrow reading column.
+    wide: true,
+    pages: [],
   },
   {
     key: 'people',

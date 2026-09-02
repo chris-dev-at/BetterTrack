@@ -4413,7 +4413,6 @@
       "ai": "KI",
       "users": "Nutzer",
       "invites": "Einladungen",
-      "feedback": "Feedback",
       "settings": "Einstellungen",
       "accountDefaults": "Kontovorgaben",
       "announcements": "Ankündigungen",
@@ -4951,24 +4950,13 @@
       "reopen": "Wieder öffnen"
     },
     "feedback": {
-      "title": "Feedback",
-      "subtitle": "Funktionsideen, Fehler, Hilfeanfragen, Verbesserungen und sonstige Rückmeldungen.",
-      "refresh": "Aktualisieren",
-      "loading": "Feedback wird geladen…",
-      "loadError": "Feedback konnte nicht geladen werden.",
-      "actionError": "Der Feedback-Status konnte nicht aktualisiert werden.",
-      "empty": "Noch kein Feedback vorhanden.",
       "archive": "Archivieren",
       "unarchive": "Wiederherstellen",
       "archived": "Archiviert",
-      "filters": {
-        "category": "Kategorie",
-        "sort": "Sortierung",
-        "all": "Alle Kategorien"
-      },
       "sort": {
         "category": "Priorität: Funktionen zuerst",
-        "newest": "Neueste zuerst"
+        "newest": "Neueste zuerst",
+        "aging": "Am längsten unberührt zuerst"
       },
       "category": {
         "feature": "Funktionsidee",
@@ -4985,12 +4973,8 @@
         "declined": "Abgelehnt",
         "shipped": "Veröffentlicht"
       },
-      "statusControl": "Status für Feedback von {{user}}",
       "deletedByUser": "Vom Benutzer gelöscht",
       "fields": {
-        "status": "Status",
-        "message": "Nachricht",
-        "submittedBy": "Eingereicht von",
         "createdAt": "Eingereicht am"
       },
       "diagnostics": {
@@ -5001,12 +4985,6 @@
         "device": "Gerät",
         "locale": "Sprache/Region",
         "screen": "Ansicht"
-      },
-      "pagination": {
-        "navigation": "Feedback-Seiten",
-        "summary": "Seite {{page}} von {{pages}} · {{total}} insgesamt",
-        "previous": "Zurück",
-        "next": "Weiter"
       }
     },
     "featureFlags": {
@@ -5212,8 +5190,90 @@
     "support": {
       "title": "Support",
       "subtitle": "Wo Meldungen von Nutzern ankommen und beantwortet werden.",
-      "comingSoon": "Die Helpdesk-Konsole — Verläufe, interne Notizen, Tags und gespeicherte Ansichten — kommt mit W3.",
-      "openInbox": "Feedback-Postfach öffnen"
+      "refresh": "Aktualisieren",
+      "stats": {
+        "needsReply": "Wartet auf dich",
+        "counting": "…",
+        "unavailable": "nicht verfügbar"
+      },
+      "keyboardHint": "j / k zum Wechseln · Enter zum Öffnen · Esc zum Schließen",
+      "filters": {
+        "search": "Suche",
+        "searchPlaceholder": "Betreff, Nachricht oder Absender",
+        "status": "Status",
+        "allStatuses": "Beliebiger Status",
+        "category": "Kategorie",
+        "allCategories": "Beliebige Kategorie",
+        "unread": "Ungelesen",
+        "unreadOption": {
+          "all": "Gelesen und ungelesen",
+          "unread": "Nur ungelesene",
+          "read": "Nur gelesene"
+        },
+        "sort": "Sortierung",
+        "version": "Veröffentlicht in Version",
+        "versionPlaceholder": "z. B. 5.2.0",
+        "queue": "Liste",
+        "queueActive": "Aktiv",
+        "queueArchived": "Archiviert",
+        "reset": "Filter zurücksetzen"
+      },
+      "inbox": {
+        "label": "Support-Meldungen",
+        "loading": "Postfach wird geladen…",
+        "empty": "Es wurde noch nichts eingereicht.",
+        "emptyFiltered": "Keine Meldung passt zu diesen Filtern.",
+        "emptyArchived": "Es wurde noch nichts archiviert.",
+        "noSubject": "(kein Betreff)",
+        "unread": "Ungelesene Antwort",
+        "noReplies": "noch keine Antworten",
+        "lastWordYou": "du hast zuletzt geantwortet",
+        "lastWordSubmitter": "sie haben zuletzt geantwortet",
+        "pagination": {
+          "navigation": "Postfach-Seiten",
+          "range": "Seite {{page}} von {{pages}} · {{total}} insgesamt",
+          "previous": "Zurück",
+          "next": "Weiter"
+        }
+      },
+      "thread": {
+        "none": "Wähle eine Meldung aus, um sie zu lesen und zu beantworten.",
+        "loading": "Meldung wird geladen…",
+        "gone": "Diese Meldung existiert nicht mehr.",
+        "backToInbox": "Zurück zum Postfach",
+        "opened": "vor {{age}} eingereicht",
+        "lastChange": "Status vor {{age}} geändert",
+        "copyAsIssue": "Als Issue kopieren",
+        "copied": "Kopiert",
+        "archiveError": "Der Archivstatus konnte nicht geändert werden.",
+        "deletedByUserNote": "Der Absender hat das auf seiner Seite gelöscht. Es bleibt hier für die Nachvollziehbarkeit erhalten; eine Antwort käme dort an, wo er sie nicht mehr lesen kann.",
+        "statusLabel": "Status setzen",
+        "applyStatus": "Übernehmen",
+        "statusError": "Der Status konnte nicht aktualisiert werden.",
+        "declinedReason": "Begründung für die Ablehnung",
+        "shippedVersion": "Veröffentlicht in Version",
+        "submitterWillSee": "Genau das bekommt der Absender zu sehen.",
+        "reasonRequired": "Eine Ablehnung braucht eine Begründung, bevor sie gespeichert werden kann.",
+        "versionRequired": "Eine Veröffentlichung braucht eine Version, bevor sie gespeichert werden kann.",
+        "currentlyShown": "Wird dem Absender aktuell angezeigt: {{text}}",
+        "messagesLoading": "Verlauf wird geladen…",
+        "noReplies": "Noch keine Antworten.",
+        "authorYou": "Du",
+        "olderTruncated": "Ältere Nachrichten werden hier noch nicht angezeigt.",
+        "replyLabel": "Antwort an {{user}}",
+        "replyPlaceholder": "Antwort schreiben…",
+        "replyCount": "{{count}} / {{max}}",
+        "sendReply": "Antwort senden",
+        "replyError": "Die Antwort konnte nicht gesendet werden.",
+        "submitter": "Absender",
+        "account": "Konto",
+        "openTickets": "Offen",
+        "totalTickets": "Meldungen",
+        "openInPeople": "In Personen öffnen →",
+        "history": "Weitere Meldungen",
+        "historyEmpty": "Das ist die einzige Meldung dieses Kontos.",
+        "diagnosticsNote": "Nur diese Schlüssel werden je angezeigt. Alles andere, was der Client gesendet hat, wird verworfen."
+      }
     },
     "registration": {
       "title": "Registrierung",
