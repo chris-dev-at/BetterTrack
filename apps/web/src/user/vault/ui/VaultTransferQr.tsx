@@ -14,7 +14,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import type { VaultKeyFingerprint } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { Button, Field, Input } from '../../../ui/origin';
+import { Button, Disclosure, Field, Input } from '../../../ui/origin';
 import { useOverlayEscape } from '../../../ui/overlayStack';
 import { useFocusTrap } from '../../../ui/useFocusTrap';
 import {
@@ -416,7 +416,18 @@ export function VaultTransferQr({
 
                 {phase === 'visible' && currentSecret != null ? (
                   <>
-                    <p className="w-full rounded-lg border border-amber-600 bg-amber-950/50 p-4 text-sm font-semibold text-amber-100">
+                    {/* Was `border-amber-600 bg-amber-950/50 text-amber-100` —
+                        three hand-mixed colours from outside the palette, so
+                        the most serious banner in the app was the one screen
+                        that did not look like the app. Gold has tokens, and
+                        they follow the theme. */}
+                    <p
+                      className="bt-panel bt-gold-note w-full p-4 text-sm font-semibold"
+                      style={{
+                        borderColor: 'var(--bt-border-accent)',
+                        background: 'var(--bt-gold-soft)',
+                      }}
+                    >
                       {t('vault.transfer.sender.banner')}
                     </p>
                     <div className="rounded-xl bg-white p-2 shadow-2xl">
@@ -432,34 +443,35 @@ export function VaultTransferQr({
                     <p aria-live="polite" className="bt-muted text-sm">
                       {t('vault.transfer.sender.expires')}
                     </p>
-                    <details
-                      className="w-full rounded-lg border border-neutral-800 p-4"
-                      onToggle={(event) => setManualOpen(event.currentTarget.open)}
-                      open={manualOpen}
-                    >
-                      <summary className="cursor-pointer font-medium">
-                        {t('vault.transfer.manualWords')}
-                      </summary>
-                      <dl className="mt-4 text-sm">
-                        <dt className="bt-muted">{t('vault.transfer.sender.vaultId')}</dt>
-                        <dd className="bt-num mt-1 break-all">{currentSecret.vaultId}</dd>
-                      </dl>
-                      {/* The QR is SVG geometry; this list is the ONLY textual
+                    <div className="w-full">
+                      <Disclosure
+                        onToggle={setManualOpen}
+                        open={manualOpen}
+                        summary={t('vault.transfer.manualWords')}
+                      >
+                        <dl className="text-sm">
+                          <dt className="bt-muted">{t('vault.transfer.sender.vaultId')}</dt>
+                          <dd className="bt-num mt-1 break-all">{currentSecret.vaultId}</dd>
+                        </dl>
+                        {/* The QR is SVG geometry; this list is the ONLY textual
                           copy of the phrase, so it exists in the DOM only while
-                          the user has actually asked for the words. A closed
-                          <details> still yields its text to content scripts,
-                          innerText automation and find-in-page. */}
-                      {manualOpen ? (
-                        <ol className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
-                          {currentSecret.mnemonic.split(' ').map((word, index) => (
-                            <li className="bt-num text-sm" key={`${index}-${word}`}>
-                              <span className="bt-muted mr-2">{index + 1}.</span>
-                              {word}
-                            </li>
-                          ))}
-                        </ol>
-                      ) : null}
-                    </details>
+                          the user has actually asked for the words. `Disclosure`
+                          is a native `<details>`, and a CLOSED one still yields
+                          its text to content scripts, innerText automation and
+                          find-in-page — so the fold is not the guard here, this
+                          conditional is. */}
+                        {manualOpen ? (
+                          <ol className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
+                            {currentSecret.mnemonic.split(' ').map((word, index) => (
+                              <li className="bt-num text-sm" key={`${index}-${word}`}>
+                                <span className="bt-muted mr-2">{index + 1}.</span>
+                                {word}
+                              </li>
+                            ))}
+                          </ol>
+                        ) : null}
+                      </Disclosure>
+                    </div>
                   </>
                 ) : null}
 
@@ -547,14 +559,20 @@ export function EndpointKeystoreResetFold({ onReset }: { onReset: () => Promise<
 
   if (!open) {
     return (
-      <button className="bt-link self-start text-sm" onClick={() => setOpen(true)} type="button">
+      <Button
+        className="self-start"
+        onClick={() => setOpen(true)}
+        size="sm"
+        type="button"
+        variant="quiet"
+      >
         {t('vault.transfer.reset.forgot')}
-      </button>
+      </Button>
     );
   }
 
   return (
-    <div className="flex w-full flex-col gap-3 rounded-lg border border-neutral-800 p-4 text-sm">
+    <div className="bt-panel flex w-full flex-col gap-3 p-4 text-sm">
       <p className="bt-soft">{t('vault.transfer.reset.explain')}</p>
       {failed ? (
         <p className="bt-neg" role="alert">

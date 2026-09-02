@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 
@@ -22,8 +22,20 @@ import {
   renameVault,
   VAULTS_QUERY_KEY,
 } from '../../../lib/vaultApi';
-import { Button, Field, Input, Select, SkeletonBlock } from '../../../ui/origin';
-import { CHECKBOX_STYLE } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  CheckRow,
+  Disclosure,
+  Empty,
+  Field,
+  Icon,
+  Input,
+  LinkButton,
+  Panel,
+  Select,
+  SkeletonBlock,
+} from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { portfolioDisplayName } from '../../portfolio/lockedPortfolio';
 import { usePortfolioStore } from '../../portfolio/PortfolioStoreProvider';
@@ -39,6 +51,7 @@ import {
   vaultStateAffordance,
   vaultStateOffersAction,
   vaultStateRetryAt,
+  vaultStateTone,
 } from '../vaultStateAffordance';
 import { vaultRetryTimeLabel } from './retryTime';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
@@ -101,6 +114,29 @@ const ACCESS_ACTIONS: ReadonlySet<string> = new Set([
   'start-fresh',
   'restore',
 ]);
+
+/**
+ * A read that failed and offers a retry. It was four copies of a `bt-soft` div
+ * — a class that is ONE declaration, `color`, so the "banner" had no surface at
+ * all and read as loose text with a button beside it. One component, one soft
+ * panel, one retry.
+ */
+function RetryNotice({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const t = useT();
+  return (
+    <Panel
+      className="flex flex-wrap items-center justify-between gap-3 p-3"
+      pad={false}
+      role="alert"
+      soft
+    >
+      <span className="bt-soft text-sm">{message}</span>
+      <Button icon="refresh" onClick={onRetry} size="sm" type="button">
+        {t('common.retry')}
+      </Button>
+    </Panel>
+  );
+}
 
 /** Null when the action can run; otherwise the i18n key explaining why not. */
 function deferredReasonKey(action: string, operations: VaultManagerOperations): string | null {
@@ -213,13 +249,27 @@ export function VaultManager({
         ) : null}
       </div>
 
-      <ul className="grid gap-2 text-sm sm:grid-cols-3">
-        {(['names', 'storage', 'privacy'] as const).map((item) => (
-          <li className="bt-soft" key={item}>
-            {t(`vault.manager.explainer.${item}`)}
-          </li>
-        ))}
-      </ul>
+      {/* The cleartext boundaries. Three sentences with nothing behind them read
+          as loose prose; on one soft panel, ruled and glyphed, they read as the
+          rules of the surface they introduce. */}
+      <Panel pad={false} soft>
+        <ul className="bt-band flex flex-col">
+          {(
+            [
+              ['names', 'eye'],
+              ['storage', 'database'],
+              ['privacy', 'lock'],
+            ] as const
+          ).map(([item, icon]) => (
+            <li className="bt-soft flex items-start gap-2.5 px-3 py-2.5 text-sm" key={item}>
+              <span className="bt-muted mt-0.5 shrink-0">
+                <Icon name={icon} size={15} />
+              </span>
+              <span className="min-w-0">{t(`vault.manager.explainer.${item}`)}</span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
 
       {creating ? (
         <>
@@ -227,12 +277,10 @@ export function VaultManager({
             <SkeletonBlock height={48} />
           ) : null}
           {driveConnectionsNeeded && connectionsQuery.isError ? (
-            <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-              <span>{t('vault.manager.connectionsError')}</span>
-              <Button onClick={() => void connectionsQuery.refetch()} size="sm" type="button">
-                {t('common.retry')}
-              </Button>
-            </div>
+            <RetryNotice
+              message={t('vault.manager.connectionsError')}
+              onRetry={() => void connectionsQuery.refetch()}
+            />
           ) : null}
           <VaultCreationCeremony
             connections={connectionsQuery.data ?? []}
@@ -245,25 +293,21 @@ export function VaultManager({
 
       {vaultsQuery.isPending ? <SkeletonBlock height={112} /> : null}
       {vaultsQuery.isError ? (
-        <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-          <span>{t('vault.manager.loadError')}</span>
-          <Button onClick={() => void vaultsQuery.refetch()} size="sm" type="button">
-            {t('common.retry')}
-          </Button>
-        </div>
+        <RetryNotice
+          message={t('vault.manager.loadError')}
+          onRetry={() => void vaultsQuery.refetch()}
+        />
       ) : null}
       {vaultsQuery.isSuccess && vaults.length === 0 && !creating ? (
-        <p className="bt-soft text-sm">{t('vault.manager.empty')}</p>
+        <Empty icon="shield" title={t('vault.manager.empty')} />
       ) : null}
 
       {portfoliosQuery.isPending && vaults.length > 0 ? <SkeletonBlock height={36} /> : null}
       {portfoliosQuery.isError && vaults.length > 0 ? (
-        <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-          <span>{t('vault.manager.portfoliosError')}</span>
-          <Button onClick={() => void portfoliosQuery.refetch()} size="sm" type="button">
-            {t('common.retry')}
-          </Button>
-        </div>
+        <RetryNotice
+          message={t('vault.manager.portfoliosError')}
+          onRetry={() => void portfoliosQuery.refetch()}
+        />
       ) : null}
 
       {vaults.length > 0 ? (
@@ -327,6 +371,7 @@ function VaultManagerRow({
   unlockedNames: ReadonlyMap<string, string>;
 }) {
   const t = useT();
+  const deferredFoldId = useId();
   const [renameOpen, setRenameOpen] = useState(false);
   const [name, setName] = useState(vault.name);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -375,18 +420,30 @@ function VaultManagerRow({
     }
   }
 
+  const deferredReasons = [
+    'vault.manager.deferred.changeMedia',
+    rotateDeferred,
+    startFreshDeferred,
+  ].filter((key): key is string => key != null);
+
   return (
     <li className="bt-panel flex flex-col gap-3 p-3">
+      {/* Identity, live state, and the one act this row is FOR. Everything
+          below the rule is maintenance. */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="bt-row-title truncate">{vault.name}</p>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <p className="bt-row-title truncate">{vault.name}</p>
+            {state ? (
+              <Badge tone={vaultStateTone(state)}>{t(vaultStateAffordance(state).stateKey)}</Badge>
+            ) : null}
+          </div>
           <p className="bt-row-sub">
             {t(
               vault.media.length === 2
                 ? 'vault.manager.media.both'
                 : `vault.manager.media.${vault.media[0] ?? 'server'}`,
             )}
-            {state ? ` · ${t(vaultStateAffordance(state).stateKey)}` : ''}
           </p>
           {vault.driveConnectionId ? (
             <p className="bt-row-sub">
@@ -401,7 +458,7 @@ function VaultManagerRow({
           ) : null}
         </div>
         {state ? (
-          <VaultStateAction state={state} vaultId={vault.id} />
+          <VaultStateAction emphasis="primary" state={state} vaultId={vault.id} />
         ) : (
           <Button
             onClick={() => void endpointQuery?.refetch()}
@@ -417,18 +474,21 @@ function VaultManagerRow({
       {!membershipReady ? null : memberships.length > 0 ? (
         <div>
           <p className="bt-label">{t('vault.manager.portfolios')}</p>
-          <ul className="mt-1 flex flex-wrap gap-2">
+          <ul className="mt-1.5 flex flex-wrap gap-2">
             {memberships.map((portfolio) => (
-              <li className="bt-badge" key={portfolio.id}>
+              <li key={portfolio.id}>
                 {/* "Private Holdings · Private Holdings" — the vault named after
                     itself — is what this chip read while the vault was open
                     (failure map #6). With the name in hand it says which
                     portfolio; locked, it stays the alias. */}
-                {portfolioDisplayName(
-                  portfolio,
-                  t('vault.lockedStub.fallbackAlias'),
-                  unlockedNames.get(portfolio.id),
-                )}
+                <Badge>
+                  <Icon name="portfolios" size={12} />
+                  {portfolioDisplayName(
+                    portfolio,
+                    t('vault.lockedStub.fallbackAlias'),
+                    unlockedNames.get(portfolio.id),
+                  )}
+                </Badge>
               </li>
             ))}
           </ul>
@@ -437,10 +497,21 @@ function VaultManagerRow({
         <p className="bt-row-sub">{t('vault.manager.noPortfolios')}</p>
       )}
 
-      <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
-        <button className="bt-link" onClick={() => setRenameOpen((open) => !open)} type="button">
+      {/* The maintenance bar. It used to be five underlined words in a line —
+          three of them `<span>`s pretending to be links — followed by up to
+          three explainer paragraphs. Now it is one ruled action bar with real
+          hierarchy, and the paragraphs are folded into the single disclosure
+          below it. */}
+      <div className="bt-t-rule bt-row-actions flex flex-wrap items-center gap-2 pt-3">
+        <Button
+          icon="pen"
+          onClick={() => setRenameOpen((open) => !open)}
+          size="sm"
+          type="button"
+          variant="quiet"
+        >
           {t('vault.manager.action.rename')}
-        </button>
+        </Button>
         {/* "Change storage" WAS a link to `/control/connections?vault=<id>`,
             and that panel has never read the `vault` param (#1520): the link
             landed on an unscoped Drive-connection list with no per-vault media
@@ -449,51 +520,81 @@ function VaultManagerRow({
             E5/#1415). Honouring the param would have scoped the page to a
             control that is not there. So it follows the same rule as `rotate`
             and `start-fresh` below — stated as what it is, with the missing
-            piece named, and never a link. */}
-        <span className="bt-muted">{t('vault.manager.action.changeMedia')}</span>
-        {/* An action this build cannot finish is never a link: it stays visible
-            as what it is, with the missing piece named beside it. */}
+            piece named, and never a link.
+
+            `aria-disabled` rather than `disabled`: §12 forbids a SILENT
+            disabled control, and a real `disabled` button drops out of the tab
+            order, so a keyboard user would meet three actions that simply are
+            not there. This way each one is still reachable, still announced,
+            and points at the fold that names what is missing. */}
+        <DeferredAction
+          describedBy={deferredFoldId}
+          label={t('vault.manager.action.changeMedia')}
+        />
         {rotateDeferred ? (
-          <span className="bt-muted">{t('vault.manager.action.rotate')}</span>
+          <DeferredAction describedBy={deferredFoldId} label={t('vault.manager.action.rotate')} />
         ) : (
-          <Link
-            className="bt-link"
+          <LinkButton
+            size="sm"
             to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=rotate`}
+            variant="quiet"
           >
             {t('vault.manager.action.rotate')}
-          </Link>
+          </LinkButton>
         )}
         {startFreshDeferred ? (
-          <span className="bt-muted">{t('vault.manager.action.startFresh')}</span>
+          <DeferredAction
+            describedBy={deferredFoldId}
+            label={t('vault.manager.action.startFresh')}
+          />
         ) : (
-          <Link
-            className="bt-link"
+          <LinkButton
+            size="sm"
             to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=start-fresh`}
+            variant="quiet"
           >
             {t('vault.manager.action.startFresh')}
-          </Link>
+          </LinkButton>
         )}
-        <button
-          className="bt-link bt-neg"
+        <span className="grow" />
+        <Button
           disabled={!membershipReady || memberships.length > 0}
+          icon="trash"
           onClick={() => setDeleteOpen((open) => !open)}
+          size="sm"
           type="button"
+          variant="danger"
         >
           {t('common.delete')}
-        </button>
+        </Button>
       </div>
-      <p className="bt-meta">{t('vault.manager.deferred.changeMedia')}</p>
-      {rotateDeferred ? <p className="bt-meta">{t(rotateDeferred)}</p> : null}
-      {startFreshDeferred ? <p className="bt-meta">{t(startFreshDeferred)}</p> : null}
+
+      {/* Three "isn't available yet" paragraphs stacked above the fold were the
+          wall the owner met on this panel. Same words, one disclosure. */}
+      {deferredReasons.length > 0 ? (
+        <div id={deferredFoldId}>
+          <Disclosure summary={t('vault.manager.deferredFold')}>
+            <div className="flex flex-col gap-2">
+              {deferredReasons.map((key) => (
+                <p className="bt-meta" key={key}>
+                  {t(key)}
+                </p>
+              ))}
+            </div>
+          </Disclosure>
+        </div>
+      ) : null}
+
       {/* "Delete refuses while a portfolio is inside, and says so" — said with
           the membership list already in hand, not after a server round trip.
-          The server refusal below still stands for the cross-device race. */}
+          It stays OUT of the fold above: that fold explains what this build
+          cannot do, while this explains a control the user can see is off. */}
       {membershipReady && memberships.length > 0 ? (
         <p className="bt-meta">{t('vault.manager.deleteReferenced')}</p>
       ) : null}
 
       {renameOpen ? (
-        <div className="flex flex-wrap items-end gap-2">
+        <Panel className="flex flex-wrap items-end gap-2 p-3" pad={false} soft>
           <Field htmlFor={`vault-name-${vault.id}`} label={t('vault.manager.nameLabel')}>
             <Input
               id={`vault-name-${vault.id}`}
@@ -509,12 +610,12 @@ function VaultManagerRow({
           >
             {t('common.save')}
           </Button>
-        </div>
+        </Panel>
       ) : null}
 
       {deleteOpen ? (
-        <div className="bt-soft flex flex-col gap-3">
-          <p className="text-sm">{t('vault.manager.deleteWarning')}</p>
+        <Panel className="flex flex-col gap-3 p-3" pad={false} soft>
+          <p className="bt-soft text-sm">{t('vault.manager.deleteWarning')}</p>
           <CredentialFields
             credential={credential}
             credentialKind={credentialKind}
@@ -522,16 +623,18 @@ function VaultManagerRow({
             onCredentialChange={setCredential}
             onKindChange={setCredentialKind}
           />
-          <Button
-            disabled={working || credential.trim() === ''}
-            onClick={() => void remove()}
-            size="sm"
-            type="button"
-            variant="danger"
-          >
-            {t('vault.manager.deleteAction')}
-          </Button>
-        </div>
+          <div>
+            <Button
+              disabled={working || credential.trim() === ''}
+              onClick={() => void remove()}
+              size="sm"
+              type="button"
+              variant="danger"
+            >
+              {t('vault.manager.deleteAction')}
+            </Button>
+          </div>
+        </Panel>
       ) : null}
       {errorKey ? (
         <p className="bt-neg text-sm" role="alert">
@@ -539,6 +642,26 @@ function VaultManagerRow({
         </p>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * An action this build cannot finish, kept in the bar as a peer of the ones it
+ * can. Focusable and announced (`aria-disabled`, not `disabled`) and pointed at
+ * the disclosure that names the missing piece — §12's "never a silent disabled
+ * control", without the three paragraphs that used to say it above the fold.
+ */
+function DeferredAction({ describedBy, label }: { describedBy: string; label: string }) {
+  return (
+    <Button
+      aria-describedby={describedBy}
+      aria-disabled="true"
+      size="sm"
+      type="button"
+      variant="quiet"
+    >
+      {label}
+    </Button>
   );
 }
 
@@ -717,12 +840,10 @@ function VaultAccessAction({
           </p>
         ) : null}
         {stateQuery.isError ? (
-          <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-            <span>{t('vault.manager.access.stateError')}</span>
-            <Button onClick={() => void stateQuery.refetch()} size="sm" type="button">
-              {t('common.retry')}
-            </Button>
-          </div>
+          <RetryNotice
+            message={t('vault.manager.access.stateError')}
+            onRetry={() => void stateQuery.refetch()}
+          />
         ) : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button onClick={onClose} type="button" variant="quiet">
@@ -787,12 +908,10 @@ function VaultAccessAction({
         ) : restoreCandidates.isPending ? (
           <SkeletonBlock height={96} />
         ) : restoreCandidates.isError ? (
-          <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
-            <span>{t('vault.manager.access.restoreLoadError')}</span>
-            <Button onClick={() => void restoreCandidates.refetch()} size="sm" type="button">
-              {t('common.retry')}
-            </Button>
-          </div>
+          <RetryNotice
+            message={t('vault.manager.access.restoreLoadError')}
+            onRetry={() => void restoreCandidates.refetch()}
+          />
         ) : (
           <VaultRestorePicker
             candidates={restoreCandidates.data}
@@ -866,27 +985,19 @@ function VaultAccessAction({
         </>
       ) : null}
       {isReset ? (
-        <label className="bt-soft flex items-start gap-2 text-sm">
-          <input
-            checked={resetAcknowledged}
-            onChange={(event) => setResetAcknowledged(event.target.checked)}
-            style={CHECKBOX_STYLE}
-            type="checkbox"
-          />
-          <span>{t('vault.manager.access.resetConfirm')}</span>
-        </label>
+        <CheckRow checked={resetAcknowledged} onChange={setResetAcknowledged} tone="gold">
+          {t('vault.manager.access.resetConfirm')}
+        </CheckRow>
       ) : null}
       {isStartFresh ? (
         <>
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={destructionAcknowledged}
-              onChange={(event) => setDestructionAcknowledged(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.manager.access.startFreshConfirm')}</span>
-          </label>
+          <CheckRow
+            checked={destructionAcknowledged}
+            onChange={setDestructionAcknowledged}
+            tone="gold"
+          >
+            {t('vault.manager.access.startFreshConfirm')}
+          </CheckRow>
           <CredentialFields
             credential={stepUpValue}
             credentialKind={stepUpKind}
@@ -939,8 +1050,8 @@ function DeferredActionNotice({
   const t = useT();
   const stateQuery = useVaultEndpointState(vault.id);
   return (
-    <div className="bt-soft flex flex-col items-start gap-2 text-sm">
-      <p>{t(reasonKey, reasonVars)}</p>
+    <Panel className="flex flex-col items-start gap-2 p-3" pad={false} soft>
+      <p className="bt-soft text-sm">{t(reasonKey, reasonVars)}</p>
       {stateQuery.data ? (
         <VaultStateAction state={stateQuery.data} vaultId={vault.id} />
       ) : (
@@ -954,7 +1065,7 @@ function DeferredActionNotice({
           {stateQuery.isError ? t('common.retry') : t('common.loading')}
         </Button>
       )}
-    </div>
+    </Panel>
   );
 }
 
