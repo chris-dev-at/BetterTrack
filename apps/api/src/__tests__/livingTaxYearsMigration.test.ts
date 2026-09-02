@@ -18,11 +18,18 @@ import * as schema from '../data/schema';
 const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 const TARGET = '0093_living_tax_years';
 const GUARD_TARGET = '0099_living_tax_year_touch_guards';
+const FANOUT_TARGET = '0105_living_tax_year_correction_fanout';
 const LEGACY_TABLE = ['tax', 'year', 'unlocks'].join('_');
 const USER_ID = '0198cb38-1111-7000-8000-000000000001';
 const PORTFOLIO_2024_ID = '0198cb38-1111-7000-8000-000000000002';
 const PORTFOLIO_2025_ID = '0198cb38-1111-7000-8000-000000000003';
 const ASSET_ID = '0198cb38-1111-7000-8000-000000000004';
+const CASH_SOURCE_ID = '0198cb38-1111-7000-8000-000000000007';
+const CORRECTION_ID = '0198cb38-1111-7000-8000-000000000008';
+const ATTACHED_TAX_ID = '0198cb38-1111-7000-8000-000000000009';
+const TX_2023_ID = '0198cb38-1111-7000-8000-00000000000a';
+const TX_2024_ID = '0198cb38-1111-7000-8000-00000000000b';
+const TX_2025_ID = '0198cb38-1111-7000-8000-00000000000c';
 const BASELINE = new Date('2000-01-01T00:00:00.000Z');
 
 const NONE_SETTINGS: UserTaxSettingsRecord = {
@@ -168,6 +175,107 @@ describe(`migration ${GUARD_TARGET}`, () => {
       expect(afterPortfolioChange[0]).toMatchObject({ year: 2024 });
       expect(afterPortfolioChange[0]!.lastChangedAt!.getTime()).toBeGreaterThan(BASELINE.getTime());
       expect(afterPortfolioChange[1]).toEqual({ year: 2025, lastChangedAt: BASELINE });
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe(`migration ${FANOUT_TARGET}`, () => {
+  it('attributes a cash correction to the year it documents and leaves the other years untouched', async () => {
+    const client = await bootUpTo(FANOUT_TARGET);
+    try {
+      // Rows, triggers and markers from 0093/0099 already exist when the
+      // fan-out migration lands — it must apply cleanly on top of them.
+      await client.exec(`
+        INSERT INTO "users" ("id", "email", "username", "password_hash")
+        VALUES ('${USER_ID}', 'correction-fanout@bettertrack.test', 'correction_fanout', 'x');
+        INSERT INTO "portfolios" ("id", "user_id", "name")
+        VALUES ('${PORTFOLIO_2024_ID}', '${USER_ID}', 'Fan-out source');
+        INSERT INTO "assets" (
+          "id", "provider_id", "provider_ref", "type", "symbol", "name", "currency"
+        ) VALUES ('${ASSET_ID}', 'yahoo', 'FAN-OUT', 'stock', 'FO', 'Fan Out', 'EUR');
+        INSERT INTO "portfolio_cash_sources" ("id", "portfolio_id", "name", "type", "is_main")
+        VALUES ('${CASH_SOURCE_ID}', '${PORTFOLIO_2024_ID}', 'Main', 'cash', true);
+        INSERT INTO "transactions" (
+          "id", "portfolio_id", "asset_id", "side", "quantity", "price", "executed_at"
+        ) VALUES
+          ('${TX_2023_ID}', '${PORTFOLIO_2024_ID}', '${ASSET_ID}', 'buy', 1, 10, '2023-06-01T12:00:00Z'),
+          ('${TX_2024_ID}', '${PORTFOLIO_2024_ID}', '${ASSET_ID}', 'buy', 1, 10, '2024-06-01T12:00:00Z'),
+          ('${TX_2025_ID}', '${PORTFOLIO_2024_ID}', '${ASSET_ID}', 'buy', 1, 10, '2025-06-01T12:00:00Z');
+      `);
+      await applyMigration(client, FANOUT_TARGET);
+
+      const db = drizzlePglite(client, { schema }) as unknown as Database;
+      const taxRepository = createTaxRepository(db);
+      const rebaseline = () =>
+        client.exec(`
+          UPDATE "tax_year_changes" SET "last_changed_at" = '${BASELINE.toISOString()}'
+          WHERE "user_id" = '${USER_ID}';
+        `);
+      const atBaseline = (years: number[]) =>
+        years.map((year) => ({ year, lastChangedAt: BASELINE }));
+
+      await rebaseline();
+      expect(await taxRepository.listTaxYearChanges(USER_ID)).toEqual(
+        atBaseline([2023, 2024, 2025]),
+      );
+
+      // A correction posted in January 2025 settles tax year 2024: it marks the
+      // year it BELONGS to, never the year it was posted in.
+      await client.exec(`
+        INSERT INTO "portfolio_cash_movements" (
+          "id", "portfolio_id", "source_id", "kind", "amount_eur", "tax_year", "executed_at"
+        ) VALUES (
+          '${CORRECTION_ID}', '${PORTFOLIO_2024_ID}', '${CASH_SOURCE_ID}',
+          'tax_refund', 5, 2024, '2025-01-15T12:00:00Z'
+        );
+      `);
+      const afterCorrection = await taxRepository.listTaxYearChanges(USER_ID);
+      expect(afterCorrection.filter(({ year }) => year !== 2024)).toEqual(atBaseline([2023, 2025]));
+      expect(
+        afterCorrection.find(({ year }) => year === 2024)!.lastChangedAt!.getTime(),
+      ).toBeGreaterThan(BASELINE.getTime());
+
+      // A tax leg attached to its parent row stays excluded — the parent's own
+      // trigger marks that year.
+      await rebaseline();
+      await client.exec(`
+        INSERT INTO "portfolio_cash_movements" (
+          "id", "portfolio_id", "source_id", "kind", "amount_eur",
+          "transaction_id", "tax_year", "executed_at"
+        ) VALUES (
+          '${ATTACHED_TAX_ID}', '${PORTFOLIO_2024_ID}', '${CASH_SOURCE_ID}',
+          'tax_withholding', -5, '${TX_2023_ID}', 2023, '2023-06-01T12:00:00Z'
+        );
+      `);
+      expect(await taxRepository.listTaxYearChanges(USER_ID)).toEqual(
+        atBaseline([2023, 2024, 2025]),
+      );
+
+      // A no-op UPDATE still marks nothing (0099's guard, carried through).
+      await client.exec(`
+        UPDATE "portfolio_cash_movements" SET "tax_year" = 2024 WHERE "id" = '${CORRECTION_ID}';
+      `);
+      expect(await taxRepository.listTaxYearChanges(USER_ID)).toEqual(
+        atBaseline([2023, 2024, 2025]),
+      );
+
+      // Re-attributing a correction marks BOTH sides (OLD 2024, NEW 2023) — and
+      // neither is 2025, the year the row is posted in.
+      await client.exec(`
+        UPDATE "portfolio_cash_movements" SET "tax_year" = 2023 WHERE "id" = '${CORRECTION_ID}';
+      `);
+      const afterReattribution = await taxRepository.listTaxYearChanges(USER_ID);
+      expect(afterReattribution.filter(({ year }) => year === 2025)).toEqual(atBaseline([2025]));
+      expect(
+        afterReattribution
+          .filter(({ year }) => year !== 2025)
+          .map(({ year, lastChangedAt }) => [year, lastChangedAt! > BASELINE]),
+      ).toEqual([
+        [2023, true],
+        [2024, true],
+      ]);
     } finally {
       await client.close();
     }
