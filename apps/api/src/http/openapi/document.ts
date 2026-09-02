@@ -95,6 +95,20 @@ const VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION = {
     'design: an unrecognized value is read back as null rather than rejecting the row.',
 };
 
+// Same generator gap, sixth instance: the vault import-row `kind_undecided`
+// field is a `.catch(false)` for the same reason as its siblings — a malformed
+// value must not be why a portfolio cannot be restored. Reachable from
+// `PortfolioVaultMoveOutRequest`, so without a hint `/openapi.json` and `/docs`
+// 500 for the whole API (which is exactly how this one was caught).
+const VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION = {
+  type: 'boolean' as const,
+  description:
+    "Whether a staged import row's KIND is still an open question (§16 2026-08-29): the row " +
+    'parsed cleanly but nobody has said what it is, so a person may still confirm one. ' +
+    'Tolerant by design: an unrecognized value is read back as false — the row then reads as ' +
+    'a plain reported line, which is what it was before the affordance existed.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -121,6 +135,10 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowResolvedBySchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowKindUndecidedSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION,
   ],
 ];
 

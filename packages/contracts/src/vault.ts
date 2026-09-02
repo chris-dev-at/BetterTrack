@@ -1300,6 +1300,32 @@ export const vaultImportRowResolvedBySchema = importRowResolvedBySchema
   .optional()
   .catch(null);
 
+/**
+ * The `import_rows.kind_undecided` column inside a vault document (§16
+ * 2026-08-29 gap (b)): true while this staged row parsed cleanly but nobody has
+ * said what KIND it is, so its other columns hold the parsed values (with
+ * `amountEur` still signed) and a person may still confirm a kind for it.
+ *
+ * `.optional()` for the `resolvedBy` reason: restore and disable strict-parse
+ * documents written BEFORE this column existed, and those carry no key at all —
+ * requiring it would lock every pre-existing vault out. Absent restores as the
+ * column's own default (false), which is exactly what such a document means:
+ * every row of it was decided. A document written since always carries the key,
+ * because capture reads a NOT NULL column.
+ *
+ * `.catch(false)` because a malformed value must not be the reason a vault
+ * fails to open — the same rule its four siblings follow — and `false` is the
+ * SAFE direction to degrade in: the row reads as a plain reported error, which
+ * is what it was before this feature existed. Catching to `true` would be the
+ * unsafe mirror, re-opening a row someone had already decided.
+ *
+ * Exported for the same OpenAPI-generator reason as its siblings above (see
+ * `GENERATOR_GAP_HINTS` in the API's `openapi/document.ts` — zod-to-openapi
+ * 7.3.x cannot walk a `ZodCatch`, and an unhinted one 500s the whole spec);
+ * nothing else should import it.
+ */
+export const vaultImportRowKindUndecidedSchema = z.boolean().optional().catch(false);
+
 const importRowRowSchema = z
   .object({
     batchId: uuidSchema,
@@ -1381,29 +1407,13 @@ const importRowRowSchema = z
      */
     resolvedBy: vaultImportRowResolvedBySchema,
     /**
-     * The `import_rows.kind_undecided` column (§16 2026-08-29 gap (b)): this
-     * staged row parsed cleanly but nobody has said what KIND it is yet, so its
-     * other columns hold the parsed values (with `amountEur` still signed) and
-     * a person may confirm a kind for it. Enrolled because the
-     * export-completeness sweep requires every persisted column to appear in
-     * the strict payload — and it must be, since a vault round trip that
-     * dropped it would restore a batch whose undecided rows silently became
-     * unconfirmable reported errors.
-     *
-     * `.default(false)` for the `vaultAlias` / `kind` reason: restore and
-     * disable strict-parse documents written BEFORE this column existed, and
-     * those carry no key at all. Requiring it would lock every pre-existing
-     * vault out. The default matches the migration's own column default, so a
-     * document from before the feature restores exactly as the database would
-     * have back-filled it — every row of it decided, which it was.
-     *
-     * `.catch(false)` because a malformed value must not be the reason a vault
-     * fails to open (the `candidates` precedent), and `false` is the SAFE
-     * direction to degrade in: the row reads as a plain reported error, which
-     * is precisely what such a row was before this feature existed. Catching
-     * to `true` would be the unsafe mirror — it would re-open a decided row.
+     * Enrolled because the export-completeness sweep requires every persisted
+     * column to appear in the strict payload — and it must be, since a vault
+     * round trip that dropped it would restore a batch whose undecided rows
+     * silently came back as unconfirmable reported errors. See
+     * {@link vaultImportRowKindUndecidedSchema} for the tolerance rules.
      */
-    kindUndecided: z.boolean().default(false).catch(false),
+    kindUndecided: vaultImportRowKindUndecidedSchema,
   })
   .strict();
 
