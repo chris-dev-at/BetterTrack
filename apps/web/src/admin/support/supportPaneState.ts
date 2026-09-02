@@ -1,5 +1,7 @@
 import {
   FEEDBACK_CATEGORIES,
+  FEEDBACK_SEARCH_MAX_LENGTH,
+  FEEDBACK_SHIPPED_VERSION_MAX_LENGTH,
   FEEDBACK_SORTS,
   FEEDBACK_STATUSES,
   type AdminFeedbackListQuery,
@@ -79,10 +81,14 @@ export function readSupportQuery(params: URLSearchParams): SupportQuery {
   const statusParam = params.get('status');
   const unreadParam = params.get('unread');
   return {
-    q: params.get('q') ?? '',
+    // Clamped to the contract's own bounds, not merely validated for shape: a
+    // pasted link carrying 500 characters of search text would otherwise reach
+    // the API and come back 400 — an error the operator can neither read nor
+    // act on, from a URL they did not type.
+    q: (params.get('q') ?? '').slice(0, FEEDBACK_SEARCH_MAX_LENGTH),
     category: isCategory(categoryParam) ? categoryParam : ANY,
     status: isStatus(statusParam) ? statusParam : ANY,
-    version: params.get('version') ?? '',
+    version: (params.get('version') ?? '').slice(0, FEEDBACK_SHIPPED_VERSION_MAX_LENGTH),
     unread: isUnread(unreadParam) ? unreadParam : 'all',
     archived: params.get('archived') === 'true',
     sort: isSort(sortParam) ? sortParam : 'category',
@@ -140,6 +146,55 @@ export type SupportKeyIntent =
 const EDITABLE_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
 /**
+ * Marks a subtree the inbox shortcuts must keep their hands off. The thread
+ * pane carries it: `j`, `k` and `Enter` are about the QUEUE, and the queue is
+ * not what the operator is working in once a conversation is open.
+ */
+export const SUPPORT_KEYS_OFF_ATTR = 'data-support-keys';
+const KEYS_OFF_SELECTOR = `[${SUPPORT_KEYS_OFF_ATTR}='off']`;
+
+/**
+ * Controls that already own their keys. A focused `<button>` must get its own
+ * Enter — the browser's activation behaviour — and a link must get its own.
+ * Roles are included because an element can be a button without being one.
+ */
+const INTERACTIVE_SELECTOR = [
+  'button',
+  'a[href]',
+  'input',
+  'textarea',
+  'select',
+  '[contenteditable=""]',
+  '[contenteditable="true"]',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="menuitem"]',
+  '[role="tab"]',
+  '[role="switch"]',
+  '[role="checkbox"]',
+].join(',');
+
+/** Narrow an EventTarget to something we can run `closest` on. */
+function asElement(target: EventTarget | null): { closest(selector: string): unknown } | null {
+  if (target === null || typeof target !== 'object') return null;
+  const candidate = target as { closest?: unknown };
+  return typeof candidate.closest === 'function'
+    ? (candidate as { closest(selector: string): unknown })
+    : null;
+}
+
+function matches(target: EventTarget | null, selector: string): boolean {
+  const element = asElement(target);
+  if (element === null) return false;
+  try {
+    return element.closest(selector) !== null;
+  } catch {
+    // A malformed selector must never take the whole handler down.
+    return false;
+  }
+}
+
+/**
  * True when the keystroke landed in something the operator is typing into.
  * Without this, composing the word "jk" in a reply would walk the inbox and
  * silently swap the thread out from under the composer.
@@ -149,6 +204,19 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   const element = target as { tagName?: unknown; isContentEditable?: unknown };
   if (element.isContentEditable === true) return true;
   return typeof element.tagName === 'string' && EDITABLE_TAGS.has(element.tagName);
+}
+
+/**
+ * True when the keystroke landed on a control that already has a meaning for
+ * this key, or anywhere inside a keys-off subtree.
+ *
+ * This is the fix for the bug that shipped in review round 0: the handler is
+ * bound to `window`, and treating "not a form field" as "safe to claim" meant
+ * `Enter` on **Send reply** was `preventDefault()`-ed into an inbox navigation —
+ * the reply was never sent, and the thread swapped underneath it.
+ */
+export function isShortcutFreeTarget(target: EventTarget | null): boolean {
+  return matches(target, INTERACTIVE_SELECTOR) || matches(target, KEYS_OFF_SELECTOR);
 }
 
 export interface SupportKeyEvent {
@@ -165,14 +233,22 @@ export interface SupportKeyEvent {
  * A modifier always wins: `Cmd+K` is the command palette and `Ctrl+J` belongs
  * to the browser, so the inbox claims neither. Inside a text field only Escape
  * is honoured, and it means "let me out of this box" rather than "close the
- * thread" — closing the thread from the reply composer would discard a draft.
+ * thread", so one press does not jump the operator out of what they are writing.
+ *
+ * On any other interactive control — and anywhere inside the thread pane —
+ * Escape still closes, but nothing else is claimed. The queue shortcuts are for
+ * the queue; a focused button's Enter belongs to that button.
  */
 export function supportKeyIntent(event: SupportKeyEvent): SupportKeyIntent {
   if (event.ctrlKey === true || event.metaKey === true || event.altKey === true) {
     return { kind: 'none' };
   }
-  if (isEditableTarget(event.target ?? null)) {
+  const target = event.target ?? null;
+  if (isEditableTarget(target)) {
     return event.key === 'Escape' ? { kind: 'blur' } : { kind: 'none' };
+  }
+  if (isShortcutFreeTarget(target)) {
+    return event.key === 'Escape' ? { kind: 'close' } : { kind: 'none' };
   }
   switch (event.key) {
     case 'j':

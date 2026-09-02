@@ -5,7 +5,11 @@ import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { SupportInbox } from '../support/SupportInbox';
 import { SupportThread } from '../support/SupportThread';
-import { readSupportQuery, supportFiltersActive } from '../support/supportPaneState';
+import {
+  SUPPORT_KEYS_OFF_ATTR,
+  readSupportQuery,
+  supportFiltersActive,
+} from '../support/supportPaneState';
 import { Button, PageHeader, cx } from '../components/ui';
 import { EDGE, STACK, TEXT_MICRO, TEXT_MUTED, TEXT_NUM } from '../components/tokens';
 import { useResource } from '../useResource';
@@ -14,9 +18,10 @@ import { useResource } from '../useResource';
  * The Support workspace — a split-pane helpdesk (#1406 W3).
  *
  * Owner verdict, 2026-08-20: "Support desktop = split pane (inbox left / thread
- * right, full-page on mobile)". Below `lg` the two panes are one at a time,
+ * right, full-page on mobile)". Below `lg` only one pane is VISIBLE at a time,
  * because a 390 px column cannot hold a queue and a conversation at once and
- * pretending otherwise produces two unusable halves.
+ * pretending otherwise produces two unusable halves. Both stay mounted — see
+ * the note on the grid below for why that is load-bearing.
  *
  * Every piece of view state is a query parameter, so a thread is a link: an
  * operator can paste `?thread=…` into a note, or send a filtered queue to
@@ -76,7 +81,12 @@ export function SupportPage() {
 
   const openThread = useCallback(
     (id: string | null) => {
-      // A thread change is a navigation the operator should be able to undo, so
+      // Opening the thread that is already open is not a navigation. Without
+      // this guard a keypress handled by both the row and the window shortcut
+      // pushes two identical history entries, and the operator's next Back
+      // press appears to do nothing.
+      if ((id ?? null) === (params.get('thread') ?? null)) return;
+      // A thread change IS a navigation the operator should be able to undo, so
       // unlike a filter tweak it pushes a history entry.
       setParams(
         (current) => {
@@ -88,7 +98,7 @@ export function SupportPage() {
         { replace: false },
       );
     },
-    [setParams],
+    [setParams, params],
   );
 
   return (
@@ -126,9 +136,17 @@ export function SupportPage() {
       </div>
 
       {/*
-       * Below `lg` exactly one pane is mounted: an open thread replaces the
-       * inbox instead of stacking under it, which is the "full-page on mobile"
-       * half of the owner's verdict.
+       * BOTH panes are always mounted; below `lg` one of them is hidden with
+       * CSS so an open thread reads as full-page, which is the "full-page on
+       * mobile" half of the owner's verdict.
+       *
+       * Mounting both is deliberate, not laziness. The inbox pane owns the
+       * queue read, and that read is the ONLY one on this screen whose 404 is
+       * allowed to mean "you are not an admin any more" (the two by-id reads
+       * treat a 404 as "this row is gone" — see `useResource`'s notFound
+       * policy). Unmounting the inbox on a phone would take that signal away,
+       * and an operator whose admin rights were revoked while a thread was open
+       * would sit on a stale pane instead of being signed out.
        */}
       <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(19rem,24rem)_1fr]">
         <div className={cx('min-w-0', query.thread === null ? 'block' : 'hidden lg:block')}>
@@ -142,7 +160,12 @@ export function SupportPage() {
           />
         </div>
 
-        <div className={cx('min-w-0', query.thread === null ? 'hidden lg:block' : 'block')}>
+        <div
+          // The queue shortcuts stop at this boundary: `j`/`k`/`Enter` are
+          // about the list, and this is the conversation.
+          {...{ [SUPPORT_KEYS_OFF_ATTR]: 'off' }}
+          className={cx('min-w-0', query.thread === null ? 'hidden lg:block' : 'block')}
+        >
           <SupportThread
             threadId={query.thread}
             onClose={() => openThread(null)}

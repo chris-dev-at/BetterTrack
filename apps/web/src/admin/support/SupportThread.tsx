@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
@@ -63,10 +63,36 @@ export function SupportThread({
 }) {
   const t = useT();
 
+  /**
+   * Reply drafts, keyed by submission id.
+   *
+   * They live HERE rather than in the composer because closing the pane
+   * unmounts the composer — and losing a half-written reply to a stray Escape
+   * is exactly the kind of small betrayal that makes an operator stop trusting
+   * the keyboard. This component stays mounted across `threadId` changes, so a
+   * draft survives closing a thread, reading another, and coming back.
+   */
+  const [drafts, setDrafts] = useState<Readonly<Record<string, string>>>({});
+  const setDraft = useCallback((id: string, value: string) => {
+    setDrafts((current) => ({ ...current, [id]: value }));
+  }, []);
+  const clearDraft = useCallback((id: string) => {
+    setDrafts((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
   const submission = useResource(
     (signal) =>
       threadId === null ? Promise.resolve(null) : api.getAdminFeedback(threadId, signal),
     [threadId],
+    // Row-scoped: a 404 is "this submission is gone", not "you are not an
+    // admin". The inbox pane's list read keeps the `session` policy, so a
+    // genuinely de-admined operator is still signed out from this same screen.
+    { notFound: 'gone' },
   );
   /**
    * Opening a thread marks it read. Fired once per id and deliberately
@@ -135,7 +161,13 @@ export function SupportThread({
       />
 
       <div className="grid min-w-0 gap-0 xl:grid-cols-[1fr_17rem] xl:divide-x xl:divide-neutral-800">
-        <Conversation row={row} onChanged={onChanged} />
+        <Conversation
+          row={row}
+          draft={drafts[row.id] ?? ''}
+          onDraftChange={setDraft}
+          onDraftClear={clearDraft}
+          onChanged={onChanged}
+        />
         <SubmitterAside row={row} />
       </div>
     </section>
@@ -403,9 +435,23 @@ function StatusControl({
  * one that renders their loading and failure states — a resource passed in from
  * a parent is a resource whose failure this file would not be answering for.
  */
-function Conversation({ row, onChanged }: { row: AdminFeedbackSubmission; onChanged: () => void }) {
+function Conversation({
+  row,
+  draft,
+  onDraftChange,
+  onDraftClear,
+  onChanged,
+}: {
+  row: AdminFeedbackSubmission;
+  draft: string;
+  onDraftChange: (id: string, value: string) => void;
+  onDraftClear: (id: string) => void;
+  onChanged: () => void;
+}) {
   const t = useT();
-  const thread = useResource((signal) => api.getAdminFeedbackThread(row.id, {}, signal), [row.id]);
+  const thread = useResource((signal) => api.getAdminFeedbackThread(row.id, {}, signal), [row.id], {
+    notFound: 'gone',
+  });
 
   // Newest-first on the wire; a conversation reads oldest-first.
   const messages = useMemo(
@@ -474,7 +520,10 @@ function Conversation({ row, onChanged }: { row: AdminFeedbackSubmission; onChan
       </div>
       <ReplyComposer
         row={row}
+        draft={draft}
+        onDraftChange={onDraftChange}
         onSent={() => {
+          onDraftClear(row.id);
           thread.reload();
           onChanged();
         }}
@@ -483,16 +532,23 @@ function Conversation({ row, onChanged }: { row: AdminFeedbackSubmission; onChan
   );
 }
 
-function ReplyComposer({ row, onSent }: { row: AdminFeedbackSubmission; onSent: () => void }) {
+function ReplyComposer({
+  row,
+  draft,
+  onDraftChange,
+  onSent,
+}: {
+  row: AdminFeedbackSubmission;
+  draft: string;
+  onDraftChange: (id: string, value: string) => void;
+  onSent: () => void;
+}) {
   const t = useT();
-  const [body, setBody] = useState('');
+  const body = draft;
 
   const send = useAdminMutation(() => api.sendAdminFeedbackReply(row.id, { body: body.trim() }), {
     errorKey: 'admin.support.thread.replyError',
-    onSuccess: () => {
-      setBody('');
-      onSent();
-    },
+    onSuccess: onSent,
   });
 
   const tooLong = body.length > FEEDBACK_THREAD_MESSAGE_MAX_LENGTH;
@@ -505,7 +561,7 @@ function ReplyComposer({ row, onSent }: { row: AdminFeedbackSubmission; onSent: 
         name="support-reply"
         rows={3}
         value={body}
-        onChange={(event) => setBody(event.target.value)}
+        onChange={(event) => onDraftChange(row.id, event.target.value)}
         placeholder={t('admin.support.thread.replyPlaceholder')}
       />
       <div className="flex flex-wrap items-center justify-between gap-2">

@@ -17,7 +17,7 @@ import { I18nProvider } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { ApiError } from '../../lib/apiClient';
 import { setViewportWidth } from '../../test/viewport';
-import { AuthProvider } from '../AuthContext';
+import { AuthProvider, useAuth } from '../AuthContext';
 import { SupportPage } from './SupportPage';
 
 const admin: MeResponse = {
@@ -76,12 +76,18 @@ function LocationProbe() {
   return <span data-testid="location">{`${location.pathname}${location.search}`}</span>;
 }
 
+/** Surfaces the auth status, so "was the operator signed out" is observable. */
+function AuthProbe() {
+  return <span data-testid="auth-status">{useAuth().status}</span>;
+}
+
 function renderPage(initialEntry = '/admin/support', locale: 'en' | 'de' = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
       <AuthProvider>
         <MemoryRouter initialEntries={[initialEntry]}>
           <LocationProbe />
+          <AuthProbe />
           <Routes>
             <Route path="/admin/support" element={<SupportPage />} />
           </Routes>
@@ -185,6 +191,33 @@ describe('the inbox pane', () => {
     expect(screen.getByTestId('location')).not.toHaveTextContent('page=4');
   });
 
+  test('the version filter is controlled: a link populates it and Clear empties it', async () => {
+    const user = userEvent.setup();
+    renderPage('/admin/support?version=5.2.0');
+    await screen.findByRole('listbox');
+
+    // An uncontrolled field would ignore the URL entirely.
+    const version = screen.getByRole('textbox', { name: 'Shipped version' });
+    expect(version).toHaveValue('5.2.0');
+
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+
+    // ...and would survive the reset, then re-apply itself on the next blur.
+    await waitFor(() => expect(version).toHaveValue(''));
+    expect(screen.getByTestId('location')).not.toHaveTextContent('version=');
+  });
+
+  test('both free-text filters cap their length at the contract bound', async () => {
+    renderPage('/admin/support');
+    await screen.findByRole('listbox');
+
+    expect(screen.getByRole('searchbox', { name: 'Search' })).toHaveAttribute('maxlength', '120');
+    expect(screen.getByRole('textbox', { name: 'Shipped version' })).toHaveAttribute(
+      'maxlength',
+      '64',
+    );
+  });
+
   test('sends the filters from the URL to the API, unread included as a boolean', async () => {
     renderPage('/admin/support?status=shipped&category=bug&version=5.2.0&unread=read&sort=aging');
 
@@ -262,6 +295,92 @@ describe('the split pane and its keyboard', () => {
     expect(screen.getByTestId('location')).not.toHaveTextContent('thread=');
   });
 
+  // ── K1 / K2 regressions (review round 1) ─────────────────────────────────
+  // The window-level shortcut handler used to claim EVERY key whose target was
+  // not an <input>/<textarea>/<select>, which meant it swallowed Enter from
+  // every button in the workspace.
+
+  test('Enter on a focused button activates the button and does not touch the thread', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.sendAdminFeedbackReply).mockResolvedValue(
+      {} as unknown as Awaited<ReturnType<typeof api.sendAdminFeedbackReply>>,
+    );
+    renderPage('/admin/support?thread=sub-1');
+    await screen.findByRole('heading', { name: 'Dividend total is off by one payout' });
+
+    await user.type(screen.getByRole('textbox', { name: 'Reply to martin_k' }), 'On it.');
+    // Reach the control by keyboard, the way an operator actually would.
+    screen.getByRole('button', { name: 'Send reply' }).focus();
+    await user.keyboard('{Enter}');
+
+    expect(api.sendAdminFeedbackReply).toHaveBeenCalledWith('sub-1', { body: 'On it.' });
+    expect(screen.getByTestId('location')).toHaveTextContent('thread=sub-1');
+  });
+
+  test('Enter on the Refresh button does not swap the open thread', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.listAdminFeedback).mockResolvedValue(
+      listOf([submission({ id: 'sub-1' }), submission({ id: 'sub-2', subject: 'Second' })]),
+    );
+    renderPage('/admin/support?thread=sub-2');
+    await screen.findByRole('listbox');
+
+    // Move the HIGHLIGHT off the open thread first, so "open the focused row"
+    // and "keep the current thread" are different outcomes. Without this the
+    // assertion cannot fail.
+    await user.keyboard('{ArrowUp}');
+    screen.getByRole('button', { name: 'Refresh' }).focus();
+    await user.keyboard('{Enter}');
+
+    expect(screen.getByTestId('location')).toHaveTextContent('thread=sub-2');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('thread=sub-1');
+  });
+
+  test('Escape does not destroy a half-written reply', async () => {
+    const user = userEvent.setup();
+    renderPage('/admin/support?thread=sub-1');
+    await screen.findByRole('heading', { name: 'Dividend total is off by one payout' });
+
+    await user.type(
+      screen.getByRole('textbox', { name: 'Reply to martin_k' }),
+      'Half a sentence that must survive',
+    );
+    // Tab out of the field, then Escape — the reviewer's exact sequence.
+    screen.getByRole('button', { name: 'Send reply' }).focus();
+    await user.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).not.toHaveTextContent('thread=');
+    });
+
+    // Reopening the same thread must bring the draft back.
+    await user.click(within(await screen.findByRole('listbox')).getAllByRole('option')[0]!);
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Reply to martin_k' })).toHaveValue(
+        'Half a sentence that must survive',
+      ),
+    );
+  });
+
+  test('Escape twice from inside the composer keeps the draft', async () => {
+    const user = userEvent.setup();
+    renderPage('/admin/support?thread=sub-1');
+    await screen.findByRole('heading', { name: 'Dividend total is off by one payout' });
+
+    const box = screen.getByRole('textbox', { name: 'Reply to martin_k' });
+    await user.type(box, 'Draft text');
+    // First Escape leaves the field; the second closes the pane.
+    await user.keyboard('{Escape}');
+    await user.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).not.toHaveTextContent('thread=');
+    });
+
+    await user.click(within(await screen.findByRole('listbox')).getAllByRole('option')[0]!);
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Reply to martin_k' })).toHaveValue('Draft text'),
+    );
+  });
+
   test('an open thread survives a reload of the link, and marks itself read once', async () => {
     renderPage('/admin/support?thread=sub-1');
 
@@ -273,13 +392,40 @@ describe('the split pane and its keyboard', () => {
   test('a link to a deleted submission is a stated dead end, not a sign-out', async () => {
     // The admin area answers non-admins with 404, so an unguarded 404 here
     // would clear the session and bounce the operator to the login screen for
-    // the crime of clicking a stale link. The client maps it to "gone" instead.
-    vi.mocked(api.getAdminFeedback).mockResolvedValue(null);
-    vi.mocked(api.getAdminFeedbackThread).mockResolvedValue(null);
+    // the crime of clicking a stale link. The row-scoped reads declare
+    // `notFound: 'gone'`, so the SAME 404 resolves to "this row is gone".
+    vi.mocked(api.getAdminFeedback).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'gone'));
+    vi.mocked(api.getAdminFeedbackThread).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'gone'));
     renderPage('/admin/support?thread=missing');
 
     expect(await screen.findByText('This submission no longer exists.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back to the inbox' })).toBeInTheDocument();
+    // Still signed in: the inbox beside it is still rendering the queue.
+    expect(screen.getByRole('listbox', { name: 'Support submissions' })).toBeInTheDocument();
+  });
+
+  test('the converse: a de-admined operator on a thread link IS signed out', async () => {
+    // The list read keeps the default `session` policy, which is what makes the
+    // `gone` policy above safe to grant to the two by-id reads. If BOTH reads
+    // treated 404 as "gone", a revoked admin would sit on a stale pane forever.
+    vi.mocked(api.getAdminFeedback).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'gone'));
+    vi.mocked(api.getAdminFeedbackThread).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'gone'));
+    vi.mocked(api.listAdminFeedback).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'nope'));
+    renderPage('/admin/support?thread=sub-1');
+
+    await waitFor(() => expect(screen.getByTestId('auth-status')).toHaveTextContent('anonymous'));
+  });
+
+  test('both panes stay mounted below lg, so the session-policy read keeps running', async () => {
+    // The panes are shown one at a time on a phone with CSS, NOT by unmounting:
+    // the inbox read is the only one on this screen whose 404 means auth loss.
+    setViewportWidth(390);
+    renderPage('/admin/support?thread=sub-1');
+
+    await screen.findByRole('heading', { name: 'Dividend total is off by one payout' });
+    // The inbox is mounted (its listbox exists) even though the thread is open.
+    expect(screen.getByRole('listbox', { name: 'Support submissions' })).toBeInTheDocument();
+    expect(api.listAdminFeedback).toHaveBeenCalled();
   });
 
   test('with nothing selected the right pane invites a selection', async () => {

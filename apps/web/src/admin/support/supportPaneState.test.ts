@@ -1,9 +1,16 @@
 import { describe, expect, test } from 'vitest';
 
 import {
+  FEEDBACK_SEARCH_MAX_LENGTH,
+  FEEDBACK_SHIPPED_VERSION_MAX_LENGTH,
+} from '@bettertrack/contracts';
+
+import {
+  SUPPORT_KEYS_OFF_ATTR,
   clampFocus,
   deriveFocusIndex,
   isEditableTarget,
+  isShortcutFreeTarget,
   readSupportQuery,
   supportFiltersActive,
   supportKeyIntent,
@@ -59,6 +66,19 @@ describe('readSupportQuery', () => {
     expect(parsed.status).toBe('');
     expect(parsed.sort).toBe('category');
     expect(parsed.unread).toBe('all');
+  });
+
+  test('clamps the free-text filters to the contract bounds', () => {
+    // A pasted link must not be able to send a value the API answers with a
+    // 400 the operator can neither read nor act on.
+    const longQ = 'a'.repeat(400);
+    const longVersion = 'v'.repeat(200);
+    const parsed = q(`q=${longQ}&version=${longVersion}`);
+    expect(parsed.q).toHaveLength(FEEDBACK_SEARCH_MAX_LENGTH);
+    expect(parsed.version).toHaveLength(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH);
+    // And what survives is a prefix of what was asked for, not a truncation
+    // marker or an empty string.
+    expect(longQ.startsWith(parsed.q)).toBe(true);
   });
 
   test('a nonsense page number is page one, not NaN or zero', () => {
@@ -160,6 +180,51 @@ describe('supportKeyIntent', () => {
 
   test('an unmapped key is inert', () => {
     expect(supportKeyIntent({ key: 'x' })).toEqual({ kind: 'none' });
+  });
+
+  // ── K1 (review round 1) ───────────────────────────────────────────────────
+  // The handler is bound to `window`. Treating "not a form field" as "safe to
+  // claim" meant Enter on **Send reply** was preventDefault()-ed into an inbox
+  // navigation: the reply was never sent and the thread swapped underneath it.
+
+  test('a focused button keeps its own Enter', () => {
+    const button = document.createElement('button');
+    expect(supportKeyIntent({ key: 'Enter', target: button })).toEqual({ kind: 'none' });
+    expect(supportKeyIntent({ key: 'j', target: button })).toEqual({ kind: 'none' });
+  });
+
+  test('Escape still closes from a button — only the claiming keys are dropped', () => {
+    expect(supportKeyIntent({ key: 'Escape', target: document.createElement('button') })).toEqual({
+      kind: 'close',
+    });
+  });
+
+  test('a link and a role=button both keep their keys', () => {
+    const link = document.createElement('a');
+    link.setAttribute('href', '/somewhere');
+    const fake = document.createElement('div');
+    fake.setAttribute('role', 'button');
+    expect(supportKeyIntent({ key: 'Enter', target: link })).toEqual({ kind: 'none' });
+    expect(supportKeyIntent({ key: 'Enter', target: fake })).toEqual({ kind: 'none' });
+  });
+
+  test('the queue keys stop at the thread pane boundary', () => {
+    const pane = document.createElement('div');
+    pane.setAttribute(SUPPORT_KEYS_OFF_ATTR, 'off');
+    const inside = document.createElement('p');
+    pane.append(inside);
+
+    expect(supportKeyIntent({ key: 'j', target: inside })).toEqual({ kind: 'none' });
+    expect(supportKeyIntent({ key: 'Enter', target: inside })).toEqual({ kind: 'none' });
+    // Escape is the one key the thread pane still answers — it is how you leave.
+    expect(supportKeyIntent({ key: 'Escape', target: inside })).toEqual({ kind: 'close' });
+  });
+
+  test('an inbox row is NOT shortcut-free — it is what the keys are for', () => {
+    const row = document.createElement('li');
+    row.setAttribute('role', 'option');
+    expect(isShortcutFreeTarget(row)).toBe(false);
+    expect(supportKeyIntent({ key: 'Enter', target: row })).toEqual({ kind: 'open' });
   });
 });
 

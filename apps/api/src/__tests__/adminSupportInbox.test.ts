@@ -175,16 +175,61 @@ describe('admin support inbox — W3 filters and thread state', () => {
 
   it('escapes LIKE metacharacters so a literal % is not a wildcard', async () => {
     await seedInbox();
+    // DECOYS. Without these the `%` assertion is vacuous: "Allocation shows
+    // 100% twice" is the only row containing "100" at all, so the unescaped
+    // pattern `%100%%` — which means "contains 100" — returns exactly the same
+    // single row as the escaped one, and the test passes against broken code.
+    // The first decoy contains "100" WITHOUT a following percent sign, so only
+    // a correctly escaped pattern can tell the two apart.
+    await harness.db.insert(schema.feedback).values([
+      {
+        userId: bob.id,
+        category: 'other',
+        subject: 'Chart tops out at 1000 rows',
+        message: 'The table stops rendering past a thousand entries.',
+        status: 'new',
+        lastStatusChangeAt: at('2026-08-22T08:00:00.000Z'),
+        createdAt: at('2026-08-22T08:00:00.000Z'),
+        updatedAt: at('2026-08-22T08:00:00.000Z'),
+      },
+      {
+        userId: bob.id,
+        category: 'bug',
+        subject: 'Import from C:\\broker\\export fails',
+        message: 'The Windows path is rejected by the importer.',
+        status: 'new',
+        lastStatusChangeAt: at('2026-08-23T08:00:00.000Z'),
+        createdAt: at('2026-08-23T08:00:00.000Z'),
+        updatedAt: at('2026-08-23T08:00:00.000Z'),
+      },
+    ]);
 
-    // Unescaped, `%` is "match everything" and this returns all five rows.
+    // Unescaped, `%100%%` means "contains 100" and would drag in the decoy.
     const percent = await list({ q: '100%' });
     expect(percent.submissions.map((row) => row.subject)).toEqual(['Allocation shows 100% twice']);
     expect(percent.pagination.total).toBe(1);
+
+    // Control: the decoy IS reachable, so the assertion above is about the
+    // escape and not about a fixture that failed to insert.
+    const hundred = await list({ q: '100' });
+    expect(hundred.submissions.map((row) => row.subject).sort()).toEqual([
+      'Allocation shows 100% twice',
+      'Chart tops out at 1000 rows',
+    ]);
 
     // `_` is the single-character wildcard; there is no row with that literal.
     const underscore = await list({ q: 'sort_order' });
     expect(underscore.submissions).toEqual([]);
     expect(underscore.pagination.total).toBe(0);
+
+    // A literal backslash. This is the ordering the escape function must get
+    // right: escaping `%` and `_` BEFORE `\` would double-escape the backslash
+    // it just introduced and the pattern would stop matching.
+    const backslash = await list({ q: 'C:\\broker' });
+    expect(backslash.submissions.map((row) => row.subject)).toEqual([
+      'Import from C:\\broker\\export fails',
+    ]);
+    expect(backslash.pagination.total).toBe(1);
   });
 
   it('treats unread as tri-state: absent, only-unread, only-read', async () => {

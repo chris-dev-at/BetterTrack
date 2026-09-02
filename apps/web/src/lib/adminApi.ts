@@ -149,7 +149,7 @@ import {
   type UpdateApiKeyTierRequest,
 } from '@bettertrack/contracts';
 
-import { ApiError, apiRequest } from './apiClient';
+import { apiRequest } from './apiClient';
 
 /**
  * Thin, typed wrappers over the auth + admin endpoints (PROJECTPLAN.md §6.1,
@@ -493,53 +493,32 @@ export async function listAdminFeedback(
 }
 
 /**
- * "Gone" is an answer, not a session problem.
- *
- * The admin area answers non-admins with 404 rather than 403 (§6.12), so the
- * shared `useResource` treats any 404 as "this session is no longer an admin"
- * and signs the operator out. That is right for a whole page and wrong for one
- * addressed row: a helpdesk link to a submission that was since deleted would
- * log the operator out instead of saying the thread is gone. Mapping 404 to
- * `null` here keeps the dead end local. It cannot mask a genuinely expired
- * session, because the inbox list read on the same screen is not wrapped and
- * still trips the sign-out.
- */
-async function nullOnMissing<T>(load: () => Promise<T>): Promise<T | null> {
-  try {
-    return await load();
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) return null;
-    throw error;
-  }
-}
-
-/**
  * One submission by id (#1406 W3). The split pane opens whatever `?thread=`
  * names even when the current filters exclude it, so the thread pane reads this
  * rather than hunting the row inside the paged list.
+ *
+ * A 404 here means "this submission is gone", not "you are not an admin" — that
+ * distinction is made by the caller through `useResource`'s `notFound: 'gone'`
+ * policy, not by swallowing the error in the client.
  */
 export async function getAdminFeedback(
   id: string,
   signal?: AbortSignal,
-): Promise<AdminFeedbackSubmission | null> {
-  return nullOnMissing(async () => {
-    const data = await apiRequest<unknown>(`/admin/feedback/${id}`, { signal });
-    return adminFeedbackSubmissionSchema.parse(data);
-  });
+): Promise<AdminFeedbackSubmission> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, { signal });
+  return adminFeedbackSubmissionSchema.parse(data);
 }
 
 export async function getAdminFeedbackThread(
   id: string,
   params: FeedbackThreadQuery = {},
   signal?: AbortSignal,
-): Promise<FeedbackThreadResponse | null> {
-  return nullOnMissing(async () => {
-    const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
-      query: { cursor: params.cursor, limit: params.limit },
-      signal,
-    });
-    return feedbackThreadResponseSchema.parse(data);
+): Promise<FeedbackThreadResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
   });
+  return feedbackThreadResponseSchema.parse(data);
 }
 
 export async function sendAdminFeedbackReply(

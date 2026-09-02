@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   FEEDBACK_CATEGORIES,
+  FEEDBACK_SEARCH_MAX_LENGTH,
+  FEEDBACK_SHIPPED_VERSION_MAX_LENGTH,
   FEEDBACK_SORTS,
   FEEDBACK_STATUSES,
   type AdminFeedbackSubmission,
@@ -42,6 +44,29 @@ import {
   supportListParams,
   type SupportQuery,
 } from './supportPaneState';
+
+/**
+ * A text filter whose value lives in the URL.
+ *
+ * Controlled, never `defaultValue`: an uncontrolled field ignores the back
+ * button and a pasted link, and survives "Clear filters" only to re-apply
+ * itself on the next blur. The debounce is what keeps a controlled field from
+ * turning every keystroke into a request and a history entry.
+ */
+function useUrlDraft(
+  value: string,
+  key: string,
+  patch: (patch: Record<string, string | number | boolean | null>, keepPage?: boolean) => void,
+): readonly [string, (next: string) => void] {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  useEffect(() => {
+    if (draft === value) return;
+    const id = setTimeout(() => patch({ [key]: draft.trim() }), 300);
+    return () => clearTimeout(id);
+  }, [draft, value, key, patch]);
+  return [draft, setDraft] as const;
+}
 
 /**
  * The left half of the Support split pane (#1406 W3): filters over a dense,
@@ -140,15 +165,10 @@ export function SupportInbox({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [ids, focusIndex, onOpen, onClose, query.thread]);
 
-  // The URL owns the search term; the input is a local draft of it so each
-  // keystroke does not become a request (and a history entry).
-  const [draft, setDraft] = useState(query.q);
-  useEffect(() => setDraft(query.q), [query.q]);
-  useEffect(() => {
-    if (draft === query.q) return;
-    const id = setTimeout(() => onPatchQuery({ q: draft.trim() }), 300);
-    return () => clearTimeout(id);
-  }, [draft, query.q, onPatchQuery]);
+  // The URL owns both free-text filters; each input is a local draft of its
+  // parameter so a keystroke does not become a request (and a history entry).
+  const [searchDraft, setSearchDraft] = useUrlDraft(query.q, 'q', onPatchQuery);
+  const [versionDraft, setVersionDraft] = useUrlDraft(query.version, 'version', onPatchQuery);
 
   return (
     <section className={cx(EDGE, SURFACE_PANEL, 'flex min-w-0 flex-col')}>
@@ -159,8 +179,9 @@ export function SupportInbox({
           name="support-search"
           type="search"
           placeholder={t('admin.support.filters.searchPlaceholder')}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          maxLength={FEEDBACK_SEARCH_MAX_LENGTH}
+          value={searchDraft}
+          onChange={(event) => setSearchDraft(event.target.value)}
         />
 
         <div className="grid grid-cols-2 gap-2">
@@ -214,8 +235,9 @@ export function SupportInbox({
             label={t('admin.support.filters.version')}
             name="support-version"
             placeholder={t('admin.support.filters.versionPlaceholder')}
-            defaultValue={query.version}
-            onBlur={(event) => onPatchQuery({ version: event.target.value.trim() })}
+            maxLength={FEEDBACK_SHIPPED_VERSION_MAX_LENGTH}
+            value={versionDraft}
+            onChange={(event) => setVersionDraft(event.target.value)}
           />
           <SelectField
             label={t('admin.support.filters.queue')}
