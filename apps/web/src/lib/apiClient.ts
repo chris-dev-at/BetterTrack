@@ -174,10 +174,102 @@ function notifyAuthPolicy(error: ApiError): void {
   }
 }
 
-function parseRetryAfter(header: string | null): number | undefined {
+/**
+ * Read the wait a 429 asks for, from BOTH places the API publishes it:
+ *
+ *  1. the `Retry-After` header — delta-seconds or, per RFC 9110, an HTTP-date;
+ *  2. the error envelope's `details.retryAfter` (seconds), which is the only
+ *     copy guaranteed to survive a cross-origin read.
+ *
+ * The header is the primary source, but the SPA and the API sit on different
+ * origins in both deployment modes (§4.6), so it is only visible when the API
+ * lists it in `Access-Control-Expose-Headers` (it does — see the API's
+ * `cors.ts`). The body fallback means a client that talks to an older API — or
+ * a proxy that strips the header — still backs off for the right duration
+ * instead of silently collapsing to a fixed one-second floor.
+ */
+function parseRetryAfter(header: string | null, payload: unknown): number | undefined {
+  const fromHeader = parseRetryAfterHeader(header);
+  if (fromHeader !== undefined) return fromHeader;
+  return retryAfterFromBody(payload);
+}
+
+function parseRetryAfterHeader(header: string | null): number | undefined {
   if (!header) return undefined;
-  const seconds = parseInt(header, 10);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+  const trimmed = header.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = parseInt(trimmed, 10);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+  }
+  // HTTP-date form: convert to a delta against the local clock. Clock skew can
+  // only make this too small or too large by seconds, which the jittered
+  // backoff below absorbs.
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at)) return undefined;
+  const seconds = Math.ceil((at - Date.now()) / 1000);
+  return seconds > 0 ? seconds : undefined;
+}
+
+function retryAfterFromBody(payload: unknown): number | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const details = (error as { details?: unknown }).details;
+  if (typeof details !== 'object' || details === null) return undefined;
+  const retryAfter = (details as { retryAfter?: unknown }).retryAfter;
+  return typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter > 0
+    ? retryAfter
+    : undefined;
+}
+
+/** Ceiling on any automatic wait, so a long cooldown never freezes a surface. */
+const MAX_BACKOFF_MS = 60_000;
+
+/**
+ * Milliseconds to wait before re-attempting a failed request, with FULL JITTER.
+ *
+ * Jitter is not cosmetic here: every tab, every widget and every polling hook
+ * fails at the same instant when a limiter trips, so an unjittered backoff
+ * re-synchronises them into one thundering herd that arrives the moment the
+ * cooldown expires — which is exactly how a first-rung 20 s pause climbs to the
+ * 10 min rung (§10's escalation ladder). Randomising across the window spreads
+ * the recovery instead.
+ */
+export function backoffDelayMs(attempt: number, error: unknown): number {
+  const retryAfterMs =
+    error instanceof ApiError && error.retryAfterSeconds
+      ? error.retryAfterSeconds * 1_000
+      : undefined;
+  const base = retryAfterMs ?? Math.min(1_000 * 2 ** attempt, MAX_BACKOFF_MS);
+  const ceiling = Math.min(base, MAX_BACKOFF_MS);
+  // Full jitter over [ceiling/2, ceiling] — never earlier than half the wait the
+  // server asked for, never later than the wait itself plus scheduling slop.
+  return Math.round(ceiling / 2 + Math.random() * (ceiling / 2));
+}
+
+/**
+ * TanStack `retry` predicate with a SEPARATE, much smaller allowance for 429.
+ *
+ * The default `rateLimitRetries: 0` means a rate-limited read is not retried at
+ * all. The server has already said it is turning requests away for
+ * `retryAfterSeconds`; a retry on the library's fixed 1 s timer is guaranteed to
+ * land inside that cooldown, so it cannot succeed — it only doubles the load on
+ * a limiter that is already refusing, and the doubled traffic is then what
+ * climbs the next rung of §10's escalation ladder when the cooldown lifts. On a
+ * page that mounts dozens of queries, that doubling is the difference between a
+ * 20 s pause and a 10 min one.
+ *
+ * A surface that MUST eventually succeed — the app gate, the session bootstrap —
+ * may buy exactly one rate-limit attempt, which {@link backoffDelayMs} schedules
+ * at the server's own Retry-After with jitter rather than on the 1 s timer.
+ */
+export function apiRetryPolicy(maxRetries: number, rateLimitRetries = 0) {
+  return (failureCount: number, error: unknown): boolean => {
+    if (error instanceof ApiError && error.status === 429) {
+      return failureCount < rateLimitRetries;
+    }
+    return failureCount < maxRetries;
+  };
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -229,9 +321,10 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const payload: unknown = await response.json().catch(() => undefined);
 
   if (!response.ok) {
-    const retryAfterSeconds = parseRetryAfter(
-      response.status === 429 ? response.headers.get('Retry-After') : null,
-    );
+    const retryAfterSeconds =
+      response.status === 429
+        ? parseRetryAfter(response.headers.get('Retry-After'), payload)
+        : undefined;
     const parsed = apiErrorSchema.safeParse(payload);
     const error = parsed.success
       ? new ApiError(

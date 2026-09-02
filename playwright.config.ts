@@ -69,7 +69,13 @@ const apiEnv = {
   // every route and overlay in four locale/width profiles, which is intentionally
   // far beyond a human burst; keep the steady-state limit enforced while giving
   // this throwaway e2e stack enough short-window headroom to measure the UI.
+  // Both halves are pinned HERE, together: the limit is meaningless without the
+  // window it applies to, and inheriting the window from the production default
+  // means an ops change to that default silently re-tunes the e2e stack. The
+  // pair below is what these specs were sized against; production's own default
+  // lives in apps/api/src/config/env.ts (§10 limiter table).
   RATE_LIMIT_BURST_LIMIT: '4000',
+  RATE_LIMIT_BURST_WINDOW_SEC: '10',
   // Make the API listen where the specs look (see config.ts API_PORT) instead of
   // inheriting `PORT`'s 3000 default, and pin the Prometheus port so a dev
   // stack's API on the same host cannot cause an EADDRINUSE crash at boot.
