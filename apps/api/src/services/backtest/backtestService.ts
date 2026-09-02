@@ -36,7 +36,7 @@ import { compareSeriesStats } from '../../domain/seriesStats';
 import { notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
-import { flattenConglomerate } from '../conglomerate/nesting';
+import { flattenConglomerate, mapFlattened } from '../conglomerate/nesting';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 
 /**
@@ -199,13 +199,32 @@ interface ResolvedBenchmark {
   assets: BacktestAsset[];
 }
 
-/** One of the caller's conglomerates resolved to a runnable basket (V4-P7 / V5-P6). */
-interface ResolvedConglomerateBasket {
+/**
+ * What one of the caller's conglomerates IS, once its nesting is flattened:
+ * identity plus the effective asset/weight vector. Derived from the database
+ * alone (no provider I/O), which is what lets it address the comparison memo
+ * key before any history is fetched.
+ */
+export interface ConglomerateComposition {
   id: string;
   name: string;
   positions: Array<{ assetId: string; weight: number }>;
+}
+
+/** One of the caller's conglomerates resolved to a runnable basket (V4-P7 / V5-P6). */
+interface ResolvedConglomerateBasket extends ConglomerateComposition {
   assets: BacktestAsset[];
 }
+
+/** Scoping flags shared by the two halves of a basket-member load. */
+interface BasketAssetOptions {
+  globalOnly?: boolean;
+  redactIdentity?: boolean;
+  hidePrivateAsset?: boolean;
+}
+
+/** An authorized basket member, between the two halves of its load. */
+type BasketAssetRow = NonNullable<Awaited<ReturnType<AssetRepository['findByIdForUser']>>>;
 
 export interface BacktestService {
   /**
@@ -288,20 +307,36 @@ export function backtestPreviewCacheKey(
 
 /**
  * Redis memo key for a comparison's **baseline-independent core** (the per-series
- * backtests) — hash(orderedIds+range+mode+rebalance+base), namespaced by user id
- * (§10). `baselineId` is deliberately NOT part of the key: it only selects the
- * delta reference, so re-picking it hits the same cached backtests and just
- * re-runs the cheap delta math. The id order IS part of the key — the first id
- * defines the shared window, so `[A,B]` and `[B,A]` are different comparisons.
+ * backtests) — hash(orderedIds+resolved compositions+range+mode+rebalance+base),
+ * namespaced by user id (§10). `baselineId` is deliberately NOT part of the key:
+ * it only selects the delta reference, so re-picking it hits the same cached
+ * backtests and just re-runs the cheap delta math. The id order IS part of the
+ * key — the first id defines the shared window, so `[A,B]` and `[B,A]` are
+ * different comparisons.
+ *
+ * The key is **content-addressed** like the preview key (V5-P6): a conglomerate
+ * id is a mutable handle, so keying by id alone served a 1 h-stale chart and
+ * stats grid after any Builder edit — and, worse, after an edit to a NESTED
+ * CHILD, whose id never appears in the request at all. `compositions` therefore
+ * carries each series' name and its fully *resolved* asset/weight vector (the
+ * flatten already walked the children), so any edit that changes what a series
+ * IS lands on a different key and recomputes; an edit that changes nothing
+ * observable still hits the memo.
  */
 export function backtestComparisonCacheKey(
   userId: string,
   input: BacktestComparisonInput,
   baseCurrency: string,
-  scope?: { globalOnly?: boolean },
+  scope?: { globalOnly?: boolean; compositions?: readonly ConglomerateComposition[] },
 ): string {
   const canonical = JSON.stringify({
     conglomerateIds: input.conglomerateIds,
+    compositions:
+      scope?.compositions?.map((c) => ({
+        id: c.id,
+        name: c.name,
+        positions: c.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
+      })) ?? null,
     range: input.range,
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
@@ -345,14 +380,30 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
    * custom asset — or a missing id — is a 404, no existence leak §10) plus its
    * daily closes through the market-data keystone (§5.2/§5.3). Shared by the
    * primary basket and every benchmark constituent so both go through the
-   * exact same path.
+   * exact same path. Composed of the two phases below, which the batched
+   * callers run separately.
    */
   async function loadBasketAsset(
     userId: string,
     assetId: string,
     providerRange: HistoryRange,
-    opts?: { globalOnly?: boolean; redactIdentity?: boolean; hidePrivateAsset?: boolean },
+    opts?: BasketAssetOptions,
   ): Promise<BacktestAsset> {
+    const row = await resolveBasketAssetRow(userId, assetId, opts);
+    return loadBasketAssetPrices(row, providerRange, opts);
+  }
+
+  /**
+   * Phase one of {@link loadBasketAsset}: the owner-scoped row read and the two
+   * refusals that follow from it. Database only — **no provider I/O** — which is
+   * what lets the batched callers authorize every asset of a request before any
+   * history is fetched (see {@link loadBasketAssets}).
+   */
+  async function resolveBasketAssetRow(
+    userId: string,
+    assetId: string,
+    opts?: BasketAssetOptions,
+  ): Promise<BasketAssetRow> {
     const row = await assetRepo.findByIdForUser(assetId, userId, {
       includeCustomAssets: opts?.hidePrivateAsset !== true,
     });
@@ -371,6 +422,15 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         'SANDBOX_PRIVATE_ASSET',
       );
     }
+    return row;
+  }
+
+  /** Phase two of {@link loadBasketAsset}: the market-data half (§5.2/§5.3). */
+  async function loadBasketAssetPrices(
+    row: BasketAssetRow,
+    providerRange: HistoryRange,
+    opts?: BasketAssetOptions,
+  ): Promise<BacktestAsset> {
     const prices = await loadDailyCloses(
       { providerId: row.providerId, providerRef: row.providerRef },
       providerRange,
@@ -386,6 +446,32 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
   }
 
   /**
+   * Load many basket members as a bounded fan-out, in **two phases**: every row
+   * is authorized first (database only), and only once they all pass does the
+   * history fetch run. The phase split is load-bearing, not tidiness — the pool
+   * replaced a sequential `for` loop in which the first refused asset aborted
+   * before a single provider call. Fanned out naively, a refused request (a
+   * paranoid transition that won mid-flight, a foreign custom asset) would still
+   * emit history calls for its siblings — provider work for a request that ends
+   * in a 404. Authorizing first restores "refused ⇒ zero provider I/O" exactly,
+   * regardless of scheduling.
+   *
+   * Order is preserved and the lowest-index failure is the one that throws, so
+   * the error a caller sees is the one the sequential loop would have given.
+   */
+  async function loadBasketAssets(
+    userId: string,
+    assetIds: readonly string[],
+    providerRange: HistoryRange,
+    opts?: BasketAssetOptions,
+  ): Promise<BacktestAsset[]> {
+    const rows = await mapFlattened(assetIds, (assetId) =>
+      resolveBasketAssetRow(userId, assetId, opts),
+    );
+    return mapFlattened(rows, (row) => loadBasketAssetPrices(row, providerRange, opts));
+  }
+
+  /**
    * Resolve one of the caller's own conglomerates into a runnable basket
    * (ownership enforced at query time → 404, no existence leak §10; an empty or
    * unpriced basket is a 422). Shared by the V4-P7 benchmark path and the V5-P6
@@ -396,12 +482,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
    * hand-flattened equivalent by construction; a basket that flattens to
    * nothing (empty, or only empty children) is a 422.
    */
-  async function resolveConglomerateBasket(
+  async function resolveConglomerateComposition(
     userId: string,
     conglomerateId: string,
-    providerRange: HistoryRange,
     globalOnly = false,
-  ): Promise<ResolvedConglomerateBasket> {
+  ): Promise<ConglomerateComposition> {
     const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId, {
       globalAssetMetadataOnly: globalOnly,
     });
@@ -422,21 +507,50 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         'BACKTEST_UNAVAILABLE',
       );
     }
-    const assets: BacktestAsset[] = [];
-    for (const pos of flat.positions) {
-      assets.push(
-        await loadBasketAsset(userId, pos.assetId, providerRange, {
-          globalOnly,
-          hidePrivateAsset: globalOnly,
-        }),
-      );
-    }
     return {
       id: detail.id,
       name: detail.name,
       positions: flat.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
-      assets,
     };
+  }
+
+  /**
+   * The provider half of a comparison: one asset row + history window per
+   * resolved position across ALL series, through a small pool rather than one
+   * sequential round trip each. Each basket's flatten is bounded by
+   * `MAX_FLATTENED_POSITIONS` and the series count by `COMPARISON_MAX_SERIES`,
+   * so this is a bounded fan-out, not an open one. Results are re-split in
+   * request order, one entry per input composition.
+   */
+  async function loadCompositionAssets(
+    userId: string,
+    compositions: readonly ConglomerateComposition[],
+    providerRange: HistoryRange,
+    globalOnly: boolean,
+  ): Promise<ResolvedConglomerateBasket[]> {
+    // One pool across the WHOLE request rather than a pool per basket: the two
+    // authorization/history phases then straddle every series at once, so a
+    // refused asset in the last basket still precedes the first history call.
+    const flatIds = compositions.flatMap((c) => c.positions.map((p) => p.assetId));
+    const assets = await loadBasketAssets(userId, flatIds, providerRange, {
+      globalOnly,
+      hidePrivateAsset: globalOnly,
+    });
+    let at = 0;
+    return compositions.map((composition) => ({
+      ...composition,
+      assets: assets.slice(at, (at += composition.positions.length)),
+    }));
+  }
+
+  async function resolveConglomerateBasket(
+    userId: string,
+    conglomerateId: string,
+    providerRange: HistoryRange,
+    globalOnly = false,
+  ): Promise<ResolvedConglomerateBasket> {
+    const composition = await resolveConglomerateComposition(userId, conglomerateId, globalOnly);
+    return (await loadCompositionAssets(userId, [composition], providerRange, globalOnly))[0]!;
   }
 
   /**
@@ -657,10 +771,23 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // first when omitted); it steers only the deltas, never the window.
       const baselineId = input.baselineId ?? input.conglomerateIds[0]!;
 
+      // Resolve WHAT each series is first (database only — no provider I/O, no
+      // engine): ownership, emptiness and the nesting invariants are checked
+      // here, and the resolved compositions address the memo key so an edited
+      // basket — or an edited nested child — cannot be answered from the
+      // pre-edit core.
+      const providerRange = PROVIDER_RANGE[input.range];
+      const compositions = await mapFlattened(input.conglomerateIds, (id) =>
+        resolveConglomerateComposition(userId, id, globalOnly),
+      );
+
       // The per-series backtests are baseline-independent, so they memoise under
       // a key WITHOUT the baseline: re-picking the baseline hits this core and
       // only the cheap delta math re-runs.
-      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency, { globalOnly });
+      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency, {
+        globalOnly,
+        compositions,
+      });
       let core: ComparisonCore | null = null;
       const cached = await redis.get(key);
       if (cached) {
@@ -671,7 +798,16 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         }
       }
       if (core === null) {
-        core = await computeComparisonCore(userId, input, fx, mode, rebalance, globalOnly);
+        core = await computeComparisonCore(
+          userId,
+          compositions,
+          providerRange,
+          input.range,
+          fx,
+          mode,
+          rebalance,
+          globalOnly,
+        );
         await redis.set(key, JSON.stringify(core), 'EX', PREVIEW_TTL_SECONDS);
       }
 
@@ -878,37 +1014,34 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
   };
 
   /**
-   * Run the baseline-independent core of a comparison: resolve every
-   * conglomerate (ownership-scoped, in request order), run the FIRST as the
-   * primary to fix the shared window, then run every other over that exact
-   * window with identical settings. A non-primary that can't cover the window
-   * is a 422 (the V4-P7 short-benchmark outcome). The primary's own clip notice
-   * is expected and never an error — it just means the window is shorter than
-   * requested.
+   * Run the baseline-independent core of a comparison over the already-resolved
+   * compositions (in request order): load each series' price history, run the
+   * FIRST as the primary to fix the shared window, then run every other over
+   * that exact window with identical settings. A non-primary that can't cover
+   * the window is a 422 (the V4-P7 short-benchmark outcome). The primary's own
+   * clip notice is expected and never an error — it just means the window is
+   * shorter than requested.
    */
   async function computeComparisonCore(
     userId: string,
-    input: BacktestComparisonInput,
+    compositions: readonly ConglomerateComposition[],
+    providerRange: HistoryRange,
+    range: BacktestPreviewRange,
     fx: CurrencyService,
     mode: BacktestMode,
     rebalance: RebalanceFrequency,
     globalOnly: boolean,
   ): Promise<ComparisonCore> {
-    const providerRange = PROVIDER_RANGE[input.range];
-
-    const baskets: ResolvedConglomerateBasket[] = [];
-    for (const id of input.conglomerateIds) {
-      baskets.push(await resolveConglomerateBasket(userId, id, providerRange, globalOnly));
-    }
+    const baskets = await loadCompositionAssets(userId, compositions, providerRange, globalOnly);
 
     const end = todayIso();
     const primary = baskets[0]!;
     const primaryStart =
-      input.range === 'MAX'
+      range === 'MAX'
         ? mode === 'clip'
           ? commonStart(primary.assets)
           : earliestStart(primary.assets)
-        : yearsBefore(end, RANGE_YEARS[input.range]);
+        : yearsBefore(end, RANGE_YEARS[range]);
 
     let primaryResult: BacktestResult;
     try {

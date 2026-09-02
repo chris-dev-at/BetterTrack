@@ -467,11 +467,14 @@ const CA = '018f0000-0000-7000-8000-0000000000a1'; // 60/40 A/B (== the PREVIEW 
 const CB = '018f0000-0000-7000-8000-0000000000b1'; // 100 % B
 const CC = '018f0000-0000-7000-8000-0000000000c1'; // 100 % C — a late listing (starts 2026-01-02)
 const CD = '018f0000-0000-7000-8000-0000000000d1'; // 100 % A
+const CN = '018f0000-0000-7000-8000-0000000000e1'; // 100 % of CA — a NESTED basket
 
-const COMPARISON_CONGLOMERATES: Record<
-  string,
-  { name: string; positions: Array<{ kind: 'asset'; assetId: string; weightPct: number }> }
-> = {
+/** An asset or nested constituent, as the repository serves it. */
+type StubConstituent =
+  | { kind: 'asset'; assetId: string; weightPct: number }
+  | { kind: 'conglomerate'; childId: string; weightPct: number };
+
+const COMPARISON_CONGLOMERATES: Record<string, { name: string; positions: StubConstituent[] }> = {
   [CA]: {
     name: 'A/B Mix',
     positions: [
@@ -482,35 +485,52 @@ const COMPARISON_CONGLOMERATES: Record<
   [CB]: { name: 'All B', positions: [{ kind: 'asset', assetId: 'B', weightPct: 100 }] },
   [CC]: { name: 'Late C', positions: [{ kind: 'asset', assetId: 'C', weightPct: 100 }] },
   [CD]: { name: 'All A', positions: [{ kind: 'asset', assetId: 'A', weightPct: 100 }] },
+  [CN]: {
+    name: 'Nested A/B Mix',
+    positions: [{ kind: 'conglomerate', childId: CA, weightPct: 100 }],
+  },
 };
 
 function createComparisonHarness() {
   const store = new Map<string, string>();
+  let historyCalls = 0;
+  // A per-harness MUTABLE copy: the cache tests rewrite a basket's positions
+  // mid-test, exactly as a Builder autosave does between two comparisons.
+  const catalog = new Map(
+    Object.entries(COMPARISON_CONGLOMERATES).map(([id, entry]) => [
+      id,
+      { name: entry.name, positions: [...entry.positions] },
+    ]),
+  );
+
+  // Assets the caller may no longer see — a paranoid transition that won
+  // mid-request, or a custom asset scoped out of a shared sandbox.
+  const hidden = new Set<string>();
 
   const assetRepo = {
-    findByIdForUser: async (assetId: string) => ({
-      id: assetId,
-      symbol: assetId,
-      currency: 'EUR',
-      providerId: 'stub',
-      providerRef: assetId,
-    }),
+    findByIdForUser: async (assetId: string) =>
+      hidden.has(assetId)
+        ? null
+        : {
+            id: assetId,
+            symbol: assetId,
+            currency: 'EUR',
+            providerId: 'stub',
+            providerRef: assetId,
+          },
     findGlobal: async () => null,
   } as unknown as AssetRepository;
 
   const conglomerateRepo = {
-    findByIdForOwner: async (ownerId: string, id: string) =>
-      ownerId === 'u1' && COMPARISON_CONGLOMERATES[id]
-        ? {
-            id,
-            name: COMPARISON_CONGLOMERATES[id]!.name,
-            positions: COMPARISON_CONGLOMERATES[id]!.positions,
-          }
-        : null,
+    findByIdForOwner: async (ownerId: string, id: string) => {
+      const entry = ownerId === 'u1' ? catalog.get(id) : undefined;
+      return entry ? { id, name: entry.name, positions: entry.positions } : null;
+    },
   } as unknown as ConglomerateRepository;
 
   const marketData = {
     getHistory: async (ref: { providerRef: string }) => {
+      historyCalls += 1;
       const closes = CLOSES[ref.providerRef] ?? [];
       return { value: closes.map((c) => ({ time: `${c.date}T00:00:00Z`, close: c.close })) };
     },
@@ -541,7 +561,7 @@ function createComparisonHarness() {
     now: () => Date.parse('2026-01-05T12:00:00Z'),
   });
 
-  return { service, store };
+  return { service, store, catalog, hidden, historyCalls: () => historyCalls };
 }
 
 describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6)', () => {
@@ -633,6 +653,76 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
     await expect(
       service.runComparison('u2', { conglomerateIds: [CA, CB], range: '1Y' }),
     ).rejects.toMatchObject({ statusCode: 404, code: 'CONGLOMERATE_NOT_FOUND' });
+  });
+
+  it('an edit to a compared basket recomputes instead of serving the pre-edit core', async () => {
+    const { service, catalog, historyCalls } = createComparisonHarness();
+    const before = await service.runComparison('u1', { conglomerateIds: [CA, CB], range: '1Y' });
+    // CA is the 60/40 A/B mix: 0.6·132 + 0.4·90 = 115.2 ⇒ +15.2 %.
+    expect(before.series[0]!.stats.totalReturnPct).toBeCloseTo(15.2, 6);
+
+    // Same ids, same params, nothing edited ⇒ the memo answers, no provider work.
+    const warm = historyCalls();
+    const again = await service.runComparison('u1', { conglomerateIds: [CA, CB], range: '1Y' });
+    expect(again).toEqual(before);
+    expect(historyCalls()).toBe(warm);
+
+    // The Builder rewrites CA to 10/90 — the same id, a different basket.
+    catalog.get(CA)!.positions = [
+      { kind: 'asset', assetId: 'A', weightPct: 10 },
+      { kind: 'asset', assetId: 'B', weightPct: 90 },
+    ];
+    const after = await service.runComparison('u1', { conglomerateIds: [CA, CB], range: '1Y' });
+    expect(historyCalls()).toBeGreaterThan(warm);
+    // 0.1·132 + 0.9·90 = 94.2 ⇒ −5.8 %: the edited basket, not the cached one.
+    expect(after.series[0]!.stats.totalReturnPct).toBeCloseTo(-5.8, 6);
+  });
+
+  it('an edit to a NESTED CHILD recomputes too — its id never appears in the request', async () => {
+    const { service, catalog } = createComparisonHarness();
+    const before = await service.runComparison('u1', { conglomerateIds: [CN, CB], range: '1Y' });
+    // CN is 100 % of CA, so it resolves to CA's 60/40 A/B mix.
+    expect(before.series[0]!.stats.totalReturnPct).toBeCloseTo(15.2, 6);
+
+    // Editing the CHILD changes the parent's effective weights.
+    catalog.get(CA)!.positions = [{ kind: 'asset', assetId: 'A', weightPct: 100 }];
+    const after = await service.runComparison('u1', { conglomerateIds: [CN, CB], range: '1Y' });
+    expect(after.series[0]!.stats.totalReturnPct).toBeCloseTo(32, 6);
+  });
+
+  it('a refused asset costs ZERO provider history calls, even batched across series', async () => {
+    // The batched load runs in two phases — authorize every asset, then fetch —
+    // precisely so a request that ends in a 404 sends no provider traffic. Fanned
+    // out in one phase, asset A of the first basket would already be in flight
+    // while B is refused. B sits in BOTH baskets, so this also covers the
+    // refusal landing in a later series than the one that would have resolved.
+    const { service, hidden, historyCalls } = createComparisonHarness();
+    hidden.add('B');
+
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CA, CB], range: '1Y' }),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'ASSET_NOT_FOUND' });
+    expect(historyCalls()).toBe(0);
+  });
+
+  it('the resolved composition is part of the memo key (an id alone is a mutable handle)', () => {
+    const base = { conglomerateIds: [CA, CB], range: '1Y' as const };
+    const keyFor = (weight: number) =>
+      backtestComparisonCacheKey('u1', base, 'EUR', {
+        compositions: [
+          {
+            id: CA,
+            name: 'A/B Mix',
+            positions: [
+              { assetId: 'A', weight },
+              { assetId: 'B', weight: 100 - weight },
+            ],
+          },
+          { id: CB, name: 'All B', positions: [{ assetId: 'B', weight: 100 }] },
+        ],
+      });
+    expect(keyFor(60)).toBe(keyFor(60));
+    expect(keyFor(60)).not.toBe(keyFor(90));
   });
 
   it('the baseline is not part of the core memo key (same ids/params share the core)', () => {

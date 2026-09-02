@@ -16,6 +16,7 @@ import {
   type ConglomerateDetailRow,
   type ConglomerateRepository,
   type ConglomerateSummaryRow,
+  type NestingEdgeRow,
 } from '../../data/repositories/conglomerateRepository';
 import {
   allocateBudget,
@@ -32,6 +33,7 @@ import {
   createsCycle,
   flattenConglomerate,
   longestChainLength,
+  mapFlattened,
   MAX_NESTING_DEPTH,
 } from './nesting';
 
@@ -115,6 +117,37 @@ const SUM_TOLERANCE = 0.01;
 const ACTIVE_SUM = 100;
 
 const NOT_FOUND = () => notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+
+/**
+ * The V5-P6 graph rules over the owner-local nesting graph with `id`'s outgoing
+ * edges replaced by `childIds`: no cycle (direct or transitive) and no chain
+ * longer than {@link MAX_NESTING_DEPTH}. Pure — the caller supplies the edge
+ * set — so the exact same check runs twice against two different snapshots: once
+ * up front on the service's read, and once again inside the write transaction
+ * (`replacePositions`' `verifyNesting`) where a concurrent writer's committed
+ * edges are visible. Throwing there rolls the write back.
+ */
+function assertNestingRules(
+  id: string,
+  childIds: ReadonlySet<string>,
+  existingEdges: readonly NestingEdgeRow[],
+): void {
+  const edges = existingEdges
+    .filter((e) => e.parentId !== id)
+    .concat([...childIds].map((childId) => ({ parentId: id, childId })));
+  if (createsCycle(edges, id)) {
+    throw badRequest(
+      'Nesting these conglomerates would create a cycle — a conglomerate cannot contain itself, directly or through another conglomerate.',
+      'NESTING_CYCLE',
+    );
+  }
+  if (longestChainLength(edges) > MAX_NESTING_DEPTH) {
+    throw badRequest(
+      `Conglomerates can be nested at most ${MAX_NESTING_DEPTH} levels deep.`,
+      'NESTING_TOO_DEEP',
+    );
+  }
+}
 
 function toSummary(row: ConglomerateSummaryRow): ConglomerateSummary {
   return {
@@ -261,7 +294,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     id: string,
     positions: readonly ReplacePositionInput[],
     includeCustomAssets = true,
-  ): Promise<void> {
+  ): Promise<ReadonlySet<string>> {
     if (positions.length > MAX_POSITIONS) {
       throw badRequest(
         `A conglomerate may have at most ${MAX_POSITIONS} positions.`,
@@ -308,23 +341,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
         if (!owned.has(childId)) throw NOT_FOUND();
       }
 
-      const existing = await repo.nestingEdges(ownerId);
-      const edges = existing
-        .filter((e) => e.parentId !== id)
-        .concat([...seenChildren].map((childId) => ({ parentId: id, childId })));
-      if (createsCycle(edges, id)) {
-        throw badRequest(
-          'Nesting these conglomerates would create a cycle — a conglomerate cannot contain itself, directly or through another conglomerate.',
-          'NESTING_CYCLE',
-        );
-      }
-      if (longestChainLength(edges) > MAX_NESTING_DEPTH) {
-        throw badRequest(
-          `Conglomerates can be nested at most ${MAX_NESTING_DEPTH} levels deep.`,
-          'NESTING_TOO_DEEP',
-        );
-      }
+      assertNestingRules(id, seenChildren, await repo.nestingEdges(ownerId));
     }
+
+    return seenChildren;
   }
 
   async function activateScoped(
@@ -352,6 +372,33 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       );
     }
 
+    // A nested constituent counts toward that 100 %, so a child that resolves to
+    // NO asset would let a basket activate whose weights add up on paper while
+    // its slice buys nothing: at flatten time the empty child is dropped and its
+    // weight is silently redistributed onto the survivors (a 60/40 basket buys
+    // 100 % of the 60 % leg). Every nested slice must therefore resolve to at
+    // least one asset before the basket can go active.
+    for (const position of row.positions) {
+      if (position.kind !== 'conglomerate') continue;
+      const child = await flattenConglomerate(
+        (cid) =>
+          repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }),
+        position.childId,
+      );
+      if (!child || child.positions.length === 0) {
+        throw badRequest(
+          `Nested conglomerate ${position.child.name} resolves to no assets — give it positions or remove it before activating.`,
+          'ACTIVATION_INVALID',
+        );
+      }
+      if (child.unresolvedPct > 0) {
+        throw badRequest(
+          `Nested conglomerate ${position.child.name} contains a conglomerate that resolves to no assets — give it positions or remove it before activating.`,
+          'ACTIVATION_INVALID',
+        );
+      }
+    }
+
     const ok = await repo.setStatus(ownerId, id, 'active');
     if (!ok) throw NOT_FOUND();
     return detailOrThrow(ownerId, id, includeCustomAssets);
@@ -373,6 +420,8 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
    *  3. Normalise the stored percent weights to fractions summing to ~1 — by
    *     the basket's own weight sum, so both an active (Σ=100) and a draft
    *     basket allocate proportionally; the engine re-normalises to exactly 1.
+   *     A nested constituent that resolves to no asset keeps its slice OUT of
+   *     the budget instead of donating it to the survivors (see below).
    *  4. Run the engine and shape its result to the wire contract; an
    *     {@link AllocationError} (e.g. a non-positive quote) becomes a 422.
    *
@@ -410,14 +459,16 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       );
     }
 
-    let anyStale = false;
-    const nameByAssetId = new Map<string, string>();
-    // Native (own-currency) price per asset — a transaction's `price` is
-    // recorded in the asset's native currency (`domain/holdings.ts`), so the
-    // bulk buy-flow prefill must carry this, not the EUR-converted costEur.
-    const nativeByAssetId = new Map<string, { price: number; currency: string }>();
-    const positions: AllocationPositionInput[] = [];
-    for (const pos of flat.positions) {
+    // One row read + quote + FX per resolved asset, through a small pool rather
+    // than a sequential round trip each: nesting lifted the effective per-request
+    // asset count well past the 50-position per-basket cap.
+    //
+    // In TWO phases, like the backtest basket load: every asset is authorized
+    // first (database only), and only then is a single quote fetched. Fanned out
+    // in one phase, a request that ends in a 404 would still have sent provider
+    // traffic for the assets that happened to resolve — so the refusal comes
+    // before any market-data call, whatever the scheduling.
+    const rows = await mapFlattened(flat.positions, async (pos) => {
       // The embedded position asset carries neither the provider ref nor is a
       // full row, so re-resolve owner-scoped (a vanished/foreign asset 404s —
       // nothing leaks, §10 — though positions are validated on write). The
@@ -426,39 +477,58 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
         includeCustomAssets,
       });
       if (!asset) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
-      nameByAssetId.set(pos.assetId, asset.name);
+      return { pos, asset };
+    });
 
-      let priceEur: number;
+    const priced = await mapFlattened(rows, async ({ pos, asset }) => {
       try {
         const cached = await marketData.getQuote({
           providerId: asset.providerId,
           providerRef: asset.providerRef,
         });
-        if (cached.stale) anyStale = true;
-        nativeByAssetId.set(pos.assetId, {
-          price: cached.value.price,
-          currency: asset.currency,
-        });
-        // Convert into the caller's base here, before the pure engine — the
-        // domain does no FX (§5.4); the budget is interpreted in the same base.
-        priceEur = await fx.toBase(cached.value.price, asset.currency);
+        return {
+          assetId: pos.assetId,
+          weightPct: pos.weightPct,
+          name: asset.name,
+          symbol: asset.symbol,
+          stale: cached.stale,
+          // Native (own-currency) price per asset — a transaction's `price` is
+          // recorded in the asset's native currency (`domain/holdings.ts`), so
+          // the bulk buy-flow prefill must carry this, not the converted cost.
+          native: { price: cached.value.price, currency: asset.currency },
+          // Convert into the caller's base here, before the pure engine — the
+          // domain does no FX (§5.4); the budget is in the same base.
+          priceEur: await fx.toBase(cached.value.price, asset.currency),
+        };
       } catch {
         throw unprocessable(`No current quote available for ${asset.symbol}.`, 'NO_QUOTE');
       }
+    });
 
-      positions.push({
-        assetId: pos.assetId,
-        symbol: asset.symbol,
-        // The flatten already normalized the vector to Σ=100.
-        weight: pos.weightPct / 100,
-        priceEur,
-      });
-    }
+    const anyStale = priced.some((p) => p.stale);
+    const nameByAssetId = new Map(priced.map((p) => [p.assetId, p.name]));
+    const nativeByAssetId = new Map(priced.map((p) => [p.assetId, p.native]));
+    const positions: AllocationPositionInput[] = priced.map((p) => ({
+      assetId: p.assetId,
+      symbol: p.symbol,
+      // The flatten already normalized the vector to Σ=100 over what resolved.
+      weight: p.weightPct / 100,
+      priceEur: p.priceEur,
+    }));
+
+    // A nested constituent that resolves to no asset is NOT free money for the
+    // rest of the basket: the flatten normalizes the survivors to 100, so
+    // spending the whole budget over them would buy the empty child's slice as
+    // extra shares of everything else (a 60/40 basket with an empty 40 % child
+    // would buy 100 % of the 60 % leg). Only the resolved share of the budget is
+    // handed to the engine; the rest stays unallocated and is reported as such.
+    const withheldEur = req.budgetEur * (flat.unresolvedPct / 100);
+    const allocatableEur = req.budgetEur - withheldEur;
 
     let result: AllocationResult;
     try {
       result = allocateBudget({
-        budgetEur: req.budgetEur,
+        budgetEur: allocatableEur,
         mode: req.mode,
         step: req.step,
         atLeastOneShare: req.atLeastOneShare,
@@ -493,8 +563,16 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
         return row;
       }),
       totalCostEur: result.totalCostEur,
-      leftoverEur: result.leftoverEur,
-      warnings: result.warnings,
+      // `totalCostEur + leftoverEur === budgetEur` still holds: the withheld
+      // slice is part of the leftover, not money that vanished.
+      leftoverEur: result.leftoverEur + withheldEur,
+      warnings:
+        withheldEur > 0
+          ? [
+              ...result.warnings,
+              `${withheldEur.toFixed(2)} ${fx.baseCurrency} is left unallocated: ${flat.unresolvedPct.toFixed(2)} % of this conglomerate is a nested conglomerate with no assets in it.`,
+            ]
+          : result.warnings,
       stale: anyStale,
       quoteNotice: anyStale
         ? 'Some quotes are stale (market closed or the data provider is unreachable); showing the last known prices.'
@@ -584,7 +662,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     async replacePositions(ownerId, id, positions) {
       return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
         await assertReadable(ownerId, id, includeCustomAssets);
-        await validatePositions(ownerId, id, positions, includeCustomAssets);
+        const childIds = await validatePositions(ownerId, id, positions, includeCustomAssets);
         const ok = await repo.replacePositions(
           ownerId,
           id,
@@ -593,6 +671,14 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
               ? { kind: 'asset' as const, assetId: p.assetId, weightPct: p.weightPct }
               : { kind: 'conglomerate' as const, childId: p.childId, weightPct: p.weightPct },
           ),
+          // Re-run the graph rules against the edge set as it stands INSIDE the
+          // write transaction: a racing write that committed since the check
+          // above is visible there, so two concurrent writes can never persist a
+          // cycle between them. Only a set that nests something can create one,
+          // so a plain asset write takes no lock at all.
+          childIds.size > 0
+            ? { verifyNesting: (edges) => assertNestingRules(id, childIds, edges) }
+            : undefined,
         );
         if (!ok) throw NOT_FOUND();
         return detailOrThrow(ownerId, id, includeCustomAssets);
