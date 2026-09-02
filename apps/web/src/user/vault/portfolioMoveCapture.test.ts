@@ -53,6 +53,7 @@ const ASSET_ID = '018f0000-0000-7000-8000-0000000000b5';
 const SOURCE_ID = '018f0000-0000-7000-8000-0000000000b6';
 const MOVEMENT_ID = '018f0000-0000-7000-8000-0000000000b7';
 const TRANSACTION_ID = '018f0000-0000-7000-8000-0000000000b8';
+const DIVIDEND_ID = '018f0000-0000-7000-8000-0000000000bd';
 const KEY_ID = '018f0000-0000-7000-8000-0000000000b9';
 const REVISION = 'portfolio_move_capture_revision_vector';
 /** Typed into rows below; must NEVER appear in any byte written to the store. */
@@ -132,6 +133,64 @@ function transactionFixture(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/** The one settled year the harness reports when `state.taxYear` is set. */
+const TAX_YEAR = 2026;
+
+function sellFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return transactionFixture({ side: 'sell', ...overrides });
+}
+
+/** One `taxYearSellSchema` row — the ONLY endpoint stating a sell's frozen facts. */
+function taxYearSellFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    transactionId: TRANSACTION_ID,
+    executedAt: '2026-08-01T10:00:00.000Z',
+    quantity: 2,
+    proceedsEur: 203,
+    costBasisEur: 200,
+    realizedPnlEur: 3,
+    taxMode: 'none',
+    taxAmountEur: null,
+    taxCountry: null,
+    taxParams: null,
+    ...overrides,
+  };
+}
+
+function dividendFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: DIVIDEND_ID,
+    portfolioId: PORTFOLIO_ID,
+    assetId: ASSET_ID,
+    cashSourceId: SOURCE_ID,
+    grossAmountEur: 12.5,
+    executedAt: '2026-08-02T10:00:00.000Z',
+    note: null,
+    taxMode: 'none',
+    taxCountry: null,
+    taxAmountEur: null,
+    taxParams: null,
+    source: 'manual',
+    createdAt: '2026-08-02T10:00:00.000Z',
+    asset: MARKET_ASSET,
+    ...overrides,
+  };
+}
+
+/** The year-report twin of {@link dividendFixture}; the two must agree. */
+function taxYearDividendFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    dividendId: DIVIDEND_ID,
+    executedAt: '2026-08-02T10:00:00.000Z',
+    grossAmountEur: 12.5,
+    taxMode: 'none',
+    taxAmountEur: null,
+    taxCountry: null,
+    taxParams: null,
+    ...overrides,
+  };
+}
+
 interface Harness {
   docs: Map<string, { envelope: Uint8Array; header: VaultDocEnvelopeHeader }>;
   writes: string[];
@@ -151,6 +210,15 @@ interface Harness {
     /** FIFO of settled re-reads; the last entry answers every further read. */
     settledRevisions: Array<{ portfolioDataRevision: string; importBatchCount: number }>;
     transactions: ReturnType<typeof transactionFixture>[];
+    dividends: ReturnType<typeof dividendFixture>[];
+    /**
+     * The frozen facts the year drill-down states. `null` = no settled year at
+     * all, so `getTaxYearReport` must never be called (the default shape).
+     */
+    taxYear: {
+      sells: ReturnType<typeof taxYearSellFixture>[];
+      dividends: ReturnType<typeof taxYearDividendFixture>[];
+    } | null;
     lifecycleGeneration: number;
   };
 }
@@ -222,6 +290,8 @@ function createHarness(): Harness {
     revision: { portfolioDataRevision: REVISION, importBatchCount: 0 },
     settledRevisions: [{ portfolioDataRevision: REVISION, importBatchCount: 0 }],
     transactions: [transactionFixture()],
+    dividends: [],
+    taxYear: null,
     lifecycleGeneration: 1,
   };
 
@@ -317,14 +387,29 @@ function createHarness(): Harness {
       mediaAttestedAt = null; // any live write voids the full-set proof (E1)
     }) as PortfolioMoveCaptureApi['writeVaultDocument'],
     listDividends: (async () => ({
-      dividends: [],
+      dividends: state.dividends,
     })) as unknown as PortfolioMoveCaptureApi['listDividends'],
     getTaxYearReports: (async () => ({
-      years: [],
+      years: state.taxYear === null ? [] : [{ year: TAX_YEAR }],
     })) as unknown as PortfolioMoveCaptureApi['getTaxYearReports'],
-    getTaxYearReport: notCalled(
-      'getTaxYearReport',
-    ) as unknown as PortfolioMoveCaptureApi['getTaxYearReport'],
+    getTaxYearReport: (async () => {
+      if (state.taxYear === null)
+        throw new Error('TEST VECTOR: getTaxYearReport must not be called');
+      return {
+        year: TAX_YEAR,
+        summary: {},
+        positions: [
+          {
+            asset: MARKET_ASSET,
+            realizedPnlEur: 0,
+            dividendsGrossEur: 0,
+            taxEur: 0,
+            sells: state.taxYear.sells,
+            dividends: state.taxYear.dividends,
+          },
+        ],
+      };
+    }) as unknown as PortfolioMoveCaptureApi['getTaxYearReport'],
     listStandingOrderRuns: (async () => ({
       runs: [],
     })) as unknown as PortfolioMoveCaptureApi['listStandingOrderRuns'],
@@ -647,6 +732,85 @@ describe('captureMoveIn', () => {
     });
     expect(harness.writes).toEqual([]);
   });
+
+  // #1635: legacy V3-P4 rows freeze `country_specific` with NO country
+  // (`drizzle/0021_tax_engine.sql` shipped the column without a backfill). The
+  // server settles them as AT; the vault contract has no such fallback, so the
+  // capture must refuse them by NAME with its own typed code — not the untyped
+  // `Error` the frozen-fact assertion used to raise.
+  describe.each([
+    {
+      label: 'a sell whose year report states the legacy shape',
+      arrange: (target: Harness) => {
+        target.state.transactions = [sellFixture()];
+        target.state.taxYear = {
+          sells: [taxYearSellFixture({ taxMode: 'country_specific', taxCountry: null })],
+          dividends: [],
+        };
+      },
+      named: `sell ${TRANSACTION_ID}`,
+    },
+    {
+      label: 'a dividend carrying the legacy shape on both of its reads',
+      arrange: (target: Harness) => {
+        target.state.dividends = [dividendFixture({ taxMode: 'country_specific' })];
+        target.state.taxYear = {
+          sells: [],
+          dividends: [taxYearDividendFixture({ taxMode: 'country_specific', taxCountry: null })],
+        };
+      },
+      named: `dividend ${DIVIDEND_ID}`,
+    },
+  ])('legacy country-specific row with no frozen country: $label', ({ arrange, named }) => {
+    it('refuses with the typed code, names the row, and writes nothing', async () => {
+      arrange(harness);
+      await expect(runMoveIn(harness)).rejects.toMatchObject({
+        name: 'PortfolioMoveCaptureError',
+        code: 'VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED',
+        // Needs the `tax_country = 'AT'` backfill, so a retry cannot help.
+        retryable: false,
+        message: expect.stringContaining(named) as unknown as string,
+      });
+      expect(harness.writes).toEqual([]);
+      expect(harness.attestations).toEqual([]);
+    });
+  });
+
+  it('names every offending row, not just the one the loop reached first', async () => {
+    harness.state.transactions = [sellFixture()];
+    harness.state.dividends = [dividendFixture({ taxMode: 'country_specific' })];
+    harness.state.taxYear = {
+      sells: [taxYearSellFixture({ taxMode: 'country_specific', taxCountry: null })],
+      dividends: [taxYearDividendFixture({ taxMode: 'country_specific', taxCountry: null })],
+    };
+    const refusal = await runMoveIn(harness).then(
+      () => null,
+      (cause: unknown) => cause as Error & { code: string },
+    );
+    expect(refusal?.code).toBe('VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED');
+    expect(refusal?.message).toContain(`sell ${TRANSACTION_ID}`);
+    expect(refusal?.message).toContain(`dividend ${DIVIDEND_ID}`);
+    expect(harness.writes).toEqual([]);
+  });
+
+  // Negative space: `taxCountry === null` is the CORRECT frozen shape in every
+  // mode except `country_specific`. The refusal must not touch those rows.
+  it.each([['none'], ['manual_per_trade']])(
+    'leaves a %s row with a null frozen country alone',
+    async (taxMode) => {
+      harness.state.transactions = [sellFixture()];
+      harness.state.dividends = [dividendFixture({ taxMode })];
+      harness.state.taxYear = {
+        sells: [taxYearSellFixture({ taxMode, taxCountry: null })],
+        dividends: [taxYearDividendFixture({ taxMode, taxCountry: null })],
+      };
+      await expect(runMoveIn(harness)).resolves.toEqual({
+        docVersion: 1,
+        portfolioDataRevision: REVISION,
+      });
+      expect(harness.writes).toEqual([PORTFOLIO_ID, HEADER_DOC_ID, COMMON_DOC_ID]);
+    },
+  );
 
   it('WEDGE-PROBE (#1528 F1): a refused E4 commit after a completed capture does not wedge the vault — the retry re-captures end to end', async () => {
     // The reviewer's exact interleaving: capture → refused commit → retry.
