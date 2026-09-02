@@ -117,9 +117,15 @@ function sectionBetween(
  * the replacement per-vault acceptance contract.
  */
 export async function assertPd9DesignPrecondition(): Promise<void> {
-  const [document, projectPlan] = await Promise.all([
+  const [document, projectPlan, decisionLogArchive] = await Promise.all([
     readFile(join(process.cwd(), 'docs/paranoid-design.md'), 'utf8'),
     readFile(join(process.cwd(), 'PROJECTPLAN.md'), 'utf8'),
+    // The 2026-07 §16 rows this gate reads were moved VERBATIM to the archive
+    // by the docs condensation (PR #1571), which left the gate red on main
+    // (#1607). The decision text is the ground truth wherever it lives, so the
+    // haystack below is the ACTIVE log plus the archive — never a copy back
+    // into PROJECTPLAN.
+    readFile(join(process.cwd(), 'docs/history/DECISIONLOG.md'), 'utf8'),
   ]);
   const normalized = (value: string) => value.replace(/\s+/g, ' ');
   const statusEnd = document.indexOf('**Table of contents**');
@@ -161,7 +167,9 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     );
   }
 
-  const decisionLog = normalized(projectPlan.slice(projectPlan.indexOf('## 16. Decision Log')));
+  const decisionLog = normalized(
+    `${projectPlan.slice(projectPlan.indexOf('## 16. Decision Log'))}\n${decisionLogArchive}`,
+  );
   const loggedDecision = [
     'V5-P13 PD6/PD9 media-removal COD reconciliation',
     'issue #895 / PR #896',
@@ -171,7 +179,10 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     'A successful signed purge leaves zero server ciphertext',
   ];
   if (loggedDecision.some((evidence) => !decisionLog.includes(evidence))) {
-    throw new Error('PD9 design §5 reconciliation is missing from PROJECTPLAN §16.');
+    throw new Error(
+      'PD9: the #895/#896 media-removal reconciliation (design §7) is in neither ' +
+        'PROJECTPLAN §16 nor docs/history/DECISIONLOG.md.',
+    );
   }
 
   const currentDecision = [
@@ -182,7 +193,26 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     'Implementation issues may now be cut from the §20 epics',
   ];
   if (currentDecision.some((evidence) => !decisionLog.includes(evidence))) {
-    throw new Error('PD9 current owner ruling is missing from PROJECTPLAN §16.');
+    throw new Error(
+      'PD9: the 2026-08-20 five-gate owner ruling is in neither PROJECTPLAN §16 ' +
+        'nor docs/history/DECISIONLOG.md.',
+    );
+  }
+
+  // The §16 haystack above is ACTIVE-log-plus-archive, so it cannot tell "still
+  // current" from "archived" — acceptable only because §16 is append-only and a
+  // row is never edited once written. The design note's own §21 is therefore the
+  // currency anchor: these rulings must be readable where implementers look, not
+  // only in a decision log that may have been archived out from under them.
+  const sectionTwentyOne = normalized(sectionBetween(document, '## 21.', '## 22.', 'design §21'));
+  const gateRulings = [
+    '**Move-out: ALLOWED.**',
+    '**Transition: (C) backup + wipe.**',
+    '**Vault names: cleartext, stated calmly.**',
+    '**Drive: `drive.file` with the visible "BetterTrack Vaults" folder**',
+  ];
+  if (gateRulings.some((evidence) => !sectionTwentyOne.includes(evidence))) {
+    throw new Error('PD9 design §21 no longer carries the five ruled gate decisions verbatim.');
   }
 
   const sectionSeventeen = normalized(sectionBetween(document, '## 17.', '## 18.', 'design §17'));
