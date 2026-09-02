@@ -1,6 +1,7 @@
 import { uuidv7 } from 'uuidv7';
 
 import {
+  PER_VAULT_ERROR_CODES,
   VAULT_DOC_SCHEMA_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
   serializePortfolioVaultMoveOutProofTranscript,
@@ -107,6 +108,14 @@ export const PORTFOLIO_MOVE_CAPTURE_ERROR_CODES = [
   'VAULT_MOVE_STATE_CONFLICT',
   /** A written document did not read back byte-identical. */
   'VAULT_MOVE_VERIFY_FAILED',
+  /**
+   * TERMINAL for this caller (#1530). The server's exact-set attestation
+   * refused because another portfolio's interrupted move-in left a prospective
+   * blob staged in this vault. No readback of THIS portfolio's documents can
+   * ever satisfy it, so the honest answer is the named blocker and its remedy —
+   * finish or cancel that move — not an invitation to retry.
+   */
+  'VAULT_MOVE_CAPTURE_IN_FLIGHT',
 ] as const;
 
 export type PortfolioMoveCaptureErrorCode = (typeof PORTFOLIO_MOVE_CAPTURE_ERROR_CODES)[number];
@@ -116,11 +125,56 @@ export class PortfolioMoveCaptureError extends Error {
     readonly code: PortfolioMoveCaptureErrorCode,
     message: string,
     readonly retryable = false,
-    options?: ErrorOptions,
+    options?: ErrorOptions & {
+      /**
+       * Display names of the portfolios whose in-flight move blocks this one
+       * (`VAULT_MOVE_CAPTURE_IN_FLIGHT`). Names, not ids: this reaches a user.
+       * An id the roster cannot name is carried through verbatim rather than
+       * dropped — a blocker the surface cannot name is still a blocker.
+       */
+      blockingPortfolios?: readonly string[];
+    },
   ) {
     super(message, options);
     this.name = 'PortfolioMoveCaptureError';
+    this.blockingPortfolios = options?.blockingPortfolios ?? [];
   }
+
+  readonly blockingPortfolios: readonly string[];
+}
+
+/**
+ * Translate the server's `VAULT_MEDIA_CAPTURE_IN_FLIGHT` 412 (#1530) into this
+ * module's own terminal refusal, or `null` when the cause is something else.
+ *
+ * The distinction is the whole point of the split 412 vocabulary: a
+ * `VAULT_MEDIA_VERIFICATION_FAILED` is worth another attempt with a fresh
+ * readback, while this one never is — the gap is a prospective blob belonging
+ * to a DIFFERENT portfolio, which no readback of this portfolio's documents can
+ * account for. Before this translation the user saw an undifferentiated
+ * failure and could only retry forever.
+ */
+function captureInFlightRefusal(
+  cause: unknown,
+  nameFor: (portfolioId: string) => string,
+): PortfolioMoveCaptureError | null {
+  if (!(cause instanceof ApiError) || cause.code !== PER_VAULT_ERROR_CODES.mediaCaptureInFlight) {
+    return null;
+  }
+  const details = cause.details;
+  const ids =
+    typeof details === 'object' && details !== null && 'portfolioIds' in details
+      ? (details as { portfolioIds?: unknown }).portfolioIds
+      : undefined;
+  const blockingPortfolios = Array.isArray(ids)
+    ? ids.filter((value): value is string => typeof value === 'string').map(nameFor)
+    : [];
+  return new PortfolioMoveCaptureError(
+    'VAULT_MOVE_CAPTURE_IN_FLIGHT',
+    'Another portfolio has an unfinished move into this vault; finish or cancel it first.',
+    false,
+    { cause, blockingPortfolios },
+  );
 }
 
 export interface PortfolioMoveCaptureApi {
@@ -642,17 +696,22 @@ export function createPortfolioVaultMoveCapture(
     vault: VaultConfig,
     docs: readonly PerVaultMediaDocAttestation[],
     expectedMediaAttestedAt: string | null,
+    nameFor: (portfolioId: string) => string,
   ): Promise<void> {
-    await deps.api.transitionVaultMedia(vault.id, {
-      transitionId: id(),
-      expected: {
-        media: [...vault.media],
-        driveConnectionId: vault.driveConnectionId,
-        mediaAttestedAt: expectedMediaAttestedAt,
-      },
-      next: { media: [...vault.media], driveConnectionId: vault.driveConnectionId },
-      verification: { kind: 'server', docs: [...docs] },
-    });
+    try {
+      await deps.api.transitionVaultMedia(vault.id, {
+        transitionId: id(),
+        expected: {
+          media: [...vault.media],
+          driveConnectionId: vault.driveConnectionId,
+          mediaAttestedAt: expectedMediaAttestedAt,
+        },
+        next: { media: [...vault.media], driveConnectionId: vault.driveConnectionId },
+        verification: { kind: 'server', docs: [...docs] },
+      });
+    } catch (cause) {
+      throw captureInFlightRefusal(cause, nameFor) ?? cause;
+    }
   }
 
   return {
@@ -673,6 +732,12 @@ export function createPortfolioVaultMoveCapture(
       const plainOwnedIds = roster
         .filter((candidate) => candidate.vaultId == null)
         .map((candidate) => candidate.id);
+      // The roster this capture already read is the only place a blocking
+      // portfolio id can be turned into something worth showing a user. An id
+      // it does not cover (another device moved it since) still names a real
+      // blocker, so it travels as itself rather than being dropped.
+      const nameFor = (portfolioId: string): string =>
+        roster.find((candidate) => candidate.id === portfolioId)?.name ?? portfolioId;
 
       // ── §9 validate-then-accept, with v1's one-rebuild allowance: capture
       // reads WRITE (the cash main-source seed, the tax-year self-heal), so
@@ -824,7 +889,7 @@ export function createPortfolioVaultMoveCapture(
           throw conflict('The vault media configuration changed during the capture.');
         }
         if (mediaState.mediaAttestedAt === null) {
-          await refreshServerAttestation(vault, currentAttestations(set), null);
+          await refreshServerAttestation(vault, currentAttestations(set), null, nameFor);
         }
 
         // ── Writes, strictly ordered: the portfolio doc FIRST (its admission
@@ -875,7 +940,7 @@ export function createPortfolioVaultMoveCapture(
             writeId: header.writeId,
           })),
         ];
-        await refreshServerAttestation(vault, finalDocs, null);
+        await refreshServerAttestation(vault, finalDocs, null, nameFor);
 
         return {
           docVersion: encrypted.portfolio.header.docVersion,

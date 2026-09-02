@@ -435,9 +435,16 @@ function VaultManagerRow({
         <button className="bt-link" onClick={() => setRenameOpen((open) => !open)} type="button">
           {t('vault.manager.action.rename')}
         </button>
-        <Link className="bt-link" to={`/control/connections?vault=${encodeURIComponent(vault.id)}`}>
-          {t('vault.manager.action.changeMedia')}
-        </Link>
+        {/* "Change storage" WAS a link to `/control/connections?vault=<id>`,
+            and that panel has never read the `vault` param (#1520): the link
+            landed on an unscoped Drive-connection list with no per-vault media
+            control on it, because this build provisions no per-vault Drive
+            medium at all (`PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false`,
+            E5/#1415). Honouring the param would have scoped the page to a
+            control that is not there. So it follows the same rule as `rotate`
+            and `start-fresh` below — stated as what it is, with the missing
+            piece named, and never a link. */}
+        <span className="bt-muted">{t('vault.manager.action.changeMedia')}</span>
         {/* An action this build cannot finish is never a link: it stays visible
             as what it is, with the missing piece named beside it. */}
         {rotateDeferred ? (
@@ -469,6 +476,7 @@ function VaultManagerRow({
           {t('common.delete')}
         </button>
       </div>
+      <p className="bt-meta">{t('vault.manager.deferred.changeMedia')}</p>
       {rotateDeferred ? <p className="bt-meta">{t(rotateDeferred)}</p> : null}
       {startFreshDeferred ? <p className="bt-meta">{t(startFreshDeferred)}</p> : null}
       {/* "Delete refuses while a portfolio is inside, and says so" — said with

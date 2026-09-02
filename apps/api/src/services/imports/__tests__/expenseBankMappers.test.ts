@@ -10,6 +10,7 @@ import {
   createBankMapperRegistry,
   ersteGeorgeMapper,
   n26Mapper,
+  parseEnglishAmount,
   raiffeisenElbaMapper,
   revolutMapper,
   type BankStatementMapper,
@@ -30,6 +31,11 @@ const ERSTE = fixture('erste-george.csv');
 const ELBA = fixture('raiffeisen-elba.csv');
 const N26 = fixture('n26.csv');
 const REVOLUT = fixture('revolut.csv');
+
+// Derived from the fixtures so a header edit cannot leave the inline cases
+// asserting against a shape the real export no longer has.
+const N26_HEADER = N26.split('\n')[0]!;
+const REVOLUT_HEADER = REVOLUT.split('\n')[0]!;
 
 const okRows = (mapper: BankStatementMapper, csv: string): NormalizedExpenseRow[] =>
   mapper.map(parseCsv(csv)).map((line) => {
@@ -177,7 +183,32 @@ describe('n26Mapper.map — golden fixture', () => {
         currency: 'EUR',
         description: 'ACME GmbH',
       },
+      // A thousands-GROUPED English amount: read with the German framework
+      // parser `2,400.00` books as 2.4 — 1000× understated, silently.
+      {
+        bookedOn: '2024-02-28',
+        direction: 'income',
+        amount: 2400,
+        currency: 'EUR',
+        description: 'ACME GmbH',
+      },
     ]);
+  });
+
+  // `1,200` (grouped, no decimal part) is the sharper case: the GENERIC sniffer
+  // refuses it as `ambiguous-grouped-number`, because in an unknown file it is
+  // 1200 the English way and 1.2 the German way. A hardcoded mapper has no such
+  // ambiguity — N26 declares its notation — so it must read 1200. It stays out
+  // of the committed fixture only because that file is also pinned as a
+  // clean-sniff sample for the generic-import lane.
+  it('books a bare comma-grouped amount at full magnitude, not 1000× under', () => {
+    const csv = parseCsv(
+      N26_HEADER + '\n2024-02-02,Furniture Store,,MasterCard Payment,,"-1,200",,,',
+    );
+    expect(n26Mapper.map(csv)[0]).toMatchObject({
+      ok: true,
+      row: { amount: 1200, direction: 'expense', currency: 'EUR' },
+    });
   });
 });
 
@@ -205,7 +236,30 @@ describe('revolutMapper.map — golden fixture', () => {
         currency: 'EUR',
         description: 'Payment from Employer',
       },
+      // A thousands-GROUPED English amount: read with the German framework
+      // parser `2,400.00` books as 2.4 — 1000× understated, silently.
+      {
+        bookedOn: '2024-02-28',
+        direction: 'income',
+        amount: 2400,
+        currency: 'EUR',
+        description: 'Payment from Employer',
+      },
     ]);
+  });
+
+  // See the N26 counterpart above for why `1,200` is asserted inline rather
+  // than from the committed fixture.
+  it('books a bare comma-grouped amount at full magnitude, not 1000× under', () => {
+    const csv = parseCsv(
+      REVOLUT_HEADER +
+        '\nCARD_PAYMENT,Current,2024-02-02 10:00:00,2024-02-02 11:00:00,Furniture Store,' +
+        '"-1,200",0.00,EUR,COMPLETED,1530.06',
+    );
+    expect(revolutMapper.map(csv)[0]).toMatchObject({
+      ok: true,
+      row: { amount: 1200, direction: 'expense', currency: 'EUR' },
+    });
   });
 
   it('flags a non-COMPLETED row as an error (excluded from apply)', () => {
@@ -226,6 +280,76 @@ describe('revolutMapper.map — golden fixture', () => {
     expect(revolutMapper.map(csv)[0]).toMatchObject({
       ok: true,
       row: { currency: 'GBP', amount: 18.4, direction: 'expense' },
+    });
+  });
+});
+
+describe('parseEnglishAmount — the English-notation guard', () => {
+  it('reads comma-grouped English amounts at full magnitude', () => {
+    expect(parseEnglishAmount('2,400.00')).toBe(2400);
+    expect(parseEnglishAmount('-1,200')).toBe(-1200);
+    expect(parseEnglishAmount('1,234,567.89')).toBe(1234567.89);
+    expect(parseEnglishAmount('-42.50')).toBe(-42.5);
+    expect(parseEnglishAmount('-42.50 EUR')).toBe(-42.5);
+  });
+
+  it('REFUSES what it cannot read unambiguously rather than guessing', () => {
+    // Not 3-digit grouping — German `1,20` or a truncated group, either way
+    // guessing costs money. Refusing costs one reported row.
+    expect(parseEnglishAmount('1,20')).toBeNull();
+    expect(parseEnglishAmount('1,2345')).toBeNull();
+    // German notation fed to the English parser: refused, never read as 1200.5.
+    expect(parseEnglishAmount('1.200,50')).toBeNull();
+    // A trailing sign dropped silently would flip the booking's direction.
+    expect(parseEnglishAmount('1,200-')).toBeNull();
+    // Accounting negatives and non-numeric cells stay refused.
+    expect(parseEnglishAmount('(1,200.00)')).toBeNull();
+    expect(parseEnglishAmount('')).toBeNull();
+    expect(parseEnglishAmount('n/a')).toBeNull();
+  });
+});
+
+describe('English-notation mappers reject an unreadable amount instead of misbooking', () => {
+  it('fails the N26 row whose amount is not unambiguous English notation', () => {
+    const csv = parseCsv(
+      'Date,Payee,Account number,Transaction type,Payment reference,Amount (EUR),' +
+        'Amount (Foreign Currency),Type Foreign Currency,Exchange Rate\n' +
+        '2024-03-01,Furniture Store,,MasterCard Payment,,"-1,20",,,',
+    );
+    const line = n26Mapper.map(csv)[0];
+    expect(line?.ok).toBe(false);
+    expect(line?.ok === false && line.error).toContain('amount');
+  });
+
+  it('fails the Revolut row whose amount is German notation', () => {
+    const csv = parseCsv(
+      'Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n' +
+        'CARD_PAYMENT,Current,2024-03-01 10:00:00,2024-03-01 11:00:00,Furniture Store,' +
+        '"-1.200,50",0.00,EUR,COMPLETED,100.00',
+    );
+    const line = revolutMapper.map(csv)[0];
+    expect(line?.ok).toBe(false);
+    expect(line?.ok === false && line.error).toContain('amount');
+  });
+});
+
+describe('German-notation mappers keep the framework parser', () => {
+  it('reads a dot-grouped German amount at full magnitude', () => {
+    const csv = parseCsv(
+      'Buchungsdatum;Valutadatum;Partnername;Verwendungszweck;Betrag;Währung\n' +
+        '31.01.2024;31.01.2024;Muster GmbH;Gehalt;2.500,00;EUR',
+    );
+    expect(ersteGeorgeMapper.map(csv)[0]).toMatchObject({
+      ok: true,
+      row: { amount: 2500, direction: 'income' },
+    });
+    const elba = parseCsv(
+      'Kontonummer;Buchungsdatum;Valutadatum;Buchungstext;Betrag;Währung\n' +
+        'AT483200000012345678;31.01.2024;31.01.2024;GEHALT;2.100,00;EUR',
+    );
+    expect(raiffeisenElbaMapper.map(elba)[0]).toMatchObject({
+      ok: true,
+      row: { amount: 2100, direction: 'income' },
     });
   });
 });

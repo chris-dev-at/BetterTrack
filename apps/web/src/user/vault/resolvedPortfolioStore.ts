@@ -4,7 +4,12 @@ import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore
 import { moneyFailure } from './engine/errors';
 import { createParanoidAppPortfolioStore } from './engine/paranoidPortfolioStore';
 import type { UnlockedVaultPortfolioStoreResolution } from './portfolioStoreResolver';
-import { VaultPortfolioStoreError, type VaultPortfolioStore } from './vaultPortfolioStore';
+import {
+  createVaultPortfolioStore,
+  VaultPortfolioStoreError,
+  type VaultPortfolioDocumentSource,
+  type VaultPortfolioStore,
+} from './vaultPortfolioStore';
 
 /**
  * The wiring half of the PARANOID-E6 store resolver (#1416).
@@ -33,6 +38,16 @@ import { VaultPortfolioStoreError, type VaultPortfolioStore } from './vaultPortf
  * Everything the resolution cannot answer refuses with a typed error — never an
  * empty list, never a zero. An empty ledger and an unreadable ledger look
  * identical on screen, and only one of them is true.
+ *
+ * ROW READS (#1532). The projections behind transactions, cash sources,
+ * movements, standing orders, custom assets and tax settings are the account
+ * store's own — `createVaultPortfolioStore`, now taking a document source
+ * rather than a sync engine — pointed at this resolution's authenticated
+ * document. There is exactly ONE implementation of that money-adjacent mapping
+ * and this module is not a second one. What stays refused is every WRITE: a
+ * resolution is a read of an authenticated snapshot and owns no CAS write path,
+ * so its document source refuses at `mutate`, which is where a write actually
+ * becomes a write.
  */
 
 /** Everything a surface needs from one unlocked, resolver-backed portfolio. */
@@ -109,7 +124,7 @@ export function createUnlockedVaultPortfolioAccess(
 ): UnlockedVaultPortfolioAccess {
   const plainStore = options.plainStore ?? apiPortfolioStore;
   const portfolioId = resolution.portfolio.id;
-  const rows = refusingRowStore(plainStore);
+  const rows = resolutionRowStore(resolution, plainStore);
 
   const store = createParanoidAppPortfolioStore({
     engine: resolution.engine,
@@ -163,73 +178,72 @@ function documentAccess(resolution: UnlockedVaultPortfolioStoreResolution) {
 }
 
 /**
- * Every row operation a per-portfolio resolution cannot serve, as one typed
- * refusal each.
+ * The account store's projections, pointed at this resolution's document.
  *
- * Two different reasons live behind one code. Reads (transactions, cash
- * sources, movements, standing orders, value points) are unavailable because
- * this resolution carries a derivation engine, not the account-level mutation
- * store those projections are written against — wiring them up is a separate
- * piece of work, and answering them with `[]` in the meantime would state
- * "there is nothing here" about a portfolio that demonstrably has holdings.
- * Writes are unavailable because a resolution is a READ of an authenticated
- * snapshot: it owns no CAS write path, and inventing one here would publish
- * vault documents outside the E1 protocol that guards them.
+ * `listPortfolios` is the ONE call that does not come from the vault. The
+ * resolution's document holds this portfolio's rows and the vault's shared
+ * common bucket — not the account's other portfolios — so projecting a roster
+ * out of it would silently drop every plain and every other-vault row from the
+ * switcher. The content-free server stub roster is the fact that binds a
+ * vaulted portfolio to its vault at all, and every surface already reads it.
  */
-function refusingRowStore(plainStore: PortfolioStore): VaultPortfolioStore {
-  // The store's OWN error type, not the engine's: `asMoneyFailure` already maps
-  // it to `VAULT_OPERATION_UNSUPPORTED`, so one refusal reads identically
-  // whether a caller catches it raw or receives it through a money outcome.
-  const refuse = (operation: string): never => {
-    throw new VaultPortfolioStoreError(
-      'VAULT_OPERATION_UNAVAILABLE',
-      `"${operation}" is not available from a resolver-backed vault portfolio store.`,
-    );
-  };
+function resolutionRowStore(
+  resolution: UnlockedVaultPortfolioStoreResolution,
+  plainStore: PortfolioStore,
+): VaultPortfolioStore {
+  const projections = createVaultPortfolioStore(readOnlyDocumentSource(resolution), {
+    // The account store resolves an unseen market asset through `GET /assets/:id`
+    // before writing its catalog snapshot into the document. Only write paths
+    // reach it, and they all refuse below — but they refuse at `mutate`, which
+    // is AFTER this lookup, so leaving the default in place would let a refused
+    // write still put a request on the wire for a sealed portfolio's asset.
+    resolveMarketAsset: async () => refuseResolutionWrite('resolveMarketAsset'),
+  });
 
+  return { ...projections, listPortfolios: (...args) => plainStore.listPortfolios(...args) };
+}
+
+/**
+ * The document seam {@link createVaultPortfolioStore} reads, served from the
+ * resolution's authenticated snapshot.
+ *
+ * `status` is derived, not stored: while the snapshot is live the source is
+ * `synced`, and the instant the resolution stops vouching for it — disposed,
+ * locked, or the synchronized set moved underneath — it reports `locked` with
+ * no active document, which the projections already translate into a typed
+ * `VAULT_LOCKED` rather than an empty list. There is no third state to model,
+ * because a resolution never holds a conflicting or pending branch: it opened
+ * one authenticated set and either still vouches for it or does not.
+ */
+function readOnlyDocumentSource(
+  resolution: UnlockedVaultPortfolioStoreResolution,
+): VaultPortfolioDocumentSource {
   return {
-    // The ONLY delegation. A content-free stub roster, already read by every
-    // surface, and the fact that binds this portfolio to its vault.
-    listPortfolios: (...args) => plainStore.listPortfolios(...args),
-    createPortfolio: async () => refuse('createPortfolio'),
-    getPortfolio: async () => refuse('getPortfolio'),
-    updatePortfolio: async () => refuse('updatePortfolio'),
-    archivePortfolio: async () => refuse('archivePortfolio'),
-    restorePortfolio: async () => refuse('restorePortfolio'),
-    deletePortfolio: async () => refuse('deletePortfolio'),
-    getTaxSettings: async () => refuse('getTaxSettings'),
-    updateTaxSettings: async () => refuse('updateTaxSettings'),
-    getPortfolioTaxSettings: async () => refuse('getPortfolioTaxSettings'),
-    setPortfolioTaxOverride: async () => refuse('setPortfolioTaxOverride'),
-    clearPortfolioTaxOverride: async () => refuse('clearPortfolioTaxOverride'),
-    listCustomAssets: async () => refuse('listCustomAssets'),
-    createCustomAsset: async () => refuse('createCustomAsset'),
-    updateCustomAsset: async () => refuse('updateCustomAsset'),
-    getValuePoints: async () => refuse('getValuePoints'),
-    putValuePoints: async () => refuse('putValuePoints'),
-    listTransactions: async () => refuse('listTransactions'),
-    createTransactions: async () => refuse('createTransactions'),
-    updateTransaction: async () => refuse('updateTransaction'),
-    deleteTransaction: async () => refuse('deleteTransaction'),
-    listCashSources: async () => refuse('listCashSources'),
-    createCashSource: async () => refuse('createCashSource'),
-    updateCashSource: async () => refuse('updateCashSource'),
-    archiveCashSource: async () => refuse('archiveCashSource'),
-    restoreCashSource: async () => refuse('restoreCashSource'),
-    getCashMovements: async () => refuse('getCashMovements'),
-    previewCash: async () => refuse('previewCash'),
-    depositCash: async () => refuse('depositCash'),
-    withdrawCash: async () => refuse('withdrawCash'),
-    chargeCashFee: async () => refuse('chargeCashFee'),
-    transferCash: async () => refuse('transferCash'),
-    setCashBalance: async () => refuse('setCashBalance'),
-    listStandingOrders: async () => refuse('listStandingOrders'),
-    createStandingOrder: async () => refuse('createStandingOrder'),
-    updateStandingOrder: async () => refuse('updateStandingOrder'),
-    pauseStandingOrder: async () => refuse('pauseStandingOrder'),
-    resumeStandingOrder: async () => refuse('resumeStandingOrder'),
-    deleteStandingOrder: async () => refuse('deleteStandingOrder'),
-    materializeStandingOrderOccurrence: async () => refuse('materializeStandingOrderOccurrence'),
-    discardAllData: async () => refuse('discardAllData'),
+    // A resolution authors nothing, so it has no write provenance to stamp. The
+    // value is unreachable — every path that would use it goes through `mutate`
+    // — and naming it is more honest than borrowing a real device id.
+    deviceId: 'resolver-backed-read-only',
+    get state() {
+      const document = resolution.documentSnapshot();
+      return document === null
+        ? { status: 'locked' as const, active: null }
+        : { status: 'synced' as const, active: { document } };
+    },
+    // THE WRITE FENCE. Every mutation in the projection set funnels through
+    // here, so one refusal covers all of them and no future write path can be
+    // added that quietly bypasses it.
+    mutate: async () => refuseResolutionWrite('mutate'),
   };
+}
+
+/**
+ * The store's OWN error type, not the engine's: `asMoneyFailure` already maps
+ * it to a typed money failure, so one refusal reads identically whether a
+ * caller catches it raw or receives it through a money outcome.
+ */
+function refuseResolutionWrite(operation: string): never {
+  throw new VaultPortfolioStoreError(
+    'VAULT_OPERATION_UNAVAILABLE',
+    `"${operation}" is not available from a resolver-backed vault portfolio store: a resolution reads an authenticated snapshot and owns no vault write path.`,
+  );
 }

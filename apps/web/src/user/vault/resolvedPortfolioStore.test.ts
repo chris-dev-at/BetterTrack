@@ -94,36 +94,108 @@ describe('the resolver-backed client portfolio store', () => {
     expect(fixture.plainCalls).toEqual(['listPortfolios']);
   });
 
-  it.each([
-    ['listTransactions', (store: PortfolioStore) => store.listTransactions('p')],
-    ['listCashSources', (store: PortfolioStore) => store.listCashSources('p')],
-    ['getCashMovements', (store: PortfolioStore) => store.getCashMovements('p')],
-    ['listStandingOrders', (store: PortfolioStore) => store.listStandingOrders('p')],
-    ['listCustomAssets', (store: PortfolioStore) => store.listCustomAssets()],
-    ['getTaxSettings', (store: PortfolioStore) => store.getTaxSettings()],
-    ['createTransactions', (store: PortfolioStore) => store.createTransactions('p', [])],
-    ['depositCash', (store: PortfolioStore) => store.depositCash('p', {} as never)],
-    ['deleteTransaction', (store: PortfolioStore) => store.deleteTransaction('p', 't')],
-    ['archivePortfolio', (store: PortfolioStore) => store.archivePortfolio('p')],
-  ])(
-    '%s refuses in a typed way instead of answering with an empty result',
-    async (_label, call) => {
-      const fixture = await storeFixture();
+  /**
+   * The #1532 seam, from the outside: the row-level tabs read REAL rows out of
+   * the resolution's authenticated document, through the account store's own
+   * projections rather than a second copy of them.
+   */
+  it('serves the row-level tabs from the same projections the account store uses', async () => {
+    const fixture = await storeFixture();
+    const { store } = fixture.access;
+    const portfolioId = fixture.stub.id;
 
-      // Not `[]`, not `0`, not a server round trip: an unreadable ledger and an
-      // empty one must never look the same on screen.
-      await expect(call(fixture.access.store)).rejects.toMatchObject({
-        name: 'VaultPortfolioStoreError',
-        code: 'VAULT_OPERATION_UNAVAILABLE',
-      });
-      expect(fixture.fetchSpy).not.toHaveBeenCalled();
-      expect(fixture.plainCalls).toEqual([]);
-    },
-  );
+    const [transactions, cashSources, movements, standingOrders, customAssets, tax] =
+      await Promise.all([
+        store.listTransactions(portfolioId),
+        store.listCashSources(portfolioId),
+        store.getCashMovements(portfolioId),
+        store.listStandingOrders(portfolioId),
+        store.listCustomAssets(),
+        store.getTaxSettings(),
+      ]);
+
+    // The TEST VECTOR's three trades — the buy the holdings assertion above
+    // already sees, now as a ledger row the transactions tab can render.
+    expect(transactions.items.map((row) => row.id).sort()).toEqual(
+      [
+        '018f0000-0000-7000-8000-000000000110',
+        '018f0000-0000-7000-8000-000000000111',
+        '018f0000-0000-7000-8000-000000000112',
+      ].sort(),
+    );
+    expect(transactions.items.find((row) => row.id.endsWith('110'))).toMatchObject({
+      side: 'buy',
+      quantity: 10,
+      price: 100,
+    });
+    expect(cashSources.sources.map((source) => source.id)).toContain(CLIENT_MONEY_IDS.cashSource);
+    expect(movements.movements.length).toBeGreaterThan(0);
+    // Empty in the vector, but ANSWERED — the distinction this whole module
+    // exists to keep: an empty list the document actually supports, not a
+    // refusal dressed up as one.
+    expect(standingOrders.orders).toEqual([]);
+    expect(Array.isArray(customAssets.assets)).toBe(true);
+    expect(tax.mode).toBeDefined();
+
+    // Still the fence: every one of those came out of the decrypted document.
+    expect(fixture.fetchSpy).not.toHaveBeenCalled();
+    expect(fixture.plainCalls).toEqual([]);
+  });
+
+  it.each([
+    ['createPortfolio', (store: PortfolioStore) => store.createPortfolio('Second')],
+    [
+      'updatePortfolio',
+      (store: PortfolioStore, id: string) => store.updatePortfolio(id, { name: 'Renamed' }),
+    ],
+    [
+      'createTransactions',
+      (store: PortfolioStore, id: string) =>
+        store.createTransactions(id, [
+          {
+            assetId: CLIENT_MONEY_IDS.eurAsset,
+            side: 'buy',
+            quantity: 1,
+            price: 10,
+            fee: 0,
+            executedAt: '2026-07-25T10:00:00.000Z',
+          },
+        ]),
+    ],
+    [
+      'deleteTransaction',
+      (store: PortfolioStore, id: string) =>
+        store.deleteTransaction(id, '018f0000-0000-7000-8000-000000000110'),
+    ],
+    [
+      'depositCash',
+      (store: PortfolioStore, id: string) =>
+        store.depositCash(id, { amountEur: 10, sourceId: CLIENT_MONEY_IDS.cashSource }),
+    ],
+    [
+      'createCashSource',
+      (store: PortfolioStore, id: string) =>
+        store.createCashSource(id, { name: 'Broker', type: 'bank' }),
+    ],
+    ['updateTaxSettings', (store: PortfolioStore) => store.updateTaxSettings({ mode: 'none' })],
+  ])('%s refuses: a resolution owns no vault write path', async (_label, call) => {
+    const fixture = await storeFixture();
+
+    // Every one of these carries a VALID body against a REAL row, so the
+    // refusal can only have come from the write fence — not from a schema or a
+    // missing-entity check that would still leave a writable build passing.
+    await expect(call(fixture.access.store, fixture.stub.id)).rejects.toMatchObject({
+      name: 'VaultPortfolioStoreError',
+      code: 'VAULT_OPERATION_UNAVAILABLE',
+    });
+    expect(fixture.fetchSpy).not.toHaveBeenCalled();
+    expect(fixture.plainCalls).toEqual([]);
+  });
 
   it('closes every read the moment the vault session is revoked', async () => {
     const fixture = await storeFixture();
     await expect(fixture.access.store.getPortfolio(fixture.stub.id)).resolves.toBeDefined();
+    await expect(fixture.access.store.listTransactions(fixture.stub.id)).resolves.toBeDefined();
     expect(fixture.access.isCurrent()).toBe(true);
 
     fixture.access.dispose();
@@ -131,6 +203,12 @@ describe('the resolver-backed client portfolio store', () => {
     expect(fixture.access.isCurrent()).toBe(false);
     await expect(fixture.access.store.getPortfolio(fixture.stub.id)).rejects.toMatchObject({
       failure: { code: 'VAULT_LOCKED', retryable: true },
+    });
+    // The row reads close on the SAME edge, and typed — never a stale document
+    // and never the empty list a lock would otherwise be indistinguishable from.
+    await expect(fixture.access.store.listTransactions(fixture.stub.id)).rejects.toMatchObject({
+      name: 'VaultPortfolioStoreError',
+      code: 'VAULT_LOCKED',
     });
     await expect(fixture.access.readTotals()).rejects.toMatchObject({
       failure: { code: 'VAULT_LOCKED' },
@@ -149,6 +227,9 @@ describe('the resolver-backed client portfolio store', () => {
     // prove the set it holds is still the current one.
     await expect(fixture.access.store.getPortfolio(fixture.stub.id)).rejects.toMatchObject({
       failure: { retryable: true },
+    });
+    await expect(fixture.access.store.listTransactions(fixture.stub.id)).rejects.toMatchObject({
+      name: 'VaultPortfolioStoreError',
     });
   });
 });

@@ -298,6 +298,55 @@ describe('digest mode (§13.5 V5-P3)', () => {
     expect(transport.sent).toHaveLength(0);
   });
 
+  it('drops claimed items the user switched off between enqueue and the digest run', async () => {
+    const user = await harness.seedUser({ email: 'off@bt.test', username: 'switchedoff' });
+    await enableEmailFor(user.id, 'friend.request', 'watchlist.shared');
+    await digestRepo.setCadences(user.id, {
+      'friend.request': 'daily',
+      'watchlist.shared': 'daily',
+    });
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: user.id, requestId: 'r1' }));
+    await dispatcher.dispatch(watchlistSharedEvent({ userId: user.id }));
+    expect(await emailQueueFor(user.id)).toHaveLength(2);
+
+    // The email channel for friend.request goes off AFTER the rows were queued
+    // (#1590): the matrix is re-resolved at release, so that item is dropped.
+    await db
+      .update(notificationSettings)
+      .set({ config: { 'friend.request': false, 'watchlist.shared': true } })
+      .where(eq(notificationSettings.userId, user.id));
+
+    const service = createDigestService({
+      repo: digestRepo,
+      users: createUserRepository(db),
+      email,
+      routing: createNotificationRepository(db),
+      now: deliverLater,
+      logger: harness.ctx.logger,
+    });
+    expect((await service.deliverDue('daily')).sent).toBe(1);
+    expect(transport.sent).toHaveLength(1);
+    expect(transport.sent[0]!.text).toContain('watchlist');
+    expect(transport.sent[0]!.text).not.toContain('friend request');
+  });
+
+  it('drops a whole claimed group when the user muted notifications meanwhile', async () => {
+    const user = await harness.seedUser({ email: 'muted@bt.test', username: 'muteddigest' });
+    await enableEmailFor(user.id, 'friend.request');
+    await digestRepo.setCadences(user.id, { 'friend.request': 'daily' });
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: user.id, requestId: 'r1' }));
+    expect(await emailQueueFor(user.id)).toHaveLength(1);
+
+    await createUserRepository(db).setNotificationsMuted(user.id, true);
+
+    const res = await digestService.deliverDue('daily');
+    expect(res.groups).toBe(1); // claimed…
+    expect(res.sent).toBe(0); // …and dropped, not delivered
+    expect(transport.sent).toHaveLength(0);
+  });
+
   it('delivers the push digest analogously and stays idempotent', async () => {
     const user = await harness.seedUser({ email: 'p@bt.test', username: 'pushuser' });
     const fcmCalls: { userId: string; message: PushMessage }[] = [];

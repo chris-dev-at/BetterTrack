@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
+import { PortfolioMoveCaptureError } from '../portfolioMoveCapture';
 import { isDriveOnlyVaultMedia, PortfolioVaultMoveWizard } from './PortfolioVaultMoveWizard';
 
 describe('PortfolioVaultMoveWizard', () => {
@@ -86,6 +87,46 @@ describe('PortfolioVaultMoveWizard', () => {
       vaultId: '018f0000-0000-7000-8000-000000000001',
       stepUp: { password: 'account-secret' },
     });
+  });
+
+  /**
+   * #1530: the one refusal a retry can never clear. Before this, the ceremony
+   * answered it with the generic "not moved, try again" line and left the
+   * commit button armed.
+   */
+  it('names the blocking move and shuts the commit on VAULT_MOVE_CAPTURE_IN_FLIGHT', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn(async () => {
+      throw new PortfolioMoveCaptureError('VAULT_MOVE_CAPTURE_IN_FLIGHT', 'blocked', false, {
+        blockingPortfolios: ['Holiday fund'],
+      });
+    });
+    render(
+      <MemoryRouter>
+        <PortfolioVaultMoveWizard
+          mode="in"
+          onCancel={() => {}}
+          onSubmit={onSubmit}
+          portfolioName="Daily"
+          preconditions={[]}
+          vaults={[{ id: '018f0000-0000-7000-8000-000000000001', name: 'Private' }]}
+        />
+      </MemoryRouter>,
+    );
+
+    await user.selectOptions(
+      screen.getByLabelText('Target vault'),
+      '018f0000-0000-7000-8000-000000000001',
+    );
+    await user.type(screen.getByLabelText('Account confirmation'), 'account-secret');
+    await user.click(screen.getByRole('button', { name: 'Move into vault' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Holiday fund');
+    expect(alert).toHaveTextContent(/trying again will not help/i);
+    // NOT the retryable copy — the two must never both be on screen.
+    expect(screen.queryByText(/^The portfolio was not moved\. Its server data/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Move into vault' })).toBeDisabled();
   });
 
   it('names the retained staging copy and its TTL only for a Drive-only target (#1491)', async () => {

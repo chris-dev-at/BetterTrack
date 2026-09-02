@@ -997,6 +997,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     webPush: webPushChannel,
     // Quiet hours (V5-P3): defer a digest whose delivery lands inside the window.
     quietHours: notificationDigestRepo,
+    // Release-time matrix re-check (#1590): a channel switched off after the
+    // enqueue drops the queued item instead of delivering it.
+    routing: notificationRepo,
     logger,
   });
 

@@ -340,6 +340,16 @@ describe('VaultManager', () => {
       screen.getByText(/Rotating the recovery words isn’t available yet/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/Starting fresh isn’t available yet/i)).toBeInTheDocument();
+
+    // "Change storage" joins them (#1520). It used to link to
+    // `/control/connections?vault=<id>`, a panel that never read the param and
+    // carries no per-vault media control — a dead end by the same definition
+    // the two rows above avoid.
+    expect(screen.getByText('Change storage')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Change storage' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Changing where a vault is stored isn’t available yet/i),
+    ).toBeInTheDocument();
   });
 
   it('presents start fresh as step-up-gated destruction', async () => {
