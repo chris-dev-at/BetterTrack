@@ -42,7 +42,7 @@ export function createPasswordResetTokenRepository(db: Database) {
      * request. The branch already held the lock across an extra INSERT before
      * this change, and an INSERT on a connection the request already owns is
      * bounded where a pool acquisition is not — but the direction is worth a
-     * dedicated look; see the follow-up issue.
+     * dedicated look, which #1645 carries.
      */
     async issueOrEqualize(
       input: CreatePasswordResetTokenInput | null,

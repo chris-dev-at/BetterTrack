@@ -242,7 +242,8 @@ export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
  * inside the window leaves the streak to expire on its own, with no user
  * action, and a streak can no longer be assembled out of blips months apart.
  *
- * Two things this window does NOT do, named so neither reads as solved:
+ * Two things this window does NOT do, named so neither reads as solved (#1646
+ * carries both):
  *
  * - It bounds only the MAXIMUM span of a streak, never a minimum. The retry
  *   ladder is well under a minute, so five events delivered during one
