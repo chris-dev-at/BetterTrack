@@ -6,8 +6,14 @@
  * personal API key (`btk_…`), OAuth token (`bto_…`/`btr_…`/`bts_…`),
  * `Authorization` header or raw `Cookie` ever reaches the wire (the "zero PII"
  * acceptance bar). It walks the event depth-first, redacting by KEY (headers,
- * cookies, obvious secret field names) and by VALUE (emails + token-shaped
- * strings anywhere, including inside exception messages and breadcrumbs).
+ * cookies, obvious secret field names) and by VALUE (emails — plain or
+ * URL-encoded — token-shaped strings and credential-bearing query parameters
+ * anywhere, including inside exception messages and breadcrumbs).
+ *
+ * The value rules carry the whole bar for the §13.5 V5-P2 problem capture,
+ * whose provider path stores a thrown fetch/axios message verbatim: that
+ * message routinely embeds the full request URL, so `?apikey=…` and a
+ * percent-encoded address in a query string must fall to the same pass.
  *
  * It is deliberately dependency-free and Sentry-type-free so it can be unit
  * tested in isolation against plain objects (the colocated `scrubber.test.ts`).
@@ -58,8 +64,19 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
 
 const normalizeKey = (key: string): string => key.toLowerCase().replace(/[-_\s]/g, '');
 
-// Emails anywhere in a string. Intentionally broad — over-redaction is safe here.
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// Emails anywhere in a string, including the URL-encoded form (`%40`) a provider
+// error message carries when the address travelled in a query string.
+// Intentionally broad — over-redaction is safe here.
+const EMAIL_RE = /[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+// A query-string parameter whose NAME says it carries a credential:
+// `?apikey=…`, `&access_token=…`, `?client_secret=…`. Key-based redaction only
+// ever saw object keys, so a secret that travelled inside a URL — which is
+// exactly what a fetch/axios provider error embeds in its message — survived
+// every other rule (an `apikey=` value is not `bt*_`-shaped and not an email).
+// The name is matched loosely so `x-api-key`, `apiKey` and `sig` all land.
+const QUERY_SECRET_RE =
+  /([?&][^?&=\s]*(?:key|token|secret|password|passwd|pwd|auth|credential|signature|sig)[^?&=\s]*=)([^&\s"'<>]*)/gi;
 
 // BetterTrack token shapes: personal API keys and every OAuth token/secret/id
 // prefix (§6.13). base64url body, so `[A-Za-z0-9._-]`.
@@ -68,11 +85,16 @@ const BT_TOKEN_RE = /\b(?:btk|bto|btr|bts|btc)_[A-Za-z0-9._-]+/g;
 // `Authorization: Bearer <token>` / `Basic <creds>` embedded in a free string.
 const BEARER_RE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
 
-/** Redact emails and token-shaped substrings from a free-text string. */
+/**
+ * Redact emails, token-shaped substrings and credential-bearing query
+ * parameters from a free-text string. The parameter NAME is kept so the message
+ * still reads ("…?apikey=[redacted-token]") — only its value goes.
+ */
 export function redactString(value: string): string {
   return value
     .replace(BEARER_RE, (_m, scheme: string) => `${scheme} ${REDACTED_TOKEN}`)
     .replace(BT_TOKEN_RE, REDACTED_TOKEN)
+    .replace(QUERY_SECRET_RE, (_m, name: string) => `${name}${REDACTED_TOKEN}`)
     .replace(EMAIL_RE, REDACTED_EMAIL);
 }
 

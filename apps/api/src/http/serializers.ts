@@ -379,5 +379,13 @@ export function toProblem(row: ProblemRow): Problem {
     lastSeenAt: toIsoRequired(row.lastSeenAt),
     resolvedAt: toIso(row.resolvedAt),
     resolvedBy: row.resolvedBy,
+    // A regression, derived rather than stored (§13.5 V5-P2 is migration-free):
+    // the capture reopens a resolved row on recurrence and leaves `resolved_at`
+    // standing, so an open row that still carries an EARLIER resolution is one
+    // an admin cleared and that came back. A manual reopen nulls it.
+    regressed:
+      row.status === 'open' &&
+      row.resolvedAt !== null &&
+      row.lastSeenAt.getTime() > row.resolvedAt.getTime(),
   };
 }

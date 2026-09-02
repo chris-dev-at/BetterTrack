@@ -18,8 +18,12 @@ import { redactString, scrubEvent, type ScrubbableValue } from './scrubber';
  * {@link redactString} scrubber first, so no email/token/cookie ever lands in a
  * row. Occurrences fold by fingerprint (kind + normalized title + message, both
  * taken AFTER scrubbing so the fold key matches what is stored and shown), and
- * writes are **rate-capped** to a fixed budget per window so a storm of
- * identical errors can never unbounded-write to the DB.
+ * writes are **rate-capped** so a storm of identical errors can never
+ * unbounded-write to the DB. The cap is charged per KIND and only for a
+ * fingerprint's first write in a window, so a flapping provider cannot starve a
+ * genuinely new unhandled error; throttled repeats defer their occurrences into
+ * the next write rather than losing them, and an actual drop is logged and
+ * counted ({@link ProblemService.droppedCaptures}), never silent.
  *
  * The same object exposes the admin read/resolve side (list/get/resolve/reopen,
  * audit-logged) behind `/admin/problems`.
@@ -37,6 +41,18 @@ export interface ListProblemsParams {
   kind?: ProblemRow['kind'];
   status?: ProblemRow['status'];
   limit: number;
+  /** Rows to skip in `lastSeenAt desc` order. Defaults to 0. */
+  offset?: number;
+}
+
+export interface ListProblemsResult {
+  problems: ProblemRow[];
+  /** Open problems regardless of the filter — the admin nav badge source. */
+  openCount: number;
+  /** Rows matching the filter, ignoring limit/offset. */
+  total: number;
+  /** Whether a further page exists past this one. */
+  hasMore: boolean;
 }
 
 export interface ProblemService {
@@ -48,7 +64,13 @@ export interface ProblemService {
   captureProviderFailure(err: unknown, meta: { providerId?: string }): void;
   /** Await any in-flight capture writes (tests / graceful shutdown). */
   flush(): Promise<void>;
-  list(params: ListProblemsParams): Promise<{ problems: ProblemRow[]; openCount: number }>;
+  /**
+   * Captures the rate cap refused to write, since boot. A drop is never silent:
+   * it lands here AND in the log, so "the page shows nothing" can always be told
+   * apart from "nothing happened".
+   */
+  droppedCaptures(): number;
+  list(params: ListProblemsParams): Promise<ListProblemsResult>;
   get(id: string): Promise<ProblemRow | null>;
   /** Mark a problem resolved (audit-logged). Null when the id is unknown. */
   resolve(id: string, actor: ProblemAdminActor): Promise<ProblemRow | null>;
@@ -63,14 +85,42 @@ export interface ProblemServiceDeps {
   logger?: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
-  /** Max DB capture-writes per {@link windowMs}. Defaults to 60. */
+  /**
+   * Max DISTINCT problems written per kind per {@link windowMs}. Defaults to 60.
+   * Per kind, so a flapping provider spends the provider budget and nothing else.
+   */
   maxWritesPerWindow?: number;
   /** Rate-cap window length in ms. Defaults to 60_000 (a minute). */
   windowMs?: number;
+  /**
+   * Extra writes one fingerprint may spend per window on occurrence bumps.
+   * Defaults to 1 (so a storm of one error costs 2 writes a window, not N).
+   */
+  maxRepeatWritesPerFingerprint?: number;
 }
 
 const DEFAULT_MAX_WRITES_PER_WINDOW = 60;
 const DEFAULT_WINDOW_MS = 60_000;
+const DEFAULT_MAX_REPEAT_WRITES = 1;
+
+/**
+ * Ceiling on fingerprints tracked at once. Only entries carrying deferred
+ * occurrences survive a window roll, so this is reached solely by a
+ * high-cardinality storm — and then it is a bound, not a leak.
+ */
+const MAX_TRACKED_FINGERPRINTS = 5_000;
+
+/** Per-fingerprint budget state inside the current window. */
+interface FingerprintState {
+  /** Writes this fingerprint has issued in the current window. */
+  writes: number;
+  /**
+   * Occurrences observed while throttled. They are NOT lost: the next allowed
+   * write for this fingerprint folds them in, so `occurrence_count` still
+   * converges on the truth (a window late at worst).
+   */
+  pending: number;
+}
 
 /**
  * Collapse a message so trivial variants (ids, whitespace) fold together. Fed
@@ -105,24 +155,49 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   const now = deps.now ?? Date.now;
   const maxWrites = deps.maxWritesPerWindow ?? DEFAULT_MAX_WRITES_PER_WINDOW;
   const windowMs = deps.windowMs ?? DEFAULT_WINDOW_MS;
+  const maxRepeatWrites = deps.maxRepeatWritesPerFingerprint ?? DEFAULT_MAX_REPEAT_WRITES;
 
-  // Fixed-window rate cap across ALL fingerprints: the storm guard. Once the
-  // budget for the current window is spent, further captures are dropped (never
-  // written) until the window rolls over — so N identical errors cost at most
-  // `maxWrites` DB writes, not N.
+  // Fixed-window rate cap — the storm guard, charged PER KIND and only for a
+  // fingerprint's first write in the window. A repeat of something already
+  // known is not a new problem competing for the budget, and one flapping
+  // source must never spend the headroom a genuinely new error needs.
   let windowStart = now();
-  let writesInWindow = 0;
+  const writesByKind = new Map<ProblemRow['kind'], number>();
+  const tracked = new Map<string, FingerprintState>();
+  let droppedTotal = 0;
+  let droppedInWindow = 0;
+  let loggedDropInWindow = false;
   const inflight = new Set<Promise<unknown>>();
 
-  const allowWrite = (): boolean => {
-    const t = now();
-    if (t - windowStart >= windowMs) {
-      windowStart = t;
-      writesInWindow = 0;
+  const rollWindow = (t: number): void => {
+    if (t - windowStart < windowMs) return;
+    windowStart = t;
+    writesByKind.clear();
+    for (const [fingerprint, state] of tracked) {
+      // Keep only what still owes occurrences; everything else is re-learnt on
+      // its next sighting, which is what bounds the map over a long uptime.
+      if (state.pending === 0) tracked.delete(fingerprint);
+      else state.writes = 0;
     }
-    if (writesInWindow >= maxWrites) return false;
-    writesInWindow += 1;
-    return true;
+    if (droppedInWindow > 0) {
+      logger?.warn(
+        { dropped: droppedInWindow, droppedTotal },
+        'problem captures dropped by the rate cap in the closed window',
+      );
+      droppedInWindow = 0;
+    }
+    loggedDropInWindow = false;
+  };
+
+  const drop = (kind: ProblemRow['kind'], reason: 'kind-budget' | 'tracking-capacity'): void => {
+    droppedTotal += 1;
+    droppedInWindow += 1;
+    // One line per window, not one per drop: a storm must stay visible without
+    // becoming the next flood. The rest is carried by the window summary above
+    // and by `droppedCaptures()`.
+    if (loggedDropInWindow) return;
+    loggedDropInWindow = true;
+    logger?.warn({ kind, reason, droppedTotal }, 'problem capture dropped by the rate cap');
   };
 
   const capture = (
@@ -131,14 +206,40 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     rawMessage: string,
     context: ProblemCaptureContext | null,
   ): void => {
-    if (!allowWrite()) return;
     const title = redactString(rawTitle);
     const message = redactString(rawMessage);
-    const scrubbedContext = context ? (scrubEvent(context) as unknown) : null;
     // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
     // token bodies) that the stored row does not, so fingerprinting them would
     // split one visible problem into a row per user.
     const fingerprint = fingerprintOf(kind, title, message);
+
+    rollWindow(now());
+    const state = tracked.get(fingerprint);
+    let occurrences = 1;
+    if (state === undefined) {
+      const spent = writesByKind.get(kind) ?? 0;
+      if (spent >= maxWrites) {
+        drop(kind, 'kind-budget');
+        return;
+      }
+      if (tracked.size >= MAX_TRACKED_FINGERPRINTS) {
+        drop(kind, 'tracking-capacity');
+        return;
+      }
+      writesByKind.set(kind, spent + 1);
+      tracked.set(fingerprint, { writes: 1, pending: 0 });
+    } else if (state.writes <= maxRepeatWrites) {
+      state.writes += 1;
+      occurrences = 1 + state.pending;
+      state.pending = 0;
+    } else {
+      // Throttled, not dropped: the occurrence rides along with this
+      // fingerprint's next write, so no count is lost.
+      state.pending += 1;
+      return;
+    }
+
+    const scrubbedContext = context ? (scrubEvent(context) as unknown) : null;
 
     const write = repo
       .upsert({
@@ -148,7 +249,7 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
         message,
         context: scrubbedContext,
         seenAt: new Date(now()),
-        occurrences: 1,
+        occurrences,
       })
       .catch((writeErr: unknown) => {
         logger?.error({ err: writeErr, kind }, 'failed to persist captured problem');
@@ -201,12 +302,19 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       await Promise.allSettled([...inflight]);
     },
 
+    droppedCaptures() {
+      return droppedTotal;
+    },
+
     async list(params) {
-      const [problems, openCount] = await Promise.all([
-        repo.list({ kind: params.kind, status: params.status, limit: params.limit }),
+      const offset = params.offset ?? 0;
+      const filter = { kind: params.kind, status: params.status };
+      const [problems, total, openCount] = await Promise.all([
+        repo.list({ ...filter, limit: params.limit, offset }),
+        repo.countMatching(filter),
         repo.countByStatus('open'),
       ]);
-      return { problems, openCount };
+      return { problems, openCount, total, hasMore: offset + problems.length < total };
     },
 
     get(id) {
