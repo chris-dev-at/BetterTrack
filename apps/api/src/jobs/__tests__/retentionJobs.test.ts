@@ -6,6 +6,8 @@ import type { Logger } from '../../logger';
 import * as schema from '../../data/schema';
 import { createAuditRepository } from '../../data/repositories/auditRepository';
 import { createEmailLogRepository } from '../../data/repositories/emailLogRepository';
+import { createProblemRepository } from '../../data/repositories/problemRepository';
+import { createUsageAnalyticsRepository } from '../../data/repositories/usageAnalyticsRepository';
 import { createUserRepository, type UserRepository } from '../../data/repositories/userRepository';
 import {
   pinQuickAuthMarkerKey,
@@ -36,6 +38,8 @@ beforeEach(async () => {
 const noUsers: Pick<UserRepository, 'listByIds'> = { listByIds: async () => [] };
 const noVaultStaging = { cleanupExpiredEnableStaging: async () => 0 };
 const noVaultCandidates = { cleanupExpiredServerCandidates: async () => 0 };
+const noProblems = { deleteOlderThan: async () => 0 };
+const noUsageEvents = { deleteEventsOlderThan: async () => 0 };
 
 function ctx(jobLogger: Logger = logger): JobContext {
   return {
@@ -54,6 +58,10 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
     });
@@ -104,6 +112,10 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
       batchSize: 1,
@@ -138,6 +150,10 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 180,
       now: () => NOW,
@@ -158,6 +174,10 @@ describe('data.retentionCleanup', () => {
       vaultStaging: { cleanupExpiredEnableStaging },
       vaultCandidates: noVaultCandidates,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       batchSize: 2,
@@ -174,9 +194,11 @@ describe('data.retentionCleanup', () => {
         emailLogPruned: 0,
         abandonedVaultStagesExamined: 3,
         expiredVaultCandidatesDisposed: 0,
+        problemsPruned: 0,
+        usageEventsPruned: 0,
         deferredToNextRun: false,
       },
-      'expired audit and email-log rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
+      'expired audit, email-log, problem and usage-event rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
     );
   });
 
@@ -198,6 +220,10 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: { cleanupExpiredServerCandidates },
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       batchSize: 2,
@@ -217,6 +243,90 @@ describe('data.retentionCleanup', () => {
     );
   });
 
+  /**
+   * §13.5 V5-P2 arc (d): the capture's rate cap bounds how fast `problems`
+   * grows, never how big it gets, and raw `usage_events` — a per-user viewing
+   * history — had no time-based sweep at all. Both now age out on the existing
+   * daily cron, and only the rows past the window may go.
+   */
+  it('prunes problems past their window and leaves the recent ones', async () => {
+    const repo = createProblemRepository(harness.db);
+    const seen = (daysAgo: number, fingerprint: string) => ({
+      fingerprint,
+      kind: 'error' as const,
+      title: 'Error',
+      message: fingerprint,
+      context: null,
+      seenAt: new Date(NOW.getTime() - daysAgo * DAY_MS),
+      occurrences: 1,
+    });
+    await repo.upsert(seen(91, 'stale-open'));
+    await repo.upsert(seen(400, 'ancient'));
+    await repo.upsert(seen(89, 'recent'));
+
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      problems: repo,
+      usageEvents: noUsageEvents,
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      problemRetentionDays: 90,
+      usageEventRetentionDays: 0,
+      batchSize: 1,
+      now: () => NOW,
+    });
+
+    const summary = await job.handler({} as never, ctx());
+
+    expect((await harness.db.select().from(schema.problems)).map((row) => row.fingerprint)).toEqual(
+      ['recent'],
+    );
+    expect(summary).toMatchObject({ problemsPruned: 2 });
+  });
+
+  it('prunes raw usage events past their window and keeps the rollup', async () => {
+    const user = await harness.seedUser({ email: 'usage@bt.test', username: 'usage_user' });
+    const day = (daysAgo: number) =>
+      new Date(NOW.getTime() - daysAgo * DAY_MS).toISOString().slice(0, 10);
+    await harness.db.insert(schema.usageEvents).values([
+      { userId: user.id, feature: 'assets.view', assetId: 'AAPL', day: day(181), hits: 3 },
+      { userId: user.id, feature: 'assets.view', assetId: 'MSFT', day: day(400), hits: 1 },
+      { userId: user.id, feature: 'assets.view', assetId: 'SAP', day: day(179), hits: 2 },
+    ]);
+    await harness.db
+      .insert(schema.usageDaily)
+      .values([{ day: day(400), feature: '*', events: 1, activeUsers: 1 }]);
+
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
+      vaultCandidates: noVaultCandidates,
+      problems: noProblems,
+      usageEvents: createUsageAnalyticsRepository(harness.db, harness.db),
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 180,
+      batchSize: 1,
+      now: () => NOW,
+    });
+
+    const summary = await job.handler({} as never, ctx());
+
+    expect((await harness.db.select().from(schema.usageEvents)).map((row) => row.assetId)).toEqual([
+      'SAP',
+    ]);
+    // The aggregate rollup the analytics page reads is deliberately untouched.
+    expect(await harness.db.select().from(schema.usageDaily)).toHaveLength(1);
+    expect(summary).toMatchObject({ usageEventsPruned: 2 });
+  });
+
   it('stays silent when no sweep found anything to dispose', async () => {
     const info = vi.fn();
     const job = createDataRetentionCleanupJob({
@@ -225,6 +335,10 @@ describe('data.retentionCleanup', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       users: noUsers,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       now: () => NOW,
@@ -266,6 +380,10 @@ describe('data.retentionCleanup — legacy remembered-device bindings', () => {
       vaultStaging: noVaultStaging,
       vaultCandidates: noVaultCandidates,
       users,
+      problems: noProblems,
+      usageEvents: noUsageEvents,
+      problemRetentionDays: 0,
+      usageEventRetentionDays: 0,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,
       now: () => NOW,

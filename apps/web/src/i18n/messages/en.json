@@ -4940,6 +4940,9 @@
       "actionError": "Could not update the problem.",
       "empty": "No problems — nothing to see here.",
       "openCount": "{{count}} open",
+      "shownCount": "{{shown}} of {{total}} shown",
+      "loadMore": "Load more",
+      "regressed": "Came back",
       "filters": {
         "kind": "Kind",
         "status": "Status",

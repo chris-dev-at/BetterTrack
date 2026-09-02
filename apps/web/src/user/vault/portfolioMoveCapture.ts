@@ -61,6 +61,7 @@ import {
   listAllCashMovements,
   listAllTransactions,
   runKey,
+  type FrozenTaxFacts,
 } from './ui/migration';
 
 /**
@@ -93,6 +94,9 @@ import {
  *    paths: move-in has only the rounded public DTO (not the exact decimal
  *    snapshot E4's restore CAS needs) and move-out already fails closed in
  *    `portfolioRestoreDocument` without a lossless resolver.
+ *  - A portfolio carrying a legacy `country_specific` row with NO frozen
+ *    country is refused with its own typed code — see
+ *    `refuseLegacyNullCountryTaxRows` for the shape and its migration path.
  */
 
 export const PORTFOLIO_MOVE_CAPTURE_ERROR_CODES = [
@@ -104,6 +108,13 @@ export const PORTFOLIO_MOVE_CAPTURE_ERROR_CODES = [
   'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
   /** Owner-manual assets need the exact-snapshot seam this build lacks. */
   'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+  /**
+   * Legacy V3-P4 rows freeze `country_specific` with NO country; the client
+   * vault contract has no representation for them (see
+   * `refuseLegacyNullCountryTaxRows`). Needs the backfill migration, not a
+   * retry.
+   */
+  'VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED',
   /** Concurrent writer / stale roster / lifecycle mismatch; nothing committed. */
   'VAULT_MOVE_STATE_CONFLICT',
   /** A written document did not read back byte-identical. */
@@ -237,6 +248,78 @@ function requireServerOnlyMedia(vault: VaultConfig): void {
   }
 }
 
+/** Enough named rows for the owner to find them; the rest are counted. */
+const LEGACY_TAX_ROW_SAMPLE = 5;
+
+/**
+ * The legacy V3-P4 frozen shape: `taxMode = 'country_specific'` with
+ * `taxCountry = null`. `drizzle/0021_tax_engine.sql` added the column without a
+ * backfill, so rows settled before it carry the mode and no country.
+ *
+ * Server-side that shape is NOT ambiguous: `frozenTaxCountryEngine(null)`
+ * resolves it to AT (the `rowEngineCountry` legacy rule), and the #1512 shared
+ * row-engine classifier and its committed vectors pin that reading. The CLIENT
+ * vault contract has no such fallback — `assertProvenTaxFacts`
+ * (`ui/migration.ts`), the strict restore contract, the server's rehydration
+ * validator and the snapshot gate (`engine/session.ts validateFrozenTaxShape`)
+ * all require a country whenever the mode is `country_specific`, because a
+ * vault document is the only remaining copy and a mode without its country
+ * cannot be settled twice the same way by construction.
+ *
+ * MIGRATION PATH (the recommended fix, deliberately NOT done here): a one-off
+ * backfill migration
+ * `UPDATE transactions/dividends SET tax_country = 'AT' WHERE tax_mode = 'country_specific' AND tax_country IS NULL`
+ * — it writes down exactly what the engine already reads, so there is one
+ * source of truth and no capture-time rewriting of frozen facts. Rewriting the
+ * fact on the way into the vault was rejected: capture must carry what the
+ * server holds, byte for byte, or move-out cannot restore it. Until that
+ * migration ships, the honest answer is this typed refusal — named rows, zero
+ * writes — rather than the untyped `Error` the row-schema parse used to raise.
+ * Recorded in `docs/paranoid-design.md` §9.
+ */
+function isLegacyNullCountryTaxRow(facts: {
+  taxMode: string | null;
+  taxCountry: string | null;
+}): boolean {
+  return facts.taxMode === 'country_specific' && facts.taxCountry === null;
+}
+
+/**
+ * Scan the whole capture set BEFORE a single row is appended (and therefore
+ * long before any ciphertext write), so the refusal can name every offending
+ * row instead of dying on whichever one the loop reached first.
+ */
+function refuseLegacyNullCountryTaxRows(
+  transactions: readonly { id: string; side: string }[],
+  dividends: readonly { id: string; taxMode: string | null; taxCountry: string | null }[],
+  recorded: Map<string, FrozenTaxFacts>,
+): void {
+  const offenders: string[] = [];
+  for (const transaction of transactions) {
+    if (transaction.side !== 'sell') continue;
+    const facts = recorded.get(transaction.id);
+    if (facts !== undefined && isLegacyNullCountryTaxRow(facts)) {
+      offenders.push(`sell ${transaction.id}`);
+    }
+  }
+  for (const dividend of dividends) {
+    const facts = recorded.get(dividend.id);
+    if (
+      isLegacyNullCountryTaxRow(dividend) ||
+      (facts !== undefined && isLegacyNullCountryTaxRow(facts))
+    ) {
+      offenders.push(`dividend ${dividend.id}`);
+    }
+  }
+  if (offenders.length === 0) return;
+  const named = offenders.slice(0, LEGACY_TAX_ROW_SAMPLE).join(', ');
+  const rest = offenders.length - LEGACY_TAX_ROW_SAMPLE;
+  throw new PortfolioMoveCaptureError(
+    'VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED',
+    `This portfolio has ${offenders.length} legacy row(s) that record a country-specific tax mode with no country and cannot be captured: ${named}${rest > 0 ? ` and ${rest} more` : ''}.`,
+  );
+}
+
 interface PortfolioCaptureRows {
   entities: VaultPortfolioDoc['entities'];
   /** Every referenced asset, market-catalog included, for the common-doc fold. */
@@ -329,6 +412,7 @@ async function buildPortfolioCaptureRows(input: {
     taxYears.years.map((year) => api.getTaxYearReport(portfolio.id, year.year, signal)),
   );
   const recordedTax = frozenTaxFacts(reports);
+  refuseLegacyNullCountryTaxRows(transactions, dividendList.dividends, recordedTax);
 
   for (const transaction of transactions) {
     refuseImportSource(transaction.source, `transaction ${transaction.id}`);

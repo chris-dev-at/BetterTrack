@@ -22,8 +22,38 @@ describe('redactString', () => {
     expect(redactString('Basic dXNlcjpwYXNz')).toBe(`Basic ${REDACTED_TOKEN}`);
   });
 
+  /**
+   * The provider-failure path stores a thrown fetch/axios message verbatim, and
+   * such a message carries the whole request URL. Neither rule above sees it:
+   * an `apikey=` value is not `bt*_`-shaped, and `%40` is not an `@`.
+   */
+  it('redacts query-string credentials and percent-encoded emails in a provider URL', () => {
+    expect(
+      redactString(
+        'Request failed: https://api.provider.com/v8/finance?apikey=AB12CD34EF&user=alice%40example.com',
+      ),
+    ).toBe(
+      `Request failed: https://api.provider.com/v8/finance?apikey=${REDACTED_TOKEN}&user=${REDACTED_EMAIL}`,
+    );
+  });
+
+  it('redacts the other credential-bearing parameter names, value only', () => {
+    expect(redactString('GET /x?access_token=abc123&page=2')).toBe(
+      `GET /x?access_token=${REDACTED_TOKEN}&page=2`,
+    );
+    expect(redactString('?client_secret=s3cr3t')).toBe(`?client_secret=${REDACTED_TOKEN}`);
+    expect(redactString('?password=hunter2&signature=deadbeef')).toBe(
+      `?password=${REDACTED_TOKEN}&signature=${REDACTED_TOKEN}`,
+    );
+  });
+
   it('leaves clean text untouched', () => {
     expect(redactString('just a normal error message')).toBe('just a normal error message');
+    // A non-credential parameter keeps its value — the page still has to be
+    // readable, so over-redaction stops at names that mean "secret".
+    expect(redactString('GET /assets?symbol=AAPL&range=1y')).toBe(
+      'GET /assets?symbol=AAPL&range=1y',
+    );
   });
 });
 
