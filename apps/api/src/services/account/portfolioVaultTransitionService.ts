@@ -94,7 +94,8 @@ export type PortfolioVaultTransitionFailure =
   | 'RESTORE_INVALID'
   | 'RESTORE_SOLVENCY'
   | 'RESTORE_PROVENANCE'
-  | 'POSSESSION_PROOF_INVALID';
+  | 'POSSESSION_PROOF_INVALID'
+  | 'CAPTURE_UNSERVABLE';
 
 export class PortfolioVaultTransitionError extends Error {
   constructor(
@@ -156,6 +157,10 @@ export const PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS = {
   RESTORE_INVALID: {
     status: 400,
     code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.restoreInvalid,
+  },
+  CAPTURE_UNSERVABLE: {
+    status: 409,
+    code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureUnservable,
   },
   RESTORE_SOLVENCY: {
     status: 400,
@@ -457,12 +462,21 @@ export function createPortfolioVaultTransitionService(
       }
       // The strict (no `.catch`) contract: a value the server cannot serve
       // exactly fails the response instead of degrading — the capture must
-      // refuse what it cannot prove lossless.
-      return portfolioVaultImportCaptureResponseSchema.parse({
+      // refuse what it cannot prove lossless. TYPED (review F2): a bare
+      // ZodError here would be mapped by the request validator to a client
+      // 400 "Invalid request." — but nothing about the REQUEST is invalid.
+      const response = portfolioVaultImportCaptureResponseSchema.safeParse({
         batches: read.batches,
         rows: read.rows,
         nextCursor: read.nextCursor,
       });
+      if (!response.success) {
+        fail(
+          'CAPTURE_UNSERVABLE',
+          'A stored import row cannot be served losslessly, so the portfolio’s import history cannot be captured.',
+        );
+      }
+      return response.data;
     },
 
     async lifecycle(userId, portfolioId) {

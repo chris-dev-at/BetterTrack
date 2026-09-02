@@ -3974,7 +3974,7 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
     const beyond = await h.ctx.portfolioVaultTransitions.captureImportBatches(
       user.id,
       TEST_VECTOR.targetPortfolioId,
-      { cursor: `${RICH_BATCH_ID}:2147483647:${id(9_999)}` },
+      { cursor: `${RICH_BATCH_ID}:999999999:${id(9_999)}` },
     );
     expect(beyond.rows).toEqual([]);
     expect(beyond.nextCursor).toBeNull();
@@ -3985,6 +3985,46 @@ describe('portfolio vault import-batch capture read (#1529 — lifting the ruled
         { cursor: 'not-a-cursor' },
       ),
     ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
+    // A row index past int4 is refused as a bad cursor, never cast into a 500 (review F3).
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        { cursor: `${RICH_BATCH_ID}:9999999999:${id(9_999)}` },
+      ),
+    ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
+
+  });
+
+  it('refuses a stored row the strict contract cannot serve losslessly with a TYPED 409, never a client 400 (review F2)', async () => {
+    await seedRichBatch();
+    // jsonb happily holds six candidates; the contract allows five. The read
+    // must answer with its own typed refusal — a bare ZodError would have been
+    // mapped to VALIDATION_ERROR "Invalid request." by the request validator.
+    await h.db
+      .update(importRows)
+      .set({
+        candidates: Array.from({ length: 6 }, (_, index) => ({
+          id: id(70 + index),
+          symbol: `C${index}`,
+          name: `Candidate ${index}`,
+          currency: 'EUR',
+          exchange: null,
+          type: 'stock' as const,
+        })),
+      })
+      .where(eq(importRows.id, RICH_ROW_IDS[1]));
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'CAPTURE_UNSERVABLE' });
+    expect(PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS.CAPTURE_UNSERVABLE).toEqual({
+      status: 409,
+      code: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
+    });
   });
 
   it('is owner-scoped, portfolio-scoped, and refuses a vaulted portfolio (its rows are purged)', async () => {

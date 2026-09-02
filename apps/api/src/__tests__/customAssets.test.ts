@@ -775,6 +775,46 @@ describe('GET /api/v1/custom-assets/vault-snapshots (#1529 lossless manual-asset
     expect(JSON.stringify(res.body)).not.toContain('FOREIGN');
   });
 
+  it('answers a stored row the row contract cannot serve exactly with a TYPED 409, never a client 400 (review F2)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const id = randomUUID();
+    // `char(3)` accepts it, the vault currency contract does not.
+    await harness.db.insert(assets).values({
+      id,
+      ownerId: user.id,
+      providerId: 'manual',
+      providerRef: id,
+      type: 'custom',
+      symbol: 'BADCCY',
+      name: 'TEST VECTOR unservable currency',
+      currency: 'eur',
+      exchange: null,
+      meta: null,
+    });
+    const res = await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: id });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error.code).toBe('CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE');
+  });
+
+  it('refuses a read whose value points exceed the per-response cap, typed (size, not security)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const assetId = await seedManualAsset(user.id, 'BIG', null);
+    const start = Date.UTC(1900, 0, 1);
+    const rows = Array.from({ length: 20_001 }, (_, index) => ({
+      assetId,
+      date: new Date(start + index * 86_400_000).toISOString().slice(0, 10),
+      close: '1',
+    }));
+    for (let offset = 0; offset < rows.length; offset += 2_000) {
+      await harness.db.insert(priceHistory).values(rows.slice(offset, offset + 2_000));
+    }
+    const res = await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: assetId });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error.code).toBe('CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE');
+  });
+
   it('is a plain read: the id list is de-duplicated and order-independent', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

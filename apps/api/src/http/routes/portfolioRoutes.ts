@@ -225,11 +225,13 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
   );
 
   // #1529: the lossless import-capture read — a PLAIN portfolio's historical
-  // import batches + staging rows in vault-document row shape, paged. It is
-  // portfolio CONTENT (bearer: the module's ordinary portfolio:read policy,
-  // like `/imports/:batchId`), NOT a transition carve-out: a vaulted
-  // portfolio is refused at the enforcement boundary, and the service refuses
-  // it again. No-store like every capture-protocol read.
+  // import batches + staging rows in vault-document row shape, paged.
+  // SESSION-ONLY by the vault-namespace fence (`bearerAuth.ts`: every
+  // `/portfolios/{id}/vault/*` path outside the account-security allowlist
+  // is closed to bearer keys); bearer admission is deferred — raw staging
+  // rows and memos must not reach third-party keys. NOT a transition
+  // carve-out: a vaulted portfolio is refused at the enforcement boundary,
+  // and the service refuses it again. No-store like every capture-protocol read.
   router.get(
     '/:portfolioId/vault/import-batches',
     noStore,

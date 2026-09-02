@@ -400,8 +400,11 @@ export type PortfolioImportBatchCaptureRead =
       nextCursor: string | null;
     };
 
+// The row index is an int4 column: nine digits keeps every accepted cursor
+// inside its range, so a forged `9999999999` answers `bad_cursor` (409)
+// instead of overflowing the cast into a 500 (review F3).
 const IMPORT_CAPTURE_CURSOR = new RegExp(
-  '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\\d{1,10}):' +
+  '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\\d{1,9}):' +
     '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$',
   'i',
 );

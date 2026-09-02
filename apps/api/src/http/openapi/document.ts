@@ -5105,7 +5105,7 @@ const endpoints: EndpointDef[] = [
     tag: 'Vault',
     summary: 'Read a plain portfolio’s historical import batches and staging rows losslessly.',
     description:
-      'The lossless capture read that lets the §9 move-in carry historical import batches into the encrypted portfolio document instead of refusing (#1529, lifting the #1528 fail-closed ruling). Owner-scoped; every batch keyed to the portfolio rides on every page, staging rows page by an opaque cursor, and every column is served exactly as stored (decimals as strings). Portfolio content under the module’s ordinary portfolio:read bearer policy — NOT a transition carve-out: a vaulted portfolio is refused at the enforcement boundary. Responses are no-store.',
+      'The lossless capture read that lets the §9 move-in carry historical import batches into the encrypted portfolio document instead of refusing (#1529, lifting the #1528 fail-closed ruling). Owner-scoped; every batch keyed to the portfolio rides on every page, staging rows page by an opaque cursor, and every column is served exactly as stored (decimals as strings). Session-only by the vault-namespace fence (bearer admission deferred: raw staging rows and memos must not reach third-party keys) — NOT a transition carve-out: a vaulted portfolio is refused at the enforcement boundary. Responses are no-store.',
     params: contracts.portfolioIdParamSchema,
     query: contracts.portfolioVaultImportCaptureQuerySchema,
     status: 200,
@@ -5113,7 +5113,7 @@ const endpoints: EndpointDef[] = [
     noStore: true,
     errorResponses: {
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
-      409: 'The portfolio is already stored in a vault, or the cursor does not belong to this read.',
+      409: 'The portfolio is already stored in a vault, the cursor does not belong to this read, or a stored staging row cannot be served losslessly (PORTFOLIO_VAULT_CAPTURE_UNSERVABLE).',
     },
   },
   {

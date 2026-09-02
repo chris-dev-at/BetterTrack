@@ -1,4 +1,6 @@
 import {
+  CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES,
+  CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX,
   customAssetCategorySchema,
   customAssetVaultSnapshotsResponseSchema,
   type CreateCustomAssetRequest,
@@ -13,7 +15,7 @@ import {
 
 import type { CustomAssetRepository } from '../../data/repositories/customAssetRepository';
 import type { AssetRow } from '../../data/schema';
-import { badRequest, notFound } from '../../errors';
+import { badRequest, conflict, notFound } from '../../errors';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import type { VaultedPortfolioGuard } from '../account/vaultedPortfolioEnforcement';
@@ -235,7 +237,16 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
 
     async vaultSnapshots(userId, ids) {
       const { present, absentIds } = await repo.vaultSnapshotsForOwner(userId, ids);
-      return customAssetVaultSnapshotsResponseSchema.parse({
+      const totalValues = present.reduce((total, { values }) => total + values.length, 0);
+      if (totalValues > CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX) {
+        // Size, not security: one response stays bounded; the client asks
+        // for fewer ids per request.
+        throw conflict(
+          `The requested manual assets carry ${totalValues} value points; at most ${CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX} fit one read.`,
+          CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES.tooLarge,
+        );
+      }
+      const response = customAssetVaultSnapshotsResponseSchema.safeParse({
         present: present.map(({ asset, values }) => ({
           id: asset.id,
           asset: {
@@ -256,6 +267,16 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
         })),
         absentIds,
       });
+      if (!response.success) {
+        // TYPED (review F2): a bare ZodError would become a client 400 —
+        // but nothing about the request is invalid; a STORED row is not
+        // exactly servable, so the move must refuse the asset, not the request.
+        throw conflict(
+          'A stored manual-asset row cannot be served exactly in vault-entity shape.',
+          CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES.unservable,
+        );
+      }
+      return response.data;
     },
 
     async getValuePoints(userId, id) {

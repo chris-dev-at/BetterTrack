@@ -8,6 +8,7 @@ import {
   cashTransferResponseSchema,
   createCustomAssetResponseSchema,
   customAssetListResponseSchema,
+  CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST,
   customAssetVaultSnapshotsResponseSchema,
   serializeCustomAssetVaultSnapshotIds,
   type CustomAssetVaultSnapshotsResponse,
@@ -661,11 +662,22 @@ export async function getCustomAssetVaultSnapshots(
   ids: readonly string[],
   signal?: AbortSignal,
 ): Promise<CustomAssetVaultSnapshotsResponse> {
-  const data = await apiRequest<unknown>(
-    `/custom-assets/vault-snapshots?ids=${encodeURIComponent(serializeCustomAssetVaultSnapshotIds(ids))}`,
-    { signal },
-  );
-  return customAssetVaultSnapshotsResponseSchema.parse(data);
+  // Bounded requests (size, not security): the server caps value points per
+  // response, so the id list travels in small chunks and is merged here.
+  const unique = [...new Set(ids.map((id) => id.toLowerCase()))].sort();
+  const present: CustomAssetVaultSnapshotsResponse['present'] = [];
+  const absentIds: string[] = [];
+  for (let start = 0; start < unique.length; start += CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST) {
+    const chunk = unique.slice(start, start + CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST);
+    const data = await apiRequest<unknown>(
+      `/custom-assets/vault-snapshots?ids=${encodeURIComponent(serializeCustomAssetVaultSnapshotIds(chunk))}`,
+      { signal },
+    );
+    const page = customAssetVaultSnapshotsResponseSchema.parse(data);
+    present.push(...page.present);
+    absentIds.push(...page.absentIds);
+  }
+  return { present, absentIds };
 }
 
 // --- Value points ----------------------------------------------------------

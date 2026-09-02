@@ -795,9 +795,12 @@ describe('captureMoveIn', () => {
   it('refuses import history before any ciphertext write when the lossless read seam is absent (#1529: lifted by capability, not deleted)', async () => {
     harness.api.listPortfolioVaultImportBatches = undefined;
     harness.state.settledRevisions = [{ portfolioDataRevision: REVISION, importBatchCount: 2 }];
+    // Byte-identical to the #1528 refusal: code AND message (review F4).
     await expect(runMoveIn(harness)).rejects.toMatchObject({
       name: 'PortfolioMoveCaptureError',
       code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+      message: 'This version cannot capture the portfolio’s historical import batches losslessly.',
+      retryable: false,
     });
     expect(harness.writes).toEqual([]);
     expect(harness.attestations).toEqual([]);
@@ -835,6 +838,8 @@ describe('captureMoveIn', () => {
     harness.state.transactions = [transactionFixture({ source: 'import:csv' })];
     await expect(runMoveIn(harness)).rejects.toMatchObject({
       code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+      message: `This version cannot capture imported rows losslessly (transaction ${TRANSACTION_ID}).`,
+      retryable: false,
     });
     expect(harness.writes).toEqual([]);
   });
@@ -848,6 +853,8 @@ describe('captureMoveIn', () => {
     ];
     await expect(runMoveIn(harness)).rejects.toMatchObject({
       code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+      message: `This version cannot capture custom asset ${ASSET_ID} with exact values.`,
+      retryable: false,
     });
     expect(harness.writes).toEqual([]);
   });
@@ -1294,6 +1301,41 @@ describe('lossless capture (#1529)', () => {
     });
     expect(harness.writes).toEqual([]);
     expect(harness.attestations).toEqual([]);
+  });
+
+  it('maps the server’s typed "unservable row" answer to the import-history refusal, cause preserved, before any write (review F2)', async () => {
+    withImportHistory();
+    harness.api.listPortfolioVaultImportBatches = (async () => {
+      throw new ApiError(409, 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE', 'TEST VECTOR unservable row');
+    }) as PortfolioMoveCaptureApi['listPortfolioVaultImportBatches'];
+    const rejection = expect(runMoveIn(harness)).rejects;
+    await rejection.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+      retryable: false,
+    });
+    await rejection.toMatchObject({
+      cause: { name: 'ApiError', code: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE', status: 409 },
+    });
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('maps the snapshot seam’s typed refusals (unservable, too large) to the manual-asset refusal, before any write (review F2)', async () => {
+    for (const code of ['CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE', 'CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE']) {
+      harness = createHarness();
+      await seedVaultDocuments(harness);
+      withManualAsset();
+      harness.api.getCustomAssetVaultSnapshots = (async () => {
+        throw new ApiError(409, code, `TEST VECTOR ${code}`);
+      }) as PortfolioMoveCaptureApi['getCustomAssetVaultSnapshots'];
+      await expect(runMoveIn(harness)).rejects.toMatchObject({
+        name: 'PortfolioMoveCaptureError',
+        code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+        retryable: false,
+        cause: { code },
+      });
+      expect(harness.writes).toEqual([]);
+    }
   });
 
   it('refuses a batch that is not historical yet (pending) as a state conflict, before any write', async () => {

@@ -1461,6 +1461,17 @@ export type PortfolioVaultImportCaptureResponse = z.infer<
  * form the client's own snapshot rows use.
  */
 export const CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_MAX = 200;
+/** Ids a client sends per request (size, not security): keeps every response bounded. */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_IDS_PER_REQUEST = 20;
+/** Total value points one response may carry; beyond it the read refuses, typed. */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX = 20_000;
+/** Typed refusals of the snapshot read; the client maps both to the manual-asset move refusal. */
+export const CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES = {
+  /** A stored row the vault-entity row contract cannot serve exactly (review F2). */
+  unservable: 'CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE',
+  /** The requested ids carry more value points than one response may hold. */
+  tooLarge: 'CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE',
+} as const;
 
 const UUID_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
 
@@ -1730,6 +1741,13 @@ export const PORTFOLIO_VAULT_TRANSITION_ERROR_CODES = {
   restoreSolvency: 'PORTFOLIO_VAULT_RESTORE_INSOLVENT',
   restoreProvenance: 'PORTFOLIO_VAULT_RESTORE_PROVENANCE_INVALID',
   possessionProofInvalid: 'PORTFOLIO_VAULT_POSSESSION_PROOF_INVALID',
+  /**
+   * #1529 (review F2): a stored staging row the strict capture contract
+   * cannot serve exactly. Typed and 409 on purpose — never the request
+   * validator's 400 — so the client refuses the move as "not losslessly
+   * capturable" instead of reporting its own request as invalid.
+   */
+  captureUnservable: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
 } as const;
 export type PortfolioVaultTransitionErrorCode =
   (typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES)[keyof typeof PORTFOLIO_VAULT_TRANSITION_ERROR_CODES];

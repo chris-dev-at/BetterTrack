@@ -8,6 +8,7 @@ import { portfolioVaultTransitionStates, portfolios } from '../data/schema';
 import { paranoidRestoreJsonLimitBytes } from '../http/bodyLimits';
 import { getOpenApiDocument } from '../http/openapi';
 import { buildRouteTable, checkCoverage } from '../scripts/checkOpenapiCoverage';
+import { PortfolioVaultTransitionError } from '../services/account/portfolioVaultTransitionService';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -162,7 +163,9 @@ async function mintKey(
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
 describe('E4 portfolio-vault HTTP boundary', () => {
-  it('mounts all five cookie-session routes and marks every successful response no-store', async () => {
+  // The seeded principal costs an argon2 hash and this arc now carries the
+  // #1529 read's happy/400/409 probes as well: its own budget, not the suite's.
+  it('mounts all five cookie-session routes and marks every successful response no-store', { timeout: 60_000 }, async () => {
     const harness = await createTestApp();
     const { user, portfolioId, agent } = await seedPrincipal(harness, 'cookie');
     const spies = stubTransitions(harness, portfolioId);
@@ -189,6 +192,15 @@ describe('E4 portfolio-vault HTTP boundary', () => {
       .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
       .query({ limit: 0 });
     expect(badLimit.status).toBe(400);
+    // Review F2: an unservable STORED row is a typed 409, never the request
+    // validator's 400 — the request was fine, the data is not exactly servable.
+    spies.captureImportBatches.mockRejectedValueOnce(
+      new PortfolioVaultTransitionError('CAPTURE_UNSERVABLE', 'TEST VECTOR unservable row'),
+    );
+    const unservable = await agent.get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`);
+    expect(unservable.status).toBe(409);
+    expect(unservable.body.error.code).toBe('PORTFOLIO_VAULT_CAPTURE_UNSERVABLE');
+    expect(unservable.headers['cache-control']).toContain('no-store');
 
     const movedIn = await agent
       .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
@@ -331,6 +343,21 @@ describe('E4 portfolio-vault HTTP boundary', () => {
       .send({});
     expect(future.status).toBe(403);
     expect(future.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    // #1529 (review F1, Chief ruling): the import-capture read is SESSION-ONLY —
+    // closed to the account:security key that the transition routes admit AND
+    // to an ordinary portfolio:read key. Raw staging rows never reach a bearer.
+    const readerToken = await mintKey(harness, user.id, 'E4 reader TEST VECTOR', [
+      'portfolio:read',
+    ]);
+    for (const token of [allowedToken, readerToken, deniedToken]) {
+      const closed = await request(harness.app)
+        .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+        .set(bearer(token));
+      expect(closed.status).toBe(403);
+      expect(closed.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+    expect(spies.captureImportBatches).not.toHaveBeenCalled();
     expect(spies.revision).toHaveBeenCalledOnce();
     expect(spies.moveIn).toHaveBeenCalledOnce();
     expect(spies.moveOutChallenge).toHaveBeenCalledOnce();

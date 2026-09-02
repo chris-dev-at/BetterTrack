@@ -1,8 +1,10 @@
 import { uuidv7 } from 'uuidv7';
 
 import {
+  CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES,
   PER_VAULT_ERROR_CODES,
   PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX,
+  PORTFOLIO_VAULT_TRANSITION_ERROR_CODES,
   VAULT_DOC_SCHEMA_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
   serializePortfolioVaultMoveOutProofTranscript,
@@ -304,6 +306,34 @@ function sameJson(left: unknown, right: unknown): boolean {
 }
 
 /**
+ * Read the exact manual-asset seam, translating its typed refusals (a stored
+ * row that cannot be served exactly, or a value set too large for one read)
+ * into the manual-asset move refusal — never a raw transport error.
+ */
+async function readManualAssetSnapshots(
+  read: NonNullable<PortfolioMoveCaptureApi['getCustomAssetVaultSnapshots']>,
+  assetIds: readonly string[],
+  signal?: AbortSignal,
+) {
+  try {
+    return await read(assetIds, signal);
+  } catch (cause) {
+    if (
+      cause instanceof ApiError &&
+      (Object.values(CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES) as string[]).includes(cause.code)
+    ) {
+      throw new PortfolioMoveCaptureError(
+        'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+        'This version cannot capture a manual asset exactly: the server could not serve its current state losslessly.',
+        false,
+        { cause },
+      );
+    }
+    throw cause;
+  }
+}
+
+/**
  * Read EVERY page of the lossless import-capture seam. The batch list rides on
  * every page; a page whose batch list differs from the first proves the set
  * moved mid-read, which the revision CAS would refuse anyway — refuse here
@@ -320,11 +350,31 @@ async function readAllImportBatches(
   const seenRowIds = new Set<string>();
   do {
     signal?.throwIfAborted();
-    const page: PortfolioVaultImportCaptureResponse = await read(
-      portfolioId,
-      { ...(cursor === undefined ? {} : { cursor }), limit: PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX },
-      signal,
-    );
+    let page: PortfolioVaultImportCaptureResponse;
+    try {
+      page = await read(
+        portfolioId,
+        { ...(cursor === undefined ? {} : { cursor }), limit: PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX },
+        signal,
+      );
+    } catch (cause) {
+      // The server's typed answer for a stored row it cannot serve exactly
+      // (review F2): the portfolio's import history is not losslessly
+      // capturable — the same refusal class as a row the document contract
+      // would degrade, never a "your request was invalid".
+      if (
+        cause instanceof ApiError &&
+        cause.code === PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureUnservable
+      ) {
+        throw new PortfolioMoveCaptureError(
+          'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+          'This version cannot capture the portfolio’s import history losslessly: a stored staging row cannot be served exactly.',
+          false,
+          { cause },
+        );
+      }
+      throw cause;
+    }
     if (batches === null) batches = page.batches;
     else if (!sameJson(batches, page.batches)) {
       throw conflict('The portfolio’s import batches changed while they were being captured.');
@@ -700,7 +750,7 @@ async function buildPortfolioCaptureRows(input: {
   if (manualAssetIds.size > 0) {
     if (manualCapture === undefined) throw new Error('unreachable: manual assets were refused above');
     const ids = [...manualAssetIds].sort();
-    const snapshots = await manualCapture(ids, signal);
+    const snapshots = await readManualAssetSnapshots(manualCapture, ids, signal);
     const present = new Map(snapshots.present.map((snapshot) => [snapshot.id, snapshot]));
     for (const assetId of ids) {
       const snapshot = present.get(assetId);
@@ -1312,7 +1362,7 @@ export function createPortfolioVaultMoveCapture(
         manualCapture === undefined
           ? undefined
           : async ({ assetIds, signal }) => {
-              const response = await manualCapture(assetIds, signal);
+              const response = await readManualAssetSnapshots(manualCapture, assetIds, signal);
               const authoredAt = now();
               return {
                 serverPresent: response.present.map(({ id: assetId, asset, values }) => ({
