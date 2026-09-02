@@ -5,6 +5,7 @@ import {
   mirrorChainSummarySchema,
   mirrorInviteListResponseSchema,
   mirrorMemberListResponseSchema,
+  mirrorRetrySyncResponseSchema,
   okResponseSchema,
   type ConvertMirrorChainRequest,
   type CreateMirrorChainRequest,
@@ -15,6 +16,7 @@ import {
   type MirrorChainSummary,
   type MirrorInviteListResponse,
   type MirrorMemberListResponse,
+  type MirrorRetrySyncResponse,
   type RenameMirrorChainRequest,
   type SetMirrorMemberRoleRequest,
   type TransferMirrorOwnershipRequest,
@@ -169,6 +171,19 @@ export async function leaveMirrorChain(chainId: string): Promise<void> {
     method: 'POST',
   });
   okResponseSchema.parse(data);
+}
+
+/**
+ * `POST /mirrorchain/chains/:chainId/retry-sync` — the "Retry sync" action the
+ * `mirror.sync_stalled` notice names (design §2): the caller's own copy replays
+ * from its watermark. A copy that is already caught up answers
+ * `409 MIRROR_NOT_STALLED`.
+ */
+export async function retryMirrorSync(chainId: string): Promise<MirrorRetrySyncResponse> {
+  const data = await apiRequest<unknown>(`/mirrorchain/chains/${chainId}/retry-sync`, {
+    method: 'POST',
+  });
+  return mirrorRetrySyncResponseSchema.parse(data);
 }
 
 /** `DELETE /mirrorchain/chains/:chainId` — dissolve → every copy forks (owner-only, §6). */

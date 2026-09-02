@@ -52,6 +52,12 @@ export const MIRROR_ROW_DELETED = 'MIRROR_ROW_DELETED';
  */
 export const MIRROR_SYNC_STALLED = 'MIRROR_SYNC_STALLED';
 /**
+ * "Retry sync" was asked for on a copy that is already caught up with the
+ * chain's `last_seq` — there is nothing to resume (design §2). The client
+ * refreshes and drops the stalled affordance. HTTP 409.
+ */
+export const MIRROR_NOT_STALLED = 'MIRROR_NOT_STALLED';
+/**
  * A write into a synced copy references a per-user custom asset (design §10:
  * members never see each other's custom assets, so the op could never apply on
  * any other copy). Custom assets live in non-chain portfolios. HTTP 400.
@@ -720,6 +726,12 @@ export const strippedMirrorAttribution: MirrorAttribution = {
  * A copy's sync progress (design §4 "Syncing… n %"): `percent` = applied/last
  * (100 when `lastSeq` is 0 or caught up). `synced` is the caught-up flag the
  * switcher badge reads.
+ *
+ * `stalled` is the honest end of that story (design §2, the `mirror.sync_stalled`
+ * notice): replication gave up on this copy at exactly this watermark, so it is
+ * NOT quietly making progress and the client must render it distinctly from
+ * "Syncing…" and offer the Retry sync action the notification promises. A copy
+ * is never both `synced` and `stalled`.
  */
 export const mirrorSyncStateSchema = z
   .object({
@@ -727,6 +739,7 @@ export const mirrorSyncStateSchema = z
     lastSeq: z.number().int().nonnegative(),
     percent: z.number().int().min(0).max(100),
     synced: z.boolean(),
+    stalled: z.boolean(),
   })
   .strict();
 export type MirrorSyncState = z.infer<typeof mirrorSyncStateSchema>;
@@ -828,6 +841,24 @@ export const mirrorInviteListResponseSchema = z
   })
   .strict();
 export type MirrorInviteListResponse = z.infer<typeof mirrorInviteListResponseSchema>;
+
+/**
+ * The result of "Retry sync" (design §2: "a 'retry sync' action resumes from the
+ * watermark"). The caller's own copy replays from its watermark inline and the
+ * response says what that achieved: `synced` (caught up), `syncing` (progress
+ * made, the rest continues on the replicate job) or `stalled` (the copy still
+ * cannot advance — the blocker outlives the retry). `sync` is the copy's state
+ * after the attempt, so the client re-renders from one round trip.
+ */
+export const mirrorRetrySyncResponseSchema = z
+  .object({
+    status: z.enum(['synced', 'syncing', 'stalled']),
+    /** Ops applied to the caller's copy by this attempt (0 when nothing moved). */
+    applied: z.number().int().nonnegative(),
+    sync: mirrorSyncStateSchema,
+  })
+  .strict();
+export type MirrorRetrySyncResponse = z.infer<typeof mirrorRetrySyncResponseSchema>;
 
 /** The response to accepting an invite — the freshly materialized copy (§4). */
 export const mirrorAcceptInviteResponseSchema = z

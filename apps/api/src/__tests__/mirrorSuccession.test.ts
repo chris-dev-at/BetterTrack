@@ -476,6 +476,8 @@ describe('mirrorchain M4 — repair-sweep queries', () => {
       ownerlessRepaired: [],
       danglingOriginRows: [],
       orphanedLocalRows: [],
+      divergentMissingRows: [],
+      divergentTransactionRows: [],
     });
     expect((await repo.getChain(chainId))?.status).toBe('active');
     expect((await repo.findActiveMembership(chainId, manager.user.id))?.role).toBe('manager');
@@ -590,6 +592,127 @@ describe('mirrorchain M4 — repair sweep', () => {
     const { problems } = await h.ctx.problems.list({ limit: 100 });
     expect(problems.some((p) => p.title.includes('origin row without op'))).toBe(true);
     expect(problems.some((p) => p.title.includes('orphaned synced transaction'))).toBe(true);
+  });
+
+  /**
+   * (c)/(d) — the crash window the create-shaped detectors structurally cannot
+   * see (#1611). The origin applies its local effect and COMMITS before the op
+   * is appended, so a crash in between leaves exactly the states seeded below:
+   * a delete that took the local row and its link with it (nothing left for (a)
+   * to find), and an update that changed the money while leaving every link
+   * intact. Both are permanent, silent money divergence without a detector.
+   */
+  async function syncedTransaction(h: TestHarness) {
+    const { owner, chainId, ownerPortfolioId } = await ownerChain(h);
+    const member = await join(h, chainId, 'member');
+    const asset = await seedAsset(h);
+    const [tx] = await h.ctx.mirror.submitTransactionsCreate(owner.id, ownerPortfolioId, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 5,
+        price: 100,
+        fee: 0,
+        executedAt: new Date('2026-03-02T10:00:00.000Z').toISOString(),
+      },
+    ]);
+    await h.ctx.mirror.replicateChain(chainId);
+    return { owner, chainId, ownerPortfolioId, member, mirrorId: tx!.id };
+  }
+
+  it('detects a lost tx.delete — the entity is alive in the oplog but gone from a caught-up copy', async () => {
+    const { chainId, ownerPortfolioId, mirrorId } = await syncedTransaction(h);
+    const repo = repoOf(h);
+    // The committed half of `submitTransactionDelete`, with the append lost.
+    await h.db.delete(schema.transactions).where(eq(schema.transactions.id, mirrorId));
+    await repo.deleteMirrorRow('transaction', mirrorId, ownerPortfolioId);
+
+    const result = await h.ctx.mirror.runConsistencySweep();
+
+    expect(result.divergentMissingRows).toEqual([
+      expect.objectContaining({ chainId, portfolioId: ownerPortfolioId, mirrorId }),
+    ]);
+    // The create-shaped residual scans stay silent on it — that is the gap.
+    expect(result.danglingOriginRows).toEqual([]);
+    await runSweep(h);
+    const { problems } = await h.ctx.problems.list({ limit: 100 });
+    expect(problems.some((p) => p.title.includes('missing from a caught-up copy'))).toBe(true);
+  });
+
+  it('detects a lost tx.update — a copy money that contradicts its own latest op', async () => {
+    const { chainId, ownerPortfolioId, mirrorId } = await syncedTransaction(h);
+    // The committed half of `submitTransactionUpdate` (quantity 5 → 6), with the
+    // append lost: the origin holds 6, every other copy still holds 5.
+    await h.db
+      .update(schema.transactions)
+      .set({ quantity: '6' })
+      .where(eq(schema.transactions.id, mirrorId));
+
+    const result = await h.ctx.mirror.runConsistencySweep();
+
+    expect(result.divergentTransactionRows).toEqual([
+      expect.objectContaining({
+        chainId,
+        portfolioId: ownerPortfolioId,
+        mirrorId,
+        localId: mirrorId,
+      }),
+    ]);
+    expect(result.divergentMissingRows).toEqual([]);
+    await runSweep(h);
+    const { problems } = await h.ctx.problems.list({ limit: 100 });
+    expect(problems.some((p) => p.title.includes('diverges from its op'))).toBe(true);
+  });
+
+  it('a faithfully replicated chain is not a finding, and neither is an ordinary lagging copy', async () => {
+    const { chainId, owner, ownerPortfolioId } = await syncedTransaction(h);
+    // A second write that only the origin has applied so far: the joiner is
+    // BEHIND, not divergent — the detectors must not confuse the two.
+    await h.ctx.mirror.submitCashDeposit(owner.id, ownerPortfolioId, { amountEur: 10 });
+
+    const result = await h.ctx.mirror.runConsistencySweep();
+
+    expect(result.divergentMissingRows).toEqual([]);
+    expect(result.divergentTransactionRows).toEqual([]);
+    expect((await repoOf(h).getChain(chainId))!.lastSeq).toBeGreaterThan(0);
+  });
+
+  it('pages past the row limit instead of re-reporting the same residuals forever', async () => {
+    const repo = repoOf(h);
+    const { chainId, ownerPortfolioId } = await ownerChain(h);
+    // Three (a)-residuals, one page of two: the tail must surface on the NEXT
+    // run rather than the first page repeating until an admin fixes it by hand.
+    const seeded: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const mirrorId = randomUUID();
+      seeded.push(mirrorId);
+      await repo.insertMirrorRow({
+        chainId,
+        kind: 'transaction',
+        mirrorId,
+        portfolioId: ownerPortfolioId,
+        localId: mirrorId,
+        createdBy: null,
+        createdByUsername: 'ghost',
+      });
+    }
+
+    const first = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
+    const second = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
+    const third = await h.ctx.mirror.runConsistencySweep({ limit: 2 });
+
+    const ids = (rows: { mirrorId: string }[]) => rows.map((r) => r.mirrorId);
+    expect(first.danglingOriginRows).toHaveLength(2);
+    expect(second.danglingOriginRows).toHaveLength(1);
+    // Disjoint pages: run two surfaced the tail, not the same rows again.
+    expect(
+      ids(second.danglingOriginRows).some((id) => ids(first.danglingOriginRows).includes(id)),
+    ).toBe(false);
+    expect([...ids(first.danglingOriginRows), ...ids(second.danglingOriginRows)].sort()).toEqual(
+      [...seeded].sort(),
+    );
+    // The short page wrapped the cursor, so the scan keeps covering the set.
+    expect(ids(third.danglingOriginRows)).toEqual(ids(first.danglingOriginRows));
   });
 
   it('a clean database yields no Problems', async () => {

@@ -78,7 +78,7 @@ function portfolioList(mirror = false): Awaited<ReturnType<typeof listPortfolios
                 chainName: 'Household',
                 role: 'owner' as const,
                 memberCount: 2,
-                sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+                sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true, stalled: false },
               },
             }
           : {}),

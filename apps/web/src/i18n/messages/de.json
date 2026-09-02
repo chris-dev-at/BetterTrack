@@ -3551,7 +3551,8 @@
     "avatarStack": {
       "openAria": "{{name}} — {{count}} Mitglieder. Mitgliederliste öffnen.",
       "membersCount": "{{count}} Mitglieder",
-      "syncing": "Synchronisiere… {{percent}} %"
+      "syncing": "Synchronisiere… {{percent}} %",
+      "stalled": "Synchronisierung hängt"
     },
     "fork": {
       "provenance": "Abgezweigt von {{chain}} · {{date}}"
@@ -3575,6 +3576,7 @@
       "transfer": "Besitzer machen",
       "leave": "Verlassen",
       "dissolve": "Gruppe auflösen",
+      "retrySync": "Synchronisierung wiederholen",
       "sendInvite": "Einladen",
       "revokeInvite": "Einladung zurückziehen"
     },
@@ -3623,7 +3625,16 @@
     },
     "memberRow": {
       "you": "du",
-      "joined": "Beigetreten {{date}}"
+      "joined": "Beigetreten {{date}}",
+      "stalled": "Synchronisierung hängt bei {{percent}} %"
+    },
+    "retrySync": {
+      "pending": "Wird wiederholt…",
+      "synced": "Deine Kopie ist wieder auf dem aktuellen Stand.",
+      "syncing": "Synchronisierung läuft wieder — die restlichen Einträge folgen.",
+      "stalled": "Die Synchronisierung kommt weiterhin nicht weiter. Sie läuft von selbst weiter, sobald die Blockade weg ist.",
+      "notStalled": "Diese Kopie ist bereits auf dem aktuellen Stand.",
+      "error": "Die Synchronisierung konnte nicht wiederholt werden. Bitte versuche es erneut."
     },
     "confirm": {
       "leave": {

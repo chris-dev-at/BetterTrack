@@ -477,9 +477,11 @@ const portfolioService = createPortfolioService({
 });
 // Plain enqueue, no job id: a retained completed/failed job under a fixed id
 // silently swallows every later add (see mirrorJobs.ts); `replicateChain`'s
-// per-chain lock serializes appliers instead.
-const enqueueMirrorReplicate = async (chainId: string) => {
-  await registry.enqueue('mirror.replicate', { chainId });
+// per-chain lock serializes appliers instead. `opts` carries the tail-catch
+// re-enqueue's delay — a write enqueues without one, so a member's change still
+// lands on every copy as fast as the queue can run it.
+const enqueueMirrorReplicate = async (chainId: string, opts?: { delay?: number }) => {
+  await registry.enqueue('mirror.replicate', { chainId }, opts);
 };
 const mirrorchainRepo = createMirrorchainRepository(db);
 const mirror = createMirrorService({
@@ -624,7 +626,7 @@ const definitions = assembleRegisteredJobDefinitions({
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
   createMirrorReplicateJob: bindParanoidJob(
-    createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+    createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate, problems }),
     { mode: 'serviceFiltered' },
   ),
   // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past

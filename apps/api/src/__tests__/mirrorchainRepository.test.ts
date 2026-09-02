@@ -283,4 +283,44 @@ describe('mirrorchainRepository (M1)', () => {
     await repo.repointMirrorRow('transaction', MIRROR, pid, NEW_LOCAL);
     expect((await repo.findMirrorRow('transaction', MIRROR, pid))?.localId).toBe(NEW_LOCAL);
   });
+
+  /**
+   * #1611 — the residual scans are a REPORT that must eventually name every
+   * residual. Without a total ORDER BY they returned whatever the seq scan hit
+   * first, so a backlog past the limit meant the same arbitrary page forever
+   * and a permanently invisible tail.
+   */
+  it('the residual scans are deterministically ordered and page past their limit', async () => {
+    const { owner, chain, pid } = await seedChainWithOwner();
+    const mirrorIds = [
+      '018f0000-0000-7000-8000-0000000000f3',
+      '018f0000-0000-7000-8000-0000000000f1',
+      '018f0000-0000-7000-8000-0000000000f2',
+    ];
+    for (const mirrorId of mirrorIds) {
+      await repo.insertMirrorRow({
+        chainId: chain.id,
+        kind: 'transaction',
+        mirrorId,
+        portfolioId: pid,
+        localId: mirrorId,
+        createdBy: owner.id,
+        createdByUsername: owner.username,
+      });
+    }
+
+    const all = await repo.listDanglingOriginRows(10);
+    expect(all.map((row) => row.mirrorId)).toEqual([...mirrorIds].sort());
+    // Same order every time, and the pages tile the set without overlap or gap.
+    expect((await repo.listDanglingOriginRows(10)).map((r) => r.mirrorId)).toEqual(
+      all.map((r) => r.mirrorId),
+    );
+    expect((await repo.listDanglingOriginRows(2, 0)).map((r) => r.mirrorId)).toEqual(
+      all.slice(0, 2).map((r) => r.mirrorId),
+    );
+    expect((await repo.listDanglingOriginRows(2, 2)).map((r) => r.mirrorId)).toEqual(
+      all.slice(2).map((r) => r.mirrorId),
+    );
+    expect(await repo.listDanglingOriginRows(2, 10)).toEqual([]);
+  });
 });

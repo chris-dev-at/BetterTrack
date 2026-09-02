@@ -50,7 +50,13 @@ type Summary = {
     chainName: string;
     role: 'owner' | 'manager' | 'member';
     memberCount: number;
-    sync: { appliedSeq: number; lastSeq: number; percent: number; synced: boolean };
+    sync: {
+      appliedSeq: number;
+      lastSeq: number;
+      percent: number;
+      synced: boolean;
+      stalled: boolean;
+    };
   };
 };
 
@@ -83,7 +89,7 @@ const HOUSEHOLD = summary({
     chainName: 'Household',
     role: 'owner',
     memberCount: 3,
-    sync: { appliedSeq: 9, lastSeq: 9, percent: 100, synced: true },
+    sync: { appliedSeq: 9, lastSeq: 9, percent: 100, synced: true, stalled: false },
   },
 });
 

@@ -1125,10 +1125,14 @@ describe('mirrorchain M2 — replication core', () => {
     await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
       applied: 0,
       lagging: 0,
+      skipped: 0,
+      advanced: 0,
     });
     await expect(harness.ctx.mirror.replicateChain(chain.id)).resolves.toEqual({
       applied: 0,
       lagging: 0,
+      skipped: 0,
+      advanced: 0,
     });
 
     const membershipAfter = await mirrorRepo.findActiveMembership(chain.id, bob.id);
@@ -1138,5 +1142,191 @@ describe('mirrorchain M2 — replication core', () => {
       .where(eq(schema.portfolioCashMovements.portfolioId, bPid));
     expect(membershipAfter?.appliedSeq).toBe(membershipBefore?.appliedSeq);
     expect(rowsAfter).toEqual(rowsBefore);
+  });
+});
+
+/**
+ * V5-P7 #1611 — the recovery path for a copy that stops advancing. A member who
+ * can never be replayed (an op author who LEFT the chain and later enabled
+ * paranoid mode: leaving clears the paranoid blocker, but the guard set is built
+ * from every op author since the copy's watermark) is reported as a SKIP, not a
+ * failure — so the run returns normally, nothing retries, nothing dead-letters
+ * and nothing notifies. These tests pin the three things that must now happen
+ * instead: the pass reports zero forward progress, the escalation marks the copy
+ * stalled exactly once, and "Retry sync" resumes it from its watermark.
+ */
+describe('mirrorchain — no-progress escalation + retry sync (#1611)', () => {
+  let h: TestHarness;
+  let repo: ReturnType<typeof createMirrorchainRepository>;
+  let events: DispatchableEvent[];
+
+  beforeEach(async () => {
+    events = [];
+    h = await createTestApp({
+      notificationEnqueue: async (event) => {
+        events.push(event);
+      },
+    });
+    repo = createMirrorchainRepository(h.db);
+  });
+
+  const stalledEvents = () => events.filter((event) => event.type === 'mirror.sync_stalled');
+
+  async function makeParanoid(userId: string) {
+    await withExclusiveParanoidTransitionTestLock(h.db, userId, async () => {
+      await h.db
+        .update(schema.users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: ['drive'],
+          paranoidDriveAttestedVersion: 1,
+        })
+        .where(eq(schema.users.id, userId));
+    });
+  }
+
+  /** Owner alice + member bob, both caught up. */
+  async function simpleChain() {
+    const alice = await h.seedUser({ email: 'a1611@bettertrack.test', username: 'a1611' });
+    const bob = await h.seedUser({ email: 'b1611@bettertrack.test', username: 'b1611' });
+    const aPid = await h.ctx.portfolio.getDefaultPortfolioId(alice.id);
+    const { chain } = await h.ctx.mirror.convertToChain(alice.id, aPid, { name: 'Retry' });
+    const { portfolioId: bPid } = await h.ctx.mirror.attachMemberCopy(chain.id, bob.id);
+    await h.ctx.mirror.replicateChain(chain.id);
+    return { alice, bob, aPid, bPid, chain };
+  }
+
+  /**
+   * The permanently-unreplayable chain: carol writes an op, LEAVES (keeping her
+   * fork, which clears the paranoid membership blocker) and then goes paranoid.
+   * Every remaining copy is behind an op she authored, so every replay attempt
+   * is refused by the privacy guard — forever.
+   */
+  async function chainBlockedByDepartedParanoidAuthor() {
+    const base = await simpleChain();
+    const carol = await h.seedUser({ email: 'c1611@bettertrack.test', username: 'c1611' });
+    const { portfolioId: cPid } = await h.ctx.mirror.attachMemberCopy(base.chain.id, carol.id);
+    await h.ctx.mirror.replicateChain(base.chain.id);
+    await h.ctx.mirror.submitCashDeposit(carol.id, cPid, { amountEur: 50 });
+    await h.ctx.mirror.leaveChain(carol.id, base.chain.id);
+    await makeParanoid(carol.id);
+    return { ...base, carol };
+  }
+
+  it('reports a permanently-unreplayable copy as skipped with zero forward progress', async () => {
+    const { chain } = await chainBlockedByDepartedParanoidAuthor();
+
+    const result = await h.ctx.mirror.replicateChain(chain.id);
+
+    // Every remaining copy was refused, so nothing applied and no watermark
+    // moved — the signal the job needs to stop chaining another identical pass.
+    expect(result.applied).toBe(0);
+    expect(result.advanced).toBe(0);
+    expect(result.skipped).toBe(2);
+    expect(result.lagging).toBe(2);
+    // Idempotent: a second pass is just as fruitless, and just as quiet.
+    await expect(h.ctx.mirror.replicateChain(chain.id)).resolves.toEqual(result);
+  });
+
+  it('escalates the no-progress chain exactly once: members marked stalled, notice fired once', async () => {
+    const { bob, chain } = await chainBlockedByDepartedParanoidAuthor();
+    await h.ctx.mirror.replicateChain(chain.id);
+    expect(stalledEvents()).toHaveLength(0);
+
+    const first = await h.ctx.mirror.escalateStalledChain(chain.id);
+    expect(first).toEqual({ escalated: true, stalled: 2 });
+    const firedOnce = stalledEvents().length;
+    expect(firedOnce).toBeGreaterThan(0);
+
+    // Nothing changed, so a later sweep re-marks but must not nag again.
+    const second = await h.ctx.mirror.escalateStalledChain(chain.id);
+    expect(second).toEqual({ escalated: false, stalled: 2 });
+    expect(stalledEvents()).toHaveLength(firedOnce);
+
+    // The copy now READS stalled — distinct from "Syncing…" — on both surfaces
+    // the client renders: the member sheet and the switcher summary.
+    const sheet = await h.ctx.mirror.getMemberList(bob.id, chain.id);
+    const self = sheet.members.find((member) => member.isSelf)!;
+    expect(self.sync).toMatchObject({ synced: false, stalled: true });
+    const [summary] = await h.ctx.mirror.listChainsForUser(bob.id);
+    expect(summary!.sync.stalled).toBe(true);
+  });
+
+  it('a copy that is merely behind is never marked stalled', async () => {
+    const { alice, bob, aPid, chain } = await simpleChain();
+    await h.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 10 });
+
+    const sheet = await h.ctx.mirror.getMemberList(bob.id, chain.id);
+    const self = sheet.members.find((member) => member.isSelf)!;
+    expect(self.sync).toMatchObject({ synced: false, stalled: false });
+  });
+
+  it('retry sync resumes the caller own copy from its watermark', async () => {
+    const { alice, bob, aPid, bPid, chain } = await simpleChain();
+    await h.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 25 });
+    const before = await repo.findActiveMembership(chain.id, bob.id);
+    expect(before!.appliedSeq).toBeLessThan((await repo.getChain(chain.id))!.lastSeq);
+
+    const result = await h.ctx.mirror.retrySync(bob.id, chain.id);
+
+    expect(result.status).toBe('synced');
+    expect(result.applied).toBeGreaterThan(0);
+    expect(result.sync).toMatchObject({ synced: true, stalled: false });
+    // Resumed, not replayed from zero: the money landed exactly once.
+    expect((await h.ctx.portfolio.getCashMovements(bob.id, bPid)).balanceEur).toBe(25);
+    expect((await repo.findActiveMembership(chain.id, bob.id))!.appliedSeq).toBe(
+      (await repo.getChain(chain.id))!.lastSeq,
+    );
+  });
+
+  it('retry sync refuses a caught-up copy and a non-member', async () => {
+    const { bob, chain } = await simpleChain();
+    const stranger = await h.seedUser({ email: 's1611@bettertrack.test', username: 's1611' });
+
+    await expect(h.ctx.mirror.retrySync(bob.id, chain.id)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'MIRROR_NOT_STALLED',
+    });
+    await expect(h.ctx.mirror.retrySync(stranger.id, chain.id)).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'MIRROR_CHAIN_NOT_FOUND',
+    });
+  });
+
+  it('retry sync on a copy that still cannot advance answers stalled, and keeps saying so', async () => {
+    const { bob, chain } = await chainBlockedByDepartedParanoidAuthor();
+    await h.ctx.mirror.replicateChain(chain.id);
+    await h.ctx.mirror.escalateStalledChain(chain.id);
+
+    const result = await h.ctx.mirror.retrySync(bob.id, chain.id);
+
+    expect(result.status).toBe('stalled');
+    expect(result.applied).toBe(0);
+    expect(result.sync.stalled).toBe(true);
+    // The affordance survives a failed retry — the copy has not silently
+    // fallen back to pretending it is syncing.
+    const sheet = await h.ctx.mirror.getMemberList(bob.id, chain.id);
+    expect(sheet.members.find((member) => member.isSelf)!.sync.stalled).toBe(true);
+  });
+
+  it('over HTTP, retry sync is members-only and returns the copy state', async () => {
+    const { alice, bob, aPid, chain } = await simpleChain();
+    await h.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 40 });
+    const stranger = await h.seedUser({ email: 's2-1611@bettertrack.test', username: 's21611' });
+
+    const bobAgent = await loginAgent(h.app, bob.email, bob.password);
+    const ok = await bobAgent
+      .post(`/api/v1/mirrorchain/chains/${chain.id}/retry-sync`)
+      .set(...XRW)
+      .send({});
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ status: 'synced', sync: { synced: true, stalled: false } });
+
+    const strangerAgent = await loginAgent(h.app, stranger.email, stranger.password);
+    const denied = await strangerAgent
+      .post(`/api/v1/mirrorchain/chains/${chain.id}/retry-sync`)
+      .set(...XRW)
+      .send({});
+    expect(denied.status).toBe(404);
   });
 });
