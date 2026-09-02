@@ -1018,7 +1018,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //
   // SIZING RULE (owner directive 2026-09-02, §16): a limiter that normal use can
   // reach must clear the MODELLED NORMAL-USE BAR by at least 3×. The bar is one
-  // active user with two tabs open, measured against the real SPA:
+  // active user with two tabs open. Its terms are ENGINEERING ESTIMATES derived
+  // by reading the client — the widget fan-out, the TanStack polling intervals,
+  // the search debounce and its enrichment poll — not a captured browser trace;
+  // treat them as a written-down model to argue against and correct, not as
+  // measurements:
   //
   //   * cold dashboard load  = 10 + 2N requests (N = portfolios); a 10-widget
   //     board at N=5 is ~50, and two tabs reloading together ~100 in ~2 s

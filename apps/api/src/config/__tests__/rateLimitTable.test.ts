@@ -168,10 +168,14 @@ describe('§10 limiter table — STRICT limiters (unchanged by the 2026-09-02 pa
 
 describe('§10 limiter table — the modelled normal-use bar', () => {
   /**
-   * The measured request shape of the real SPA, one active user, two tabs. Each
-   * number is evidence-backed (see the §10 LIMITER TABLE comment in `env.ts`);
-   * they are restated here so a future limiter edit is checked against the bar
-   * rather than against a feeling.
+   * The DOCUMENTED MODEL of the SPA's request shape — one active user, two tabs.
+   *
+   * These are engineering estimates derived by reading the client (widget
+   * fan-out, TanStack polling intervals, the search debounce and its enrichment
+   * poll), NOT numbers captured from a running browser or a production trace.
+   * They are restated here so that a future limiter edit is argued against a
+   * written-down model instead of a feeling — and so that the model itself can
+   * be challenged and corrected in one place when someone does measure it.
    */
   const BAR = {
     /** Cold dashboard load, 10-widget board, N=5 portfolios, per tab. */
@@ -186,15 +190,17 @@ describe('§10 limiter table — the modelled normal-use bar', () => {
     idlePerTabPerMinute: 8,
   };
 
-  it('clears the worst realistic 30 seconds with at least 3x headroom', () => {
+  it('clears the modelled worst 30 seconds with at least 3x headroom', () => {
     const { generalBurst } = config().rateLimits;
     const worst30s = BAR.coldLoadPerTab * 2 + BAR.navigation + BAR.search + BAR.invalidateAll;
+    // Pins the model's arithmetic, not a measurement: if someone edits a term
+    // above, this number has to be restated deliberately.
     expect(worst30s).toBe(188);
     expect(generalBurst.windowSec).toBe(30);
     expect(generalBurst.limit).toBeGreaterThanOrEqual(worst30s * 3);
   });
 
-  it('clears the worst realistic 15 minutes with at least 3x headroom', () => {
+  it('clears the modelled worst 15 minutes with at least 3x headroom', () => {
     const { general } = config().rateLimits;
     // Two tabs, both signed in, for a quarter of an hour of hard use.
     const idle = BAR.idlePerTabPerMinute * 2 * 15;

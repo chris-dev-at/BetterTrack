@@ -177,4 +177,41 @@ describe('the strict limiters stay strict (§10, §6.1)', () => {
     }
     expect(status).toBe(429);
   });
+
+  it('meters PIN SETTING on the login ladder, not the general per-user budget', async () => {
+    // `PUT /auth/pin` runs an argon2id hash at 64 MiB per request. Under the
+    // general limiter alone it allowed 600 req/min after the 2026-09-02
+    // re-sizing — an authenticated amplification door where one cheap request
+    // buys 64 MiB and a deliberately slow KDF. It rides the same strict ladder
+    // as its `/pin/verify` sibling.
+    const limited = await createTestApp({
+      rateLimitsEnabled: true,
+      env: { RATE_LIMIT_LOGIN_IP_LIMIT: '3', RATE_LIMIT_LOGIN_IP_WINDOW_SEC: '60' },
+    });
+    const user = await limited.seedUser({ email: 'pin@bt.test', username: 'pinner' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    // The login above already spent one of the three; two sets fit, then the
+    // per-IP rail closes — long before the general budget would have noticed.
+    let status = 200;
+    for (let i = 0; i < 6 && status !== 429; i += 1) {
+      status = (
+        await request(limited.app)
+          .put('/api/v1/auth/pin')
+          .set(...XRW)
+          .set('Cookie', cookie)
+          .send({ pin: '4731' })
+      ).status;
+    }
+    expect(status).toBe(429);
+
+    // …and the refusal came from the login rail, not the general one.
+    const ip = progressiveKeys('login_ip', 'ip:::ffff:127.0.0.1').cooldown;
+    const loopback = progressiveKeys('login_ip', 'ip:127.0.0.1').cooldown;
+    const armed = (await limited.ctx.redis.get(ip)) ?? (await limited.ctx.redis.get(loopback));
+    expect(armed).toBe('1');
+    expect(
+      await limited.ctx.redis.get(progressiveKeys('general', limiterKeyForUser(user.id)).cooldown),
+    ).toBeNull();
+  });
 });
