@@ -176,6 +176,15 @@ jobs:
         env:
           DATABASE_URL: postgres://bt:bt@localhost:5432/bettertrack_test
 
+      # #1619: schema.ts is the schema of record (§5.5), but most of the chain is
+      # hand-written SQL. This introspects the database the migrations just built
+      # and fails on any table, CHECK, UNIQUE, FOREIGN KEY or index only one side
+      # knows about — plus any FK whose referencing column is unindexed.
+      - name: Check schema.ts against the migrated database
+        run: pnpm --filter @bettertrack/api check:schema-drift
+        env:
+          DATABASE_URL: postgres://bt:bt@localhost:5432/bettertrack_test
+
       - name: Run integration test slice (real Postgres + Redis)
         run: pnpm --filter @bettertrack/api test:integration
 

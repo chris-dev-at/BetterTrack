@@ -14,6 +14,7 @@
     "check:production-compose": "tsx src/scripts/checkProductionCompose.ts",
     "check:openapi-coverage": "tsx src/scripts/checkOpenapiCoverage.ts",
     "check:migrations-immutable": "tsx src/scripts/checkMigrationsImmutable.ts",
+    "check:schema-drift": "tsx src/scripts/checkSchemaDrift.ts",
     "test:integration": "vitest run --config vitest.config.integration.ts",
     "build": "tsup",
     "db:generate": "drizzle-kit generate",
