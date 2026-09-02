@@ -403,6 +403,195 @@ describe('nothing is dropped silently', () => {
   });
 });
 
+/**
+ * A statement with no booking-type column (§16 2026-08-29 gap (b)). Every line
+ * is a memo and a signed amount, so the classifier will not name a kind and the
+ * server hands each row the kinds it WILL accept. The file signs its amounts,
+ * so the two negatives can only be money out and the salary can only be money
+ * in — which is what makes the bulk sweep safe.
+ */
+const STATEMENT_ROW = (
+  over: Partial<ImportRow> & Pick<ImportRow, 'id' | 'rowIndex' | 'note' | 'amountEur'>,
+): ImportRow =>
+  row({
+    flag: 'error',
+    kind: null,
+    asset: null,
+    isin: null,
+    name: null,
+    quantity: null,
+    price: null,
+    fee: null,
+    message: 'This row needs a human decision before it can be imported.',
+    confirmableKinds: ['withdrawal'],
+    ...over,
+  });
+
+const UNDECIDED: ImportPreviewResponse = {
+  ...PREVIEW,
+  understanding: { ...UNDERSTANDING, amountsSigned: true },
+  rows: [
+    STATEMENT_ROW({ id: 'r-card', rowIndex: 2, note: 'HOFER DANKT KARTE', amountEur: -52.3 }),
+    STATEMENT_ROW({ id: 'r-rent', rowIndex: 3, note: 'MIETE JAENNER', amountEur: -780 }),
+    STATEMENT_ROW({
+      id: 'r-salary',
+      rowIndex: 4,
+      note: 'GEHALT ARBEITGEBER AG',
+      amountEur: 2100,
+      confirmableKinds: ['deposit'],
+    }),
+  ],
+  batch: {
+    ...PREVIEW.batch,
+    counts: { total: 3, mapped: 0, unmapped: 0, duplicate: 0, error: 3 },
+  },
+};
+
+/** The same preview with one row confirmed, as the server would return it. */
+function withConfirmed(id: string): ImportPreviewResponse {
+  const rows = UNDECIDED.rows.map((r) =>
+    r.id === id
+      ? {
+          ...r,
+          flag: 'mapped' as const,
+          kind: 'withdrawal' as const,
+          message: null,
+          amountEur: 780,
+        }
+      : r,
+  );
+  const error = rows.filter((r) => r.flag === 'error').length;
+  return {
+    ...UNDECIDED,
+    rows,
+    batch: { ...UNDECIDED.batch, counts: { ...UNDECIDED.batch.counts, mapped: 1, error } },
+  };
+}
+
+describe('a row nobody has decided is a question, not a dead end', () => {
+  test('asks what the row is, offering only the kinds the server will accept', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(UNDECIDED);
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+
+    await screen.findByText('3 rows we can import once you say what they are');
+    // NOT filed under "we can't import without you" — that list is for rows
+    // nothing can repair, and these are exactly the repairable ones.
+    expect(screen.queryByText(/we can't import without you/)).not.toBeInTheDocument();
+
+    // What the file actually said is on screen, because that is what the
+    // decision is made from.
+    expect(screen.getByText('MIETE JAENNER')).toBeInTheDocument();
+
+    // Nothing is pre-selected: a wrong default is how a flagged row becomes a
+    // wrong booking when a reviewer works through many of them.
+    const rent = screen.getByLabelText('What is this row?', {
+      selector: '#import-kind-r-rent',
+    }) as HTMLSelectElement;
+    expect(rent.value).toBe('');
+
+    // The file signs its amounts, so a negative row is not on offer as money
+    // in — the server withheld it and the UI does not invent it back.
+    const offered = within(rent)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(offered).toEqual(['Choose…', 'Withdrawal']);
+  });
+
+  test('confirms one row by asserting a kind — and sends nothing else', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(UNDECIDED);
+    vi.mocked(importsApi.resolveImportRow).mockResolvedValue(withConfirmed('r-rent'));
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('3 rows we can import once you say what they are');
+
+    await user.selectOptions(
+      screen.getByLabelText('What is this row?', {
+        selector: '#import-kind-r-rent',
+      }),
+      'withdrawal',
+    );
+    await user.click(screen.getAllByRole('button', { name: 'Confirm' })[1]!);
+
+    // The body carries the assertion and NOTHING else: no amount, no date, no
+    // id. Everything the row books is re-derived server-side.
+    await waitFor(() =>
+      expect(vi.mocked(importsApi.resolveImportRow)).toHaveBeenCalledWith('batch-1', 'r-rent', {
+        kind: 'withdrawal',
+      }),
+    );
+    // The server's answer replaces the local view wholesale — the row leaves
+    // the list because the SERVER says it is mapped now.
+    await waitFor(() =>
+      expect(screen.getByText('2 rows we can import once you say what they are')),
+    );
+  });
+
+  test('bulk confirms exactly the eligible rows, one request each', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(UNDECIDED);
+    vi.mocked(importsApi.resolveImportRow).mockResolvedValue(withConfirmed('r-rent'));
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('All the same kind?');
+
+    // The label names the reach, and the reach is the server's own answer: the
+    // salary row accepts `deposit` only, so it is not in the withdrawal sweep.
+    await user.click(screen.getByRole('button', { name: 'Confirm 2 rows as Withdrawal' }));
+
+    await waitFor(() => expect(vi.mocked(importsApi.resolveImportRow)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(importsApi.resolveImportRow).mock.calls.map((c) => [c[1], c[2]])).toEqual([
+      ['r-card', { kind: 'withdrawal' }],
+      ['r-rent', { kind: 'withdrawal' }],
+    ]);
+    // …and the one-click sweep for a statement that is all one kind is there
+    // too, sized honestly.
+    expect(screen.getByRole('button', { name: 'Confirm 1 row as Deposit' })).toBeInTheDocument();
+  });
+
+  test('freezes the write and the navigation around it until the server answers', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(UNDECIDED);
+    let release!: (value: ImportPreviewResponse) => void;
+    vi.mocked(importsApi.resolveImportRow).mockReturnValue(
+      new Promise<ImportPreviewResponse>((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    renderPage();
+    const user = await upload();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('All the same kind?');
+    await user.click(screen.getByRole('button', { name: 'Confirm 2 rows as Withdrawal' }));
+
+    // Same gate the pin has, for the same reason: the answer decides which rows
+    // are importable AND whether this step still exists.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Confirm 1 row as Deposit' })).toBeDisabled();
+
+    release(withConfirmed('r-rent'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled());
+  });
+
+  test('renders the whole affordance in German', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(UNDECIDED);
+    renderPage('de');
+    const user = await upload({ file: 'CSV-Export', cta: 'Vorschau erstellen' });
+    await user.click(await screen.findByRole('button', { name: 'Weiter' }));
+
+    await screen.findByText('3 Zeilen können wir importieren, sobald du sagst, was sie sind');
+    expect(
+      screen.getByRole('button', { name: '2 Zeilen als Auszahlung bestätigen' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Was ist diese Zeile?')).toHaveLength(3);
+    // Server English must never reach the localized surface.
+    expect(screen.queryByText(/All the same kind/)).not.toBeInTheDocument();
+  });
+});
+
 describe('the staged facts are rendered, not recomputed', () => {
   test('names the cash-rule tags the row was pre-tagged with, and badges a human pin', async () => {
     vi.mocked(importsApi.uploadImportBatch).mockResolvedValue({

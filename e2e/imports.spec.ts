@@ -20,6 +20,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = path.join(HERE, 'support', 'fixtures');
 const HAPPY_CSV = path.join(FIXTURE_DIR, 'trade-republic-happy.csv');
 const ERROR_CSV = path.join(FIXTURE_DIR, 'trade-republic-with-error.csv');
+/** A real bank statement shape with NO booking-type column (§16 2026-08-29). */
+const ELBA_CSV = path.join(FIXTURE_DIR, 'raiffeisen-elba.csv');
 const CSV_YEAR_TOKEN = '{{CURRENT_VIENNA_YEAR}}';
 
 /** Resolve dated booking rows into the current tax year before browser upload. */
@@ -128,6 +130,88 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
   const holdings2 = inspector2.getByRole('region', { name: 'Holdings' });
   await expect(holdings2.getByRole('link', { name: 'SAP.DE' })).toHaveCount(1);
   await inspector2.close();
+
+  await owner.context.close();
+});
+
+test('imports: a statement with no booking-type column imports once the user says what the rows are', async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+
+  const apiRequest = await newAdminRequestContext(newRequestContext);
+  const owner = await provisionUser(browser, apiRequest, 'importselba');
+  await apiRequest.dispose();
+
+  const page = owner.page;
+  const elbaCsv = await currentYearCsv(ELBA_CSV);
+
+  // ── Upload: no mapper claims it, so the generic path reads it ─────────────
+  await page.goto('/portfolio/import');
+  await page.getByLabel('CSV export').setInputFiles(elbaCsv);
+  await page.getByRole('button', { name: 'Create preview' }).click();
+
+  // No mapper claims this header, so the generic path reads it and the wizard
+  // shows what it understood first — four steps here, not three.
+  await expect(page.getByText('What we read from raiffeisen-elba.csv')).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(page.getByText('Broker: Work it out from the file')).toBeVisible();
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  // This file has a memo and a signed amount and nothing else, so the
+  // classifier will not name a kind for ANY row — the whole statement stops on
+  // review. Before this change that was the end of the road: every row was an
+  // error, and nothing in the wizard could turn one into a booking.
+  await expect(page.getByText('What still needs you')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText('3 rows we can import once you say what they are')).toBeVisible();
+  // What the file said is on screen, because that is what the decision is made
+  // from — and it is the data staging used to throw away on these rows.
+  await expect(page.getByText('MIETE JAENNER')).toBeVisible();
+  await expect(page.getByText('GEHALT ARBEITGEBER AG')).toBeVisible();
+
+  // ── The bulk sweep, which the signs make safe ─────────────────────────────
+  // The file writes money out as a negative, so the salary line is NOT eligible
+  // to be swept into "withdrawal" — the button says two rows, not three, and
+  // the server would refuse the third even if the button lied.
+  await page.getByRole('button', { name: 'Confirm 2 rows as Withdrawal' }).click();
+  await expect(page.getByText('1 row we can import once you say what it is')).toBeVisible({
+    timeout: 30_000,
+  });
+
+  // The salary row is left to be decided on its own — and with a single row
+  // left there is no bulk bar any more, because one row is not a batch.
+  //
+  // Its picker offers exactly the readings the server will accept: this file
+  // writes money out as a negative, so a positive row is money IN and neither
+  // outflow kind is on the list. Dividend survives beside Deposit because the
+  // memo names something ("a dividend credited to your bank account" is a real
+  // statement line) — offering it is honest, and picking it would send the row
+  // to the instrument step rather than booking anything on a guess.
+  const kind = page.getByLabel('What is this row?');
+  await expect(kind.getByRole('option')).toHaveText(['Choose…', 'Dividend', 'Deposit']);
+  await kind.selectOption('deposit');
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+
+  // ── Nothing left to review: the wizard moves itself on ────────────────────
+  await expect(page.getByText('Preview: raiffeisen-elba.csv')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText('3 mapped')).toBeVisible();
+  await expect(page.getByText('0 errors')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Import 3 rows' }).click();
+  await expect(page.getByText('3 imported · 0 skipped · 0 failed')).toBeVisible({
+    timeout: 60_000,
+  });
+
+  // ── The ledger got the file's own numbers, in the file's own direction ────
+  await page.goto('/portfolio/cash/accounts');
+  const history = page.getByRole('region', { name: 'Movement history' });
+  await expect(history.getByText('Deposit', { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(history.getByText('Withdrawal', { exact: true })).toHaveCount(2);
+  // The magnitudes are the server's derivation of what it parsed — the browser
+  // never sent an amount, only a kind.
+  await expect(history.getByText('MIETE JAENNER')).toBeVisible();
+  await expect(history.getByText('Imported · Generic').first()).toBeVisible();
 
   await owner.context.close();
 });

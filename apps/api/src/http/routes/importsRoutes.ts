@@ -134,10 +134,18 @@ export function createImportsRouter(ctx: AppContext): Router {
     }),
   );
 
-  // PATCH /imports/:batchId/rows/:rowId — pin an unresolved row to an asset the
-  // USER picked (§16 2026-07-31 point 4). Owner-scoped in the service, batch
-  // must still be pending. Returns the refreshed preview, so the client never
-  // recomputes counts locally and never drifts from what staging now holds.
+  // PATCH /imports/:batchId/rows/:rowId — finish ONE row a person had to decide
+  // about: `{ assetId }` pins an unresolved instrument (§16 2026-07-31 point 4),
+  // `{ kind }` confirms what an undecided row is (§16 2026-08-29 gap (b));
+  // exactly one per request, enforced by the contract and again in the service.
+  // Owner-scoped in the service, batch must still be pending. Returns the
+  // refreshed preview, so the client never recomputes counts locally and never
+  // drifts from what staging now holds.
+  //
+  // Rate-limited on the portfolio-write lane: a confirmation is cheap for a
+  // client to repeat (the wizard's bulk sweep is one call per row) and each one
+  // re-reads the portfolio's content hashes, so the endpoint gets the same
+  // ceiling every other authenticated write surface has (§10).
   router.patch(
     '/:batchId/rows/:rowId',
     validateParams(importRowIdParamSchema),
