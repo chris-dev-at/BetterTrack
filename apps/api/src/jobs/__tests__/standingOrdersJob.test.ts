@@ -134,7 +134,9 @@ async function seedDailyOrder(
 }
 
 interface BuiltJob {
-  handler: () => Promise<void>;
+  // A handler may now report a counts summary (#1406 W4); this one does not,
+  // and these tests assert on `scans` either way.
+  handler: () => Promise<void | Readonly<Record<string, number>>>;
   /** The tally of each completed scan, in order. */
   scans: ProcessDueResult[];
 }

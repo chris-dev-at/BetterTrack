@@ -56,6 +56,48 @@ export class CircuitOpenError extends Error {
 const DEFAULT_FAILURE_THRESHOLD = 5;
 const DEFAULT_OPEN_MS = 30_000;
 
+/** Longest error note the breaker will retain, so a huge message cannot be pinned. */
+const LAST_ERROR_MAX_LENGTH = 300;
+
+/**
+ * A one-line note about a failure: its error class, or its message when the
+ * class is the generic `Error`. Mirrors `healthService`'s `errorDetail`, which
+ * is the disclosure level the admin health component already publishes.
+ */
+function describeError(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const note = err.name && err.name !== 'Error' ? err.name : err.message;
+  if (!note) return null;
+  return note.length > LAST_ERROR_MAX_LENGTH
+    ? `${note.slice(0, LAST_ERROR_MAX_LENGTH - 1)}…`
+    : note;
+}
+
+/**
+ * Read-only introspection of one breaker, for the admin operations cockpit
+ * (#1406 W4). Everything here is state the breaker already keeps privately;
+ * reading it never creates, trips or resets anything.
+ */
+export interface CircuitBreakerSnapshot {
+  state: CircuitState;
+  /** Consecutive failures since the last success — progress toward tripping. */
+  consecutiveFailures: number;
+  /** The threshold `consecutiveFailures` is counted against. */
+  failureThreshold: number;
+  /** Epoch ms the breaker last tripped open; null if it never has. */
+  openedAtMs: number | null;
+  /** Epoch ms a half-open probe becomes admissible; null unless open. */
+  retryAtMs: number | null;
+  /**
+   * Error class of the failure that last tripped this breaker (falling back to
+   * its message when the class is anonymous) — deliberately the same shape
+   * `healthService.errorDetail` already publishes, never the whole error.
+   */
+  lastError: string | null;
+  /** Epoch ms of that failure. */
+  lastErrorAtMs: number | null;
+}
+
 export class CircuitBreaker {
   private readonly failureThreshold: number;
   private readonly openMs: number;
@@ -69,6 +111,14 @@ export class CircuitBreaker {
   private openedAt = 0;
   /** True while a half-open probe is in flight, to admit exactly one. */
   private probing = false;
+  /**
+   * The tripping failure, retained ONLY as its error class (or message) plus a
+   * timestamp. The error object itself is never held: keeping it would pin an
+   * arbitrary object — possibly carrying a request body — alive for the life of
+   * the process, on a field an admin surface reads.
+   */
+  private lastError: string | null = null;
+  private lastErrorAt = 0;
 
   constructor(
     private readonly providerId?: string,
@@ -88,6 +138,26 @@ export class CircuitBreaker {
       return 'half-open';
     }
     return this.state;
+  }
+
+  /**
+   * Everything the admin cockpit is allowed to know about this breaker (#1406
+   * W4). Pure read: it calls {@link getState}, which applies the elapsed-cooldown
+   * transition without mutating, and touches nothing else.
+   */
+  snapshot(): CircuitBreakerSnapshot {
+    const state = this.getState();
+    return {
+      state,
+      consecutiveFailures: this.failures,
+      failureThreshold: this.failureThreshold,
+      openedAtMs: this.openedAt === 0 ? null : this.openedAt,
+      // Only meaningful while the cooldown is still running: once it elapses the
+      // breaker reads half-open and the next call IS the probe.
+      retryAtMs: state === 'open' ? this.openedAt + this.openMs : null,
+      lastError: this.lastError,
+      lastErrorAtMs: this.lastErrorAt === 0 ? null : this.lastErrorAt,
+    };
   }
 
   /**
@@ -164,6 +234,8 @@ export class CircuitBreaker {
   private trip(err?: unknown): void {
     this.state = 'open';
     this.openedAt = this.now();
+    this.lastError = describeError(err);
+    this.lastErrorAt = this.openedAt;
     // A tripped breaker is a definitive provider failure → capture it (§13.5).
     this.onOpen?.(err, { providerId: this.providerId });
   }
@@ -174,5 +246,7 @@ export class CircuitBreaker {
     this.failures = 0;
     this.openedAt = 0;
     this.probing = false;
+    this.lastError = null;
+    this.lastErrorAt = 0;
   }
 }

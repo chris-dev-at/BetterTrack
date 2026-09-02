@@ -18,7 +18,12 @@ import type { Redis } from 'ioredis';
 
 import type { AssetProvider, ProviderCapability } from './AssetProvider';
 import { cacheKey, createMarketCache, type MarketCache } from './cache';
-import { CircuitBreaker, type CircuitBreakerOptions, type CircuitState } from './circuitBreaker';
+import {
+  CircuitBreaker,
+  type CircuitBreakerOptions,
+  type CircuitBreakerSnapshot,
+  type CircuitState,
+} from './circuitBreaker';
 import { CapabilityUnavailableError, isNotFoundError, isRateLimitError } from './errors';
 import {
   createFailoverResolver,
@@ -124,11 +129,33 @@ export interface MarketDataService {
    */
   breakerStates(): Array<{ providerId: string; state: CircuitState }>;
   /**
+   * The per-capability breaker detail the admin operations cockpit reads
+   * (#1406 W4). {@link breakerStates} deliberately collapses a provider to its
+   * WORST capability so the health payload stays one-dimensional — which hides
+   * exactly the distinction per-capability isolation was built for ("with
+   * `fundamentals` dead, quotes keep flowing"). This is that dimension, and it
+   * is the only place it is published.
+   *
+   * Reports a provider's LIVE breakers only: a capability that has never been
+   * called has no breaker and is therefore absent rather than listed as
+   * `closed`, because "never exercised" and "exercised and healthy" are
+   * different operational facts. Read-only — never creates or trips a breaker.
+   */
+  breakerSnapshots(): ProviderBreakerSnapshots[];
+  /**
    * Failover attribution for the admin health surface (§13.5 V5-P1c): which
    * provider is currently serving each chain, the recent switch events, and
    * per-provider serve counts. Empty arrays when no secondary is configured.
    */
   failoverStatus(): FailoverStatus;
+}
+
+/** One provider's live capability breakers, worst-first at the provider level. */
+export interface ProviderBreakerSnapshots {
+  providerId: string;
+  /** Worst state across this provider's live capability breakers. */
+  state: CircuitState;
+  capabilities: Array<{ capability: ProviderCapability } & CircuitBreakerSnapshot>;
 }
 
 export interface MarketDataServiceOptions {
@@ -513,6 +540,24 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
           providerId: provider.id,
           state: providerBreakerState(provider.id),
         })),
+
+    breakerSnapshots: () =>
+      registry
+        .all()
+        .filter((provider) => provider.local !== true)
+        .map((provider) => {
+          const live = breakers.get(provider.id);
+          const capabilities = [...(live?.entries() ?? [])]
+            .map(([capability, breaker]) => ({ capability, ...breaker.snapshot() }))
+            // Worst first: an operator scanning the list should meet the open
+            // breaker before the nine healthy ones.
+            .sort((a, b) => STATE_SEVERITY[b.state] - STATE_SEVERITY[a.state]);
+          return {
+            providerId: provider.id,
+            state: providerBreakerState(provider.id),
+            capabilities,
+          };
+        }),
 
     failoverStatus: () => resolver.status(),
   };

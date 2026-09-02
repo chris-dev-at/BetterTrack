@@ -4428,7 +4428,10 @@
         "securityApi": "Security & API"
       },
       "registration": "Registration",
-      "testAccounts": "Test accounts"
+      "testAccounts": "Test accounts",
+      "opsHealth": "Health & queues",
+      "providers": "Providers",
+      "marketData": "Market data"
     },
     "settings": {
       "title": "Settings",
@@ -5540,6 +5543,110 @@
         "cleanupValue": "Expiry deletes it on the job runner — the same idempotent cleanup whether it fires once or five times — and writes an audit row."
       },
       "why": "There is no staging estate: production is the only estate, and the invite gate makes real smoke testing a token dance. That is what this is for."
+    },
+    "ops": {
+      "refresh": "Refresh",
+      "live": {
+        "label": "Live refresh",
+        "off": "Off",
+        "seconds": "{{seconds}} s",
+        "every": "Refreshing every {{seconds}} s",
+        "manualOnly": "Manual refresh only",
+        "pausedHidden": "Paused — this tab is in the background",
+        "updatedAt": "read at {{time}}"
+      },
+      "health": {
+        "title": "Health & queues",
+        "subtitle": "What the API depends on, what is queued, and what has failed for good."
+      },
+      "system": {
+        "title": "System",
+        "components": "Dependencies",
+        "build": "Deployed build",
+        "versionDetail": "The commit this API process was built from.",
+        "versionUnavailable": "The deploy marker could not be read."
+      },
+      "queues": {
+        "title": "Queues",
+        "queue": "Queue",
+        "waiting": "Waiting",
+        "active": "Active",
+        "delayed": "Delayed",
+        "failed": "Failed",
+        "paused": "Paused",
+        "heartbeat": "Worker heartbeat",
+        "heartbeatBudget": "expected every {{seconds}} s",
+        "idleHidden": "{{count}} idle queues are not listed.",
+        "allIdle": "Every queue is idle.",
+        "unavailable": "This API process holds no queue registry, so it cannot see the queues. This is not the same as the queues being empty."
+      },
+      "schedules": {
+        "title": "Scheduled work",
+        "subtitle": "Cadence, last run and what the sweep reported. Times come from the scheduler itself.",
+        "job": "Job",
+        "cadence": "Cadence",
+        "lastRun": "Last run",
+        "duration": "Took",
+        "next": "Next",
+        "every": "every {{age}}",
+        "in": "in {{age}}",
+        "overdue": "overdue by {{age}}",
+        "neverRun": "never run",
+        "empty": "No repeatable schedules are registered.",
+        "milliseconds": "{{ms}} ms"
+      },
+      "failures": {
+        "title": "Permanent failures",
+        "subtitle": "{{total}} retained. Newest first.",
+        "when": "When",
+        "queue": "Queue",
+        "reason": "Reason",
+        "attempts": "Attempts",
+        "empty": "No job has failed permanently.",
+        "readOnlyNote": "Read-only. Job payloads are never shown, and there is no retry or discard: what is safe to re-run differs per job, so one shared button could not be."
+      },
+      "providers": {
+        "title": "Providers",
+        "subtitle": "Circuit breakers per capability, call outcomes and how much the cache absorbs.",
+        "capability": "Capability",
+        "breaker": "Breaker",
+        "failures": "Failures",
+        "lastError": "Last error",
+        "retryAt": "Retry from",
+        "callsSummary": "{{success}} served · {{error}} errored · {{shortCircuited}} short-circuited",
+        "noCapabilityCalls": "Nothing has called this provider yet, so it has no breakers to report.",
+        "sampledSince": "counting since {{time}}",
+        "processLocalNote": "These counters belong to the API process answering this request and reset when it restarts; the worker counts its own separately. There is no upstream quota figure — the provider is keyless, so no authoritative quota exists to show."
+      },
+      "cache": {
+        "hitRate": "Cache hit rate",
+        "hitDetail": "Served from the fresh copy.",
+        "staleRate": "Served stale",
+        "staleDetail": "Last-known-good, refreshed in the background.",
+        "lookups": "Cache lookups",
+        "negative": "Negative hits"
+      }
+    },
+    "marketData": {
+      "title": "Market data",
+      "subtitle": "An inspector for instrument, FX and import-mapping integrity. Not built yet.",
+      "comingSoonShort": "Planned — the inspector itself is a later package.",
+      "notShipped": "This tab is where the financial-data inspector will live. Nothing here reads an instrument, enqueues a job or touches a price.",
+      "plannedTitle": "What it will do, and what it will never do",
+      "plannedDescription": "The guardrails below are already decided and are not open for reinterpretation.",
+      "rows": {
+        "inspector": "Inspector",
+        "inspectorValue": "Provider mapping, latest and as-of values, history coverage and gaps, cache and breaker state, and recent job outcomes for one instrument or FX pair.",
+        "detection": "Detection",
+        "detectionValue": "Stale quotes, FX gaps and outliers, surfaced as findings rather than fixes.",
+        "imports": "Imports",
+        "importsValue": "Unresolved import mappings grouped by importer and error code — aggregates only, never a raw broker file.",
+        "writes": "The only writes",
+        "writesValue": "A guarded, audited enqueue of the existing per-symbol backfill and cache refresh. Both jobs are already idempotent; that is what makes the button safe.",
+        "never": "Never",
+        "neverValue": "No direct price-row edits, no blind duplicate merges, and no per-user data — only affected-user counts."
+      },
+      "why": "Editing a price by hand would put money math behind a browser session, and merging duplicates without provenance, a dry run and a rollback is a change nobody can undo. Both need a domain answer first, so this package ships the reading and stops there."
     }
   },
   "create": {
