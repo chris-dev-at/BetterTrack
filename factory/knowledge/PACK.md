@@ -50,7 +50,8 @@ flow backward, and `domain/` imports nothing but types.
 - **apps/api** — Express 5 service (+ BullMQ worker entrypoint). Internal layout
   under `apps/api/src/`: `http/routes` + `http/middleware` (thin: parse → service
   → respond) · `services/**` (business orchestration, one dir per module) ·
-  `domain/**` (pure money-math: holdings, backtest; allocation coming) ·
+  `domain/**` (pure money-math: allocation, backtest, plus one-line re-export
+  shims for what now lives in `packages/domain`) ·
   `data/**` (Drizzle schema + repositories — all SQL lives here) ·
   `providers/**` (AssetProvider interface, registry, yahoo, cache/coalescing/
   circuit-breaker) · `jobs/**` (BullMQ queues/processors/cron) · `events/**`
@@ -60,6 +61,10 @@ flow backward, and `domain/` imports nothing but types.
   schema defined once (`@bettertrack/contracts`); the API validates against it and
   the SPA derives its types from it, so they cannot silently drift. Later feeds
   OpenAPI `/docs`.
+- **packages/domain** (`@bettertrack/domain`) — the extracted pure money-math:
+  `tax.ts`, `holdings.ts`, `cashLedger.ts`, `seriesStats.ts`, `settingsScope.ts`,
+  `vaultVectors/`. Shared by API and web, and **T1 territory** exactly like
+  `apps/api/src/domain/**` (see Difficulty routing below).
 - **packages/config** — shared tsconfig base, ESLint flat config, Prettier config.
 
 **Stack specifics:** PostgreSQL 17 via Drizzle ORM (also hosts the search index:
@@ -106,20 +111,24 @@ Every issue gets exactly one `diff:*` label; `state/control/models.json`
 defaults are all-Claude. When unsure, take the higher difficulty. Escalate
 instead of looping: a bug surviving two fix attempts moves up one difficulty.
 
-- **diff:max / diff:hard** (old T1 Fable) — correctness-critical / architectural
-  keystones: everything under `apps/api/src/domain/**` (holdings, backtest,
-  allocation, the V3 realized-P/L + tax engine, alert evaluator), the provider
-  **caching/coalescing/serve-stale/currency** keystone (§5.3), the **local
-  search-index core** (§6.2), and plan-deviation design decisions.
-- **diff:intermediate** (old T2 Opus) — security & subtlety: auth/sessions/PIN/
+- **diff:max / diff:hard** (T1 Fable) — correctness-critical / architectural
+  keystones. The money math, which lives in **two** places: everything under
+  `apps/api/src/domain/**` (allocation, backtest, plus the re-export shims) and
+  everything under `packages/domain/src/**` (tax = the V3 realized-P/L + tax
+  engine, holdings, cashLedger, seriesStats, settingsScope, vaultVectors, alert
+  evaluator) — a `touches:` claim matching either glob lands here, no second
+  rule. Plus the provider **caching/coalescing/serve-stale/currency** keystone
+  (§5.3), the **local search-index core** (§6.2), and plan-deviation design
+  decisions.
+- **diff:intermediate** (T2 Opus) — security & subtlety: auth/sessions/PIN/
   rate-limiting, account kinds, admin routes, registration modes (§6.12),
   friendship/sharing **privacy boundaries** (§6.9 and the V3-P5 audience model),
   tokens, import/export, DB schema/migrations, BullMQ jobs, realtime/event bus,
   the **Builder** UI, deployment-topology config (§11), design-polish pass.
   The security floor never drops below this.
-- **diff:easy / diff:normal** (old T3 Sonnet floor) — CRUD, plain UI pages,
-  Coming-Soon placeholders, config/CI/compose, templates, e2e, docs, i18n string
-  sweeps.
+- **diff:easy / diff:normal** (T3 Sonnet at `high` effort — the floor, nothing
+  runs below it) — CRUD, plain UI pages, Coming-Soon placeholders,
+  config/CI/compose, templates, e2e, docs, i18n string sweeps.
 
 ## V5 phases (PROJECTPLAN §13.5) — one line each, "done when" essence
 
