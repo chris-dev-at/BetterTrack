@@ -19,6 +19,7 @@ import {
 
 import { createFeedbackRepository } from '../data/repositories/feedbackRepository';
 import * as schema from '../data/schema';
+import { limiterKeyForUser } from '../http/middleware/rateLimit';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
@@ -988,11 +989,13 @@ describe('admin feedback inbox', () => {
       // Replies never consume the capture budget, which stays whole for the
       // owner's own `POST /feedback`.
       expect(
-        await limitedHarness.ctx.redis.get(progressiveKeys('feedback', limitedAdmin.id).count),
+        await limitedHarness.ctx.redis.get(
+          progressiveKeys('feedback', limiterKeyForUser(limitedAdmin.id)).count,
+        ),
       ).toBeNull();
 
       // The conversation budget is still a budget: exhaust it and the rail closes.
-      const threadKeys = progressiveKeys('feedback_thread', limitedAdmin.id);
+      const threadKeys = progressiveKeys('feedback_thread', limiterKeyForUser(limitedAdmin.id));
       expect(await limitedHarness.ctx.redis.get(threadKeys.count)).toBe(String(submissions.length));
       await limitedHarness.ctx.redis.set(threadKeys.count, String(threadLimit), 'EX', 3600);
       const limited = await limitedAdminAgent

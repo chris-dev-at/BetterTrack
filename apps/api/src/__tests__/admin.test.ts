@@ -26,7 +26,9 @@ import {
   rememberedDeviceKey,
   rememberedDevicesForUserKey,
 } from '../services/auth/loginThrottle';
+import { limiterKeyForUser } from '../http/middleware/rateLimit';
 import { generateTotpCode } from '../services/auth/totp';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -533,7 +535,11 @@ describe('Bull Board administrator boundary (#878)', () => {
     const setupDenied = await bootstrap.get(BULL_BOARD_BASE_PATH);
     expect(setupDenied.status).toBe(403);
     expect(setupDenied.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
-    expect(await local.ctx.redis.get(`rl:admin:${admin.id}:n`)).toBe('1');
+    // The admin limiter meters the ADMIN (per user), not the address they came
+    // from — derive the key rather than pasting its layout (§10).
+    expect(
+      await local.ctx.redis.get(progressiveKeys('admin', limiterKeyForUser(admin.id)).count),
+    ).toBe('1');
 
     const assured = await local.loginAdmin(admin);
     expect((await assured.get(BULL_BOARD_BASE_PATH)).status).toBe(503);
