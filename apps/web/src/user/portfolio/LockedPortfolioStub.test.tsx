@@ -14,7 +14,8 @@ const mocks = vi.hoisted(() => ({
   requestPortfolioMoveOutChallenge: vi.fn(),
 }));
 
-vi.mock('../../lib/vaultApi', () => ({
+vi.mock('../../lib/vaultApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/vaultApi')>()),
   VAULTS_QUERY_KEY: ['vaults', 'configs'],
   listVaults: mocks.listVaults,
   getPortfolioVaultRevision: vi.fn(),

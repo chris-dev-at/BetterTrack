@@ -19,7 +19,8 @@ const mocks = vi.hoisted(() => ({
   openStoredVault: vi.fn(),
 }));
 
-vi.mock('../../../lib/vaultApi', () => ({
+vi.mock('../../../lib/vaultApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/vaultApi')>()),
   VAULTS_QUERY_KEY: ['vaults', 'configs'],
   DRIVE_CONNECTIONS_QUERY_KEY: ['vaults', 'drive-connections'],
   listVaults: mocks.listVaults,
