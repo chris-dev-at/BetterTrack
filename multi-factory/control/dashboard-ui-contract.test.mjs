@@ -414,14 +414,14 @@ test('legacy control APIs cannot offer a new ClaudeX route but preserve an exist
       difficulties: {
         easy: { provider: 'claude' },
         normal: { provider: 'codex' },
-        hard: { provider: 'gemini' },
+        hard: { provider: 'opencode' },
       },
     },
     providers: {},
   });
   assert.deepEqual(
     providers.definitions().map((entry) => entry.id),
-    ['claude', 'codex', 'gemini'],
+    ['claude', 'codex', 'opencode'],
   );
 
   providers.syncProviderDefs({
@@ -505,7 +505,7 @@ test('models editor understands role pins and never corrupts unknown role entrie
     roles: {
       composer: pin,
       checker: 'hard',
-      reviewer: { provider: 'gemini', model: 'Gemini 3.1 Pro (High)' },
+      reviewer: { provider: 'opencode', model: 'openrouter/stealth/ox-alpha' },
       reviewFloor: 'easy',
     },
   };
@@ -514,7 +514,7 @@ test('models editor understands role pins and never corrupts unknown role entrie
   const providers = helpers.mAllRoutes(models).map((route) => route.provider);
   assert.ok(providers.includes('codex'));
   assert.ok(providers.includes('claude'));
-  assert.ok(providers.includes('gemini'));
+  assert.ok(providers.includes('opencode'));
 
   // editor wiring: pin mode option, per-role pinned inputs, base-role passthrough on collect
   assert.match(script, /const PIN_VALUE = '__pin__'/);

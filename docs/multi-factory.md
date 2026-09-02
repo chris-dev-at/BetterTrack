@@ -40,6 +40,35 @@ loaded flag. Consequence worth knowing: a permanently stuck queue record stops
 ordinary composition, which is intended (drain the lane, then compose), but it
 never blocks a brief you write yourself.
 
+**Composer outcome model.** The composer is the priciest role in the fleet, so
+every run is classified exactly once and only one classification retries:
+
+| Outcome            | When                                                                  | What follows                                                                                                                                                                                                                                                                                                                                             |
+| ------------------ | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `created`          | the run created ≥ 1 repository issue — schedulable **or** quarantined | books the ordinary `MF_COMPOSER_COOLDOWN` (default 900 s); resets the idle backoff; NEVER retried                                                                                                                                                                                                                                                        |
+| `idle`             | zero issues created and a valid empty result (`NONE`)                 | feeds the idle backoff: doubles up to `MF_COMPOSER_BACKOFF_MAX` (default 14400 s) while the open-issue set, mode and phase are unchanged                                                                                                                                                                                                                 |
+| `protocol-failure` | zero issues created and malformed output / a transport failure        | `MF_COMPOSER_PROTOCOL_ATTEMPTS` (default 2) corrective attempts, **one per tick**, each gated by `MF_COMPOSER_PROTOCOL_COOLDOWN` (defaults to `MF_COMPOSER_COOLDOWN`); the cooldown doubles per failure up to `MF_COMPOSER_PROTOCOL_BACKOFF_MAX` (defaults to `MF_COMPOSER_BACKOFF_MAX`), which is what bounds it once the corrective attempts are spent |
+
+The `created` row is the one that costs money. A run whose issues were all
+quarantined as not-schedulable used to be booked as a protocol failure, and the
+corrective retry then started a second composer **31 s later, inside the same
+tick** — two ~20-minute `claude-opus-5 (xhigh)` runs for one batch (live log,
+2026-08-30). Replaying a run that already filed issues can only produce
+duplicates, so quarantined-but-created ends the sequence. The corrective attempt
+number lives in `state/control/.composer-protocol-attempt` so the bound survives
+a restart, and any `created`/`idle` outcome clears it.
+
+**Composer cost caps.** `COMPOSER_BATCH` (default **5**) is the issues-per-run
+target; raise it in `compose.yml` when a deliberately big batch is wanted (the
+owner's 2026-07-16 "big batches" note is honoured by keeping it configurable,
+not by defaulting high). `MF_COMPOSER_MAX_TURNS` (default **60**) and
+`MF_COMPOSER_TIMEOUT` (default **1800** s) bound every composer run on the
+claude and claudex branches of `mf_cc`, the way `MF_SOL_COMPOSER_MAX_TURNS` /
+`MF_SOL_COMPOSER_TIMEOUT` (40 / 1200) bound a Sol composer — Sol keeps its own
+tighter numbers where both apply. Out-of-range values fall back to the defaults,
+never to an unbounded run. All three are set explicitly for the master service
+in `compose.yml`.
+
 **Review-requeue budget.** An approval that keeps invalidating used to send the
 same issue back through review forever (#1232 burned 140 reviewer runs).
 `requeue_for_review` now counts requeues per issue in
@@ -80,8 +109,11 @@ max); reviews never run below `roles.reviewFloor` (default intermediate).
 Legacy `tier:*` labels still resolve (sonnet→easy, opus→intermediate,
 fable→max); unlabeled issues run as intermediate.
 
-Four subscription providers (per-provider effort semantics), plus one API-key
-provider (`opencode`, below):
+Three subscription providers (per-provider effort semantics), plus one API-key
+provider (`opencode`, below). The Google **Antigravity (`agy`) / gemini**
+provider was removed in #1623: it was wired end-to-end but had never run a
+single production role, so it was pure weight in `mflib.sh`, `autorun.sh`,
+`compose.yml`, the provider registry and the dashboard.
 
 - **claude** — claude CLI, auth via `CLAUDE_CODE_OAUTH_TOKEN` (factory/.env);
   effort = `--effort low|medium|high|xhigh|max`.
@@ -96,10 +128,6 @@ provider (`opencode`, below):
   `model_reasoning_effort low|medium|high|xhigh|max|ultra` where supported by
   the selected model; models e.g. `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`
   (free-text for new ones).
-- **gemini** — Google **Antigravity CLI (`agy`)**, auth from the host's
-  `~/.gemini` Google login; the reasoning level is part of the model name,
-  e.g. `Gemini 3.1 Pro (High)`, `Gemini 3.5 Flash (Low)` (`agy models` lists
-  what the subscription offers — the dashboard shows them as suggestions).
 - **opencode** — the opencode CLI (Bun binary, installed by
   `multi-factory/opencode-install.sh`). **Not a subscription**: it authenticates
   with an API key held in `auth/<service>/opencode/share/opencode/auth.json`, and
@@ -122,7 +150,7 @@ provider's usage limit sleeps `LIMIT_SLEEP` and retries at most
 retry/triage path. Without the cap a quota-dead provider napped forever and the
 worker looked alive while doing nothing.
 
-Auth for codex/ClaudeX/agy is synced by `autorun.sh` from the host into gitignored
+Auth for codex/ClaudeX/opencode is synced by `autorun.sh` from the host into gitignored
 **per-container** copies under `multi-factory/auth/<service>/` (bind-mounted
 over the container HOME, rw so token refreshes persist; a copy is only
 overwritten when the host file is newer). **Nothing under `auth/` or `state/`
@@ -137,7 +165,7 @@ that same service while it is stopped, so it exercises the factory image,
 isolated auth/CCR mounts, direct gateway, and Claude Code route rather than a
 host-only CLI shortcut.
 Claude capacity gating (`wait_for_capacity`) only blocks startup while some
-difficulty actually routes to claude — a claudex/codex/gemini-only config starts fine
+difficulty actually routes to claude — a claudex/codex-only config starts fine
 during a claude outage. Non-Claude subscription runs retain `cost_usd: 0` as the
 billing field and record token counts plus `api_equivalent_usd` when pricing is
 known. Dashboard money totals, model/role/issue breakdowns, and daily charts use
@@ -256,12 +284,27 @@ available at `/legacy` (and `/legacy/`) against the same live control APIs.
 ./multi-factory/autorun.sh --stop   # stop containers (resumable)
 ./multi-factory/autorun.sh --down   # remove containers (state/ + volumes persist)
 ./multi-factory/test.sh             # offline scheduler+provider+protocol+control tests
+./multi-factory/autorun.sh --self-test  # the same suite, as a deploy gate
 node multi-factory/control/server.mjs   # dashboard on 127.0.0.1:8790
 docker compose -p bettertrack-multifactory pause|unpause   # freeze/thaw (cc() survives)
 ```
 
 `test.sh` runs entirely offline against stubs — **no containers, no Docker, no
-network** — so it is the right check while the daemon is down or restarting.
+network** — so it is the right check while the daemon is down or restarting. It
+chains `protocol-test.sh`, `claudex-test.sh` and the control-plane Node tests,
+and it owns its whole environment: every `MF_*`/`CC_*`/`COMPOSER_*` variable the
+live fleet exports is unset at the top before the fixtures are written (an
+inherited `MF_MODELS_FILE` alone reddened 42 checks when the suite was first run
+inside a container).
+
+**The suite runs on every deploy.** `autorun.sh` calls it before building and
+starting the fleet, writes the output to `state/logs/test-<UTC timestamp>.log`
+and prints the summary line. A red suite is loud but **non-fatal** on the start
+path — a guard regression must never be able to keep the fleet down. Use
+`autorun.sh --self-test` to run only the suite (exit code follows the result),
+and `MF_SKIP_SELF_TEST=1` to skip it on a start; `claudex-test.sh` drives
+`autorun.sh` itself, so that variable is also what stops the suite re-entering
+itself.
 
 **Standing fleet shape: `WORKERS=2`** (the value in `state/control/workers`, or
 2 when that file is absent). `compose.yml` defines exactly `master`, `worker-1`

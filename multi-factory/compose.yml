@@ -10,8 +10,8 @@
 # guards both directions.
 #
 # Provider auth: autorun.sh syncs/materializes credentials into gitignored
-# per-container copies under ./auth/<service>/. Codex/ClaudeX, Gemini and
-# opencode need writable homes for refresh/cache/session state. Native Claude
+# per-container copies under ./auth/<service>/. Codex/ClaudeX and opencode need
+# writable homes for refresh/cache/session state. Native Claude
 # gets only its selected inference token through a read-only service-local
 # mount; if no named profile is selected, mflib keeps the legacy
 # CLAUDE_CODE_OAUTH_TOKEN from factory/.env.
@@ -46,6 +46,12 @@ services:
     environment:
       <<: *common-env
       MF_REQUEUE_MAX: '3'
+      # Composer economics (owner survey 2026-09-01): the priciest role runs in
+      # small batches under an explicit turn/time cap. Raise COMPOSER_BATCH here
+      # when a deliberately big batch is wanted.
+      COMPOSER_BATCH: '5'
+      MF_COMPOSER_MAX_TURNS: '60'
+      MF_COMPOSER_TIMEOUT: '1800'
     volumes:
       - mf-master-work:/work/state
       - ./state:/work/mfstate
@@ -67,7 +73,6 @@ services:
       - ./auth/master/claude:/home/factory/.claude-auth:ro
       - ./auth/master/codex:/home/factory/.codex
       - ./auth/master/ccr:/home/factory/.claude-code-router
-      - ./auth/master/gemini:/home/factory/.gemini
       - ./auth/master/opencode:/home/factory/.opencode
 
   worker-1:
@@ -97,7 +102,6 @@ services:
       - ./auth/worker-1/claude:/home/factory/.claude-auth:ro
       - ./auth/worker-1/codex:/home/factory/.codex
       - ./auth/worker-1/ccr:/home/factory/.claude-code-router
-      - ./auth/worker-1/gemini:/home/factory/.gemini
       - ./auth/worker-1/opencode:/home/factory/.opencode
 
   worker-2:
@@ -127,7 +131,6 @@ services:
       - ./auth/worker-2/claude:/home/factory/.claude-auth:ro
       - ./auth/worker-2/codex:/home/factory/.codex
       - ./auth/worker-2/ccr:/home/factory/.claude-code-router
-      - ./auth/worker-2/gemini:/home/factory/.gemini
       - ./auth/worker-2/opencode:/home/factory/.opencode
 
 volumes:

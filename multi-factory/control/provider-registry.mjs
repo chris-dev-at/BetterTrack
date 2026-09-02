@@ -54,13 +54,6 @@ const MODEL_CATALOGS = Object.freeze({
     'codex-auto-review',
     'gpt-5-codex',
   ]),
-  gemini: Object.freeze([
-    'Gemini 3.1 Pro (High)',
-    'Gemini 3.1 Pro (Low)',
-    'Gemini 3.5 Flash (High)',
-    'Gemini 3.5 Flash (Medium)',
-    'Gemini 3.5 Flash (Low)',
-  ]),
   // opencode addresses models as "<opencode-provider>/<model>", and the model
   // half may itself contain a slash (stealth/ox-alpha).
   opencode: Object.freeze(['openrouter/stealth/ox-alpha']),
@@ -138,29 +131,10 @@ const registry = {
       'gpt-5.6-luna': Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
     },
   },
-  gemini: {
-    id: 'gemini',
-    label: 'Antigravity (Google)',
-    providerFamily: 'google',
-    harness: 'antigravity',
-    billing: 'subscription',
-    experimental: false,
-    modelSuggestions: MODEL_CATALOGS.gemini,
-    efforts: Object.freeze([]),
-    defaultModel: 'Gemini 3.1 Pro (High)',
-    defaultEffort: null,
-    capabilities: {
-      freeTextModel: true,
-      effort: false,
-      containerTest: false,
-      apiEquivalentEstimate: false,
-      dynamicModelCatalog: true,
-    },
-  },
   // The only API-KEY route in the factory: OpenRouter bills per token, and the
   // intended model is free only for the duration of its preview. `billing` says
   // free-preview rather than subscription so neither this registry nor the ledger
-  // implies the $0 is structural the way it is for the other four.
+  // implies the $0 is structural the way it is for the other three.
   opencode: {
     id: 'opencode',
     label: 'opencode (OpenRouter)',

@@ -36,7 +36,22 @@ backdate(){ # $1=file $2=seconds-ago — portable mtime rewind (GNU + BSD/macOS 
 }
 
 # ---- environment + stubs --------------------------------------------------------
+# Hermetic environment. The suite also runs INSIDE a factory container (the
+# autorun.sh --self-test deploy hook), where compose exports MF_MODELS_FILE,
+# MF_REQUEUE_MAX, MF_LIMIT_NAPS_MAX, the composer caps and CC_* for the live
+# fleet. Every one of those silently overrides a fixture: an inherited
+# MF_MODELS_FILE alone reddened 42 checks here. Own the whole namespace.
+unset MF_MODELS_FILE MF_ROLE_TIMEOUT MF_REQUEUE_MAX MF_MERGE_LOOKAHEAD \
+  MF_LIMIT_NAPS_MAX MF_COMPOSER_COOLDOWN MF_COMPOSER_BACKOFF_MAX \
+  MF_COMPOSER_PROTOCOL_ATTEMPTS MF_COMPOSER_PROTOCOL_COOLDOWN \
+  MF_COMPOSER_PROTOCOL_BACKOFF_MAX MF_COMPOSER_MAX_TURNS MF_COMPOSER_TIMEOUT \
+  MF_SOL_COMPOSER_TIMEOUT MF_SOL_COMPOSER_MAX_TURNS COMPOSER_BATCH \
+  CC_ROLE CC_SLOT CC_EFFORT CC_ISSUE CC_MAX_TURNS CC_TIMEOUT 2>/dev/null || true
+# claudex-test.sh drives autorun.sh with a stubbed docker; without this the
+# start path would re-enter this very suite.
+export MF_SKIP_SELF_TEST=1
 export MFSTATE=$T/state
+export MF_MODELS_FILE=$MFSTATE/control/models.json
 mkdir -p "$MFSTATE/assignments" "$MFSTATE/status" "$MFSTATE/merge-queue" "$MFSTATE/control" "$MFSTATE/logs"
 export TICK_ISSUES=$T/issues.json
 export TICK_DEPS=$T/deps; mkdir -p "$TICK_DEPS"
@@ -585,7 +600,6 @@ for ROUTE in \
   "claude claude-opus-4-8 extra" \
   "claudex gpt-5.6-terra" \
   "codex gpt-5.6-luna" \
-  "gemini Gemini-3.1-Pro" \
   "opencode openrouter/stealth/ox-alpha"; do
   ROUTE_PROVIDER=${ROUTE%% *}
   ROUTE_MODEL=${ROUTE#* }
@@ -625,14 +639,17 @@ printf '%s\n' \
   CC_MAX_TURNS=23
   cc(){
     printf '%s' "$2" >"$FABLE_CAPTURE"
-    printf '%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" >"$FABLE_LIMITS"
+    printf '%s|%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" "${CC_TIMEOUT:-none}" >"$FABLE_LIMITS"
   }
   mf_cc composer max "$FABLE_PROMPT"
 )
 check "Fable receives the shared composer prompt byte-identically" \
   "$FABLE_PROMPT" "$(<"$FABLE_CAPTURE")"
-check "Fable keeps its existing timeout/turn settings untouched" \
-  "777|23" "$(<"$FABLE_LIMITS")"
+# Sol's tighter 1200s/40-turn caps must not leak onto Fable, but since #1623
+# every composer is bounded: Fable runs under the MF_COMPOSER_* caps, and the
+# ambient MF_ROLE_TIMEOUT the claude branch never consulted stays untouched.
+check "Fable takes the composer caps, not Sol's and not an unbounded run" \
+  "777|60|1800" "$(<"$FABLE_LIMITS")"
 
 SOL_CAPTURE=$T/sol-composer-prompt
 SOL_LIMITS=$T/sol-composer-limits
@@ -682,12 +699,12 @@ unset BAD_MODEL BAD_CAPTURE BAD_MODELS
 echo "— difficulty → model config (state/control/models.json)"
 cat >"$MFSTATE/control/models.json" <<'JSON'
 {"difficulties":{
-  "easy":{"provider":"gemini","model":"Gemini 3.5 Flash (Low)"},
+  "easy":{"provider":"opencode","model":"openrouter/stealth/ox-alpha"},
   "hard":{"provider":"codex","model":"gpt-5.5","effort":"xhigh"},
   "max":{"provider":"pigeon","model":"carrier"}},
  "roles":{"composer":"intermediate","checker":"max","reviewFloor":"hard"}}
 JSON
-check "cfg: owner-set gemini entry (no effort)" "gemini|Gemini 3.5 Flash (Low)|" "$(diff_cfg easy)"
+check "cfg: owner-set opencode entry (no effort)" "opencode|openrouter/stealth/ox-alpha|" "$(diff_cfg easy)"
 check "cfg: owner-set codex entry with effort" "codex|gpt-5.5|xhigh" "$(diff_cfg hard)"
 check "cfg: invalid provider remains explicit/fail-closed" "invalid|pigeon|" "$(diff_cfg max)"
 check "cfg: unset difficulty uses builtin default" "claude|claude-opus-4-8|medium" "$(diff_cfg normal)"
@@ -698,7 +715,7 @@ mf_uses_claude && ok "mixed config still detects claude" || bad "mixed config sh
 cat >"$MFSTATE/control/models.json" <<'JSON'
 {"difficulties":{
   "easy":{"provider":"claudex","model":"gpt-5.6-luna","effort":"high"},
-  "normal":{"provider":"gemini","model":"g"},
+  "normal":{"provider":"opencode","model":"g"},
   "intermediate":{"provider":"codex","model":"c"},"hard":{"provider":"codex","model":"c"},
   "max":{"provider":"codex","model":"c","effort":"xhigh"}}}
 JSON
@@ -1198,6 +1215,181 @@ COMPOSER_REQUEST_LOADED=0
 MF_DRY_RUN=1
 eval "$CMP_SAVED_RUNNABLE"; eval "$CMP_SAVED_READY"; eval "$CMP_SAVED_PREPARE"
 log(){ :; }
+
+echo "— composer outcome model: created / idle / protocol-failure (#1202, #1623)"
+# The 2026-08-30 live log: a composer run that CREATED six issues was booked as a
+# protocol failure because they were quarantined as not-schedulable, and the
+# bounded retry then started a second ~20-minute claude-opus-5 (xhigh) run 31 s
+# later — inside the same tick. Three rules are pinned here: created wins over a
+# bad artifact contract, an empty run is idle, and a real protocol failure waits
+# a full cooldown before its next attempt.
+OC_LOG=$T/outcome.log
+OC_SAVED_RUNNABLE=$(declare -f runnable_issues)
+# An earlier battery leaves the shell in a temp clone — never use $(pwd) here.
+MF_PROMPTS=$TEST_SCRIPT_DIR/prompts
+MF_COMPOSER_COOLDOWN=900
+MF_COMPOSER_PROTOCOL_COOLDOWN=900
+MF_COMPOSER_PROTOCOL_BACKOFF_MAX=14400
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
+MF_COMPOSER_DISCOVERY_ATTEMPTS=2
+MF_COMPOSER_DISCOVERY_SLEEP=0
+MF_DRY_RUN=0
+COMPOSER_REQUEST_LOADED=0
+OC_CALLS=0
+OC_AFTER='[]'
+OC_CASE=none
+log(){ printf '%s\n' "$*" >>"$OC_LOG"; }
+runnable_issues(){ :; }
+mf_recent_issues_json(){ printf '%s\n' "$OC_AFTER"; }
+mf_issue_json_by_number(){ return 1; }
+role_diff(){ echo hard; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+mstatus(){ :; }
+# Stands in for the model. Reads the run id and manifest path out of the real
+# composer prompt, exactly as the helper the composer is told to call would.
+mf_cc(){
+  local run manifest body
+  OC_CALLS=$((OC_CALLS + 1))
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  case "$OC_CASE" in
+    none)     printf 'NONE\n' >"$manifest"; OC_AFTER='[]';;
+    silent)   OC_AFTER='[]';;   # no manifest at all: a genuine protocol failure
+    created-invalid)
+      # Issues WERE filed, but the artifact contract does not hold: the manifest
+      # claims an autopilot issue and #913 carries no such label.
+      body=$(printf '## Context\nquoted\n\n## Scope\ninvalid\n\n## Acceptance criteria\n- [ ] invalid\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: invalid\n-->' "$run")
+      printf 'ISSUE 913 autopilot\n' >"$manifest"
+      OC_AFTER=$(jq -cn --arg body "$body" \
+        '[{number:913,title:"invalid",body:$body,labels:["diff:normal"],created_at:"now"}]')
+      ;;
+  esac
+  return 0
+}
+oc_reset(){
+  rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests"
+  rm -f "$CONTROL"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff,protocol-attempt} \
+        "$CONTROL/composer-quarantine"
+  rm -f "$MFSTATE"/merge-queue/*.json
+  mkdir -p "$CONTROL/composer-manifests"
+  printf '[]\n' >"$TICK_ISSUES"
+  OC_CALLS=0; OC_AFTER='[]'; : >"$OC_LOG"
+}
+
+oc_reset
+OC_CASE=created-invalid
+composer_step run || true
+check "a run whose issues were all quarantined invokes the model once" "1" "$OC_CALLS"
+check "quarantined-but-created issues are still fenced off from the scheduler" "913" \
+  "$(cat "$CONTROL/composer-quarantine" 2>/dev/null)"
+check "created-but-quarantined is NOT booked as a protocol failure" "0" \
+  "$(grep -c 'composer protocol failure' "$OC_LOG")"
+check "created-but-quarantined is logged as a created outcome" "1" \
+  "$(grep -c 'composer outcome created: issues \[913\] quarantined' "$OC_LOG")"
+check "created-but-quarantined books the ordinary composer cooldown" "1" \
+  "$([ -f "$CONTROL/.composer-last" ] && echo 1 || echo 0)"
+check "created-but-quarantined arms no protocol retry" "0" \
+  "$([ -e "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
+# The same tick again: the cooldown, not a retry counter, is what must stop it.
+composer_step run || true
+check "no second composer starts in the same tick after a created run" "1" "$OC_CALLS"
+
+oc_reset
+OC_CASE=none
+composer_step run || true
+check "a valid empty run invokes the model once" "1" "$OC_CALLS"
+check "a valid empty run is booked idle, not protocol" "0" \
+  "$(grep -c 'composer protocol failure' "$OC_LOG")"
+check "a valid empty run feeds the idle backoff (#1202)" "900" \
+  "$(cat "$CONTROL/.composer-backoff" 2>/dev/null)"
+check "a valid empty run quarantines nothing" "0" \
+  "$([ -e "$CONTROL/composer-quarantine" ] && echo 1 || echo 0)"
+
+oc_reset
+OC_CASE=silent
+composer_step run || true
+check "a malformed run invokes the model ONCE per tick, never back-to-back" "1" "$OC_CALLS"
+check "a malformed run is booked as attempt 1 of 2" "1" \
+  "$(grep -c 'composer protocol failure (attempt 1/2' "$OC_LOG")"
+check "the malformed-run retry waits a full composer cooldown" "900" \
+  "$(cat "$CONTROL/.composer-protocol-backoff")"
+check "the attempt counter outlives the tick" "1" \
+  "$(cat "$CONTROL/.composer-protocol-attempt")"
+composer_step run || true
+check "the next 15-second tick does not re-run the composer" "1" "$OC_CALLS"
+backdate "$CONTROL/.composer-protocol-last" 901
+composer_step run || true
+check "the corrective retry runs only after the protocol cooldown" "2" "$OC_CALLS"
+check "the retry is the second attempt, and the backoff doubles" "1" \
+  "$(grep -c 'composer protocol failure (attempt 2/2' "$OC_LOG")"
+check "repeated malformed runs back off independently" "1800" \
+  "$(cat "$CONTROL/.composer-protocol-backoff")"
+# A later good run clears the whole correction sequence.
+OC_CASE=none
+backdate "$CONTROL/.composer-protocol-last" 1801
+composer_step run || true
+check "a later valid run clears the persisted attempt counter" "0" \
+  "$([ -e "$CONTROL/.composer-protocol-attempt" ] && echo 1 || echo 0)"
+
+oc_reset
+unset MF_PROMPTS MF_COMPOSER_COOLDOWN MF_COMPOSER_PROTOCOL_COOLDOWN \
+  MF_COMPOSER_PROTOCOL_BACKOFF_MAX MF_COMPOSER_PROTOCOL_ATTEMPTS \
+  MF_COMPOSER_DISCOVERY_ATTEMPTS MF_COMPOSER_DISCOVERY_SLEEP
+unset -f mf_cc mf_recent_issues_json mf_issue_json_by_number role_diff with_pack \
+  fetch_issues mstatus
+eval "$OC_SAVED_RUNNABLE"
+MF_DRY_RUN=1
+log(){ :; }
+MF_SOURCE_ONLY=1 . "$TEST_SCRIPT_DIR/master.sh"   # restore the real orchestration functions
+. "$TEST_SCRIPT_DIR/mflib.sh"
+
+echo "— composer role caps: the priciest role is bounded in turns and wall clock"
+# Until #1623 only the Sol branch was capped; a Claude composer inherited
+# MF_ROLE_TIMEOUT=7200 with no turn cap at all, which is how one tick could buy
+# two ~20-minute xhigh runs. Assert the dispatch mf_cc assembles, per branch.
+CAPS_MODELS=$T/caps-models.json
+CAPS_OUT=$T/caps-dispatch
+cat >"$CAPS_MODELS" <<'JSON'
+{"version":2,"difficulties":{"hard":{"provider":"claude","model":"claude-opus-4-8","effort":"max"}},
+ "roles":{"composer":{"provider":"claude","model":"claude-opus-5","effort":"xhigh"}}}
+JSON
+(
+  MF_MODELS_FILE=$CAPS_MODELS
+  mf_with_claude_profile(){ "$@"; }
+  cc(){ printf '%s turns=%s timeout=%s\n' "$1" "${CC_MAX_TURNS:-none}" "${CC_TIMEOUT:-none}"; }
+  : >"$CAPS_OUT"
+  mf_cc composer hard p >>"$CAPS_OUT"
+  mf_cc writer hard p >>"$CAPS_OUT"
+  MF_COMPOSER_MAX_TURNS=25 MF_COMPOSER_TIMEOUT=600 mf_cc composer hard p >>"$CAPS_OUT"
+  MF_COMPOSER_MAX_TURNS=nonsense MF_COMPOSER_TIMEOUT=99999 mf_cc composer hard p >>"$CAPS_OUT"
+)
+check "the claude composer carries --max-turns 60 and a 1800s role timeout" \
+  "claude-opus-5 turns=60 timeout=1800" "$(sed -n 1p "$CAPS_OUT")"
+check "no other role is capped by the composer knobs" \
+  "claude-opus-4-8 turns=none timeout=none" "$(sed -n 2p "$CAPS_OUT")"
+check "the owner can tighten the composer caps by env" \
+  "claude-opus-5 turns=25 timeout=600" "$(sed -n 3p "$CAPS_OUT")"
+check "unusable composer caps fall back to the defaults, never to unbounded" \
+  "claude-opus-5 turns=60 timeout=1800" "$(sed -n 4p "$CAPS_OUT")"
+CAPS_SOL=$T/caps-sol.json
+cat >"$CAPS_SOL" <<'JSON'
+{"version":2,"difficulties":{"hard":{"provider":"claudex","model":"gpt-5.6-terra","effort":"high"}},
+ "roles":{"composer":{"provider":"claudex","model":"gpt-5.6-sol","effort":"high"}}}
+JSON
+(
+  MF_MODELS_FILE=$CAPS_SOL
+  cc_claudex(){ printf '%s turns=%s timeout=%s\n' "$1" "${CC_MAX_TURNS:-none}" "${MF_ROLE_TIMEOUT:-none}"; }
+  : >"$CAPS_OUT"
+  mf_cc composer hard p >>"$CAPS_OUT"
+)
+check "the Sol composer keeps its own tighter caps" "gpt-5.6-sol turns=40 timeout=1200" \
+  "$(sed -n 1p "$CAPS_OUT")"
+unset CAPS_MODELS CAPS_OUT CAPS_SOL
 
 echo "— merger: bounded approval-read failures park the queue head (#891 jam)"
 MF_DRY_RUN=0

@@ -26,12 +26,12 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${WORKERS:=2}"
 : "${MF_TICK:=15}"                # seconds between master loop ticks
 : "${MF_STALL_SECS:=3600}"        # heartbeat silence that counts as a worker stall
-: "${COMPOSER_BATCH:=10}"         # issues per composer run (owner 2026-07-16: big batches — amortize the per-cycle cost of the priciest role)
+: "${COMPOSER_BATCH:=5}"          # issues per composer run (the owner's 2026-07-16 "big batches" note is honoured by keeping this configurable, not by defaulting high)
 : "${MF_COMPOSER_COOLDOWN:=900}"  # min seconds between composer runs (base; also the floor after a reset)
 : "${MF_COMPOSER_BACKOFF_MAX:=14400}"  # cap on the idle-backoff cooldown (empty composer runs)
-: "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # one corrective retry for a missing/malformed manifest
-: "${MF_COMPOSER_PROTOCOL_COOLDOWN:=120}" # malformed runs retry separately from valid empty runs
-: "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=900}"
+: "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # corrective retries for a missing/malformed manifest — ONE PER TICK, never back-to-back
+: "${MF_COMPOSER_PROTOCOL_COOLDOWN:=$MF_COMPOSER_COOLDOWN}" # a malformed run waits a full composer cooldown before its retry
+: "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=$MF_COMPOSER_BACKOFF_MAX}"
 : "${MF_COMPOSER_DISCOVERY_ATTEMPTS:=6}" # no-cache post-create snapshots (GitHub lists can lag)
 : "${MF_COMPOSER_DISCOVERY_SLEEP:=2}" # seconds between post-create snapshots
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
@@ -286,6 +286,16 @@ composer_snapshot(){ # $1=mode — state the backoff should be sensitive to
   { printf 'mode=%s\nphase=%s\n' "$1" "$phase"; jq -r '[.[].number]|sort|.[]' "$TICK_ISSUES" 2>/dev/null; }
 }
 
+# Composer outcome model (owner survey 2026-09-01). A run is exactly one of:
+#   created — the run created ≥1 repository issue, whether those issues turned
+#             out schedulable or had to be quarantined. It cost the money, so it
+#             books the normal cooldown and is NEVER retried: replaying a run
+#             that already created issues just buys duplicates.
+#   idle    — zero issues created and a valid empty result → idle backoff.
+#   protocol— zero issues created and malformed output / a transport failure.
+#             It retries at most MF_COMPOSER_PROTOCOL_ATTEMPTS times, one attempt
+#             per tick, each gated by the protocol cooldown — never twice inside
+#             the same tick.
 composer_record_outcome(){ # $1=created|idle $2=snapshot $3=current backoff
   local outcome=$1 snap=$2 backoff=$3 prev="" next=$MF_COMPOSER_COOLDOWN
   [ -f "$CONTROL/.composer-snapshot" ] && prev=$(<"$CONTROL/.composer-snapshot")
@@ -300,7 +310,7 @@ composer_record_outcome(){ # $1=created|idle $2=snapshot $3=current backoff
   atomic_write "$CONTROL/.composer-snapshot" "$snap" || return 1
   touch "$CONTROL/.composer-last" || return 1
   rm -f "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff" \
-    || return 1
+    "$CONTROL/.composer-protocol-attempt" || return 1
 }
 
 composer_protocol_ready(){
@@ -309,8 +319,23 @@ composer_protocol_ready(){
   [ "$(file_age "$CONTROL/.composer-protocol-last")" -ge "$wait" ]
 }
 
-composer_record_protocol_failure(){
-  local current next
+# The corrective retry is bounded ACROSS ticks, so the attempt number has to
+# outlive the process. It is cleared by composer_record_outcome — any created or
+# idle run ends the correction sequence.
+composer_protocol_attempt(){ # attempt number this tick would consume (1-based)
+  local n max=$MF_COMPOSER_PROTOCOL_ATTEMPTS
+  n=$(cat "$CONTROL/.composer-protocol-attempt" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=0;; esac
+  case "$max" in ''|*[!0-9]*|0) max=2;; esac
+  n=$(( n + 1 ))
+  # Saturate: once the corrective attempts are spent the run stays "attempt
+  # max/max" and the doubling protocol backoff is what bounds it from there.
+  [ "$n" -le "$max" ] || n=$max
+  echo "$n"
+}
+
+composer_record_protocol_failure(){ # $1=attempt just consumed (optional)
+  local current next attempt=${1:-}
   current=$(cat "$CONTROL/.composer-protocol-backoff" 2>/dev/null)
   case "$current" in ''|*[!0-9]*) current=$MF_COMPOSER_PROTOCOL_COOLDOWN;; esac
   if [ -f "$CONTROL/.composer-protocol-last" ]; then
@@ -320,6 +345,10 @@ composer_record_protocol_failure(){
     next=$current
   fi
   atomic_write "$CONTROL/.composer-protocol-backoff" "$next" || return 1
+  case "$attempt" in
+    ''|*[!0-9]*) ;;
+    *) atomic_write "$CONTROL/.composer-protocol-attempt" "$attempt" || return 1;;
+  esac
   touch "$CONTROL/.composer-protocol-last"
 }
 
@@ -717,7 +746,7 @@ composer_manifest_validate_or_repair(){ # validate args + $6=exact-count-or-0 $7
 
 composer_discovery_fence_reconcile(){
   local fence="$CONTROL/composer-discovery-fence" before after newnums snapshot
-  local manifest_count valid=0 outcome=protocol archive
+  local manifest_count valid=0 outcome=protocol archive created=0
   if ! composer_discovery_fence_load; then
     composer_discovery_fence_alert_once invalid-fence \
       "composer discovery fence is corrupt — scheduler remains fenced; owner reconciliation required"
@@ -736,6 +765,7 @@ composer_discovery_fence_reconcile(){
   fi
   newnums=$(xargs <<<"$newnums")
   log "composer fence discovery ($COMPOSER_FENCE_RUN_ID): new repository issues [${newnums:-none}]"
+  [ -n "$newnums" ] && created=1
 
   if composer_manifest_validate_or_repair "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
     "$COMPOSER_FENCE_RUN_ID" "" "$COMPOSER_FENCE_EXACT_COUNT" \
@@ -762,8 +792,12 @@ composer_discovery_fence_reconcile(){
         fi
         ;;
       none)
-        outcome=idle
-        [ -z "$COMPOSER_FENCE_REQUEST_ID" ] \
+        # A NONE manifest beside freshly created issues is not an empty run: the
+        # money was spent and the issues exist. It stays a `created` outcome and
+        # falls through to the quarantine path below.
+        [ "$created" -eq 1 ] || outcome=idle
+        [ "$created" -eq 0 ] \
+          && [ -z "$COMPOSER_FENCE_REQUEST_ID" ] \
           && [ "$COMPOSER_FENCE_TRANSPORT" -eq 0 ] \
           && [ "$COMPOSER_FENCE_INVALID_NEW_SEEN" -eq 0 ] \
           && valid=1
@@ -801,7 +835,34 @@ composer_discovery_fence_reconcile(){
       "composer discovery was invalid and quarantine persistence failed — scheduler remains fenced"
     return 2
   fi
-  composer_record_protocol_failure || {
+  if [ "$created" -eq 1 ]; then
+    # created-but-quarantined: the run produced issues, so it is NOT a protocol
+    # failure. Book the ordinary cooldown so the corrective retry never fires —
+    # replaying a run that already created issues only produces duplicates.
+    snapshot=$(<"$fence/snapshot")
+    composer_record_outcome created "$snapshot" "$COMPOSER_FENCE_BACKOFF" || {
+      composer_discovery_fence_alert_once outcome-write-failed \
+        "composer discovery created issues but outcome persistence failed — scheduler remains fenced"
+      return 2
+    }
+    if [ -n "$COMPOSER_FENCE_REQUEST_ID" ]; then
+      composer_request_restore_from_fence || {
+        composer_discovery_fence_alert_once request-restore-failed \
+          "composer request discovery was invalid — scheduler remains fenced for owner reconciliation"
+        return 2
+      }
+      composer_request_mark_blocked discovery-reconciliation-invalid || {
+        composer_discovery_fence_alert_once request-block-write-failed \
+          "composer request discovery was invalid but its replay block could not be persisted — scheduler remains fenced"
+        return 2
+      }
+    fi
+    composer_discovery_fence_clear || return 2
+    notify "composer discovery reconciled: issues were created but their artifact contract was invalid — quarantined, no retry"
+    [ -n "$COMPOSER_FENCE_REQUEST_ID" ] && return 2
+    return 1
+  fi
+  composer_record_protocol_failure "$COMPOSER_FENCE_ATTEMPT" || {
     composer_discovery_fence_alert_once protocol-write-failed \
       "composer discovery was invalid and protocol state could not be persisted — scheduler remains fenced"
     return 2
@@ -975,9 +1036,15 @@ composer_step(){ # $1=mode
   local outcome_recorded=0 protocol_recorded=0 owner_blocked=0
   [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
     && prompt_batch=$COMPOSER_REQUEST_EXACT_COUNT
+  # Always 0 today: a run that creates artifacts ends the correction sequence as
+  # `created`, so no later attempt can follow a quarantining one. The fence still
+  # carries the flag because a persisted fence from an older master may set it.
   local invalid_new_seen=0
   mkdir -p "$CONTROL/composer-manifests"
-  for attempt in $(seq 1 "$MF_COMPOSER_PROTOCOL_ATTEMPTS"); do
+  # ONE model invocation per tick. The corrective retry is bounded ACROSS ticks
+  # by .composer-protocol-attempt and gated by the protocol cooldown above, so a
+  # malformed run can never start a second paid composer inside the same tick.
+  for attempt in "$(composer_protocol_attempt)"; do
     before=$(mf_recent_issues_json) || {
       log "composer protocol: cannot snapshot repository issues — retrying next tick"
       break
@@ -1107,15 +1174,39 @@ finish the manifest contract this time."
       esac
     fi
     if [ -n "$newnums" ]; then
-      invalid_new_seen=1
       composer_quarantine "$newnums" || {
         composer_discovery_fence_alert_once quarantine-failed \
           "composer artifact quarantine failed — scheduler remains fenced"
         return 2
       }
+      # created-but-quarantined. The run filed real issues, so it is a `created`
+      # outcome that books the ordinary cooldown — NOT a protocol failure. The
+      # corrective retry must not fire: replaying a run that already created
+      # issues only buys duplicates, at composer prices.
+      if ! composer_record_outcome created "$snap" "$backoff"; then
+        composer_discovery_fence_alert_once outcome-write-failed \
+          "composer created issues but cooldown persistence failed — scheduler remains fenced"
+        return 2
+      fi
+      outcome_recorded=1
+      if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+        composer_request_mark_blocked artifact-contract-invalid || {
+          composer_discovery_fence_alert_once request-block-write-failed \
+            "composer request created issues under an invalid contract but its replay block could not be persisted — scheduler remains fenced"
+          return 2
+        }
+        owner_blocked=1
+      fi
+      composer_discovery_fence_clear || {
+        notify "composer artifacts were quarantined but the discovery fence could not be cleared — scheduler remains fenced"
+        return 2
+      }
+      outcome=created
+      log "composer outcome created: issues [$newnums] quarantined (invalid artifact contract) — no retry"
+      break
     fi
     if [ "$protocol_recorded" -ne 1 ]; then
-      composer_record_protocol_failure || {
+      composer_record_protocol_failure "$attempt" || {
         composer_discovery_fence_alert_once protocol-write-failed \
           "composer artifact contract failed and protocol persistence failed — scheduler remains fenced"
         return 2
@@ -1123,7 +1214,7 @@ finish the manifest contract this time."
       protocol_recorded=1
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
-      && [ "$attempt" -eq "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
+      && [ "$attempt" -ge "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
       composer_request_mark_blocked protocol-failure || {
         composer_discovery_fence_alert_once request-block-write-failed \
           "composer request exhausted its attempts but its replay block could not be persisted — scheduler remains fenced"
@@ -1141,13 +1232,16 @@ finish the manifest contract this time."
   if [ "$outcome" = protocol ]; then
     # A malformed run does not advance the valid-empty cooldown, but it has its
     # own bounded backoff so a bad provider cannot fire twice every 15-second tick.
-    if [ "$protocol_recorded" -ne 1 ] && ! composer_record_protocol_failure; then
+    if [ "$protocol_recorded" -ne 1 ] && ! composer_record_protocol_failure "$attempt"; then
       notify "composer protocol failed and its retry cooldown could not be persisted"
       [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
       return 1
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+      # The brief keeps its bounded corrective attempt — it is just spread over
+      # ticks now, so the retry can never fire back-to-back inside this one.
       if [ "$owner_blocked" -ne 1 ] \
+        && [ "$attempt" -ge "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ] \
         && ! composer_request_mark_blocked protocol-failure; then
         return 2
       fi
@@ -1161,6 +1255,12 @@ finish the manifest contract this time."
       log "composer: failed to persist cooldown outcome"
       return 1
     }
+  fi
+  if [ "$owner_blocked" -eq 1 ]; then
+    # The brief is retained for owner review; keep the scheduler fenced exactly
+    # as a protocol-exhausted request does.
+    [ "$outcome" = created ] && fetch_issues
+    return 2
   fi
   [ "$outcome" = created ] && fetch_issues
 }
@@ -1799,7 +1899,7 @@ gh label create "mf:relocated" --color BFD4F2 --description "multi-factory: issu
 mf_labels_boot
 notify "multi-factory master started (workers=$WORKERS, mode=$(cat "$CONTROL/mode"), dry=$MF_DRY_RUN)"
 # Claude capacity gates startup only while some difficulty actually routes to the
-# claude provider — a codex/gemini-only configuration must start during a claude outage.
+# claude provider — a codex/claudex-only configuration must start during a claude outage.
 if [ "$MF_DRY_RUN" != 1 ] && mf_uses_claude; then
   mf_wait_for_claude_capacity "startup"
 fi
