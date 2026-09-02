@@ -339,7 +339,7 @@ function LockedPortfolioTableRow({
       <td className="bt-row-title">{portfolioDisplayName(portfolio, fallback)}</td>
       <td colSpan={3}>
         {state.data ? (
-          <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+          <VaultStateAction inPlace state={state.data} vaultId={portfolio.vaultId} />
         ) : (
           <Button
             disabled={state.isPending}
@@ -374,7 +374,7 @@ function LockedPortfolioCard({
         <Badge>{t('vault.lockedStub.badge')}</Badge>
       </span>
       {state.data ? (
-        <VaultStateAction state={state.data} vaultId={portfolio.vaultId} />
+        <VaultStateAction inPlace state={state.data} vaultId={portfolio.vaultId} />
       ) : (
         <Button
           disabled={state.isPending}

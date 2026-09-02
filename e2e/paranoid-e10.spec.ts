@@ -1176,16 +1176,22 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(wizard).toBeHidden();
       });
 
-      await test.step('UNLOCK, then MOVE-OUT restores the same rows under the same ids', async () => {
+      await test.step('UNLOCK IN PLACE, then MOVE-OUT restores the same rows under the same ids', async () => {
         const stub = page.getByTestId('locked-portfolio-stub');
-        // The stub's own state action is the §12 affordance — an SPA link into
-        // the Control Center popup; the workspace stays mounted behind it.
-        await stub.getByRole('link', { name: 'Unlock', exact: true }).click();
-        const access = page.getByRole('region', { name: /access$/ });
-        await expect(access).toBeVisible({ timeout: 30_000 });
-        await access.locator(`#vault-access-secret-${created.vaultId}`).fill(DEVICE_PASSWORD);
-        await access.getByRole('button', { name: 'Continue', exact: true }).click();
-        await expect(access).toBeHidden({ timeout: 60_000 });
+        // The stub's own state action prompts HERE (#4). It used to be a bare
+        // link into the Control Center, where the password field sat below the
+        // fold and success left the user standing in a settings panel; now the
+        // page the user is already on resolves behind the dialog.
+        await expect(stub.getByRole('link', { name: 'Unlock', exact: true })).toHaveCount(0);
+        await stub.getByRole('button', { name: 'Unlock', exact: true }).click();
+        const prompt = page.getByRole('dialog', { name: /^Unlock/u });
+        await expect(prompt).toBeVisible({ timeout: 30_000 });
+        await prompt.getByLabel('Device password').fill(DEVICE_PASSWORD);
+        await prompt.getByRole('button', { name: 'Unlock vault', exact: true }).click();
+        await expect(prompt).toBeHidden({ timeout: 60_000 });
+        expect(new URL(page.url()).pathname, 'the in-place unlock must not navigate').toBe(
+          '/portfolio',
+        );
 
         // A6's listener, inverted: the unlocked view is only worth anything if
         // it reads the VAULT. A single money request for this portfolio would
@@ -1227,9 +1233,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
           }
         });
 
-        // Leave the popup its own way (SPA back to the workspace behind it).
-        await page.getByRole('button', { name: 'Close', exact: true }).click();
-
+        // No popup to leave any more: the prompt closed over the workspace it
+        // unlocked, which is the whole of #4.
+        //
         // THE UNLOCKED IN-PLACE VIEW (#1416). The stub gives way to the real
         // portfolio, served by the client engine out of the encrypted document.
         await expect(stub).toBeHidden({ timeout: 60_000 });

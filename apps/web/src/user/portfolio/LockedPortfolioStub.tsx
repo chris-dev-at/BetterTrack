@@ -32,7 +32,7 @@ export function LockedPortfolioStub({
         <Badge tone="gold">{t('vault.lockedStub.badge')}</Badge>
         <p className="bt-soft text-sm">{t('vault.lockedStub.body')}</p>
         {state ? (
-          <VaultStateAction state={state} vaultId={portfolio.vaultId} />
+          <VaultStateAction inPlace state={state} vaultId={portfolio.vaultId} vaultName={alias} />
         ) : (
           <Button
             disabled={stateQuery.isPending}
