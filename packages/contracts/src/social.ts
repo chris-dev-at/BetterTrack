@@ -860,15 +860,14 @@ export type ItemComment = z.infer<typeof itemCommentSchema>;
 export const COMMENT_PAGE_SIZE = 50;
 
 /**
- * An opaque thread cursor: `<ISO instant>|<comment id>`. It names the oldest
- * comment of the page just read, so the next request returns the page strictly
- * older than it — a stable key even when two comments share a timestamp.
+ * An opaque thread cursor: the id of the oldest comment of the page just read,
+ * so the next request returns the page strictly older than it. The ordering key
+ * itself (`created_at`, then `id`) is never carried in the cursor — the server
+ * resolves it from the named row, so no timestamp precision is lost in transit
+ * and a page boundary can never skip a comment that shares a millisecond with
+ * the boundary row.
  */
-export const commentCursorSchema = z
-  .string()
-  .regex(
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
-  );
+export const commentCursorSchema = z.string().uuid();
 
 /** `GET …/thread` query — page backwards through an older slice of the thread. */
 export const commentThreadQuerySchema = z

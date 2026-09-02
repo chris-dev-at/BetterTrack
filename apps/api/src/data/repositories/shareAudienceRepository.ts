@@ -1080,34 +1080,40 @@ export function createShareAudienceRepository(db: Database) {
      * tombstone exists to make moderation auditable on a live item, and there is
      * no live item left. Comment reactions go first — `item_reactions.comment_id`
      * cascades, but deleting them explicitly keeps the purge independent of that.
+     *
+     * All four statements run in ONE transaction: a failure between them would
+     * otherwise leave a half-purged subject — e.g. comments gone but the audience
+     * row still live, or the reverse — with no second caller to finish the job.
      */
     async clearForSubject(kind: ShareKind, subjectId: string): Promise<void> {
-      // A subquery, not a materialized id list: a long thread must not turn its
-      // teardown into a 20 000-element IN clause.
-      await db.delete(itemReactions).where(
-        inArray(
-          itemReactions.commentId,
-          db
-            .select({ id: itemComments.id })
-            .from(itemComments)
-            .where(and(eq(itemComments.kind, kind), eq(itemComments.subjectId, subjectId))),
-        ),
-      );
-      await db
-        .delete(itemComments)
-        .where(and(eq(itemComments.kind, kind), eq(itemComments.subjectId, subjectId)));
-      await db
-        .delete(itemReactions)
-        .where(
-          and(
-            eq(itemReactions.targetType, 'item'),
-            eq(itemReactions.kind, kind),
-            eq(itemReactions.subjectId, subjectId),
+      await db.transaction(async (tx) => {
+        // A subquery, not a materialized id list: a long thread must not turn its
+        // teardown into a 20 000-element IN clause.
+        await tx.delete(itemReactions).where(
+          inArray(
+            itemReactions.commentId,
+            tx
+              .select({ id: itemComments.id })
+              .from(itemComments)
+              .where(and(eq(itemComments.kind, kind), eq(itemComments.subjectId, subjectId))),
           ),
         );
-      await db
-        .delete(shareAudiences)
-        .where(and(eq(shareAudiences.kind, kind), eq(shareAudiences.subjectId, subjectId)));
+        await tx
+          .delete(itemComments)
+          .where(and(eq(itemComments.kind, kind), eq(itemComments.subjectId, subjectId)));
+        await tx
+          .delete(itemReactions)
+          .where(
+            and(
+              eq(itemReactions.targetType, 'item'),
+              eq(itemReactions.kind, kind),
+              eq(itemReactions.subjectId, subjectId),
+            ),
+          );
+        await tx
+          .delete(shareAudiences)
+          .where(and(eq(shareAudiences.kind, kind), eq(shareAudiences.subjectId, subjectId)));
+      });
     },
   };
 }

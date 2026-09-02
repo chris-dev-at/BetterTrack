@@ -34,16 +34,11 @@ export interface CommentSubjectRef {
   deletedAt: Date | null;
 }
 
-/** The oldest comment of the page just read — where the next older page starts. */
-export interface CommentPageCursor {
-  createdAt: Date;
-  id: string;
-}
-
 /** One bounded thread read: page size, optional cursor, optional actor snapshot. */
 export interface CommentPageOptions {
   limit: number;
-  before?: CommentPageCursor;
+  /** Id of the oldest comment of the previous page; its key is resolved in SQL. */
+  before?: string;
   authorIds?: readonly string[];
 }
 
@@ -66,12 +61,20 @@ export function createItemCommentRepository(db: Database) {
     /**
      * ONE bounded page of LIVE comments on an item, NEWEST-first, joined to the
      * author identity — a thread is never read whole (§13.5 V5-P8 anti-bloat +
-     * scale). `before` names the oldest row of the previous page, so paging walks
-     * backwards through the conversation on the composite (created_at, id) key —
-     * stable even when two comments share a timestamp. `authorIds` is the
+     * scale). `before` is the ID of the oldest row of the previous page and its
+     * ordering key is resolved IN SQL, so paging walks backwards on the composite
+     * (created_at, id) key at the database's own microsecond precision. Carrying
+     * the timestamp in the cursor instead would truncate it to milliseconds on
+     * the JS `Date` round trip and silently drop every row sitting between the
+     * truncated value and the boundary row's real key. `authorIds` is the
      * transition-locked participant snapshot; an author who was not admitted by
      * that snapshot is never enriched here. The caller reverses the page when it
      * wants oldest-first render order.
+     *
+     * The cursor row is looked up within this same thread and WITHOUT the
+     * tombstone filter (a soft-deleted boundary row must still anchor the walk).
+     * A cursor naming no such row resolves to NULL, which makes the comparison
+     * NULL and yields an empty page — fail-closed, never a silent full read.
      */
     async listForItem(
       kind: ShareKind,
@@ -80,6 +83,19 @@ export function createItemCommentRepository(db: Database) {
     ): Promise<CommentRow[]> {
       const { limit, before, authorIds } = options;
       if (authorIds?.length === 0 || limit <= 0) return [];
+      const cursorKey =
+        before === undefined
+          ? undefined
+          : db
+              .select({ createdAt: itemComments.createdAt, id: itemComments.id })
+              .from(itemComments)
+              .where(
+                and(
+                  eq(itemComments.id, before),
+                  eq(itemComments.kind, kind),
+                  eq(itemComments.subjectId, subjectId),
+                ),
+              );
       return db
         .select({
           id: itemComments.id,
@@ -97,8 +113,10 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
             authorIds ? inArray(itemComments.authorId, [...authorIds]) : undefined,
-            before
-              ? sql`(${itemComments.createdAt}, ${itemComments.id}) < (${before.createdAt.toISOString()}::timestamptz, ${before.id}::uuid)`
+            cursorKey
+              ? // drizzle parenthesizes an embedded query builder itself, giving
+                // Postgres its `row_constructor < (subquery)` comparison form.
+                sql`(${itemComments.createdAt}, ${itemComments.id}) < ${cursorKey}`
               : undefined,
           ),
         )

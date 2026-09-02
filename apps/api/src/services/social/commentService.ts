@@ -10,10 +10,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { coerceProfileIcon } from '../../http/serializers';
-import type {
-  CommentPageCursor,
-  ItemCommentRepository,
-} from '../../data/repositories/itemCommentRepository';
+import type { ItemCommentRepository } from '../../data/repositories/itemCommentRepository';
 import type {
   ReactionAggregate,
   ItemReactionRepository,
@@ -269,17 +266,6 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     });
   }
 
-  /** `<ISO instant>|<comment id>` → the composite key the page read walks back from. */
-  function parseCursor(cursor: string | undefined): CommentPageCursor | undefined {
-    if (!cursor) return undefined;
-    const separator = cursor.lastIndexOf('|');
-    if (separator <= 0) throw THREAD_NOT_FOUND();
-    const createdAt = new Date(cursor.slice(0, separator));
-    const id = cursor.slice(separator + 1);
-    if (Number.isNaN(createdAt.getTime()) || id.length === 0) throw THREAD_NOT_FOUND();
-    return { createdAt, id };
-  }
-
   async function buildThread(
     viewerId: string,
     kind: ShareKind,
@@ -289,10 +275,12 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     allowedActorIds?: readonly string[],
   ): Promise<CommentThreadResponse> {
     // One row beyond the page tells us whether an older page exists without a
-    // second query; it never leaves this function.
+    // second query; it never leaves this function. The cursor is just the
+    // boundary comment's id — its ordering key is resolved in SQL, so nothing
+    // rounds a microsecond timestamp down to a millisecond and skips a row.
     const page = await comments.listForItem(kind, subjectId, {
       limit: COMMENT_PAGE_SIZE + 1,
-      before: parseCursor(cursor),
+      before: cursor,
       authorIds: allowedActorIds,
     });
     const hasOlder = page.length > COMMENT_PAGE_SIZE;
@@ -326,7 +314,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
       subjectId,
       commentCount,
       comments: commentList,
-      nextCursor: hasOlder && oldest ? `${oldest.createdAt.toISOString()}|${oldest.id}` : null,
+      nextCursor: hasOlder && oldest ? oldest.id : null,
       reactions: toReactionSummaries(itemReactions),
     };
   }

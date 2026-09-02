@@ -2,7 +2,7 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import {
   COMMENT_PAGE_SIZE,
@@ -351,6 +351,63 @@ describe('the thread is served in bounded pages (§13.5 V5-P8)', () => {
 
     const walked = [...older.comments, ...first.comments].map((c) => c.body);
     expect(new Set(walked).size).toBe(total);
+  });
+
+  it('does not skip a comment that shares a millisecond with the page boundary', async () => {
+    const { alice, aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const total = COMMENT_PAGE_SIZE + 1;
+    await seedComments(pid, alice.id, total);
+    // `created_at` is filled by the DB at MICROsecond precision. Push the two
+    // oldest rows into the same millisecond with different microseconds:
+    // `comment 0` then sits strictly between the millisecond `comment 1`
+    // truncates to and `comment 1`'s real key. A cursor carrying a truncated
+    // timestamp would filter `comment 0` out of every later page forever.
+    await harness.db.execute(
+      sql`update item_comments set created_at = '2026-07-01T00:00:00.123400Z'::timestamptz
+          where subject_id = ${pid} and body = 'comment 0'`,
+    );
+    await harness.db.execute(
+      sql`update item_comments set created_at = '2026-07-01T00:00:00.123900Z'::timestamptz
+          where subject_id = ${pid} and body = 'comment 1'`,
+    );
+
+    // Guard the fixture itself: if the store ever rounded to milliseconds, this
+    // test would silently stop covering the regression it exists for.
+    const [stored] = await harness.db
+      .select({ ts: sql<string>`${schema.itemComments.createdAt}::text` })
+      .from(schema.itemComments)
+      .where(
+        and(eq(schema.itemComments.subjectId, pid), eq(schema.itemComments.body, 'comment 0')),
+      );
+    expect(stored!.ts).toContain('.1234');
+
+    const first = commentThreadResponseSchema.parse((await getThread(bobAgent, pid)).body);
+    expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
+    expect(first.commentCount).toBe(total);
+    // The boundary row is the sub-millisecond one, and the cursor names it by id.
+    expect(first.comments[0]!.body).toBe('comment 1');
+    expect(first.nextCursor).toBe(first.comments[0]!.id);
+
+    const older = commentThreadResponseSchema.parse(
+      (await getThread(bobAgent, pid, first.nextCursor!)).body,
+    );
+    // The row inside the boundary's millisecond is still reachable.
+    expect(older.comments.map((c) => c.body)).toEqual(['comment 0']);
+    expect(older.nextCursor).toBeNull();
+  });
+
+  it('serves an empty page for a cursor that names no comment of this thread', async () => {
+    const { alice, aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    await seedComments(pid, alice.id, 3);
+
+    const stranger = '00000000-0000-4000-8000-000000000abc';
+    const page = commentThreadResponseSchema.parse((await getThread(bobAgent, pid, stranger)).body);
+    // Fail-closed: an unresolvable boundary yields nothing, never the whole thread.
+    expect(page.comments).toEqual([]);
+    expect(page.nextCursor).toBeNull();
+    expect(page.commentCount).toBe(3);
   });
 
   it('rejects a malformed cursor at the edge (400)', async () => {

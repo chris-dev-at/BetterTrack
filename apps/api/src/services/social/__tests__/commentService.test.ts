@@ -362,7 +362,7 @@ describe('commentService — audience and moderation boundaries', () => {
     expect(thread.commentCount).toBe(4200);
   });
 
-  it('hands back a cursor for the next older page and accepts it', async () => {
+  it('hands back the boundary comment ID as the cursor and passes it through unparsed', async () => {
     const harness = makeHarness();
     admitOwner(harness, 'portfolio');
     // A full page + 1 probe row: newest-first out of SQL, oldest-first back out.
@@ -377,13 +377,15 @@ describe('commentService — audience and moderation boundaries', () => {
     const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
     expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
     const oldestOfPage = page[COMMENT_PAGE_SIZE - 1]!;
-    expect(first.nextCursor).toBe(`${oldestOfPage.createdAt.toISOString()}|${oldestOfPage.id}`);
+    // The cursor carries NO timestamp: the ordering key is resolved in SQL from
+    // this row, so a millisecond-truncated `Date` can never move the boundary.
+    expect(first.nextCursor).toBe(oldestOfPage.id);
     expect(first.comments[0]!.id).toBe(oldestOfPage.id);
 
     await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, first.nextCursor!);
     expect(harness.comments.listForItem).toHaveBeenLastCalledWith('portfolio', SUBJECT_ID, {
       limit: COMMENT_PAGE_SIZE + 1,
-      before: { createdAt: oldestOfPage.createdAt, id: oldestOfPage.id },
+      before: oldestOfPage.id,
       authorIds: undefined,
     });
   });

@@ -124,6 +124,20 @@ describe('CommentThread (§13.5 V5-P8)', () => {
     expect(await screen.findByText(/2 comments/i)).toBeInTheDocument();
   });
 
+  test('an expanded thread takes its count from the polled page, not the frozen summary', async () => {
+    // The summary query stops polling once expanded (that is the AC), so a
+    // thread left open would otherwise show the count as of expansion forever.
+    vi.mocked(getCommentThreadSummary).mockResolvedValue(summary({ commentCount: 2 }));
+    vi.mocked(getCommentThread).mockResolvedValue(
+      thread({ comments: [oneComment], commentCount: 7 }),
+    );
+    renderThread();
+
+    await userEvent.click(await screen.findByRole('button', { name: /2 comments/i }));
+
+    expect(await screen.findByRole('button', { name: /7 comments/i })).toBeInTheDocument();
+  });
+
   test('loads an older page through the cursor', async () => {
     const older: ItemComment = { ...oneComment, id: 'c0', body: 'First!' };
     vi.mocked(getCommentThreadSummary).mockResolvedValue(summary({ commentCount: 2 }));
@@ -133,7 +147,7 @@ describe('CommentThread (§13.5 V5-P8)', () => {
         : thread({
             comments: [oneComment],
             commentCount: 2,
-            nextCursor: '2026-07-19T10:00:00.000Z|c1',
+            nextCursor: 'c1',
           }),
     );
     renderThread();
@@ -144,12 +158,7 @@ describe('CommentThread (§13.5 V5-P8)', () => {
     await userEvent.click(screen.getByRole('button', { name: /load older comments/i }));
 
     expect(await screen.findByText('First!')).toBeInTheDocument();
-    expect(getCommentThread).toHaveBeenCalledWith(
-      'portfolio',
-      SUBJECT,
-      '2026-07-19T10:00:00.000Z|c1',
-      expect.anything(),
-    );
+    expect(getCommentThread).toHaveBeenCalledWith('portfolio', SUBJECT, 'c1', expect.anything());
     // Oldest-first render order: the older page sits above the newest one.
     const bodies = screen.getAllByText(/First!|Nice pick!/).map((el) => el.textContent);
     expect(bodies).toEqual(['First!', 'Nice pick!']);

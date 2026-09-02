@@ -162,7 +162,10 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
     );
   }
 
-  const count = summary?.commentCount ?? 0;
+  // Page 0 is the newest window and carries the authoritative live count, so an
+  // expanded thread keeps its header honest off the poll it already runs; the
+  // collapsed head falls back to the cheap summary (which never polls).
+  const count = thread.data?.pages[0]?.commentCount ?? summary?.commentCount ?? 0;
   const trimmed = draft.trim();
   // Pages arrive newest-first (page 0 is the newest window); render oldest-first.
   const comments = [...(thread.data?.pages ?? [])].reverse().flatMap((page) => page.comments);
