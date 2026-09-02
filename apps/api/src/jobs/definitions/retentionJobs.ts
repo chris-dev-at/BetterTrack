@@ -1,6 +1,8 @@
 import type { AuditRepository } from '../../data/repositories/auditRepository';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { ParanoidVaultRepository } from '../../data/repositories/paranoidVaultRepository';
+import type { ProblemRepository } from '../../data/repositories/problemRepository';
+import type { UsageAnalyticsRepository } from '../../data/repositories/usageAnalyticsRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { VaultBlobRepository } from '../../data/repositories/vaultBlobRepository';
 import { sweepLegacyRememberedDeviceBindings } from '../../services/auth/loginThrottle';
@@ -38,12 +40,29 @@ export interface DataRetentionCleanupJobDeps {
    * checks in the repository stay — this is the belt to their braces.
    */
   vaultCandidates: Pick<VaultBlobRepository, 'cleanupExpiredServerCandidates'>;
+  /**
+   * Captured problems (§13.5 V5-P2 arc (d)). The capture's rate cap bounds how
+   * FAST the table grows; only this bounds how BIG it gets, and without it the
+   * Sentry replacement becomes a write-only table.
+   */
+  problems: Pick<ProblemRepository, 'deleteOlderThan'>;
+  /**
+   * Raw usage events — one row per user × feature × asset × day, i.e. a
+   * per-user viewing history that nothing but a paranoid transition removed.
+   * The aggregate `usage_daily` rollup is untouched, so the admin analytics
+   * series outlives the raw rows it was built from.
+   */
+  usageEvents: Pick<UsageAnalyticsRepository, 'deleteEventsOlderThan'>;
   /** Batched account lookup for the remembered-device sweep. */
   users: Pick<UserRepository, 'listByIds'>;
   /** Whole days; `0` explicitly means retain audit rows forever. */
   auditRetentionDays: number;
   /** Whole days; `0` explicitly means retain email-log rows forever. */
   emailLogRetentionDays: number;
+  /** Whole days since `last_seen_at`; `0` means retain problems forever. */
+  problemRetentionDays: number;
+  /** Whole days; `0` means retain raw usage events forever. */
+  usageEventRetentionDays: number;
   batchSize?: number;
   maxRowsPerRun?: number;
   now?: () => Date;
@@ -100,13 +119,33 @@ export function createDataRetentionCleanupJob(
         batchSize,
         maxRowsPerRun,
       );
+      const problems =
+        deps.problemRetentionDays === 0
+          ? NOTHING_PRUNED
+          : await deleteInBatches(
+              deps.problems.deleteOlderThan.bind(deps.problems),
+              new Date(runAt - deps.problemRetentionDays * MS_PER_DAY),
+              batchSize,
+              maxRowsPerRun,
+            );
+      const usageEvents =
+        deps.usageEventRetentionDays === 0
+          ? NOTHING_PRUNED
+          : await deleteInBatches(
+              deps.usageEvents.deleteEventsOlderThan.bind(deps.usageEvents),
+              new Date(runAt - deps.usageEventRetentionDays * MS_PER_DAY),
+              batchSize,
+              maxRowsPerRun,
+            );
       const devices = await sweepLegacyRememberedDeviceBindings(ctx.redis, deps.users);
 
       if (
         audit.deleted > 0 ||
         emailLog.deleted > 0 ||
         abandonedVaultStagesExamined > 0 ||
-        vaultCandidates.deleted > 0
+        vaultCandidates.deleted > 0 ||
+        problems.deleted > 0 ||
+        usageEvents.deleted > 0
       ) {
         ctx.logger.info(
           {
@@ -115,12 +154,19 @@ export function createDataRetentionCleanupJob(
             abandonedVaultStagesExamined,
             // The staged residue the #1491 TTL promises to bound (#1521).
             expiredVaultCandidatesDisposed: vaultCandidates.deleted,
+            problemsPruned: problems.deleted,
+            usageEventsPruned: usageEvents.deleted,
             // A capped run leaves eligible rows behind on purpose; the next
             // scheduled run continues, so this must be visible in the log.
             deferredToNextRun:
-              audit.capped || emailLog.capped || vaultStaging.capped || vaultCandidates.capped,
+              audit.capped ||
+              emailLog.capped ||
+              vaultStaging.capped ||
+              vaultCandidates.capped ||
+              problems.capped ||
+              usageEvents.capped,
           },
-          'expired audit and email-log rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
+          'expired audit, email-log, problem and usage-event rows pruned; abandoned vault-staging rows examined; expired vault candidates disposed',
         );
       }
       if (devices.legacy > 0) {
@@ -136,9 +182,18 @@ export function createDataRetentionCleanupJob(
         emailLogPruned: emailLog.deleted,
         abandonedVaultStagesExamined,
         expiredVaultCandidatesDisposed: vaultCandidates.deleted,
+        problemsPruned: problems.deleted,
+        usageEventsPruned: usageEvents.deleted,
         legacyDeviceBindingsRetired: devices.legacy,
         deferredToNextRun:
-          audit.capped || emailLog.capped || vaultStaging.capped || vaultCandidates.capped ? 1 : 0,
+          audit.capped ||
+          emailLog.capped ||
+          vaultStaging.capped ||
+          vaultCandidates.capped ||
+          problems.capped ||
+          usageEvents.capped
+            ? 1
+            : 0,
       };
     },
     schedule: {

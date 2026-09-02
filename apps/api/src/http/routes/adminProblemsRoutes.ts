@@ -29,12 +29,13 @@ const actorOf = (req: Request): ProblemAdminActor => ({ id: req.authUser!.id, ip
 export function registerAdminProblemsRoutes(router: Router, ctx: AppContext): void {
   router.get('/problems', validateQuery(problemListQuerySchema), async (req, res) => {
     const query = req.valid?.query as ProblemListQuery;
-    const { problems, openCount } = await ctx.problems.list({
+    const { problems, openCount, total, hasMore } = await ctx.problems.list({
       kind: query.kind,
       status: query.status,
       limit: query.limit,
+      offset: query.offset,
     });
-    res.json({ problems: problems.map(toProblem), openCount });
+    res.json({ problems: problems.map(toProblem), openCount, total, hasMore });
   });
 
   router.get('/problems/:id', validateParams(idParamSchema), async (req, res) => {

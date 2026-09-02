@@ -1,7 +1,15 @@
-import { and, count, desc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, lt, sql, type SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { problems, type NewProblemRow, type ProblemRow } from '../schema';
+
+/** The one place list and count agree on what a filter means. */
+function whereFilter(filter: ProblemFilter): SQL | undefined {
+  const conds: SQL[] = [];
+  if (filter.kind) conds.push(eq(problems.kind, filter.kind));
+  if (filter.status) conds.push(eq(problems.status, filter.status));
+  return conds.length > 0 ? and(...conds) : undefined;
+}
 
 /** Fields an upsert supplies for a freshly-observed occurrence. */
 export interface UpsertProblemInput {
@@ -16,21 +24,42 @@ export interface UpsertProblemInput {
   occurrences: number;
 }
 
-export interface ListProblemsFilter {
+/** Filter shared by {@link ProblemRepository.list} and its count. */
+export interface ProblemFilter {
   kind?: ProblemRow['kind'];
   status?: ProblemRow['status'];
+}
+
+export interface ListProblemsFilter extends ProblemFilter {
   limit: number;
+  /** Rows to skip in `last_seen_at desc` order — the paging cursor. */
+  offset?: number;
 }
 
 export interface ProblemRepository {
   /**
    * Fold one (or more) occurrences of a problem into its row, keyed by
    * `fingerprint`. First sighting inserts; a repeat bumps the occurrence count
-   * and `last_seen_at` without touching the resolve status — a resolved problem
-   * stays resolved until an admin reopens it.
+   * and `last_seen_at`.
+   *
+   * A repeat that lands AFTER the row was resolved reopens it — a problem an
+   * admin cleared and that then happened again is a regression, and leaving it
+   * `resolved` hides it from the default view and the open badge no matter how
+   * often it recurs. `resolved_at` is deliberately left standing: it is what
+   * makes the reopen visible as a regression rather than as a fresh problem,
+   * with no column of its own (§13.5 V5-P2 — migration-free by mandate).
+   * A manual reopen clears it, so the marker never outlives its resolution.
    */
   upsert(input: UpsertProblemInput): Promise<void>;
   list(filter: ListProblemsFilter): Promise<ProblemRow[]>;
+  /** How many rows match `filter`, ignoring limit/offset — the paging total. */
+  countMatching(filter: ProblemFilter): Promise<number>;
+  /**
+   * Delete at most `limit` problems last seen before `cutoff` (the retention
+   * sweep's bounded drain). The rate cap bounds the write RATE; only this
+   * bounds the table.
+   */
+  deleteOlderThan(cutoff: Date, limit: number): Promise<number>;
   get(id: string): Promise<ProblemRow | null>;
   /** Set a problem's status; returns the updated row, or null if unknown. */
   setStatus(
@@ -64,6 +93,11 @@ export function createProblemRepository(db: Database): ProblemRepository {
           set: {
             occurrenceCount: sql`${problems.occurrenceCount} + ${input.occurrences}`,
             lastSeenAt: input.seenAt,
+            // The regression reopen. Unqualified in an ON CONFLICT DO UPDATE
+            // SET, `problems.*` is the EXISTING row, so this compares the stored
+            // resolution against the incoming sighting: recurred after it was
+            // cleared ⇒ open again, everything else ⇒ status untouched.
+            status: sql`case when ${problems.resolvedAt} is not null and ${problems.resolvedAt} < ${input.seenAt} then 'open'::problem_status else ${problems.status} end`,
             // Refresh the human-facing fields to the latest sighting so a
             // problem's headline never goes stale after a code change.
             title: input.title,
@@ -74,15 +108,32 @@ export function createProblemRepository(db: Database): ProblemRepository {
     },
 
     async list(filter: ListProblemsFilter): Promise<ProblemRow[]> {
-      const conds: SQL[] = [];
-      if (filter.kind) conds.push(eq(problems.kind, filter.kind));
-      if (filter.status) conds.push(eq(problems.status, filter.status));
       return db
         .select()
         .from(problems)
-        .where(conds.length > 0 ? and(...conds) : undefined)
-        .orderBy(desc(problems.lastSeenAt))
-        .limit(filter.limit);
+        .where(whereFilter(filter))
+        .orderBy(desc(problems.lastSeenAt), desc(problems.id))
+        .limit(filter.limit)
+        .offset(filter.offset ?? 0);
+    },
+
+    async countMatching(filter: ProblemFilter): Promise<number> {
+      const [row] = await db.select({ value: count() }).from(problems).where(whereFilter(filter));
+      return row?.value ?? 0;
+    },
+
+    async deleteOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: problems.id })
+        .from(problems)
+        .where(lt(problems.lastSeenAt, cutoff))
+        .orderBy(asc(problems.lastSeenAt), asc(problems.id))
+        .limit(limit);
+      const deleted = await db
+        .delete(problems)
+        .where(inArray(problems.id, candidates))
+        .returning({ id: problems.id });
+      return deleted.length;
     },
 
     async get(id: string): Promise<ProblemRow | null> {

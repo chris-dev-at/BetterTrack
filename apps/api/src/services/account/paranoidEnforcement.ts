@@ -1170,7 +1170,7 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
   jobPolicy('retentionJobs.ts', 'createDataRetentionCleanupJob', 'data.retentionCleanup', {
     capability: null,
     mode: 'kept',
-    reason: 'Audit and email-log cleanup is global retention infrastructure.',
+    reason: 'Audit, email-log, problem and usage-event cleanup is global retention infrastructure.',
   }),
 ] as const;
 

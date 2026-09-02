@@ -397,10 +397,12 @@ identifying operational trails. A daily worker job (`data.retentionCleanup`,
 04:50 Europe/Vienna) purges past-cutoff rows in bounded batches, so shortening a
 window takes effect on the next run rather than in one long statement.
 
-| Variable                      | Default | Notes                                                        |
-| ----------------------------- | ------- | ------------------------------------------------------------ |
-| `BT_AUDIT_RETENTION_DAYS`     | `400`   | Age at which `audit_log` rows are purged. `0` = keep forever |
-| `BT_EMAIL_LOG_RETENTION_DAYS` | `180`   | Age at which `email_log` rows are purged. `0` = keep forever |
+| Variable                        | Default | Notes                                                                                                  |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `BT_AUDIT_RETENTION_DAYS`       | `400`   | Age at which `audit_log` rows are purged. `0` = keep forever                                           |
+| `BT_EMAIL_LOG_RETENTION_DAYS`   | `180`   | Age at which `email_log` rows are purged. `0` = keep forever                                           |
+| `BT_PROBLEM_RETENTION_DAYS`     | `90`    | Age (since last occurrence) at which `problems` rows are purged. `0` = keep forever                    |
+| `BT_USAGE_EVENT_RETENTION_DAYS` | `180`   | Age at which raw `usage_events` rows are purged (the `usage_daily` rollup is kept). `0` = keep forever |
 
 - Blank or unset uses the default; an explicit `0` disables that branch of the
   purge entirely (nothing is ever deleted from that table).
