@@ -9,7 +9,9 @@ import {
   conglomerateResolvedResponseSchema,
 } from '@bettertrack/contracts';
 
+import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import * as schema from '../data/schema';
+import { createsCycle } from '../services/conglomerate/nesting';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -810,6 +812,120 @@ describe('nested conglomerates', () => {
     );
     expect(byId.get(a1.id)).toBeCloseTo(75, 9);
     expect(byId.get(a2.id)).toBeCloseTo(25, 9);
+  });
+
+  it('refuses to activate a basket whose nested constituent resolves to NO asset', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    // "Bonds" is created and never filled; the parent's weights still add to 100.
+    const empty = await createId(agent, 'Bonds');
+    const parent = await createId(agent, 'Core');
+    expect(
+      (
+        await putPositions(agent, parent, [
+          { assetId: a1.id, weightPct: 60 },
+          { childId: empty, weightPct: 40 },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const res = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('ACTIVATION_INVALID');
+    expect(res.body.error.message).toContain('Bonds');
+    expect((await agent.get(`/api/v1/conglomerates/${parent}`)).body.status).toBe('draft');
+
+    // Filling the child is all it takes — the same basket then activates.
+    expect((await putPositions(agent, empty, [{ assetId: a1.id, weightPct: 100 }])).status).toBe(
+      200,
+    );
+    const after = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
+    expect(after.status).toBe(200);
+    expect(after.body.status).toBe('active');
+  });
+
+  it('refuses to activate when the nested child is empty only through ITS own child', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    const empty = await createId(agent, 'Empty Leaf');
+    const mid = await createId(agent, 'Middle');
+    const parent = await createId(agent, 'Deep Core');
+    expect((await putPositions(agent, mid, [{ childId: empty, weightPct: 100 }])).status).toBe(200);
+    expect(
+      (
+        await putPositions(agent, parent, [
+          { assetId: a1.id, weightPct: 70 },
+          { childId: mid, weightPct: 30 },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const res = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('ACTIVATION_INVALID');
+  });
+
+  it('cannot persist a cycle when two position writes race (in-transaction re-check)', async () => {
+    const user = await harness.seedUser({ email: 'race@nest.test', username: 'nestrace' });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const a = await createId(agent, 'Racer A');
+    const b = await createId(agent, 'Racer B');
+    const repo = createConglomerateRepository(harness.db);
+
+    // Writer 1 commits A → B.
+    expect((await putPositions(agent, a, [{ childId: b, weightPct: 100 }])).status).toBe(200);
+
+    // Writer 2 asked "may B nest A?" against the graph as it stood BEFORE writer
+    // 1 committed — no edges, so its own check passed. The re-check inside the
+    // write transaction observes A → B and refuses.
+    const verifyNesting = (edges: readonly { parentId: string; childId: string }[]) => {
+      const proposed = edges.filter((e) => e.parentId !== b).concat([{ parentId: b, childId: a }]);
+      if (createsCycle(proposed, b)) throw new Error('would create a cycle');
+    };
+    await expect(
+      repo.replacePositions(user.id, b, [{ kind: 'conglomerate', childId: a, weightPct: 100 }], {
+        verifyNesting,
+      }),
+    ).rejects.toThrow('would create a cycle');
+
+    // The losing write rolled back whole: B still has no constituents, and the
+    // graph holds A → B only.
+    const after = await repo.findByIdForOwner(user.id, b);
+    expect(after!.positions).toHaveLength(0);
+    expect(await repo.nestingEdges(user.id)).toEqual([{ parentId: a, childId: b }]);
+  });
+
+  it('answers a PERSISTED cycle with a mapped 422 on every read path — never a 500', async () => {
+    const user = await harness.seedUser({ email: 'cyc@nest.test', username: 'nestcycle' });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const a = await createId(agent, 'Cyc A');
+    const b = await createId(agent, 'Cyc B');
+    expect((await putPositions(agent, a, [{ childId: b, weightPct: 100 }])).status).toBe(200);
+    // Force the state a lost race would leave behind, straight into the table.
+    await harness.db.insert(schema.conglomeratePositions).values({
+      conglomerateId: b,
+      childConglomerateId: a,
+      weightPct: '100',
+      sortOrder: 0,
+    });
+
+    const resolved = await agent.get(`/api/v1/conglomerates/${a}/resolved`);
+    expect(resolved.status).toBe(422);
+    expect(resolved.body.error.code).toBe('NESTING_UNRESOLVABLE');
+
+    const allocate = await agent
+      .post(`/api/v1/conglomerates/${a}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole' });
+    expect(allocate.status).toBe(422);
+    expect(allocate.body.error.code).toBe('NESTING_UNRESOLVABLE');
+
+    const compare = await agent
+      .post('/api/v1/backtest/compare')
+      .set(...XRW)
+      .send({ conglomerateIds: [a, b], range: '1Y' });
+    expect(compare.status).toBe(422);
+    expect(compare.body.error.code).toBe('NESTING_UNRESOLVABLE');
   });
 
   it('activation counts a nested slice like any weight (Σ = 100 across kinds)', async () => {

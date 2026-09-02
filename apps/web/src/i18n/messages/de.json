@@ -2731,7 +2731,6 @@
       "error": "Der Vergleich konnte nicht berechnet werden. Bitte versuche es erneut.",
       "windowError": "Einer der ausgewählten Blueprints hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne ihn.",
       "chartAriaLabel": "Vergleichschart der Blueprints",
-      "legendAriaLabel": "Verglichene Blueprints",
       "baselineLabel": "Basis",
       "setBaseline": "{{name}} als Basis verwenden",
       "grid": {
