@@ -2731,7 +2731,6 @@
       "error": "The comparison could not be computed. Please try again.",
       "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
       "chartAriaLabel": "Blueprint comparison chart",
-      "legendAriaLabel": "Compared blueprints",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
       "grid": {
