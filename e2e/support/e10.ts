@@ -8,8 +8,9 @@ import { API_BASE_URL, DATABASE_URL } from './config';
 import type { E2EUser } from './users';
 
 /**
- * E10-specific e2e harness — the PARANOID vault gate (`docs/paranoid-design.md`
- * §20 row E10, line 959).
+ * E10-specific e2e harness — the PARANOID vault gate (the §20 row E10 arc list,
+ * archived verbatim in `docs/history/paranoid-design-history.md` §D by the
+ * post-E9 condensation).
  *
  * Unlike the E1/E2/E3 harnesses, this module stands up NO out-of-band service:
  * every arc E10 can actually run is reachable through the shipped browser
@@ -61,7 +62,10 @@ import type { E2EUser } from './users';
 /**
  * Every E10 sub-arc named by the spec line, and where it is discharged.
  *
- * `arc` quotes `docs/paranoid-design.md:959` verbatim — it is the CLAIM. `status`
+ * `arc` quotes the §20 row E10 scope sketch verbatim — it is the CLAIM. That row
+ * now lives in `docs/history/paranoid-design-history.md` §D; cite it by SECTION,
+ * never by line number, which is what went stale here (the row had drifted 217
+ * lines by the time anyone looked). `status`
  * and `note` are what this suite actually proves against it, which is not always
  * the same thing; `partial` entries name the missing half rather than rounding it
  * up. [E10-A0] holds the guard that keeps this table honest.
