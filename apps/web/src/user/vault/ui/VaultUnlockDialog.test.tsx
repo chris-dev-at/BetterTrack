@@ -9,12 +9,12 @@ const VAULT_ID = '018f0000-0000-7000-8000-000000000001';
 const mocks = vi.hoisted(() => ({
   unlock: vi.fn(),
   stateFor: vi.fn(),
-  restoreOnce: vi.fn(),
+  resumeOnce: vi.fn(),
 }));
 
 vi.mock('../keystore/runtime', () => ({
   endpointVaultKeystore: { unlock: mocks.unlock, stateFor: mocks.stateFor },
-  restoreEndpointCustodyOnce: mocks.restoreOnce,
+  resumeEndpointSessionOnce: mocks.resumeOnce,
   bindEndpointKeystoreAccount: vi.fn(),
   endpointKeystoreAccountId: () => null,
   releaseEndpointKeystoreLockSignal: () => undefined,
@@ -49,7 +49,7 @@ function renderAction(state: EndpointVaultState, onUnlocked = vi.fn()) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.restoreOnce.mockResolvedValue({ unlockedVaultIds: [] });
+  mocks.resumeOnce.mockResolvedValue({ unlockedVaultIds: [] });
   mocks.stateFor.mockResolvedValue(LOCKED);
   mocks.unlock.mockResolvedValue({ unlockedVaultIds: [VAULT_ID] });
 });
@@ -76,26 +76,26 @@ describe('in-place vault unlock', () => {
     await user.click(screen.getByRole('button', { name: 'Unlock vault' }));
 
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1));
-    expect(mocks.unlock).toHaveBeenCalledWith('the device password', {
-      keepUnlockedOnThisDevice: false,
-    });
+    expect(mocks.unlock).toHaveBeenCalledWith('the device password');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('carries the keep-unlocked opt-in into the keystore', async () => {
+  /**
+   * `docs/paranoid-design.md` §12 retires the persisted "keep unlocked on this
+   * device" convenience for wrapped custody, and the Chief upheld it. The prompt
+   * must therefore offer no such option — offering one is what the reviewer
+   * blocked, and this is the test that keeps it from coming back by accident.
+   */
+  it('offers NO keep-unlocked option: §12 keeps K_dev memory-only', async () => {
     const user = userEvent.setup();
     renderAction(LOCKED);
 
     await user.click(screen.getByRole('button', { name: 'Unlock' }));
-    await user.type(await screen.findByLabelText('Device password'), 'the device password');
-    await user.click(screen.getByRole('switch', { name: /Keep unlocked on this device/ }));
-    await user.click(screen.getByRole('button', { name: 'Unlock vault' }));
+    await screen.findByLabelText('Device password');
 
-    await waitFor(() =>
-      expect(mocks.unlock).toHaveBeenCalledWith('the device password', {
-        keepUnlockedOnThisDevice: true,
-      }),
-    );
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByText(/keep unlocked/iu)).toBeNull();
   });
 
   it('keeps a wrong password inline, with the attempt count and the dialog open', async () => {

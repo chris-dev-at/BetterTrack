@@ -106,13 +106,6 @@ function keystoreFailure(cause: EndpointKeystoreError): VaultMoneyFailure {
     case 'device-password-invalid':
     case 'wrong-password':
     case 'acknowledgment-required':
-    case 'custody-failed':
-    case 'custody-unavailable':
-      // The two custody codes belong here rather than with corruption: device
-      // custody is an OPT-IN convenience over an otherwise intact vault, so a
-      // browser refusing to hold — or hand back — the device key breaks the
-      // "keep unlocked" promise, never the ciphertext. Calling that VAULT_CORRUPT
-      // would be a false alarm about the user's money data.
       return typedFailure('VAULT_DATA_UNAVAILABLE', cause.message, true);
   }
 }

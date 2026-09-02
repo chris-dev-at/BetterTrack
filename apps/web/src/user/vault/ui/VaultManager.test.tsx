@@ -50,7 +50,7 @@ vi.mock('../keystore/runtime', () => ({
     openStoredVault: mocks.openStoredVault,
   },
   // The endpoint keystore now resumes device custody before any state read.
-  restoreEndpointCustodyOnce: async () => ({ unlockedVaultIds: [] }),
+  resumeEndpointSessionOnce: async () => ({ unlockedVaultIds: [] }),
   bindEndpointKeystoreAccount: () => undefined,
 }));
 

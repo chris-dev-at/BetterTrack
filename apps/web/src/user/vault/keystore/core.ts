@@ -18,13 +18,19 @@ import {
   type DevicePasswordArgon2,
 } from './deviceCrypto';
 import {
-  endpointCustodyId,
   forgetEndpointDeviceLocked,
   isEndpointDeviceLocked,
   rememberEndpointDeviceLocked,
-  type EndpointDeviceCustody,
   type EndpointDeviceKeyMaterial,
-} from './deviceCustody';
+} from './deviceLock';
+import {
+  createBroadcastEndpointSessionTransport,
+  importShareableDeviceKey,
+  isShareableDeviceKey,
+  type CreateEndpointSessionTransport,
+  type EndpointSessionMessage,
+  type EndpointSessionTransport,
+} from './sessionChannel';
 import { decodeBase64Url, encodeBase64Url } from './encoding';
 import { EndpointKeystoreError } from './errors';
 import { parseEndpointPasswordMetadata, parseStoredPhraseEntry } from './records';
@@ -46,6 +52,16 @@ import {
 const LOCKOUT_FIRST_FAILURE = 5;
 const LOCKOUT_INITIAL_MS = 30_000;
 const LOCKOUT_MAX_MS = 300_000;
+/**
+ * How long a fresh tab waits for a sibling to answer with its live session.
+ *
+ * Every first endpoint-state read blocks on this, so it is a first-paint budget,
+ * not a network timeout: a live tab answers within a task plus one `importKey`.
+ * A device with no other tab open pays it once and then paints the prompt — the
+ * ordering that matters, because painting "Unlock" and correcting it a moment
+ * later is the flicker this whole seam exists to avoid.
+ */
+const SESSION_GRANT_TIMEOUT_MS = 300;
 
 interface CachedContentKey {
   keyId: string;
@@ -70,37 +86,45 @@ export interface EndpointVaultKeystoreOptions {
   randomBytes?: RandomBytes;
   now?: () => number;
   /**
-   * Optional "keep unlocked on this device" backing. Absent ⇒ the endpoint is
-   * memory-only, exactly as it was before, and the opt-in is refused rather
-   * than silently ignored.
+   * How this keystore reaches the account's other tabs. Absent (or returning
+   * null) ⇒ no sharing, and every tab asks for the password on its own — the
+   * behaviour of a browser without `BroadcastChannel`, and the fallback that
+   * makes sharing an optimization rather than a dependency.
    */
-  custody?: EndpointDeviceCustody;
-  /**
-   * The authenticated account custody is scoped to, read at call time because a
-   * module singleton outlives every sign-in. Null ⇒ no account ⇒ no custody.
-   */
-  custodyAccount?: () => string | null;
+  createSessionTransport?: CreateEndpointSessionTransport;
+  /** First-paint budget for a sibling tab's answer. */
+  sessionGrantTimeoutMs?: number;
+  /** Correlation id for one request/grant pair. Not a secret; must be unique. */
+  newRequestId?: () => string;
 }
 
 /**
- * Headless E3 endpoint keystore. Passwords, K_dev, mnemonic entropy and K_c are
- * held only by this object and synchronously zeroed when the session ends.
+ * Headless E3 endpoint keystore. The device password, K_dev, mnemonic entropy
+ * and every K_c are held only by this object, in volatile memory, and are
+ * synchronously zeroed when the session ends — `docs/paranoid-design.md` §12,
+ * with no persisted-custody exception. Nothing in this class writes key material
+ * to IndexedDB, localStorage, sessionStorage, a cookie or a log.
  *
- * The one exception is opt-in device custody (`./deviceCustody`), which persists
- * K_dev as a NON-EXTRACTABLE CryptoKey so a reload or a second tab resumes the
- * session the user already established. That is the legacy account-level gate's
- * construction, unchanged; see `deviceCustody.ts` for why K_dev is the right
- * secret and what the concession is.
+ * A session is scoped to the ENDPOINT, not to the tab: `sessionChannel.ts`
+ * hands the live session to the account's other same-origin tabs over
+ * `BroadcastChannel`, memory-only, dying with the last of them. See that file
+ * for why §12 reads that way and what the trade-off is.
  */
 export class EndpointVaultKeystore {
   private readonly storage: EndpointKeystoreStorage;
   private readonly argon2: DevicePasswordArgon2 | undefined;
   private readonly randomBytes: RandomBytes;
   private readonly now: () => number;
-  private readonly custody: EndpointDeviceCustody | undefined;
-  private readonly custodyAccount: (() => string | null) | undefined;
-  /** One restore per tab at a time; concurrent callers share its outcome. */
-  private custodyRestore: Promise<EndpointUnlockResult> | null = null;
+  private readonly createSessionTransport: CreateEndpointSessionTransport;
+  private readonly sessionGrantTimeoutMs: number;
+  private readonly newRequestId: () => string;
+  /** The account this endpoint session belongs to; null ⇒ nobody is signed in. */
+  private accountId: string | null = null;
+  private transport: EndpointSessionTransport | null = null;
+  /** Grants in flight, keyed by the request id each one answers. */
+  private readonly pendingGrants = new Map<string, (deviceKey: CryptoKey | null) => void>();
+  /** One resume per tab at a time; concurrent callers share its outcome. */
+  private sessionResume: Promise<EndpointUnlockResult> | null = null;
   private deviceKey: EndpointDeviceKeyMaterial | null = null;
   private devicePasswordMetadata: EndpointPasswordMetadataV1 | null = null;
   private readonly wrappedEntropy = new Map<string, Uint8Array>();
@@ -116,8 +140,44 @@ export class EndpointVaultKeystore {
     this.argon2 = options.argon2;
     this.randomBytes = options.randomBytes ?? secureRandomBytes;
     this.now = options.now ?? Date.now;
-    this.custody = options.custody;
-    this.custodyAccount = options.custodyAccount;
+    this.createSessionTransport =
+      options.createSessionTransport ?? createBroadcastEndpointSessionTransport;
+    this.sessionGrantTimeoutMs = options.sessionGrantTimeoutMs ?? SESSION_GRANT_TIMEOUT_MS;
+    this.newRequestId = options.newRequestId ?? (() => globalThis.crypto.randomUUID());
+  }
+
+  /**
+   * Bind (or release) the account this endpoint session belongs to, and with it
+   * the channel the session may be shared on.
+   *
+   * PER-ACCOUNT SCOPING IS A SECURITY BOUNDARY, not bookkeeping. Two accounts
+   * sharing one browser profile share one origin, one IndexedDB and one
+   * localStorage; the only thing that keeps A's live session out of B's tab is
+   * that B never listens on A's channel and never accepts a grant stamped with
+   * A's id. So: one channel per account, the id is re-checked after every await
+   * in the resume, and a CHANGE of account is a revocation — the live session
+   * was proven by the previous account's password and cannot carry into the
+   * next one. The first bind of a tab is not a change (nothing is live) and
+   * must not fire a spurious session end at every mount.
+   */
+  bindAccount(accountId: string | null): void {
+    const next = accountId?.trim() || null;
+    if (this.accountId === next) return;
+    const hadAccount = this.accountId !== null;
+    this.closeSessionTransport();
+    this.accountId = next;
+    this.sessionResume = null;
+    if (hadAccount) this.endSession();
+    if (next != null) {
+      this.transport = this.createSessionTransport(next, (message) =>
+        this.onSessionMessage(message),
+      );
+    }
+  }
+
+  /** The account currently bound, for surfaces that must not guess it. */
+  boundAccountId(): string | null {
+    return this.accountId;
   }
 
   async stateFor(vaultId: string): Promise<EndpointVaultState> {
@@ -185,19 +245,13 @@ export class EndpointVaultKeystore {
   }
 
   /**
-   * `keepUnlockedOnThisDevice` is the legacy gate's checkbox, verbatim: it is an
-   * opt-in, it is refused (never silently dropped) where custody cannot exist,
-   * and a custody write that fails FAILS THE UNLOCK — the user asked for a
-   * promise this endpoint could not keep, and must be told.
+   * The device password, once per endpoint session (§12). There is no
+   * "keep unlocked on this device" option and there is no persisted key: what
+   * this establishes lives in memory and is shared with the account's other
+   * tabs over `sessionChannel.ts` for as long as one of them is open.
    */
-  async unlock(
-    devicePassword: string,
-    options: { keepUnlockedOnThisDevice?: boolean } = {},
-  ): Promise<EndpointUnlockResult> {
-    const keepUnlocked = options.keepUnlockedOnThisDevice === true;
-    // Refuse BEFORE the KDF runs, so an endpoint that cannot hold custody does
-    // not spend a second on Argon2id only to reject at the end.
-    const custodyAccountId = keepUnlocked ? this.requireCustodyAccount() : null;
+  async unlock(devicePassword: string): Promise<EndpointUnlockResult> {
+    const accountId = this.accountId;
     const generation = this.beginSessionChange();
     const snapshot = await this.storage.readEndpointSnapshot();
     if (snapshot.metadata == null) {
@@ -252,23 +306,16 @@ export class EndpointVaultKeystore {
         );
       }
       this.requireCurrentGeneration(generation);
-      // Persist BEFORE the session is installed, exactly like the legacy
-      // `setUnlocked`: a custody write that cannot land must abort the unlock
-      // rather than hand back a session the next reload silently loses.
-      if (custodyAccountId != null) {
-        await this.custody!.persist(endpointCustodyId(custodyAccountId), candidate);
-        this.requireCurrentGeneration(generation);
-      }
       this.deviceKey = candidate;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
       candidate = undefined;
       for (const [vaultId, bytes] of entropy) this.wrappedEntropy.set(vaultId, bytes);
       entropy.clear();
-      // The §12 marker's ONLY clearing edge, mirroring `forgetDeviceLocked`:
-      // an unlock without the opt-in leaves a device that was locked locked, so
-      // a custody record left behind by an older session cannot resurrect it.
-      if (custodyAccountId != null) forgetEndpointDeviceLocked(custodyAccountId);
+      // The §12 marker's ONLY clearing edge. The user just proved the device
+      // password, so "the last deliberate act on this device was a lock" has
+      // stopped being true and sibling tabs may share this session again.
+      if (accountId != null) forgetEndpointDeviceLocked(accountId);
       const unlockedVaultIds = [...this.wrappedEntropy.keys()].sort();
       // Tell the store resolver, so an unlock is enough on its own.
       //
@@ -282,10 +329,6 @@ export class EndpointVaultKeystore {
       return { unlockedVaultIds };
     } catch (cause) {
       if (this.sessionGeneration === generation) this.clearSessionSecrets();
-      // A failed unlock revokes custody, as the legacy `failUnlock` → `lock()`
-      // does. The session this instance had is already gone; leaving a live
-      // custody record behind would let the next load silently resurrect it.
-      await this.revokeDeviceCustody().catch(() => undefined);
       throw cause;
     } finally {
       if (candidate != null) zeroBytes(candidate);
@@ -294,64 +337,83 @@ export class EndpointVaultKeystore {
   }
 
   /**
-   * Resume a session this device was told to keep — the reload/second-tab path.
+   * Join the session the account's other tabs already hold — the second-tab and
+   * reload-beside-a-sibling path.
    *
-   * Speculative and silent by design: every refusal (no custody, the §12 marker,
-   * a record that no longer matches this endpoint's password, an active lockout)
-   * resolves to "nothing restored" and leaves the surface asking for the
-   * password, which is what it would have done anyway. It never throws at a
-   * caller who merely wanted to read state.
+   * Speculative and silent by design: every refusal (no account, no transport,
+   * nobody answering, the §12 marker, an active lockout, a grant that does not
+   * open this endpoint's wrap-check) resolves to "nothing restored" and leaves
+   * the surface asking for the password, which is what it would have done
+   * anyway. It never throws at a caller who merely wanted to read state.
    */
-  async restoreFromDeviceCustody(): Promise<EndpointUnlockResult> {
+  async resumeSessionFromOpenTabs(): Promise<EndpointUnlockResult> {
     if (this.deviceKey != null) {
       return { unlockedVaultIds: [...this.wrappedEntropy.keys()].sort() };
     }
-    this.custodyRestore ??= this.runCustodyRestore()
+    this.sessionResume ??= this.runSessionResume()
       .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
       .finally(() => {
-        this.custodyRestore = null;
+        this.sessionResume = null;
       });
-    return this.custodyRestore;
+    return this.sessionResume;
   }
 
-  private async runCustodyRestore(): Promise<EndpointUnlockResult> {
+  /**
+   * ── THE RACE DISCIPLINE (reviewer finding B2, probe P1b) ──────────────────
+   *
+   * The first shape of this method read its refusal signals BEFORE it minted a
+   * generation guard, so a lock landing during the async exchange was invisible
+   * to the guard and the resumed session handed back the seed phrase AFTER
+   * revocation. The order below is the fix and is load-bearing:
+   *
+   *   1. read the §12 marker and mint the generation with NO await between
+   *      them, so nothing can interleave;
+   *   2. re-check the generation, the account AND the marker after the exchange;
+   *   3. check all three once more IMMEDIATELY before the session is installed,
+   *      with no await in between.
+   *
+   * `lockDevice` bumps the generation synchronously, so any lock this instance
+   * observed fails step 2 or 3. The marker is the independent backstop for a
+   * lock this instance has NOT yet observed — the message is still in flight —
+   * because whichever tab locked wrote it before its own first await.
+   */
+  private async runSessionResume(): Promise<EndpointUnlockResult> {
     const nothing: EndpointUnlockResult = { unlockedVaultIds: [] };
-    const accountId = this.custodyAccount?.() ?? null;
-    if (this.custody == null || accountId == null) return nothing;
-    // The independent second lock. It is read BEFORE IndexedDB so a lock whose
-    // record delete never landed still fails closed, and an unreadable
-    // localStorage reads as locked.
+    const accountId = this.accountId;
+    const transport = this.transport;
+    if (accountId == null || transport == null) return nothing;
+    // (1) Fail closed, then arm the guard. Both statements are synchronous.
     if (isEndpointDeviceLocked(accountId)) return nothing;
-    const custodyId = endpointCustodyId(accountId);
-    const deviceKey = await this.custody.read(custodyId).catch(() => null);
-    if (deviceKey == null) return nothing;
-
     const generation = this.beginSessionChange();
+
+    const deviceKey = await this.requestSessionGrant(transport, accountId);
+    if (deviceKey == null) return nothing;
+    // The transport validates too, but a keystore that trusts its transport to
+    // police key SHAPE would re-broadcast whatever it was handed: `grantSession`
+    // passes an already-shareable key straight on. An extractable key must never
+    // become this endpoint's K_dev, or the origin gains exportable K_dev bytes.
+    if (!isShareableDeviceKey(deviceKey)) return nothing;
+    // (2) The exchange is over. Fail fast so a revoked session never reaches the
+    // decryption below. Redundant with (3), which is the boundary that counts.
+    if (!this.sessionStillCurrent(generation, accountId)) return nothing;
+
     const snapshot = await this.storage.readEndpointSnapshot();
-    this.requireCurrentGeneration(generation);
-    if (snapshot.metadata == null) {
-      // The endpoint was reset. The record can only ever be junk now.
-      await this.forgetDeviceCustody();
-      return nothing;
-    }
+    if (!this.sessionStillCurrent(generation, accountId)) return nothing;
+    // No metadata means this endpoint was reset. A grant from a tab that has not
+    // noticed yet opens nothing here.
+    if (snapshot.metadata == null) return nothing;
     const metadata = parseEndpointPasswordMetadata(snapshot.metadata);
-    // A lockout is about the PASSWORD, and custody is not a password guess — but
-    // refusing here costs the user only the lockout window and keeps one rule
-    // for "this endpoint is not accepting device-password sessions right now".
-    // The record is deliberately kept: someone else's failed guesses must not
-    // destroy the custody its owner opted into.
+    // A lockout is about the PASSWORD and a granted session is not a password
+    // guess — but refusing keeps ONE rule for "this endpoint is not accepting
+    // device-password sessions right now", at the cost of the lockout window.
     if (metadata.lockout.lockedUntil != null && metadata.lockout.lockedUntil > this.now()) {
       return nothing;
     }
-    // THE AUTHORITATIVE BINDING. The wrapCheck is the same AES-GCM open
-    // `unlock` performs; a record minted under a different device password (an
-    // endpoint reset and re-created, a password change) cannot open it, and is
-    // dropped rather than retried.
-    if (!(await verifyEndpointPassword(metadata, deviceKey))) {
-      await this.forgetDeviceCustody();
-      return nothing;
-    }
-    this.requireCurrentGeneration(generation);
+    // THE AUTHORITATIVE BINDING, and the reason a hostile grant is harmless:
+    // the wrap-check is the same AES-GCM open `unlock` performs, so a key that
+    // was not derived from THIS endpoint's device password cannot pass it.
+    if (!(await verifyEndpointPassword(metadata, deviceKey))) return nothing;
+    if (!this.sessionStillCurrent(generation, accountId)) return nothing;
 
     const listed = await this.storage.listEntries(snapshot.revision);
     if (listed.status === 'stale') return nothing;
@@ -379,7 +441,8 @@ export class EndpointVaultKeystore {
       ) {
         return nothing;
       }
-      this.requireCurrentGeneration(generation);
+      // (3) Last word before the session exists. Nothing may await past here.
+      if (!this.sessionStillCurrent(generation, accountId)) return nothing;
       this.deviceKey = deviceKey;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
@@ -398,41 +461,129 @@ export class EndpointVaultKeystore {
   }
 
   /**
-   * The user-intended lock: manual lock, sign-out, PIN idle lock. Everything
-   * `endSession` revokes, plus the persisted custody — which is what separates
-   * it from the internal consistency teardowns (a revision drift, a custody
-   * change) that must NOT throw away the user's "keep unlocked" choice.
+   * All three revocation signals, read together. Called after every await in the
+   * resume, and once more with nothing awaited between it and the assignment.
+   *
+   * The generation and the marker are independently load-bearing and each has a
+   * test that isolates it. The ACCOUNT term is deliberate redundancy: today
+   * `bindAccount` already ends the session and settles every pending grant with
+   * null, so no mutation of this clause alone can be observed — it is here so
+   * that a future change to `bindAccount` cannot silently open the boundary. The
+   * per-account boundary that IS observable, and pinned, is the channel name.
    */
-  lockDevice(): Promise<void> {
-    const accountId = this.custodyAccount?.() ?? null;
-    // Marker first, and before any await: a lock whose IndexedDB delete never
-    // lands must still fail closed on the next restore.
-    if (accountId != null) rememberEndpointDeviceLocked(accountId);
-    this.endSession();
-    return this.revokeDeviceCustody();
+  private sessionStillCurrent(generation: number, accountId: string): boolean {
+    return (
+      this.sessionGeneration === generation &&
+      this.accountId === accountId &&
+      !isEndpointDeviceLocked(accountId)
+    );
   }
 
-  /** Drops the persisted record without claiming the session was locked. */
-  async forgetDeviceCustody(): Promise<void> {
-    const accountId = this.custodyAccount?.() ?? null;
-    if (this.custody == null || accountId == null) return;
-    await this.custody.clear(endpointCustodyId(accountId));
-  }
-
-  private async revokeDeviceCustody(): Promise<void> {
-    this.custodyRestore = null;
-    await this.forgetDeviceCustody();
-  }
-
-  private requireCustodyAccount(): string {
-    const accountId = this.custodyAccount?.() ?? null;
-    if (this.custody == null || accountId == null) {
-      throw new EndpointKeystoreError(
-        'custody-unavailable',
-        'This endpoint cannot keep a vault unlocked on this device.',
+  private requestSessionGrant(
+    transport: EndpointSessionTransport,
+    accountId: string,
+  ): Promise<CryptoKey | null> {
+    const requestId = this.newRequestId();
+    return new Promise<CryptoKey | null>((resolve) => {
+      // A device with no other tab open is the ORDINARY case, so the timeout is
+      // the normal exit from here, not an error path. It settles THROUGH the
+      // pending map rather than through a captured closure, which keeps the
+      // "first answer wins" rule in exactly one place.
+      const timer = setTimeout(
+        () => this.pendingGrants.get(requestId)?.(null),
+        this.sessionGrantTimeoutMs,
       );
+      this.pendingGrants.set(requestId, (deviceKey) => {
+        // A second grant for the same request id is dropped, not installed.
+        if (!this.pendingGrants.delete(requestId)) return;
+        clearTimeout(timer);
+        resolve(deviceKey);
+      });
+      transport.post({ kind: 'session-request', accountId, requestId });
+    });
+  }
+
+  /**
+   * The other side of the exchange. Note that it carries the SAME race
+   * discipline as the resume: a lock landing between "I hold a session" and
+   * "I posted it" must cancel the grant, or a locking tab would hand its
+   * revoked session to a tab that asked a moment earlier.
+   */
+  private async grantSession(requestId: string, accountId: string): Promise<void> {
+    // Fail fast. Redundant with the `sessionStillCurrent` call below, which
+    // reads the same marker — kept because refusing before touching the session
+    // at all is the cheaper and more obvious shape of "do not hand this out".
+    if (isEndpointDeviceLocked(accountId)) return;
+    const generation = this.sessionGeneration;
+    const deviceKey = this.deviceKey;
+    if (deviceKey == null) return;
+    const shareable = isShareableDeviceKey(deviceKey)
+      ? deviceKey
+      : await importShareableDeviceKey(deviceKey).catch(() => null);
+    if (shareable == null) return;
+    if (!this.sessionStillCurrent(generation, accountId) || this.deviceKey == null) return;
+    this.transport?.post({ kind: 'session-grant', accountId, requestId, deviceKey: shareable });
+  }
+
+  private onSessionMessage(message: EndpointSessionMessage): void {
+    // A message that outlived its account binding is not this session's news.
+    if (this.accountId !== message.accountId) return;
+    switch (message.kind) {
+      case 'session-request':
+        void this.grantSession(message.requestId, message.accountId).catch(() => undefined);
+        return;
+      case 'session-grant':
+        this.pendingGrants.get(message.requestId)?.(message.deviceKey);
+        return;
+      case 'session-lock':
+        this.applyRemoteLock();
+        return;
     }
-    return accountId;
+  }
+
+  /**
+   * The user-intended lock: manual lock, sign-out, PIN idle lock.
+   *
+   * SYNCHRONOUS ON PURPOSE. A lock that can be awaited is a lock that can be
+   * raced, and the previous shape — which awaited an IndexedDB delete — is
+   * exactly what let a reset be blocked by a failing cleanup (finding B4) and a
+   * revoked session be handed back (B2). There is nothing left to await: the
+   * marker is a localStorage write, the teardown is memory, and the broadcast is
+   * a `postMessage` whose failures are swallowed by the transport.
+   */
+  lockDevice(): void {
+    const accountId = this.accountId;
+    // Marker first, before anything that could throw: a lock whose broadcast
+    // never lands must still fail closed on the next resume, here and in every
+    // other tab.
+    if (accountId != null) rememberEndpointDeviceLocked(accountId);
+    this.sessionResume = null;
+    this.endSession();
+    if (accountId != null) {
+      this.transport?.post({ kind: 'session-lock', accountId });
+    }
+  }
+
+  /**
+   * A lock that happened in ANOTHER tab, arriving on the channel or as the
+   * account-scoped `storage` twin. It tears this tab down exactly like a local
+   * lock and deliberately does NOT re-broadcast: the originating tab already
+   * reached every tab of the account, and echoing would only multiply the
+   * message. Idempotent — a lock delivered on both paths ends a session once and
+   * then finds nothing left to end.
+   */
+  private applyRemoteLock(): void {
+    const accountId = this.accountId;
+    if (accountId != null) rememberEndpointDeviceLocked(accountId);
+    this.sessionResume = null;
+    this.endSession();
+  }
+
+  private closeSessionTransport(): void {
+    for (const settle of [...this.pendingGrants.values()]) settle(null);
+    this.pendingGrants.clear();
+    this.transport?.close();
+    this.transport = null;
   }
 
   /**
@@ -907,30 +1058,42 @@ export class EndpointVaultKeystore {
   }
 
   handleIdle(pinLockEnabled: boolean): Promise<void> {
-    return pinLockEnabled ? this.lockDevice() : Promise.resolve();
+    if (pinLockEnabled) this.lockDevice();
+    return Promise.resolve();
   }
 
   /**
-   * The one seam every user-intended lock arrives on. `requestVaultLock` is
-   * dispatched by sign-out, the PIN idle lock, an account switch and a
-   * confirmed-unauthorized bootstrap; its account-scoped localStorage twin
-   * carries the same lock to the account's OTHER tabs, which is what makes a
-   * manual lock in one tab revoke this device's custody everywhere.
+   * The one seam every user-intended lock arrives on.
    *
-   * Plaintext is revoked SYNCHRONOUSLY here — `lockDevice` ends the session and
-   * writes the §12 marker before its first await — so a slow IndexedDB delete
-   * can never leave decrypted state mounted while a sign-out is in flight.
+   * TWO INDEPENDENT PATHS, both pinned by tests, because either one alone has a
+   * hole:
+   *
+   *   • `VAULT_LOCK_REQUEST_EVENT` — dispatched in THIS tab by sign-out, the PIN
+   *     idle lock, an account switch, a confirmed-unauthorized bootstrap and the
+   *     manual "Lock vault". It is a local intent, so it locks AND broadcasts.
+   *   • the account-scoped `storage` twin — the same lock arriving from another
+   *     tab. It reaches tabs of a normal account that deliberately mount no
+   *     vault provider, and it keeps working when `BroadcastChannel` does not
+   *     exist. It tears down without re-broadcasting.
+   *
+   * The channel's own `session-lock` message is the third delivery and is
+   * handled in `onSessionMessage`; a lock delivered twice ends one session and
+   * then finds nothing left to end.
+   *
+   * Plaintext is revoked SYNCHRONOUSLY on all of them — `lockDevice` writes the
+   * §12 marker and ends the session with nothing awaited — so a sign-out in
+   * flight can never leave decrypted state mounted.
    */
   bindToVaultLockSignal(
     target: EventTarget = globalThis,
     accountId?: () => string | null,
   ): () => void {
-    const onLock = () => void this.lockDevice().catch(() => undefined);
-    const readAccountId = accountId ?? this.custodyAccount;
+    const onLock = () => this.lockDevice();
+    const readAccountId = accountId ?? (() => this.accountId);
     const onStorage = (event: Event) => {
-      const active = readAccountId?.() ?? null;
+      const active = readAccountId() ?? null;
       if (active == null) return;
-      if ((event as StorageEvent).key === vaultLockSignalStorageKey(active)) onLock();
+      if ((event as StorageEvent).key === vaultLockSignalStorageKey(active)) this.applyRemoteLock();
     };
     target.addEventListener(VAULT_LOCK_REQUEST_EVENT, onLock);
     target.addEventListener('storage', onStorage);
@@ -945,9 +1108,17 @@ export class EndpointVaultKeystore {
    * touched; the words or E7 QR restore access without vault-data loss.
    */
   async reset(): Promise<KeystoreResetResult> {
-    // A reset is the most deliberate lock there is: the persisted device key
-    // opens phrases that are about to stop existing.
-    await this.lockDevice();
+    // B4: `reset()` is the "I cannot get in any more" escape hatch, so CLEANUP
+    // MUST NEVER BE ABLE TO BLOCK IT. The lock is synchronous and swallows its
+    // own failures; the try/catch is the belt to that braces, so that even a
+    // throwing lock leaves the wipe below reachable. A reset is also the most
+    // deliberate lock there is — the live session opens phrases that are about
+    // to stop existing.
+    try {
+      this.lockDevice();
+    } catch {
+      // A device that cannot signal its lock must still be wipeable.
+    }
     await this.storage.reset();
     return {
       scope: 'this-endpoint-only',

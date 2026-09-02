@@ -27,7 +27,7 @@ import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/Portfoli
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
-import { useEndpointVaultCustody } from '../vault/ui/useEndpointVaultCustody';
+import { useEndpointVaultSession } from '../vault/ui/useEndpointVaultSession';
 import { useEndpointVaultLock, type EndpointVaultLock } from '../vault/ui/useEndpointVaultLock';
 import {
   readVaultEndpointState,
@@ -648,7 +648,7 @@ export function OriginShell() {
   // asked this device to keep — the reload / second-tab / post-deploy-reload
   // path. Mounted here because this shell is the one thing every authenticated
   // vault surface renders inside.
-  useEndpointVaultCustody();
+  useEndpointVaultSession();
   const privacy = useResolvedPrivacyModeState();
   // The cleartext vault directory feeds the shield chip. It is small, changes
   // only when the user creates/renames/deletes a vault (each of which

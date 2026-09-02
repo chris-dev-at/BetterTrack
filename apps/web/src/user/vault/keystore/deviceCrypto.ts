@@ -9,7 +9,7 @@ import {
   secureRandomBytes,
   type RandomBytes,
 } from '../crypto';
-import type { EndpointDeviceKeyMaterial } from './deviceCustody';
+import type { EndpointDeviceKeyMaterial } from './deviceLock';
 import { EndpointKeystoreError, asEndpointKeystoreError } from './errors';
 import { decodeBase64Url, encodeBase64Url } from './encoding';
 import {
@@ -139,8 +139,11 @@ export async function deriveDeviceKey(
 
 /**
  * K_dev is only ever an AES-256-GCM key here, so it may equally be raw bytes
- * derived in this tab or the non-extractable CryptoKey device custody handed
- * back — `aesGcmDecrypt` accepts both and validates the CryptoKey shape.
+ * derived in this tab or the non-extractable CryptoKey another tab of this
+ * device granted — `aesGcmDecrypt` accepts both and validates the CryptoKey
+ * shape. This is also the check that makes a granted key authoritative: a key
+ * that was not derived from THIS endpoint's device password cannot open the
+ * wrap-check.
  */
 export async function verifyEndpointPassword(
   metadata: EndpointPasswordMetadataV1,

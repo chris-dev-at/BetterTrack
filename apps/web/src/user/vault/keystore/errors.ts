@@ -1,10 +1,6 @@
 export type EndpointKeystoreErrorCode =
   | 'acknowledgment-required'
   | 'crypto-failed'
-  /** Device custody exists but the browser refused to hold or return the key. */
-  | 'custody-failed'
-  /** "Keep unlocked on this device" was asked for where custody cannot exist. */
-  | 'custody-unavailable'
   | 'device-password-invalid'
   | 'device-password-not-configured'
   | 'device-password-required'

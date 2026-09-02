@@ -4043,7 +4043,6 @@
       "titleNamed": "„{{name}}“ entsperren",
       "body": "Gib das Gerätepasswort für diesen Tresor ein. Er öffnet sich direkt hier — du bleibst auf dieser Seite.",
       "wrongPassword": "Dieses Gerätepasswort stimmt nicht. Es wurde nichts geändert — versuch es noch einmal.",
-      "custodyUnavailable": "Dieser Browser kann keinen Tresor auf diesem Gerät entsperrt lassen, deshalb wurde nichts entsperrt. Versuch es ohne diese Option noch einmal.",
       "moreOptions": "Weitere Tresoroptionen"
     },
     "sync": {

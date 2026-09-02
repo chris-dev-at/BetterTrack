@@ -320,10 +320,11 @@ async function readChallengedWordNumber(ceremony: Locator): Promise<number> {
  * End every live endpoint session. E3 keeps the unwrapped device key only in
  * memory, so a fresh document IS the lock — see the module header.
  *
- * Still true here because nothing in this arc opts into device custody: the
- * ceremony has no such choice and the settings access form does not offer one.
- * A session unlocked through the in-place dialog WITH "keep unlocked on this
- * device" survives a reload by design (VAULT-UX-B); that path has its own spec.
+ * Still true after VAULT-UX-B, and for the SAME reason: `docs/paranoid-design.md`
+ * §12 keeps K_dev memory-only and nothing persists it. What that arc adds is a
+ * live handoff between OPEN TABS of one device, so this helper only locks while
+ * `page` is the account's last tab — which it is in every arc that calls it.
+ * The sharing (and its revocation) has its own spec, `vault-session-sharing`.
  */
 export async function lockVaultsByReload(page: Page): Promise<void> {
   await page.reload();

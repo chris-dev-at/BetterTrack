@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useT, type TranslateVars } from '../../../i18n';
-import { Button, Field, Input, ODialog, Switch } from '../../../ui/origin';
+import { Button, Field, Input, ODialog } from '../../../ui/origin';
 import { EndpointKeystoreError } from '../keystore/errors';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import { vaultStateActionHref } from '../vaultStateAffordance';
@@ -42,6 +42,12 @@ interface UnlockFailure {
  * instant — and a lockout withdraws the field, because inviting a password no
  * verification will look at is the thing the settings surface was fixed for
  * (#1526).
+ *
+ * THERE IS NO "KEEP UNLOCKED ON THIS DEVICE" HERE, deliberately.
+ * `docs/paranoid-design.md` §12 retires that convenience for wrapped custody,
+ * and the Chief upheld it: K_dev stays memory-only, so a reload with no other
+ * tab open re-locks. This dialog is the mitigation — one step, where the user
+ * already is — not a reason to persist a key.
  */
 export function VaultUnlockDialog({
   onClose,
@@ -60,7 +66,6 @@ export function VaultUnlockDialog({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [password, setPassword] = useState('');
-  const [keepUnlocked, setKeepUnlocked] = useState(false);
   const [working, setWorking] = useState(false);
   const [failure, setFailure] = useState<UnlockFailure | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -84,7 +89,7 @@ export function VaultUnlockDialog({
     setWorking(true);
     setFailure(null);
     try {
-      await endpointVaultKeystore.unlock(password, { keepUnlockedOnThisDevice: keepUnlocked });
+      await endpointVaultKeystore.unlock(password);
       setPassword('');
       // The surfaces that read endpoint state repaint from here; the store
       // resolver hears the keystore's own vault-opened edge. Neither needs a
@@ -148,39 +153,19 @@ export function VaultUnlockDialog({
       >
         <p className="bt-soft text-sm">{t('vault.unlockDialog.body')}</p>
         {withdrawn ? null : (
-          <>
-            <Field
-              htmlFor={`vault-unlock-password-${vaultId}`}
-              label={t('vault.manager.access.devicePassword')}
-            >
-              <Input
-                autoComplete="current-password"
-                disabled={working}
-                id={`vault-unlock-password-${vaultId}`}
-                onChange={(event) => setPassword(event.target.value)}
-                type="password"
-                value={password}
-              />
-            </Field>
-            {/* The legacy gate's checkbox, same wording and same promise: the
-                device key it writes is revoked by a manual lock, a sign-out or
-                the PIN idle lock, and by nothing else. */}
-            <div className="flex items-start gap-3">
-              <Switch
-                aria-label={t('vault.unlock.keepUnlocked')}
-                checked={keepUnlocked}
-                disabled={working}
-                id={`vault-unlock-keep-${vaultId}`}
-                onChange={setKeepUnlocked}
-              />
-              <label className="bt-soft text-sm" htmlFor={`vault-unlock-keep-${vaultId}`}>
-                {t('vault.unlock.keepUnlocked')}
-                <span className="bt-muted mt-1 block text-xs">
-                  {t('vault.unlock.keepUnlockedHint')}
-                </span>
-              </label>
-            </div>
-          </>
+          <Field
+            htmlFor={`vault-unlock-password-${vaultId}`}
+            label={t('vault.manager.access.devicePassword')}
+          >
+            <Input
+              autoComplete="current-password"
+              disabled={working}
+              id={`vault-unlock-password-${vaultId}`}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              value={password}
+            />
+          </Field>
         )}
         {failure ? (
           <p className="bt-neg text-sm" role="alert">
@@ -214,12 +199,6 @@ function unlockFailure(cause: unknown): UnlockFailure {
           };
     case 'device-password-invalid':
       return { key: 'vault.unlockDialog.wrongPassword', withdrawn: false };
-    // The user asked this endpoint for a promise it cannot keep. Nothing was
-    // unlocked (custody is checked before the KDF runs), so the honest answer
-    // is to say so and let them retry without the option.
-    case 'custody-failed':
-    case 'custody-unavailable':
-      return { key: 'vault.unlockDialog.custodyUnavailable', withdrawn: false };
     default:
       return { key: 'vault.manager.access.error', withdrawn: false };
   }

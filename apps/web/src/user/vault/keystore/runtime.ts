@@ -1,105 +1,86 @@
 import { EndpointVaultKeystore } from './core';
-import { createIndexedDbEndpointDeviceCustody } from './deviceCustody';
 import type { EndpointUnlockResult } from './types';
 
-const NOTHING_RESTORED: EndpointUnlockResult = { unlockedVaultIds: [] };
+const NOTHING_RESUMED: EndpointUnlockResult = { unlockedVaultIds: [] };
 
-/**
- * The account device custody is scoped to.
- *
- * A module singleton outlives every sign-in, so the account cannot be captured
- * at construction: it is read at call time and kept here, set by
- * `useEndpointVaultCustody` from the authenticated shell.
- */
-let custodyAccountId: string | null = null;
-let restoreOnce: Promise<EndpointUnlockResult> | null = null;
-/** What the last custody restore actually established; see the listener below. */
-let restoredVaultIds: readonly string[] = [];
+let resumeOnce: Promise<EndpointUnlockResult> | null = null;
+/** What the last resume actually established; see the listener below. */
+let resumedVaultIds: readonly string[] = [];
 
 /** One endpoint-scoped E3 keystore shared by the directory, chip and stubs. */
-export const endpointVaultKeystore = new EndpointVaultKeystore({
-  custody: createIndexedDbEndpointDeviceCustody(),
-  custodyAccount: () => custodyAccountId,
-});
+export const endpointVaultKeystore = new EndpointVaultKeystore();
 
 /**
- * Bind (or release) the account the endpoint session and its device custody
- * belong to.
+ * Bind (or release) the account this endpoint session belongs to.
  *
- * A CHANGE of account is a revocation, exactly as `qr/runtime.ts` treats it: the
- * live session was proven by the previous account's password and must not carry
- * into the next one. The first bind of a tab is not a change — nothing is live —
- * so it must not fire a spurious session end at every mount.
- *
- * The previous account's PERSISTED custody is revoked separately and earlier, by
- * `AuthContext`'s `requestVaultLock(previousUserId)`, which reaches
- * `lockDevice()` through the bound lock signal while this id still names the
- * outgoing account.
+ * A module singleton outlives every sign-in, so the account cannot be captured
+ * at construction. The keystore owns the boundary itself (`bindAccount`): it
+ * opens the account's session channel, refuses grants stamped with any other
+ * account, and treats a CHANGE of account as a revocation.
  */
 export function bindEndpointKeystoreAccount(accountId: string | null): void {
-  const next = accountId?.trim() || null;
-  if (custodyAccountId === next) return;
-  const hadAccount = custodyAccountId !== null;
-  custodyAccountId = next;
-  restoreOnce = null;
-  restoredVaultIds = [];
-  if (hadAccount) endpointVaultKeystore.endSession();
+  if (endpointVaultKeystore.boundAccountId() === (accountId?.trim() || null)) return;
+  endpointVaultKeystore.bindAccount(accountId);
+  resumeOnce = null;
+  resumedVaultIds = [];
 }
 
 /** The account currently bound, for surfaces that must not guess it. */
 export function endpointKeystoreAccountId(): string | null {
-  return custodyAccountId;
+  return endpointVaultKeystore.boundAccountId();
 }
 
 /**
- * ONE custody restore per tab per account, awaited by every first state read.
+ * ONE cross-tab session request per tab per account, awaited by every first
+ * state read.
  *
- * Without the memo, `useVaultEndpointState` would re-check IndexedDB custody on
- * every refetch of every vault. Without the account guard, a state query that
- * beat the shell's binding effect would cache "nothing restored" for the rest of
- * the tab's life — the exact shape of race that leaves a user staring at a
- * locked portfolio they never locked.
+ * Without the memo, `useVaultEndpointState` would broadcast a request on every
+ * refetch of every vault. Without the account guard, a state query that beat the
+ * shell's binding effect would cache "nothing resumed" for the rest of the tab's
+ * life — the exact shape of race that leaves a user staring at a locked
+ * portfolio they never locked.
  */
-export function restoreEndpointCustodyOnce(): Promise<EndpointUnlockResult> {
-  if (custodyAccountId === null) return Promise.resolve(NOTHING_RESTORED);
-  restoreOnce ??= endpointVaultKeystore.restoreFromDeviceCustody().then((result) => {
-    restoredVaultIds = result.unlockedVaultIds;
+export function resumeEndpointSessionOnce(): Promise<EndpointUnlockResult> {
+  if (endpointVaultKeystore.boundAccountId() === null) return Promise.resolve(NOTHING_RESUMED);
+  resumeOnce ??= endpointVaultKeystore.resumeSessionFromOpenTabs().then((result) => {
+    resumedVaultIds = result.unlockedVaultIds;
     return result;
   });
-  return restoreOnce;
+  return resumeOnce;
 }
 
 /**
- * A session that custody established may be re-established after a teardown
- * custody did not cause.
+ * A session another tab granted may be re-requested after a teardown no lock
+ * caused.
  *
  * `endSession()` is raised by consistency teardowns as well as by locks — a
  * SECOND TAB writing a phrase entry bumps the keystore revision, and
  * `reconcileSessionRevision` ends this tab's session over it. Without this
  * retry, one tab unlocking would silently lock the other, which is precisely
- * the "it locks itself again" the custody work exists to end.
+ * the "it locks itself again" this work exists to end.
  *
  * It cannot resurrect a real lock: manual lock, sign-out and the PIN idle lock
- * all go through `lockDevice()`, which writes the §12 marker and deletes the
- * record BEFORE the session end this listener sees — so the retry runs, finds a
- * locked device, and settles at "nothing restored". Which also disarms the
- * retry, because `restoredVaultIds` is then empty: at most one re-attempt per
- * genuinely restored session, never a poll.
+ * all go through `lockDevice()`, which writes the §12 marker BEFORE the session
+ * end this listener sees — so the retry runs, finds a locked device, and settles
+ * at "nothing resumed". Which also disarms the retry, because `resumedVaultIds`
+ * is then empty: at most one re-attempt per genuinely resumed session, never a
+ * poll.
  */
 endpointVaultKeystore.subscribeToSessionEnd(() => {
-  if (restoredVaultIds.length === 0) return;
-  restoredVaultIds = [];
-  restoreOnce = null;
+  if (resumedVaultIds.length === 0) return;
+  resumedVaultIds = [];
+  resumeOnce = null;
 });
 
 /**
  * Sign-out, the PIN idle lock, an account switch and a manual lock all dispatch
  * `VAULT_LOCK_REQUEST_EVENT` (and its account-scoped cross-tab twin). Before
  * this binding the per-portfolio keystore listened to NONE of them — it was
- * memory-only, so a reload hid the gap. With custody on disk, an unbound
- * keystore would survive a sign-out, so this is load-bearing.
+ * per-tab memory-only, so a reload hid the gap. With one session shared across
+ * the device's tabs, an unbound keystore would let a sign-out in one tab leave
+ * the others unlocked, so this is load-bearing.
  */
 export const releaseEndpointKeystoreLockSignal =
   typeof globalThis.addEventListener === 'function'
-    ? endpointVaultKeystore.bindToVaultLockSignal(globalThis, () => custodyAccountId)
+    ? endpointVaultKeystore.bindToVaultLockSignal()
     : () => undefined;
