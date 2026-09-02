@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
@@ -7,11 +9,12 @@ import {
   CUSTOM_ASSET_CATEGORIES,
   customAssetListResponseSchema,
   customAssetSchema,
+  customAssetVaultSnapshotsResponseSchema,
   valuePointsResponseSchema,
 } from '@bettertrack/contracts';
 
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
-import { alerts, assetIdentities, assets } from '../data/schema';
+import { alerts, assetIdentities, assets, priceHistory } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -633,5 +636,159 @@ describe('GET /api/v1/custom-assets', () => {
     const res = await otherAgent.get('/api/v1/custom-assets').set(...XRW);
     expect(res.status).toBe(200);
     expect(res.body.assets).toEqual([]);
+  });
+});
+
+describe('GET /api/v1/custom-assets/vault-snapshots (#1529 lossless manual-asset seam)', () => {
+  const UNKNOWN_ID = '019c8400-0000-7000-8000-00000000fa11';
+
+  async function seedManualAsset(userId: string, symbol: string, meta: unknown) {
+    const id = randomUUID();
+    await harness.db.insert(assets).values({
+      id,
+      ownerId: userId,
+      providerId: 'manual',
+      providerRef: id,
+      type: 'custom',
+      symbol,
+      name: `TEST VECTOR ${symbol}`,
+      currency: 'EUR',
+      exchange: null,
+      meta: meta as Record<string, unknown>,
+    });
+    return id;
+  }
+
+  it('requires authentication and validates the id list', async () => {
+    const anonymous = await request(harness.app)
+      .get('/api/v1/custom-assets/vault-snapshots')
+      .query({ ids: UNKNOWN_ID });
+    expect(anonymous.status).toBe(401);
+
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    expect((await agent.get('/api/v1/custom-assets/vault-snapshots')).status).toBe(400);
+    expect(
+      (await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: 'not-a-uuid' }))
+        .status,
+    ).toBe(400);
+    const tooMany = Array.from({ length: 201 }, (_, index) =>
+      `019c8400-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
+    ).join(',');
+    expect(
+      (await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: tooMany })).status,
+    ).toBe(400);
+  });
+
+  it('returns exact decimal value points and verbatim jsonb meta in vault-entity row shape', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const assetId = await seedManualAsset(user.id, 'EXACT', {
+      category: 'property',
+      smoothing: false,
+      recategorize: true,
+      valuation: { source: 'owner', nested: [1, 'two', null] },
+    });
+    // Beyond Number precision on purpose: the seam must never round-trip
+    // through a float. `numeric` is unbounded; the DTO would have shown 98765432109876.66.
+    await harness.db.insert(priceHistory).values([
+      { assetId, date: '2026-08-21', close: '0.000001' },
+      { assetId, date: '2026-08-20', close: '98765432109876.654321' },
+    ]);
+
+    const res = await agent
+      .get('/api/v1/custom-assets/vault-snapshots')
+      .query({ ids: `${assetId},${UNKNOWN_ID}` });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.headers['cache-control']).toContain('no-store');
+    const parsed = customAssetVaultSnapshotsResponseSchema.parse(res.body);
+    expect(parsed).toEqual({
+      present: [
+        {
+          id: assetId,
+          asset: {
+            providerId: 'manual',
+            providerRef: assetId,
+            ownerId: user.id,
+            type: 'custom',
+            symbol: 'EXACT',
+            name: 'TEST VECTOR EXACT',
+            exchange: null,
+            currency: 'EUR',
+            meta: {
+              category: 'property',
+              smoothing: false,
+              recategorize: true,
+              valuation: { source: 'owner', nested: [1, 'two', null] },
+            },
+            searchText: 'EXACT TEST VECTOR EXACT',
+          },
+          // Ascending by date, decimals as the exact stored strings.
+          values: [
+            { assetId, date: '2026-08-20', close: '98765432109876.654321' },
+            { assetId, date: '2026-08-21', close: '0.000001' },
+          ],
+        },
+      ],
+      absentIds: [UNKNOWN_ID],
+    });
+    // The public DTO is the rounded one this seam exists to bypass.
+    expect(JSON.stringify(res.body)).not.toContain('98765432109876.66');
+  });
+
+  it('answers absent (no oracle) for catalog assets, another account’s manual assets, and unknown ids', async () => {
+    const owner = await harness.seedUser({
+      email: 'vault-snapshot-owner@bettertrack.test',
+      username: 'vault_snapshot_owner',
+    });
+    const intruder = await harness.seedUser({
+      email: 'vault-snapshot-intruder@bettertrack.test',
+      username: 'vault_snapshot_intruder',
+    });
+    const agent = await loginAgent(harness.app, intruder.email, intruder.password);
+    const foreignId = await seedManualAsset(owner.id, 'FOREIGN', { category: 'other' });
+    const ownId = await seedManualAsset(intruder.id, 'MINE', null);
+    const [catalog] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'SAP.DE',
+        type: 'stock',
+        symbol: 'SAP.DE',
+        name: 'SAP SE',
+        currency: 'EUR',
+        exchange: 'XETRA',
+      })
+      .returning({ id: assets.id });
+
+    const res = await agent
+      .get('/api/v1/custom-assets/vault-snapshots')
+      .query({ ids: [foreignId, catalog!.id, UNKNOWN_ID, ownId].join(',') });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const parsed = customAssetVaultSnapshotsResponseSchema.parse(res.body);
+    expect(parsed.present.map(({ id }) => id)).toEqual([ownId]);
+    expect(parsed.present[0]!.asset.meta).toBeNull();
+    expect(parsed.present[0]!.values).toEqual([]);
+    expect(parsed.absentIds).toEqual([foreignId, catalog!.id, UNKNOWN_ID].sort());
+    // A foreign id must be indistinguishable from an unknown one — no field
+    // of the response may leak that the foreign asset exists.
+    expect(JSON.stringify(res.body)).not.toContain('FOREIGN');
+  });
+
+  it('is a plain read: the id list is de-duplicated and order-independent', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const a = await seedManualAsset(user.id, 'AAA', null);
+    const b = await seedManualAsset(user.id, 'BBB', null);
+    const first = await agent
+      .get('/api/v1/custom-assets/vault-snapshots')
+      .query({ ids: `${b},${a},${b}` });
+    const second = await agent.get('/api/v1/custom-assets/vault-snapshots').query({ ids: `${a},${b}` });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body).toEqual(second.body);
+    expect(customAssetVaultSnapshotsResponseSchema.parse(first.body).present.map(({ id }) => id)).toEqual(
+      [a, b].sort(),
+    );
   });
 });

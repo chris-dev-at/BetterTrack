@@ -138,7 +138,10 @@ function stubTransitions(harness: TestHarness, portfolioId: string) {
   const lifecycle = vi
     .spyOn(harness.ctx.portfolioVaultTransitions, 'lifecycle')
     .mockResolvedValue({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
-  return { revision, lifecycle, moveIn, moveOutChallenge, moveOut };
+  const captureImportBatches = vi
+    .spyOn(harness.ctx.portfolioVaultTransitions, 'captureImportBatches')
+    .mockResolvedValue({ batches: [], rows: [], nextCursor: null });
+  return { revision, lifecycle, moveIn, moveOutChallenge, moveOut, captureImportBatches };
 }
 
 async function mintKey(
@@ -173,6 +176,19 @@ describe('E4 portfolio-vault HTTP boundary', () => {
     expect(lifecycle.status, JSON.stringify(lifecycle.body)).toBe(200);
     expect(lifecycle.headers['cache-control']).toContain('no-store');
     expect(lifecycle.body).toEqual({ portfolioId, vaultId: VAULT_ID, lifecycleGeneration: 1 });
+
+    // #1529: the lossless import-capture read — paged, no-store, query-validated.
+    const captured = await agent
+      .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+      .query({ limit: 2 });
+    expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+    expect(captured.headers['cache-control']).toContain('no-store');
+    expect(captured.body).toEqual({ batches: [], rows: [], nextCursor: null });
+    expect(spies.captureImportBatches).toHaveBeenCalledWith(user.id, portfolioId, { limit: 2 });
+    const badLimit = await agent
+      .get(`/api/v1/portfolios/${portfolioId}/vault/import-batches`)
+      .query({ limit: 0 });
+    expect(badLimit.status).toBe(400);
 
     const movedIn = await agent
       .post(`/api/v1/portfolios/${portfolioId}/vault/move-in`)
@@ -389,6 +405,7 @@ describe('E4 portfolio-vault HTTP boundary', () => {
 
   it('keeps the mounted-route and generated-OpenAPI censuses converged', () => {
     const expectedMounted = [
+      'GET /api/v1/portfolios/{portfolioId}/vault/import-batches',
       'GET /api/v1/portfolios/{portfolioId}/vault/lifecycle',
       'GET /api/v1/portfolios/{portfolioId}/vault/revision',
       'POST /api/v1/portfolios/{portfolioId}/vault/move-in',

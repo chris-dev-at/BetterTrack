@@ -64,6 +64,8 @@ import {
   vaultRetired,
   vaultServerCandidates,
   vaults,
+  type ImportBatchRow,
+  type ImportRowRow,
   type PortfolioRow,
   type PortfolioVaultTransitionStateRow,
   type UserRow,
@@ -330,6 +332,138 @@ export async function countPortfolioImportBatches(
     .from(importBatches)
     .where(eq(importBatches.portfolioId, portfolioId));
   return Number(row?.value ?? 0);
+}
+
+// ── #1529: the lossless import-capture read ─────────────────────────────────
+
+/**
+ * The `import_batches` row as the vault document carries it (#1529). A
+ * HAND-LISTED full-row projection — every persisted column except the id —
+ * pinned by `__tests__/portfolioVaultImportCaptureProjection.test.ts` against
+ * both the table columns and the document row contract, because `.optional()`
+ * on the contract cannot tell "absent because old document" from "absent
+ * because the assembler forgot" (the `vault.ts` warning). Nulls stay nulls,
+ * never absent, so a restored row re-reads byte-identically.
+ */
+export function importBatchCaptureData(row: ImportBatchRow) {
+  return {
+    ownerId: row.ownerId,
+    portfolioId: row.portfolioId,
+    brokerId: row.brokerId,
+    filename: row.filename,
+    status: row.status,
+    cashSourceId: row.cashSourceId,
+    createdAt: row.createdAt.toISOString(),
+    appliedAt: row.appliedAt === null ? null : row.appliedAt.toISOString(),
+    understanding: row.understanding ?? null,
+  };
+}
+
+/** The `import_rows` row as the vault document carries it — same discipline. */
+export function importRowCaptureData(row: ImportRowRow) {
+  return {
+    batchId: row.batchId,
+    rowIndex: row.rowIndex,
+    raw: row.raw,
+    kind: row.kind,
+    flag: row.flag,
+    message: row.message,
+    executedAt: row.executedAt === null ? null : row.executedAt.toISOString(),
+    isin: row.isin,
+    symbol: row.symbol,
+    name: row.name,
+    // `numeric` columns arrive as exact strings and leave as exact strings.
+    quantity: row.quantity,
+    price: row.price,
+    fee: row.fee,
+    amountEur: row.amountEur,
+    currency: row.currency,
+    note: row.note,
+    assetId: row.assetId,
+    contentHash: row.contentHash,
+    result: row.result,
+    resultMessage: row.resultMessage,
+    candidates: row.candidates ?? null,
+    ruleTagIds: row.ruleTagIds ?? null,
+    resolvedBy: row.resolvedBy ?? null,
+  };
+}
+
+export type PortfolioImportBatchCaptureRead =
+  | { status: 'not_found' }
+  | { status: 'vaulted' }
+  | { status: 'bad_cursor' }
+  | {
+      status: 'ok';
+      batches: Array<{ id: string; data: ReturnType<typeof importBatchCaptureData> }>;
+      rows: Array<{ id: string; data: ReturnType<typeof importRowCaptureData> }>;
+      nextCursor: string | null;
+    };
+
+const IMPORT_CAPTURE_CURSOR = new RegExp(
+  '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\\d{1,10}):' +
+    '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$',
+  'i',
+);
+
+function importCaptureCursor(row: { batchId: string; rowIndex: number; id: string }): string {
+  return `${row.batchId}:${row.rowIndex}:${row.id}`;
+}
+
+/**
+ * Owner-scoped, lossless read of a PLAIN portfolio's historical import
+ * batches and staging rows (#1529) — the read path whose absence made the
+ * #1528 capture refuse fail-closed (§16 2026-08-28). Run inside the caller's
+ * repeatable-read snapshot. Batches are complete on every page (ordered by
+ * createdAt, id); rows page by the (batchId, rowIndex, id) keyset the cursor
+ * encodes. A vaulted portfolio answers `vaulted`: its rows are purged and the
+ * route is deliberately NOT a transition carve-out.
+ */
+export async function readPortfolioImportBatchCapture(
+  db: Database,
+  userId: string,
+  portfolioId: string,
+  page: { cursor?: string; limit: number },
+): Promise<PortfolioImportBatchCaptureRead> {
+  const [portfolio] = await db
+    .select({ id: portfolios.id, vaultId: portfolios.vaultId })
+    .from(portfolios)
+    .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+    .limit(1);
+  if (!portfolio) return { status: 'not_found' };
+  if (portfolio.vaultId !== null) return { status: 'vaulted' };
+
+  const parsedCursor = page.cursor === undefined ? null : IMPORT_CAPTURE_CURSOR.exec(page.cursor);
+  if (page.cursor !== undefined && parsedCursor === null) return { status: 'bad_cursor' };
+
+  const batchRows = await db
+    .select()
+    .from(importBatches)
+    .where(and(eq(importBatches.portfolioId, portfolioId), eq(importBatches.ownerId, userId)))
+    .orderBy(asc(importBatches.createdAt), asc(importBatches.id));
+  const batchIds = batchRows.map(({ id }) => id);
+  const batches = batchRows.map((row) => ({ id: row.id, data: importBatchCaptureData(row) }));
+  if (batchIds.length === 0) return { status: 'ok', batches, rows: [], nextCursor: null };
+
+  const afterCursor =
+    parsedCursor === null
+      ? sql`true`
+      : sql`(${importRows.batchId}, ${importRows.rowIndex}, ${importRows.id}) > (${parsedCursor[1]!.toLowerCase()}::uuid, ${Number(parsedCursor[2])}::int, ${parsedCursor[3]!.toLowerCase()}::uuid)`;
+  const fetched = await db
+    .select()
+    .from(importRows)
+    .where(and(inArray(importRows.batchId, batchIds), afterCursor))
+    .orderBy(asc(importRows.batchId), asc(importRows.rowIndex), asc(importRows.id))
+    .limit(page.limit + 1);
+  const hasMore = fetched.length > page.limit;
+  const pageRows = hasMore ? fetched.slice(0, page.limit) : fetched;
+  const last = pageRows.at(-1);
+  return {
+    status: 'ok',
+    batches,
+    rows: pageRows.map((row) => ({ id: row.id, data: importRowCaptureData(row) })),
+    nextCursor: hasMore && last ? importCaptureCursor(last) : null,
+  };
 }
 
 export type PortfolioVaultLifecycleRead =

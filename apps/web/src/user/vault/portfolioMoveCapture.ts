@@ -2,6 +2,7 @@ import { uuidv7 } from 'uuidv7';
 
 import {
   PER_VAULT_ERROR_CODES,
+  PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX,
   VAULT_DOC_SCHEMA_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
   serializePortfolioVaultMoveOutProofTranscript,
@@ -10,9 +11,11 @@ import {
   vaultCommonDocSchema,
   vaultHeaderDocSchema,
   vaultPortfolioDocSchema,
+  type CustomAssetVaultSnapshot,
   type PerVaultMediaDocAttestation,
   type PortfolioAsset,
   type PortfolioSummary,
+  type PortfolioVaultImportCaptureResponse,
   type VaultCommonDoc,
   type VaultConfig,
   type VaultDocEnvelopeHeader,
@@ -26,7 +29,12 @@ import {
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDetail } from '../../lib/assetApi';
 import { listAllCashBudgets } from '../../lib/cashApi';
-import { getTaxYearReport, getTaxYearReports, listDividends } from '../../lib/portfolioApi';
+import {
+  getCustomAssetVaultSnapshots,
+  getTaxYearReport,
+  getTaxYearReports,
+  listDividends,
+} from '../../lib/portfolioApi';
 import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
 import { listStandingOrderRuns } from '../../lib/standingOrdersApi';
 import { getMe, getParanoidForkProvenance } from '../../lib/userApi';
@@ -34,6 +42,7 @@ import {
   getPortfolioVaultLifecycle,
   getPortfolioVaultRevision,
   getVaultMediaState,
+  listPortfolioVaultImportBatches,
   transitionVaultMedia,
   writeVaultDocument,
 } from '../../lib/vaultApi';
@@ -52,7 +61,10 @@ import { endpointVaultKeystore } from './keystore/runtime';
 import { mergeForkProvenance, pruneForkProvenance } from './mirrorProvenance';
 import type { PortfolioVaultKeystore } from './portfolioStoreResolver';
 import type { PortfolioVaultMoveCapture } from './portfolioVaultMove';
-import { buildPortfolioVaultRestoreDocument } from './portfolioRestoreDocument';
+import {
+  buildPortfolioVaultRestoreDocument,
+  type ManualAssetSnapshotResolver,
+} from './portfolioRestoreDocument';
 import {
   decimal,
   frozenFactsForDividend,
@@ -81,18 +93,19 @@ import {
  * challenge transcript with the retirement-proof Ed25519 key that exists only
  * inside the encrypted common doc — possession of the vault, not of a session.
  *
- * Deliberate fail-closed limits of THIS build, each surfaced before anything
- * destructive and recorded in #1525:
+ * Deliberate fail-closed limits, each surfaced before anything destructive:
  *  - Drive-carrying vaults are refused (no per-vault Drive provisioning —
  *    `PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false` — so none can exist).
- *  - A portfolio with historical import batches is refused: there is no client
- *    read path for their staging rows, and purging rows the encrypted document
- *    never carried is exactly the loss class §9 forbids. The refusal fact is
- *    the `importBatchCount` returned in the same snapshot as the revision.
- *  - A portfolio referencing owner-manual (custom) assets is refused on BOTH
- *    paths: move-in has only the rounded public DTO (not the exact decimal
- *    snapshot E4's restore CAS needs) and move-out already fails closed in
- *    `portfolioRestoreDocument` without a lossless resolver.
+ *  - Historical import batches and owner-manual (custom) assets were refused
+ *    by the #1528 ruling (§16 2026-08-28) because no lossless read path
+ *    existed. #1529 supplies both seams — the paged import-capture read and
+ *    the exact manual-asset snapshot read — and the refusals now lift BY
+ *    CAPABILITY: when a seam is absent from `PortfolioMoveCaptureApi` the
+ *    pre-#1529 refusal is byte-identical, and when it is present the capture
+ *    still refuses anything it cannot prove lossless (a served row the
+ *    document contract would degrade, a batch set that disagrees with the
+ *    settled revision, a referenced asset the server does not hold as the
+ *    owner's manual asset). The refusal machinery stays for future gaps.
  */
 
 export const PORTFOLIO_MOVE_CAPTURE_ERROR_CODES = [
@@ -191,6 +204,14 @@ export interface PortfolioMoveCaptureApi {
   listAllCashBudgets: typeof listAllCashBudgets;
   getAssetDetail: typeof getAssetDetail;
   getParanoidForkProvenance: typeof getParanoidForkProvenance;
+  /**
+   * #1529 capability seams. Optional ON PURPOSE: their absence keeps the
+   * #1528 fail-closed refusals in force exactly as shipped; production always
+   * supplies both. A harness toggles them to prove the refusal machinery is
+   * lifted, not deleted.
+   */
+  listPortfolioVaultImportBatches?: typeof listPortfolioVaultImportBatches;
+  getCustomAssetVaultSnapshots?: typeof getCustomAssetVaultSnapshots;
 }
 
 export interface PortfolioMoveCaptureDependencies {
@@ -216,6 +237,8 @@ const PRODUCTION_API: PortfolioMoveCaptureApi = {
   listAllCashBudgets,
   getAssetDetail,
   getParanoidForkProvenance,
+  listPortfolioVaultImportBatches,
+  getCustomAssetVaultSnapshots,
 };
 
 function conflict(message: string, options?: ErrorOptions): PortfolioMoveCaptureError {
@@ -239,8 +262,83 @@ function requireServerOnlyMedia(vault: VaultConfig): void {
 
 interface PortfolioCaptureRows {
   entities: VaultPortfolioDoc['entities'];
-  /** Every referenced asset, market-catalog included, for the common-doc fold. */
+  /** Every referenced MARKET-catalog asset, for the client-only common-doc snapshot. */
   referencedAssets: Map<string, PortfolioAsset>;
+  /**
+   * Every referenced owner-manual asset as the EXACT server row + value set
+   * (#1529) — the common-doc fold writes these verbatim, never the DTO.
+   */
+  manualAssets: Map<string, CustomAssetVaultSnapshot>;
+  /** Batches captured through the lossless read, or null when the seam is absent. */
+  capturedImportBatchCount: number | null;
+}
+
+/** Structural JSON equality: key order is irrelevant, array order and values are not. */
+function sameJson(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJson(value, right[index]))
+    );
+  }
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) {
+    return false;
+  }
+  const leftKeys = Object.keys(left as object).filter(
+    (key) => (left as Record<string, unknown>)[key] !== undefined,
+  );
+  const rightKeys = Object.keys(right as object).filter(
+    (key) => (right as Record<string, unknown>)[key] !== undefined,
+  );
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        rightKeys.includes(key) &&
+        sameJson((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]),
+    )
+  );
+}
+
+/**
+ * Read EVERY page of the lossless import-capture seam. The batch list rides on
+ * every page; a page whose batch list differs from the first proves the set
+ * moved mid-read, which the revision CAS would refuse anyway — refuse here
+ * first, before the document is even assembled.
+ */
+async function readAllImportBatches(
+  read: NonNullable<PortfolioMoveCaptureApi['listPortfolioVaultImportBatches']>,
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<PortfolioVaultImportCaptureResponse> {
+  let cursor: string | undefined;
+  let batches: PortfolioVaultImportCaptureResponse['batches'] | null = null;
+  const rows: PortfolioVaultImportCaptureResponse['rows'] = [];
+  const seenRowIds = new Set<string>();
+  do {
+    signal?.throwIfAborted();
+    const page: PortfolioVaultImportCaptureResponse = await read(
+      portfolioId,
+      { ...(cursor === undefined ? {} : { cursor }), limit: PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_MAX },
+      signal,
+    );
+    if (batches === null) batches = page.batches;
+    else if (!sameJson(batches, page.batches)) {
+      throw conflict('The portfolio’s import batches changed while they were being captured.');
+    }
+    for (const row of page.rows) {
+      if (seenRowIds.has(row.id)) {
+        throw conflict('The import-capture read served a staging row twice.');
+      }
+      seenRowIds.add(row.id);
+      rows.push(row);
+    }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return { batches: batches ?? [], rows, nextCursor: null };
 }
 
 /**
@@ -265,6 +363,9 @@ async function buildPortfolioCaptureRows(input: {
   const { accountId, portfolio, store, api, signal } = input;
   const buckets = new Map<VaultEntityKind, VaultEntity[]>();
   const referencedAssets = new Map<string, PortfolioAsset>();
+  const manualAssetIds = new Set<string>();
+  const importCapture = api.listPortfolioVaultImportBatches;
+  const manualCapture = api.getCustomAssetVaultSnapshots;
   const append = (
     kind: VaultEntityKind,
     entityId: string,
@@ -283,8 +384,33 @@ async function buildPortfolioCaptureRows(input: {
     });
     buckets.set(kind, bucket);
   };
+  /**
+   * The lossless-or-refuse discipline for served import rows: the document
+   * contract tolerates malformed staging fields by degrading them to null
+   * (`.catch(null)` in `vault.ts`) so a cosmetic suggestion can never lock a
+   * portfolio out of restore — but a CAPTURE must never rely on that: a row
+   * the contract would degrade is a row this capture cannot carry, and the
+   * §9 purge would then delete what the document never held.
+   */
+  const appendLossless = (
+    kind: 'importBatch' | 'importRow',
+    entityId: string,
+    data: Record<string, unknown>,
+    editedAt: string,
+  ) => {
+    const parsed = VAULT_ENTITY_ROW_SCHEMAS[kind].safeParse(data);
+    if (!parsed.success || !sameJson(parsed.data, data)) {
+      throw new PortfolioMoveCaptureError(
+        'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+        `This version cannot capture ${kind === 'importBatch' ? 'import batch' : 'import row'} ${entityId} losslessly.`,
+      );
+    }
+    append(kind, entityId, data, editedAt);
+  };
+  // Capability-gated refusals (#1529): byte-identical to the #1528 ruling
+  // while the corresponding read seam is absent.
   const refuseImportSource = (source: string, label: string) => {
-    if (source.startsWith('import:')) {
+    if (importCapture === undefined && source.startsWith('import:')) {
       throw new PortfolioMoveCaptureError(
         'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
         `This version cannot capture imported rows losslessly (${label}).`,
@@ -292,12 +418,19 @@ async function buildPortfolioCaptureRows(input: {
     }
   };
   const refuseCustomAsset = (asset: { id: string; isCustom: boolean }) => {
-    if (asset.isCustom) {
+    if (!asset.isCustom) return;
+    if (manualCapture === undefined) {
       throw new PortfolioMoveCaptureError(
         'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
         `This version cannot capture custom asset ${asset.id} with exact values.`,
       );
     }
+    manualAssetIds.add(asset.id);
+  };
+  /** Market assets snapshot from the DTO; owner-manual ones only through the exact seam. */
+  const reference = (asset: PortfolioAsset) => {
+    refuseCustomAsset(asset);
+    if (!asset.isCustom) referencedAssets.set(asset.id, asset);
   };
 
   append(
@@ -332,8 +465,7 @@ async function buildPortfolioCaptureRows(input: {
 
   for (const transaction of transactions) {
     refuseImportSource(transaction.source, `transaction ${transaction.id}`);
-    refuseCustomAsset(transaction.asset);
-    referencedAssets.set(transaction.asset.id, transaction.asset);
+    reference(transaction.asset);
     const taxFact = frozenFactsForTransaction(transaction, recordedTax);
     append(
       'transaction',
@@ -410,8 +542,7 @@ async function buildPortfolioCaptureRows(input: {
 
   for (const dividend of dividendList.dividends) {
     refuseImportSource(dividend.source, `dividend ${dividend.id}`);
-    refuseCustomAsset(dividend.asset);
-    referencedAssets.set(dividend.asset.id, dividend.asset);
+    reference(dividend.asset);
     const taxFact = frozenFactsForDividend(dividend, recordedTax);
     append(
       'dividend',
@@ -449,11 +580,10 @@ async function buildPortfolioCaptureRows(input: {
   );
   for (const order of standingOrders) {
     const assetId = order.assetId;
-    if (assetId != null && !referencedAssets.has(assetId)) {
+    if (assetId != null && !referencedAssets.has(assetId) && !manualAssetIds.has(assetId)) {
       signal?.throwIfAborted();
       const detail = await api.getAssetDetail(assetId, signal);
-      refuseCustomAsset(detail.asset);
-      referencedAssets.set(assetId, detail.asset);
+      reference(detail.asset);
     }
   }
 
@@ -524,7 +654,80 @@ async function buildPortfolioCaptureRows(input: {
     );
   }
 
-  return { entities: Object.fromEntries(buckets), referencedAssets };
+  // ── #1529: historical import batches ride the doc (the §9 table row).
+  let capturedImportBatchCount: number | null = null;
+  if (importCapture !== undefined) {
+    const captured = await readAllImportBatches(importCapture, portfolio.id, signal);
+    const batchCreatedAt = new Map<string, string>();
+    for (const batch of captured.batches) {
+      if (batch.data.portfolioId !== portfolio.id || batch.data.ownerId !== accountId) {
+        throw conflict(`The import-capture read served batch ${batch.id} of another portfolio.`);
+      }
+      if (batch.data.status !== 'applied') {
+        // E4 refuses the commit on a pending import anyway (PENDING_IMPORT);
+        // say so here, before any ciphertext write, as the same fixable state.
+        throw conflict(
+          `Import batch ${batch.id} is still pending; apply or delete it before moving the portfolio.`,
+        );
+      }
+      if (batchCreatedAt.has(batch.id)) {
+        throw conflict(`The import-capture read served batch ${batch.id} twice.`);
+      }
+      batchCreatedAt.set(batch.id, batch.data.createdAt);
+      appendLossless('importBatch', batch.id, batch.data, batch.data.appliedAt ?? batch.data.createdAt);
+    }
+    for (const row of captured.rows) {
+      const createdAt = batchCreatedAt.get(row.data.batchId);
+      if (createdAt === undefined) {
+        throw conflict(`The import-capture read served row ${row.id} of a batch it did not list.`);
+      }
+      appendLossless('importRow', row.id, row.data, createdAt);
+      const assetId = row.data.assetId;
+      if (assetId !== null && !referencedAssets.has(assetId) && !manualAssetIds.has(assetId)) {
+        // A staged row may reference an instrument nothing else in the
+        // portfolio touched; E4's restore re-resolves catalog ones and needs
+        // the owner-manual ones restated, so classify it like a standing order.
+        signal?.throwIfAborted();
+        const detail = await api.getAssetDetail(assetId, signal);
+        reference(detail.asset);
+      }
+    }
+    capturedImportBatchCount = captured.batches.length;
+  }
+
+  // ── #1529: owner-manual assets fold as the EXACT server row + value set.
+  const manualAssets = new Map<string, CustomAssetVaultSnapshot>();
+  if (manualAssetIds.size > 0) {
+    if (manualCapture === undefined) throw new Error('unreachable: manual assets were refused above');
+    const ids = [...manualAssetIds].sort();
+    const snapshots = await manualCapture(ids, signal);
+    const present = new Map(snapshots.present.map((snapshot) => [snapshot.id, snapshot]));
+    for (const assetId of ids) {
+      const snapshot = present.get(assetId);
+      if (
+        snapshot === undefined ||
+        snapshot.asset.ownerId !== accountId ||
+        snapshot.asset.providerId !== 'manual' ||
+        snapshot.asset.providerRef !== assetId ||
+        snapshot.values.some((value) => value.assetId !== assetId)
+      ) {
+        // Not held server-side as THIS owner's manual asset: E4's restore
+        // would refuse the restatement, so the capture refuses first.
+        throw new PortfolioMoveCaptureError(
+          'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+          `Custom asset ${assetId} is not held by the server as one of your own manual assets.`,
+        );
+      }
+      manualAssets.set(assetId, snapshot);
+    }
+  }
+
+  return {
+    entities: Object.fromEntries(buckets),
+    referencedAssets,
+    manualAssets,
+    capturedImportBatchCount,
+  };
 }
 
 interface CommonDocFold {
@@ -544,44 +747,99 @@ function foldCommonDocument(input: {
   accountId: string;
   common: VaultCommonDoc;
   referencedAssets: ReadonlyMap<string, PortfolioAsset>;
+  manualAssets: ReadonlyMap<string, CustomAssetVaultSnapshot>;
   capturedProvenance: readonly VaultMirrorProvenance[];
   allEntities: Record<string, VaultEntity[]>;
   deviceId: string;
   now: () => string;
+  id: () => string;
 }): CommonDocFold {
   let changed = false;
   const entities: VaultCommonDoc['entities'] = { ...input.common.entities };
 
   const existingAssets = [...(entities.customAsset ?? [])];
   const byId = new Map(existingAssets.map((entity, index) => [entity.id, index]));
-  for (const asset of [...input.referencedAssets.values()].sort((a, b) =>
-    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
-  )) {
-    const data = VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(
-      assetSnapshotRow(asset, input.accountId),
-    ) as VaultEntity['data'];
-    const index = byId.get(asset.id);
+  const upsertAsset = (assetId: string, data: VaultEntity['data']) => {
+    const index = byId.get(assetId);
     const existing = index === undefined ? undefined : existingAssets[index];
-    if (
-      existing &&
-      existing.deletedAt === null &&
-      JSON.stringify(existing.data) === JSON.stringify(data)
-    ) {
-      continue;
-    }
+    if (existing && existing.deletedAt === null && sameJson(existing.data, data)) return;
     const next: VaultEntity = {
-      id: asset.id,
+      id: assetId,
       rev: (existing?.rev ?? 0) + 1,
       editedAt: input.now(),
       editedBy: input.deviceId,
       deletedAt: null,
       data,
     };
-    if (index === undefined) existingAssets.push(next);
-    else existingAssets[index] = next;
+    if (index === undefined) {
+      byId.set(assetId, existingAssets.length);
+      existingAssets.push(next);
+    } else {
+      existingAssets[index] = next;
+    }
     changed = true;
+  };
+  const sortedIds = (ids: Iterable<string>) => [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const assetId of sortedIds(input.referencedAssets.keys())) {
+    upsertAsset(
+      assetId,
+      VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(
+        assetSnapshotRow(input.referencedAssets.get(assetId)!, input.accountId),
+      ) as VaultEntity['data'],
+    );
+  }
+  // #1529: the owner's manual assets fold as the EXACT server rows, and their
+  // live value set in this doc is made equal to the server's — a stale close
+  // is replaced under the same entity id, a missing date is added, and a
+  // date the server no longer holds is tombstoned. For a server-present
+  // asset the server IS the fact E4 compares at restore (`COMMON_FACT_CONFLICT`).
+  const existingValues = [...(entities.customAssetValue ?? [])];
+  for (const assetId of sortedIds(input.manualAssets.keys())) {
+    const snapshot = input.manualAssets.get(assetId)!;
+    upsertAsset(
+      assetId,
+      VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(snapshot.asset) as VaultEntity['data'],
+    );
+    const liveByDate = new Map<string, number>();
+    existingValues.forEach((entity, index) => {
+      if (entity.deletedAt === null && entity.data.assetId === assetId) {
+        liveByDate.set(String(entity.data.date), index);
+      }
+    });
+    const servedDates = new Set<string>();
+    for (const value of snapshot.values) {
+      servedDates.add(value.date);
+      const data = VAULT_ENTITY_ROW_SCHEMAS.customAssetValue.parse(value) as VaultEntity['data'];
+      const index = liveByDate.get(value.date);
+      const existing = index === undefined ? undefined : existingValues[index];
+      if (existing && sameJson(existing.data, data)) continue;
+      const next: VaultEntity = {
+        id: existing?.id ?? input.id(),
+        rev: (existing?.rev ?? 0) + 1,
+        editedAt: input.now(),
+        editedBy: input.deviceId,
+        deletedAt: null,
+        data,
+      };
+      if (index === undefined) existingValues.push(next);
+      else existingValues[index] = next;
+      changed = true;
+    }
+    for (const [date, index] of liveByDate) {
+      if (servedDates.has(date)) continue;
+      const stale = existingValues[index]!;
+      existingValues[index] = {
+        ...stale,
+        rev: stale.rev + 1,
+        editedAt: input.now(),
+        editedBy: input.deviceId,
+        deletedAt: input.now(),
+      };
+      changed = true;
+    }
   }
   if (existingAssets.length > 0) entities.customAsset = existingAssets;
+  if (existingValues.length > 0) entities.customAssetValue = existingValues;
 
   const mergedProvenance = pruneForkProvenance(
     mergeForkProvenance(input.common.mirrorProvenance, input.capturedProvenance),
@@ -765,10 +1023,20 @@ export function createPortfolioVaultMoveCapture(
           (entry) => entry.portfolioId === portfolioId,
         );
         const settled = await deps.api.getPortfolioVaultRevision(portfolioId);
-        if (settled.importBatchCount > 0) {
-          throw new PortfolioMoveCaptureError(
-            'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
-            'This version cannot capture the portfolio’s historical import batches losslessly.',
+        if (built.capturedImportBatchCount === null) {
+          // #1528 ruling, unchanged while the lossless read seam is absent.
+          if (settled.importBatchCount > 0) {
+            throw new PortfolioMoveCaptureError(
+              'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+              'This version cannot capture the portfolio’s historical import batches losslessly.',
+            );
+          }
+        } else if (built.capturedImportBatchCount !== settled.importBatchCount) {
+          // The count rides the same snapshot as the digest, so a disagreement
+          // with what the read served is a server that changed under the
+          // build (the digest refuses too) or one that lies — never a purge.
+          throw conflict(
+            'The captured import batches do not match the portfolio’s settled batch count.',
           );
         }
         if (settled.portfolioDataRevision === openingRevision) {
@@ -803,6 +1071,7 @@ export function createPortfolioVaultMoveCapture(
         accountId: me.id,
         common: set.common.document,
         referencedAssets: rows.referencedAssets,
+        manualAssets: rows.manualAssets,
         capturedProvenance,
         allEntities: entityUnion([
           set.common.document,
@@ -811,6 +1080,7 @@ export function createPortfolioVaultMoveCapture(
         ]),
         deviceId,
         now,
+        id,
       });
       const commonDocument = vaultCommonDocSchema.parse(fold.document);
 
@@ -1024,6 +1294,55 @@ export function createPortfolioVaultMoveCapture(
         throw conflict('The encrypted proof key does not match the vault’s registered verifier.');
       }
 
+      // #1529: the lossless manual-asset seam for move-out. Server-present
+      // assets cross as the EXACT current rows (E4 compares them field for
+      // field at restore); ids the server does not hold are the ones move-in
+      // detached, restorable from the encrypted snapshot. Entity envelopes
+      // reuse the encrypted doc's revs/ids where the identity matches so two
+      // authorings of the same set are byte-deterministic. Absent seam →
+      // `undefined` → the restore builder's own fail-closed refusal, unchanged.
+      const manualCapture = deps.api.getCustomAssetVaultSnapshots;
+      const encryptedAssets = new Map(
+        (set.common.document.entities.customAsset ?? []).map((entity) => [entity.id, entity]),
+      );
+      const encryptedValues = (set.common.document.entities.customAssetValue ?? []).filter(
+        (entity) => entity.deletedAt === null,
+      );
+      const resolveManualAssetSnapshots: ManualAssetSnapshotResolver | undefined =
+        manualCapture === undefined
+          ? undefined
+          : async ({ assetIds, signal }) => {
+              const response = await manualCapture(assetIds, signal);
+              const authoredAt = now();
+              return {
+                serverPresent: response.present.map(({ id: assetId, asset, values }) => ({
+                  asset: {
+                    id: assetId,
+                    rev: encryptedAssets.get(assetId)?.rev ?? 1,
+                    editedAt: authoredAt,
+                    editedBy: deviceId,
+                    deletedAt: null,
+                    data: asset as VaultEntity['data'],
+                  },
+                  values: values.map((value) => {
+                    const prior = encryptedValues.find(
+                      (entity) =>
+                        entity.data.assetId === assetId && entity.data.date === value.date,
+                    );
+                    return {
+                      id: prior?.id ?? id(),
+                      rev: prior?.rev ?? 1,
+                      editedAt: authoredAt,
+                      editedBy: deviceId,
+                      deletedAt: null,
+                      data: value as VaultEntity['data'],
+                    };
+                  }),
+                })),
+                detachedAssetIds: response.absentIds,
+              };
+            };
+
       const document = await buildPortfolioVaultRestoreDocument(
         {
           userId: me.id,
@@ -1040,7 +1359,7 @@ export function createPortfolioVaultMoveCapture(
           // correct client-side check; a background sync engine for per-vault
           // docs does not exist in this build.
           isDocumentSetCurrent: (candidate) => candidate === portfolioSet,
-          resolveManualAssetSnapshots: undefined,
+          resolveManualAssetSnapshots,
         },
       );
       const documentDigest = await sha256Base64Url(

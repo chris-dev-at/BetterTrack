@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  TAX_ROW_ENGINE_VECTORS,
+  type TaxRowEngineVectorEngine,
+} from '@bettertrack/domain/taxVectors';
+
+import {
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
+  TaxRowClassificationError,
+  type CustomTaxParams,
   type DeTaxableEvent,
 } from '../../../domain/tax';
 import {
@@ -11,12 +18,39 @@ import {
   deYearStateForYear,
   isDeDividend,
   isDeSell,
+  livingEngineOf,
   portfolioHasDeRows,
   portfolioHasFiRows,
+  reportCostBasisStrategy,
   rowEngineCountry,
+  rowTaxEngine,
   type DeRowView,
 } from '../countryState';
+import { isDerivableSell, type LiveRegime } from '../livingYear';
 import { categoryOfBuilder, divRecord, realizationsBuilder, txRecord, yearOf } from './records';
+
+const CUSTOM_PARAMS: CustomTaxParams = {
+  ratePct: 20,
+  lossOffset: true,
+  refund: true,
+  yearReset: true,
+  carryForward: false,
+  costBasis: 'fifo',
+};
+
+/** The server's own regime record for each vector's living-engine label. */
+function liveRegimeFor(engine: TaxRowEngineVectorEngine): LiveRegime {
+  switch (engine) {
+    case 'none':
+      return { kind: 'none' };
+    case 'manual':
+      return { kind: 'manual' };
+    case 'custom':
+      return { kind: 'custom', params: CUSTOM_PARAMS };
+    default:
+      return { kind: 'country', country: engine };
+  }
+}
 
 /**
  * Per-country tax bookkeeping (V5-P4/#635): country routing, DE FIFO
@@ -51,6 +85,108 @@ describe('rowEngineCountry', () => {
 
   it('fails LOUD on an unwired country instead of falling through to the AT pool (#669)', () => {
     expect(() => rowEngineCountry('US')).toThrow(/no settlement component/);
+    expect(() => rowEngineCountry('US')).toThrow(TaxRowClassificationError);
+  });
+});
+
+/**
+ * #1512 — the committed row-engine truth table replayed through the SERVER
+ * classifier. The paranoid client replays the same vectors through
+ * `taxRegimeForRow`; a divergence between the two fails whichever side moved.
+ */
+describe('rowTaxEngine (shared #1512 classifier, server replay)', () => {
+  it('replays the whole committed vector set', () => {
+    expect(TAX_ROW_ENGINE_VECTORS.length).toBeGreaterThanOrEqual(72);
+  });
+
+  it.each(TAX_ROW_ENGINE_VECTORS.map((vector) => [vector.id, vector] as const))(
+    'vector: %s',
+    (_id, vector) => {
+      const regime = liveRegimeFor(vector.living);
+      expect(livingEngineOf(regime)).toBe(vector.living);
+      if ('throws' in vector.expected) {
+        expect(() => rowTaxEngine(vector.row, regime)).toThrow(TaxRowClassificationError);
+        return;
+      }
+      expect(rowTaxEngine(vector.row, regime)).toBe(vector.expected.engine);
+    },
+  );
+
+  it('agrees with the pre-existing server predicates on every vector that classifies', () => {
+    // The legacy predicates are what the derivation router still consults;
+    // the classifier must be a pure restatement of them, never a third opinion.
+    for (const vector of TAX_ROW_ENGINE_VECTORS) {
+      if ('throws' in vector.expected) continue;
+      const regime = liveRegimeFor(vector.living);
+      const sell = txRecord({
+        id: 's',
+        side: 'sell',
+        taxMode: vector.row.taxMode,
+        taxCountry: vector.row.taxCountry,
+      });
+      const engine = rowTaxEngine(sell, regime);
+      const derivable = regime.kind !== 'manual' && isDerivableSell(sell);
+      expect(derivable, vector.id).toBe(engine !== 'manual' && regime.kind !== 'manual');
+      if (!derivable) {
+        // Frozen branch: the DE predicate is exactly "classified as DE".
+        expect(isDeSell(sell), vector.id).toBe(engine === TAX_COUNTRY_DE);
+      }
+    }
+  });
+});
+
+describe('reportCostBasisStrategy (#1512 — the report basis both engines render)', () => {
+  const manual: LiveRegime = { kind: 'manual' };
+  const sell = (taxMode: 'country_specific' | 'custom' | 'none' | 'manual_per_trade' | null, taxCountry: string | null) =>
+    txRecord({ id: 's', side: 'sell', taxMode, taxCountry });
+
+  it.each([
+    ['AT', 'moving-average'],
+    ['DE', 'fifo'],
+    ['FI', 'fifo'],
+    [null, 'moving-average'],
+  ] as const)('manual regime keeps a %s-frozen sell at its own basis (%s)', (country, basis) => {
+    expect(reportCostBasisStrategy(sell('country_specific', country), manual, null)).toBe(basis);
+  });
+
+  it('manual regime: custom-frozen sells keep their snapshot basis, untaxed rows show the moving average', () => {
+    expect(reportCostBasisStrategy(sell('custom', null), manual, 'fifo')).toBe('fifo');
+    expect(reportCostBasisStrategy(sell('custom', null), manual, 'moving-average')).toBe(
+      'moving-average',
+    );
+    expect(() => reportCostBasisStrategy(sell('custom', null), manual, null)).toThrow(
+      TaxRowClassificationError,
+    );
+    expect(reportCostBasisStrategy(sell('none', null), manual, null)).toBe('moving-average');
+    expect(reportCostBasisStrategy(sell(null, null), manual, null)).toBe('moving-average');
+    expect(reportCostBasisStrategy(sell('manual_per_trade', null), manual, null)).toBe(
+      'moving-average',
+    );
+  });
+
+  it('living regimes re-derive every non-manual row under their own basis', () => {
+    const fi: LiveRegime = { kind: 'country', country: TAX_COUNTRY_FI };
+    const at: LiveRegime = { kind: 'country', country: TAX_COUNTRY_AT };
+    const custom: LiveRegime = { kind: 'custom', params: CUSTOM_PARAMS };
+    expect(reportCostBasisStrategy(sell('country_specific', 'AT'), fi, null)).toBe('fifo');
+    expect(reportCostBasisStrategy(sell('country_specific', 'DE'), at, null)).toBe(
+      'moving-average',
+    );
+    expect(reportCostBasisStrategy(sell('custom', null), at, 'fifo')).toBe('moving-average');
+    // Under a custom living regime the LIVING parameters win over a frozen snapshot.
+    expect(reportCostBasisStrategy(sell('custom', null), custom, 'moving-average')).toBe('fifo');
+    // A manual row is a literal fact under every regime.
+    expect(reportCostBasisStrategy(sell('manual_per_trade', null), fi, null)).toBe(
+      'moving-average',
+    );
+  });
+
+  it('never renders an unwired frozen country, under any regime', () => {
+    for (const regime of [manual, { kind: 'none' }, { kind: 'country', country: TAX_COUNTRY_AT }] as LiveRegime[]) {
+      expect(() => reportCostBasisStrategy(sell('country_specific', 'US'), regime, null)).toThrow(
+        TaxRowClassificationError,
+      );
+    }
   });
 });
 

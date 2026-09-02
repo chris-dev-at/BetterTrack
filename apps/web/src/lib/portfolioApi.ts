@@ -8,6 +8,9 @@ import {
   cashTransferResponseSchema,
   createCustomAssetResponseSchema,
   customAssetListResponseSchema,
+  customAssetVaultSnapshotsResponseSchema,
+  serializeCustomAssetVaultSnapshotIds,
+  type CustomAssetVaultSnapshotsResponse,
   customAssetSchema,
   dividendListResponseSchema,
   portfolioHistoryResponseSchema,
@@ -646,6 +649,23 @@ export async function getRecategorizationStatus(
 /** `POST /custom-assets/recategorization/dismiss` — clear the migration flag on all assets (204). */
 export async function dismissRecategorization(): Promise<void> {
   await apiRequest<unknown>('/custom-assets/recategorization/dismiss', { method: 'POST' });
+}
+
+/**
+ * `GET /custom-assets/vault-snapshots?ids=` — #1529: the exact current state of
+ * the caller's own manual assets in vault-entity row shape (decimal strings,
+ * verbatim meta). The lossless seam the per-portfolio vault move uses on both
+ * paths; ids that are not the caller's manual assets come back as absent.
+ */
+export async function getCustomAssetVaultSnapshots(
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<CustomAssetVaultSnapshotsResponse> {
+  const data = await apiRequest<unknown>(
+    `/custom-assets/vault-snapshots?ids=${encodeURIComponent(serializeCustomAssetVaultSnapshotIds(ids))}`,
+    { signal },
+  );
+  return customAssetVaultSnapshotsResponseSchema.parse(data);
 }
 
 // --- Value points ----------------------------------------------------------

@@ -60,6 +60,8 @@ import {
   type UpdatePortfolioResponse,
   type UpdateTaxSettingsRequest,
   type UpdateTransactionRequest,
+  portfolioVaultImportCaptureQuerySchema,
+  type PortfolioVaultImportCaptureQuery,
 } from '@bettertrack/contracts';
 
 import { ApiError, forbidden, notFound } from '../../errors';
@@ -217,6 +219,28 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
       res.json(
         await runPortfolioVaultTransition(() =>
           ctx.portfolioVaultTransitions.lifecycle(req.authUser!.id, portfolioId),
+        ),
+      );
+    },
+  );
+
+  // #1529: the lossless import-capture read — a PLAIN portfolio's historical
+  // import batches + staging rows in vault-document row shape, paged. It is
+  // portfolio CONTENT (bearer: the module's ordinary portfolio:read policy,
+  // like `/imports/:batchId`), NOT a transition carve-out: a vaulted
+  // portfolio is refused at the enforcement boundary, and the service refuses
+  // it again. No-store like every capture-protocol read.
+  router.get(
+    '/:portfolioId/vault/import-batches',
+    noStore,
+    validateParams(portfolioIdParamSchema),
+    validateQuery(portfolioVaultImportCaptureQuerySchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const query = req.valid?.query as PortfolioVaultImportCaptureQuery;
+      res.json(
+        await runPortfolioVaultTransition(() =>
+          ctx.portfolioVaultTransitions.captureImportBatches(req.authUser!.id, portfolioId, query),
         ),
       );
     },

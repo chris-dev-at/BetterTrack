@@ -1,10 +1,12 @@
 import {
   customAssetCategorySchema,
+  customAssetVaultSnapshotsResponseSchema,
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
   type CustomAsset,
   type CustomAssetCategory,
   type CustomAssetListItem,
+  type CustomAssetVaultSnapshotsResponse,
   type UpdateCustomAssetRequest,
   type ValuePoint,
 } from '@bettertrack/contracts';
@@ -50,6 +52,13 @@ export interface CustomAssetService {
   remove(userId: string, id: string): Promise<void>;
   getValuePoints(userId: string, id: string): Promise<ValuePoint[]>;
   putValuePoints(userId: string, id: string, points: ValuePoint[]): Promise<ValuePoint[]>;
+  /**
+   * #1529: the exact current state of the caller's own manual assets among
+   * `ids`, in vault-entity row shape (decimal strings, verbatim `meta`) — the
+   * lossless seam the per-portfolio move needs in both directions. Ids that
+   * are not the caller's manual assets are simply absent (no oracle).
+   */
+  vaultSnapshots(userId: string, ids: readonly string[]): Promise<CustomAssetVaultSnapshotsResponse>;
   /** How many of the user's custom assets still need re-categorizing (V3-P2). */
   recategorizationStatus(userId: string): Promise<{ pending: number }>;
   /** Dismiss the re-categorize banner: clear every flag the user owns (V3-P2). */
@@ -222,6 +231,31 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       for (const ref of refs) {
         await snapshots.invalidate(ref.portfolioId, ref.fromDay);
       }
+    },
+
+    async vaultSnapshots(userId, ids) {
+      const { present, absentIds } = await repo.vaultSnapshotsForOwner(userId, ids);
+      return customAssetVaultSnapshotsResponseSchema.parse({
+        present: present.map(({ asset, values }) => ({
+          id: asset.id,
+          asset: {
+            providerId: asset.providerId,
+            providerRef: asset.providerRef,
+            ownerId: asset.ownerId,
+            type: asset.type,
+            symbol: asset.symbol,
+            name: asset.name,
+            exchange: asset.exchange,
+            currency: asset.currency,
+            meta: asset.meta ?? null,
+            // `search_text` is GENERATED ALWAYS server-side; the vault's own
+            // snapshot producer (`assetSnapshotRow`) spells it as `symbol name`.
+            searchText: `${asset.symbol} ${asset.name}`.trim(),
+          },
+          values: values.map(({ date, close }) => ({ assetId: asset.id, date, close })),
+        })),
+        absentIds,
+      });
     },
 
     async getValuePoints(userId, id) {

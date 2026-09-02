@@ -1,7 +1,9 @@
 import {
+  PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_DEFAULT,
   PORTFOLIO_VAULT_TRANSITION_ERROR_CODES,
   PORTFOLIO_VAULT_LIFECYCLE_GENERATION_MAX,
   VAULT_SERVER_CANDIDATE_TTL_MS,
+  portfolioVaultImportCaptureResponseSchema,
   portfolioVaultMoveInRequestSchema,
   portfolioVaultMoveInResponseSchema,
   portfolioVaultLifecycleResponseSchema,
@@ -9,6 +11,8 @@ import {
   portfolioVaultMoveOutRequestSchema,
   portfolioVaultMoveOutResponseSchema,
   portfolioVaultRevisionResponseSchema,
+  type PortfolioVaultImportCaptureQuery,
+  type PortfolioVaultImportCaptureResponse,
   type PortfolioVaultLifecycleResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveInResponse,
@@ -34,6 +38,7 @@ import {
   listPendingPortfolioVaultMoveOutFinalizations,
   markPendingPortfolioVaultMoveOutFinalizationAttempt,
   readPendingPortfolioVaultMoveOutFinalization,
+  readPortfolioImportBatchCapture,
   readPortfolioVaultLifecycle,
   withPortfolioVaultTransitionTransaction,
 } from '../../data/repositories/portfolioVaultTransitionRepository';
@@ -246,6 +251,16 @@ export interface PortfolioVaultMoveOutFinalizerDeps {
 export interface PortfolioVaultTransitionService {
   revision(userId: string, portfolioId: string): Promise<PortfolioVaultRevisionResponse>;
   lifecycle(userId: string, portfolioId: string): Promise<PortfolioVaultLifecycleResponse>;
+  /**
+   * #1529: the lossless read of a PLAIN portfolio's historical import batches
+   * and staging rows, paged. The client capture carries them into the
+   * portfolio document (the §9 table row) instead of refusing (#1528).
+   */
+  captureImportBatches(
+    userId: string,
+    portfolioId: string,
+    query: PortfolioVaultImportCaptureQuery,
+  ): Promise<PortfolioVaultImportCaptureResponse>;
   moveOutChallenge(
     userId: string,
     portfolioId: string,
@@ -418,6 +433,35 @@ export function createPortfolioVaultTransitionService(
       return portfolioVaultRevisionResponseSchema.parse({
         portfolioDataRevision: revision,
         importBatchCount,
+      });
+    },
+
+    async captureImportBatches(userId, portfolioId, query) {
+      // One repeatable-read snapshot per page. Tearing ACROSS pages is not a
+      // loss class: the revision digest the client binds its commit to covers
+      // both tables, so rows that moved between two pages refuse the commit.
+      const read = await deps.db.transaction(
+        (tx) =>
+          readPortfolioImportBatchCapture(tx as unknown as Database, userId, portfolioId, {
+            ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+            limit: query.limit ?? PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_DEFAULT,
+          }),
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+      );
+      if (read.status === 'not_found') fail('NOT_FOUND', 'Portfolio not found.');
+      if (read.status === 'vaulted') {
+        fail('ALREADY_VAULTED', 'The portfolio is already stored in a vault.');
+      }
+      if (read.status === 'bad_cursor') {
+        fail('TRANSITION_CONFLICT', 'The import-capture cursor does not belong to this read.');
+      }
+      // The strict (no `.catch`) contract: a value the server cannot serve
+      // exactly fails the response instead of degrading — the capture must
+      // refuse what it cannot prove lossless.
+      return portfolioVaultImportCaptureResponseSchema.parse({
+        batches: read.batches,
+        rows: read.rows,
+        nextCursor: read.nextCursor,
       });
     },
 
