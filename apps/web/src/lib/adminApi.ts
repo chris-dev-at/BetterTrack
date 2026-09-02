@@ -1,6 +1,7 @@
 import {
   adminApiKeyListResponseSchema,
   adminFeedbackListResponseSchema,
+  adminFeedbackSubmissionSchema,
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
@@ -37,6 +38,9 @@ import {
   problemSchema,
   problemListResponseSchema,
   updateFeedbackStatusResponseSchema,
+  updateFeedbackArchiveResponseSchema,
+  feedbackThreadResponseSchema,
+  sendFeedbackMessageResponseSchema,
   monitoringStatusResponseSchema,
   aiSettingsResponseSchema,
   aiTestConnectionResponseSchema,
@@ -54,6 +58,7 @@ import {
   type AdminBackupStatusResponse,
   type AdminHealthResponse,
   type AdminFeedbackListResponse,
+  type AdminFeedbackSubmission,
   type AdminFeedbackListQuery,
   type AdminInviteListResponse,
   type AdminStats,
@@ -86,6 +91,12 @@ import {
   type ProblemListResponse,
   type ProblemStatus,
   type UpdateFeedbackStatusRequest,
+  type UpdateFeedbackArchiveRequest,
+  type UpdateFeedbackArchiveResponse,
+  type FeedbackThreadQuery,
+  type FeedbackThreadResponse,
+  type SendFeedbackMessageRequest,
+  type SendFeedbackMessageResponse,
   type UpdateFeedbackStatusResponse,
   type MonitoringStatusResponse,
   type AiSettingsResponse,
@@ -138,7 +149,7 @@ import {
   type UpdateApiKeyTierRequest,
 } from '@bettertrack/contracts';
 
-import { apiRequest } from './apiClient';
+import { ApiError, apiRequest } from './apiClient';
 
 /**
  * Thin, typed wrappers over the auth + admin endpoints (PROJECTPLAN.md §6.1,
@@ -464,6 +475,14 @@ export async function listAdminFeedback(
   const data = await apiRequest<unknown>('/admin/feedback', {
     query: {
       category: params.category,
+      status: params.status,
+      version: params.version,
+      q: params.q,
+      // `archived` and `unread` are booleans on the wire's TEXT side: the query
+      // builder drops `undefined`, so an omitted `unread` stays "don't filter",
+      // while an explicit `false` must still be sent as the string "false".
+      archived: params.archived === undefined ? undefined : String(params.archived),
+      unread: params.unread === undefined ? undefined : String(params.unread),
       sort: params.sort,
       page: params.page,
       limit: params.limit,
@@ -471,6 +490,73 @@ export async function listAdminFeedback(
     signal,
   });
   return adminFeedbackListResponseSchema.parse(data);
+}
+
+/**
+ * "Gone" is an answer, not a session problem.
+ *
+ * The admin area answers non-admins with 404 rather than 403 (§6.12), so the
+ * shared `useResource` treats any 404 as "this session is no longer an admin"
+ * and signs the operator out. That is right for a whole page and wrong for one
+ * addressed row: a helpdesk link to a submission that was since deleted would
+ * log the operator out instead of saying the thread is gone. Mapping 404 to
+ * `null` here keeps the dead end local. It cannot mask a genuinely expired
+ * session, because the inbox list read on the same screen is not wrapped and
+ * still trips the sign-out.
+ */
+async function nullOnMissing<T>(load: () => Promise<T>): Promise<T | null> {
+  try {
+    return await load();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/**
+ * One submission by id (#1406 W3). The split pane opens whatever `?thread=`
+ * names even when the current filters exclude it, so the thread pane reads this
+ * rather than hunting the row inside the paged list.
+ */
+export async function getAdminFeedback(
+  id: string,
+  signal?: AbortSignal,
+): Promise<AdminFeedbackSubmission | null> {
+  return nullOnMissing(async () => {
+    const data = await apiRequest<unknown>(`/admin/feedback/${id}`, { signal });
+    return adminFeedbackSubmissionSchema.parse(data);
+  });
+}
+
+export async function getAdminFeedbackThread(
+  id: string,
+  params: FeedbackThreadQuery = {},
+  signal?: AbortSignal,
+): Promise<FeedbackThreadResponse | null> {
+  return nullOnMissing(async () => {
+    const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+      query: { cursor: params.cursor, limit: params.limit },
+      signal,
+    });
+    return feedbackThreadResponseSchema.parse(data);
+  });
+}
+
+export async function sendAdminFeedbackReply(
+  id: string,
+  body: SendFeedbackMessageRequest,
+): Promise<SendFeedbackMessageResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/messages`, {
+    method: 'POST',
+    body,
+  });
+  return sendFeedbackMessageResponseSchema.parse(data);
+}
+
+/** Idempotent: the route advances the shared admin marker on every open. */
+export async function markAdminFeedbackRead(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/read`, { method: 'POST' });
+  okResponseSchema.parse(data);
 }
 
 export async function updateFeedbackStatus(
@@ -482,6 +568,18 @@ export async function updateFeedbackStatus(
     body,
   });
   return updateFeedbackStatusResponseSchema.parse(data);
+}
+
+/** Workspace hygiene, not a lifecycle transition — and never a delete. */
+export async function setAdminFeedbackArchived(
+  id: string,
+  archived: boolean,
+): Promise<UpdateFeedbackArchiveResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, {
+    method: 'PATCH',
+    body: { archived } satisfies UpdateFeedbackArchiveRequest,
+  });
+  return updateFeedbackArchiveResponseSchema.parse(data);
 }
 
 // --- Admin: Usage analytics (§13.5 V5-P2 arc (b), first-party only) --------

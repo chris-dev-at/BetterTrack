@@ -4405,7 +4405,6 @@
       "ai": "AI",
       "users": "Users",
       "invites": "Invites",
-      "feedback": "Feedback",
       "settings": "Settings",
       "accountDefaults": "Account defaults",
       "announcements": "Announcements",
@@ -4943,24 +4942,13 @@
       "reopen": "Reopen"
     },
     "feedback": {
-      "title": "Feedback",
-      "subtitle": "Feature ideas, bugs, help requests, improvements, and other submissions.",
-      "refresh": "Refresh",
-      "loading": "Loading feedback…",
-      "loadError": "Could not load feedback.",
-      "actionError": "Could not update the feedback status.",
-      "empty": "No feedback yet.",
       "archive": "Archive",
       "unarchive": "Unarchive",
       "archived": "Archived",
-      "filters": {
-        "category": "Category",
-        "sort": "Sort",
-        "all": "All categories"
-      },
       "sort": {
         "category": "Priority: features first",
-        "newest": "Newest first"
+        "newest": "Newest first",
+        "aging": "Longest untouched first"
       },
       "category": {
         "feature": "Feature idea",
@@ -4977,12 +4965,8 @@
         "declined": "Declined",
         "shipped": "Shipped"
       },
-      "statusControl": "Status for feedback from {{user}}",
       "deletedByUser": "Deleted by user",
       "fields": {
-        "status": "Status",
-        "message": "Message",
-        "submittedBy": "Submitted by",
         "createdAt": "Submitted at"
       },
       "diagnostics": {
@@ -4993,12 +4977,6 @@
         "device": "Device",
         "locale": "Locale",
         "screen": "Screen"
-      },
-      "pagination": {
-        "navigation": "Feedback pages",
-        "summary": "Page {{page}} of {{pages}} · {{total}} total",
-        "previous": "Previous",
-        "next": "Next"
       }
     },
     "featureFlags": {
@@ -5204,8 +5182,90 @@
     "support": {
       "title": "Support",
       "subtitle": "Where user reports land and get answered.",
-      "comingSoon": "The helpdesk console — threads, internal notes, tags and saved views — arrives with W3.",
-      "openInbox": "Open the feedback inbox"
+      "refresh": "Refresh",
+      "stats": {
+        "needsReply": "Waiting on you",
+        "counting": "…",
+        "unavailable": "unavailable"
+      },
+      "keyboardHint": "j / k to move · Enter to open · Esc to close",
+      "filters": {
+        "search": "Search",
+        "searchPlaceholder": "Subject, message or submitter",
+        "status": "Status",
+        "allStatuses": "Any status",
+        "category": "Category",
+        "allCategories": "Any category",
+        "unread": "Unread",
+        "unreadOption": {
+          "all": "Read and unread",
+          "unread": "Unread only",
+          "read": "Read only"
+        },
+        "sort": "Sort",
+        "version": "Shipped version",
+        "versionPlaceholder": "e.g. 5.2.0",
+        "queue": "Queue",
+        "queueActive": "Active",
+        "queueArchived": "Archived",
+        "reset": "Clear filters"
+      },
+      "inbox": {
+        "label": "Support submissions",
+        "loading": "Loading the inbox…",
+        "empty": "Nothing has been submitted yet.",
+        "emptyFiltered": "No submission matches these filters.",
+        "emptyArchived": "Nothing has been archived.",
+        "noSubject": "(no subject)",
+        "unread": "Unread reply",
+        "noReplies": "no replies yet",
+        "lastWordYou": "you replied last",
+        "lastWordSubmitter": "they replied last",
+        "pagination": {
+          "navigation": "Inbox pages",
+          "range": "Page {{page}} of {{pages}} · {{total}} total",
+          "previous": "Previous",
+          "next": "Next"
+        }
+      },
+      "thread": {
+        "none": "Select a submission to read and answer it.",
+        "loading": "Loading the submission…",
+        "gone": "This submission no longer exists.",
+        "backToInbox": "Back to the inbox",
+        "opened": "opened {{age}} ago",
+        "lastChange": "status changed {{age}} ago",
+        "copyAsIssue": "Copy as issue",
+        "copied": "Copied",
+        "archiveError": "Could not change the archive state.",
+        "deletedByUserNote": "The submitter deleted this from their side. It is kept here for the record, and a reply would arrive somewhere they can no longer read.",
+        "statusLabel": "Set status",
+        "applyStatus": "Apply",
+        "statusError": "Could not update the status.",
+        "declinedReason": "Reason for declining",
+        "shippedVersion": "Shipped in version",
+        "submitterWillSee": "This is what the submitter will see.",
+        "reasonRequired": "Declining needs a reason before it can be saved.",
+        "versionRequired": "Shipping needs a version before it can be saved.",
+        "currentlyShown": "Shown to the submitter right now: {{text}}",
+        "messagesLoading": "Loading the conversation…",
+        "noReplies": "No replies yet.",
+        "authorYou": "You",
+        "olderTruncated": "Older messages are not shown here yet.",
+        "replyLabel": "Reply to {{user}}",
+        "replyPlaceholder": "Write a reply…",
+        "replyCount": "{{count}} / {{max}}",
+        "sendReply": "Send reply",
+        "replyError": "Could not send the reply.",
+        "submitter": "Submitter",
+        "account": "Account",
+        "openTickets": "Open",
+        "totalTickets": "Submissions",
+        "openInPeople": "Open in People →",
+        "history": "Their other submissions",
+        "historyEmpty": "This is their only submission.",
+        "diagnosticsNote": "Only these keys are ever shown. Anything else the client sent is dropped."
+      }
     },
     "registration": {
       "title": "Registration",

@@ -11,7 +11,7 @@ interface ResourceState<T> {
   retryable: boolean;
 }
 
-interface Resource<T> extends ResourceState<T> {
+export interface Resource<T> extends ResourceState<T> {
   /** Re-run the fetch (e.g. after a mutation). */
   reload: () => void;
 }
