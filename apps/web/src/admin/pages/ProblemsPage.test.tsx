@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -44,7 +45,11 @@ const list: ProblemListResponse = { problems: [problem], openCount: 1 };
 function renderPage() {
   return render(
     <AuthProvider>
-      <ProblemsPage />
+      {/* W4 folded Operations: the page renders the workspace tab strip, which
+          needs a router. */}
+      <MemoryRouter initialEntries={['/admin/problems']}>
+        <ProblemsPage />
+      </MemoryRouter>
     </AuthProvider>,
   );
 }
