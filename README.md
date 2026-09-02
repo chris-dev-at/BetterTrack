@@ -37,8 +37,8 @@ infra/
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
-docs/         # auxiliary docs (§4.2) — STARTAUTOMATE.md (factory runbook) and
-              # FableBackExecute.md (outage-runbook template)
+docs/         # auxiliary docs (§4.2) — see docs/README.md for the index;
+              # docs/history/ holds archived, non-normative records
 ```
 
 ## Prerequisites
@@ -63,6 +63,36 @@ pnpm dev:infra            # docker compose -f infra/docker-compose.dev.yml up -d
 cp infra/.env.example apps/api/.env
 ```
 
+### Working in a git worktree
+
+A second working tree is the cheapest way to run a parallel branch without
+touching your main checkout:
+
+```bash
+# From the main checkout:
+git worktree add ../bt-task-1624 -b task/1624
+
+cd ../bt-task-1624
+pnpm install --prefer-offline   # reuses the shared pnpm store; fetches only what is missing
+                                # (plain --offline works only if the store already has every tarball)
+
+# when the branch is merged:
+git worktree remove ../bt-task-1624
+```
+
+**Never symlink or copy `node_modules` from the main checkout into a worktree.**
+pnpm links workspace packages by relative path, so a borrowed `node_modules`
+resolves `@bettertrack/*` to the **main checkout's** `packages/` — `pnpm typecheck`
+then verifies the other branch's code and reports green on changes you never made.
+Every worktree gets its own `pnpm install`; the package store is shared anyway, so
+the only extra cost is the `node_modules` tree. Confirm the links point at the
+worktree before trusting a typecheck:
+
+```bash
+readlink -f apps/api/node_modules/@bettertrack/domain
+# → /path/to/bt-task-1624/packages/domain   (never the main checkout)
+```
+
 ## Running
 
 ```bash
@@ -80,6 +110,23 @@ Run an app individually with pnpm filters:
 pnpm --filter @bettertrack/api dev
 pnpm --filter @bettertrack/web dev
 ```
+
+### Resetting local infra
+
+The dev stack keeps its data across a plain teardown — `down` removes the
+containers, not the volumes:
+
+```bash
+docker compose -f infra/docker-compose.dev.yml down      # stop; the bettertrack-dev_pgdata volume survives
+docker compose -f infra/docker-compose.dev.yml down -v   # stop AND delete the dev volumes (destructive)
+```
+
+Reach for `-v` when the dev database is in a state migrations cannot repair: a
+half-applied migration, a schema left behind by a branch you abandoned, or the
+`relation already exists` / `column … does not exist` failures a stale
+`bettertrack-dev_pgdata` volume produces on the next `pnpm dev:infra` + migrate
+run. It destroys the local dev database and cache only — the production stack
+(`infra/docker-compose.yml`) has separate volumes and is untouched.
 
 ## Email (SMTP)
 

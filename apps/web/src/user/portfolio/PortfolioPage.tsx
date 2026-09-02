@@ -1498,7 +1498,7 @@ function DividendIntelSection() {
 
 /**
  * Portfolio overview (PROJECTPLAN.md §6.9; Origin recomposition per
- * docs/redesign/REAL_APP_REDESIGN_PROMPT.md): one continuous working canvas —
+ * docs/history/redesign/REAL_APP_REDESIGN_PROMPT.md): one continuous working canvas —
  * net-worth hero + ruled stat strip, the value-over-time chart integrated into
  * the page, allocation, holdings with expandable transaction rows, winners/
  * losers, dividend intelligence and the recent ledger, separated by rules

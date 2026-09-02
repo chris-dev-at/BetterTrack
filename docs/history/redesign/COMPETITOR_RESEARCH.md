@@ -1,5 +1,7 @@
 # BetterTrack redesign — competitor and interaction research
 
+_Archived 2026-09-02 — the Origin redesign record; the shipped design language now lives in `apps/web/src/styles/origin.css`, and the ground-up v6 redesign is tracked in #544._
+
 Research date: 2026-07-27  
 Method: public product pages, pricing pages, help centers, and official documentation.
 

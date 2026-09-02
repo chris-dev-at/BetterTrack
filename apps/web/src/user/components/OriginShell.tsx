@@ -54,7 +54,7 @@ const VaultSyncChip = lazy(() =>
 );
 
 /**
- * Origin application frame (docs/redesign/REAL_APP_REDESIGN_PROMPT.md,
+ * Origin application frame (docs/history/redesign/REAL_APP_REDESIGN_PROMPT.md,
  * PRODUCT_BLUEPRINT.md §4): a stable left navigation rail with the five suite
  * destinations — Home · Portfolios · Workbench · Assets · People — plus the
  * persistent utilities (Ask BetterTrack, Review, Control Center), a slim
@@ -328,7 +328,7 @@ function RailBrand() {
 
 /**
  * The account / organization switcher — a PERSISTENT utility (see
- * docs/redesign/PRODUCT_BLUEPRINT.md §4), i.e. reachable at every width like
+ * docs/history/redesign/PRODUCT_BLUEPRINT.md §4), i.e. reachable at every width like
  * Create and Notifications. It renders at the foot of the rail on desktop
  * (`placement="rail"`, the documented lower-left position) and, once the rail is
  * hidden, as a compact avatar trigger in the topbar (`placement="topbar"`).

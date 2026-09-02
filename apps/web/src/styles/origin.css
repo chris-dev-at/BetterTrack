@@ -1,5 +1,5 @@
 /**
- * BetterTrack Origin design system (docs/redesign/REAL_APP_REDESIGN_PROMPT.md).
+ * BetterTrack Origin design system (docs/history/redesign/REAL_APP_REDESIGN_PROMPT.md).
  *
  * One continuous premium application: warm graphite canvas, soft ivory type,
  * gold reserved for identity/action/focus, flat surfaces with one-pixel rules,
@@ -759,7 +759,7 @@
 /* Compact account trigger. Stands in for the rail's account row once the rail
    is hidden (≤760px), so the account menu — My profile, Settings, Discreet
    mode, Logout — stays a persistent utility on a phone. 44px keeps it a full
-   touch target (docs/redesign/REAL_APP_REDESIGN_PROMPT.md). */
+   touch target (docs/history/redesign/REAL_APP_REDESIGN_PROMPT.md). */
 .bt-topbar__account {
   display: inline-flex;
   align-items: center;

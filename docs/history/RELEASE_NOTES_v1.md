@@ -1,5 +1,7 @@
 # BetterTrack v1 — pre-release review (P10 gate)
 
+_Archived 2026-09-02 — the v1 pre-release gate record; superseded by the shipped V1–V4 milestones in `PROJECTPLAN.md` §13._
+
 Date: 2026-07-04 · Reviewed at: `main` @ `96c9846` · Gate issue: #195
 
 ## Verdict

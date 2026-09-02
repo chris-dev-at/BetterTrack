@@ -1167,6 +1167,13 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'The chip exists only after entering and unlocking paranoid mode with a configured data home; paranoid Drive round-trip e2e owns that state.',
   },
   {
+    surface: 'VaultUnlockDialog in-place unlock prompt',
+    sources: ['apps/web/src/user/vault/ui/VaultUnlockDialog.tsx'],
+    routes: ['/', '/portfolio'],
+    justification:
+      'It mounts only on a paranoid endpoint whose vault is locked and whose device password is still unentered; the E10 paranoid and vault-session-sharing e2e flows own that custody state.',
+  },
+  {
     surface: 'portfolio-switcher selection popover',
     sources: ['apps/web/src/user/portfolio/PortfolioSwitcher.tsx'],
     routes: ['/portfolio'],

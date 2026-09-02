@@ -1,5 +1,7 @@
 # Frontend security and usability review
 
+_Archived 2026-09-02 — part of the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 **Date:** 2026-07-26
 **Scope:** `apps/web`, `apps/landing`, and frontend-facing contracts used by those applications
 **Review type:** Static security, privacy, usability, accessibility, responsive-layout, resilience, localization, and test-coverage review

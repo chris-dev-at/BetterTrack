@@ -1,5 +1,7 @@
 # Infrastructure, Supply-Chain, Deployment, and Operations Review
 
+_Archived 2026-09-02 — part of the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 **Review date:** 2026-07-26
 **Repository:** BetterTrack
 **Scope:** Docker and Compose topology, deployment automation, factory and multi-factory automation, GitHub Actions, dependency controls, secrets handling, backups and restore, observability, runtime health, static web delivery, and operational documentation.

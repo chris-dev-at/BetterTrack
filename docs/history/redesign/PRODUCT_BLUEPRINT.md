@@ -1,5 +1,7 @@
 # BetterTrack — Ground-up product blueprint
 
+_Archived 2026-09-02 — the Origin redesign record; the shipped design language now lives in `apps/web/src/styles/origin.css`, and the ground-up v6 redesign is tracked in #544._
+
 Status: Origin synthesis implemented as the sixth redesign direction  
 Primary platform: desktop web, adapting deliberately to mobile web/PWA  
 Product line: **Your wealth, working together.**
