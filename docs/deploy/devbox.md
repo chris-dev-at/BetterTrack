@@ -326,8 +326,10 @@ forge the rate-limit key. The edge-secret gate is the answer.
    Rule first, mount second. The other order closes every connection including yours.
 3. **Registration mode `Closed`** — the default; verify it after first boot and leave it. Nobody
    self-registers; accounts are admin-created or invited.
-4. **Rate limits** at their defaults (`RATE_LIMIT_BURST_*`). Raising them on a public box raises how
-   much credential stuffing a single source may attempt.
+4. **Rate limits** at their defaults. `RATE_LIMIT_BURST_*` is a per-user capacity control and is
+   sized for normal use (§10); the control that bounds credential stuffing from one source is
+   `RATE_LIMIT_LOGIN_IP_LIMIT`, and raising _that_ on a public box raises how much a single source
+   may attempt.
 5. **No production anything** — separate secrets, separate database, no production data, no
    production SMTP sender, no production push credentials.
 

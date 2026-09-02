@@ -9,6 +9,7 @@ import {
   type PrivacyMode,
 } from '@bettertrack/contracts';
 
+import { apiRetryPolicy, backoffDelayMs } from '../../lib/apiClient';
 import { getParanoidMediaState } from '../../lib/userApi';
 import { removePlaintextQueries } from './plaintextQueries';
 
@@ -94,7 +95,15 @@ export function usePrivacyMode(enabled = true, accountId: string | null = null):
     // where the individual page queries used to retry themselves. Bounded, not
     // unlimited: the gate still fails closed — while these attempts run the
     // query is pending (a splash), and it never resolves to 'normal' on error.
-    retry: 2,
+    //
+    // A 429 gets its OWN, much smaller allowance (§10): the generic `retry: 2`
+    // turned the one read every signed-in user makes into THREE requests fired
+    // one second apart at a limiter that was already refusing. It now buys a
+    // single attempt, scheduled by `backoffDelayMs` at the server's own
+    // Retry-After (jittered) instead of on TanStack's 1 s timer — so the gate
+    // still recovers by itself once the cooldown lifts, without hammering it.
+    retry: apiRetryPolicy(2, 1),
+    retryDelay: backoffDelayMs,
     staleTime: 15_000,
     // Only a paranoid account polls. It is the one that must notice a disable
     // performed on another device *while a decrypted session is open*; a normal
