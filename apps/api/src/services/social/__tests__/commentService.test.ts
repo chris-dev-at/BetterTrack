@@ -1,5 +1,7 @@
-import type { ShareKind } from '@bettertrack/contracts';
+import { COMMENT_PAGE_SIZE, type ShareKind } from '@bettertrack/contracts';
 import { describe, expect, it, vi } from 'vitest';
+
+import { createParanoidModeGuard, type ParanoidModeGuard } from '../../account/paranoidEnforcement';
 
 import type {
   CommentRow,
@@ -24,13 +26,30 @@ const CREATED_AT = new Date('2026-07-27T00:00:00.000Z');
 
 const SHARE_KINDS: readonly ShareKind[] = ['portfolio', 'conglomerate', 'idea', 'watchlist'];
 
-function makeHarness() {
+/**
+ * A real paranoid guard over an in-memory mode map — the locking semantics
+ * (required principals reject, optional ones are filtered) are the thing under
+ * test, so stubbing them away would prove nothing.
+ */
+function makeParanoidGuard(modes: Record<string, 'normal' | 'paranoid'>): ParanoidModeGuard {
+  return createParanoidModeGuard({
+    privacyModeFor: async (userId) => modes[userId] ?? 'normal',
+    withLockedPrivacyModes: async (userIds, run) =>
+      run(new Map(userIds.map((userId) => [userId, modes[userId] ?? 'normal']))),
+  });
+}
+
+function makeHarness(paranoid?: ParanoidModeGuard) {
   const comments = {
     listForItem: vi.fn<ItemCommentRepository['listForItem']>().mockResolvedValue([]),
     create: vi
       .fn<ItemCommentRepository['create']>()
       .mockResolvedValue({ id: COMMENT_ID, createdAt: CREATED_AT }),
     getById: vi.fn<ItemCommentRepository['getById']>().mockResolvedValue(undefined),
+    countForItem: vi.fn<ItemCommentRepository['countForItem']>().mockResolvedValue(0),
+    listParticipantsForItem: vi
+      .fn<ItemCommentRepository['listParticipantsForItem']>()
+      .mockResolvedValue([]),
     softDelete: vi.fn<ItemCommentRepository['softDelete']>().mockResolvedValue(true),
   };
   const reactions = {
@@ -41,6 +60,15 @@ function makeHarness() {
     summaryForComments: vi
       .fn<ItemReactionRepository['summaryForComments']>()
       .mockResolvedValue(new Map<string, ReactionAggregate[]>()),
+    listActorIdsForThread: vi
+      .fn<ItemReactionRepository['listActorIdsForThread']>()
+      .mockResolvedValue([]),
+    listActorIdsForItem: vi
+      .fn<ItemReactionRepository['listActorIdsForItem']>()
+      .mockResolvedValue([]),
+    listActorIdsForComment: vi
+      .fn<ItemReactionRepository['listActorIdsForComment']>()
+      .mockResolvedValue([]),
   };
   const audience = {
     ownsSubject: vi.fn<AudienceService['ownsSubject']>().mockResolvedValue(false),
@@ -71,6 +99,7 @@ function makeHarness() {
       reactions: reactions as unknown as ItemReactionRepository,
       audience: audience as unknown as AudienceService,
       userRepo,
+      paranoid,
     }),
     comments,
     reactions,
@@ -270,6 +299,119 @@ describe('commentService — audience and moderation boundaries', () => {
 
     expectNoAudienceRead(harness);
     expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+  });
+
+  it('lets an author delete their own comment while the ITEM OWNER is paranoid', async () => {
+    // The owner's account mode is not the author's business: blocking here would
+    // strand the author's own text forever AND disclose the owner's mode via 403.
+    const harness = makeHarness(makeParanoidGuard({ [OWNER]: 'paranoid' }));
+    harness.comments.getById.mockResolvedValue(commentRef());
+
+    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
+
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+  });
+
+  it('still refuses a paranoid viewer their own delete (their own capability is off)', async () => {
+    const harness = makeHarness(makeParanoidGuard({ [AUTHOR]: 'paranoid' }));
+    harness.comments.getById.mockResolvedValue(commentRef());
+
+    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    expect(harness.comments.softDelete).not.toHaveBeenCalled();
+  });
+
+  it('lets an author delete a comment whose subject no longer exists', async () => {
+    // Orphans predate the subject-teardown purge; without this they are
+    // undeletable forever, because no owner resolves to authorize the removal.
+    const harness = makeHarness();
+    harness.comments.getById.mockResolvedValue(commentRef());
+    harness.audience.subjectOwner.mockResolvedValue(undefined);
+
+    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
+
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+  });
+
+  it('gives a non-author the uniform 404 on an orphaned comment', async () => {
+    const harness = makeHarness();
+    harness.comments.getById.mockResolvedValue(commentRef());
+    harness.audience.subjectOwner.mockResolvedValue(undefined);
+
+    await expectNotFound(harness.service.deleteComment(VIEWER, COMMENT_ID), 'COMMENT_NOT_FOUND');
+
+    expect(harness.comments.softDelete).not.toHaveBeenCalled();
+  });
+
+  it('reads ONE bounded page and reports the whole thread count', async () => {
+    const harness = makeHarness();
+    admitOwner(harness, 'portfolio');
+    harness.comments.listForItem.mockResolvedValue([commentRow()]);
+    harness.comments.countForItem.mockResolvedValue(4200);
+
+    const thread = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
+
+    expect(harness.comments.listForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, {
+      limit: COMMENT_PAGE_SIZE + 1,
+      before: undefined,
+      authorIds: undefined,
+    });
+    // A page that did not fill ends the walk — no cursor, but the true count.
+    expect(thread.nextCursor).toBeNull();
+    expect(thread.commentCount).toBe(4200);
+  });
+
+  it('hands back a cursor for the next older page and accepts it', async () => {
+    const harness = makeHarness();
+    admitOwner(harness, 'portfolio');
+    // A full page + 1 probe row: newest-first out of SQL, oldest-first back out.
+    const page = Array.from({ length: COMMENT_PAGE_SIZE + 1 }, (_unused, index) =>
+      commentRow({
+        id: `comment-${index}`,
+        createdAt: new Date(CREATED_AT.getTime() - index * 1000),
+      }),
+    );
+    harness.comments.listForItem.mockResolvedValue(page);
+
+    const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
+    expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
+    const oldestOfPage = page[COMMENT_PAGE_SIZE - 1]!;
+    expect(first.nextCursor).toBe(`${oldestOfPage.createdAt.toISOString()}|${oldestOfPage.id}`);
+    expect(first.comments[0]!.id).toBe(oldestOfPage.id);
+
+    await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, first.nextCursor!);
+    expect(harness.comments.listForItem).toHaveBeenLastCalledWith('portfolio', SUBJECT_ID, {
+      limit: COMMENT_PAGE_SIZE + 1,
+      before: { createdAt: oldestOfPage.createdAt, id: oldestOfPage.id },
+      authorIds: undefined,
+    });
+  });
+
+  it('summarizes a thread without reading a single body', async () => {
+    const harness = makeHarness();
+    admitOwner(harness, 'portfolio');
+    harness.comments.countForItem.mockResolvedValue(12);
+    harness.reactions.summaryForItem.mockResolvedValue([{ emoji: '🔥', count: 3, reacted: false }]);
+
+    await expect(harness.service.getThreadSummary(OWNER, 'portfolio', SUBJECT_ID)).resolves.toEqual(
+      {
+        kind: 'portfolio',
+        subjectId: SUBJECT_ID,
+        commentCount: 12,
+        reactions: [{ emoji: '🔥', count: 3, reacted: false }],
+      },
+    );
+    expect(harness.comments.listForItem).not.toHaveBeenCalled();
+  });
+
+  it('refuses the summary to an unauthorized viewer, exactly like the thread', async () => {
+    const harness = makeHarness();
+    await expectNotFound(
+      harness.service.getThreadSummary(OUTSIDER, 'portfolio', SUBJECT_ID),
+      'NOT_FOUND',
+    );
+    expect(harness.comments.countForItem).not.toHaveBeenCalled();
   });
 
   it('lets the current item owner moderate any live comment', async () => {

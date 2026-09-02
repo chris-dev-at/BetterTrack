@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { ShareKind } from '@bettertrack/contracts';
 
@@ -34,10 +34,17 @@ export interface CommentSubjectRef {
   deletedAt: Date | null;
 }
 
-/** Identity-only thread discovery used before participant privacy locks. */
-export interface CommentParticipantRow {
+/** The oldest comment of the page just read — where the next older page starts. */
+export interface CommentPageCursor {
+  createdAt: Date;
   id: string;
-  authorId: string;
+}
+
+/** One bounded thread read: page size, optional cursor, optional actor snapshot. */
+export interface CommentPageOptions {
+  limit: number;
+  before?: CommentPageCursor;
+  authorIds?: readonly string[];
 }
 
 export function createItemCommentRepository(db: Database) {
@@ -57,16 +64,22 @@ export function createItemCommentRepository(db: Database) {
     },
 
     /**
-     * Every LIVE comment on one item, oldest-first, joined to the author
-     * identity. `authorIds` is the transition-locked participant snapshot; an
-     * author who was not admitted by that snapshot is never enriched here.
+     * ONE bounded page of LIVE comments on an item, NEWEST-first, joined to the
+     * author identity — a thread is never read whole (§13.5 V5-P8 anti-bloat +
+     * scale). `before` names the oldest row of the previous page, so paging walks
+     * backwards through the conversation on the composite (created_at, id) key —
+     * stable even when two comments share a timestamp. `authorIds` is the
+     * transition-locked participant snapshot; an author who was not admitted by
+     * that snapshot is never enriched here. The caller reverses the page when it
+     * wants oldest-first render order.
      */
     async listForItem(
       kind: ShareKind,
       subjectId: string,
-      authorIds?: readonly string[],
+      options: CommentPageOptions,
     ): Promise<CommentRow[]> {
-      if (authorIds?.length === 0) return [];
+      const { limit, before, authorIds } = options;
+      if (authorIds?.length === 0 || limit <= 0) return [];
       return db
         .select({
           id: itemComments.id,
@@ -84,22 +97,25 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
             authorIds ? inArray(itemComments.authorId, [...authorIds]) : undefined,
+            before
+              ? sql`(${itemComments.createdAt}, ${itemComments.id}) < (${before.createdAt.toISOString()}::timestamptz, ${before.id}::uuid)`
+              : undefined,
           ),
         )
-        .orderBy(asc(itemComments.createdAt));
+        .orderBy(desc(itemComments.createdAt), desc(itemComments.id))
+        .limit(limit);
     },
 
     /**
-     * Live comment ids + author ids only. Thread reads use this non-content
-     * discovery query to acquire optional author/reaction locks before loading a
-     * body or profile identity.
+     * The DISTINCT live authors of one item's thread — ids only, no content.
+     * Thread reads use this non-content discovery query to acquire optional
+     * author/reaction locks before loading a body or profile identity. Distinct
+     * by author, so it is bounded by the item's audience rather than by how many
+     * comments the thread has accumulated.
      */
-    async listParticipantsForItem(
-      kind: ShareKind,
-      subjectId: string,
-    ): Promise<CommentParticipantRow[]> {
-      return db
-        .select({ id: itemComments.id, authorId: itemComments.authorId })
+    async listParticipantsForItem(kind: ShareKind, subjectId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ authorId: itemComments.authorId })
         .from(itemComments)
         .where(
           and(
@@ -108,10 +124,21 @@ export function createItemCommentRepository(db: Database) {
             isNull(itemComments.deletedAt),
           ),
         );
+      return rows.map((row) => row.authorId);
     },
 
-    /** Count of LIVE comments on one item (drives the collapsed-count UI). */
-    async countForItem(kind: ShareKind, subjectId: string): Promise<number> {
+    /**
+     * Count of LIVE comments on one item — the collapsed-count UI and the paged
+     * thread's `commentCount` both read it, so neither has to load bodies.
+     * `authorIds` applies the SAME participant snapshot the page read uses, so a
+     * count can never disclose a comment the page itself filters out.
+     */
+    async countForItem(
+      kind: ShareKind,
+      subjectId: string,
+      authorIds?: readonly string[],
+    ): Promise<number> {
+      if (authorIds?.length === 0) return 0;
       const [row] = await db
         .select({ n: sql<number>`count(*)::int` })
         .from(itemComments)
@@ -120,6 +147,7 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.kind, kind),
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
+            authorIds ? inArray(itemComments.authorId, [...authorIds]) : undefined,
           ),
         );
       return row?.n ?? 0;

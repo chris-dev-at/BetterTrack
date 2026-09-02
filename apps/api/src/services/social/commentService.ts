@@ -1,14 +1,19 @@
-import type {
-  CommentThreadResponse,
-  CreateCommentResponse,
-  ItemComment,
-  ReactionListResponse,
-  ReactionSummary,
-  ShareKind,
+import {
+  COMMENT_PAGE_SIZE,
+  type CommentThreadResponse,
+  type CommentThreadSummaryResponse,
+  type CreateCommentResponse,
+  type ItemComment,
+  type ReactionListResponse,
+  type ReactionSummary,
+  type ShareKind,
 } from '@bettertrack/contracts';
 
 import { coerceProfileIcon } from '../../http/serializers';
-import type { ItemCommentRepository } from '../../data/repositories/itemCommentRepository';
+import type {
+  CommentPageCursor,
+  ItemCommentRepository,
+} from '../../data/repositories/itemCommentRepository';
 import type {
   ReactionAggregate,
   ItemReactionRepository,
@@ -52,8 +57,26 @@ export interface CommentServiceDeps {
 }
 
 export interface CommentService {
-  /** The item's full thread + item-level reactions, or 404 when unauthorized. */
-  getThread(viewerId: string, kind: ShareKind, subjectId: string): Promise<CommentThreadResponse>;
+  /**
+   * ONE bounded page of the item's thread + item-level reactions, or 404 when
+   * unauthorized. Without a cursor the newest page is served; `cursor` (the
+   * previous page's `nextCursor`) walks backwards into older comments.
+   */
+  getThread(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    cursor?: string,
+  ): Promise<CommentThreadResponse>;
+  /**
+   * The collapsed head — live comment count + item reactions, no bodies. Same
+   * audience rule and the same uniform 404 as {@link getThread}.
+   */
+  getThreadSummary(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+  ): Promise<CommentThreadSummaryResponse>;
   /** Post one comment on an authorized item, or 404 when unauthorized. */
   addComment(
     viewerId: string,
@@ -199,25 +222,92 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     );
   }
 
+  /**
+   * The read side of a thread — access resolution, the portfolio boundary, and
+   * (in paranoid mode) the participant discovery + lock dance — done ONCE for
+   * both the page read and the collapsed summary. `allowedActorIds` is undefined
+   * when no privacy filter applies.
+   */
+  async function withThreadActors<T>(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    action: (access: ThreadAccess, allowedActorIds?: readonly string[]) => Promise<T>,
+  ): Promise<T> {
+    return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
+      if (!deps.paranoid) {
+        return withLockedAccess(viewerId, kind, subjectId, (access) => action(access));
+      }
+
+      const candidate = await resolveAccess(viewerId, kind, subjectId);
+      if (!candidate) throw THREAD_NOT_FOUND();
+      // Discover ids without selecting bodies, usernames, profile icons, emojis,
+      // or aggregates. Every candidate is optional: a paranoid third-party actor
+      // disappears from the thread instead of making unrelated rows fail or
+      // revealing their mode. Viewer + item owner remain required.
+      const [commentAuthorIds, reactionActorIds] = await Promise.all([
+        comments.listParticipantsForItem(kind, subjectId),
+        reactions.listActorIdsForThread(kind, subjectId),
+      ]);
+      const optionalActorIds = [...new Set([...commentAuthorIds, ...reactionActorIds])];
+      return deps.paranoid.runAllowedWithOptional(
+        [viewerId, candidate.ownerId],
+        optionalActorIds,
+        'sharing',
+        async (allowedOptionalActorIds) => {
+          const access = await resolveAccess(viewerId, kind, subjectId);
+          if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+          // Required principals may themselves have authored/reacted; include
+          // them alongside the admitted optional set. SQL filters make a newly
+          // appearing, undiscovered actor invisible until the next locked read.
+          const allowedActorIds = [
+            ...new Set([viewerId, candidate.ownerId, ...allowedOptionalActorIds]),
+          ];
+          return action(access, allowedActorIds);
+        },
+      );
+    });
+  }
+
+  /** `<ISO instant>|<comment id>` → the composite key the page read walks back from. */
+  function parseCursor(cursor: string | undefined): CommentPageCursor | undefined {
+    if (!cursor) return undefined;
+    const separator = cursor.lastIndexOf('|');
+    if (separator <= 0) throw THREAD_NOT_FOUND();
+    const createdAt = new Date(cursor.slice(0, separator));
+    const id = cursor.slice(separator + 1);
+    if (Number.isNaN(createdAt.getTime()) || id.length === 0) throw THREAD_NOT_FOUND();
+    return { createdAt, id };
+  }
+
   async function buildThread(
     viewerId: string,
     kind: ShareKind,
     subjectId: string,
     access: ThreadAccess,
+    cursor: string | undefined,
     allowedActorIds?: readonly string[],
   ): Promise<CommentThreadResponse> {
-    const rows = await comments.listForItem(kind, subjectId, allowedActorIds);
-    const reactionMap = await reactions.summaryForComments(
-      viewerId,
-      rows.map((row) => row.id),
-      allowedActorIds,
-    );
-    const itemReactions = await reactions.summaryForItem(
-      viewerId,
-      kind,
-      subjectId,
-      allowedActorIds,
-    );
+    // One row beyond the page tells us whether an older page exists without a
+    // second query; it never leaves this function.
+    const page = await comments.listForItem(kind, subjectId, {
+      limit: COMMENT_PAGE_SIZE + 1,
+      before: parseCursor(cursor),
+      authorIds: allowedActorIds,
+    });
+    const hasOlder = page.length > COMMENT_PAGE_SIZE;
+    // Newest-first out of SQL; oldest-first for the reader.
+    const rows = (hasOlder ? page.slice(0, COMMENT_PAGE_SIZE) : page).reverse();
+    const oldest = rows[0];
+    const [reactionMap, itemReactions, commentCount] = await Promise.all([
+      reactions.summaryForComments(
+        viewerId,
+        rows.map((row) => row.id),
+        allowedActorIds,
+      ),
+      reactions.summaryForItem(viewerId, kind, subjectId, allowedActorIds),
+      comments.countForItem(kind, subjectId, allowedActorIds),
+    ]);
     const commentList: ItemComment[] = rows.map((row) => ({
       id: row.id,
       author: {
@@ -234,50 +324,27 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     return {
       kind,
       subjectId,
-      commentCount: commentList.length,
+      commentCount,
       comments: commentList,
+      nextCursor: hasOlder && oldest ? `${oldest.createdAt.toISOString()}|${oldest.id}` : null,
       reactions: toReactionSummaries(itemReactions),
     };
   }
 
   return {
-    async getThread(viewerId, kind, subjectId) {
-      return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
-        if (!deps.paranoid) {
-          return withLockedAccess(viewerId, kind, subjectId, (access) =>
-            buildThread(viewerId, kind, subjectId, access),
-          );
-        }
+    async getThread(viewerId, kind, subjectId, cursor) {
+      return withThreadActors(viewerId, kind, subjectId, (access, allowedActorIds) =>
+        buildThread(viewerId, kind, subjectId, access, cursor, allowedActorIds),
+      );
+    },
 
-        const candidate = await resolveAccess(viewerId, kind, subjectId);
-        if (!candidate) throw THREAD_NOT_FOUND();
-        // Discover ids without selecting bodies, usernames, profile icons, emojis,
-        // or aggregates. Every candidate is optional: a paranoid third-party actor
-        // disappears from the thread instead of making unrelated rows fail or
-        // revealing their mode. Viewer + item owner remain required.
-        const [commentParticipants, reactionActorIds] = await Promise.all([
-          comments.listParticipantsForItem(kind, subjectId),
-          reactions.listActorIdsForThread(kind, subjectId),
+    async getThreadSummary(viewerId, kind, subjectId) {
+      return withThreadActors(viewerId, kind, subjectId, async (_access, allowedActorIds) => {
+        const [commentCount, itemReactions] = await Promise.all([
+          comments.countForItem(kind, subjectId, allowedActorIds),
+          reactions.summaryForItem(viewerId, kind, subjectId, allowedActorIds),
         ]);
-        const optionalActorIds = [
-          ...new Set([...commentParticipants.map((row) => row.authorId), ...reactionActorIds]),
-        ];
-        return deps.paranoid.runAllowedWithOptional(
-          [viewerId, candidate.ownerId],
-          optionalActorIds,
-          'sharing',
-          async (allowedOptionalActorIds) => {
-            const access = await resolveAccess(viewerId, kind, subjectId);
-            if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
-            // Required principals may themselves have authored/reacted; include
-            // them alongside the admitted optional set. SQL filters make a newly
-            // appearing, undiscovered actor invisible until the next locked read.
-            const allowedActorIds = [
-              ...new Set([viewerId, candidate.ownerId, ...allowedOptionalActorIds]),
-            ];
-            return buildThread(viewerId, kind, subjectId, access, allowedActorIds);
-          },
-        );
+        return { kind, subjectId, commentCount, reactions: toReactionSummaries(itemReactions) };
       });
     },
 
@@ -312,8 +379,13 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
         candidate.subjectId,
         COMMENT_NOT_FOUND,
         async () => {
+          // A subject that no longer exists resolves no owner. That must NOT
+          // strand the comment: its author keeps their cleanup right over their
+          // own text (pre-purge orphans from before subject teardown cleared
+          // threads still exist). With no owner there is simply nobody holding
+          // the moderation right, so every non-author still gets the uniform 404.
           const ownerId = await audience.subjectOwner(candidate.kind, candidate.subjectId);
-          if (!ownerId) throw COMMENT_NOT_FOUND();
+          if (!ownerId && candidate.authorId !== viewerId) throw COMMENT_NOT_FOUND();
           const remove = async () => {
             const comment = await comments.getById(commentId);
             if (
@@ -329,14 +401,22 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
             // Author deletes their own regardless of current visibility (cleanup);
             // the item owner moderates any comment on their item. Anyone else → 404.
             const isAuthor = comment.authorId === viewerId;
-            const isOwner = ownerId === viewerId;
+            const isOwner = ownerId !== undefined && ownerId === viewerId;
             if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
             const removed = await comments.softDelete(commentId, viewerId);
             if (!removed) throw COMMENT_NOT_FOUND();
           };
-          return deps.paranoid
-            ? deps.paranoid.runAllowedMany([viewerId, ownerId], 'sharing', remove)
-            : remove();
+          if (!deps.paranoid) return remove();
+          // The deleter is the only REQUIRED principal. The item owner is
+          // optional: an author removing their own text must not be blocked —
+          // nor told anything — by the OWNER's account mode, which would both
+          // strand the comment forever and disclose that mode through a 403.
+          return deps.paranoid.runAllowedWithOptional(
+            [viewerId],
+            ownerId && ownerId !== viewerId ? [ownerId] : [],
+            'sharing',
+            remove,
+          );
         },
       );
     },

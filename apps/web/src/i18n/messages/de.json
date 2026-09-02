@@ -3151,7 +3151,7 @@
     "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
     "share": "Teilen…",
     "groupsNone": "Du hast noch keine Gruppen. Erstelle auf der Freunde-Seite eine, um mit einem Kreis zu teilen.",
-    "groupMemberCount": "{{count}} Mitglieder",
+    "groupMemberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
     "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
   },
   "watchlists": {
@@ -3460,7 +3460,7 @@
       "cloneError": "Diese Idee konnte nicht geklont werden."
     },
     "comments": {
-      "count": "{{count}} Kommentare",
+      "count": { "one": "{{count}} Kommentar", "other": "{{count}} Kommentare" },
       "empty": "Noch keine Kommentare.",
       "loadError": "Die Kommentare konnten nicht geladen werden. Bitte versuche es erneut.",
       "placeholder": "Kommentar hinzufügen…",
@@ -3468,6 +3468,9 @@
       "posting": "Wird gesendet…",
       "delete": "Löschen",
       "postError": "Kommentar konnte nicht gesendet werden.",
+      "deleteError": "Kommentar konnte nicht gelöscht werden.",
+      "reactionError": "Reaktion konnte nicht gespeichert werden.",
+      "loadOlder": "Ältere Kommentare laden",
       "itemReactionsLabel": "Auf dieses Element reagieren",
       "commentReactionsLabel": "Auf diesen Kommentar reagieren"
     },
@@ -3482,7 +3485,7 @@
       "loadError": "Deine Gruppen konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Noch keine Gruppen",
       "emptyDescription": "Erstelle eine Gruppe, um mit einem bestimmten Freundeskreis zu teilen.",
-      "memberCount": "{{count}} Mitglieder",
+      "memberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
       "nameLabel": "Gruppenname",
       "renameAction": "Umbenennen",
       "membersHeading": "Mitglieder",

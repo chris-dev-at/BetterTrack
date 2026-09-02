@@ -856,13 +856,38 @@ export const itemCommentSchema = z
   .strict();
 export type ItemComment = z.infer<typeof itemCommentSchema>;
 
+/** How many comments one thread page carries — a thread is never served whole. */
+export const COMMENT_PAGE_SIZE = 50;
+
 /**
- * A shared item's full comment thread plus its item-level reaction aggregate.
- * Returned ONLY to a viewer the item's current audience admits (a friend the
- * owner shares with) or the owner — the exact same audience the read view uses,
- * fail-closed. A public link stays read-only and never reaches this (§16). The
- * SPA keeps the comment list collapsed to `commentCount` until expanded
- * (anti-bloat), while the reaction chips stay compactly visible.
+ * An opaque thread cursor: `<ISO instant>|<comment id>`. It names the oldest
+ * comment of the page just read, so the next request returns the page strictly
+ * older than it — a stable key even when two comments share a timestamp.
+ */
+export const commentCursorSchema = z
+  .string()
+  .regex(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
+  );
+
+/** `GET …/thread` query — page backwards through an older slice of the thread. */
+export const commentThreadQuerySchema = z
+  .object({ cursor: commentCursorSchema.optional() })
+  .strict();
+export type CommentThreadQuery = z.infer<typeof commentThreadQuerySchema>;
+
+/**
+ * ONE page of a shared item's comment thread plus its item-level reaction
+ * aggregate. Returned ONLY to a viewer the item's current audience admits (a
+ * friend the owner shares with) or the owner — the exact same audience the read
+ * view uses, fail-closed. A public link stays read-only and never reaches this
+ * (§16).
+ *
+ * The default page is the NEWEST {@link COMMENT_PAGE_SIZE} comments, ascending
+ * within the page; `nextCursor` (null at the start of the thread) loads the next
+ * older page. `commentCount` is the whole thread's live count — the collapsed
+ * count the SPA renders without ever fetching a page (anti-bloat), which the
+ * cheaper {@link commentThreadSummaryResponseSchema} serves on its own.
  */
 export const commentThreadResponseSchema = z
   .object({
@@ -870,10 +895,27 @@ export const commentThreadResponseSchema = z
     subjectId: z.string().uuid(),
     commentCount: z.number().int().nonnegative(),
     comments: z.array(itemCommentSchema),
+    nextCursor: commentCursorSchema.nullable(),
     reactions: z.array(reactionSummarySchema),
   })
   .strict();
 export type CommentThreadResponse = z.infer<typeof commentThreadResponseSchema>;
+
+/**
+ * The collapsed thread head: the live comment count + the item-level reactions,
+ * with no comment bodies at all. Same audience rule as the thread itself. The
+ * SPA reads THIS while the section is collapsed, so a 20 000-comment thread
+ * costs one count and one aggregate instead of the whole conversation.
+ */
+export const commentThreadSummaryResponseSchema = z
+  .object({
+    kind: shareKindSchema,
+    subjectId: z.string().uuid(),
+    commentCount: z.number().int().nonnegative(),
+    reactions: z.array(reactionSummarySchema),
+  })
+  .strict();
+export type CommentThreadSummaryResponse = z.infer<typeof commentThreadSummaryResponseSchema>;
 
 /** `POST …/comments` body — post one comment. Trimmed, non-empty, length-bounded. */
 export const createCommentRequestSchema = z

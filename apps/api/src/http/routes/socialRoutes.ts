@@ -5,6 +5,7 @@ import {
   addGroupMemberRequestSchema,
   audienceParamSchema,
   commentIdParamSchema,
+  commentThreadQuerySchema,
   conglomerateIdParamSchema,
   createCommentRequestSchema,
   createFriendGroupRequestSchema,
@@ -28,6 +29,7 @@ import {
   type AddGroupMemberRequest,
   type AudienceParam,
   type CommentIdParam,
+  type CommentThreadQuery,
   type CreateCommentRequest,
   type CreateFriendGroupRequest,
   type CreateFriendRequestRequest,
@@ -47,7 +49,7 @@ import {
 
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
-import { validateBody, validateParams } from '../middleware/validate';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
@@ -405,14 +407,30 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // `requireUser`, and the non-owner path needs a friendship, so a public-link
   // (logged-out) visitor never reaches them — public links stay read-only (§16).
 
-  // GET /social/items/:kind/:subjectId/thread — the item's comment thread +
-  // item-level reactions. 404 when the caller can't currently read the item.
+  // GET /social/items/:kind/:subjectId/thread — ONE bounded page of the item's
+  // comment thread + item-level reactions (newest page by default; `?cursor=`
+  // walks older). 404 when the caller can't currently read the item.
   router.get(
     '/items/:kind/:subjectId/thread',
     validateParams(audienceParamSchema),
+    validateQuery(commentThreadQuerySchema),
     async (req, res) => {
       const { kind, subjectId } = req.valid?.params as AudienceParam;
-      const result = await ctx.comments.getThread(req.authUser!.id, kind, subjectId);
+      const { cursor } = req.valid?.query as CommentThreadQuery;
+      const result = await ctx.comments.getThread(req.authUser!.id, kind, subjectId, cursor);
+      res.json(result);
+    },
+  );
+
+  // GET /social/items/:kind/:subjectId/thread/summary — the collapsed head: the
+  // live comment count + item reactions, no bodies. The SPA reads this while the
+  // comments section is collapsed, so a long thread costs nothing until opened.
+  router.get(
+    '/items/:kind/:subjectId/thread/summary',
+    validateParams(audienceParamSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.params as AudienceParam;
+      const result = await ctx.comments.getThreadSummary(req.authUser!.id, kind, subjectId);
       res.json(result);
     },
   );
