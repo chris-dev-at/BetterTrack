@@ -104,50 +104,50 @@ ruling's own words. Knowing THAT a vault exists, where it stores and WHICH
 portfolios are inside is required to enforce §11 and render locked stubs; it is
 not portfolio content. What the server can never do is read a doc.
 
-Shipped in `apps/api/src/data/schema.ts` (migration `0091_paranoid_vaults_keystone`):
+Shipped in `apps/api/src/data/schema.ts` (migration `0091_paranoid_vaults_keystone`);
+each bullet names its Drizzle table export, not a line:
 
-- **`vaults`** (`:4163`) — `id`, `user_id`, `name` (cleartext by design: it is
+- **`vaults`** — `id`, `user_id`, `name` (cleartext by design: it is
   config and the UI needs it while locked), `media`, `drive_connection_id`,
   `retirement_proof_public_key` (the per-vault Ed25519 purge verifier, §7),
   `key_fingerprint` (a non-secret HKDF tag of K_c that lets a client confirm
   "these words open THIS vault" before destructive steps, §4),
   `header_doc_id`/`common_doc_id`, `retirement_generation`, `media_attested_at`
   plus `media_attested_drive_connection_id` (§7 consequence 3). One CHECK
-  carries the whole media contract (`vaults_media_state`, `:4250`): the set is
+  carries the whole media contract (the `vaults_media_state` CHECK): the set is
   exactly `{server}`, `{drive}` or `{server,drive}` — non-empty and
   duplicate-free by enumeration, `local` refused at the deepest boundary, the
   drive ⇔ connection binding as its second half. `local` is RESERVED in the
-  contract enum (`packages/contracts/src/vaults.ts:113`), rejected as
-  `reserved_medium`.
-- **`vault_blobs`** (`:4304`) — `(vault_id, doc_id)` PK, `doc_kind`
+  contract enum (`VAULT_MEDIA_VALUES`), rejected as `reserved_medium`.
+- **`vault_blobs`** — `(vault_id, doc_id)` PK, `doc_kind`
   (`header`|`common`|`portfolio`), `portfolio_id` (set iff `portfolio`,
   CHECK-pinned equal to `doc_id`), `version` (the per-doc CAS token),
   `format_version`, `size_bytes`, `blob` (bytea, never interpreted past the
   envelope header). Caps per kind — header 1 MiB, common 4 MiB, portfolio 8 MiB
   (`BT_VAULT_MAX_BYTES_*`).
-- **`vault_blob_history`** (`:4376`), **`vault_server_candidates`** (`:4404`)
-  and **`vault_retired`** (`:4472`) are per doc; **`vault_retirements`**
-  (`:4452`) is keyed by `vault_id` ALONE — one record per vault. Bounded
-  history (10 versions / 30 days) is the bad-write safety net.
-- **`drive_connections`** (`:4132`, §8) — `google_sub` is unique per user, not
-  globally: two users may connect the same Google account.
-- **`portfolios.vault_id`** (`:1383`) + **`vault_alias`** (`:1386`, the
-  locked-row label; the true name travels inside the ciphertext). NULL ⇒ normal
+- **`vault_blob_history`**, **`vault_server_candidates`** and
+  **`vault_retired`** are per doc; **`vault_retirements`** is keyed by
+  `vault_id` ALONE — one record per vault. Bounded history (10 versions /
+  30 days, `BT_VAULT_HISTORY_MAX_*`) is the bad-write safety net.
+- **`drive_connections`** (§8) — `google_sub` is unique per user, not globally:
+  two users may connect the same Google account.
+- **`portfolios.vault_id`** + **`vault_alias`** (the locked-row label; the true name travels inside the ciphertext). NULL ⇒ normal
   portfolio, today's behavior byte-for-byte; NOT NULL ⇒ the locked stub: zero
   content rows (probed), only identity + alias + membership. The stub exists for
   (a) enforcement keying, (b) same-UUID move-out, (c) rendering "N locked
   portfolios" and the unlock affordance.
 
-**Mounted routes** under `/api/v1` — `vaultRoutes.ts`: `GET`/`POST /vaults` and
-`GET`/`PATCH`/`DELETE /vaults/:vaultId` (`:847`–`:924`); `GET`/`PUT
-/vaults/:vaultId/docs/:docId` + `/history[/:version]` (`:958`–`:1069`);
-`GET`/`PATCH /vaults/:vaultId/media` (`:1086`); `PUT
-/vaults/:vaultId/media/server-candidate/:transitionId/docs/:docId` (`:1166`)
-and its `GET` readback (`:1219`); `POST /vaults/:vaultId/media/retired/purge`
-and `/challenge` (`:1249`); the `drive-connections` family (`:755`–`:791`).
-`portfolioRoutes.ts`: `GET /portfolios/:id/vault/{revision,lifecycle}`
-(`:189`/`:210`), `POST /portfolios/:id/vault/move-in` and
-`move-out[/challenge]` (`:226`–`:276`). `DELETE /vaults/:vaultId` refuses while
+**Mounted routes** under `/api/v1`, all in `http/routes/vaultRoutes.ts` except
+the last two, which are in `portfolioRoutes.ts`: `GET`/`POST /vaults` and
+`GET`/`PATCH`/`DELETE /vaults/:vaultId`; `GET`/`PUT
+/vaults/:vaultId/docs/:docId` and `/history[/:version]`; `GET`/`PATCH
+/vaults/:vaultId/media`; `PUT
+/vaults/:vaultId/media/server-candidate/:transitionId/docs/:docId` and its
+`GET` readback; `POST /vaults/:vaultId/media/retired/purge` and `/challenge`;
+the `drive-connections` family; `GET
+/portfolios/:id/vault/{revision,lifecycle}`; `POST
+/portfolios/:id/vault/move-in` and `move-out[/challenge]`. `DELETE
+/vaults/:vaultId` refuses while
 a portfolio references the vault (`VAULT_REFERENCED_BY_PORTFOLIO`) or a
 retirement is pending (`VAULT_RETIREMENT_PENDING`); doc GET/PUT are
 ETag/`If-Match` CAS and answer 428 `VAULT_PRECONDITION_REQUIRED` with no
@@ -156,7 +156,8 @@ precondition.
 **Deliberately NOT a server fact:** seed phrases, the endpoint keystore, the
 device password, unlock state, and which endpoints hold which phrases. There is
 no server table for endpoint custody, ever. `users.privacy_mode` and the
-account-level media columns (`:230`–`:264`) retire at the end of §17.
+account-level media columns (`privacyMode`, `paranoidMediaSet` on the `users`
+table) retire at the end of §17.
 
 ## 4. Seed phrase → keys (BIP39, derivation, rotation)
 
@@ -177,7 +178,9 @@ mnemonic (12 words)
 key_fingerprint = base64url(HKDF-SHA256(K_c, info = "bettertrack-vault-fingerprint-v1"))[0..16]
 ```
 
-Every literal is a contract constant (`packages/contracts/src/vaults.ts:67`–`:77`),
+Every literal is a contract constant (`VAULT_WRAP_HKDF_INFO_PREFIX`,
+`VAULT_KEY_FINGERPRINT_HKDF_INFO`, `VAULT_ACCOUNT_BINDING_INFO_PREFIX` in
+`packages/contracts/src/vaults.ts`),
 implemented in `apps/web/src/user/vault/keys/keyCore.ts` (HKDF `:52`,
 fingerprint `:182`, account binding `:271`) over `@scure/bip39`.
 
@@ -187,7 +190,7 @@ exactly `bettertrack-vault-key-slot-v1:${vaultId}:${keyId}`. `wrappedKc` is
 unpadded base64url of `IV || ciphertext || 16-byte GCM tag` (WebCrypto's
 ciphertext already carries the tag); a consumer MUST read this layout
 byte-for-byte and fail closed on malformed length or authentication
-(`keyCore.ts:30`, `:94`, `:139`).
+(`keys/keyCore.ts`).
 
 Notes, each deliberate: **no Argon2id on the mnemonic** — stretching defends
 low-entropy human secrets, a 128-bit random mnemonic needs none, and the
@@ -214,7 +217,7 @@ header tamper (version rollback included) fails decryption; deflate before
 encryption; strict fail-closed versioning.
 
 **Envelope v2 header** — cleartext, counters/ids/crypto parameters only, never
-portfolio information (`packages/contracts/src/vaults.ts:463`, `.strict()`):
+portfolio information (`vaultDocEnvelopeHeaderSchema`, `.strict()`):
 
 ```
 { formatVersion: 2, cipher: 'A256GCM', iv, keyId,
@@ -228,7 +231,7 @@ portfolio information (`packages/contracts/src/vaults.ts:463`, `.strict()`):
 `vaultId` + `docId` + `accountBinding` in the AAD are the anti-swap guarantee
 §8 relies on: a doc copied between vaults, accounts or Drive folders fails
 decryption before any namespace check. The server never parses more than the
-six-field projection `vaultDocServerHeaderSchema` (`vaults.ts:494`).
+six-field projection `vaultDocServerHeaderSchema`.
 
 **The doc set.** The **`header` doc** carries vault metadata under encryption
 (true name, member roster, keySlots echo, creation record, the §8
@@ -236,12 +239,15 @@ six-field projection `vaultDocServerHeaderSchema` (`vaults.ts:494`).
 material the vault's portfolios reference: the custom-asset bucket with the v1
 snapshot/tombstone/strict-restore-narrowing semantics and the
 `asset_identities` claim seam, severed-fork mirrorchain provenance, the
-retirement-proof Ed25519 private key (`vaults.ts:744`), mergeLog. One
+retirement-proof Ed25519 private key (the header doc's `clientSecurity`
+member), mergeLog. One
 **`portfolio` doc per member** carries every `vault`-classified row of that
 portfolio — transactions, dividends, cash sources + movements, per-portfolio
 settings, tax settlement rows, standing-order definitions + the
-`standing_order_runs` exactly-once ledger, import batches/rows, scoped expense
-rows; snapshots stay derived-and-purged, never carried. Per-doc granularity is
+`standing_order_runs` exactly-once ledger, historical import batches/rows (a
+portfolio carrying any is refused at capture today —
+`VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED`, §9 step 2), scoped expense rows;
+snapshots stay derived-and-purged, never carried. Per-doc granularity is
 what makes move-in/move-out incremental, keeps the size caps honest, and lets
 two devices editing two different portfolios not conflict at all.
 
@@ -251,14 +257,16 @@ pure `v(n)→v(n+1)` schema migrations on load, NEWER-version docs go read-only
 with an "update the app" notice — never best-effort parsed.
 
 **Three classification axes, all CI-gated** (`services/export/manifest.ts`).
-Every Drizzle table classifies `vault` | `server` | `purge` (`:471`) and CI
+Every Drizzle table classifies `vault` | `server` | `purge`
+(`PARANOID_TABLE_CLASSIFICATION`) and CI
 fails on an unclassified table. Two more ride alongside, neither hand-listed in
 that map: the **doc bucket** (`PARANOID_VAULT_DOC_BUCKETS`, `:759`, derived
 from `VAULT_TABLE_ENTITY_KINDS` × `VAULT_ENTITY_DOC_BUCKETS` —
 portfolio-scoped → portfolio doc, account-scoped-but-vault-referenced → common
-doc) and the **rehydration policy** (`:424` — `restore(entity)` vs
+doc) and the **rehydration policy** (`ParanoidRehydrationPolicy` —
+`restore(entity)` vs
 `purge-only`). `PARANOID_PURGED_TABLE_NAMES` and `PARANOID_PURGE_REASONS`
-(`:454`, pinned in `paranoidClassification.test.ts`) are portfolio-scoped —
+(pinned in `paranoidClassification.test.ts`) are portfolio-scoped —
 `usage_events` capture suppression keys on "does the request target a vaulted
 portfolio / does the account own any vault" for the client engine's quote reads
 (the #1344 holdings-roster leak must not reopen per portfolio).
@@ -269,16 +277,15 @@ The v1 storage protocol carries over **per doc**:
 
 - **Server medium:** ETag/`If-Match` CAS per `(vaultId, docId)` — the HTTP
   precondition is the entire server-side CAS decision
-  (`vaultBlobRepository.ts:860`), and `docVersion` is never version-gated. 412
+  (`vaultBlobRepository`), and `docVersion` is never version-gated. 412
   `VAULT_PRECONDITION_FAILED` on mismatch, a distinct terminal 412
   `VAULT_WRITE_ID_REPLAYED` for a replayed write, 428 with no precondition.
   Bounded history; the server reads nothing past the envelope header. Rate
   limiting is **two** families, not one: `limiters.vaultRead` for GET/HEAD
-  (600/min) and `limiters.vault` for everything else (60/min)
-  (`vaultRoutes.ts:841`).
+  (600/min) and `limiters.vault` for everything else (60/min).
 - **Drive medium:** per-doc file (§8 naming), `appProperties` carrying exactly
   `{ownerDigest, vaultDigest, docKind, docVersion, formatVersion}`
-  (`driveDataHome.ts:762`); CAS approximated via appProperties +
+  (`drive/driveDataHome.ts`); CAS approximated via appProperties +
   `headRevisionId` with the accepted TOCTOU window (writers are one user's own
   devices; the merge repairs races). Drive revisions are that medium's history.
 - **Local cache:** a per-endpoint encrypted cache of last-known docs — a cache,
@@ -292,13 +299,14 @@ The v1 storage protocol carries over **per doc**:
   max(parents) + 1; commutative + idempotent; corrupt candidates kept for the
   restore picker, never silently discarded. Fork provenance merges by
   content-addressed union with the v1 prune-in-three-places lifecycle. As
-  shipped (`vault/merge.ts:131`) the ladder resolves `rev` →
+  shipped (`vault/merge.ts`) the ladder resolves `rev` →
   live-beats-tombstoned → `editedAt` → `editedBy` (which IS the deviceId) → a
   canonical-JSON comparison as the total-order tiebreak the prose leaves
   implicit.
 - **`vault:sync` bearer exception** (owner mandate 2026-08-04), re-keyed:
   opaque per-doc GET/PUT, both history reads, `GET /vaults/:vaultId/media` and
-  the `GET /vaults[/:vaultId]` config reads (`bearerAuth.ts:42`). Destructive
+  the `GET /vaults[/:vaultId]` config reads (the `vault:sync` allowlist in
+  `bearerAuth.ts`). Destructive
   and recovery-media transitions stay off the plain bearer path except as §15
   gates them; the retirement-proof header stays ignored-on-bearer so a token
   can never pin a verifier.
@@ -312,7 +320,7 @@ reconciliation (#895/#896) and is kept because it is right:
    back, decrypt, compare writeId/hash per doc) → `PATCH /vaults/:id/media`
    records the set. Adding `server` goes through staged server candidates and
    needs an exact candidate roster plus one signed readback receipt each, else
-   412 `VAULT_MEDIA_PARTIAL_SET` (`vaultBlobRepository.ts:1409`).
+   412 `VAULT_MEDIA_PARTIAL_SET`.
 2. **Remove a medium:** only while another medium holds a verified-fresh copy.
    Removing `server` atomically moves the vault's blobs + history into the
    retired recovery set (`vault_retired`), destroyable only through the signed
@@ -324,10 +332,14 @@ reconciliation (#895/#896) and is kept because it is right:
 3. The last medium can never be removed (`vaultMediaListSchema.min(1)` plus the
    `vaults_media_state` CHECK).
 
-Recorded honestly against the code: for an ordinary transition the server
-accepts a readback attestation of EITHER kind (`vaultBlobRepository.ts:1467`),
-so "another medium holds a verified-fresh copy" is enforced strictly only in
-the same-selection refresh and Drive-replacement branches (`:1332`, `:1459`).
+**Recorded honestly against the code — rule 2 is not fully enforced (#1637).**
+On an ordinary transition `vaultBlobRepository` accepts a readback attestation
+of EITHER kind, so removing `server` can be authorised by a _server_-kind
+attestation — an attestation against the medium being removed rather than the
+one that must survive. Strict enforcement exists only in the same-selection
+refresh and Drive-replacement branches. Nothing is lost today (the media CHECK
+still refuses an empty set and no vault has a second medium yet), but #1637
+must land before Drive provisioning ships.
 
 **Staged-candidate lifetime — retained to TTL, never deleted at success
 (#1491, Chief 2026-08-22).** A staged batch (`vault_server_candidates`, 10-minute
@@ -392,11 +404,14 @@ consumer compares the batch against a client-declared value, so this is a
 recorded property, not a proof the server makes.
 
 Consequence 3's service literal is `DOCUMENT_SET_STALE`; the wire code is
-`PORTFOLIO_VAULT_DOCUMENT_SET_STALE` (`packages/contracts/src/vaults.ts:1556`).
-The TTL and retention floor are compile-time contract constants, not env knobs
-(`VAULT_SERVER_CANDIDATE_TTL_MS` 10 min, `VAULT_RETIRED_SERVER_MIN_RETENTION_MS`
-7 d — `packages/contracts/src/vault.ts:77`–`:85`); the daily sweep is
-`createDataRetentionCleanupJob` (`jobs/definitions/retentionJobs.ts:60`).
+`PORTFOLIO_VAULT_DOCUMENT_SET_STALE`. The staged-candidate TTL and the
+retirement retention floor are **compile-time contract constants, not env
+knobs** (`VAULT_SERVER_CANDIDATE_TTL_MS` 10 min,
+`VAULT_RETIRED_SERVER_MIN_RETENTION_MS` 7 d) — §22's "retention windows are
+env-tunable ops knobs" holds for history depth
+(`BT_VAULT_HISTORY_MAX_VERSIONS`/`_AGE_DAYS`) and the size caps, but NOT for
+these two, which no deployment can move. The daily sweep is
+`createDataRetentionCleanupJob`.
 
 Changing a vault's **Drive connection** (Y → Z) is a media migration with the
 same discipline, and it starts one step earlier than a byte copy: the header
@@ -410,11 +425,12 @@ would disagree with the new Drive bytes, which is what `PATCH
 /vaults/:vaultId/media` verifies. Source and target must differ — a
 same-connection "move" resolves both homes to one object, so the copy is
 skipped as already-equal and the cleanup would delete the only copy while
-reporting success. **Built but deliberately unwired**
-(`vault/media/driveMigration.ts:91`): production still composes the v1
+reporting success. **Built but deliberately unwired (#1638)**
+(`vault/media/driveMigration.ts`): production still composes the v1
 account-scoped Drive home, and the per-vault client media switcher
-(`media/mediaSwitcher.ts`) also still speaks the v1 account-level API. Wiring
-belongs to E6 (#1416) / E8 (#1418).
+(`media/mediaSwitcher.ts`) also still speaks the v1 account-level API. E6
+(#1416) and E8 (#1418) are both closed, so #1638 is the tracker; it must land
+with Drive provisioning, not after it.
 
 ## 8. Google Drive — separate authentication, multi-connection, collision-safe namespace
 
@@ -424,9 +440,9 @@ account the user picks in Google's chooser, decoupled from how they log in.
 Login with X, back up to Drive Y, put another vault on Drive Z: supported.
 
 **Not yet provisionable.** `PER_VAULT_DRIVE_PROVISIONING_AVAILABLE = false`
-(`apps/web/src/user/vault/capabilities.ts:27`) — a plain constant, deliberately
+(`apps/web/src/user/vault/capabilities.ts`) — a plain constant, deliberately
 not an env or feature flag, so nothing an operator can flip brings the missing
-epic's code with it. `provisionVault.ts:52` refuses any `media` containing
+epic's code with it. `provisionVault.ts` refuses any `media` containing
 `drive`, the create ceremony renders the option disabled and names the gap, and
 `[E10-A9]` is a `test.fixme` on the same flag. The registry, the transport and
 the namespace discipline below all ship; the per-vault provisioning path does
@@ -435,8 +451,8 @@ not (**planned, E5 residual — no open issue tracks it; nearest #1597, #1598**)
 - **Connection identity.** GIS mints ephemeral tokens with no durable notion of
   "connection Y vs Z", so the client captures identity at connect time: after
   consent it calls Drive `about.get(fields=user)` with the fresh token and
-  records the account's stable subject id + email (`drive/driveIdentity.ts:5`,
-  `:76`). The authoritative registry is server-side **`drive_connections`** —
+  records the account's stable subject id + email (`drive/driveIdentity`). The
+  authoritative registry is server-side **`drive_connections`** —
   `id`, `user_id`, `google_sub` (unique per user), `email`, `display_name`,
   `created_at`, `last_verified_at`; **no tokens, no refresh tokens, no file ids
   — ever.** It is account CONFIG under the ruling's definition (§3): it lets
@@ -475,11 +491,11 @@ not (**planned, E5 residual — no open issue tracks it; nearest #1597, #1598**)
   silent stall.
   Verification runs on fresh consent and real re-mints;
   `registerClient.authorize()` skips `about.get` when the client already held a
-  live token (`media/driveConnectionRegistry.ts:133`), and every Drive header
-  read re-checks independently (`qr/driveHeader.ts:180`).
+  live token (`media/driveConnectionRegistry#authorize`), and every Drive
+  header read re-checks independently (`qr/driveHeader`).
 - **Scope RULED (§21 Q5) — `drive.file` with a visible "BetterTrack Vaults"
-  folder**, shipped: `DRIVE_FILE_SCOPE` (`drive/gisTokenClient.ts:2`),
-  `DRIVE_FOLDER_NAME` (`drive/driveDataHome.ts:34`); no `drive.appdata` remains
+  folder**, shipped: `DRIVE_FILE_SCOPE` (`drive/gisTokenClient`),
+  `DRIVE_FOLDER_NAME` (`drive/driveDataHome`); no `drive.appdata` remains
   anywhere. The hidden app-data folder was namespaced per (Google account ×
   OAuth client), NOT per BetterTrack user, and failed the owner's mental model
   twice: the user could never SEE that the backup exists ("i am not sure if the
@@ -501,12 +517,13 @@ not (**planned, E5 residual — no open issue tracks it; nearest #1597, #1598**)
   dropping its last medium would leave the empty media set
   `vaults_media_state` rejects, and the only copy of every doc behind a binding
   that no longer exists — so the refusal (`DRIVE_CONNECTION_LAST_MEDIUM`) is
-  decided BEFORE the acknowledgment is read
-  (`driveConnectionRepository.ts:171`), and the owner is never offered a loss
+  decided BEFORE the acknowledgment is read (`driveConnectionRepository`), and
+  the owner is never offered a loss
   of reach that was never on the table. Add and attest the server medium first.
 - **Collision-safe namespace (two users, one physical Drive).** Both users'
   files share one visible folder, so the naming + ownership discipline is the
-  isolation, never the folder (`driveDataHome.ts:29`–`:33`, `:380`, `:762`):
+  isolation, never the folder (`driveDataHome#driveVaultFileName` and the
+  `appProperties` it writes beside it):
 
   ```
   name = "bettertrack-vault-" + base64url(sha256(
@@ -525,8 +542,8 @@ not (**planned, E5 residual — no open issue tracks it; nearest #1597, #1598**)
   dedupe by re-querying before first write. **The folder is reconciled, not
   assumed unique:** lookup-then-create is not atomic on Drive, so two devices
   can both create one — every creator re-lists, adopts the deterministic winner
-  (lowest folder id) and discards its own if it lost and is still empty
-  (`:850`); objects are always found by `appProperties`, never by parent, so a
+  (lowest folder id) and discards its own if it lost and is still empty;
+  objects are always found by `appProperties`, never by parent, so a
   stray folder never hides a doc. **Cannot read each other:** contents are AEAD
   ciphertext under different K_c, and even a renamed or copied file fails
   decryption because `accountBinding`/`vaultId`/`docId` sit in the AAD (§5);
@@ -535,7 +552,8 @@ not (**planned, E5 residual — no open issue tracks it; nearest #1597, #1598**)
   of `appProperties`, so every document sharing (`ownerDigest`, `vaultDigest`,
   `docKind`) shares one list address; the resolution is pagination, not a new
   `docDigest` field — 100 objects per page, at most **1,000 candidate objects
-  per address** (`:26`–`:27`), every page read before declaring a document
+  per address** (`DRIVE_LIST_PAGE_SIZE`, `DRIVE_ADDRESS_OBJECT_LIMIT`), every
+  page read before declaring a document
   absent, and a repeated page token or over-ceiling address fails closed.
   **Residual shared-Drive denial of service (accepted, manual remedy):** a
   co-tenant can create an app-owned file carrying another user's digests and a
@@ -554,7 +572,7 @@ Move-in = capture → encrypt → verify → destructive commit
 (`services/account/portfolioVaultTransitionService.ts`,
 `apps/web/src/user/vault/portfolioMoveCapture.ts`):
 
-1. **Preconditions**, server-checked with one code each (`:540`–`:590`): the
+1. **Preconditions**, server-checked with one code each: the
    vault exists and its media are verified-live (`VAULT_MEDIA_NOT_VERIFIED`),
    the portfolio holds no active mirrorchain membership
    (`PORTFOLIO_VAULT_ACTIVE_MIRRORCHAIN` — leave-with-fork first;
@@ -568,22 +586,24 @@ Move-in = capture → encrypt → verify → destructive commit
    re-reads the token, and accepts only when the pair agrees — capture reads
    still write (tax self-heal, seeded defaults), so capture must validate
    before it accepts. One rebuild on mismatch, then
-   `VAULT_MOVE_CAPTURE_UNSTABLE` (`portfolioMoveCapture.ts:742`). The same
-   response carries `importBatchCount`; non-zero refuses capture today (§22).
+   `VAULT_MOVE_CAPTURE_UNSTABLE`. The same response carries
+   `importBatchCount`; a portfolio with any historical import batch is refused
+   at capture today (`VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED`; lifting it is
+   #1529).
 3. **Encrypt + verify:** the portfolio doc is written to every vault medium,
    the common doc folds in that portfolio's custom-asset snapshots and fork
    provenance, the header roster gains the portfolio — each write CAS'd and
    round-trip verified (§7 rule 1).
 4. **Destructive commit:** `POST /portfolios/:id/vault/move-in` with body
    `{ vaultId, docVersion, portfolioDataRevision, stepUp }`
-   (`packages/contracts/src/vaults.ts:1351`; §15). One account-locked
-   transaction (`FOR UPDATE`, `:486`): re-verify preconditions + the revision
+   (`portfolioVaultMoveInRequestSchema`; §15). One account-locked transaction
+   (`FOR UPDATE`): re-verify preconditions + the revision
    token → hard-delete every `vault`-classified row keyed to the portfolio →
    destroy its `purge`-classified rows → revoke every share, audience entry,
    comment, follow and public-profile inclusion OF THAT PORTFOLIO
-   (`portfolioVaultTransitionRepository.ts:951`) → set `vault_id` +
-   `vault_alias` on the stub → zero-cleartext probe over the classified set
-   (`vaultedPortfolioProbe.ts:727`). A replay returns `idempotent: true` rather
+   (`portfolioVaultTransitionRepository`) → set `vault_id` + `vault_alias` on
+   the stub → zero-cleartext probe over the classified set
+   (`vaultedPortfolioProbe`). A replay returns `idempotent: true` rather
    than destroying gated state.
 
 **What happens to each attached thing, explicitly:**
@@ -598,7 +618,7 @@ Move-in = capture → encrypt → verify → destructive commit
 | Price alerts                                                            | Untouched — asset-level rows, zero portfolio reference; nothing to kill                                                    |
 | Conglomerates / workboard                                               | Untouched — baskets reference `asset_identities`, not portfolios; custom-asset claims survive via the tombstone/claim seam |
 | Home board widgets scoped to it                                         | Render through the `PortfolioStore` seam: live when unlocked, a locked-state tile with the unlock affordance otherwise     |
-| Imports in flight                                                       | Precondition-blocked; historical import batches refuse capture today (§22)                                                 |
+| Imports in flight                                                       | Precondition-blocked; a portfolio with historical import batches is refused at capture (#1529)                             |
 
 ## 10. Portfolio move-out (the designed exit)
 
@@ -612,12 +632,12 @@ the #865 option-B rule (`PORTFOLIO_VAULT_RESTORE_INSOLVENT`) — plus the §15
 step-up. One account-locked transaction: rows re-created through the normal
 services in dependency order **under the SAME portfolio UUID** (the stub is the
 identity anchor), `vault_id`/`vault_alias` cleared
-(`portfolioVaultTransitionRepository.ts:1379`), the portfolio doc removed from
+(`portfolioVaultTransitionRepository`), the portfolio doc removed from
 the server medium into bounded history, the header roster updated; after commit
 the deterministic plan rebuilds snapshots and invalidates derived consumers.
 The client then tombstones the portfolio doc, syncs, and best-effort deletes
 the doc's Drive file. Payload ceiling per the factor rule
-(`PARANOID_RESTORE_PLAINTEXT_FACTOR = 8`, `http/bodyLimits.ts:11`).
+(`PARANOID_RESTORE_PLAINTEXT_FACTOR = 8`, `http/bodyLimits.ts`).
 Idempotent-resumable. Shares are not restored; the vault keeps existing
 (possibly empty). Move-out is also the account's escape hatch: unlike v1's
 all-or-nothing disable, a user can exit one portfolio while others stay
@@ -633,16 +653,16 @@ them over bearer scopes. This permanently fixes the class of bug where owning
 any vault killed cash-on-mobile for the whole account.
 
 The account-wide kill rail is **demoted, not yet deleted**: the `PARANOID_MODE`
-refusal (`http/middleware/bearerAuth.ts:923`) now fires only for a live v1
+refusal (`http/middleware/bearerAuth.ts`) now fires only for a live v1
 account whose durable `users.privacy_mode` is still `paranoid`, and
-`MeResponse.privacyMode` (`packages/contracts/src/auth.ts:343`) is
+`MeResponse.privacyMode` (`packages/contracts/src/auth.ts`) is
 `@deprecated` and documented as not a vault signal. Both die with the §17 wipe
 and the §19 train; a vault's own signal is `vaultId` on portfolio rows plus the
 narrow `GET /vaults` projection.
 
 **Killed for a VAULTED portfolio** — each enforced server-side at the portfolio
 boundary with one stable error code, `VAULTED_PORTFOLIO`
-(`services/account/vaultedPortfolioGuard.ts:5`); hidden client-side as absent
+(`services/account/vaultedPortfolioGuard.ts`); hidden client-side as absent
 affordances; every row covered by the matrix test:
 
 1. Sharing/public: cannot be shared, added to any audience, or included in the
@@ -663,7 +683,7 @@ affordances; every row covered by the matrix test:
 7. Webhooks: no portfolio-content events for it (nothing server-side to fire).
 
 **Proof strategy (the acceptance backbone).** The enforcement inventory +
-completeness harness (`services/account/paranoidEnforcement.ts:1185`, `:1239`;
+completeness harness (`services/account/paranoidEnforcement.ts`;
 `paranoidEnforcementCompleteness.test.ts` — every mounted route, callable
 context method and registered job must carry exactly one policy) is keyed
 portfolio-first as `{ vaulted, siblingPlain, vaultFree, allowedParity }`, so
@@ -682,13 +702,14 @@ untouched** and is not part of this arc's diff.
 
 **The endpoint keystore** (IndexedDB / platform storage; no server table —
 `apps/web/src/user/vault/keystore/`): per stored phrase an entry
-`{ vaultId, custody: 'wrapped' | 'plain', payload }` (`keystore/types.ts:48`).
+`{ vaultId, custody: 'wrapped' | 'plain', payload }` (`keystore/types.ts`).
 
 - **Wrapped (default):** ONE device password per endpoint, never per-vault
   passwords. Argon2id(password, per-endpoint salt; m = 64 MiB, t = 3, p = 1) →
-  K_dev (`keystore/types.ts:5`); each stored mnemonic entropy is
+  K_dev (`keystore/deviceCrypto#deriveDeviceKey`); each stored mnemonic
+  entropy is
   AES-256-GCM-wrapped under K_dev, and a wrap-check value verifies entry
-  (`keystore/deviceCrypto.ts:22`). Entering it once per session unlocks ALL
+  (`keystore/deviceCrypto.ts`). Entering it once per session unlocks ALL
   wrapped phrases on that endpoint.
 - **"Never cached across sessions" — the precise meaning (binding):** the
   password and K_dev exist only in volatile process memory. They are never
@@ -702,11 +723,11 @@ untouched** and is not part of this arc's diff.
   retired; the convenience path is plain custody, below. Unlocked K_c keys are
   likewise memory-only and die with the session.
   Shipped: the device key is a private field zeroed by `clearSessionSecrets()`
-  (`keystore/core.ts:75`, `:1049`), and the keystore's IndexedDB holds only KDF
+  (`keystore/core.ts`), and the keystore's IndexedDB holds only KDF
   parameters, the wrap-check and lockout metadata — with no localStorage or
-  sessionStorage use at all (`keystore/storage.ts:105`). **The session-end
-  wiring is incomplete:** `endSession()` exists (`core.ts:657`) but
-  `handleIdle()` (`:698`) and `bindToVaultLockSignal()` (`:705`) have no
+  sessionStorage use at all (`keystore/storage.ts`). **The session-end wiring
+  is incomplete:** `endSession()` exists but `handleIdle()` and
+  `bindToVaultLockSignal()` have no
   production caller, so the PIN idle-lock signal still reaches only the legacy
   v1 runtime and there is no "Lock vaults" control in the UI yet — planned with
   the remaining E8 UX (#1599).
@@ -720,10 +741,10 @@ untouched** and is not part of this arc's diff.
   (Android Keystore / iOS keychain) "plain" still means "not protected by the
   device password" — the platform baseline applies underneath.
 - **Wrong password / lockout:** verification is local (wrap-check,
-  `core.ts:963`). Failures escalate a client-side delay — 5 wrong → 30 s,
-  doubling, capped at 5 min (`core.ts:38`, `:1089`) — and there is no server
+  `keystore/core.ts`). Failures escalate a client-side delay — 5 wrong → 30 s,
+  doubling, capped at 5 min — and there is no server
   lockout because the server is not involved. The prompt always offers "Forgot
-  the password?" → **keystore reset** (`core.ts:712`): wipes the stored phrases
+  the password?" → **keystore reset**: wipes the stored phrases
   on THIS endpoint only, loses NO data (the phrases re-enter by typing or §13
   QR from another device), and says exactly that in one sentence.
 - **Vault states and their affordances (binding — a state without a next action
@@ -731,7 +752,7 @@ untouched** and is not part of this arc's diff.
   unlock path): stored+wrapped → "Unlock" (password); stored+plain → opens
   silently; not-on-this-endpoint → "Enter words / Scan QR from another device".
   Every surface that renders a vault or locked stub carries its state's action
-  inline. The map is total and compile-checked (`vaultStateAffordance.ts:30`);
+  inline. The map is total and compile-checked (`vaultStateAffordance.ts`);
   the QR-receiver half is still deferred at runtime (`ui/VaultManager.tsx:77`).
 
 ## 13. QR seed-phrase transfer
@@ -769,18 +790,20 @@ warning). Manual word entry remains the fallback everywhere the QR is offered.
   cross-portfolio quantity is a client-side merge of server-computed plain
   figures and client-computed vaulted figures, merged at the figure level the
   domain engine defines — never by re-implementing offset rules in view code.
-  `composePortfolioFigures` is wired into the Home board
-  (`home/homeData.ts:359`); AT/DE cross-portfolio tax
-  (`engine/composition.ts:389`, Verlustausgleich spans portfolios) is **built
-  and tested but has no production caller yet** — planned with the remaining
-  store-seam routing (#1599).
+  `composePortfolioFigures` is wired into the Home board (`home/homeData.ts`);
+  AT/DE cross-portfolio tax (`engine/composition#composeCountryTaxYear`,
+  Verlustausgleich spans portfolios) is **built and tested but has no
+  production caller yet** — planned with the remaining store-seam routing
+  (#1599). The living-tax-year marker (the 2026-08-19 §16 row that removed
+  year locking, superseding the 2026-08-07 lock ritual) applies identically to
+  a composed year: every Vienna year stays mutable and recomputes live.
 - **Locked honesty:** while any involved vault is locked, aggregate views
   render **sum-of-visible plus a mandatory lock qualifier** ("+ N locked
   portfolios") — never a bare total, never a silently-partial figure. Enforced
   by construction: `QualifiedPortfolioFigure` cannot exist without its coverage
   qualifier, and a scope with zero readable members returns
-  `UnavailableComposition` instead (`engine/composition.ts:96`, `:107`).
-- `PortfolioStore` resolves per portfolio (`portfolioStoreResolver.ts:184`):
+  `UnavailableComposition` instead (`engine/composition.ts`).
+- `PortfolioStore` resolves per portfolio (`portfolioStoreResolver.ts`):
   `apiPortfolioStore` for plain rows, `vaultPortfolioStore` for vaulted ones —
   same pages, same components, which is why an unlocked vaulted portfolio is
   indistinguishable day-to-day. Only the overview tab routes at the seam so far
@@ -792,10 +815,11 @@ warning). Manual word entry remains the fallback everywhere the QR is offered.
   it. With N vaults on different media the chip renders one **aggregate
   state** — `all synced ✓` / `syncing` / `locked (N)` / `attention: <name>` —
   as the worst state across vaults (attention > syncing > locked > synced,
-  `media/status.ts:149`), and its popover gains one row per vault (state,
+  `media/status#projectVaultMediaSyncStatus`), and its popover gains one row
+  per vault (state,
   per-medium detail, last-write time, the state's §12 affordance inline). One
   chip, never one per vault. `DirectoryVaultSyncChip` ships
-  (`ui/VaultSyncChip.tsx:227`, mounted `components/OriginShell.tsx:870`); the
+  (`ui/VaultSyncChip.tsx`, mounted in `components/OriginShell.tsx`); the
   account-singleton `LegacyVaultSyncChip` is mounted beside it until §19.
 
 ## 15. Step-up re-auth on destructive operations (#1326 carry-over)
@@ -812,7 +836,7 @@ riding session must not be an erasure primitive:
   the vault) — no password check bolted on.
 - **The credential rides IN the request body** — `{ password?, code?,
 recoveryCode? }`, at least one required via schema `.refine`
-  (`packages/contracts/src/vaults.ts:319`), mirroring
+  (`vaultStepUpCredentialSchema`), mirroring
   `deleteAccountRequestSchema`. It is verified inside the same account lock as
   the transition (no check-then-act race); failure rides the progressive
   per-account throttle plus an audit record with generic error text. The
@@ -820,19 +844,19 @@ recoveryCode? }`, at least one required via schema `.refine`
 - **Both paths, same rule:** the web wizard sends it too; a bearer path is
   never stricter or looser than the browser path. Bearer reachability follows
   the owner's 2026-08-17 shared-control-layer ruling under `account:security`,
-  default-closed via the method-aware allowlist (`bearerAuth.ts:155`), with the
+  default-closed via the method-aware allowlist (`bearerAuth.ts`), with the
   #1326 acceptance battery (wrong-credential = nothing purged,
   INSUFFICIENT_SCOPE naming the scope, unknown-future-route canary) inherited
   as this arc's tests.
 
-**Shipped today: three of the five.** Move-in
-(`portfolioVaultTransitionService.ts:534`), move-out (`:908`) and vault
-deletion (`vaultService.ts:302`) verify the in-body credential. Drive
-disconnect-with-loss takes only the `acknowledgeBound` query flag and no
-step-up (`vaultRoutes.ts:790`), and the §17 path is instead hard-gated
-session-only on the bearer surface (`bearerAuth.ts:717`). Closing the
-disconnect gap is **planned and untracked** — the one ruled gate with no issue
-behind it.
+**Shipped today: three of the five.** Move-in, move-out
+(`portfolioVaultTransitionService`) and vault deletion (`vaultService`) verify
+the in-body credential. **Drive disconnect-with-loss takes only the
+`acknowledgeBound` query flag and no step-up** (`vaultRoutes`, the
+`drive-connections` DELETE handler) — tracked as **#1632**. The §17 commit is
+not a gap: the wipe has **no HTTP route at all** (§17), so there is no request
+for a credential to ride in; it is owner-run from a shell behind the recorded
+backup attestation.
 
 ## 16. Recovery semantics — lost phrase = lost vault
 
@@ -858,14 +882,17 @@ vaults or the account.
 path over a lossless conversion; the in-place wizard (former recommendation A)
 is never built. The plan:
 
-1. **External ciphertext backup first** — dump every `paranoid_vaults` account
-   blob + bounded history to a verified archive on the prod host, offsite copy
-   confirmed, THEN any destructive step. The owner runs/authorizes the backup.
-2. **Wipe + reset**: the account-level rows are retired behind that backup,
-   affected accounts' `privacy_mode` flips to `normal`, and the account-kill
-   state is cleared. Those accounts come back feature-complete and empty of
-   previously vaulted content; the legacy passphrase and recovery kit die with
-   the wipe.
+1. **External ciphertext backup first** — the PR #1392 ops pattern
+   (`scripts/ops/export-vault-v2-backup.mjs` is the verified-dump precedent):
+   dump every `paranoid_vaults` account blob + bounded history to a verified
+   archive on the prod host, offsite copy confirmed, THEN any destructive
+   step. The owner runs/authorizes the backup, exactly as with the v2
+   teardown.
+2. **Wipe + reset**: one migration retires the account-level rows (quarantined
+   behind the backup, `zz_`-prefix pattern), flips affected accounts'
+   `privacy_mode` to `normal`, and clears the account-kill state. Those
+   accounts come back feature-complete and empty of previously vaulted
+   content; the legacy passphrase and recovery kit die with the wipe.
 3. **Notice**: affected accounts get a one-time in-app notice at next login —
    "Paranoid mode has a new shape; the old paranoid data was retired with the
    old system" — with the create-a-vault CTA. No conversion ceremony, no
@@ -874,7 +901,8 @@ is never built. The plan:
    one-implementation rule holds with zero unconverted-account bookkeeping.
 
 **The ordering ruling that shipped it** (PROJECTPLAN §16, 2026-08-29, PR #1559
-— binding). "One migration retires the account-level rows" is implemented as
+— ruling verbatim, rationale summarised). Step 2's "one migration retires the
+account-level rows" is implemented as
 **migration-ships-the-gate + service-side, owner-triggered destruction.**
 Migration `0102_paranoid_v1_transition` creates the attestation gate, the
 wipe-receipt table and the seven `zz_paranoid_v1_backup_*` quarantine mirrors,
@@ -893,7 +921,7 @@ three-step owner runbook lives in `docs/ops.md` ("Retiring the account-level
 (v1) paranoid surface — §17"), but it has not been run on production, so every
 v1 account, table and route is still live. The fresh-start notice rides the
 session payload (`paranoidFreshStartPending`,
-`packages/contracts/src/auth.ts:359`) and is acknowledged once via
+`packages/contracts/src/auth.ts`) and is acknowledged once via
 `POST /auth/fresh-start-notice/acknowledge`. The evidence analysis behind the
 (C) choice and the two alternatives that were considered and not built are
 archived in `docs/history/paranoid-design-history.md` §B.
@@ -939,14 +967,14 @@ the `asset_identities` seam, `limiters.vault`, the `vault:sync` scope.
 every item below is still ALIVE at HEAD because §17 has not been run:** the
 account-level enable/disable pipeline (`paranoidTransitionService`, `POST
 /account/paranoid/enable|disable`, `fork-provenance`, `normal-revision` —
-`accountRoutes.ts:145`–`:227`), the account-singleton document and its store
+`accountRoutes.ts`), the account-singleton document and its store
 (`paranoid_vaults`, `paranoid_vault_history`, `paranoid_enable_transitions`,
 `paranoid_vault_server_candidates`, `paranoid_vault_retirements`,
 `paranoid_vault_retired`, `paranoid_rehydration_receipts` —
-`schema.ts:3828`–`:3985`; `GET/PUT /vault` and the `/vault/media*` account
-family — `vaultRoutes.ts:269`–`:549`), `users.privacy_mode` + the paranoid
-media columns + CHECK (`schema.ts:230`–`:264`), the account-wide
-`PARANOID_MODE` kill rail (`bearerAuth.ts:923`), `MeResponse.privacyMode` as a
+all still exported from `schema.ts`; `GET/PUT /vault` and the `/vault/media*`
+account family in `vaultRoutes.ts`), `users.privacy_mode` + the paranoid media
+columns + the `users_paranoid_media_state` CHECK, the account-wide
+`PARANOID_MODE` kill rail (`bearerAuth.ts`), `MeResponse.privacyMode` as a
 mode signal, the v1 app-wide unlock gate (`VaultUnlockGate.tsx`), the
 account-level wizard (`ParanoidEnableWizard.tsx`) + recovery-kit flow
 (`recovery.ts`), and v1's persisted-VK "keep unlocked" custody (`custody.ts`).

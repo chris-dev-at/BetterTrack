@@ -33,6 +33,14 @@ show and scan screens — recorded as a mobile-board contract item.
 
 ## The contract
 
+Two cross-references inside the verbatim text below point out of this file:
+**"§12"** means `docs/paranoid-design.md` §12 (device custody — the wrapped/plain
+choice and the device-password rules the receiver's custody step obeys), and
+**"the #1500 ruling"** is the decision that the `f` key-fingerprint is compared
+only AFTER the receiver fetches and unwraps the vault header, never as an
+offline pre-check — the block states the reason (the fingerprint derives from a
+content key that lives inside the not-yet-fetched envelope).
+
 **Payload format — normative.** This section, not any README, is the ONE
 specification the web renderer, the phone scanner, and any future client are
 built against (requested by the mobile dev 2026-08-19; made normative and

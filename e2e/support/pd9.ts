@@ -179,7 +179,10 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     'A successful signed purge leaves zero server ciphertext',
   ];
   if (loggedDecision.some((evidence) => !decisionLog.includes(evidence))) {
-    throw new Error('PD9 design §5 reconciliation is missing from PROJECTPLAN §16.');
+    throw new Error(
+      'PD9: the #895/#896 media-removal reconciliation (design §7) is in neither ' +
+        'PROJECTPLAN §16 nor docs/history/DECISIONLOG.md.',
+    );
   }
 
   const currentDecision = [
@@ -190,7 +193,26 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     'Implementation issues may now be cut from the §20 epics',
   ];
   if (currentDecision.some((evidence) => !decisionLog.includes(evidence))) {
-    throw new Error('PD9 current owner ruling is missing from PROJECTPLAN §16.');
+    throw new Error(
+      'PD9: the 2026-08-20 five-gate owner ruling is in neither PROJECTPLAN §16 ' +
+        'nor docs/history/DECISIONLOG.md.',
+    );
+  }
+
+  // The §16 haystack above is ACTIVE-log-plus-archive, so it cannot tell "still
+  // current" from "archived" — acceptable only because §16 is append-only and a
+  // row is never edited once written. The design note's own §21 is therefore the
+  // currency anchor: these rulings must be readable where implementers look, not
+  // only in a decision log that may have been archived out from under them.
+  const sectionTwentyOne = normalized(sectionBetween(document, '## 21.', '## 22.', 'design §21'));
+  const gateRulings = [
+    '**Move-out: ALLOWED.**',
+    '**Transition: (C) backup + wipe.**',
+    '**Vault names: cleartext, stated calmly.**',
+    '**Drive: `drive.file` with the visible "BetterTrack Vaults" folder**',
+  ];
+  if (gateRulings.some((evidence) => !sectionTwentyOne.includes(evidence))) {
+    throw new Error('PD9 design §21 no longer carries the five ruled gate decisions verbatim.');
   }
 
   const sectionSeventeen = normalized(sectionBetween(document, '## 17.', '## 18.', 'design §17'));
