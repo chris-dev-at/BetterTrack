@@ -1604,6 +1604,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     tax,
     mappers: ALL_MAPPERS,
     logger,
+    // Apply tolerates every per-row failure so one bad row cannot strand a
+    // claimed batch; this is what keeps an UNEXPECTED one loud, on the same
+    // Problems page an operator already watches, instead of it reading as a
+    // routine refusal.
+    problems,
     paranoid: paranoidGuard,
     // Generic staging path (#964, §16 2026-07-31): both AI tiers are OPTIONAL
     // and neither can decide anything on its own — the heavy tier only PROPOSES

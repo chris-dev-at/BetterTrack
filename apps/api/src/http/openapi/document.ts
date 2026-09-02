@@ -95,6 +95,20 @@ const VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION = {
     'design: an unrecognized value is read back as null rather than rejecting the row.',
 };
 
+// Same generator gap, sixth instance: the vault import-row `kind_undecided`
+// field is a `.catch(false)` for the same reason as its siblings — a malformed
+// value must not be why a portfolio cannot be restored. Reachable from
+// `PortfolioVaultMoveOutRequest`, so without a hint `/openapi.json` and `/docs`
+// 500 for the whole API (which is exactly how this one was caught).
+const VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION = {
+  type: 'boolean' as const,
+  description:
+    "Whether a staged import row's KIND is still an open question (§16 2026-08-29): the row " +
+    'parsed cleanly but nobody has said what it is, so a person may still confirm one. ' +
+    'Tolerant by design: an unrecognized value is read back as false — the row then reads as ' +
+    'a plain reported line, which is what it was before the affordance existed.',
+};
+
 /**
  * Install `type` hints on the contract schemas zod-to-openapi 7.3.x cannot walk
  * (`ZodLazy`, `ZodCatch`) for the duration of ONE `generateDocument()` call,
@@ -121,6 +135,10 @@ const GENERATOR_GAP_HINTS: ReadonlyArray<readonly [HintableSchema, unknown]> = [
   [
     contracts.vaultImportRowResolvedBySchema as unknown as HintableSchema,
     VAULT_IMPORT_ROW_RESOLVED_BY_DOCUMENTATION,
+  ],
+  [
+    contracts.vaultImportRowKindUndecidedSchema as unknown as HintableSchema,
+    VAULT_IMPORT_ROW_KIND_UNDECIDED_DOCUMENTATION,
   ],
 ];
 
@@ -296,6 +314,10 @@ const componentSchemas = {
   AdminStats: contracts.adminStatsSchema,
   AdminHealthResponse: contracts.adminHealthResponseSchema,
   AdminBackupStatusResponse: contracts.adminBackupStatusResponseSchema,
+  // Operations cockpit (#1406 W4) — read-only projections of counters the
+  // process already keeps. Neither has a request body: there is no write here.
+  AdminOpsJobsResponse: contracts.adminOpsJobsResponseSchema,
+  AdminOpsProvidersResponse: contracts.adminOpsProvidersResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -462,6 +484,7 @@ const componentSchemas = {
   SendFeedbackMessageRequest: contracts.sendFeedbackMessageRequestSchema,
   SendFeedbackMessageResponse: contracts.sendFeedbackMessageResponseSchema,
   AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
+  AdminFeedbackSubmission: contracts.adminFeedbackSubmissionSchema,
   UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
   UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
   UpdateFeedbackArchiveRequest: contracts.updateFeedbackArchiveRequestSchema,
@@ -1773,6 +1796,30 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/admin/ops/jobs',
+    tag: 'Admin',
+    summary: 'Queue depths, repeatable schedules with next/last run, and the dead-letter list.',
+    description:
+      'Read-only operations cockpit projection (#1406 W4). Job payloads are never included; ' +
+      'a scheduled run reports its own counts only as numbers. `available: false` means this ' +
+      'process holds no queue registry — not that the queues are empty.',
+    status: 200,
+    response: R.AdminOpsJobsResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/ops/providers',
+    tag: 'Admin',
+    summary: 'Per-capability circuit-breaker state, provider call outcomes and market-cache rates.',
+    description:
+      'Read-only (#1406 W4). Counters are process-local and reset on restart — `sampledSince` ' +
+      'is their epoch. There is no upstream quota gauge: the provider is keyless and no ' +
+      'authoritative quota exists to report.',
+    status: 200,
+    response: R.AdminOpsProvidersResponse,
+  },
+  {
+    method: 'get',
     path: '/admin/settings',
     tag: 'Admin',
     summary: 'Global app settings (registration mode + beta toggle).',
@@ -2069,6 +2116,15 @@ const endpoints: EndpointDef[] = [
     query: contracts.adminFeedbackListQuerySchema,
     status: 200,
     response: R.AdminFeedbackListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/feedback/{id}',
+    tag: 'Admin',
+    summary: 'Read one feedback submission for the helpdesk split pane.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.AdminFeedbackSubmission,
   },
   {
     method: 'patch',
@@ -3606,7 +3662,7 @@ const endpoints: EndpointDef[] = [
     path: '/imports/{batchId}/rows/{rowId}',
     tag: 'Imports',
     summary:
-      "Pin an unresolved staged row to an asset the USER picked (#964): the row flips to mapped (or duplicate, if the pin collides with data already recorded), is stamped resolvedBy=user, and the refreshed preview is returned. The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted.",
+      "Finish one staged row a person had to decide about — exactly one of assetId or kind per request; the refreshed preview is returned either way, and the row is stamped resolvedBy=user. assetId (#964) pins an unresolved row to an asset the USER picked: the row flips to mapped (or duplicate, if the pin collides with data already recorded). The row's candidates are UI suggestions, not the validation boundary — the asset id is checked with the same visibility rule as the manual transaction path, so a custom asset the caller just created is accepted. kind (§16 2026-08-29) confirms what an UNDECIDED row is — one member of that row's confirmableKinds, and nothing else: no amount, date or id is accepted from the client, because the server re-derives every value it books from the fields staging already parsed. A kind the row's own contents (or the direction its file states) will not support is refused with the reason; confirmation is one-shot, and both paths require the batch to still be pending.",
     params: contracts.importRowIdParamSchema,
     body: R.ResolveImportRowRequest,
     status: 200,

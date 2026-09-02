@@ -89,7 +89,12 @@ export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
     const worker = new Worker(
       def.name,
       async (job: Job) => {
-        await def.handler(job as never, ctx);
+        // The handler's summary (if it returns one) becomes BullMQ's
+        // `returnvalue`, which is how the admin operations cockpit can say what
+        // last night's sweep deleted (#1406 W4). `JobRunSummary` is counts-only,
+        // so this can carry no identifier; handlers that return nothing are
+        // unaffected and store `null`.
+        return await def.handler(job as never, ctx);
       },
       { connection: createConnection(), ...def.workerOptions },
     );

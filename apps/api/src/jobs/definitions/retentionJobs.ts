@@ -126,6 +126,20 @@ export function createDataRetentionCleanupJob(
       if (devices.legacy > 0) {
         ctx.logger.info(devices, 'pre-retention remembered-device bindings retired');
       }
+
+      // The same counts the log line carries, returned so they survive as this
+      // run's BullMQ `returnvalue` and the admin operations cockpit can show
+      // what the sweep actually did (#1406 W4). Counts only — never an id.
+      // Booleans are widened to 0/1 because `JobRunSummary` is numbers-only.
+      return {
+        auditPruned: audit.deleted,
+        emailLogPruned: emailLog.deleted,
+        abandonedVaultStagesExamined,
+        expiredVaultCandidatesDisposed: vaultCandidates.deleted,
+        legacyDeviceBindingsRetired: devices.legacy,
+        deferredToNextRun:
+          audit.capped || emailLog.capped || vaultStaging.capped || vaultCandidates.capped ? 1 : 0,
+      };
     },
     schedule: {
       id: DATA_RETENTION_CLEANUP_SCHEDULER_ID,

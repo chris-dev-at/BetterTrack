@@ -77,15 +77,17 @@ beforeEach(() => {
 });
 
 describe('LockedPortfolioStub', () => {
-  it('renders only the server alias and the action implied by E3 state', () => {
+  it('renders only the server alias and the action implied by E3 state', async () => {
+    const user = userEvent.setup();
     renderStub();
 
     expect(screen.getByRole('heading', { name: 'Vault portfolio 2' })).toBeInTheDocument();
     expect(screen.queryByText('Never reveal this name')).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Unlock' })).toHaveAttribute(
-      'href',
-      `/control/privacy?vault=${VAULT_ID}&action=unlock`,
-    );
+    // #4, the owner's oracle: open the portfolio, get prompted, unlock. The
+    // stub prompts in place instead of linking into the Control Center.
+    expect(screen.queryByRole('link', { name: 'Unlock' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Unlock' }));
+    expect(await screen.findByLabelText('Device password')).toBeInTheDocument();
   });
 
   it('offers the §10 move-out wizard and states the server-readable price', async () => {
