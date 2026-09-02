@@ -4940,6 +4940,9 @@
       "actionError": "Das Problem konnte nicht aktualisiert werden.",
       "empty": "Keine Probleme – alles in Ordnung.",
       "openCount": "{{count}} offen",
+      "shownCount": "{{shown}} von {{total}} angezeigt",
+      "loadMore": "Mehr laden",
+      "regressed": "Erneut aufgetreten",
       "filters": {
         "kind": "Art",
         "status": "Status",

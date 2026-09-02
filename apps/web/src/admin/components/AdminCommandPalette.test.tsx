@@ -75,7 +75,12 @@ beforeEach(() => {
     users: [],
     page: { total: 0, limit: 6, offset: 0 },
   });
-  vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 0 });
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [],
+    openCount: 0,
+    total: 0,
+    hasMore: false,
+  });
 });
 
 test('opens focused on the input and offers destinations before anything is typed', async () => {
@@ -143,6 +148,8 @@ test('debounces the user search so one word is one request', async () => {
 test('matches open problems client-side and points at the Problems page', async () => {
   vi.mocked(api.listProblems).mockResolvedValue({
     openCount: 1,
+    total: 1,
+    hasMore: false,
     problems: [
       {
         id: '00000000-0000-7000-8000-000000000001',
@@ -157,6 +164,7 @@ test('matches open problems client-side and points at the Problems page', async 
         lastSeenAt: '2026-08-20T09:00:00.000Z',
         resolvedAt: null,
         resolvedBy: null,
+        regressed: false,
       },
     ],
   });

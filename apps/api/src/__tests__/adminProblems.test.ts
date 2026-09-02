@@ -5,6 +5,8 @@ import { problemListResponseSchema, problemSchema } from '@bettertrack/contracts
 
 import { auditLog } from '../data/schema';
 import { eq } from 'drizzle-orm';
+import { createProblemRepository } from '../data/repositories/problemRepository';
+import { createProblemService } from '../services/observability/problemService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -84,6 +86,89 @@ describe('admin problems', () => {
     const reopened = await agent.post(`/api/v1/admin/problems/${target.id}/reopen`).set(...XRW);
     expect(reopened.status).toBe(200);
     expect(problemSchema.parse(reopened.body).status).toBe('open');
+  });
+
+  /**
+   * The regression path (§13.5 V5-P2 arc (d)). A resolved row used to stay
+   * resolved no matter how often it recurred, so the default view and the open
+   * badge both read "nothing" while the same failure fired thousands of times.
+   */
+  it('reopens a resolved problem when the same fingerprint happens again', async () => {
+    harness.ctx.problems.captureError(new Error('db pool exhausted'));
+    await harness.ctx.problems.flush();
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+
+    const list = await agent.get('/api/v1/admin/problems').query({ status: 'open' });
+    const target = problemListResponseSchema.parse(list.body).problems[0]!;
+    const resolved = await agent.post(`/api/v1/admin/problems/${target.id}/resolve`).set(...XRW);
+    expect(problemSchema.parse(resolved.body).status).toBe('resolved');
+    expect(
+      problemListResponseSchema.parse(
+        (await agent.get('/api/v1/admin/problems').query({ status: 'open' })).body,
+      ).openCount,
+    ).toBe(0);
+
+    // The recurrence, a minute later. A second service over the same repository
+    // pins the clock so the sighting is unambiguously after the resolution —
+    // the production path is the same `capture`, only wall-clock driven.
+    const recurrence = createProblemService({
+      repo: createProblemRepository(harness.db),
+      now: () => Date.now() + 60_000,
+    });
+    recurrence.captureError(new Error('db pool exhausted'));
+    await recurrence.flush();
+
+    const reopened = await agent.get('/api/v1/admin/problems').query({ status: 'open' });
+    const body = problemListResponseSchema.parse(reopened.body);
+    const row = body.problems.find((p) => p.id === target.id);
+    expect(row?.status).toBe('open');
+    // Still flagged as a regression: an admin cleared this, and it came back.
+    expect(row?.regressed).toBe(true);
+    expect(row?.occurrenceCount).toBe(2);
+    expect(body.openCount).toBe(1);
+
+    // A manual reopen is NOT a regression — it clears the resolution outright.
+    const manual = await agent.post(`/api/v1/admin/problems/${target.id}/reopen`).set(...XRW);
+    expect(problemSchema.parse(manual.body).regressed).toBe(false);
+  });
+
+  /**
+   * Paging. Nothing but a resolve ever removed a row from the default view and
+   * nothing ever deleted one, so before this every problem past the newest page
+   * was unreachable AND unresolvable through any UI path.
+   */
+  it('pages through every match and can resolve a row from the last page', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      harness.ctx.problems.captureError(new Error(`paged failure number ${'x'.repeat(i + 1)}`));
+    }
+    await harness.ctx.problems.flush();
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+
+    const seen: string[] = [];
+    let hasMore = true;
+    let pages = 0;
+    while (hasMore) {
+      const res = await agent
+        .get('/api/v1/admin/problems')
+        .query({ status: 'open', limit: 2, offset: seen.length });
+      expect(res.status).toBe(200);
+      const page = problemListResponseSchema.parse(res.body);
+      expect(page.total).toBe(5);
+      seen.push(...page.problems.map((p) => p.id));
+      hasMore = page.hasMore;
+      pages += 1;
+      expect(pages).toBeLessThanOrEqual(5);
+    }
+
+    expect(pages).toBe(3);
+    expect(new Set(seen).size).toBe(5);
+
+    // The last row — unreachable before paging — resolves like any other.
+    const resolved = await agent.post(`/api/v1/admin/problems/${seen[4]}/resolve`).set(...XRW);
+    expect(resolved.status).toBe(200);
+    expect(problemSchema.parse(resolved.body).status).toBe('resolved');
   });
 
   it('404s an unknown problem id', async () => {
