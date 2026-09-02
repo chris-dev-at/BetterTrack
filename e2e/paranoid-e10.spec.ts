@@ -46,14 +46,17 @@ import { assetIdFor, listTransactions, recordBuy } from './support/mirror';
 import { provisionUser, provisionUserInContext, type E2EUser } from './support/users';
 
 /**
- * PARANOID E10 — the Playwright vault gate (`docs/paranoid-design.md:959`).
+ * PARANOID E10 — the Playwright vault gate (the §20 row E10 arc list, archived
+ * verbatim in `docs/history/paranoid-design-history.md` §D).
  *
  * The spec line names seven arcs. Two of them cannot run against this build,
  * and each is a `test.fixme` naming the exact missing piece rather than a
  * weakened assertion:
  *
- *  1. **`test.fixme` — the fresh-start notice after the §17 wipe** needs **E9**
- *     (transition + v1 retirement), which is unbuilt and owner-gated.
+ *  1. **`test.fixme` — the fresh-start notice after the §17 wipe.** E9 has since
+ *     SHIPPED the machinery (#1419), but §17 is an owner-run runbook
+ *     (`docs/ops.md`) that has not been executed, so no account carries the
+ *     notice to assert against. [E10-A8] covers the notice component itself.
  *  2. **`test.fixme` — the Drive-only vault round trip** needs per-vault Drive
  *     provisioning, which `PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false`
  *     refuses in `provisionVault.ts`. The e2e web config does not override the
