@@ -279,7 +279,7 @@ function href(location: Location): string {
 }
 
 /**
- * The non-admin app (PROJECTPLAN.md §6.1, §7.1; docs/redesign/PRODUCT_BLUEPRINT.md).
+ * The non-admin app (PROJECTPLAN.md §6.1, §7.1; docs/history/redesign/PRODUCT_BLUEPRINT.md).
  * Two app-wide auth gates sit above routing: the session bootstrap (`loading`)
  * and the forced-password-change trap — while either is in effect no
  * `user`/public route is reachable (§6.1); the PIN gate wraps the app the same

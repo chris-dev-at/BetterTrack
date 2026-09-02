@@ -1,5 +1,7 @@
 # Pass 05 — Remediation roadmap
 
+_Archived 2026-09-02 — part of the 2026-07-26 review round; its findings were triaged into issues and are recorded in `PROJECTPLAN.md` §16._
+
 ## Goal
 
 This roadmap turns the review into release gates. Ordering follows exploitability and dependency: establish credential/session invariants first, then contain autonomous and deployment trust, then address data governance, operational resilience, and interface quality.

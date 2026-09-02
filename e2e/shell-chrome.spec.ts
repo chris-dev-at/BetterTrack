@@ -5,7 +5,7 @@ import { provisionUserInContext } from './support/users';
 
 /**
  * The shell's chrome must fit the viewport it is given, and its persistent
- * utilities must be reachable at every width (docs/redesign/PRODUCT_BLUEPRINT.md
+ * utilities must be reachable at every width (docs/history/redesign/PRODUCT_BLUEPRINT.md
  * §4 — Create, Notifications and the account switcher are listed as persistent).
  *
  * Both properties failed silently at phone width, and neither is visible to a

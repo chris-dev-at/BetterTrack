@@ -1,5 +1,7 @@
 # Local AI runbook — Ollama (V5-P12)
 
+_Archived 2026-09-02 — still the setup reference for the local Ollama box (#657, awaiting-owner); the runtime configuration itself is admin-side (PROJECTPLAN.md §13.5, V5-P12)._
+
 BetterTrack's AI features (portfolio insights, the natural-language conglomerate
 builder — shipping in issue 2/2) run against **one provider only: a local
 [Ollama](https://ollama.com) server on your own hardware**. There is no cloud

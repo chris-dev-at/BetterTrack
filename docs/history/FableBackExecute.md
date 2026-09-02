@@ -1,5 +1,7 @@
 # FableBackExecute.md — Undo the Fable-outage fallback
 
+_Archived 2026-09-02 — the Fable outage ended 2026-07-01 and the fallback was already reverted; kept as an outage-runbook template._
+
 **Audience: a future Claude Code session. DO NOT execute any of this unless the owner explicitly says** e.g. _"Fable is back — execute docs/FableBackExecute.md"_. Until then this file is inert documentation.
 
 ## What this reverses
