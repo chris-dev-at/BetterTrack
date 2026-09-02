@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ConglomerateDetailRow } from '../../../data/repositories/conglomerateRepository';
-import { createsCycle, flattenConglomerate, longestChainLength } from '../nesting';
+import {
+  createsCycle,
+  FLATTEN_LOAD_CONCURRENCY,
+  flattenConglomerate,
+  longestChainLength,
+  mapFlattened,
+  MAX_FLATTENED_POSITIONS,
+} from '../nesting';
 
 /**
  * Pure V5-P6 nesting rules (issue #592): cycle detection, the depth-cap
@@ -179,7 +186,7 @@ describe('flattenConglomerate', () => {
     expect(byId.get('x')).toBeCloseTo(25, 12);
   });
 
-  it('drops an EMPTY child branch and renormalizes the remainder to 100', async () => {
+  it('drops an EMPTY child branch, renormalizes the remainder and REPORTS the dropped slice', async () => {
     const load = loaderOf([
       row('parent', [assetPos('x', 30), assetPos('y', 20), childPos('empty', 50)]),
       row('empty', []),
@@ -188,11 +195,113 @@ describe('flattenConglomerate', () => {
     const byId = new Map(flat!.positions.map((p) => [p.assetId, p.weightPct]));
     expect(byId.get('x')).toBeCloseTo(60, 12);
     expect(byId.get('y')).toBeCloseTo(40, 12);
+    // The renormalization above is what money callers must NOT spend: half the
+    // basket resolved to nothing and says so.
+    expect(flat!.unresolvedPct).toBeCloseTo(50, 12);
+  });
+
+  it('reports a child that is empty only through ITS own empty child', async () => {
+    const load = loaderOf([
+      row('parent', [assetPos('x', 60), childPos('mid', 40)]),
+      row('mid', [childPos('empty', 100)]),
+      row('empty', []),
+    ]);
+    const flat = await flattenConglomerate(load, 'parent');
+    expect(flat!.positions).toHaveLength(1);
+    expect(flat!.unresolvedPct).toBeCloseTo(40, 12);
+  });
+
+  it('reports nothing unresolved for a fully resolved tree (float noise is not a gap)', async () => {
+    const load = loaderOf([
+      row('root', [assetPos('a', 33.333), childPos('mid', 66.667)]),
+      row('mid', [assetPos('b', 0.001), assetPos('c', 99.999)]),
+    ]);
+    const flat = await flattenConglomerate(load, 'root');
+    expect(flat!.unresolvedPct).toBe(0);
   });
 
   it('flattens an entirely empty basket to no positions', async () => {
     const flat = await flattenConglomerate(loaderOf([row('parent', [])]), 'parent');
-    expect(flat).toEqual({ positions: [], nested: false });
+    expect(flat).toEqual({ positions: [], nested: false, unresolvedPct: 100 });
+  });
+
+  it('refuses an over-deep tree with a MAPPED 422 instead of a bare Error (never a 500)', async () => {
+    // Four conglomerates in a chain — one past MAX_NESTING_DEPTH. Only a write
+    // that raced the graph check can persist this; reading it must still answer
+    // with a code, not an unexpected-error 500.
+    const load = loaderOf([
+      row('l1', [childPos('l2', 100)]),
+      row('l2', [childPos('l3', 100)]),
+      row('l3', [childPos('l4', 100)]),
+      row('l4', [assetPos('x', 100)]),
+    ]);
+    await expect(flattenConglomerate(load, 'l1')).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'NESTING_UNRESOLVABLE',
+    });
+  });
+
+  it('refuses a PERSISTED cycle with the same mapped 422 rather than recursing', async () => {
+    const load = loaderOf([row('a', [childPos('b', 100)]), row('b', [childPos('a', 100)])]);
+    await expect(flattenConglomerate(load, 'a')).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'NESTING_UNRESOLVABLE',
+    });
+  });
+
+  it(`bounds the flattened asset count at ${MAX_FLATTENED_POSITIONS} with a clear error`, async () => {
+    // Two children of 130 distinct assets each: 260 unique assets past the
+    // flatten, over the cap — refused before any per-asset I/O is fanned out.
+    const wide = (prefix: string) =>
+      Array.from({ length: 130 }, (_, i) => assetPos(`${prefix}${i}`, 1));
+    const load = loaderOf([
+      row('root', [childPos('c1', 50), childPos('c2', 50)]),
+      row('c1', wide('p')),
+      row('c2', wide('q')),
+    ]);
+    await expect(flattenConglomerate(load, 'root')).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'NESTING_TOO_MANY_ASSETS',
+    });
+
+    // Exactly at the cap still resolves — the bound is a ceiling, not a fence
+    // around ordinary baskets.
+    const atCap = loaderOf([
+      row('root', [childPos('c1', 100)]),
+      row(
+        'c1',
+        Array.from({ length: MAX_FLATTENED_POSITIONS }, (_, i) => assetPos(`p${i}`, 1)),
+      ),
+    ]);
+    const flat = await flattenConglomerate(atCap, 'root');
+    expect(flat!.positions).toHaveLength(MAX_FLATTENED_POSITIONS);
+  });
+});
+
+describe('mapFlattened', () => {
+  it('preserves input order while running through a bounded pool', async () => {
+    const items = Array.from({ length: 25 }, (_, i) => i);
+    let inFlight = 0;
+    let peak = 0;
+    const out = await mapFlattened(items, async (item) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      return item * 2;
+    });
+    expect(out).toEqual(items.map((i) => i * 2));
+    expect(peak).toBeGreaterThan(1); // genuinely concurrent…
+    expect(peak).toBeLessThanOrEqual(FLATTEN_LOAD_CONCURRENCY); // …but bounded.
+  });
+
+  it('surfaces the LOWEST-INDEX failure, as the sequential loop it replaces did', async () => {
+    await expect(
+      mapFlattened([0, 1, 2, 3], async (item) => {
+        if (item === 1 || item === 3) throw new Error(`fail-${item}`);
+        return item;
+      }),
+    ).rejects.toThrow('fail-1');
   });
 
   it('returns null for an unknown root and flags a flat basket as not nested', async () => {

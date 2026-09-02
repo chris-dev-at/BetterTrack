@@ -80,6 +80,38 @@ export type PositionInput =
   | { kind: 'asset'; assetId: string; weightPct: number }
   | { kind: 'conglomerate'; childId: string; weightPct: number };
 
+/** One parent → child nesting edge, as {@link nestingEdges} returns them. */
+export interface NestingEdgeRow {
+  parentId: string;
+  childId: string;
+}
+
+/**
+ * Anything that can run a `select` — the database or an open transaction. Lets
+ * the nesting-edge read be reused verbatim inside {@link replacePositions}'s
+ * transaction, where it must observe a concurrent writer's committed edges.
+ */
+type Executor = Pick<Database, 'select'>;
+
+async function selectNestingEdges(exec: Executor, ownerId: string): Promise<NestingEdgeRow[]> {
+  const rows = await exec
+    .select({
+      parentId: conglomeratePositions.conglomerateId,
+      childId: conglomeratePositions.childConglomerateId,
+    })
+    .from(conglomeratePositions)
+    .innerJoin(conglomerates, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+    .where(
+      and(
+        eq(conglomerates.ownerId, ownerId),
+        sql`${conglomeratePositions.childConglomerateId} is not null`,
+      ),
+    );
+  return rows.flatMap((r) =>
+    r.childId !== null ? [{ parentId: r.parentId, childId: r.childId }] : [],
+  );
+}
+
 export function createConglomerateRepository(db: Database) {
   /**
    * True when the owner already has a *different* Conglomerate whose name
@@ -386,23 +418,8 @@ export function createConglomerateRepository(db: Database) {
      * the write-time cycle/depth validation graph (V5-P6). Owner-local by
      * construction: only own conglomerates are nestable.
      */
-    async nestingEdges(ownerId: string): Promise<Array<{ parentId: string; childId: string }>> {
-      const rows = await db
-        .select({
-          parentId: conglomeratePositions.conglomerateId,
-          childId: conglomeratePositions.childConglomerateId,
-        })
-        .from(conglomeratePositions)
-        .innerJoin(conglomerates, eq(conglomeratePositions.conglomerateId, conglomerates.id))
-        .where(
-          and(
-            eq(conglomerates.ownerId, ownerId),
-            sql`${conglomeratePositions.childConglomerateId} is not null`,
-          ),
-        );
-      return rows.flatMap((r) =>
-        r.childId !== null ? [{ parentId: r.parentId, childId: r.childId }] : [],
-      );
+    async nestingEdges(ownerId: string): Promise<NestingEdgeRow[]> {
+      return selectNestingEdges(db, ownerId);
     },
 
     /**
@@ -411,19 +428,46 @@ export function createConglomerateRepository(db: Database) {
      * `sortOrder` from array index. Ownership is verified inside the transaction,
      * so a not-owned id mutates nothing and returns false (→ 404). `updatedAt`
      * is bumped so the list reflects the edit.
+     *
+     * `verifyNesting` closes the V5-P6 write race. The service validates the
+     * nesting graph (cycle + depth) before calling, but that read and this write
+     * are two statements: two concurrent writes — A nests B while B nests A —
+     * both pass a check made against the pre-write graph and both commit, so a
+     * cycle lands in the table. When the caller supplies the callback (it does
+     * exactly when the new set contains a nested constituent — nothing else can
+     * introduce a cycle or lengthen a chain), this locks the owner's
+     * conglomerate rows `FOR UPDATE` in id order (same order for every writer,
+     * so no deadlock), re-reads the graph INSIDE the transaction and hands it
+     * back for the same pure check. A racing writer now blocks until the first
+     * commits, sees its edge, and throws — which rolls this transaction back, so
+     * the losing write persists nothing.
      */
     async replacePositions(
       ownerId: string,
       id: string,
       positions: readonly PositionInput[],
+      options?: { verifyNesting?: (edges: NestingEdgeRow[]) => void },
     ): Promise<boolean> {
       return db.transaction(async (tx) => {
+        const verifyNesting = options?.verifyNesting;
+        if (verifyNesting) {
+          await tx
+            .select({ id: conglomerates.id })
+            .from(conglomerates)
+            .where(eq(conglomerates.ownerId, ownerId))
+            .orderBy(asc(conglomerates.id))
+            .for('update');
+        }
+
         const owned = await tx
           .select({ id: conglomerates.id })
           .from(conglomerates)
           .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)))
           .limit(1);
         if (owned.length === 0) return false;
+
+        // Throws (→ rollback) when the graph moved under the service's check.
+        if (verifyNesting) verifyNesting(await selectNestingEdges(tx, ownerId));
 
         await tx.delete(conglomeratePositions).where(eq(conglomeratePositions.conglomerateId, id));
         if (positions.length > 0) {

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams, type Location } from 'react-router-dom';
 
 import { I18nProvider, useI18n, useT } from '../i18n';
+import { apiRetryPolicy, backoffDelayMs } from '../lib/apiClient';
 import { RealtimeProvider } from '../lib/realtime';
 import { NotFoundState } from '../ui';
 
@@ -39,7 +40,15 @@ export const queryClient = new QueryClient({
       // these guardrails only apply when a new query forgets to declare them.
       staleTime: 30_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      // One retry for a transient failure — but NEVER for a 429 (§10). A plain
+      // `retry: 1` doubled the request count at the exact moment a limiter was
+      // already refusing: a page mounting dozens of queries turned one tripped
+      // cooldown into twice the traffic, which is what climbed the escalation
+      // ladder from a 20 s pause to a 10 min one. See `apiRetryPolicy`.
+      retry: apiRetryPolicy(1),
+      // Jittered, and it honours the server's Retry-After when there is one, so
+      // the retries that DO happen never re-synchronise into a thundering herd.
+      retryDelay: backoffDelayMs,
     },
   },
 });
