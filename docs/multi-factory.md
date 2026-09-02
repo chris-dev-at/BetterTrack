@@ -31,10 +31,14 @@ mergeable record always wins.
 **The merge lane outranks the composer.** A successful composer run blocks the
 whole tick for ~45 min, which freezes merging as well as scheduling. So
 `composer_step` returns early — logging `composer deferred: merge queue
-non-empty` — whenever any `<epoch>-prNN.json` record is waiting. An explicit
-owner brief (`control/composer-request.json`) is exempt: it was asked for
-deliberately. Consequence worth knowing: a permanently stuck queue record also
-stops composition, which is intended (drain the lane, then compose).
+non-empty` — whenever any `<epoch>-prNN.json` record is waiting. Owner briefs
+are exempt in **both** their states: an already-claimed one
+(`.composer-request-active.json`, reconciled above the mode gate) and a fresh
+`control/composer-request.json` that has not been claimed yet — the claim
+happens *below* this guard, so the guard has to test the file, not just the
+loaded flag. Consequence worth knowing: a permanently stuck queue record stops
+ordinary composition, which is intended (drain the lane, then compose), but it
+never blocks a brief you write yourself.
 
 **Review-requeue budget.** An approval that keeps invalidating used to send the
 same issue back through review forever (#1232 burned 140 reviewer runs).
@@ -44,6 +48,17 @@ count passes `MF_REQUEUE_MAX` (default 3, set to `3` for the master service in
 `compose.yml`). The counter is keyed by **issue**, so it survives the new PR and
 new head that a requeue produces, and it is deliberately never cleared — the
 budget is a lifetime bound on re-entering review, not a per-cycle allowance.
+An in-budget requeue leaves the PR's merge-refusal counter alone; the
+over-budget park retires the PR for good and therefore clears both that counter
+and the CI-fix state along with the queue record.
+
+> **Re-arming a parked issue.** Because the counter is never cleared
+> automatically, fixing the issue and removing `needs-human` is not enough — the
+> very next requeue parks it again immediately. Delete the counter too:
+>
+> ```bash
+> rm -f multi-factory/state/control/requeue-count/<issue>
+> ```
 
 ## Difficulty routing & model providers (mflib.sh)
 
@@ -188,6 +203,15 @@ pushed branch, so a retry/relocate/checker or the next run's reviewer can pick t
 work up instead of it evaporating in the worker's clone volume (the manual
 salvage-from-volume drill after `needs-human`). The normal happy path — where the
 writer opened its own PR — is a no-op (a PR already exists).
+
+**Dependency priming.** Before each cycle the worker runs
+`pnpm install --frozen-lockfile --prefer-offline` outside the billed model
+session, so a moved lockfile does not make the writer install on model time. It
+is bounded by `MF_PNPM_PRIME_TIMEOUT` (default 600 s) and is non-fatal either
+way — the writer installs if it failed. The timeout is not optional: this runs
+before the role loop, outside every heartbeat-refreshing `cc()` call, so an
+unreachable registry would otherwise hang with a *fresh* heartbeat, which the
+stall detector cannot see (the 2026-08-19 DNS-wedge failure class).
 
 ## The protocol dir (`multi-factory/state/`, bind-mounted at `/work/mfstate`)
 

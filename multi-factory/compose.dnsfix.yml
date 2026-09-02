@@ -4,7 +4,10 @@
 # default bridge until a Mac reboot (or Docker reset) clears the wedged NAT
 # state. Inter-container networking is unused (coordination is via the shared
 # state volume), so this is safe. Run compose with:
-#   -f compose.yml -f compose.extra.yml -f compose.dnsfix.yml
+#   -f compose.yml -f compose.dnsfix.yml
+# (At WORKERS=2 there is no compose.extra.yml — autorun.sh only generates that
+# file for worker 3+. If the fleet is scaled past 2, add `-f compose.extra.yml`
+# between the two AND re-add the worker stanzas noted at the end of this file.)
 #
 # EXTENDED 2026-08-23 — the second half of the same wedge. Pinning to the default
 # bridge was not sufficient: the containers still inherited `8.8.8.8` FIRST in
@@ -36,5 +39,12 @@ services:
       - 192.168.65.7
 # worker-3/worker-4 stanzas removed 2026-08-29 with the WORKERS=2 downscale:
 # with no compose.extra.yml generated, overlay-only services have no image and
-# `docker compose` refuses the project. Re-add them (same bridge+dns block)
-# if the fleet ever scales above 2. Backup: compose.dnsfix.yml.bak-20260829
+# `docker compose` refuses the project. If the fleet ever scales above 2, re-add
+# one stanza per new worker — they are literal copies of the worker-2 block
+# above with the service name changed:
+#
+#   worker-3:
+#     network_mode: bridge
+#     dns:
+#       - 1.1.1.1
+#       - 192.168.65.7

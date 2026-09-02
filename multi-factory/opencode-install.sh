@@ -102,7 +102,8 @@ install_all(){
       "$CONTAINER_HOME/cache/opencode" "$CONTAINER_HOME/config" || continue
     $DOCKER cp "$bin" "$n:/usr/local/bin/opencode" >/dev/null || continue
     $DOCKER exec -u root "$n" chmod 0755 /usr/local/bin/opencode
-    $DOCKER cp "$OPENCODE_AUTH_SRC" "$n:$CONTAINER_HOME/share/opencode/auth.json" >/dev/null
+    $DOCKER cp "$OPENCODE_AUTH_SRC" "$n:$CONTAINER_HOME/share/opencode/auth.json" >/dev/null \
+      || { echo "✗ $n: could not install the opencode credential"; continue; }
     # The models.dev catalog — a cold-start warm-up ONLY. opencode replaces this
     # file with its own fetch on first run, and that in-container fetch has been
     # observed returning a SHORT catalog (176 vs 367 entries) that omits preview
@@ -110,12 +111,26 @@ install_all(){
     # found" text an expired key produces. What actually guarantees the route is
     # the explicit provider.openrouter.models block in opencode-factory.json
     # (copied below), which opencode never rewrites.
-    [ -s "$OPENCODE_MODELS_SRC" ] &&
-      $DOCKER cp "$OPENCODE_MODELS_SRC" "$n:$CONTAINER_HOME/cache/opencode/models.json" >/dev/null
-    $DOCKER cp opencode-factory.json "$n:/work/mf/opencode-factory.json" >/dev/null
-    $DOCKER exec -u root "$n" chown -R factory:factory "$CONTAINER_HOME"
-    $DOCKER exec -u root "$n" chmod 700 "$CONTAINER_HOME"
-    $DOCKER exec -u root "$n" chmod 600 "$CONTAINER_HOME/share/opencode/auth.json"
+    if [ -s "$OPENCODE_MODELS_SRC" ]; then
+      $DOCKER cp "$OPENCODE_MODELS_SRC" "$n:$CONTAINER_HOME/cache/opencode/models.json" >/dev/null \
+        || echo "  ! $n: models.dev warm-up copy failed (opencode will fetch its own)"
+    fi
+    # /work/mf/opencode-factory.json is bind-mounted READ-ONLY by the current
+    # compose.yml, so this cp FAILS on an up-to-date container — and that failure
+    # is the good case: the mount already serves the host file. It only has real
+    # work to do on a container created before that mount existed, which is the
+    # whole point of this script. So a failure is only fatal when the file is
+    # also absent/unreadable in the container; never report ✓ without proving it.
+    if ! $DOCKER cp opencode-factory.json "$n:/work/mf/opencode-factory.json" >/dev/null 2>&1; then
+      $DOCKER exec "$n" test -s /work/mf/opencode-factory.json 2>/dev/null \
+        || { echo "✗ $n: /work/mf/opencode-factory.json is neither writable nor mounted"; continue; }
+    fi
+    $DOCKER exec -u root "$n" chown -R factory:factory "$CONTAINER_HOME" \
+      || { echo "✗ $n: could not chown $CONTAINER_HOME"; continue; }
+    $DOCKER exec -u root "$n" chmod 700 "$CONTAINER_HOME" \
+      || { echo "✗ $n: could not chmod $CONTAINER_HOME"; continue; }
+    $DOCKER exec -u root "$n" chmod 600 "$CONTAINER_HOME/share/opencode/auth.json" \
+      || { echo "✗ $n: could not restrict the credential to 0600"; continue; }
     echo "✓ $n"
   done
   chmod -R go-rwx auth 2>/dev/null || true

@@ -952,8 +952,17 @@ run_cycle(){ # $1=issue $2=relocated
   # Prime dependencies OUTSIDE the billed model session: when the lockfile moved,
   # the writer/fixer otherwise discovers a broken node_modules inside its own run
   # and installs on model time. Warm case is seconds; failure is non-fatal.
-  ( cd "$REPO_DIR" && pnpm install --frozen-lockfile --prefer-offline >>"$LOG" 2>&1 ) \
-    || log "pre-cycle pnpm prime failed (non-fatal — the writer will install)"
+  #
+  # Hard-bounded: this runs BEFORE the role loop, so it is outside every
+  # heartbeat-refreshing cc() call. An unreachable registry (the 2026-08-19 DNS
+  # wedge class, where lookups burned 5 s timeouts and never resolved) would
+  # otherwise hang here indefinitely with a FRESH heartbeat — the worker looks
+  # alive, the stall detector never fires, and the issue is never worked.
+  # Timing out and letting the writer install is strictly better than that.
+  ( cd "$REPO_DIR" \
+    && timeout "${MF_PNPM_PRIME_TIMEOUT:-600}" pnpm install --frozen-lockfile --prefer-offline \
+       >>"$LOG" 2>&1 ) \
+    || log "pre-cycle pnpm prime failed or timed out after ${MF_PNPM_PRIME_TIMEOUT:-600}s (non-fatal — the writer will install)"
 
   # Requeued/head-invalidated work may already have a valid PR.  Resume it
   # directly instead of asking a writer to recreate it.

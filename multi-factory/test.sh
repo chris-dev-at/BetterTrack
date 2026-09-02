@@ -118,13 +118,11 @@ A1=$(jq -r '.issue' "$MFSTATE/assignments/worker-1.json" 2>/dev/null || echo non
 A2=$(jq -r '.issue' "$MFSTATE/assignments/worker-2.json" 2>/dev/null || echo none)
 check "meta-less issue is NOT assigned" "" \
   "$(grep -l '"issue":210' "$MFSTATE"/assignments/*.json 2>/dev/null || true)"
-# Once per IDLE WORKER, not once per tick: the bad-meta branch skips the issue
-# but does not prune it from $runnable, so each worker's pass re-labels it. The
-# redundancy is bounded to a single tick — the label then keeps the issue out of
-# runnable_issues entirely (asserted below) — so this stays a WORKERS-sized
-# nuisance rather than a leak. Assert the real count so a future dedupe is a
-# conscious change and not a silent one.
-check "meta-less issue is labeled mf:bad-meta once per idle worker" "2" \
+# Exactly once per tick, not once per idle worker: the branch prunes the issue
+# from $runnable so later workers in the SAME tick never re-reach it. That also
+# bounds the failure path — the label edit is best-effort, and without the prune
+# a failing edit would repeat WORKERS calls every tick forever.
+check "meta-less issue is labeled mf:bad-meta exactly once" "1" \
   "$(grep -c 'issue edit 210 --add-label mf:bad-meta' "$GH_STUB_DIR/calls.log")"
 check "the fleet is no longer serialized behind the wildcard claim" "211" "$A1"
 check "no second worker is starved by the skipped issue" "none" "$A2"
@@ -1049,30 +1047,67 @@ mark_human(){ printf '%s|%s\n' "$1" "$2" >>"$RQ_HUMAN"; }
 log(){ printf '%s\n' "$*" >>"$RQ_LOG"; }
 rm -rf "$CONTROL/requeue-count"
 MF_REQUEUE_MAX=3
+mkdir -p "$CIFIX"
+rq_record(){ # $1=path $2=issue $3=pr — a realistic queue record, not an empty file
+  jq -nc --argjson issue "$2" --argjson pr "$3" \
+    '{pr:$pr,issue:$issue,touches:["rq/**"],approved_head:"rqhead",
+      approval_kind:"reviewer",approval_comment_id:"1"}' >"$1"
+}
 for i in 1 2 3; do
-  : >"$MFSTATE/merge-queue/rq-$i.json"
+  rq_record "$MFSTATE/merge-queue/rq-$i.json" 1232 91
   requeue_for_review "$MFSTATE/merge-queue/rq-$i.json" 1232 "attempt $i"
 done
 check "requeues within budget do not escalate" "0" "$(wc -l <"$RQ_HUMAN" | tr -d ' ')"
 check "the durable counter tracks the issue" "3" "$(cat "$CONTROL/requeue-count/1232")"
 check "each in-budget requeue logs its position" "1" "$(grep -c 'requeueing for fresh review (3/3)' "$RQ_LOG")"
-: >"$MFSTATE/merge-queue/rq-4.json"
+# An in-budget requeue must NOT clear the refusal budget — a PR that keeps
+# earning refusals across review cycles still has to reach the park bound.
+: >"$QUEUE/.mergefail-pr91"
+rq_record "$MFSTATE/merge-queue/rq-keep.json" 1232 91
+MF_REQUEUE_MAX=99 requeue_for_review "$MFSTATE/merge-queue/rq-keep.json" 1232 "in budget"
+[ -f "$QUEUE/.mergefail-pr91" ] \
+  && ok "an in-budget requeue preserves the refusal budget" \
+  || bad "an in-budget requeue must not clear the refusal budget"
+# The over-budget park retires the PR for good, so it owes the full cleanup.
+: >"$QUEUE/.mergefail-pr91-oldhead"
+CIFIX_STATE=$(ci_fix_state_file 1232 91); : >"$CIFIX_STATE"
+rq_record "$MFSTATE/merge-queue/rq-4.json" 1232 91
 requeue_for_review "$MFSTATE/merge-queue/rq-4.json" 1232 "attempt 4"
 check "the requeue past the budget parks with a human" "1" "$(grep -c '^1232|' "$RQ_HUMAN")"
 check "the park reason names the budget and the last cause" "1" \
-  "$(grep -c 'requeued 4 times (budget 3) — last: attempt 4' "$RQ_HUMAN")"
+  "$(grep -c 'requeued 5 times (budget 3) — last: attempt 4' "$RQ_HUMAN")"
 [ -f "$MFSTATE/merge-queue/rq-4.json" ] \
   && bad "the parked requeue must drop its queue record" \
   || ok "the parked requeue dropped its queue record"
+[ -f "$QUEUE/.mergefail-pr91" ] \
+  && bad "the over-budget park must clear the refusal counter" \
+  || ok "the over-budget park cleared the refusal counter"
+[ -f "$QUEUE/.mergefail-pr91-oldhead" ] \
+  && bad "the over-budget park must sweep legacy refusal counters" \
+  || ok "the over-budget park swept legacy refusal counters"
+[ -f "$CIFIX_STATE" ] \
+  && bad "the over-budget park must clear the CI-fix state" \
+  || ok "the over-budget park cleared the CI-fix state"
+# A record with no readable PR still parks; it just has nothing to sweep.
+rm -rf "$CONTROL/requeue-count"; : >"$RQ_HUMAN"
+printf 'not json' >"$MFSTATE/merge-queue/rq-bad.json"
+MF_REQUEUE_MAX=0 requeue_for_review "$MFSTATE/merge-queue/rq-bad.json" 1235 "unreadable record"
+check "an unreadable queue record still parks with a human" "1" "$(grep -c '^1235|' "$RQ_HUMAN")"
+[ -f "$MFSTATE/merge-queue/rq-bad.json" ] \
+  && bad "an unreadable record must still leave the queue" \
+  || ok "an unreadable record left the queue"
 # The counter is per ISSUE, so an unrelated issue keeps its own full budget.
+rm -rf "$CONTROL/requeue-count"; : >"$RQ_HUMAN"
+rq_record "$MFSTATE/merge-queue/rq-other.json" 1233 92
 requeue_for_review "$MFSTATE/merge-queue/rq-other.json" 1233 "unrelated"
 check "the budget is keyed per issue, not globally" "1" "$(cat "$CONTROL/requeue-count/1233")"
 check "an unrelated issue is not parked by another issue's budget" "0" "$(grep -c '^1233|' "$RQ_HUMAN")"
 # A corrupt counter file must not abort the master under `set -e` arithmetic.
 printf 'garbage' >"$CONTROL/requeue-count/1234"
+rq_record "$MFSTATE/merge-queue/rq-x.json" 1234 93
 requeue_for_review "$MFSTATE/merge-queue/rq-x.json" 1234 "corrupt counter"
 check "a corrupt counter file restarts the budget instead of aborting" "1" "$(cat "$CONTROL/requeue-count/1234")"
-rm -rf "$CONTROL/requeue-count" "$MFSTATE"/merge-queue/rq-*.json
+rm -rf "$CONTROL/requeue-count" "$MFSTATE"/merge-queue/rq-*.json "$QUEUE"/.mergefail-pr9*
 unset MF_REQUEUE_MAX
 log(){ :; }
 
@@ -1110,6 +1145,8 @@ check "queue bookkeeping files alone do not defer composition" "1" \
   "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
 rm -f "$MFSTATE/merge-queue/.mergefail-pr70"
 # An owner brief was explicitly asked for and is exempt from the deferral.
+# Case A: an ALREADY-CLAIMED request (.composer-request-active.json), which is
+# what sets COMPOSER_REQUEST_LOADED=1 above the mode gate.
 jq -nc '{pr:70,issue:700,touches:["z/**"],approved_head:"cccc3333",approval_kind:"reviewer",approval_comment_id:"70"}' \
   >"$MFSTATE/merge-queue/1099-pr70.json"
 : >"$COMPOSER_RAN"; : >"$CMP_LOG"
@@ -1117,9 +1154,46 @@ MF_DRY_RUN=0
 : >"$CONTROL/.composer-request-active.json"
 composer_request_prepare(){ COMPOSER_REQUEST_LOADED=1; return 0; }
 composer_step run || true
-check "an owner-requested composition is exempt from the merge-lane deferral" "1" \
+check "a claimed owner request is exempt from the merge-lane deferral" "1" \
   "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
-rm -f "$CONTROL/.composer-request-active.json" "$MFSTATE"/merge-queue/*.json
+rm -f "$CONTROL/.composer-request-active.json"
+COMPOSER_REQUEST_LOADED=0
+eval "$CMP_SAVED_PREPARE"        # back to the REAL composer_request_prepare
+
+# Case B — the regression that mattered: a FRESH owner brief. composer-request.json
+# is not claimed until composer_request_prepare runs BELOW the deferral guard, so
+# COMPOSER_REQUEST_LOADED is still 0 here. Guarding on the flag alone let a stuck
+# queue record swallow every new brief while the docs promised exemption. This
+# runs the REAL prepare — stubbing it is exactly what hid the bug.
+rm -rf "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/.composer-request-active.json"
+jq -nc '{version:1,approved:true,id:"brief-1",exact_count:1,brief:"do the thing"}' \
+  >"$CONTROL/composer-request.json"
+: >"$COMPOSER_RAN"; : >"$CMP_LOG"
+composer_step run || true
+check "a FRESH owner brief is not swallowed by the merge-lane deferral" "1" \
+  "$(wc -l <"$COMPOSER_RAN" | tr -d ' ')"
+check "a fresh brief does not log a deferral" "0" \
+  "$(grep -c 'composer deferred: merge queue non-empty' "$CMP_LOG")"
+# The claim itself sits BELOW the protocol gate (deliberately — a request is only
+# claimed once this tick could actually run it), so the stub above stops short of
+# it. Drive the real claim directly to prove the fresh file the guard now honours
+# is the same one composer_request_prepare goes on to consume.
+rm -rf "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/.composer-request-active.json"
+composer_request_prepare 1
+check "the real prepare claims a fresh brief" "0" "$?"
+[ -f "$CONTROL/.composer-request-active.json" ] \
+  && ok "the fresh brief is claimed into .composer-request-active.json" \
+  || bad "the fresh brief should have been claimed into .composer-request-active.json"
+[ -f "$CONTROL/composer-request.json" ] \
+  && bad "the ready request must be moved, not copied" \
+  || ok "the ready request was moved out of composer-request.json"
+check "the claimed brief is loaded for the run" "1" "$COMPOSER_REQUEST_LOADED"
+check "the claimed brief carries its id" "brief-1" "$COMPOSER_REQUEST_ID"
+check "the claimed brief carries its exact count" "1" "$COMPOSER_REQUEST_EXACT_COUNT"
+rm -rf "$CONTROL/.composer-request-claim" "$CONTROL/.composer-request-active.json" \
+       "$CONTROL/composer-request.json" "$MFSTATE"/merge-queue/*.json
 COMPOSER_REQUEST_LOADED=0
 MF_DRY_RUN=1
 eval "$CMP_SAVED_RUNNABLE"; eval "$CMP_SAVED_READY"; eval "$CMP_SAVED_PREPARE"
