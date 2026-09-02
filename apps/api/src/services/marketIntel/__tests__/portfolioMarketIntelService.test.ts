@@ -123,6 +123,134 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     expect(b).toMatchObject({ annualIncomeEur: 20 });
   });
 
+  it('is unavailable when one holding’s payload arrived half-filled', async () => {
+    // The yahoo provider settles its chart + summary halves independently and
+    // keeps the survivor; `trailingAmount` comes only from the summary half. BBB
+    // demonstrably pays dividends (history + an upcoming event from the chart
+    // half) but carries no per-share amount — that is a gap, not a zero, and a
+    // €18 total must not be presented as this portfolio's complete income.
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({ currency: 'USD', trailingAmount: 2.0 }),
+        BBB: makeDividends({
+          currency: 'EUR',
+          trailingAmount: null,
+          history: [
+            { exDate: '2026-02-07T00:00:00.000Z', payDate: null, amount: 0.5, currency: 'EUR' },
+          ],
+          upcoming: [
+            {
+              exDate: '2026-08-08T00:00:00.000Z',
+              payDate: '2026-08-15T00:00:00.000Z',
+              amount: null,
+              currency: 'EUR',
+            },
+          ],
+        }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({
+        held: [
+          held({ providerRef: 'AAA', currency: 'USD', quantity: 10 }),
+          held({
+            assetId: 'asset-b',
+            providerRef: 'BBB',
+            symbol: 'BBB',
+            name: 'Asset B',
+            currency: 'EUR',
+            quantity: 5,
+          }),
+        ],
+      }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+    });
+  });
+
+  it('is unavailable when one holding’s dividend fetch throws', async () => {
+    const marketData = createStubMarketData({
+      dividends: (ref: AssetRef) => {
+        if (ref.providerRef === 'BBB') throw new Error('upstream 429');
+        return cachedIntel(makeDividends({ currency: 'USD', trailingAmount: 2.0 }));
+      },
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({
+        held: [
+          held({ providerRef: 'AAA', currency: 'USD', quantity: 10 }),
+          held({
+            assetId: 'asset-b',
+            providerRef: 'BBB',
+            symbol: 'BBB',
+            name: 'Asset B',
+            currency: 'EUR',
+            quantity: 5,
+          }),
+        ],
+      }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+    });
+  });
+
+  it('stays available when the only gap is a holding that pays no dividend at all', async () => {
+    // Nothing in the payload — no history, no upcoming, no trailing amount — is
+    // a resolved zero (a non-payer), not a half-failure. The dividend-paying
+    // holding's income is still complete and must render.
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({ currency: 'USD', trailingAmount: 2.0 }),
+        BBB: makeDividends({ currency: 'EUR', trailingAmount: null }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({
+        held: [
+          held({ providerRef: 'AAA', currency: 'USD', quantity: 10 }),
+          held({
+            assetId: 'asset-b',
+            providerRef: 'BBB',
+            symbol: 'BBB',
+            name: 'Asset B',
+            currency: 'EUR',
+            quantity: 5,
+          }),
+        ],
+      }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const result = await service.projectedIncome('user-1');
+
+    expect(result.available).toBe(true);
+    expect(result.yearlyTotalEur).toBe(18);
+    expect(result.holdings.map((h) => h.symbol)).toEqual(['AAA']);
+  });
+
   it('skips a holding with no known forward dividend', async () => {
     const marketData = createStubMarketData({
       dividends: dividendsByRef({

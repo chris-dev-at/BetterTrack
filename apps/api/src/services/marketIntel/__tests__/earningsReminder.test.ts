@@ -57,6 +57,11 @@ const runIfAllowed = async (_userId: string, action: () => Promise<void>) => {
   return true;
 };
 
+/** Every user has `earnings.reminder` enabled on at least one channel. */
+const optedIn = async (_userId: string) => true;
+/** Nobody enabled the type — the default state of an opt-in notification. */
+const optedOut = async (_userId: string) => false;
+
 /** A notification-center double: records emits, returns a controllable result. */
 function stubNotify(result = true) {
   const events: DispatchableEvent[] = [];
@@ -98,6 +103,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ AAPL: day(2) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: true,
       runIfAllowed,
       now: () => NOW,
@@ -114,6 +120,118 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     });
   });
 
+  it('emits nothing and leaves NO marker for a recipient who never opted in', async () => {
+    const notify = stubNotify();
+    const res = await runEarningsReminderScan({
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(2) }),
+      redis,
+      notify,
+      isEnabled: optedOut,
+      enabled: true,
+      runIfAllowed,
+      now: () => NOW,
+    });
+
+    expect(res.reminded).toBe(0);
+    // No emit ⇒ the dispatcher never writes its inbox row, which doubles as the
+    // dedupe marker; and no 45-day idempotency lock is taken either. Both would
+    // otherwise say "already handled" once the recipient enables the type.
+    expect(notify.emit).not.toHaveBeenCalled();
+    expect(await redis.keys('earnings:reminded:*')).toEqual([]);
+  });
+
+  it('still reminds on the next scan when the type is enabled after a skipped one', async () => {
+    const deps = {
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(2) }),
+      redis,
+      enabled: true,
+      runIfAllowed,
+      now: () => NOW,
+    };
+    const skipped = stubNotify();
+    const first = await runEarningsReminderScan({
+      ...deps,
+      notify: skipped,
+      isEnabled: optedOut,
+    });
+    expect(first.reminded).toBe(0);
+
+    // Same report, next daily scan, type now enabled: it must arrive.
+    const delivered = stubNotify();
+    const second = await runEarningsReminderScan({
+      ...deps,
+      notify: delivered,
+      isEnabled: optedIn,
+    });
+    expect(second.reminded).toBe(1);
+    expect(delivered.events[0]).toMatchObject({
+      type: 'earnings.reminder',
+      assetId: 'a-aapl',
+      earningsDate: day(2),
+    });
+  });
+
+  it('reads each recipient’s opt-in once per run, not once per row', async () => {
+    const gate = vi.fn(optedIn);
+    await runEarningsReminderScan({
+      intelRepo: intelRepo([
+        asset({ assetId: 'a-aapl', providerRef: 'AAPL' }),
+        asset({ assetId: 'a-msft', providerRef: 'MSFT', symbol: 'MSFT' }),
+      ]),
+      marketData: marketDataWithEarnings({ AAPL: day(1), MSFT: day(2) }),
+      redis,
+      notify: stubNotify(),
+      isEnabled: gate,
+      enabled: true,
+      runIfAllowed,
+      now: () => NOW,
+    });
+
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(gate).toHaveBeenCalledWith('u1');
+  });
+
+  it('reminds an after-close reporter a full LEAD_DAYS calendar days ahead', async () => {
+    // NOW is 09:00 UTC on the 18th; the report is stamped 20:00 on the 21st —
+    // the 3rd calendar day, but 3 d 11 h of elapsed time. A milliseconds window
+    // of 3 × 24 h skips it here and only fires on the next daily run, silently
+    // shrinking the documented 3-day lead to 2.
+    const notify = stubNotify();
+    const res = await runEarningsReminderScan({
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: '2026-07-21T20:00:00.000Z' }),
+      redis,
+      notify,
+      isEnabled: optedIn,
+      enabled: true,
+      runIfAllowed,
+      now: () => NOW,
+    });
+
+    expect(res.reminded).toBe(1);
+    expect(notify.events[0]).toMatchObject({ earningsDate: '2026-07-21T20:00:00.000Z' });
+  });
+
+  it('does not reach a report on the day after the lead window', async () => {
+    const notify = stubNotify();
+    const res = await runEarningsReminderScan({
+      intelRepo: intelRepo([asset({})]),
+      // The 4th calendar day out — a later scan owns it.
+      marketData: marketDataWithEarnings({ AAPL: '2026-07-22T00:00:00.000Z' }),
+      redis,
+      notify,
+      isEnabled: optedIn,
+      enabled: true,
+      runIfAllowed,
+      now: () => NOW,
+    });
+
+    expect(res.reminded).toBe(0);
+    expect(notify.emit).not.toHaveBeenCalled();
+  });
+
   it('does NOT emit for a report outside the lead window or already past', async () => {
     const notify = stubNotify();
     const res = await runEarningsReminderScan({
@@ -124,6 +242,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ FAR: day(10), PAST: day(-1) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: true,
       runIfAllowed,
       now: () => NOW,
@@ -139,6 +258,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ AAPL: day(1) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: true,
       runIfAllowed,
       now: () => NOW,
@@ -157,6 +277,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ AAPL: day(1) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: true,
       runIfAllowed,
       now: () => NOW,
@@ -171,6 +292,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       intelRepo: intelRepo([asset({})]),
       marketData: marketDataWithEarnings({ AAPL: day(1) }),
       redis,
+      isEnabled: optedIn,
       enabled: true,
       runIfAllowed,
       now: () => NOW,
@@ -202,6 +324,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ AAPL: day(1) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: false,
       runIfAllowed,
       now: () => NOW,
@@ -226,6 +349,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ HELD: day(1), WATCH: day(1) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: true,
       runIfAllowed: async () => false,
       now: () => NOW,
@@ -273,6 +397,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       marketData: marketDataWithEarnings({ HOUSE: day(1), GLOBAL: day(1), BOAT: day(1) }),
       redis,
       notify,
+      isEnabled: optedIn,
       enabled: true,
       // Only the paranoid account's guarded pass is refused; the global pass
       // above it is unguarded and the normal account's pass runs.

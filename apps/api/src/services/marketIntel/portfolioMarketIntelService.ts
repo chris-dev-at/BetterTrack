@@ -161,29 +161,51 @@ export function createPortfolioMarketIntelService(
       const held = await repo.listHeldPositionsForUser(userId);
 
       const holdings: ProjectedDividendHolding[] = [];
-      let hasUnavailableConversion = false;
+      // Set by any holding whose contribution could NOT be resolved — a provider
+      // error, a half-filled payload, or a failed conversion. Distinct from a
+      // holding that resolved to "pays nothing", which contributes a real zero.
+      let hasUnresolvedHolding = false;
       await Promise.all(
         held.map(async (row) => {
           const ref = refOf(row);
+          // No dividend capability for this asset (a manual/custom holding, say)
+          // is a KNOWN zero, not a gap: nothing upstream could have told us more.
           if (!marketData.intelCapabilities(ref).dividends) return;
           let events;
           try {
             events = (await marketData.getDividendEvents(ref)).value;
           } catch (err) {
+            hasUnresolvedHolding = true;
             logger?.debug?.({ err, assetId: row.assetId }, 'dividend projection fetch failed');
             return;
           }
           // Forward annual dividend per share ≈ trailing 12-month per share.
-          // Nothing known ⇒ the holding contributes no projected income.
           const annualPerShare = events.trailingAmount;
-          if (annualPerShare == null || annualPerShare <= 0) return;
+          if (annualPerShare == null) {
+            // Null carries two very different meanings. A payload that shows the
+            // asset paying dividends (history/upcoming) but carries no per-share
+            // amount is a HALF-FAILED fetch — the yahoo provider settles its two
+            // halves independently and keeps the survivor, and `trailingAmount`
+            // comes only from the summary half. That gap must not silently
+            // shrink the total. A payload with no dividend activity at all is a
+            // non-payer: a real zero contribution.
+            if (events.history.length > 0 || events.upcoming.length > 0) {
+              hasUnresolvedHolding = true;
+              logger?.debug?.(
+                { assetId: row.assetId },
+                'dividend projection: partial payload, no trailing amount',
+              );
+            }
+            return;
+          }
+          if (annualPerShare <= 0) return;
           const divCurrency = events.currency ?? row.currency;
           const annualNative = row.quantity * annualPerShare;
           let annualEur: number;
           try {
             annualEur = await currency.convert(annualNative, divCurrency, 'EUR');
           } catch (err) {
-            hasUnavailableConversion = true;
+            hasUnresolvedHolding = true;
             logger?.debug?.(
               { err, assetId: row.assetId, currency: divCurrency },
               'dividend projection FX conversion failed',
@@ -203,9 +225,11 @@ export function createPortfolioMarketIntelService(
       );
 
       // The response has no partial-completeness state. Resolve every holding,
-      // but make the entire projection unavailable when any conversion fails so
-      // a smaller total is never presented as complete income.
-      if (hasUnavailableConversion) return UNAVAILABLE_PROJECTION;
+      // but make the entire projection unavailable when any of them could not be
+      // resolved — a provider error, a half-filled payload, or a failed
+      // conversion — so a smaller total is never presented as complete income
+      // (it also feeds the V5-P6b Forecast).
+      if (hasUnresolvedHolding) return UNAVAILABLE_PROJECTION;
 
       holdings.sort((a, b) => b.annualIncomeEur - a.annualIncomeEur);
       const yearlyTotalEur = round2(holdings.reduce((sum, h) => sum + h.annualIncomeEur, 0));
