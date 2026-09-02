@@ -4209,6 +4209,18 @@
           defaultModel: 'Gemini 3.1 Pro (High)',
           harness: 'Antigravity',
         },
+        {
+          id: 'opencode',
+          label: 'opencode',
+          short: 'OpenRouter API key \u00b7 opencode harness',
+          description:
+            'OpenRouter models through the opencode CLI. API-key billed, not a subscription \u2014 the preview model is free only while the preview lasts, and the anonymous provider RETAINS prompts and completions.',
+          models: ['openrouter/stealth/ox-alpha'],
+          efforts: [],
+          defaultModel: 'openrouter/stealth/ox-alpha',
+          harness: 'opencode',
+          experimental: true,
+        },
       ];
       /* v2 slotted routing: each difficulty may carry writer/reviewer1/completion
          sub-routes next to the flat legacy keys (which mirror completion). */

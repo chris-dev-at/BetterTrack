@@ -9,7 +9,15 @@ RUN apt-get update && apt-get install -y git curl jq \
  && npm install -g \
       @anthropic-ai/claude-code@2.1.218 \
       @openai/codex@0.145.0 \
-      @musistudio/claude-code-router@3.0.7
+      @musistudio/claude-code-router@3.0.7 \
+      opencode-ai@1.4.3
+# opencode (the multi-factory's `opencode` provider) ships as a ~170 MB
+# Bun-compiled binary selected by npm through per-platform optionalDependencies
+# (opencode-linux-arm64 / -x64). Its postinstall only links that binary — no
+# network fetch of its own. Auth is NOT baked in: autorun.sh syncs the API key
+# into the per-container mount that mflib.sh points MF_OPENCODE_HOME at.
+# Pinned like every other CLI above so a rebuild can never silently change the
+# harness under a running milestone.
 # Own /work (incl. the /work/state volume mountpoint) as the unprivileged user, so
 # a fresh named volume mounted at /work/state inherits factory ownership and is writable.
 RUN useradd -m factory && mkdir -p /work/state && chown -R factory:factory /work
