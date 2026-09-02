@@ -35,6 +35,14 @@ export function createPasswordResetTokenRepository(db: Database) {
      * the statement — is the cost the no-account branch never pays, which is
      * what let response time drift into an account-existence oracle (§6.1).
      * Committing the audit row with the token also makes the two atomic.
+     *
+     * The trade, stated plainly: that write now runs while this transaction
+     * still holds the per-address advisory lock, and only on the known branch,
+     * so a burst against ONE known address serializes on one extra INSERT per
+     * request. The branch already held the lock across an extra INSERT before
+     * this change, and an INSERT on a connection the request already owns is
+     * bounded where a pool acquisition is not — but the direction is worth a
+     * dedicated look; see the follow-up issue.
      */
     async issueOrEqualize(
       input: CreatePasswordResetTokenInput | null,

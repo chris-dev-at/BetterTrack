@@ -190,13 +190,9 @@ describe('webhook subscription CRUD + one-time secret', () => {
 
     // Stored form is the AES-256-GCM envelope, never the plaintext — and it
     // decrypts back to exactly the secret shown once.
-    const [row] = await harness.db
-      .select()
-      .from(schema.webhookSubscriptions)
-      .where(eq(schema.webhookSubscriptions.id, id));
-    expect(row).toBeDefined();
-    expect(row!.secretEncrypted).not.toContain(secret);
-    expect(decryptSecret(row!.secretEncrypted, harness.ctx.config.twoFactor.encryptionKey)).toBe(
+    const row = await subscriptionRow(harness.db, id);
+    expect(row.secretEncrypted).not.toContain(secret);
+    expect(decryptSecret(row.secretEncrypted, harness.ctx.config.twoFactor.encryptionKey)).toBe(
       secret,
     );
 

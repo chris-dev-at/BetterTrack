@@ -238,15 +238,26 @@ export const WEBHOOK_AUTO_DISABLE_THRESHOLD = 5;
  * after that anchor starts a fresh streak at 1 rather than adding to a stale
  * one.
  *
- * 24 hours, and the trade is deliberate in both directions. Each terminal
- * failure has already burned the whole retry ladder, so five of them inside one
- * day is a receiver that has been unreachable for a day, not a blip — while an
- * outage that ends inside the window leaves the streak to expire on its own,
- * with no user action. The cost is the other end: a receiver that is genuinely
- * dead but only subscribed to rare events never accumulates five failures in a
- * day and stays enabled, paying the retry ladder per event. Keeping a quiet
- * subscription alive is the cheaper mistake — the loud one is disabling a
- * working receiver, which silently drops every later event.
+ * 24 hours, and the trade is deliberate in both directions. An outage that ends
+ * inside the window leaves the streak to expire on its own, with no user
+ * action, and a streak can no longer be assembled out of blips months apart.
+ *
+ * Two things this window does NOT do, named so neither reads as solved:
+ *
+ * - It bounds only the MAXIMUM span of a streak, never a minimum. The retry
+ *   ladder is well under a minute, so five events delivered during one
+ *   five-minute 503 still burn five terminal failures inside the window and
+ *   still auto-disable. A minimum-span rule (or a half-open probe before the
+ *   disable) is the separate half of that problem.
+ * - A genuinely dead receiver subscribed to events rarer than the window
+ *   (gaps > 24 h) resets to 1 forever and never auto-disables, paying the retry
+ *   ladder per event. Closing that needs a second, slower trip — e.g. N
+ *   failures with no success since `last_success_at` for X days — not a longer
+ *   window.
+ *
+ * Both residuals err the same way, which is the intended one: keeping a quiet
+ * or briefly-unreachable subscription alive is the cheaper mistake — the loud
+ * one is disabling a working receiver, which silently drops every later event.
  */
 export const WEBHOOK_AUTO_DISABLE_WINDOW_MS = 24 * 60 * 60 * 1000;
 

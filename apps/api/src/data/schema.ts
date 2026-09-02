@@ -3786,7 +3786,8 @@ export const webhookSubscriptions = pgTable(
     // AES-256-GCM envelope of the signing secret — never the plaintext.
     secretEncrypted: text('secret_encrypted').notNull(),
     enabled: boolean('enabled').notNull().default(true),
-    // 'auto' (N consecutive failures) or 'manual' (paused); null while enabled.
+    // 'auto' (N consecutive failures inside the auto-disable window, see
+    // `failure_window_started_at`) or 'manual' (paused); null while enabled.
     disabledReason: text('disabled_reason'),
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
     // Consecutive terminally-failed deliveries; reset to 0 on any success or

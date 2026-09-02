@@ -166,16 +166,21 @@ export function createWebhookSubscriptionRepository(db: Database) {
      * months never accumulate into an auto-disable.
      */
     async incrementFailure(id: string, at: Date, windowMs: number): Promise<number> {
-      const windowStart = new Date(at.getTime() - windowMs);
+      // Explicit `::timestamptz` on both interpolated instants, matching the
+      // repository precedent (notificationRepository.markRead): the driver
+      // sends them as untyped parameters otherwise and leaves the resolution to
+      // Postgres' inference.
+      const windowStartIso = new Date(at.getTime() - windowMs).toISOString();
+      const atIso = at.toISOString();
       // Decided in SQL, not in JS: the whole read-decide-write is one atomic
       // statement, so concurrent failed deliveries for one subscription can
       // neither lose a bump nor race on restarting the window.
-      const withinWindow = sql`${webhookSubscriptions.failureWindowStartedAt} is not null and ${webhookSubscriptions.failureWindowStartedAt} > ${windowStart}`;
+      const withinWindow = sql`${webhookSubscriptions.failureWindowStartedAt} is not null and ${webhookSubscriptions.failureWindowStartedAt} > ${windowStartIso}::timestamptz`;
       const [row] = await db
         .update(webhookSubscriptions)
         .set({
           consecutiveFailures: sql`case when ${withinWindow} then ${webhookSubscriptions.consecutiveFailures} + 1 else 1 end`,
-          failureWindowStartedAt: sql`case when ${withinWindow} then ${webhookSubscriptions.failureWindowStartedAt} else ${at} end`,
+          failureWindowStartedAt: sql`case when ${withinWindow} then ${webhookSubscriptions.failureWindowStartedAt} else ${atIso}::timestamptz end`,
           lastDeliveryAt: at,
           updatedAt: at,
         })
