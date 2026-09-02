@@ -209,6 +209,31 @@ describe('ComparisonPage', () => {
     expect(grid).toMatchSnapshot();
   });
 
+  test('renders exactly one legend, and it names the primary series too', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4), cong('c3', 'Gamma', 2)],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
+    );
+    await selectConglomerates(user, ['Alpha', 'Beta', 'Gamma']);
+    await screen.findByRole('table', { name: 'Blueprint comparison statistics' });
+
+    // The page no longer draws a second, partial legend under the chart's own…
+    expect(screen.queryByRole('list', { name: 'Compared blueprints' })).toBeNull();
+
+    // …and the chart's single legend covers every series, Alpha (the primary,
+    // which the overlay-built legend used to omit) included — exactly once each.
+    const canvas = await screen.findByRole('img', { name: 'Blueprint comparison chart' });
+    const chart = canvas.closest('.flex-col') as HTMLElement;
+    for (const name of ['Alpha', 'Beta', 'Gamma']) {
+      expect(within(chart).getByText(name)).toBeInTheDocument();
+    }
+  });
+
   test('caps the selection at six — a seventh blueprint cannot be added (N=7 prevented)', async () => {
     const seven = Array.from({ length: 7 }, (_, i) => cong(`c${i}`, `Cong${i}`, 3));
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: seven });
