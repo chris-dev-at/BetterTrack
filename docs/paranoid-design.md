@@ -765,11 +765,27 @@ untouched** and is not part of this arc's diff.
   (`keystore/core.ts`), and the keystore's IndexedDB holds only KDF
   parameters, the wrap-check and lockout metadata — with no localStorage or
   sessionStorage use at all (`keystore/storage.ts`). **The session-end wiring
-  is incomplete:** `endSession()` exists but `handleIdle()` and
-  `bindToVaultLockSignal()` have no
-  production caller, so the PIN idle-lock signal still reaches only the legacy
-  v1 runtime and there is no "Lock vaults" control in the UI yet — planned with
-  the remaining E8 UX (#1599).
+  is complete as of VAULT-UX-B:** `keystore/runtime.ts` binds
+  `bindToVaultLockSignal()` for the app singleton, so sign-out, an account
+  switch and the PIN idle lock now reach the endpoint keystore and not only the
+  legacy v1 runtime, and `ui/useEndpointVaultLock.ts` ships the "Lock vault"
+  control in the account menu.
+- **A session belongs to the ENDPOINT, not to one tab (ruled 2026-09-01, §16;
+  binding).** "Unlocks ALL wrapped phrases on that endpoint" is read the way it
+  is written: an endpoint is a device. A newly opened tab therefore asks the
+  account's other same-origin tabs for the live session on an account-scoped
+  `BroadcastChannel` (`keystore/sessionChannel.ts`), and a tab that holds one
+  answers with K_dev imported as a NON-EXTRACTABLE `CryptoKey` —
+  structured-cloneable between same-origin contexts, with non-extractability
+  surviving the clone. This writes nothing anywhere, so the clause above is
+  untouched: the session still dies when the LAST tab of the device closes, and
+  "tab/app close" ends it exactly when there is no other tab left to hold it.
+  Nothing but K_dev crosses; the receiver re-derives entropy and K_c from its
+  own keystore and installs the session only after the wrap-check proves the key
+  belongs to this endpoint's password. A lock in any tab (manual, sign-out, PIN
+  idle) revokes the session in every tab. **Persisting K_dev to survive a full
+  close remains RETIRED** — PR #1604 proposed it and it was removed; reviving it
+  is an owner-level amendment to this section, never a lane decision.
 - **Plain (the warned option):** the mnemonic entropy sits unwrapped and the
   vault opens without any prompt. Choosing it requires the friction ladder's
   strong rung — an explicit acknowledgment that a compromised end device

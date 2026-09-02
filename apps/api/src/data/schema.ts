@@ -3252,8 +3252,31 @@ export const importRows = pgTable(
      * staging pipeline resolved the instrument by EXACT identity; `'user'`
      * means a person pinned it in the wizard. Never `'ai'` — no model mints an
      * asset id anywhere in this subsystem.
+     *
+     * It is also stamped when a person confirmed the row's KIND (§16
+     * 2026-08-29): both are the same fact — a human, not the pipeline, settled
+     * what this row is.
      */
     resolvedBy: text('resolved_by').$type<ImportRowResolvedBy>(),
+    /**
+     * TRUE while this row's KIND is an open question (§16 2026-08-29 gap (b)):
+     * staging read the row's fields but the classifier would not name a
+     * bookable kind, so `kind` is null and the columns above hold the parsed
+     * values — `amount_eur` still SIGNED as the file wrote it, the identity
+     * columns still filled — waiting for a person to assert a kind through
+     * `PATCH /imports/:batchId/rows/:rowId`.
+     *
+     * This is the INTERNAL half of a distinction the wire cannot carry: the
+     * `flag` vocabulary is frozen at mapped/unmapped/duplicate/error (shipped
+     * mobile parses it), and such a row is `error` there — correctly, since
+     * apply will not book it. The client learns it is actionable from
+     * `confirmableKinds`, which is derived from these fields at read time.
+     *
+     * Confirmation flips it to FALSE in the same statement that writes the
+     * derived row, so a decided row is never re-decidable and every column then
+     * means exactly what it means on any other staged row.
+     */
+    kindUndecided: boolean('kind_undecided').notNull().default(false),
   },
   (t) => [index('import_rows_batch_idx').on(t.batchId)],
 );

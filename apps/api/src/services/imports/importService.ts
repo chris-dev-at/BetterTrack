@@ -7,6 +7,7 @@ import type {
   ImportPreviewResponse,
   ImportRow,
   ImportRowCandidate,
+  ImportRowKind,
   ImportRowOutcome,
   ImportRowResult,
   ImportUnderstanding,
@@ -39,6 +40,7 @@ import type { PortfolioRepository } from '../../data/repositories/portfolioRepos
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
+import type { ProblemService } from '../observability/problemService';
 import { createRequestQueue, type RequestQueue } from '../../providers/requestQueue';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
@@ -48,11 +50,12 @@ import { parseCsv } from './csv';
 import { createMapperRegistry } from './registry';
 import { UnmappableTableError } from './columnMapping';
 import type { HeaderMappingAiContext } from './columnMapping';
+import { derivableKinds, deriveRowForKind, type DerivationContext } from './kindDerivation';
 import type { ClassifyContext } from './rowClassifier';
 import { UnsupportedFileFormatError } from './table';
 import { stageGenericFile } from './genericStaging';
 import type { ImportBatchRow } from '../../data/schema';
-import type { BrokerMapper, MappedLine, NormalizedImportRow } from './types';
+import type { BrokerMapper, MappedLine, NormalizedImportRow, PendingKindFields } from './types';
 
 /**
  * Broker CSV import framework (PROJECTPLAN.md §13.4 V4-P8): upload → autodetect
@@ -98,6 +101,18 @@ export interface ImportServiceDeps {
   tax: TaxService;
   mappers: readonly BrokerMapper[];
   logger?: Logger;
+  /**
+   * The problems fold behind the admin cockpit (§13.5 V5-P2 arc (d)).
+   *
+   * Apply catches EVERY per-row failure so one bad row can never strand a
+   * claimed batch — which would quietly turn a programming bug into a row that
+   * merely "failed". This is where such a fault stays loud: an unexpected error
+   * is captured with the batch/row ids, scrubbed and folded by the service
+   * itself. Optional, because a caller without observability wiring must still
+   * be able to import; absent, the failure is still reported on the row and
+   * logged.
+   */
+  problems?: Pick<ProblemService, 'captureError'>;
   paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
   /**
    * Shared process-local budget for import-driven catalog/provider resolution.
@@ -169,9 +184,12 @@ export interface ImportService {
     input: ApplyImportRequest,
   ): Promise<ApplyImportResponse>;
   /**
-   * Pin an unresolved row to an asset the caller chose (#964, directive point
-   * 4). Owner-scoped; the batch must still be `pending`. Returns the refreshed
-   * preview so the client never has to guess what the flip did to the counts.
+   * Finish ONE staged row a person had to decide about: pin the instrument the
+   * pipeline could not resolve (`assetId`, #964 directive point 4), or confirm
+   * the kind it would not guess (`kind`, §16 2026-08-29 gap (b)) — exactly one
+   * per call. Owner-scoped; the batch must still be `pending`. Returns the
+   * refreshed preview so the client never has to guess what the change did to
+   * the counts.
    */
   resolveRow(
     userId: string,
@@ -198,6 +216,30 @@ function rawInstrumentKey(row: NormalizedImportRow): string | null {
 
 const needsInstrument = (kind: NormalizedImportRow['kind']): boolean =>
   kind === 'buy' || kind === 'sell' || kind === 'dividend';
+
+/**
+ * The two verdicts a resolved (or unresolved) instrument produces, written once
+ * so staging and a later kind confirmation cannot describe the same state in
+ * two different ways.
+ */
+function unresolvedInstrumentMessage(row: NormalizedImportRow): string {
+  const identity = row.isin ?? row.symbol ?? row.name ?? '(unknown)';
+  return (
+    `Instrument "${identity}" was not found in the asset catalog — ` +
+    'search for it under Assets first, then re-upload.'
+  );
+}
+
+function currencyMismatchMessage(asset: SearchResultItem, row: NormalizedImportRow): string {
+  return (
+    `Resolved "${asset.symbol}" is quoted in ${asset.currency} but the row is ` +
+    `${row.currency} — resolve via the ${row.currency} listing instead.`
+  );
+}
+
+/** The duplicate verdict's wording, shared by staging, pinning and confirming. */
+const DUPLICATE_MESSAGE =
+  'An identical row (same date, instrument, quantity, price) already exists.';
 
 /**
  * One import may wait this long in total for background provider enrichment.
@@ -393,7 +435,16 @@ const NUMERIC_COLUMNS: ReadonlyArray<{
   { field: 'amountEur', label: 'Amount', precision: 20, scale: 6 },
 ];
 
-function stagingViolation(row: NormalizedImportRow): string | null {
+/** What every constrained `import_rows` column is asked to hold for one row. */
+interface StagedColumnValues {
+  currency: string;
+  quantity: number | null;
+  price: number | null;
+  fee: number | null;
+  amountEur: number | null;
+}
+
+function stagingViolation(row: StagedColumnValues): string | null {
   if (!CURRENCY_PATTERN.test(row.currency)) {
     return `Unrecognized currency "${row.currency}".`;
   }
@@ -411,11 +462,30 @@ function stagingViolation(row: NormalizedImportRow): string | null {
   return null;
 }
 
+/**
+ * The staging boundary, for BOTH kinds of line that carry values.
+ *
+ * The retained fields of an undecided row (§16 2026-08-29) go into the very
+ * same constrained columns as a normalized row's, in the very same single
+ * INSERT — so they need the very same guard. Without it, retaining values that
+ * used to be written as nulls would have re-opened exactly the hole this
+ * function closes: one 13-integer-digit quantity on one unclassifiable line
+ * killing every valid row of the upload with it.
+ *
+ * A retained payload that violates a column DEGRADES to a plain reported error
+ * rather than failing the line's neighbours: the row is exactly what it was
+ * before it could be confirmed — visible, explained, unbookable.
+ */
 function guardStagedRow(line: MappedLine): MappedLine {
-  if (!line.ok) return line;
-  const violation = stagingViolation(line.row);
+  if (line.ok) {
+    const violation = stagingViolation(line.row);
+    if (violation === null) return line;
+    return { line: line.line, raw: line.raw, ok: false, error: violation };
+  }
+  if (line.pending === undefined) return line;
+  const violation = stagingViolation({ ...line.pending, amountEur: line.pending.amount });
   if (violation === null) return line;
-  return { line: line.line, raw: line.raw, ok: false, error: violation };
+  return { line: line.line, raw: line.raw, ok: false, error: `${line.error} (${violation})` };
 }
 
 /**
@@ -717,9 +787,30 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * every row `duplicate` and applies nothing. Derived from live data, so
    * deleting a mis-imported entity makes the row importable again.
    */
-  async function collectExistingHashes(userId: string, portfolioId: string): Promise<Set<string>> {
+  async function collectExistingHashes(
+    userId: string,
+    portfolioId: string,
+    /**
+     * Which hash FAMILY the caller can actually collide with (#964 follow-up).
+     *
+     * `contentHash` keys on the row's kind, so a `deposit` can never collide
+     * with a transaction and a `buy` can never collide with a cash movement —
+     * the families are disjoint by construction. `applyBatch` needs all three
+     * because a batch holds every kind; a SINGLE row's re-check (a pin, a kind
+     * confirmation) needs exactly one, and the other two are a full portfolio
+     * scan spent to compare against hashes that cannot match.
+     *
+     * That mattered once the wizard's bulk sweep made this a per-row call: a
+     * 50-row statement paid 50 × (every transaction + every dividend + the
+     * whole paged cash ledger) to answer 50 questions about cash alone.
+     */
+    scope: 'all' | 'trade' | 'dividend' | 'cash' = 'all',
+  ): Promise<Set<string>> {
     const hashes = new Set<string>();
-    const txs = await transactionRepo.listForPortfolio(portfolioId);
+    const txs =
+      scope === 'all' || scope === 'trade'
+        ? await transactionRepo.listForPortfolio(portfolioId)
+        : [];
     for (const tx of txs) {
       hashes.add(
         contentHash({
@@ -732,7 +823,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }),
       );
     }
-    const { dividends } = await tax.listDividends(userId, portfolioId);
+    const { dividends } =
+      scope === 'all' || scope === 'dividend'
+        ? await tax.listDividends(userId, portfolioId)
+        : { dividends: [] };
     for (const d of dividends) {
       hashes.add(
         contentHash({
@@ -746,7 +840,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       );
     }
     let cursor: string | undefined;
-    do {
+    let morePages = scope === 'all' || scope === 'cash';
+    while (morePages) {
       const cash = await portfolio.getCashMovements(userId, portfolioId, { cursor, limit: 200 });
       for (const m of cash.movements) {
         if (m.kind !== 'deposit' && m.kind !== 'withdrawal') continue;
@@ -762,8 +857,15 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         );
       }
       cursor = cash.nextCursor ?? undefined;
-    } while (cursor != null);
+      morePages = cursor != null;
+    }
     return hashes;
+  }
+
+  /** The one hash family a row of this kind could possibly duplicate. */
+  function hashScopeFor(kind: NormalizedImportRow['kind']): 'trade' | 'dividend' | 'cash' {
+    if (kind === 'buy' || kind === 'sell') return 'trade';
+    return kind === 'dividend' ? 'dividend' : 'cash';
   }
 
   function toCounts(rows: ImportRowRecord[]): ImportBatchCounts {
@@ -795,7 +897,54 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     };
   }
 
-  function toRowDto(row: ImportRowRecord): ImportRow {
+  /**
+   * The parsed fields of a row whose KIND is still open, or null when there are
+   * none to derive from (§16 2026-08-29). A date and a currency are the two
+   * things every derivation needs, so a row missing either is not confirmable —
+   * defensive rather than expected: staging only marks a row undecided once it
+   * has both.
+   */
+  function pendingFieldsOf(row: ImportRowRecord): PendingKindFields | null {
+    if (!row.kindUndecided || row.executedAt === null || row.currency === null) return null;
+    return {
+      executedAt: row.executedAt,
+      isin: row.isin,
+      symbol: row.symbol,
+      name: row.name,
+      quantity: row.quantity,
+      price: row.price,
+      fee: row.fee,
+      // Still SIGNED — a decided row's `amountEur` is a magnitude, an undecided
+      // row's is the file's own statement of direction.
+      amount: row.amountEur,
+      currency: row.currency,
+      note: row.note,
+    };
+  }
+
+  /**
+   * What the BATCH's own file is known to do, for the derivation. Absent
+   * understanding means a broker mapper staged this batch, and a mapper emits
+   * no undecided rows at all — so the value is unreachable rather than
+   * defaulted-and-hoped-for.
+   */
+  function derivationContext(batch: ImportBatchRow): DerivationContext {
+    return { amountsSigned: batch.understanding?.amountsSigned === true };
+  }
+
+  /**
+   * The kinds this row would accept, by dry-running the SAME derivation a
+   * confirmation runs. Empty for every decided row and for a row that carries
+   * nothing bookable — so a client offering these is never offering a choice
+   * the server will refuse.
+   */
+  function confirmableKindsFor(row: ImportRowRecord, context: DerivationContext): ImportRowKind[] {
+    const fields = pendingFieldsOf(row);
+    return fields === null ? [] : derivableKinds(fields, context);
+  }
+
+  function toRowDto(row: ImportRowRecord, context: DerivationContext): ImportRow {
+    const confirmableKinds = confirmableKindsFor(row, context);
     return {
       id: row.id,
       rowIndex: row.rowIndex,
@@ -823,6 +972,11 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       // Absent means the pipeline matched the instrument exactly; present means
       // a person chose it. Same additive convention as the two above.
       ...(row.resolvedBy ? { resolvedBy: row.resolvedBy } : {}),
+      // Present ⇒ this row is `error` only because nobody has said what it is,
+      // and these are the kinds a person may confirm. Absent on every decided
+      // row, and on an undecided one that carries nothing bookable — where the
+      // honest answer is that there is no question worth asking.
+      ...(confirmableKinds.length > 0 ? { confirmableKinds } : {}),
     };
   }
 
@@ -830,7 +984,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     const rows = await importRepo.listRows(batch.id);
     return {
       batch: toBatchDto(batch, rows),
-      rows: rows.map(toRowDto),
+      rows: rows.map((row) => toRowDto(row, derivationContext(batch))),
       // Only a generically-staged batch understood any columns; a broker-mapper
       // batch reports nothing rather than an empty shape it never computed.
       ...(batch.understanding ? { understanding: batch.understanding } : {}),
@@ -884,6 +1038,313 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       );
     }
     return { mapped: staged.lines.map(guardStagedRow), understanding: staged.understanding };
+  }
+
+  /**
+   * Pin an unresolved row to an asset the CALLER chose (#964, §16 2026-07-31
+   * point 4: "resolvable IN the wizard … never a dead end and never a silent
+   * mis-map").
+   *
+   * ── WHAT VALIDATES THE ID, AND WHAT DOES NOT ───────────────────────────────
+   *
+   * The row's stored `candidates` are UI suggestions and deliberately NOT the
+   * validation boundary. Constraining the pick to them would re-create the dead
+   * end this exists to remove: the directive's other half is "or create a custom
+   * one on the spot", and a just-created custom asset is by definition not in a
+   * suggestion list computed at staging time. So the id is validated with the
+   * SAME rule the manual transaction path uses — a global catalog asset, or the
+   * caller's OWN custom asset; anything else is a 404 that cannot distinguish
+   * "missing" from "someone else's" (§10).
+   *
+   * That is the correct boundary because the hazard this subsystem guards
+   * against is a MODEL minting an asset id, and no model reaches this method:
+   * the id comes from a person, over an authenticated session, naming something
+   * they could already book by hand.
+   *
+   * ── WHY THE ROW IS RE-JUDGED, NOT JUST STAMPED ─────────────────────────────
+   *
+   * Pinning an asset changes the two things staging derived from it, so both
+   * are recomputed rather than left stale:
+   *  - the CURRENCY agreement a trade needs (the same check staging makes);
+   *  - the CONTENT HASH, which keys on the resolved asset — so a row pinned to
+   *    an instrument the portfolio already holds that exact trade for flips to
+   *    `duplicate` instead of quietly becoming a second copy at apply.
+   */
+  async function pinAsset(
+    userId: string,
+    batch: ImportBatchRow,
+    rows: readonly ImportRowRecord[],
+    row: ImportRowRecord,
+    assetId: string,
+  ): Promise<void> {
+    // Kind first, then flag: a cash row is BOTH "not an instrument row" and
+    // "not unresolved", and the first of those is the specific truth a user
+    // needs to hear. The generic message would send them hunting for a
+    // resolution problem on a row that can never have one.
+    if (row.kind === null || !needsInstrument(row.kind)) {
+      throw badRequest('This row does not reference an instrument.', 'IMPORT_ROW_NOT_INSTRUMENT');
+    }
+    if (row.flag !== 'unmapped') {
+      throw badRequest(
+        'Only a row whose instrument could not be resolved can be pinned to an asset.',
+        'IMPORT_ROW_NOT_UNRESOLVED',
+      );
+    }
+    // An `unmapped` row parsed successfully and therefore has a date; this
+    // keeps the content hash honest rather than trusting that invariant.
+    if (row.executedAt === null) {
+      throw badRequest('This row has no date to match against.', 'IMPORT_ROW_INVALID');
+    }
+
+    // Same visibility rule as `portfolioService.loadVisibleAssets`.
+    const [asset] = await portfolioRepo.assetsByIds([assetId]);
+    if (!asset || (asset.ownerId !== null && asset.ownerId !== userId)) {
+      throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    }
+
+    // A trade must be quoted in the row's own currency — staging refuses the
+    // mismatch, and a hand-pinned asset gets no weaker a check.
+    if ((row.kind === 'buy' || row.kind === 'sell') && asset.currency !== row.currency) {
+      throw badRequest(
+        `${asset.symbol} is quoted in ${asset.currency} but this row is ${row.currency} — ` +
+          `pick the ${row.currency} listing instead.`,
+        'IMPORT_ROW_CURRENCY_MISMATCH',
+      );
+    }
+
+    const hash = contentHash({
+      kind: row.kind,
+      executedAt: row.executedAt,
+      instrument: asset.id,
+      quantity: row.quantity,
+      price: row.price,
+      amountEur: row.amountEur,
+    });
+
+    const duplicate = await isDuplicateHash(userId, batch, rows, row.id, hash, row.kind);
+
+    // The write is conditional on the batch still being `pending`, because
+    // everything between the check above and this line is `await`ed and an
+    // apply can claim the batch in that gap. A refused write means the claim
+    // won: the client gets the same 409 a sequential second apply gets, and
+    // the row is left exactly as staging had it rather than half-pinned to an
+    // import that already finished.
+    const pinned = await importRepo.setRowResolution({
+      id: row.id,
+      assetId: asset.id,
+      flag: duplicate ? 'duplicate' : 'mapped',
+      message: duplicate ? DUPLICATE_MESSAGE : null,
+      contentHash: hash,
+      resolvedBy: 'user',
+    });
+    if (!pinned) {
+      throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+    }
+  }
+
+  /**
+   * Duplicate truth for ONE candidate hash: against what the portfolio already
+   * holds, AND against the rows this batch will itself apply — the same two
+   * questions staging asks, asked again because both answers can have changed
+   * since the upload.
+   */
+  async function isDuplicateHash(
+    userId: string,
+    batch: ImportBatchRow,
+    rows: readonly ImportRowRecord[],
+    exceptRowId: string,
+    hash: string,
+    kind: NormalizedImportRow['kind'],
+  ): Promise<boolean> {
+    const existing = await collectExistingHashes(userId, batch.portfolioId, hashScopeFor(kind));
+    if (existing.has(hash)) return true;
+    return rows.some((r) => r.id !== exceptRowId && r.flag === 'mapped' && r.contentHash === hash);
+  }
+
+  /**
+   * CONFIRM WHAT A ROW IS (§16 2026-08-29 gap (b)) — the person supplies the
+   * kind the classifier would not guess, and the server re-stages that one row
+   * around it.
+   *
+   * The reference case is a bank statement with no booking-type column: every
+   * line is a memo and a signed amount, every line classifies below the review
+   * bar, and the whole file previews perfectly and imports nothing. The machine
+   * still refuses to guess — that refusal is why the question exists — so the
+   * only thing that can settle it is a human, and this is the door.
+   *
+   * ── THE CLIENT ASSERTS A KIND. IT SUPPLIES NO DATA ─────────────────────────
+   *
+   * The body carries one enum member and nothing else (the contract is
+   * `.strict()`, so an amount smuggled alongside is a 400 rather than a value
+   * anyone might read). Every number this row books is re-derived by
+   * `deriveRowForKind` from the fields STAGING parsed and persisted, and the
+   * derivation may refuse — a negative amount is not confirmable as an inflow,
+   * a row with no quantity and price is not confirmable as a trade. No model is
+   * invoked here, and none could be: there is nothing to re-read, because the
+   * upload was never retained.
+   *
+   * ── WHY THIS IS A RE-STAGE AND NOT A STAMP ─────────────────────────────────
+   *
+   * A kind decides the row's whole shape, so everything staging derives from a
+   * kind is derived again, in the order staging derives it: the instrument
+   * (catalog-only — a confirmation may not launch provider work, and an
+   * unresolved one lands `unmapped` with its candidates, where the pinning path
+   * above finishes the job), the currency agreement, the content hash and the
+   * duplicate verdict, and the caller's own cash-rule tags for a row that has
+   * just BECOME a cash movement. A row that skipped any of those would be a row
+   * the preview describes and apply contradicts.
+   *
+   * ── ONE-SHOT ───────────────────────────────────────────────────────────────
+   *
+   * The derivation discards what the asserted kind has no use for (a cash
+   * movement keeps no instrument identity — `contentHash` keys cash on a null
+   * instrument, so keeping the memo there would defeat dedupe). There is
+   * therefore nothing left to re-derive from, and a second confirmation is
+   * refused rather than half-honoured. The same stance the pinning path takes
+   * on re-pinning; recovery is the same too — discard the batch and upload
+   * again, which costs nothing, because staging is a preview and not a record.
+   */
+  async function confirmKind(
+    userId: string,
+    batch: ImportBatchRow,
+    rows: readonly ImportRowRecord[],
+    row: ImportRowRecord,
+    kind: ImportRowKind,
+  ): Promise<void> {
+    if (!row.kindUndecided) {
+      throw badRequest(
+        "This row's kind is not open for confirmation — only a row the pipeline left " +
+          'undecided can be confirmed, and only once.',
+        'IMPORT_ROW_KIND_DECIDED',
+      );
+    }
+    const fields = pendingFieldsOf(row);
+    // Staging only marks a row undecided once it has a date and a currency, so
+    // this is defence against a row written by an older or a broken path — not
+    // an expected state.
+    if (fields === null) {
+      throw badRequest(
+        'This row has no parsed fields to derive a booking from.',
+        'IMPORT_ROW_INVALID',
+      );
+    }
+
+    const derived = deriveRowForKind(kind, fields, derivationContext(batch));
+    if (!derived.ok) {
+      throw badRequest(derived.error, 'IMPORT_ROW_KIND_UNSUPPORTED');
+    }
+    const normalized = derived.row;
+
+    // The instrument, exactly as staging's phase 1 does it: the local catalog
+    // only. A confirmation must not be able to launch provider enrichment —
+    // one PATCH per row would otherwise turn a bulk confirmation into a burst
+    // of upstream searches — and an identity the catalog does not hold lands
+    // `unmapped` with its near-matches, which is a state the wizard already
+    // knows how to finish.
+    let asset: SearchResultItem | null = null;
+    let candidates: ImportRowCandidate[] | null = null;
+    let flag: StageImportRowInput['flag'] = 'mapped';
+    let message: string | null = null;
+    if (needsInstrument(normalized.kind)) {
+      const sink: CandidateSink = new Map();
+      asset = await resolutionQueue.run(() => resolveInstrumentLocally(userId, normalized, sink));
+      if (asset === null) {
+        flag = 'unmapped';
+        message = unresolvedInstrumentMessage(normalized);
+        candidates = finalizeCandidates(sink);
+      } else if (
+        (normalized.kind === 'buy' || normalized.kind === 'sell') &&
+        asset.currency !== normalized.currency
+      ) {
+        // REFUSED, NOT RECORDED (review F3). Staging writes this collision as an
+        // `error` row because staging has no one to ask; a confirmation does,
+        // and committing it would spend the one shot on a row that can then
+        // never be booked — re-confirming is refused as decided, and pinning is
+        // refused because the row is no longer `unmapped`. A dead end reached
+        // through the affordance built to remove dead ends.
+        //
+        // So a confirm answers the way the PINNING path already answers the
+        // identical collision: same code, same shape, row untouched, decision
+        // still open. A confirmation never writes `error`.
+        throw badRequest(
+          `${asset.symbol} is quoted in ${asset.currency} but this row is ` +
+            `${normalized.currency} — the ${normalized.currency} listing has to exist in the ` +
+            'catalog before this row can be a trade.',
+          'IMPORT_ROW_CURRENCY_MISMATCH',
+        );
+      }
+    }
+
+    const hash = contentHash({
+      kind: normalized.kind,
+      executedAt: normalized.executedAt,
+      instrument: asset ? asset.id : rawInstrumentKey(normalized),
+      quantity: normalized.quantity,
+      price: normalized.price,
+      amountEur: normalized.amountEur,
+    });
+    if (
+      flag === 'mapped' &&
+      (await isDuplicateHash(userId, batch, rows, row.id, hash, normalized.kind))
+    ) {
+      flag = 'duplicate';
+      message = DUPLICATE_MESSAGE;
+    }
+
+    // A row that has just become a cash movement earns the same pre-tagging a
+    // row staged as one gets, from the same rules through the same engine —
+    // otherwise the preview would promise a label for one and not the other.
+    const taggable = flag === 'mapped' && isCashRowKind(normalized.kind);
+    const rules = taggable ? await cashRuleRepo.listForOwner(userId) : [];
+    const ruleTagIds = stagedRuleTags(normalized, flag, rules);
+
+    // Conditional on the batch still being `pending`, for the reason
+    // `pinAsset` states above: several awaits separate the check from the
+    // write, and `applyBatch` can claim the batch in between.
+    const written = await importRepo.confirmRowKind({
+      id: row.id,
+      kind: normalized.kind,
+      flag,
+      message,
+      executedAt: normalized.executedAt,
+      isin: normalized.isin,
+      symbol: normalized.symbol,
+      name: normalized.name,
+      quantity: normalized.quantity,
+      price: normalized.price,
+      fee: normalized.fee,
+      amountEur: normalized.amountEur,
+      currency: normalized.currency,
+      note: normalized.note,
+      assetId: asset?.id ?? null,
+      contentHash: hash,
+      candidates,
+      ruleTagIds,
+      // The same provenance a pinned asset earns: a person decided this, not
+      // the pipeline. The preview badges it, so no reviewer mistakes a human's
+      // assertion for a machine's exact reading.
+      resolvedBy: 'user',
+    });
+    if (!written) {
+      // The write is conditional on TWO things — the batch still pending, and
+      // the row still undecided — so a refusal has two possible causes and the
+      // caller deserves the right one (review F4). Telling someone whose
+      // request lost a race with ANOTHER CONFIRMATION that their import "was
+      // already applied" sends them looking for a batch that is still sitting
+      // there, pending, waiting for the rest of their decisions.
+      //
+      // Re-read to find out which. This costs one query on a path that only
+      // runs when a write was already refused.
+      const refreshed = await importRepo.findBatchForOwner(userId, batch.id);
+      if (refreshed !== null && refreshed.status === 'pending') {
+        throw badRequest(
+          "This row's kind is not open for confirmation — only a row the pipeline left " +
+            'undecided can be confirmed, and only once.',
+          'IMPORT_ROW_KIND_DECIDED',
+        );
+      }
+      throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+    }
   }
 
   return {
@@ -1050,26 +1511,41 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
       const staged: StageImportRowInput[] = mapped.map((line) => {
         if (!line.ok) {
+          // A line held back ONLY by the kind question keeps what it parsed, so
+          // a person can confirm a kind later without re-uploading a file this
+          // server never stored (§16 2026-08-29 gap (b)). Everything else is
+          // written exactly as before — all nulls — because there is nothing
+          // trustworthy to keep and nothing a confirmation could do with it.
+          const pending = line.pending;
           return {
             rowIndex: line.line,
             raw: line.raw,
+            // The one field a person is about to supply.
             kind: null,
             flag: 'error',
             message: line.error,
-            executedAt: null,
-            isin: null,
-            symbol: null,
-            name: null,
-            quantity: null,
-            price: null,
-            fee: null,
-            amountEur: null,
-            currency: null,
-            note: null,
+            executedAt: pending?.executedAt ?? null,
+            isin: pending?.isin ?? null,
+            symbol: pending?.symbol ?? null,
+            name: pending?.name ?? null,
+            quantity: pending?.quantity ?? null,
+            price: pending?.price ?? null,
+            fee: pending?.fee ?? null,
+            // SIGNED on purpose while undecided: the sign is the file's own
+            // statement of direction and it is what lets the derivation refuse
+            // to book money out as money in. Apply never reads it — an `error`
+            // row is skipped — and confirmation replaces it with the magnitude.
+            amountEur: pending?.amount ?? null,
+            currency: pending?.currency ?? null,
+            note: pending?.note ?? null,
             assetId: null,
+            // No kind, no hash: `contentHash` keys on the kind, so an undecided
+            // row cannot be deduped yet. Confirmation computes it and re-runs
+            // the duplicate check against what is recorded THEN.
             contentHash: null,
             candidates: null,
             ruleTagIds: null,
+            kindUndecided: pending !== undefined,
           };
         }
 
@@ -1086,17 +1562,12 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           // near-matches ride along as INFORMATION for a human decision, never
           // as one (§13.4: never silently guessed).
           flag = 'unmapped';
-          const identity = row.isin ?? row.symbol ?? row.name ?? '(unknown)';
-          message =
-            `Instrument "${identity}" was not found in the asset catalog — ` +
-            'search for it under Assets first, then re-upload.';
+          message = unresolvedInstrumentMessage(row);
           candidates = (rawKey ? candidateLists.get(rawKey) : undefined) ?? null;
         } else if ((row.kind === 'buy' || row.kind === 'sell') && asset) {
           if (asset.currency !== row.currency) {
             flag = 'error';
-            message =
-              `Resolved "${asset.symbol}" is quoted in ${asset.currency} but the row is ` +
-              `${row.currency} — resolve via the ${row.currency} listing instead.`;
+            message = currencyMismatchMessage(asset, row);
           }
         }
 
@@ -1111,7 +1582,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         if (flag === 'mapped') {
           if (existing.has(hash) || seenInFile.has(hash)) {
             flag = 'duplicate';
-            message = 'An identical row (same date, instrument, quantity, price) already exists.';
+            message = DUPLICATE_MESSAGE;
           }
           seenInFile.add(hash);
         }
@@ -1338,7 +1809,50 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             record(row, 'failed', err.message);
             continue;
           }
-          throw err;
+          // EVERYTHING ELSE IS ALSO THIS ROW'S PROBLEM, not the batch's.
+          //
+          // Rethrowing here was a batch-stranding bug (review F1). The claim is
+          // already committed by this point — deliberately, so no row can book
+          // twice — so an escaping error leaves the batch permanently `applied`
+          // with the remaining rows never attempted and every retry a 409. A
+          // raw driver error is exactly how that happened: a cash CHECK
+          // violation (`portfolio_cash_movements_sign`) is a PostgresError, not
+          // an ApiError, and it walked straight through the branch above.
+          //
+          // Per-row tolerance is the framework's promise (§13.4) and it cannot
+          // be conditional on the failure having been anticipated.
+          //
+          // ── SURVIVING THE BUG MUST NOT SILENCE IT ───────────────────────────
+          //
+          // Catching everything buys recoverability with loudness, and a
+          // swallowed TypeError is a defect that now looks like a business
+          // refusal. So the error is CAPTURED into the problems fold the ops
+          // cockpit reads (`captureError` scrubs every string, folds by
+          // fingerprint and rate-caps, so a storm costs one row with an
+          // occurrence count), carrying the batch/row ids an operator needs to
+          // find the line again.
+          //
+          // The user is told something different from the operator, on purpose:
+          // the row names itself an UNEXPECTED fault rather than borrowing the
+          // wording of a refusal someone could talk them through, and the
+          // driver text stays out of the API response (§10).
+          const unexpected = err instanceof Error ? err : new Error('Unknown import row failure');
+          deps.problems?.captureError(unexpected, {
+            batchId: batch.id,
+            rowId: row.id,
+            rowIndex: row.rowIndex,
+            brokerId: batch.brokerId,
+            kind: row.kind,
+          });
+          deps.logger?.error?.(
+            { err, batchId: batch.id, rowId: row.id, rowIndex: row.rowIndex },
+            'import: row failed with an unexpected error; reported as failed',
+          );
+          record(
+            row,
+            'failed',
+            'This row hit an unexpected error, reported to the team. Nothing was booked for it.',
+          );
         }
       }
 
@@ -1367,37 +1881,30 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     /**
-     * Pin an unresolved row to an asset the CALLER chose (#964, §16 2026-07-31
-     * point 4: "resolvable IN the wizard … never a dead end and never a silent
-     * mis-map").
+     * The two decisions a person can make about ONE staged row — pinning its
+     * instrument (§16 2026-07-31 point 4) or confirming its kind (§16
+     * 2026-08-29 gap (b)) — behind one owner-scoped, pending-gated entry point.
      *
-     * ── WHAT VALIDATES THE ID, AND WHAT DOES NOT ─────────────────────────────
+     * They share an endpoint because they share everything that makes them
+     * safe: the same ownership scoping, the same batch-lifecycle gate, the same
+     * compare-and-set against an apply that may claim the batch mid-flight, and
+     * the same whole-preview response so the client never recomputes what
+     * staging decided. What differs is only which fact the row was missing.
      *
-     * The row's stored `candidates` are UI suggestions and deliberately NOT the
-     * validation boundary. Constraining the pick to them would re-create the
-     * dead end this exists to remove: the directive's other half is "or create a
-     * custom one on the spot", and a just-created custom asset is by definition
-     * not in a suggestion list computed at staging time. So the id is validated
-     * with the SAME rule the manual transaction path uses — a global catalog
-     * asset, or the caller's OWN custom asset; anything else is a 404 that
-     * cannot distinguish "missing" from "someone else's" (§10).
-     *
-     * That is the correct boundary because the hazard this subsystem guards
-     * against is a MODEL minting an asset id, and no model reaches this method:
-     * the id comes from a person, over an authenticated session, naming
-     * something they could already book by hand.
-     *
-     * ── WHY THE ROW IS RE-JUDGED, NOT JUST STAMPED ───────────────────────────
-     *
-     * Pinning an asset changes the two things staging derived from it, so both
-     * are recomputed rather than left stale:
-     *  - the CURRENCY agreement a trade needs (the same check staging makes);
-     *  - the CONTENT HASH, which keys on the resolved asset — so a row pinned to
-     *    an instrument the portfolio already holds that exact trade for flips to
-     *    `duplicate` instead of quietly becoming a second copy at apply.
+     * See {@link pinAsset} and {@link confirmKind} for each half.
      */
     async resolveRow(userId, batchId, rowId, input) {
       await deps.paranoid?.assertAllowed(userId, 'imports');
+      // Exactly one intent per request. The contract enforces this too, but the
+      // service is called directly (jobs, tests) and must not depend on a route
+      // having validated for it — a body carrying both would otherwise silently
+      // take whichever branch happens to be written first.
+      const wantsKind = input.kind !== undefined;
+      const wantsAsset = input.assetId !== undefined;
+      if (wantsKind === wantsAsset) {
+        throw badRequest('Provide exactly one of assetId or kind.', 'IMPORT_ROW_UPDATE_AMBIGUOUS');
+      }
+
       const batch = await importRepo.findBatchForOwner(userId, batchId);
       if (!batch) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
       if (batch.status !== 'pending') {
@@ -1409,78 +1916,11 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       // Scoped to THIS batch: a row id from someone else's import is a 404 for
       // the same reason a foreign batch id is.
       if (!row) throw notFound('Import row not found.', 'IMPORT_ROW_NOT_FOUND');
-      // Kind first, then flag: a cash row is BOTH "not an instrument row" and
-      // "not unresolved", and the first of those is the specific truth a user
-      // needs to hear. The generic message would send them hunting for a
-      // resolution problem on a row that can never have one.
-      if (row.kind === null || !needsInstrument(row.kind)) {
-        throw badRequest('This row does not reference an instrument.', 'IMPORT_ROW_NOT_INSTRUMENT');
-      }
-      if (row.flag !== 'unmapped') {
-        throw badRequest(
-          'Only a row whose instrument could not be resolved can be pinned to an asset.',
-          'IMPORT_ROW_NOT_UNRESOLVED',
-        );
-      }
-      // An `unmapped` row parsed successfully and therefore has a date; this
-      // keeps the content hash honest rather than trusting that invariant.
-      if (row.executedAt === null) {
-        throw badRequest('This row has no date to match against.', 'IMPORT_ROW_INVALID');
-      }
 
-      // Same visibility rule as `portfolioService.loadVisibleAssets`.
-      const [asset] = await portfolioRepo.assetsByIds([input.assetId]);
-      if (!asset || (asset.ownerId !== null && asset.ownerId !== userId)) {
-        throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
-      }
-
-      // A trade must be quoted in the row's own currency — staging refuses the
-      // mismatch, and a hand-pinned asset gets no weaker a check.
-      if ((row.kind === 'buy' || row.kind === 'sell') && asset.currency !== row.currency) {
-        throw badRequest(
-          `${asset.symbol} is quoted in ${asset.currency} but this row is ${row.currency} — ` +
-            `pick the ${row.currency} listing instead.`,
-          'IMPORT_ROW_CURRENCY_MISMATCH',
-        );
-      }
-
-      const hash = contentHash({
-        kind: row.kind,
-        executedAt: row.executedAt,
-        instrument: asset.id,
-        quantity: row.quantity,
-        price: row.price,
-        amountEur: row.amountEur,
-      });
-
-      // Duplicate truth against what is already recorded AND against the rows
-      // this batch will itself apply — the same two questions staging asks.
-      const existing = await collectExistingHashes(userId, batch.portfolioId);
-      const siblings = new Set(
-        rows
-          .filter((r) => r.id !== row.id && r.flag === 'mapped' && r.contentHash !== null)
-          .map((r) => r.contentHash as string),
-      );
-      const duplicate = existing.has(hash) || siblings.has(hash);
-
-      // The write is conditional on the batch still being `pending`, because
-      // everything between the check above and this line is `await`ed and an
-      // apply can claim the batch in that gap. A refused write means the claim
-      // won: the client gets the same 409 a sequential second apply gets, and
-      // the row is left exactly as staging had it rather than half-pinned to an
-      // import that already finished.
-      const pinned = await importRepo.setRowResolution({
-        id: row.id,
-        assetId: asset.id,
-        flag: duplicate ? 'duplicate' : 'mapped',
-        message: duplicate
-          ? 'An identical row (same date, instrument, quantity, price) already exists.'
-          : null,
-        contentHash: hash,
-        resolvedBy: 'user',
-      });
-      if (!pinned) {
-        throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+      if (input.kind !== undefined) {
+        await confirmKind(userId, batch, rows, row, input.kind);
+      } else {
+        await pinAsset(userId, batch, rows, row, input.assetId!);
       }
 
       const refreshed = await importRepo.findBatchForOwner(userId, batchId);

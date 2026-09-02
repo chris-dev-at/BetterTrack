@@ -9,6 +9,7 @@ import {
   secureRandomBytes,
   type RandomBytes,
 } from '../crypto';
+import type { EndpointDeviceKeyMaterial } from './deviceLock';
 import { EndpointKeystoreError, asEndpointKeystoreError } from './errors';
 import { decodeBase64Url, encodeBase64Url } from './encoding';
 import {
@@ -136,9 +137,17 @@ export async function deriveDeviceKey(
   }
 }
 
+/**
+ * K_dev is only ever an AES-256-GCM key here, so it may equally be raw bytes
+ * derived in this tab or the non-extractable CryptoKey another tab of this
+ * device granted — `aesGcmDecrypt` accepts both and validates the CryptoKey
+ * shape. This is also the check that makes a granted key authoritative: a key
+ * that was not derived from THIS endpoint's device password cannot open the
+ * wrap-check.
+ */
 export async function verifyEndpointPassword(
   metadata: EndpointPasswordMetadataV1,
-  deviceKey: Uint8Array,
+  deviceKey: EndpointDeviceKeyMaterial,
 ): Promise<boolean> {
   const iv = decodeBase64Url(metadata.wrapCheck.iv);
   const ciphertext = decodeBase64Url(metadata.wrapCheck.ciphertext);
@@ -169,7 +178,7 @@ export async function verifyEndpointPassword(
 export async function wrapMnemonicEntropy(
   vaultId: string,
   entropy: Uint8Array,
-  deviceKey: Uint8Array,
+  deviceKey: EndpointDeviceKeyMaterial,
   randomBytes: RandomBytes = secureRandomBytes,
 ): Promise<WrappedPhrasePayloadV1> {
   if (entropy.length !== BIP39_ENTROPY_BYTES) {
@@ -199,7 +208,7 @@ export async function wrapMnemonicEntropy(
 export async function unwrapMnemonicEntropy(
   vaultId: string,
   payload: WrappedPhrasePayloadV1,
-  deviceKey: Uint8Array,
+  deviceKey: EndpointDeviceKeyMaterial,
 ): Promise<Uint8Array> {
   const iv = decodeBase64Url(payload.iv);
   const ciphertext = decodeBase64Url(payload.ciphertext);

@@ -10,7 +10,6 @@ import { listVaults, VAULTS_QUERY_KEY } from '../../../lib/vaultApi';
 import { Button, SectionHead, SkeletonBlock } from '../../../ui/origin';
 import { isVaultedPortfolio } from '../../portfolio/lockedPortfolio';
 import { portfolioSearch } from '../../portfolio/PortfolioSwitcher';
-import { endpointVaultKeystore } from '../keystore/runtime';
 import {
   moveInPreconditions,
   resolvePortfolioVaultMoveCapture,
@@ -18,7 +17,7 @@ import {
   type PortfolioVaultMoveCapture,
 } from '../portfolioVaultMove';
 import { isDriveOnlyVaultMedia, PortfolioVaultMoveWizard } from './PortfolioVaultMoveWizard';
-import { vaultEndpointStateQueryKey } from './useVaultEndpointState';
+import { readVaultEndpointState, vaultEndpointStateQueryKey } from './useVaultEndpointState';
 
 /**
  * Portfolio settings → Private vault: the move-IN entry point (§9).
@@ -51,7 +50,7 @@ export function PortfolioVaultSection({
   const endpointStates = useQueries({
     queries: vaults.map((vault) => ({
       queryKey: vaultEndpointStateQueryKey(vault.id),
-      queryFn: () => endpointVaultKeystore.stateFor(vault.id),
+      queryFn: () => readVaultEndpointState(vault.id),
       staleTime: 5_000,
     })),
   });

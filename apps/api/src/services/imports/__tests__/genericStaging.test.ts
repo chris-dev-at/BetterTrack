@@ -159,7 +159,19 @@ describe('a file no broker mapper claims is understood, not refused', () => {
     for (const row of preview.rows) {
       expect(row.message).toMatch(/needs a human decision/i);
       expect(row.raw).toContain('AT483200000012345678');
+      // …and REPORTED IS NOT FINAL (§16 2026-08-29 gap (b)): a row held back
+      // only by the kind question keeps everything it parsed, so a person can
+      // confirm a kind without re-uploading a file the server never stored.
+      // `importRowKindConfirmation.test.ts` owns that flow end to end; what
+      // matters here is that staging stopped writing these rows away as nulls.
+      expect(row.executedAt).not.toBeNull();
+      expect(row.note).not.toBeNull();
+      expect(row.amountEur).not.toBeNull();
+      expect(row.confirmableKinds?.length).toBeGreaterThan(0);
     }
+    // The file signs its amounts (two of the three lines are negative), which is
+    // what makes a positive amount mean "money in" on this statement.
+    expect(preview.understanding?.amountsSigned).toBe(true);
   });
 
   it('leaves the hand-written mappers in charge of the files they know', async () => {

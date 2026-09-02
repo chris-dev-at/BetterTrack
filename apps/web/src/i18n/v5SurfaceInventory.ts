@@ -750,6 +750,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultManager.tsx',
       'user/vault/ui/VaultRestorePicker.tsx',
       'user/vault/ui/VaultStateAction.tsx',
+      'user/vault/ui/VaultUnlockDialog.tsx',
       'user/vault/ui/VaultReceivePhrase.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultTransferQr.tsx',
@@ -929,11 +930,6 @@ export const NON_V5_SURFACES = [
     note: 'V1 SMTP diagnostics (#81); still English-only.',
   },
   {
-    path: 'admin/pages/FeedbackPage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Post-V5 owner feedback inbox (#1316); localized and tested in its own feature change.',
-  },
-  {
     path: 'admin/pages/InvitesPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V1 invite management (#11); still English-only.',
@@ -951,7 +947,17 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/pages/SupportPage.tsx',
     reason: 'no-v5-deliverable',
-    note: 'Post-V5 admin rebuild W1 (#1406) Support landing; the helpdesk console it stands in for is W3.',
+    note: 'Post-V5 admin rebuild W3 (#1406): the split-pane helpdesk workspace, which replaced both the W1 Support landing and the separate #1316 feedback inbox.',
+  },
+  {
+    path: 'admin/support/SupportInbox.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W3 (#1406): the helpdesk queue pane — filters, keyboard navigation and paging over the admin feedback routes.',
+  },
+  {
+    path: 'admin/support/SupportThread.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W3 (#1406): the helpdesk conversation pane — replies, the FEEDBACK-7 status controls, and submitter context.',
   },
   {
     path: 'admin/pages/TestAccountsPage.tsx',
@@ -1441,7 +1447,7 @@ export const NON_V5_ROUTES = [
   {
     path: '/admin/feedback',
     reason: 'no-v5-deliverable',
-    note: 'Post-V5 owner feedback inbox (#1316).',
+    note: 'Post-V5 admin rebuild W3 (#1406): the #1316 inbox URL, kept as a redirect into the Support workspace that replaced it.',
   },
   { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
   {
@@ -1452,7 +1458,7 @@ export const NON_V5_ROUTES = [
   {
     path: '/admin/support',
     reason: 'no-v5-deliverable',
-    note: 'Post-V5 admin rebuild W1 (#1406): the Support workspace landing ahead of the W3 helpdesk console.',
+    note: 'Post-V5 admin rebuild W3 (#1406): the split-pane helpdesk — inbox left, thread right, both addressed by query parameters.',
   },
   {
     path: '/admin/test-accounts',
@@ -1975,7 +1981,24 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 //
 // 74 → 75 with the Trusted devices read (#1391). It renders `AsyncReadState`
 // for both loading and error, so it adds no state gap either.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 75;
+//
+// 75 → 79 with the admin rebuild W3 (#1406), which is a net +4: one read left
+// and five arrived.
+//   • −1 — FeedbackPage's list read. The W1 inbox was replaced by the Support
+//     workspace and its file deleted, so the read is gone rather than moved.
+//   • +1 SupportInbox — the queue read, now filterable and paged.
+//   • +1 SupportPage — the standing "waiting on you" count, asked unfiltered so
+//     the attention number does not change when the operator searches.
+//   • +1 SupportThread — the single-submission GET that makes `?thread=` a
+//     shareable link even when the reader's filters exclude that row.
+//   • +1 Conversation — the thread's messages.
+//   • +1 SubmitterAside — the submitter's other submissions, reusing W2's
+//     `/admin/users/:id/support` projection rather than adding a route.
+// None of the five adds a state gap: each renders `AsyncReadState` for both
+// loading and error at its own read site, and the attention count says
+// "unavailable" rather than rendering a failed read as a confident zero. The
+// debt ceiling below is therefore unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 79;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error
