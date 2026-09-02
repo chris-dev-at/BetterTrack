@@ -28,6 +28,38 @@ already-CLEAN PR behind them is not starved. Queue files are never reordered or
 rewritten, and at most one merge lands per tick, so the oldest genuinely
 mergeable record always wins.
 
+**The merge lane outranks the composer.** A successful composer run blocks the
+whole tick for ~45 min, which freezes merging as well as scheduling. So
+`composer_step` returns early — logging `composer deferred: merge queue
+non-empty` — whenever any `<epoch>-prNN.json` record is waiting. Owner briefs
+are exempt in **both** their states: an already-claimed one
+(`.composer-request-active.json`, reconciled above the mode gate) and a fresh
+`control/composer-request.json` that has not been claimed yet — the claim
+happens _below_ this guard, so the guard has to test the file, not just the
+loaded flag. Consequence worth knowing: a permanently stuck queue record stops
+ordinary composition, which is intended (drain the lane, then compose), but it
+never blocks a brief you write yourself.
+
+**Review-requeue budget.** An approval that keeps invalidating used to send the
+same issue back through review forever (#1232 burned 140 reviewer runs).
+`requeue_for_review` now counts requeues per issue in
+`state/control/requeue-count/<issue>` and parks the issue with a human once the
+count passes `MF_REQUEUE_MAX` (default 3, set to `3` for the master service in
+`compose.yml`). The counter is keyed by **issue**, so it survives the new PR and
+new head that a requeue produces, and it is deliberately never cleared — the
+budget is a lifetime bound on re-entering review, not a per-cycle allowance.
+An in-budget requeue leaves the PR's merge-refusal counter alone; the
+over-budget park retires the PR for good and therefore clears both that counter
+and the CI-fix state along with the queue record.
+
+> **Re-arming a parked issue.** Because the counter is never cleared
+> automatically, fixing the issue and removing `needs-human` is not enough — the
+> very next requeue parks it again immediately. Delete the counter too:
+>
+> ```bash
+> rm -f multi-factory/state/control/requeue-count/<issue>
+> ```
+
 ## Difficulty routing & model providers (mflib.sh)
 
 Issues are classified by **difficulty**, not by model — exactly one label:
@@ -48,7 +80,8 @@ max); reviews never run below `roles.reviewFloor` (default intermediate).
 Legacy `tier:*` labels still resolve (sonnet→easy, opus→intermediate,
 fable→max); unlabeled issues run as intermediate.
 
-Four subscription providers (per-provider effort semantics):
+Four subscription providers (per-provider effort semantics), plus one API-key
+provider (`opencode`, below):
 
 - **claude** — claude CLI, auth via `CLAUDE_CODE_OAUTH_TOKEN` (factory/.env);
   effort = `--effort low|medium|high|xhigh|max`.
@@ -67,6 +100,27 @@ Four subscription providers (per-provider effort semantics):
   `~/.gemini` Google login; the reasoning level is part of the model name,
   e.g. `Gemini 3.1 Pro (High)`, `Gemini 3.5 Flash (Low)` (`agy models` lists
   what the subscription offers — the dashboard shows them as suggestions).
+- **opencode** — the opencode CLI (Bun binary, installed by
+  `multi-factory/opencode-install.sh`). **Not a subscription**: it authenticates
+  with an API key held in `auth/<service>/opencode/share/opencode/auth.json`, and
+  the three XDG vars are pointed at the single `MF_OPENCODE_HOME` mount so the
+  whole opencode footprint stays in one bind mount. Routes are declared in the
+  read-only `opencode-factory.json` (models are `provider/model`, e.g.
+  `openrouter/stealth/ox-alpha`), which also carries opencode's permission
+  policy (`webfetch` denied; `curl`/`wget`/`env`/`printenv` and the cloud CLIs
+  denied at the bash layer). `opencode run` exits 0 even on failure, so
+  `mflib.sh` classifies the `--format json` event stream rather than the exit
+  code. **Read the data-exposure warning at the top of `mflib.sh` before routing
+  any difficulty here** — an opencode role sees the checkout and can reach a
+  third-party model provider. It is wired up but has never run a production
+  role.
+
+Usage-limit naps are bounded: a ClaudeX/Codex run that keeps hitting the
+provider's usage limit sleeps `LIMIT_SLEEP` and retries at most
+`MF_LIMIT_NAPS_MAX` times (default 8, set explicitly for every service in
+`compose.yml`) before the role run fails and hands the issue to the normal
+retry/triage path. Without the cap a quota-dead provider napped forever and the
+worker looked alive while doing nothing.
 
 Auth for codex/ClaudeX/agy is synced by `autorun.sh` from the host into gitignored
 **per-container** copies under `multi-factory/auth/<service>/` (bind-mounted
@@ -117,7 +171,14 @@ closed (checked via direct REST reads — never the lagging search index). It ma
 be **assigned** only when none of its claims overlaps any in-flight claim
 (assigned issues + PRs still in the merge queue). Claims are compared by
 stripping everything from the first `*` and testing string-prefix both ways.
-No/unparseable meta ⇒ the issue claims `**` and simply runs alone. Assignment:
+No/unparseable meta ⇒ the issue claims `**`, which conflicts with **everything**
+and silently serialized the whole fleet behind it. The scheduler therefore does
+not run it: it labels the issue **`mf:bad-meta`**, logs `scheduler: issue #N has
+empty mf-meta touches — labeled mf:bad-meta, skipped`, and moves on;
+`runnable_issues` drops `mf:bad-meta` issues on every later tick, so the label
+is the durable record. Fix the issue body's `mf-meta` block and remove the label
+to let it back in. (The label is re-applied once per idle worker within the tick
+that detects it — harmless, and it stops after that tick.) Assignment:
 lowest runnable issue → lowest idle worker, mirrored on GitHub with
 `in-progress` + `mf:worker-N` labels (the `state/` dir is the source of truth).
 
@@ -143,6 +204,15 @@ work up instead of it evaporating in the worker's clone volume (the manual
 salvage-from-volume drill after `needs-human`). The normal happy path — where the
 writer opened its own PR — is a no-op (a PR already exists).
 
+**Dependency priming.** Before each cycle the worker runs
+`pnpm install --frozen-lockfile --prefer-offline` outside the billed model
+session, so a moved lockfile does not make the writer install on model time. It
+is bounded by `MF_PNPM_PRIME_TIMEOUT` (default 600 s) and is non-fatal either
+way — the writer installs if it failed. The timeout is not optional: this runs
+before the role loop, outside every heartbeat-refreshing `cc()` call, so an
+unreachable registry would otherwise hang with a _fresh_ heartbeat, which the
+stall detector cannot see (the 2026-08-19 DNS-wedge failure class).
+
 ## The protocol dir (`multi-factory/state/`, bind-mounted at `/work/mfstate`)
 
 - `assignments/worker-N.json` — master-written (atomic tmp+mv), removed on ack
@@ -152,8 +222,12 @@ writer opened its own PR — is a no-op (a PR already exists).
   killed-mid-run recovery: authoritative GH re-check → salvage approved PR to
   the queue, or reset labels + assignment for rescheduling)
 - `merge-queue/<epoch>-prNN.json` — FIFO-preferring, consumed by the merger only
+  (the dir also holds the merger's own dotfile counters, `.mergefail-prNN` and
+  `.apprfail-prNN`; only `<epoch>-prNN.json` records are queue entries)
 - `control/mode` — `run` | `run-out` | `close-down` (owner/dashboard-written)
 - `control/phase` — `running` | `draining` | `drained` (master-written)
+- `control/requeue-count/<issue>` — the per-issue review-requeue budget
+  (`MF_REQUEUE_MAX`); never cleared, so it bounds an issue's lifetime
 - `logs/events.log` — every container's factory event lines (`[master]`/`[wN]`)
 
 ## Modes & the control dashboard
@@ -186,12 +260,48 @@ node multi-factory/control/server.mjs   # dashboard on 127.0.0.1:8790
 docker compose -p bettertrack-multifactory pause|unpause   # freeze/thaw (cc() survives)
 ```
 
+`test.sh` runs entirely offline against stubs — **no containers, no Docker, no
+network** — so it is the right check while the daemon is down or restarting.
+
+**Standing fleet shape: `WORKERS=2`** (the value in `state/control/workers`, or
+2 when that file is absent). `compose.yml` defines exactly `master`, `worker-1`
+and `worker-2`; `autorun.sh` only generates `compose.extra.yml` for worker 3+
+when `WORKERS > 2`, and that file is generated, gitignored, and never committed.
+
+**Relaunching a script change without rebuilding the image.** Every `*.sh`,
+prompt and `opencode-factory.json` is bind-mounted read-only into the
+containers, so editing one and recreating the containers is enough — an image
+rebuild is only needed when `factory/Dockerfile` changes (a pinned CLI version):
+
+```bash
+cd multi-factory && docker compose -p bettertrack-multifactory \
+  -f compose.yml -f compose.dnsfix.yml up -d --force-recreate --no-build
+```
+
+(`autorun.sh` always runs `dc build` first; the image layer is cached, so it is
+also fine — just slower.) Note that the containers keep the file **the deploy
+worktree** holds, not the one in your checkout: after merging a factory change,
+update the deploy worktree too or the fleet keeps running the old script.
+
 Optional clean-runtime overlays are supported without editing the committed
 Compose file:
 
 ```bash
 MF_COMPOSE_OVERRIDE=/absolute/path/runtime.yml ./multi-factory/autorun.sh
 ```
+
+`compose.dnsfix.yml` is a committed, **temporary** overlay from the 2026-08-19
+Docker Desktop DNS wedge: it pins every service to the default bridge and sets
+explicit resolvers, because the user-defined bridge black-holed port 53 and the
+containers inherited `8.8.8.8` first — the factory then ran for hours with no
+outbound DNS while looking like a GitHub outage. Apply it with
+`-f compose.yml -f compose.dnsfix.yml`. **Caveat:** it carries stanzas for
+`master`, `worker-1` and `worker-2` only. The worker-3/worker-4 stanzas were
+removed with the `WORKERS=2` downscale, because an overlay-only service that has
+no counterpart in `compose.yml`/`compose.extra.yml` has no image and Compose
+refuses the whole project. If the fleet ever scales past 2, re-add the same
+`network_mode` + `dns` block per worker. Retire the file once a Mac reboot
+clears the NAT state — and verify DNS from inside a container first.
 
 Exactly one additional Compose file is accepted and is retained for build, up,
 dry-run, login, logs, stop, down, fresh, and generated worker 3/4 operations.

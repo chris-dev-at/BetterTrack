@@ -1,0 +1,50 @@
+# TEMPORARY workaround (2026-08-19): after two internet outages, the Docker
+# Desktop VM black-holes UDP/TCP port 53 on every USER-DEFINED bridge network
+# while the default bridge still resolves. Pinning all factory services to the
+# default bridge until a Mac reboot (or Docker reset) clears the wedged NAT
+# state. Inter-container networking is unused (coordination is via the shared
+# state volume), so this is safe. Run compose with:
+#   -f compose.yml -f compose.dnsfix.yml
+# (At WORKERS=2 there is no compose.extra.yml — autorun.sh only generates that
+# file for worker 3+. If the fleet is scaled past 2, add `-f compose.extra.yml`
+# between the two AND re-add the worker stanzas noted at the end of this file.)
+#
+# EXTENDED 2026-08-23 — the second half of the same wedge. Pinning to the default
+# bridge was not sufficient: the containers still inherited `8.8.8.8` FIRST in
+# /etc/resolv.conf, and 8.8.8.8 is exactly what the wedged NAT black-holes. Every
+# lookup therefore burned a 5s timeout and usually failed outright — the factory
+# ran for HOURS with no outbound DNS (master could not read PRs; workers logged
+# "PR discovery failed" and safely requeued, which is why it looked like a GitHub
+# outage rather than a local fault). 1.1.1.1 and the Docker Desktop resolver
+# 192.168.65.7 both answer fine, so we pin resolution explicitly per service.
+# Without this, the fix has to be re-applied by hand inside every container after
+# EVERY restart. Retire this whole file together with the bridge pin once a Mac
+# reboot clears the NAT state — and verify DNS from inside a container before
+# assuming the wedge is gone.
+services:
+  master:
+    network_mode: bridge
+    dns:
+      - 1.1.1.1
+      - 192.168.65.7
+  worker-1:
+    network_mode: bridge
+    dns:
+      - 1.1.1.1
+      - 192.168.65.7
+  worker-2:
+    network_mode: bridge
+    dns:
+      - 1.1.1.1
+      - 192.168.65.7
+# worker-3/worker-4 stanzas removed 2026-08-29 with the WORKERS=2 downscale:
+# with no compose.extra.yml generated, overlay-only services have no image and
+# `docker compose` refuses the project. If the fleet ever scales above 2, re-add
+# one stanza per new worker — they are literal copies of the worker-2 block
+# above with the service name changed:
+#
+#   worker-3:
+#     network_mode: bridge
+#     dns:
+#       - 1.1.1.1
+#       - 192.168.65.7
