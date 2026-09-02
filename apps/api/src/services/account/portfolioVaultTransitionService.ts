@@ -1,7 +1,9 @@
 import {
+  PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_DEFAULT,
   PORTFOLIO_VAULT_TRANSITION_ERROR_CODES,
   PORTFOLIO_VAULT_LIFECYCLE_GENERATION_MAX,
   VAULT_SERVER_CANDIDATE_TTL_MS,
+  portfolioVaultImportCaptureResponseSchema,
   portfolioVaultMoveInRequestSchema,
   portfolioVaultMoveInResponseSchema,
   portfolioVaultLifecycleResponseSchema,
@@ -9,6 +11,8 @@ import {
   portfolioVaultMoveOutRequestSchema,
   portfolioVaultMoveOutResponseSchema,
   portfolioVaultRevisionResponseSchema,
+  type PortfolioVaultImportCaptureQuery,
+  type PortfolioVaultImportCaptureResponse,
   type PortfolioVaultLifecycleResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveInResponse,
@@ -34,6 +38,7 @@ import {
   listPendingPortfolioVaultMoveOutFinalizations,
   markPendingPortfolioVaultMoveOutFinalizationAttempt,
   readPendingPortfolioVaultMoveOutFinalization,
+  readPortfolioImportBatchCapture,
   readPortfolioVaultLifecycle,
   withPortfolioVaultTransitionTransaction,
 } from '../../data/repositories/portfolioVaultTransitionRepository';
@@ -89,7 +94,8 @@ export type PortfolioVaultTransitionFailure =
   | 'RESTORE_INVALID'
   | 'RESTORE_SOLVENCY'
   | 'RESTORE_PROVENANCE'
-  | 'POSSESSION_PROOF_INVALID';
+  | 'POSSESSION_PROOF_INVALID'
+  | 'CAPTURE_UNSERVABLE';
 
 export class PortfolioVaultTransitionError extends Error {
   constructor(
@@ -151,6 +157,10 @@ export const PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS = {
   RESTORE_INVALID: {
     status: 400,
     code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.restoreInvalid,
+  },
+  CAPTURE_UNSERVABLE: {
+    status: 409,
+    code: PORTFOLIO_VAULT_TRANSITION_ERROR_CODES.captureUnservable,
   },
   RESTORE_SOLVENCY: {
     status: 400,
@@ -246,6 +256,16 @@ export interface PortfolioVaultMoveOutFinalizerDeps {
 export interface PortfolioVaultTransitionService {
   revision(userId: string, portfolioId: string): Promise<PortfolioVaultRevisionResponse>;
   lifecycle(userId: string, portfolioId: string): Promise<PortfolioVaultLifecycleResponse>;
+  /**
+   * #1529: the lossless read of a PLAIN portfolio's historical import batches
+   * and staging rows, paged. The client capture carries them into the
+   * portfolio document (the §9 table row) instead of refusing (#1528).
+   */
+  captureImportBatches(
+    userId: string,
+    portfolioId: string,
+    query: PortfolioVaultImportCaptureQuery,
+  ): Promise<PortfolioVaultImportCaptureResponse>;
   moveOutChallenge(
     userId: string,
     portfolioId: string,
@@ -419,6 +439,44 @@ export function createPortfolioVaultTransitionService(
         portfolioDataRevision: revision,
         importBatchCount,
       });
+    },
+
+    async captureImportBatches(userId, portfolioId, query) {
+      // One repeatable-read snapshot per page. Tearing ACROSS pages is not a
+      // loss class: the revision digest the client binds its commit to covers
+      // both tables, so rows that moved between two pages refuse the commit.
+      const read = await deps.db.transaction(
+        (tx) =>
+          readPortfolioImportBatchCapture(tx as unknown as Database, userId, portfolioId, {
+            ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+            limit: query.limit ?? PORTFOLIO_VAULT_IMPORT_CAPTURE_PAGE_DEFAULT,
+          }),
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+      );
+      if (read.status === 'not_found') fail('NOT_FOUND', 'Portfolio not found.');
+      if (read.status === 'vaulted') {
+        fail('ALREADY_VAULTED', 'The portfolio is already stored in a vault.');
+      }
+      if (read.status === 'bad_cursor') {
+        fail('TRANSITION_CONFLICT', 'The import-capture cursor does not belong to this read.');
+      }
+      // The strict (no `.catch`) contract: a value the server cannot serve
+      // exactly fails the response instead of degrading — the capture must
+      // refuse what it cannot prove lossless. TYPED (review F2): a bare
+      // ZodError here would be mapped by the request validator to a client
+      // 400 "Invalid request." — but nothing about the REQUEST is invalid.
+      const response = portfolioVaultImportCaptureResponseSchema.safeParse({
+        batches: read.batches,
+        rows: read.rows,
+        nextCursor: read.nextCursor,
+      });
+      if (!response.success) {
+        fail(
+          'CAPTURE_UNSERVABLE',
+          'A stored import row cannot be served losslessly, so the portfolio’s import history cannot be captured.',
+        );
+      }
+      return response.data;
     },
 
     async lifecycle(userId, portfolioId) {
