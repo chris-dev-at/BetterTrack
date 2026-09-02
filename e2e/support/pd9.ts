@@ -117,9 +117,15 @@ function sectionBetween(
  * the replacement per-vault acceptance contract.
  */
 export async function assertPd9DesignPrecondition(): Promise<void> {
-  const [document, projectPlan] = await Promise.all([
+  const [document, projectPlan, decisionLogArchive] = await Promise.all([
     readFile(join(process.cwd(), 'docs/paranoid-design.md'), 'utf8'),
     readFile(join(process.cwd(), 'PROJECTPLAN.md'), 'utf8'),
+    // The 2026-07 §16 rows this gate reads were moved VERBATIM to the archive
+    // by the docs condensation (PR #1571), which left the gate red on main
+    // (#1607). The decision text is the ground truth wherever it lives, so the
+    // haystack below is the ACTIVE log plus the archive — never a copy back
+    // into PROJECTPLAN.
+    readFile(join(process.cwd(), 'docs/history/DECISIONLOG.md'), 'utf8'),
   ]);
   const normalized = (value: string) => value.replace(/\s+/g, ' ');
   const statusEnd = document.indexOf('**Table of contents**');
@@ -161,7 +167,9 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     );
   }
 
-  const decisionLog = normalized(projectPlan.slice(projectPlan.indexOf('## 16. Decision Log')));
+  const decisionLog = normalized(
+    `${projectPlan.slice(projectPlan.indexOf('## 16. Decision Log'))}\n${decisionLogArchive}`,
+  );
   const loggedDecision = [
     'V5-P13 PD6/PD9 media-removal COD reconciliation',
     'issue #895 / PR #896',
