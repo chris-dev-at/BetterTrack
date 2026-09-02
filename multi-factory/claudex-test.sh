@@ -678,8 +678,9 @@ check "every Compose lifecycle call clears the inherited project env" 0 \
   "$(printf '%s\n' "$COMPOSE_CALLS" | grep -vc '<project-env:__unset__>' || true)"
 check "hostile project names never reach a Compose invocation" 0 \
   "$(printf '%s\n' "$COMPOSE_CALLS" | grep -Ec 'hostile-env|hostile-overlay' || true)"
-# `config` left this list with the gemini login (#1623): `dc config --images`
-# was that subcommand's only caller, so autorun.sh no longer issues it at all.
+# `config` left this list with the retired provider's interactive login (#1623):
+# `dc config --images` was that subcommand's only caller, so autorun.sh no longer
+# issues it at all.
 for verb in build up down stop logs ps; do
   grep -q "<$verb>" <<<"$COMPOSE_CALLS" \
     && ok "canonical Compose helper covers $verb" \

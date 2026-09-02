@@ -1236,9 +1236,13 @@ MF_COMPOSER_DISCOVERY_SLEEP=0
 MF_DRY_RUN=0
 COMPOSER_REQUEST_LOADED=0
 OC_CALLS=0
+OC_CORRECTIONS=0
 OC_AFTER='[]'
 OC_CASE=none
 log(){ printf '%s\n' "$*" >>"$OC_LOG"; }
+# The real notify() logs "NOTIFY: …" AND posts to the owner webhook, so the
+# battery has to distinguish "reached events.log" from "reached the owner".
+notify(){ log "NOTIFY: $*"; }
 runnable_issues(){ :; }
 mf_recent_issues_json(){ printf '%s\n' "$OC_AFTER"; }
 mf_issue_json_by_number(){ return 1; }
@@ -1251,6 +1255,7 @@ mstatus(){ :; }
 mf_cc(){
   local run manifest body
   OC_CALLS=$((OC_CALLS + 1))
+  grep -q 'PROTOCOL CORRECTION RETRY' <<<"$3" && OC_CORRECTIONS=$((OC_CORRECTIONS + 1))
   run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' <<<"$3" | head -1)
   manifest=$(awk '
     index($0, "/work/mf/create-issue.sh --run-id ") {
@@ -1278,7 +1283,7 @@ oc_reset(){
   rm -f "$MFSTATE"/merge-queue/*.json
   mkdir -p "$CONTROL/composer-manifests"
   printf '[]\n' >"$TICK_ISSUES"
-  OC_CALLS=0; OC_AFTER='[]'; : >"$OC_LOG"
+  OC_CALLS=0; OC_CORRECTIONS=0; OC_AFTER='[]'; : >"$OC_LOG"
 }
 
 oc_reset
@@ -1291,6 +1296,12 @@ check "created-but-quarantined is NOT booked as a protocol failure" "0" \
   "$(grep -c 'composer protocol failure' "$OC_LOG")"
 check "created-but-quarantined is logged as a created outcome" "1" \
   "$(grep -c 'composer outcome created: issues \[913\] quarantined' "$OC_LOG")"
+# The most expensive terminal state: paid run, real issues, permanently excluded
+# from runnable_issues until a human reconciles them, and nothing retries. It has
+# to reach the owner's webhook, not only events.log — same as the fence-reconcile
+# twin in composer_discovery_fence_reconcile.
+check "created-but-quarantined notifies the owner, not just events.log" "1" \
+  "$(grep -c 'NOTIFY: composer outcome created: issues \[913\] quarantined' "$OC_LOG")"
 check "created-but-quarantined books the ordinary composer cooldown" "1" \
   "$([ -f "$CONTROL/.composer-last" ] && echo 1 || echo 0)"
 check "created-but-quarantined arms no protocol retry" "0" \
@@ -1327,14 +1338,54 @@ composer_step run || true
 check "the corrective retry runs only after the protocol cooldown" "2" "$OC_CALLS"
 check "the retry is the second attempt, and the backoff doubles" "1" \
   "$(grep -c 'composer protocol failure (attempt 2/2' "$OC_LOG")"
+check "the corrective retry carries the correction preamble" "1" "$OC_CORRECTIONS"
 check "repeated malformed runs back off independently" "1800" \
+  "$(cat "$CONTROL/.composer-protocol-backoff")"
+# Spent attempts saturate: the run stays "attempt max/max" and only the doubling
+# protocol backoff bounds it from there. Asserting it so the knob's real reach
+# is pinned rather than assumed.
+backdate "$CONTROL/.composer-protocol-last" 1801
+composer_step run || true
+check "the attempt number saturates once the corrective attempts are spent" "2" \
+  "$(grep -c 'composer protocol failure (attempt 2/2' "$OC_LOG")"
+check "a saturated sequence is bounded by the backoff alone" "3600" \
   "$(cat "$CONTROL/.composer-protocol-backoff")"
 # A later good run clears the whole correction sequence.
 OC_CASE=none
-backdate "$CONTROL/.composer-protocol-last" 1801
+backdate "$CONTROL/.composer-protocol-last" 3601
 composer_step run || true
 check "a later valid run clears the persisted attempt counter" "0" \
   "$([ -e "$CONTROL/.composer-protocol-attempt" ] && echo 1 || echo 0)"
+
+# MF_COMPOSER_PROTOCOL_ATTEMPTS=0 is the value an owner reaches for to turn the
+# corrective retry off; it must not be silently rewritten to the default 2.
+oc_reset
+MF_COMPOSER_PROTOCOL_ATTEMPTS=0
+OC_CASE=silent
+composer_step run || true
+check "MF_COMPOSER_PROTOCOL_ATTEMPTS=0 means no corrective attempt, not the default 2" "1" \
+  "$(grep -c 'composer protocol failure (attempt 0/0' "$OC_LOG")"
+backdate "$CONTROL/.composer-protocol-last" 901
+composer_step run || true
+check "a zero-attempt sequence still re-runs under the backoff" "2" "$OC_CALLS"
+check "a zero-attempt sequence never sends the correction preamble" "0" "$OC_CORRECTIONS"
+# Non-numeric still falls back, so a typo cannot disable the correction silently.
+# The sanitized bound — not the raw env value — is what the display and the
+# owner-brief `[ "$attempt" -ge … ]` tests consume; a raw "off" in the latter is
+# an integer-expression error, so the sanitizer is asserted directly too.
+check "the attempt bound sanitizes an unset-style empty value" "2" \
+  "$(MF_COMPOSER_PROTOCOL_ATTEMPTS= composer_protocol_attempt_max)"
+check "the attempt bound sanitizes a non-numeric value" "2" \
+  "$(MF_COMPOSER_PROTOCOL_ATTEMPTS=off composer_protocol_attempt_max)"
+check "the attempt bound passes an explicit zero through" "0" \
+  "$(MF_COMPOSER_PROTOCOL_ATTEMPTS=0 composer_protocol_attempt_max)"
+MF_COMPOSER_PROTOCOL_ATTEMPTS=off
+oc_reset
+OC_CASE=silent
+composer_step run || true
+check "a non-numeric attempt setting falls back to the default bound" "1" \
+  "$(grep -c 'composer protocol failure (attempt 1/2' "$OC_LOG")"
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
 
 oc_reset
 unset MF_PROMPTS MF_COMPOSER_COOLDOWN MF_COMPOSER_PROTOCOL_COOLDOWN \

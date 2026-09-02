@@ -29,7 +29,7 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${COMPOSER_BATCH:=5}"          # issues per composer run (the owner's 2026-07-16 "big batches" note is honoured by keeping this configurable, not by defaulting high)
 : "${MF_COMPOSER_COOLDOWN:=900}"  # min seconds between composer runs (base; also the floor after a reset)
 : "${MF_COMPOSER_BACKOFF_MAX:=14400}"  # cap on the idle-backoff cooldown (empty composer runs)
-: "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # corrective retries for a missing/malformed manifest — ONE PER TICK, never back-to-back
+: "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # corrective retries for a missing/malformed manifest — ONE PER TICK, never back-to-back; 0 = none (see composer_protocol_attempt)
 : "${MF_COMPOSER_PROTOCOL_COOLDOWN:=$MF_COMPOSER_COOLDOWN}" # a malformed run waits a full composer cooldown before its retry
 : "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=$MF_COMPOSER_BACKOFF_MAX}"
 : "${MF_COMPOSER_DISCOVERY_ATTEMPTS:=6}" # no-cache post-create snapshots (GitHub lists can lag)
@@ -293,9 +293,10 @@ composer_snapshot(){ # $1=mode — state the backoff should be sensitive to
 #             that already created issues just buys duplicates.
 #   idle    — zero issues created and a valid empty result → idle backoff.
 #   protocol— zero issues created and malformed output / a transport failure.
-#             It retries at most MF_COMPOSER_PROTOCOL_ATTEMPTS times, one attempt
+#             It gets MF_COMPOSER_PROTOCOL_ATTEMPTS *corrective* attempts, one
 #             per tick, each gated by the protocol cooldown — never twice inside
-#             the same tick.
+#             the same tick. Once those are spent the attempt number saturates
+#             and the doubling protocol backoff alone bounds the re-runs.
 composer_record_outcome(){ # $1=created|idle $2=snapshot $3=current backoff
   local outcome=$1 snap=$2 backoff=$3 prev="" next=$MF_COMPOSER_COOLDOWN
   [ -f "$CONTROL/.composer-snapshot" ] && prev=$(<"$CONTROL/.composer-snapshot")
@@ -322,14 +323,27 @@ composer_protocol_ready(){
 # The corrective retry is bounded ACROSS ticks, so the attempt number has to
 # outlive the process. It is cleared by composer_record_outcome — any created or
 # idle run ends the correction sequence.
+#
+# What the knob actually bounds, precisely: the number of invocations that carry
+# the PROTOCOL CORRECTION RETRY preamble, and the point at which a claimed owner
+# brief is blocked for review. It does NOT bound how many times ordinary
+# composition re-runs after a malformed result — the attempt number saturates at
+# max and the doubling protocol backoff is the only thing bounding it from there
+# (up to MF_COMPOSER_PROTOCOL_BACKOFF_MAX, default 4 h).
+# 0 is a legal value and means "no corrective attempt": no invocation ever
+# carries the correction preamble, and a claimed brief is blocked on its first
+# protocol failure instead of being replayed. Only a non-numeric/empty setting
+# falls back to the default.
+composer_protocol_attempt_max(){ # sanitized bound; the raw env var must never reach an -ge test
+  local max=$MF_COMPOSER_PROTOCOL_ATTEMPTS
+  case "$max" in ''|*[!0-9]*) max=2;; esac
+  echo "$max"
+}
 composer_protocol_attempt(){ # attempt number this tick would consume (1-based)
-  local n max=$MF_COMPOSER_PROTOCOL_ATTEMPTS
+  local n max; max=$(composer_protocol_attempt_max)
   n=$(cat "$CONTROL/.composer-protocol-attempt" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=0;; esac
-  case "$max" in ''|*[!0-9]*|0) max=2;; esac
   n=$(( n + 1 ))
-  # Saturate: once the corrective attempts are spent the run stays "attempt
-  # max/max" and the doubling protocol backoff is what bounds it from there.
   [ "$n" -le "$max" ] || n=$max
   echo "$n"
 }
@@ -1034,6 +1048,7 @@ composer_step(){ # $1=mode
   local attempt before after manifest run_id transport outcome=protocol newnums prompt
   local prompt_batch=$COMPOSER_BATCH manifest_issue_count
   local outcome_recorded=0 protocol_recorded=0 owner_blocked=0
+  local attempt_max; attempt_max=$(composer_protocol_attempt_max)
   [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
     && prompt_batch=$COMPOSER_REQUEST_EXACT_COUNT
   # Always 0 today: a run that creates artifacts ends the correction sequence as
@@ -1202,7 +1217,11 @@ finish the manifest contract this time."
         return 2
       }
       outcome=created
-      log "composer outcome created: issues [$newnums] quarantined (invalid artifact contract) — no retry"
+      # This is the most expensive terminal state in the model: a paid run filed
+      # real issues that composer-quarantine now excludes from runnable_issues
+      # until a human reconciles them, and nothing will retry. It reaches the
+      # owner's webhook, not just events.log — same as its fence-reconcile twin.
+      notify "composer outcome created: issues [$newnums] quarantined (invalid artifact contract) — no retry, owner reconciliation needed"
       break
     fi
     if [ "$protocol_recorded" -ne 1 ]; then
@@ -1214,7 +1233,7 @@ finish the manifest contract this time."
       protocol_recorded=1
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
-      && [ "$attempt" -ge "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
+      && [ "$attempt" -ge "$attempt_max" ]; then
       composer_request_mark_blocked protocol-failure || {
         composer_discovery_fence_alert_once request-block-write-failed \
           "composer request exhausted its attempts but its replay block could not be persisted — scheduler remains fenced"
@@ -1226,7 +1245,7 @@ finish the manifest contract this time."
       notify "composer discovery completed but its safety fence could not be cleared — scheduler remains fenced"
       return 2
     }
-    log "composer protocol failure (attempt $attempt/$MF_COMPOSER_PROTOCOL_ATTEMPTS, transport=$transport)"
+    log "composer protocol failure (attempt $attempt/$attempt_max, transport=$transport)"
   done
 
   if [ "$outcome" = protocol ]; then
@@ -1241,7 +1260,7 @@ finish the manifest contract this time."
       # The brief keeps its bounded corrective attempt — it is just spread over
       # ticks now, so the retry can never fire back-to-back inside this one.
       if [ "$owner_blocked" -ne 1 ] \
-        && [ "$attempt" -ge "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ] \
+        && [ "$attempt" -ge "$attempt_max" ] \
         && ! composer_request_mark_blocked protocol-failure; then
         return 2
       fi

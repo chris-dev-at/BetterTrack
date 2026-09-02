@@ -56,7 +56,21 @@ tick** — two ~20-minute `claude-opus-5 (xhigh)` runs for one batch (live log,
 2026-08-30). Replaying a run that already filed issues can only produce
 duplicates, so quarantined-but-created ends the sequence. The corrective attempt
 number lives in `state/control/.composer-protocol-attempt` so the bound survives
-a restart, and any `created`/`idle` outcome clears it.
+a restart, and any `created`/`idle` outcome clears it. Because that run filed
+real issues that `state/control/composer-quarantine` then hides from
+`runnable_issues` until a human reconciles them, and because nothing will retry
+it, the `created`-with-quarantine outcome raises an owner **notification**, not
+just an `events.log` line — the same treatment its fence-reconcile twin gets.
+
+Be precise about what `MF_COMPOSER_PROTOCOL_ATTEMPTS` bounds: the number of
+invocations that carry the `PROTOCOL CORRECTION RETRY` preamble, and the point
+at which a claimed owner brief is blocked for review. It does **not** bound how
+often ordinary composition re-runs after a malformed result — the attempt number
+saturates at the configured maximum and from there the doubling protocol backoff
+is the only bound (up to `MF_COMPOSER_PROTOCOL_BACKOFF_MAX`, 4 h by default).
+`0` is legal and means "no corrective attempt": no invocation ever carries the
+correction preamble, and a claimed brief is blocked on its first protocol
+failure. Only an empty or non-numeric setting falls back to the default 2.
 
 **Composer cost caps.** `COMPOSER_BATCH` (default **5**) is the issues-per-run
 target; raise it in `compose.yml` when a deliberately big batch is wanted (the
@@ -68,6 +82,16 @@ claude and claudex branches of `mf_cc`, the way `MF_SOL_COMPOSER_MAX_TURNS` /
 tighter numbers where both apply. Out-of-range values fall back to the defaults,
 never to an unbounded run. All three are set explicitly for the master service
 in `compose.yml`.
+
+The turn cap and the outcome model compose in one place worth knowing about: a
+composer run killed by `--max-turns` (or the timeout) **after** it has already
+called `create-issue.sh` at least once is a `created` run — issues filed,
+manifest never finished, quarantined, no retry. That is deliberate (replaying it
+would only duplicate the issues it already filed), and it is the reason that
+branch notifies: the signal that 60 turns is short for the configured
+`COMPOSER_BATCH` is a recurring "issues […] quarantined … owner reconciliation
+needed" notification. If that appears repeatedly, raise `MF_COMPOSER_MAX_TURNS`
+or lower `COMPOSER_BATCH` rather than leaving runs to strand issues.
 
 **Review-requeue budget.** An approval that keeps invalidating used to send the
 same issue back through review forever (#1232 burned 140 reviewer runs).
