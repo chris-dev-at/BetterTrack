@@ -1850,6 +1850,7 @@ describe('paranoid rehydration service', () => {
         contentHash: 'a'.repeat(64),
         result: 'applied',
         resultMessage: null,
+        kindUndecided: false,
       }),
       entity('018f0000-0000-7000-8000-000000000033', 'portfolioDailySnapshot', {
         portfolioId: PORTFOLIO_ID,

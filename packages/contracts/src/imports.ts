@@ -32,6 +32,12 @@ export type ImportRowKind = z.infer<typeof importRowKindSchema>;
  * `duplicate` = content-hash matches an existing row (or an earlier row of the
  * same file) — skipped on apply; `error` = the row itself is malformed
  * (reported, the rest of the file still lands).
+ *
+ * FROZEN. Shipped mobile builds parse this payload with zod and would reject a
+ * response carrying a member they do not know, so a new preview state is
+ * expressed as an OPTIONAL FIELD (see `confirmableKinds`) rather than as a
+ * sixth flag. A row whose kind nobody has decided yet is `error` on the wire
+ * for the reason every `error` row is: this import will not book it.
  */
 export const IMPORT_ROW_FLAGS = ['mapped', 'unmapped', 'duplicate', 'error'] as const;
 export const importRowFlagSchema = z.enum(IMPORT_ROW_FLAGS);
@@ -183,6 +189,23 @@ export type ImportRowCandidate = z.infer<typeof importRowCandidateSchema>;
  * reports `applied`, because failing a row whose cash is already in the ledger
  * would be the worse lie. `replayRuleTags` (API `importService`) states that
  * cell and the added-rule one in full.
+ *
+ * `confirmableKinds` is OPTIONAL and additive on the same precedent, and it is
+ * how a row whose KIND nobody has decided is told apart from a row that could
+ * not be read at all — both are `flag: 'error'`, because the flag vocabulary is
+ * frozen (see {@link IMPORT_ROW_FLAGS}) and neither will be booked as things
+ * stand. PRESENT means: staging parsed this row's fields but the classifier
+ * would not name its kind (a bank statement with no booking-type column is the
+ * reference case — memo plus a signed amount, §16 2026-08-29), and these are
+ * the kinds the server will accept for it through
+ * `PATCH /imports/:batchId/rows/:rowId`. ABSENT means there is nothing to
+ * confirm: the row's kind is settled, or no kind derives from what it carries.
+ *
+ * The list is computed by DRY-RUNNING the server's own derivation for each
+ * kind, so an offered kind is one that will succeed — a client may render the
+ * entries as choices without predicting the outcome. It is deliberately not a
+ * ranking: nothing here is more likely than anything else, and pre-selecting a
+ * default is exactly how a flagged row becomes a wrong booking in bulk.
  */
 export const importRowSchema = z
   .object({
@@ -209,6 +232,7 @@ export const importRowSchema = z
     candidates: z.array(importRowCandidateSchema).max(IMPORT_ROW_CANDIDATE_LIMIT).optional(),
     ruleTagIds: z.array(z.string().uuid()).max(CASH_TAGS_PER_ITEM_MAX).optional(),
     resolvedBy: importRowResolvedBySchema.optional(),
+    confirmableKinds: z.array(importRowKindSchema).min(1).max(IMPORT_ROW_KINDS.length).optional(),
   })
   .strict();
 export type ImportRow = z.infer<typeof importRowSchema>;
@@ -378,6 +402,20 @@ export const importUnderstandingSchema = z
     numberLocale: z.string(),
     /** True when the date order is a GUESS — the client must force review. */
     dateLocaleAmbiguous: z.boolean(),
+    /**
+     * True when the file's amount column carries SIGNS — i.e. at least one row
+     * of it is negative (#964, §16 2026-08-29). OPTIONAL and additive.
+     *
+     * It is a property of the FILE, not of a row, and it is what makes a
+     * positive amount mean anything. A minus sign is unambiguous on its own
+     * (nothing writes money coming in as a negative), but a plus is only
+     * evidence of an inflow once the column is known to distinguish the two —
+     * plenty of statements write unsigned magnitudes and carry the direction in
+     * a column this path has none of. The server uses it to decide which kinds
+     * a row may be confirmed as; a client showing "what we understood" can name
+     * it in the same breath as the delimiter and the locales.
+     */
+    amountsSigned: z.boolean().optional(),
   })
   .strict();
 export type ImportUnderstanding = z.infer<typeof importUnderstandingSchema>;
@@ -403,18 +441,41 @@ export const importRowIdParamSchema = z
   .strict();
 
 /**
- * `PATCH /imports/:batchId/rows/:rowId` body — pin an unresolved row to an
- * asset (§16 2026-07-31 point 4: "resolvable IN the wizard … never a dead end
- * and never a silent mis-map").
+ * `PATCH /imports/:batchId/rows/:rowId` body — the two things a person can
+ * decide about a staged row, EXACTLY ONE per request.
  *
- * `assetId` is validated server-side with the SAME visibility rule as the
- * manual transaction path (a global catalog asset, or the caller's own custom
- * one). The row's `candidates` are UI suggestions, deliberately NOT the
- * validation boundary: the user may pin anything they could legitimately book
- * by hand, including a custom asset they just created. The hazard this
- * subsystem guards against is a MODEL minting an id, and no model reaches here.
+ * `assetId` pins an unresolved row to an asset (§16 2026-07-31 point 4:
+ * "resolvable IN the wizard … never a dead end and never a silent mis-map").
+ * It is validated server-side with the SAME visibility rule as the manual
+ * transaction path (a global catalog asset, or the caller's own custom one).
+ * The row's `candidates` are UI suggestions, deliberately NOT the validation
+ * boundary: the user may pin anything they could legitimately book by hand,
+ * including a custom asset they just created. The hazard this subsystem guards
+ * against is a MODEL minting an id, and no model reaches here.
+ *
+ * `kind` confirms what an UNDECIDED row is (§16 2026-08-29 gap (b)) — the
+ * caller asserts one member of the frozen wire vocabulary and NOTHING else.
+ * There is deliberately no field for an amount, a date, a quantity or an id:
+ * the server re-runs its own deterministic derivation for the asserted kind
+ * against the fields staging already parsed, so a client can change WHICH
+ * booking a row becomes but can never change the NUMBERS it books. The row's
+ * `confirmableKinds` are the kinds that derivation will accept; a kind outside
+ * that set is refused with the reason. No model is consulted at any point —
+ * this endpoint exists precisely because the machine declined to guess.
+ *
+ * `assetId` became optional in the same change that added `kind`, which is
+ * additive for every existing client: a body carrying only `assetId` is exactly
+ * as valid as it was.
  */
-export const resolveImportRowRequestSchema = z.object({ assetId: z.string().uuid() }).strict();
+export const resolveImportRowRequestSchema = z
+  .object({
+    assetId: z.string().uuid().optional(),
+    kind: importRowKindSchema.optional(),
+  })
+  .strict()
+  .refine((body) => (body.assetId !== undefined) !== (body.kind !== undefined), {
+    message: 'Provide exactly one of assetId or kind.',
+  });
 export type ResolveImportRowRequest = z.infer<typeof resolveImportRowRequestSchema>;
 
 /** One row's apply outcome inside the result report. */

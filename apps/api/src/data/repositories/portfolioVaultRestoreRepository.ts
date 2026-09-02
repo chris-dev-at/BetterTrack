@@ -346,6 +346,15 @@ export async function restorePortfolioVaultGraph(input: {
         ruleTagIds: entity.data.ruleTagIds ?? null,
         // Provenance for `assetId` (#964) — same hand-listed-assembler reason.
         resolvedBy: entity.data.resolvedBy ?? null,
+        // Whether this row's KIND is still an open question (§16 2026-08-29).
+        // This assembler is hand-listed, so an omission here does not fail a
+        // type check — it silently restores the column's DEFAULT. For this one
+        // that default is `false`, i.e. every undecided row of a restored batch
+        // would come back DECIDED: its parsed fields intact, its `error` flag
+        // intact, and no way left to confirm a kind for it. The payload schema
+        // defaults it to false for pre-column documents, which is right for
+        // them and wrong for every document written since.
+        kindUndecided: entity.data.kindUndecided,
       })),
     );
   }

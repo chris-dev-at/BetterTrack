@@ -2166,6 +2166,7 @@
       },
       "startOver": "Import another file",
       "resolveFailed": "That row couldn't be pinned to the asset. Please try again.",
+      "confirmFailed": "That row's kind couldn't be confirmed. Please try again.",
       "pinnedByYou": "Pinned by you",
       "unknownTag": "Deleted tag",
       "step": {
@@ -2236,7 +2237,17 @@
         "unresolvedTitleOne": "{{count}} row without a matched instrument",
         "unresolvedTitleOther": "{{count}} rows without a matched instrument",
         "skippedTitleOne": "{{count}} row we can't import without you",
-        "skippedTitleOther": "{{count}} rows we can't import without you"
+        "skippedTitleOther": "{{count}} rows we can't import without you",
+        "undecidedTitleOne": "{{count}} row we can import once you say what it is",
+        "undecidedTitleOther": "{{count}} rows we can import once you say what they are",
+        "undecidedBody": "We read these rows completely — the file just never says whether they are money in, money out or a trade, and we don't guess about money. Tell us what a row is and it joins the import; the amount and the date stay exactly as the file wrote them.",
+        "undecidedBadge": "Your call",
+        "kindLabel": "What is this row?",
+        "kindPlaceholder": "Choose…",
+        "confirmCta": "Confirm",
+        "bulkTitle": "All the same kind?",
+        "bulkCtaOne": "Confirm {{count}} row as {{kind}}",
+        "bulkCtaOther": "Confirm {{count}} rows as {{kind}}"
       }
     },
     "tabs": {
