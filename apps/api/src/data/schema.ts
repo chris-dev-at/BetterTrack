@@ -2080,12 +2080,17 @@ export const userTaxSettings = pgTable(
  * mirror replicas and every other repository caller share the same contract.
  *
  * A backdated edit re-settles LATER years too (DE loss pots carry forward, AT's
- * moving-average basis propagates), and each of those years is re-settled by an
- * unattached `tax_withholding`/`tax_refund` correction. Migration 0105 marks
- * those years as well, attributing every cash row by
+ * moving-average basis propagates), and a year whose settlement TARGET moved is
+ * re-settled by an unattached `tax_withholding`/`tax_refund` correction.
+ * Migration 0105 marks those years as well, attributing every cash row by
  * `COALESCE(tax_year, executed_at)` so a January correction lands on the prior
  * year it documents. Tax legs attached to a transaction or dividend stay
  * excluded — their parent row's own trigger marks that year.
+ *
+ * That guarantee is deliberately narrower than "every year whose report
+ * changed": a year whose figures move while its target does not (a DE gain
+ * absorbed by the Sparer-Pauschbetrag, a year that is a loss on both sides)
+ * keeps its marker. The 0105 header states why and what closing it would take.
  */
 export const taxYearChanges = pgTable(
   'tax_year_changes',

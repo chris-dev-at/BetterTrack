@@ -237,8 +237,8 @@ describe(`migration ${FANOUT_TARGET}`, () => {
         afterCorrection.find(({ year }) => year === 2024)!.lastChangedAt!.getTime(),
       ).toBeGreaterThan(BASELINE.getTime());
 
-      // A tax leg attached to its parent row stays excluded (the parent's own
-      // trigger marks that year), and a no-op UPDATE still marks nothing.
+      // A tax leg attached to its parent row stays excluded — the parent's own
+      // trigger marks that year.
       await rebaseline();
       await client.exec(`
         INSERT INTO "portfolio_cash_movements" (
@@ -248,11 +248,34 @@ describe(`migration ${FANOUT_TARGET}`, () => {
           '${ATTACHED_TAX_ID}', '${PORTFOLIO_2024_ID}', '${CASH_SOURCE_ID}',
           'tax_withholding', -5, '${TX_2023_ID}', 2023, '2023-06-01T12:00:00Z'
         );
+      `);
+      expect(await taxRepository.listTaxYearChanges(USER_ID)).toEqual(
+        atBaseline([2023, 2024, 2025]),
+      );
+
+      // A no-op UPDATE still marks nothing (0099's guard, carried through).
+      await client.exec(`
         UPDATE "portfolio_cash_movements" SET "tax_year" = 2024 WHERE "id" = '${CORRECTION_ID}';
       `);
       expect(await taxRepository.listTaxYearChanges(USER_ID)).toEqual(
         atBaseline([2023, 2024, 2025]),
       );
+
+      // Re-attributing a correction marks BOTH sides (OLD 2024, NEW 2023) — and
+      // neither is 2025, the year the row is posted in.
+      await client.exec(`
+        UPDATE "portfolio_cash_movements" SET "tax_year" = 2023 WHERE "id" = '${CORRECTION_ID}';
+      `);
+      const afterReattribution = await taxRepository.listTaxYearChanges(USER_ID);
+      expect(afterReattribution.filter(({ year }) => year === 2025)).toEqual(atBaseline([2025]));
+      expect(
+        afterReattribution
+          .filter(({ year }) => year !== 2025)
+          .map(({ year, lastChangedAt }) => [year, lastChangedAt! > BASELINE]),
+      ).toEqual([
+        [2023, true],
+        [2024, true],
+      ]);
     } finally {
       await client.close();
     }

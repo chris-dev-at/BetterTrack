@@ -1,18 +1,45 @@
 -- Living tax-year markers must describe every year whose DOCUMENTATION moved,
--- not only the year whose source row was edited (#1591).
+-- not only the year whose source row was edited (#1591). That is the aim; the
+-- SCOPE paragraph below states exactly how much of it this migration delivers.
 --
 -- A backdated edit re-settles later years: DE loss pots carry forward and AT's
 -- moving-average basis propagates, so amending 2023 changes the 2024 and 2025
 -- reports too. Those later years are re-settled by an UNATTACHED tax correction
 -- (`tax_withholding` / `tax_refund` carrying no transaction or dividend link),
--- written exactly when a year's settlement target moved. 0093 excluded every
+-- written exactly when a year's settlement TARGET moved. 0093 excluded every
 -- tax-kind row from the cash trigger, so a re-settled later year silently kept
--- a stale marker. Including the unattached corrections makes the fan-out match
--- `bettertrack_touch_portfolio_tax_years`, the settings-change precedent.
+-- a stale marker; including the unattached corrections closes that.
+--
+-- SCOPE — read this as the exact guarantee, not as total coverage. The vehicle
+-- is the correction row, so this marks every year whose settlement TARGET
+-- moved, which is NARROWER than every year whose reported figures moved. A
+-- year whose derived numbers change while its target stays put is deliberately
+-- NOT marked here:
+--   * a DE year whose whole gain stays inside the Sparer-Pauschbetrag — a
+--     backdated buy lifting the year's realized gain 400 → 900 leaves the tax
+--     at 0 both times while `realizedPnlEur` and `de.allowanceUsedEur` move;
+--   * any year that is a loss before and after the edit — the carried pot
+--     balance moves, the target is 0 either way.
+-- Detecting those needs the year's PREVIOUS derived output, which nothing
+-- persists: it is a settlement-boundary comparison across all four write paths
+-- (record/delete transaction, record/delete dividend), not a trigger
+-- predicate, so it is left as an owner decision rather than smuggled in here.
+-- `tax.test.ts` pins the DE case as a known boundary so the gap stays a
+-- decision on record. This is therefore also narrower than
+-- `bettertrack_touch_portfolio_tax_years`, which touches every year of a
+-- portfolio unconditionally on a settings change.
+--
+-- Corrections are also posted by the report read's self-heal
+-- (`reconcileLiveYears`), which has two consequences worth stating: a plain
+-- report GET can now move `last_changed_at` — for FX drift, for the
+-- settings-change heal, or for a withholding correction that was deferred for
+-- insufficient cash and posts on a later read — and such a bump carries the
+-- READ's timestamp, not the edit's. 0093's "report self-healing can never
+-- masquerade as a user edit" therefore holds from here on for row-ATTACHED tax
+-- legs only.
 --
 -- Attached tax legs (a sell's or a dividend's own withholding) stay excluded:
--- their parent row's trigger already marks that year, so report self-healing
--- can still never masquerade as a user edit in a year it did not change.
+-- their parent row's trigger already marks that year.
 --
 -- A correction is posted with `executed_at = now()` but BELONGS to its
 -- `tax_year` — January's correction for the prior year is prior-year

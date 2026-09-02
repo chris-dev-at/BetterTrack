@@ -1456,6 +1456,80 @@ describe('living tax-year change markers (#1399)', () => {
     expect((await marker(agent, fundingYear))?.lastChangedAt).toBe(oldMarker.toISOString());
   });
 
+  /**
+   * The KNOWN BOUNDARY of the correction-row fan-out, pinned so it stays a
+   * decision on record instead of a rediscovered bug (#1591 review).
+   *
+   * The vehicle that marks a re-settled later year is its unattached
+   * correction, and one is written only when the year's settlement TARGET
+   * moves. Under DE a backdated buy can lift a later year's realized gain
+   * while the Sparer-Pauschbetrag absorbs all of it: the report changes
+   * (`realizedPnlEur`, `de.allowanceUsedEur`) and the tax does not, so no
+   * correction is written and that year's marker stands still.
+   *
+   * Closing this needs the year's PREVIOUS derived output, which nothing
+   * persists — a settlement-boundary comparison on every write path, not a
+   * trigger predicate (migration 0105's header states the full reasoning).
+   * When that lands, the marker expectation below flips to "moved" and this
+   * test becomes an ordinary fan-out case.
+   */
+  it('does NOT mark a later year the Sparer-Pauschbetrag keeps at zero tax (#1591 boundary)', async () => {
+    const { user, agent, pid, asset } = await setup();
+    const deMode = await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'DE' });
+    expect(deMode.status, JSON.stringify(deMode.body)).toBe(200);
+    const backdatedYear = 2023;
+    const laterYear = 2024;
+    const summaryOf = async (year: number) =>
+      (await yearSummaries(agent, pid)).find((summary) => summary.year === year);
+
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 10,
+      price: 100,
+      executedAt: `${backdatedYear}-06-01T10:00:00.000Z`,
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 10,
+      price: 140,
+      executedAt: `${laterYear}-06-01T10:00:00.000Z`,
+    });
+    // FIFO on the €100 lot: €400 gain, entirely inside the €1 000 allowance.
+    expect(await summaryOf(laterYear)).toMatchObject({
+      realizedPnlEur: 400,
+      taxNetEur: 0,
+      de: { allowanceUsedEur: 400, allowanceRemainingEur: 600 },
+    });
+
+    for (const year of [backdatedYear, laterYear]) await ageMarker(user.id, year);
+
+    // A cheaper lot backdated ahead of the existing one: FIFO now hands the
+    // 2024 sell a €50 basis, so 2024 realizes €900 and consumes €900 of the
+    // allowance. Still zero tax ⇒ zero correction delta ⇒ nothing marks 2024.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 10,
+      price: 50,
+      executedAt: `${backdatedYear}-01-10T10:00:00.000Z`,
+    });
+
+    expect(await summaryOf(laterYear)).toMatchObject({
+      realizedPnlEur: 900,
+      taxNetEur: 0,
+      de: { allowanceUsedEur: 900, allowanceRemainingEur: 100 },
+    });
+    // The edited year moves on its own row's trigger, as always.
+    expect((await marker(agent, backdatedYear))?.lastChangedAt).not.toBe(oldMarker.toISOString());
+    // The documented gap: 2024's report moved and its marker did not.
+    expect((await marker(agent, laterYear))?.lastChangedAt).toBe(oldMarker.toISOString());
+  });
+
   it('marks both the old and the new year when an edit moves a row across New Year (#1591)', async () => {
     const { user, agent, pid, asset } = await setup();
     const fromYear = 2021;
