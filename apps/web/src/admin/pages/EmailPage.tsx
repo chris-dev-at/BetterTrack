@@ -6,7 +6,9 @@ import type { TestEmailResponse } from '@bettertrack/contracts';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
+import { useT } from '../../i18n';
 import { EmailLogTable } from '../components/EmailLogTable';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
 
 function errorMessage(err: unknown): string {
@@ -20,6 +22,7 @@ function errorMessage(err: unknown): string {
  * channel, so a green result here means those work too.
  */
 export function EmailPage() {
+  const t = useT();
   const status = useResource((signal) => api.getEmailStatus(signal), []);
   const loadLog = useCallback(
     (params: { cursor?: string }, signal?: AbortSignal) => api.listEmails(params, signal),
@@ -48,9 +51,15 @@ export function EmailPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
+        eyebrow={t('admin.nav.sections.operations')}
         title="Email"
         description="Check the SMTP channel and send a test message to confirm delivery."
       />
+
+      {/* W4 folds Operations into one tab strip; this page is a tab of it. Its
+          body keeps its pre-existing English copy — the i18n ratchet only ever
+          shrinks, and localizing it is not this package's job. */}
+      <WorkspaceTabs />
 
       <div className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <span className="text-sm text-neutral-400">Channel status</span>

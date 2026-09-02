@@ -10,6 +10,7 @@ export {
   type JobPayload,
   type JobContext,
   type JobDefinition,
+  type JobRunSummary,
   type RepeatSpec,
 } from './types';
 export {

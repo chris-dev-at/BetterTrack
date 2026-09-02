@@ -20,7 +20,9 @@ import { MonitoringPage } from './pages/MonitoringPage';
 import { ApiKeysPage } from './pages/ApiKeysPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { MarketDataPage } from './pages/MarketDataPage';
 import { ProblemsPage } from './pages/ProblemsPage';
+import { ProvidersPage } from './pages/ProvidersPage';
 import { RegistrationPage } from './pages/RegistrationPage';
 import { SupportPage } from './pages/SupportPage';
 import { TestAccountsPage } from './pages/TestAccountsPage';
@@ -87,6 +89,10 @@ function AdminShell() {
         <Route path="audit" element={<AuditPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="problems" element={<ProblemsPage />} />
+        {/* W4 (#1406): the Operations workspace's two new tabs. Every pre-fold
+            path above stays exactly where it was, so bookmarks survive. */}
+        <Route path="providers" element={<ProvidersPage />} />
+        <Route path="market-data" element={<MarketDataPage />} />
         <Route path="monitoring" element={<MonitoringPage />} />
         <Route path="usage-analytics" element={<UsageAnalyticsPage />} />
         <Route path="settings" element={<SettingsPage />} />

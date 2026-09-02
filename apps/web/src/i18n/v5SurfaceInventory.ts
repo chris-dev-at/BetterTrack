@@ -890,9 +890,14 @@ export const NON_V5_SURFACES = [
     note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
   },
   {
+    path: 'admin/components/LiveRefreshControl.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W4 (#1406): the Operations cockpit’s cadence picker and refresh button; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/WorkspaceTabs.tsx',
     reason: 'no-v5-deliverable',
-    note: 'Post-V5 admin rebuild W2 (#1406): the folded People workspace’s tab strip; localized and tested in its own feature change.',
+    note: 'Post-V5 admin rebuild W2 (#1406): the tab strip of a folded workspace — People since W2, Operations since W4; localized and tested in its own feature change.',
   },
   {
     path: 'admin/components/EmailLogTable.tsx',
@@ -935,9 +940,19 @@ export const NON_V5_SURFACES = [
     note: 'V1 invite management (#11); still English-only.',
   },
   {
+    path: 'admin/pages/MarketDataPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W4 (#1406): the Operations workspace’s placeholder for the W5 financial-data inspector.',
+  },
+  {
     path: 'admin/pages/OverviewPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W1 (#1406) operator Overview; localized and tested in its own feature change.',
+  },
+  {
+    path: 'admin/pages/ProvidersPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W4 (#1406): per-capability breaker and market-cache signals; localized and tested in its own feature change.',
   },
   {
     path: 'admin/pages/RegistrationPage.tsx',
@@ -1461,6 +1476,16 @@ export const NON_V5_ROUTES = [
     note: 'Post-V5 admin rebuild W3 (#1406): the split-pane helpdesk — inbox left, thread right, both addressed by query parameters.',
   },
   {
+    path: '/admin/market-data',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W4 (#1406): the Operations tab that holds W5’s place; a placeholder, not the inspector.',
+  },
+  {
+    path: '/admin/providers',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W4 (#1406): per-capability circuit-breaker and market-cache signals, split out of the health page.',
+  },
+  {
     path: '/admin/test-accounts',
     reason: 'no-v5-deliverable',
     note: 'Post-V5 admin rebuild W2 (#1406): the People workspace tab that holds W6’s place; a placeholder, not the factory.',
@@ -1940,8 +1965,17 @@ export type V5AsyncStateDebtLedger = Readonly<
  * live password form. It handles both states itself (a "checking" line while the
  * state loads, a retryable error card when it cannot be read) rather than
  * offering an action nobody verified, so the debt ceiling stays at zero.
+ *
+ * 207 → 209 with the admin rebuild W4 (#1406). Two NEW read sites, both on
+ * `HealthPage`, which W4 turns into the Operations cockpit's landing: the
+ * queue/schedule/dead-letter projection, and the public deploy marker that lets
+ * the page answer "is my merge live?" with a commit rather than an API version
+ * that never changes. Both join the page's existing `AsyncReadState` group, and
+ * the queue read carries its own explicit empty AND unavailable states — an
+ * idle queue set and a process that cannot see the queues are drawn
+ * differently, on purpose. The debt ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 207;
+export const V5_ASYNC_READ_SITE_BASELINE = 209;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -1998,7 +2032,18 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // loading and error at its own read site, and the attention count says
 // "unavailable" rather than rendering a failed read as a confident zero. The
 // debt ceiling below is therefore unchanged.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 79;
+//
+// 79 → 81 with the admin rebuild W4 (#1406), on top of W3. Both new reads
+// belong to the Operations workspace's Providers tab: the per-capability
+// breaker projection and the health read that carries the failover
+// attribution beside it. Each renders `AsyncReadState` for loading and
+// error, and the empty case is explicit in both directions — a provider
+// nobody has called lists no capabilities and says so, rather than
+// reporting a healthy breaker that does not exist. The debt ceiling below
+// is unchanged: neither adds a state gap. (The cockpit's own two new reads
+// — queues and the deploy version — land on HealthPage, which is inside the
+// reviewed V5 inventory, not this ledger.)
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 81;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

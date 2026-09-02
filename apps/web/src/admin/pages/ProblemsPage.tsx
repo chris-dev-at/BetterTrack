@@ -1,13 +1,36 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
-import type { Problem, ProblemKind, ProblemStatus } from '@bettertrack/contracts';
+import {
+  PROBLEM_KINDS,
+  PROBLEM_STATUSES,
+  type Problem,
+  type ProblemKind,
+  type ProblemStatus,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { useAdminMutation } from '../useAdminMutation';
+import { useLiveRefresh } from '../useLiveRefresh';
 import { useResource } from '../useResource';
-import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
+import { LiveRefreshControl } from '../components/LiveRefreshControl';
+import { WorkspaceTabs } from '../components/WorkspaceTabs';
+import { TEXT_MICRO, TEXT_MONO, TEXT_MUTED, TEXT_NUM, type Tone } from '../components/tokens';
+import {
+  Alert,
+  Badge,
+  Button,
+  EmptyState,
+  KeyValueList,
+  PageHeader,
+  Panel,
+  SelectField,
+  Spinner,
+  cx,
+} from '../components/ui';
 
-const KIND_TONE: Record<ProblemKind, 'red' | 'amber' | 'sky'> = {
+const KIND_TONE: Record<ProblemKind, Tone> = {
   error: 'red',
   job: 'amber',
   provider: 'sky',
@@ -16,26 +39,62 @@ const KIND_TONE: Record<ProblemKind, 'red' | 'amber' | 'sky'> = {
 type KindFilter = ProblemKind | 'all';
 type StatusFilter = ProblemStatus | 'all';
 
+const DEFAULT_STATUS: StatusFilter = 'open';
+
+function readKind(raw: string | null): KindFilter {
+  return raw !== null && (PROBLEM_KINDS as readonly string[]).includes(raw)
+    ? (raw as ProblemKind)
+    : 'all';
+}
+
+function readStatus(raw: string | null): StatusFilter {
+  if (raw === 'all') return 'all';
+  return raw !== null && (PROBLEM_STATUSES as readonly string[]).includes(raw)
+    ? (raw as ProblemStatus)
+    : DEFAULT_STATUS;
+}
+
 /**
- * Admin Problems page (PROJECTPLAN.md §13.5 V5-P2 arc (d)). Lists captured
- * problems — unhandled errors, permanently-failed jobs and provider failures —
- * next to Health, with kind/status filters, occurrence counts, an expandable
- * detail (scrubbed message + context) and a resolve/reopen flow. All copy is
- * localized through `admin.problems.*`.
+ * Operations → Problems (§13.5 V5-P2 arc (d); folded into the W4 workspace).
+ *
+ * The capture and the resolve/reopen flow are unchanged — both are already
+ * audit-logged in `problemService`, which is exactly why they survive the
+ * "read-only unless the action already exists and is audited" rule W4 works
+ * under. What W4 changes is the surroundings: the workspace tab strip, the
+ * sharp token layer, filters that live in the URL (so a triage view is a link a
+ * second operator can open), and the shared `useAdminMutation` seam in place of
+ * the page's own `busyId`/`setActionError` pair.
  */
 export function ProblemsPage() {
   const t = useT();
-  const [kind, setKind] = useState<KindFilter>('all');
-  const [status, setStatus] = useState<StatusFilter>('open');
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+
+  const kind = readKind(params.get('kind'));
+  const status = readStatus(params.get('status'));
+
+  const patchQuery = useCallback(
+    (patch: Record<string, string | null>) => {
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          for (const [key, value] of Object.entries(patch)) {
+            if (value === null) next.delete(key);
+            else next.set(key, value);
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
 
   const resource = useResource(
     (signal) =>
       api.listProblems(
         {
-          kind: kind === 'all' ? undefined : kind,
-          status: status === 'all' ? undefined : status,
+          ...(kind === 'all' ? {} : { kind }),
+          ...(status === 'all' ? {} : { status }),
         },
         signal,
       ),
@@ -43,91 +102,116 @@ export function ProblemsPage() {
   );
   const { data, loading, error, reload } = resource;
 
+  const live = useLiveRefresh(reload);
+
+  const resolve = useAdminMutation((id: string) => api.resolveProblem(id), {
+    errorKey: 'admin.problems.actionError',
+    onSuccess: reload,
+  });
+  const reopen = useAdminMutation((id: string) => api.reopenProblem(id), {
+    errorKey: 'admin.problems.actionError',
+    onSuccess: reload,
+  });
+
   const mutate = useCallback(
-    async (id: string, next: ProblemStatus) => {
-      setBusyId(id);
-      setActionError(null);
-      try {
-        if (next === 'resolved') await api.resolveProblem(id);
-        else await api.reopenProblem(id);
-        reload();
-      } catch {
-        setActionError(t('admin.problems.actionError'));
-      } finally {
-        setBusyId(null);
-      }
+    (id: string, next: ProblemStatus) => {
+      void (next === 'resolved' ? resolve.runFor(id, id) : reopen.runFor(id, id));
     },
-    [reload, t],
+    [resolve, reopen],
   );
 
+  const counts =
+    loading || error !== null || !data?.openCount
+      ? undefined
+      : { '/admin/problems': data.openCount };
+
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <PageHeader title={t('admin.problems.title')} description={t('admin.problems.subtitle')} />
-        <Button variant="secondary" onClick={reload}>
-          {t('admin.problems.refresh')}
-        </Button>
-      </div>
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        actions={<LiveRefreshControl busy={loading} live={live} />}
+        description={t('admin.problems.subtitle')}
+        eyebrow={t('admin.nav.sections.operations')}
+        title={t('admin.problems.title')}
+      />
 
-      <div className="flex flex-wrap items-end gap-4">
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          <span className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.filters.kind')}
-          </span>
-          <select
+      <WorkspaceTabs {...(counts ? { counts } : {})} />
+
+      <Panel>
+        <div className="flex flex-wrap items-end gap-3">
+          <SelectField
+            label={t('admin.problems.filters.kind')}
+            onChange={(event) =>
+              patchQuery({ kind: event.target.value === 'all' ? null : event.target.value })
+            }
+            options={[
+              { value: 'all', label: t('admin.problems.filters.all') },
+              ...PROBLEM_KINDS.map((value) => ({
+                value,
+                label: t(`admin.problems.kind.${value}`),
+              })),
+            ]}
             value={kind}
-            onChange={(e) => setKind(e.target.value as KindFilter)}
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100"
-          >
-            <option value="all">{t('admin.problems.filters.all')}</option>
-            <option value="error">{t('admin.problems.kind.error')}</option>
-            <option value="job">{t('admin.problems.kind.job')}</option>
-            <option value="provider">{t('admin.problems.kind.provider')}</option>
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          <span className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.filters.status')}
-          </span>
-          <select
+          />
+          <SelectField
+            label={t('admin.problems.filters.status')}
+            onChange={(event) =>
+              patchQuery({
+                status: event.target.value === DEFAULT_STATUS ? null : event.target.value,
+              })
+            }
+            options={[
+              { value: 'all', label: t('admin.problems.filters.all') },
+              ...PROBLEM_STATUSES.map((value) => ({
+                value,
+                label: t(`admin.problems.status.${value}`),
+              })),
+            ]}
             value={status}
-            onChange={(e) => setStatus(e.target.value as StatusFilter)}
-            className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100"
-          >
-            <option value="all">{t('admin.problems.filters.all')}</option>
-            <option value="open">{t('admin.problems.status.open')}</option>
-            <option value="resolved">{t('admin.problems.status.resolved')}</option>
-          </select>
-        </label>
-        {data ? (
-          <span className="text-xs text-neutral-400">
-            {t('admin.problems.openCount', { count: data.openCount })}
-          </span>
+          />
+          {data ? (
+            <span className={cx(TEXT_MICRO, 'pb-2')}>
+              {t('admin.problems.openCount', { count: data.openCount })}
+            </span>
+          ) : null}
+        </div>
+      </Panel>
+
+      {resolve.error ? <Alert tone="error">{resolve.error}</Alert> : null}
+      {reopen.error ? <Alert tone="error">{reopen.error}</Alert> : null}
+
+      <section aria-busy={loading} aria-label={t('admin.problems.title')}>
+        {loading && data === null ? <Spinner /> : null}
+        {/* Keeps the page's own wording rather than the generic read banner:
+            "couldn't load problems" is what an operator needs to read here, and
+            it is the copy this surface has always shown. */}
+        {error ? (
+          <Alert tone="error">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t('admin.problems.loadError')}</span>
+              <Button onClick={reload} size="sm" variant="secondary">
+                {t('common.retry')}
+              </Button>
+            </div>
+          </Alert>
         ) : null}
-      </div>
 
-      {loading && !data ? <Spinner label={t('common.loading')} /> : null}
-      {error ? <Alert tone="error">{t('admin.problems.loadError')}</Alert> : null}
-      {actionError ? <Alert tone="error">{actionError}</Alert> : null}
+        {data && data.problems.length === 0 ? (
+          <EmptyState>{t('admin.problems.empty')}</EmptyState>
+        ) : null}
 
-      {data && data.problems.length === 0 ? (
-        <p className="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-6 text-center text-sm text-neutral-400">
-          {t('admin.problems.empty')}
-        </p>
-      ) : null}
-
-      {data && data.problems.length > 0 ? (
-        <ul className="flex flex-col gap-3">
-          {data.problems.map((problem) => (
-            <ProblemRow
-              key={problem.id}
-              problem={problem}
-              busy={busyId === problem.id}
-              onMutate={mutate}
-            />
-          ))}
-        </ul>
-      ) : null}
+        {data && data.problems.length > 0 ? (
+          <ul className="flex flex-col gap-3">
+            {data.problems.map((problem) => (
+              <ProblemRow
+                busy={resolve.isPending(problem.id) || reopen.isPending(problem.id)}
+                key={problem.id}
+                onMutate={mutate}
+                problem={problem}
+              />
+            ))}
+          </ul>
+        ) : null}
+      </section>
     </div>
   );
 }
@@ -142,75 +226,82 @@ function ProblemRow({
   onMutate: (id: string, next: ProblemStatus) => void;
 }) {
   const t = useT();
+
   return (
-    <li className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={KIND_TONE[problem.kind]}>{t(`admin.problems.kind.${problem.kind}`)}</Badge>
-            <Badge tone={problem.status === 'open' ? 'amber' : 'green'}>
-              {t(`admin.problems.status.${problem.status}`)}
-            </Badge>
-            <span className="text-sm font-medium text-neutral-100">{problem.title}</span>
+    <li>
+      <Panel padded={false}>
+        <div className="flex flex-col gap-3 p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={KIND_TONE[problem.kind]}>
+                  {t(`admin.problems.kind.${problem.kind}`)}
+                </Badge>
+                <Badge tone={problem.status === 'open' ? 'amber' : 'green'}>
+                  {t(`admin.problems.status.${problem.status}`)}
+                </Badge>
+                <span className="text-[13px] font-medium text-neutral-100">{problem.title}</span>
+              </div>
+              {problem.message ? (
+                <p className={cx('break-words', TEXT_MUTED)}>{problem.message}</p>
+              ) : null}
+            </div>
+            <div className="shrink-0">
+              {problem.status === 'open' ? (
+                <Button
+                  disabled={busy}
+                  onClick={() => onMutate(problem.id, 'resolved')}
+                  size="sm"
+                  variant="secondary"
+                >
+                  {t('admin.problems.resolve')}
+                </Button>
+              ) : (
+                <Button
+                  disabled={busy}
+                  onClick={() => onMutate(problem.id, 'open')}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {t('admin.problems.reopen')}
+                </Button>
+              )}
+            </div>
           </div>
-          {problem.message ? (
-            <p className="break-words text-xs text-neutral-400">{problem.message}</p>
+
+          <KeyValueList
+            rows={[
+              {
+                label: t('admin.problems.occurrencesLabel'),
+                value: <span className={TEXT_NUM}>{problem.occurrenceCount}</span>,
+              },
+              {
+                label: t('admin.problems.firstSeen'),
+                value: new Date(problem.firstSeenAt).toLocaleString(),
+              },
+              {
+                label: t('admin.problems.lastSeen'),
+                value: new Date(problem.lastSeenAt).toLocaleString(),
+              },
+              {
+                label: t('admin.problems.fingerprint'),
+                value: <span className={TEXT_MONO}>{problem.fingerprint}</span>,
+              },
+            ]}
+          />
+
+          {problem.context != null ? (
+            <details className="text-[12px]">
+              <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
+                {t('admin.problems.context')}
+              </summary>
+              <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
+                {JSON.stringify(problem.context, null, 2)}
+              </pre>
+            </details>
           ) : null}
         </div>
-        <div className="shrink-0">
-          {problem.status === 'open' ? (
-            <Button
-              variant="secondary"
-              disabled={busy}
-              onClick={() => onMutate(problem.id, 'resolved')}
-            >
-              {t('admin.problems.resolve')}
-            </Button>
-          ) : (
-            <Button variant="ghost" disabled={busy} onClick={() => onMutate(problem.id, 'open')}>
-              {t('admin.problems.reopen')}
-            </Button>
-          )}
-        </div>
-      </div>
-
-      <dl className="grid grid-cols-2 gap-2 text-xs text-neutral-400 sm:grid-cols-4">
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.occurrencesLabel')}
-          </dt>
-          <dd className="text-neutral-200">{problem.occurrenceCount}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.firstSeen')}
-          </dt>
-          <dd className="text-neutral-200">{new Date(problem.firstSeenAt).toLocaleString()}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.lastSeen')}
-          </dt>
-          <dd className="text-neutral-200">{new Date(problem.lastSeenAt).toLocaleString()}</dd>
-        </div>
-        <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-400">
-            {t('admin.problems.fingerprint')}
-          </dt>
-          <dd className="truncate font-mono text-neutral-300">{problem.fingerprint}</dd>
-        </div>
-      </dl>
-
-      {problem.context != null ? (
-        <details className="text-xs">
-          <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
-            {t('admin.problems.context')}
-          </summary>
-          <pre className="mt-2 overflow-x-auto rounded-md bg-neutral-950 p-3 text-neutral-300">
-            {JSON.stringify(problem.context, null, 2)}
-          </pre>
-        </details>
-      ) : null}
+      </Panel>
     </li>
   );
 }
