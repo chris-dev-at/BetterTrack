@@ -153,6 +153,14 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
  *
  * `snapshotId` rides along because the composition boundary refuses any vaulted
  * value that cannot name the authenticated document set behind it.
+ *
+ * The key is scoped by `accessId` — the ACCESS instance — and not by `vaultId`
+ * or `snapshotId`, both of which survive a dispose-and-re-resolve of the same
+ * vault over the same documents. Under either of those, the rejection a
+ * disposed access throws from `readTotals` (its `isCurrent()` re-check fails)
+ * lands on the key the freshly resolved access then reads, and Home renders
+ * `error` for a portfolio it can read perfectly well — the roll-up's copy of
+ * the paranoid-UX failure map #1 bug.
  */
 export function useUnlockedVaultReads(
   portfolios: readonly PortfolioSummary[],
@@ -163,7 +171,7 @@ export function useUnlockedVaultReads(
     queries: openable.map((portfolio) => {
       const access = unlocked.get(portfolio.id)!;
       return {
-        queryKey: ['portfolio', portfolio.id, 'vaulted-unlocked', access.vaultId],
+        queryKey: ['portfolio', portfolio.id, 'vaulted-unlocked', access.accessId],
         queryFn: ({ signal }: { signal: AbortSignal }) => access.readTotals(signal),
         staleTime: PORTFOLIO_STALE_MS,
       };

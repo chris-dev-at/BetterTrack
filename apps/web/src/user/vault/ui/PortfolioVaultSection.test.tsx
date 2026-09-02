@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PortfolioSummary, VaultConfig } from '@bettertrack/contracts';
@@ -65,12 +65,23 @@ const PORTFOLIO = {
   archivedAt: null,
 } as PortfolioSummary;
 
-function renderSection(capture: Parameters<typeof PortfolioVaultSection>[0]['capture'] = null) {
+/** Reads back where the section left the user standing. */
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="url">{`${location.pathname}${location.search}`}</span>;
+}
+
+function renderSection(
+  capture: Parameters<typeof PortfolioVaultSection>[0]['capture'] = null,
+  onMoved: () => void = () => {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <PortfolioVaultSection capture={capture} onMoved={() => {}} portfolio={PORTFOLIO} />
+      {/* The real entry point: the portfolio's own Settings tab. */}
+      <MemoryRouter initialEntries={[`/portfolio/settings?portfolio=${PORTFOLIO_ID}`]}>
+        <PortfolioVaultSection capture={capture} onMoved={onMoved} portfolio={PORTFOLIO} />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -160,6 +171,51 @@ describe('PortfolioVaultSection', () => {
       'portfolio-vault-move-in',
     );
     expect(mocks.verifySessionPassword).toHaveBeenCalledBefore(capture.captureMoveIn);
+  });
+
+  it('leaves the settings page the move just retired, for the portfolio overview', async () => {
+    // FAILURE MAP #5. A vaulted portfolio has no Settings route: the workspace
+    // collapses its local nav to Overview and renders nothing for every other
+    // tab. Succeeding here therefore emptied the very page the user was
+    // standing on down to the "Unlocked" strip and the footer — the blank page
+    // behind "I moved a portfolio into a vault and I couldn't load it anymore".
+    const user = userEvent.setup();
+    const onMoved = vi.fn();
+    renderSection(
+      { captureMoveIn: vi.fn(async () => ({ docVersion: 4 })), captureMoveOut: vi.fn() },
+      onMoved,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Move into vault' }));
+    await user.selectOptions(screen.getByLabelText('Target vault'), VAULT_ID);
+    await user.type(screen.getByLabelText('Account confirmation'), 'account-secret');
+    await user.click(screen.getAllByRole('button', { name: 'Move into vault' }).at(-1)!);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('url')).toHaveTextContent(`/portfolio?portfolio=${PORTFOLIO_ID}`),
+    );
+    // The roster refresh still runs — the navigation is in addition to it, not
+    // instead of it, or the switcher would keep showing the pre-move name.
+    expect(onMoved).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not navigate when the move itself refuses', async () => {
+    mocks.movePortfolioIntoVault.mockRejectedValue(new Error('refused'));
+    const user = userEvent.setup();
+    renderSection({
+      captureMoveIn: vi.fn(async () => ({ docVersion: 4 })),
+      captureMoveOut: vi.fn(),
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Move into vault' }));
+    await user.selectOptions(screen.getByLabelText('Target vault'), VAULT_ID);
+    await user.type(screen.getByLabelText('Account confirmation'), 'account-secret');
+    await user.click(screen.getAllByRole('button', { name: 'Move into vault' }).at(-1)!);
+
+    await waitFor(() => expect(mocks.movePortfolioIntoVault).toHaveBeenCalled());
+    expect(screen.getByTestId('url')).toHaveTextContent(
+      `/portfolio/settings?portfolio=${PORTFOLIO_ID}`,
+    );
   });
 
   it('blocks the move while the target vault is locked on this device', async () => {

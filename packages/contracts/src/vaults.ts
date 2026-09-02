@@ -148,6 +148,33 @@ export const VAULT_ALIAS_MAX = 120;
 export const vaultAliasSchema = z.string().trim().min(1).max(VAULT_ALIAS_MAX);
 
 /**
+ * The prefix of the content-free value E4 writes into the legacy NOT NULL
+ * `portfolios.name` column of a vaulted stub. The row still has to carry SOME
+ * name; this one carries no information about the portfolio beyond its id.
+ *
+ * It lives in the contract rather than in the repository that mints it because
+ * BOTH sides need it and they need the SAME one: the API writes it
+ * (`vaultedPortfolioStubName`) and the client must be able to recognise it as
+ * "not a name" so it can never reach a screen. A second literal on the client
+ * is exactly the drift that put `__vaulted_portfolio__:<uuid>` into a dialog
+ * subtitle once already (paranoid-UX failure map #6).
+ *
+ * Recognition is the point, not parsing: nothing may read the id back out of
+ * it. `portfolios.id` is the answer to that question.
+ */
+export const VAULTED_PORTFOLIO_STUB_NAME_PREFIX = '__vaulted_portfolio__:';
+
+/** The stub name E4 stores for a portfolio that moved into a vault. */
+export function vaultedPortfolioStubName(portfolioId: string): string {
+  return `${VAULTED_PORTFOLIO_STUB_NAME_PREFIX}${portfolioId}`;
+}
+
+/** True for the server placeholder above — i.e. "this string is not a name". */
+export function isVaultedPortfolioStubName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.startsWith(VAULTED_PORTFOLIO_STUB_NAME_PREFIX);
+}
+
+/**
  * The non-secret HKDF verification tag of a vault's content key (§4) — lets a
  * client confirm "these words open THIS vault" before destructive steps, and
  * rides the QR payload's optional `f` key (§13). base64url, exactly 16 chars.

@@ -66,12 +66,20 @@ export function PortfolioWorkspace() {
   // cold load of the hot path — the page body below already refuses to render
   // anything but a skeleton until the same read resolves, so nothing leaks.
   //
-  // An UNLOCKED vaulted portfolio keeps the strip collapsed too (#1416): the
-  // resolver-backed store serves the overview's derivations and refuses every
-  // row read in a typed way, so the other tabs would be honest-but-empty dead
-  // ends. Offering a tab that can only report unavailability is worse than not
-  // offering it — and the collapse is what today's LOCKED behaviour already is,
-  // so nothing regresses on the way in or out of the vault.
+  // An UNLOCKED vaulted portfolio keeps the strip collapsed too (#1416), but
+  // the reason has narrowed since #1532 and is worth stating exactly, because
+  // the old one ("every row read refuses") is no longer true.
+  //
+  // The resolver-backed store now serves the full row projection set out of the
+  // authenticated document, which is what the Overview's recent-transactions
+  // list and cash-source picker read. What the other tabs need is not that
+  // store: Activity is still a Coming-Soon placeholder, Cash/Analysis/Tax/Import
+  // call the server API modules directly rather than through
+  // `usePortfolioStore`, and for a sealed portfolio the server has nothing to
+  // answer with. Routing those surfaces at the store seam is its own piece of
+  // work; until then, offering a tab that can only report unavailability is
+  // worse than not offering it — and the collapse is what today's LOCKED
+  // behaviour already is, so nothing regresses on the way in or out of the vault.
   const visibleItems = vaulted ? items.filter((item) => item.to === '/portfolio') : items;
   // The one route the client store can answer. Deep-linking to any other
   // portfolio tab while unlocked lands on the strip alone rather than on a page

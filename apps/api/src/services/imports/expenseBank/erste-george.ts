@@ -14,8 +14,11 @@ import {
  *
  *   Buchungsdatum;Valutadatum;Partnername;Verwendungszweck;Betrag;Währung
  *
- * Dates are `DD.MM.YYYY` (or ISO), amounts German notation (`-38,20` / `2.500,00`)
- * whose sign gives the direction. `Partnername` (the counterparty) is the primary
+ * Dates are `DD.MM.YYYY` (or ISO), amounts GERMAN notation (`-38,20` /
+ * `2.500,00` — comma decimal, dot thousands) whose sign gives the direction;
+ * they are parsed by the framework's German-notation `parseDecimal`, which is
+ * the correct helper for this export (unlike the English N26/Revolut files).
+ * `Partnername` (the counterparty) is the primary
  * description, falling back to `Verwendungszweck` (the purpose text). Distinct
  * from the SECURITIES `george` broker mapper — that one carries ISIN/Stück/Kurs;
  * this account export carries Partnername/Verwendungszweck, so they never
@@ -60,6 +63,8 @@ export const ersteGeorgeMapper: BankStatementMapper = {
         raw: record.raw,
         dateRaw: cell(record, date),
         amountRaw: cell(record, amount),
+        // GERMAN notation (`2.500,00`) — the framework parser is correct here.
+        notation: 'german',
         currencyRaw: cell(record, currency),
         description: firstNonEmpty(cell(record, payee), cell(record, purpose)),
       }),

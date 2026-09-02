@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { useQueries, useQuery } from '@tanstack/react-query';
 
@@ -8,6 +9,7 @@ import { useT } from '../../../i18n';
 import { listVaults, VAULTS_QUERY_KEY } from '../../../lib/vaultApi';
 import { Button, SectionHead, SkeletonBlock } from '../../../ui/origin';
 import { isVaultedPortfolio } from '../../portfolio/lockedPortfolio';
+import { portfolioSearch } from '../../portfolio/PortfolioSwitcher';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import {
   moveInPreconditions,
@@ -37,6 +39,7 @@ export function PortfolioVaultSection({
   capture?: PortfolioVaultMoveCapture | null;
 }) {
   const t = useT();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [selectedVaultId, setSelectedVaultId] = useState<string | null>(null);
   const vaultsQuery = useQuery({
@@ -92,6 +95,16 @@ export function PortfolioVaultSection({
             await submitPortfolioMoveIn({ portfolio, vault, stepUp, capture });
             setOpen(false);
             onMoved();
+            // LEAVE THE PAGE THE MOVE JUST RETIRED (failure map #5). A vaulted
+            // portfolio has no Settings route — the workspace collapses its
+            // local nav to Overview and renders nothing for every other tab —
+            // so a successful move-in left the user standing on a settings page
+            // that had just emptied itself down to the strip and the footer.
+            // That blank page is almost certainly the "I moved a portfolio into
+            // a vault and I couldn't load it anymore" the owner reported.
+            // Overview is the one surface this portfolio still has, and it is
+            // also where the move's result is visible.
+            navigate({ pathname: '/portfolio', search: portfolioSearch(portfolio.id) });
           }}
           onTargetChange={setSelectedVaultId}
           portfolioName={portfolio.name}

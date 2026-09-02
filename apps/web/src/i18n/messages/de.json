@@ -1494,6 +1494,7 @@
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
+      "vaultedLoadError": "Dieses Portfolio konnte gerade nicht aus seinem Tresor gelesen werden. Der Tresor bleibt auf diesem Ger\u00e4t offen \u2014 versuche es erneut.",
       "detailsLoadError": "Einige Portfolio-Details konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyState": {
         "title": "Dein Portfolio ist leer",
@@ -3727,6 +3728,7 @@
       "deferred": {
         "rotate": "Das Wechseln der Wiederherstellungswörter ist noch nicht verfügbar: Es braucht einen geprüften Durchlauf auf jedem Speicher dieses Tresors. Bis dahin bleiben dieser Tresor und seine Wörter genau so, wie sie sind.",
         "startFresh": "Neu anfangen ist noch nicht verfügbar: Das Verwerfen der verschlüsselten Kopien braucht denselben geprüften Speicher-Durchlauf. Um einen Tresor heute zu entfernen, bewege seine Portfolios hinaus und lösche ihn.",
+        "changeMedia": "Das Ändern des Tresor-Speicherorts ist noch nicht verfügbar: Dieser Build kann einen Tresor nur auf dem BetterTrack-Server speichern, es gibt also nichts, worauf du wechseln könntest. Dein Tresor und alles darin bleiben genau so, wie sie sind.",
         "scanQr": "Das Scannen eines Transfer-QR-Codes ist noch nicht verfügbar. Gib die 12 Wörter stattdessen auf diesem Gerät ein.",
         "restore": "Das Auswählen einer älteren verschlüsselten Kopie ist noch nicht verfügbar. Jede Kopie bleibt erhalten — keine wird verworfen — und die aktuelle Kopie dieses Tresors bleibt nutzbar."
       },
@@ -3885,7 +3887,9 @@
         "action": "In den Tresor verschieben",
         "working": "Portfolio wird in den Tresor verschoben…",
         "done": "Das Portfolio ist im Tresor verschlüsselt und auf dem Server gesperrt.",
-        "error": "Das Portfolio wurde nicht verschoben. Seine Serverdaten sind unverändert."
+        "error": "Das Portfolio wurde nicht verschoben. Seine Serverdaten sind unverändert.",
+        "captureInFlight": "Das Portfolio wurde nicht verschoben, und ein erneuter Versuch hilft nicht. In diesem Tresor liegt noch ein unfertiger Umzug von {{portfolios}}. Schließe diesen Umzug zuerst ab oder brich ihn ab, und verschiebe dieses Portfolio danach hinein. Seine Serverdaten sind unverändert.",
+        "captureInFlightUnnamed": "Das Portfolio wurde nicht verschoben, und ein erneuter Versuch hilft nicht. In diesem Tresor liegt noch der unfertige Umzug eines anderen Portfolios. Schließe diesen Umzug zuerst ab oder brich ihn ab, und verschiebe dieses Portfolio danach hinein. Seine Serverdaten sind unverändert."
       },
       "moveOut": {
         "title": "Portfolio aus dem Tresor verschieben",

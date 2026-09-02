@@ -813,6 +813,49 @@ describe('captureMoveIn', () => {
     });
   });
 
+  /**
+   * #1530's user-facing half. The server's exact-set attestation refuses with
+   * `VAULT_MEDIA_CAPTURE_IN_FLIGHT` when another portfolio's interrupted
+   * move-in still holds a prospective blob in the vault. Nothing in the client
+   * read that code before, so the wizard could only offer a retry that can
+   * never succeed.
+   */
+  it('translates the in-flight attestation refusal into a NAMED terminal error', async () => {
+    const other = '018f0000-0000-7000-8000-0000000000bb';
+    harness.state.roster = [
+      ...harness.state.roster,
+      // Still PLAIN — which is exactly the #1530 shape: its destructive commit
+      // was refused, so the portfolio never became a member, but the
+      // prospective blob it staged is still sitting in the vault.
+      { ...PLAIN_PORTFOLIO, id: other, name: 'Interrupted portfolio' } as PortfolioSummary,
+    ];
+    harness.api.transitionVaultMedia = (async () => {
+      throw new ApiError(
+        412,
+        'VAULT_MEDIA_CAPTURE_IN_FLIGHT',
+        'The readback omits documents an interrupted portfolio move-in staged.',
+        { portfolioIds: [other] },
+      );
+    }) as PortfolioMoveCaptureApi['transitionVaultMedia'];
+
+    const rejection = expect(runMoveIn(harness)).rejects;
+    // TERMINAL, not retryable: no readback of THIS portfolio's documents can
+    // ever cover the other portfolio's staged blob.
+    await rejection.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_CAPTURE_IN_FLIGHT',
+      retryable: false,
+      // Named, so the surface can say WHICH move has to be finished first.
+      blockingPortfolios: ['Interrupted portfolio'],
+    });
+    // The refusal lands on the CLOSING attestation, so this vault now also
+    // holds this portfolio's prospective documents — encrypted, inactive, and
+    // never committed. What matters is that no attestation was accepted, which
+    // is what E4's destructive commit checks before it deletes anything.
+    await rejection.toMatchObject({ retryable: false });
+    expect(harness.attestations).toEqual([]);
+  });
+
   it('refuses a Drive-carrying vault outright', async () => {
     await expect(
       capture(harness).captureMoveIn({

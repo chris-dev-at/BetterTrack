@@ -90,16 +90,42 @@ function renderRollup(portfolios: PortfolioSummary[]) {
   );
 }
 
-function access(isCurrent: () => boolean) {
+/**
+ * `accessId` is the ONLY thing that distinguishes two accesses over the same
+ * vault and the same documents — `vaultId` and `snapshotId` are deliberately
+ * held constant here, because that is the shape the roll-up's cache key has to
+ * survive (see `useUnlockedVaultReads`).
+ */
+function access(
+  isCurrent: () => boolean,
+  options: { accessId?: string; readTotals?: () => Promise<never> } = {},
+) {
   return {
+    accessId: options.accessId ?? 'vault-access-1',
     portfolioId: VAULTED.id,
     vaultId: VAULT_ID,
     portfolio: VAULTED,
     store: apiPortfolioStore,
     isCurrent,
-    readTotals: async () => ({ totals: TOTALS, snapshotId: 'vault-document-set-v1:test' }),
+    readTotals:
+      options.readTotals ??
+      (async () => ({ totals: TOTALS, snapshotId: 'vault-document-set-v1:test' })),
     dispose: () => {},
   };
+}
+
+/**
+ * What a DISPOSED access does: `readTotals` derives, then re-checks currency
+ * and refuses rather than reporting a figure branded with a snapshot that is no
+ * longer live (`resolvedPortfolioStore.readTotals`).
+ */
+function disposedAccess(accessId: string) {
+  return access(() => true, {
+    accessId,
+    readTotals: async () => {
+      throw new Error('The vault locked while its portfolio totals were read.');
+    },
+  });
 }
 
 beforeEach(() => {
@@ -139,6 +165,47 @@ describe('Home roll-up over an unlocked vault', () => {
     // The composition boundary refuses the value rather than trusting the map.
     expect(screen.getByTestId('coverage')).toHaveTextContent('partial');
     expect(screen.getByTestId('total')).toHaveTextContent(String(TOTALS.totalValueEur));
+  });
+
+  it('does not serve a disposed access’s rejection to the one that replaced it', async () => {
+    // The roll-up's copy of paranoid-UX failure map #1. Unlocking a second
+    // vault disposes the whole batch and re-resolves; the disposed access's
+    // in-flight `readTotals` then refuses. Keyed by `vaultId` (or by
+    // `snapshotId` — both survive a re-resolve over unchanged documents) that
+    // refusal lands under the key the LIVE access reads, and Home reports an
+    // error for a portfolio it can read perfectly well.
+    mocks.useVaultedPortfolioStores.mockReturnValue({
+      unlocked: new Map([[VAULTED.id, disposedAccess('vault-access-dead')]]),
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (portfolios: PortfolioSummary[]) => (
+      <QueryClientProvider client={client}>
+        <PortfolioStoreProvider
+          store={{
+            ...apiPortfolioStore,
+            getPortfolio: async () => ({
+              baseCurrency: 'EUR' as const,
+              holdings: [],
+              totals: TOTALS,
+            }),
+          }}
+        >
+          <Probe portfolios={portfolios} />
+        </PortfolioStoreProvider>
+      </QueryClientProvider>
+    );
+    const view = render(tree([PLAIN, VAULTED]));
+
+    // The dead access's refusal is stated, because for THAT access it is true.
+    await waitFor(() => expect(screen.getByTestId('coverage')).toHaveTextContent('partial'));
+
+    mocks.useVaultedPortfolioStores.mockReturnValue({
+      unlocked: new Map([[VAULTED.id, access(() => true, { accessId: 'vault-access-live' })]]),
+    });
+    view.rerender(tree([PLAIN, VAULTED]));
+
+    await waitFor(() => expect(screen.getByTestId('coverage')).toHaveTextContent('complete'));
+    expect(screen.getByTestId('total')).toHaveTextContent(String(TOTALS.totalValueEur * 2));
   });
 
   it('reports unknown rather than a lone client total when the plain member fails', async () => {

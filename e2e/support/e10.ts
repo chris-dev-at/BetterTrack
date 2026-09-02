@@ -84,7 +84,10 @@ export const E10_TRACEABILITY = [
     arc: 'Drive-only vault round trip',
     assertion: '[E10-A5] Drive storage is refused honestly, not offered',
     status: 'blocked',
-    note: 'PER_VAULT_DRIVE_PROVISIONING_AVAILABLE is false; [PD9-A3] covers the v1 account-level round trip.',
+    note:
+      'PER_VAULT_DRIVE_PROVISIONING_AVAILABLE is false. [PD9-A3] used to cover the v1 ' +
+      'account-level round trip; it is quarantined since the §16 2026-08-30 ruling retired ' +
+      'the v1 enable entry point, so no Drive medium has e2e coverage today.',
   },
   {
     arc: 'two-users-one-Drive isolation',
