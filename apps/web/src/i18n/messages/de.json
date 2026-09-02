@@ -2166,6 +2166,7 @@
       },
       "startOver": "Weitere Datei importieren",
       "resolveFailed": "Die Zeile konnte nicht mit der Anlage verknüpft werden. Bitte versuche es erneut.",
+      "confirmFailed": "Der Typ dieser Zeile konnte nicht bestätigt werden. Bitte versuche es erneut.",
       "pinnedByYou": "Von dir zugeordnet",
       "unknownTag": "Gelöschter Tag",
       "step": {
@@ -2236,7 +2237,17 @@
         "unresolvedTitleOne": "{{count}} Zeile ohne zugeordnete Anlage",
         "unresolvedTitleOther": "{{count}} Zeilen ohne zugeordnete Anlage",
         "skippedTitleOne": "{{count}} Zeile können wir ohne dich nicht importieren",
-        "skippedTitleOther": "{{count}} Zeilen können wir ohne dich nicht importieren"
+        "skippedTitleOther": "{{count}} Zeilen können wir ohne dich nicht importieren",
+        "undecidedTitleOne": "{{count}} Zeile können wir importieren, sobald du sagst, was sie ist",
+        "undecidedTitleOther": "{{count}} Zeilen können wir importieren, sobald du sagst, was sie sind",
+        "undecidedBody": "Diese Zeilen haben wir vollständig gelesen — in der Datei steht nur nicht, ob es Geld ein, Geld aus oder ein Handel ist, und bei Geld raten wir nicht. Sag uns, was eine Zeile ist, dann kommt sie mit; Betrag und Datum bleiben genau so, wie sie in der Datei stehen.",
+        "undecidedBadge": "Deine Entscheidung",
+        "kindLabel": "Was ist diese Zeile?",
+        "kindPlaceholder": "Bitte wählen…",
+        "confirmCta": "Bestätigen",
+        "bulkTitle": "Alle vom selben Typ?",
+        "bulkCtaOne": "{{count}} Zeile als {{kind}} bestätigen",
+        "bulkCtaOther": "{{count}} Zeilen als {{kind}} bestätigen"
       }
     },
     "tabs": {
