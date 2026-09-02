@@ -6,6 +6,8 @@ import {
   type ColumnMapResult,
   type HeaderMappingAiContext,
 } from './columnMapping';
+import { stripDecimalDecoration } from './csv';
+import { deriveRowForKind } from './kindDerivation';
 import { classifyRows, type ClassifiableRow, type ClassifyContext } from './rowClassifier';
 import {
   parseLocalizedDay,
@@ -13,7 +15,7 @@ import {
   sniffFlagsByRow,
   type SniffedTable,
 } from './table';
-import type { MappedLine, NormalizedImportRow } from './types';
+import type { MappedLine, PendingKindFields } from './types';
 
 /**
  * The GENERIC staging path (#964, §16 2026-07-31: "IMPORT IS A WIZARD THAT
@@ -56,6 +58,23 @@ import type { MappedLine, NormalizedImportRow } from './types';
  *    (§14), this path has no broker-specific knowledge of how a file states its
  *    conversion, and silently treating 500 USD as 500 EUR is a money defect. A
  *    trade keeps its native currency, exactly as the broker mappers do.
+ *
+ * ── REPORTED IS NOT ALWAYS FINAL (§16 2026-08-29 gap (b)) ─────────────────────
+ *
+ * The first two of those are a MISSING DECISION; the rest are a missing or
+ * unusable VALUE. They read identically in the preview and they used to be
+ * identical in staging too — every `!ok` line was persisted with all columns
+ * null, so a Raiffeisen ELBA statement (no booking-type column: every row a
+ * memo plus a signed amount) previewed perfectly and could never be imported.
+ *
+ * So a row held back only by the kind question now keeps its parsed fields
+ * ({@link PendingKindFields}) and can be finished by a person through
+ * `PATCH /imports/:batchId/rows/:rowId`, which re-runs `deriveRowForKind`
+ * against exactly those fields. The machine still refuses to guess — that is
+ * unchanged and is the whole reason the question reaches a human at all.
+ *
+ * The kind-independent gates therefore run FIRST below: a row whose date cannot
+ * be read has nothing to confirm, and offering the question would be a lie.
  *
  * ── WHERE THE MODEL IS, AND IS NOT ────────────────────────────────────────────
  *
@@ -122,8 +141,13 @@ export interface GenericStagingContext {
 }
 
 /** Project the wire view of what the pipeline understood about the file. */
-function toUnderstanding(table: SniffedTable, mapping: ColumnMapResult): ImportUnderstanding {
+function toUnderstanding(
+  table: SniffedTable,
+  mapping: ColumnMapResult,
+  amountsSigned: boolean,
+): ImportUnderstanding {
   return {
+    amountsSigned,
     mappings: mapping.mappings.map((m) => ({
       header: m.header,
       field: m.field,
@@ -207,27 +231,51 @@ export async function stageGenericFile(
 
   const verdicts = await classifyRows(classifiable, ctx.rows ?? {});
 
+  /**
+   * Does this file's amount column carry SIGNS? One explicitly signed cell
+   * anywhere settles it — a column that marks direction marks it throughout, so
+   * its unmarked positives are inflows rather than unsigned magnitudes.
+   *
+   * A property of the FILE, decided once over every row, because a single row
+   * cannot tell you: `2100.00` is exactly as consistent with "money in" as with
+   * "the amount, direction stated elsewhere". It travels on the understanding
+   * and is what lets a later confirmation refuse the wrong direction.
+   *
+   * IT READS THE RAW CELL, NOT THE PARSED NUMBER, and that is the whole point:
+   * `parseDecimal` strips a leading `+` on its way to the value (correctly —
+   * `+2.100,00` IS 2100), so asking the parsed number "are you negative?" reads
+   * a statement of nothing but explicit `+` credits as UNSIGNED. Every row of
+   * such a file was then confirmable as a withdrawal, and the wizard's bulk bar
+   * offered "confirm these as withdrawals" over unmistakable inflows. The sign
+   * survives only here, before the parse, so it is captured here.
+   */
+  const statesSign = (raw: string | null): boolean => {
+    if (raw === null) return false;
+    // The SAME decoration stripper the parsers use, so `+1.000,00 EUR` and a
+    // bare `+5` answer alike and a future decoration rule cannot make the two
+    // disagree.
+    const bare = stripDecimalDecoration(raw);
+    return bare !== null && (bare.startsWith('+') || bare.startsWith('-'));
+  };
+  const amountsSigned = projected.some(
+    (row) => row.amountNum !== null && (row.amountNum < 0 || statesSign(row.amount)),
+  );
+  const derivation = { amountsSigned };
+
   const lines: MappedLine[] = projected.map((row) => {
     const raw = rawLine(row.cells, table.delimiter);
     const verdict = verdicts[row.index];
     const fail = (error: string): MappedLine => ({ line: row.line, raw, ok: false, error });
 
     if (!verdict) return fail('This row could not be classified.');
-    if (!isBookable(verdict.kind)) {
-      return fail(
-        verdict.kind === 'unknown'
-          ? `This row could not be identified as a trade, dividend or cash movement (${verdict.evidence}).`
-          : `This row looks like a ${verdict.kind} entry, which is not imported on its own — ` +
-              'it belongs to the transaction it was charged on.',
-      );
-    }
-    if (verdict.needsReview) {
-      return fail(
-        `This row needs a human decision before it can be imported — read as ` +
-          `"${verdict.kind}" with low confidence (${verdict.evidence}).`,
-      );
-    }
 
+    // ── The kind-INDEPENDENT gates run first ─────────────────────────────────
+    // They used to run after the classifier's verdict, which was harmless while
+    // every unbookable row was equally final. It is not harmless now: a row
+    // reported as "needs a human decision" while its real blocker is an
+    // unreadable date would offer a confirmation that could never derive
+    // anything. Whatever is missing here is missing for EVERY kind, so it is
+    // the honest reason to show, and such a row is not confirmable.
     if (row.date === null) return fail('This row has no readable date.');
     if (table.dateLocaleAmbiguous) {
       return fail(
@@ -239,69 +287,58 @@ export async function stageGenericFile(
     if (executedAt === null)
       return fail(`"${row.date}" is not a date this file's format explains.`);
 
-    const kind: ImportRowKind = verdict.kind;
-    const currency = rowCurrency(row.currency, table);
-    const feeNum = row.fee === null ? null : parseLocalizedDecimal(row.fee, table.numberLocale);
-
-    if (kind === 'buy' || kind === 'sell') {
-      if (row.quantityNum === null || row.priceNum === null) {
-        return fail('This row reads as a trade but has no readable quantity and price.');
-      }
-      if (row.symbol === null && row.isin === null && row.description === null) {
-        return fail('This row reads as a trade but names no instrument.');
-      }
-      const normalized: NormalizedImportRow = {
-        kind,
-        executedAt,
-        isin: row.isin,
-        symbol: row.symbol,
-        name: row.description,
-        // Side is carried by `kind`, so magnitude is what the columns mean —
-        // a file writing a sale as a negative quantity states the same trade.
-        quantity: Math.abs(row.quantityNum),
-        price: Math.abs(row.priceNum),
-        fee: feeNum === null ? null : Math.abs(feeNum),
-        amountEur: null,
-        currency,
-        note: row.description,
-      };
-      return { line: row.line, raw, ok: true, row: normalized };
-    }
-
-    // dividend / deposit / withdrawal — the EUR-only side of the ledger (§14).
-    if (row.amountNum === null) {
-      return fail(`This row reads as a ${kind} but has no readable amount.`);
-    }
-    if (currency !== 'EUR') {
-      return fail(
-        `This row is stated in ${currency}, and cash and dividends are recorded in EUR — ` +
-          'convert the export, or import this file through its broker mapper.',
-      );
-    }
-    if (
-      kind === 'dividend' &&
-      row.symbol === null &&
-      row.isin === null &&
-      row.description === null
-    ) {
-      return fail('This row reads as a dividend but names no instrument.');
-    }
-    const normalized: NormalizedImportRow = {
-      kind,
+    // Everything the row parsed, kind still open. This is what a later
+    // confirmation derives from — the upload itself is never retained.
+    const fields: PendingKindFields = {
       executedAt,
-      isin: kind === 'dividend' ? row.isin : null,
-      symbol: kind === 'dividend' ? row.symbol : null,
-      name: kind === 'dividend' ? row.description : null,
-      quantity: null,
-      price: null,
-      fee: null,
-      // Direction is carried by `kind`; staging stores the positive magnitude.
-      amountEur: Math.abs(row.amountNum),
-      currency,
+      isin: row.isin,
+      symbol: row.symbol,
+      name: row.description,
+      quantity: row.quantityNum,
+      price: row.priceNum,
+      fee: row.fee === null ? null : parseLocalizedDecimal(row.fee, table.numberLocale),
+      amount: row.amountNum,
+      currency: rowCurrency(row.currency, table),
       note: row.description,
     };
-    return { line: row.line, raw, ok: true, row: normalized };
+
+    // ── The kind question ────────────────────────────────────────────────────
+    // A row the classifier will not settle is REPORTED exactly as before — and
+    // now carries its parsed fields, so the wizard can offer "this row is a …"
+    // and the server can derive the booking from what it read rather than from
+    // anything the client sends (§16 2026-08-29 gap (b)).
+    const undecided = (error: string): MappedLine => ({
+      line: row.line,
+      raw,
+      ok: false,
+      error,
+      pending: fields,
+    });
+
+    if (!isBookable(verdict.kind)) {
+      return undecided(
+        verdict.kind === 'unknown'
+          ? `This row could not be identified as a trade, dividend or cash movement (${verdict.evidence}).`
+          : `This row looks like a ${verdict.kind} entry, which is not imported on its own — ` +
+              'it belongs to the transaction it was charged on.',
+      );
+    }
+    if (verdict.needsReview) {
+      return undecided(
+        `This row needs a human decision before it can be imported — read as ` +
+          `"${verdict.kind}" with low confidence (${verdict.evidence}).`,
+      );
+    }
+
+    const kind: ImportRowKind = verdict.kind;
+    const derived = deriveRowForKind(kind, fields, derivation);
+    // A kind the classifier was SURE of that the derivation cannot build is a
+    // plain error, not a question: the machine's reading and the row's content
+    // disagree, and asking a person to re-assert the same kind would not change
+    // what the row is missing.
+    if (!derived.ok) return fail(derived.error);
+    return { line: row.line, raw, ok: true, row: derived.row };
   });
 
-  return { understanding: toUnderstanding(table, mapping), lines };
+  return { understanding: toUnderstanding(table, mapping, amountsSigned), lines };
 }
