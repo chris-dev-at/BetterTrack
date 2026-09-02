@@ -246,7 +246,13 @@ function UndecidedRow({
           <span className="bt-muted">{row.executedAt ? formatDate(row.executedAt) : EM_DASH}</span>
           {row.amountEur === null ? null : (
             <span className="bt-row-title">
-              <MoneyText amount={row.amountEur} currency="EUR" />
+              {/* The row's OWN currency, not EUR. An undecided row has not been
+                  shaped by a kind yet, so it still carries whatever the file
+                  stated — and a non-EUR cash row is refused at confirmation
+                  with that currency named. Rendering it as EUR would show the
+                  user a number in a currency the server is about to argue
+                  with. */}
+              <MoneyText amount={row.amountEur} currency={row.currency ?? 'EUR'} />
             </span>
           )}
         </span>

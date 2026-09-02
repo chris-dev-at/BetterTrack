@@ -59,6 +59,25 @@ const UNSIGNED_TRADE = [
   '12.01.2024;Muster Tech AG;10;100,00;EUR;DE000MUSTER1',
 ].join('\n');
 
+/**
+ * A zero-amount line beside a real one. Banks emit these (a reversal netted to
+ * nothing, a 0,00 notice line), and zero carries no direction at all — the cash
+ * ledger's own CHECK says so: `amount_eur > 0` for money in, `< 0` for money
+ * out, "never zero (the ledger never guesses)".
+ */
+const ZERO_AMOUNT = [
+  'Datum;Buchungstext;Betrag;Währung',
+  '05.01.2024;IRGENDEIN VORGANG A;0,00;EUR',
+  '18.01.2024;MIETE JAENNER;-780,00;EUR',
+].join('\n');
+
+/** A statement that signs its inflows with an explicit `+`, and nothing else. */
+const EXPLICIT_PLUS = [
+  'Datum;Buchungstext;Betrag;Währung',
+  '05.01.2024;GEHALT ARBEITGEBER AG;+2.100,00;EUR',
+  '09.01.2024;ERSTATTUNG VERSICHERUNG;+1.000,00;EUR',
+].join('\n');
+
 type Agent = ReturnType<typeof request.agent>;
 
 let harness: TestHarness;
@@ -383,6 +402,120 @@ describe('a person confirms the kind and the statement imports', () => {
   });
 });
 
+describe('a zero amount is not a direction, and cannot be confirmed as one', () => {
+  /**
+   * THE DEFECT THIS PINS (review F1). Zero was treated as "no sign signal", and
+   * the cash branch only refused a NULL amount — so a `0,00` line was offered
+   * deposit, withdrawal AND dividend, confirmed 200, staged `mapped`, and then
+   * met `portfolio_cash_movements_sign` at apply: `amount_eur > 0` for money in,
+   * `< 0` for money out, never zero.
+   *
+   * That CHECK raises a raw PostgresError, not an `ApiError`, so it escaped the
+   * per-row catch — AFTER `claimPendingBatch` had already flipped the batch to
+   * `applied`. The batch was then terminally applied with the rest of its rows
+   * never booked and every retry a 409: the exact silent-drop class this
+   * subsystem exists to prevent, reached through a control this PR added.
+   */
+  it('offers nothing for a 0,00 row, and refuses every kind for it', async () => {
+    const { agent, pid } = await setup();
+    const preview = await upload(agent, pid, ZERO_AMOUNT, 'zero.csv');
+
+    const zero = rowByRaw(preview, 'IRGENDEIN VORGANG A');
+    expect(zero.flag).toBe('error');
+    // No question is asked, because no answer could be booked.
+    expect(zero.confirmableKinds).toBeUndefined();
+
+    // Every kind is refused. The three cash kinds are refused FOR the zero —
+    // the trade kinds were never derivable here anyway (no quantity, no price),
+    // and say so, because the honest reason is the one a person can act on.
+    for (const kind of ['deposit', 'withdrawal', 'dividend'] as const) {
+      const res = await confirm(agent, preview.batch.id, zero.id, kind);
+      expect(res.status, `${kind} must be refused`).toBe(400);
+      expect(res.body.error.code).toBe('IMPORT_ROW_KIND_UNSUPPORTED');
+      expect(res.body.error.message).toMatch(/zero/i);
+    }
+    for (const kind of ['buy', 'sell'] as const) {
+      const res = await confirm(agent, preview.batch.id, zero.id, kind);
+      expect(res.status, `${kind} must be refused`).toBe(400);
+      expect(res.body.error.code).toBe('IMPORT_ROW_KIND_UNSUPPORTED');
+    }
+
+    // …and the row beside it is unaffected: per-row tolerance, as ever.
+    expect(rowByRaw(preview, 'MIETE JAENNER').confirmableKinds).toEqual(['withdrawal']);
+  });
+
+  it('never lets one bad row strand a batch, whatever the failure is', async () => {
+    const { agent, user, pid } = await setup();
+    await fundMain(agent, pid, 1000);
+    const staged = await upload(agent, pid);
+    for (const [needle, kind] of [
+      ['MIETE JAENNER', 'withdrawal'],
+      ['GEHALT ARBEITGEBER AG', 'deposit'],
+    ] as const) {
+      expect(
+        (await confirm(agent, staged.batch.id, rowByRaw(staged, needle).id, kind)).status,
+      ).toBe(200);
+    }
+
+    // A RAW failure — a DB constraint, a driver error, anything that is not an
+    // ApiError — on one row. Before the fix this escaped `applyRow`'s catch and
+    // left the batch claimed-but-unapplied.
+    const imports = createImportService({
+      importRepo: createImportRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      cashRuleRepo: createCashRuleRepository(harness.db),
+      cashTagRepo: createCashTagRepository(harness.db),
+      search: harness.ctx.search,
+      portfolio: {
+        ...harness.ctx.portfolio,
+        withdrawCash: async () => {
+          throw new Error('new row for relation violates check constraint');
+        },
+      } as typeof harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [],
+    });
+
+    const report = await imports.applyBatch(user.id, staged.batch.id, {});
+    // The batch completed. The failing row is REPORTED, its neighbour booked.
+    expect(report.rows.find((r) => r.kind === 'withdrawal')?.result).toBe('failed');
+    expect(report.rows.find((r) => r.kind === 'deposit')?.result).toBe('applied');
+    expect(report.applied).toBe(1);
+    expect(report.failed).toBe(1);
+  });
+});
+
+describe('a file that signs its inflows with a plus is a signed file', () => {
+  /**
+   * REVIEW F2. `amountsSigned` asked only "is any amount negative?", and the
+   * parsers strip a leading `+` before it could be seen — so a statement of
+   * nothing but explicit `+` credits read as UNSIGNED, and every row on it was
+   * offered as a withdrawal. The bulk bar then rendered "Confirm 2 rows as
+   * Withdrawal" over two unmistakable inflows.
+   */
+  it('reads an explicit + as money in, and withholds the outflow kinds', async () => {
+    const { agent, pid } = await setup();
+    const preview = await upload(agent, pid, EXPLICIT_PLUS, 'plus.csv');
+
+    expect(preview.understanding?.amountsSigned).toBe(true);
+    for (const row of preview.rows) {
+      expect(row.confirmableKinds).toBeDefined();
+      expect(row.confirmableKinds).not.toContain('withdrawal');
+      expect(row.confirmableKinds).toContain('deposit');
+    }
+
+    const salary = rowByRaw(preview, 'GEHALT');
+    const res = await confirm(agent, preview.batch.id, salary.id, 'withdrawal');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('IMPORT_ROW_KIND_UNSUPPORTED');
+
+    // The magnitude survived the sign, rather than the `+` eating a digit.
+    expect(salary.amountEur).toBe(2100);
+  });
+});
+
 describe('the derivation refuses rather than inventing a booking', () => {
   it('will not book money out as money in', async () => {
     const { agent, pid } = await setup();
@@ -453,6 +586,53 @@ describe('the derivation refuses rather than inventing a booking', () => {
       (await agent.get(`/api/v1/imports/${staged.batch.id}`)).body,
     );
     expect(rowByRaw(after, 'MIETE').kind).toBeNull();
+  });
+});
+
+describe('a refused confirmation never spends the one shot', () => {
+  /**
+   * REVIEW F3. Confirming a trade whose resolved asset is quoted in another
+   * currency used to answer 200 and COMMIT the row as `flag: 'error'` — kind
+   * decided, shot spent. The row was then permanently unbookable: re-confirming
+   * is 400 KIND_DECIDED, and pinning is 400 NOT_UNRESOLVED because the row is no
+   * longer `unmapped`. A dead end reached through the affordance built to remove
+   * dead ends.
+   *
+   * The pinning path already had the right answer for exactly this collision —
+   * refuse with `IMPORT_ROW_CURRENCY_MISMATCH` and leave the row alone — so a
+   * confirmation now answers the same way. A confirm never writes `error`.
+   */
+  it('refuses a trade whose asset is quoted in another currency, row intact', async () => {
+    const { agent, pid } = await setup();
+    await seedAsset('MTA.DE', 'Muster Tech AG', 'USD');
+    const staged = await upload(agent, pid, UNSIGNED_TRADE, 'trade.csv');
+    const rowId = staged.rows[0]!.id;
+
+    const res = await confirm(agent, staged.batch.id, rowId, 'buy');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('IMPORT_ROW_CURRENCY_MISMATCH');
+
+    // The shot is NOT spent: the row is exactly as staging left it, and the
+    // person can still decide — including the same kind once the right listing
+    // exists in the catalog.
+    const after = importPreviewResponseSchema.parse(
+      (await agent.get(`/api/v1/imports/${staged.batch.id}`)).body,
+    );
+    const row = after.rows[0]!;
+    expect(row.kind).toBeNull();
+    expect(row.flag).toBe('error');
+    expect(row.confirmableKinds).toEqual(expect.arrayContaining(['buy', 'sell']));
+
+    // Prove the shot really is unspent: once the row's own ISIN names a EUR
+    // listing, the very same confirmation lands. (Seeded as an ISIN-symbol so
+    // the ISIN lookup — which runs before the name lookup — matches it exactly;
+    // the name "Muster Tech AG" is shared with the USD listing above, and which
+    // of two same-named assets a name search ranks first is not this test's
+    // subject.)
+    const eur = await seedAsset('DE000MUSTER1', 'Muster Tech AG EUR', 'EUR');
+    const second = await confirm(agent, staged.batch.id, rowId, 'buy');
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(importPreviewResponseSchema.parse(second.body).rows[0]!.asset?.id).toBe(eur.id);
   });
 });
 
@@ -546,26 +726,32 @@ describe('confirming cannot race the apply that closes the batch', () => {
 
     const repo = createImportRepository(harness.db);
     let claimed = false;
-    const racingTransactionRepo = {
-      ...createTransactionRepository(harness.db),
-      async listForPortfolio(portfolioId: string) {
+    // Interleave deterministically on a read the CASH path actually makes.
+    // `collectExistingHashes` is scoped to the row's own hash family, so a
+    // withdrawal never touches the transaction table — hooking that would arm a
+    // trap the request walks past, and the test would pass by not racing at
+    // all. The cash ledger read is the await this row really does between the
+    // pending check and the write, which is exactly where the claim has to land.
+    const racingPortfolio = {
+      ...harness.ctx.portfolio,
+      async getCashMovements(...args: Parameters<typeof harness.ctx.portfolio.getCashMovements>) {
         if (!claimed) {
           claimed = true;
           await repo.claimPendingBatch(staged.batch.id, null);
         }
-        return createTransactionRepository(harness.db).listForPortfolio(portfolioId);
+        return harness.ctx.portfolio.getCashMovements(...args);
       },
-    } as ReturnType<typeof createTransactionRepository>;
+    } as typeof harness.ctx.portfolio;
 
     const imports = createImportService({
       importRepo: repo,
       portfolioRepo: createPortfolioRepository(harness.db),
-      transactionRepo: racingTransactionRepo,
+      transactionRepo: createTransactionRepository(harness.db),
       cashSourceRepo: createCashSourceRepository(harness.db),
       cashRuleRepo: createCashRuleRepository(harness.db),
       cashTagRepo: createCashTagRepository(harness.db),
       search: harness.ctx.search,
-      portfolio: harness.ctx.portfolio,
+      portfolio: racingPortfolio,
       tax: harness.ctx.tax,
       mappers: [],
     });

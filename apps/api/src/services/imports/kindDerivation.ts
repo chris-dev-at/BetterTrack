@@ -148,6 +148,22 @@ export function deriveRowForKind(
   if (amount === null) {
     return fail(`This row reads as a ${kind} but has no readable amount.`);
   }
+  // ZERO IS NOT A DIRECTION, and the ledger says so in its own schema:
+  // `portfolio_cash_movements_sign` demands `amount_eur > 0` for money in and
+  // `< 0` for money out — "never zero (the ledger never guesses)".
+  //
+  // Refused HERE, in the derivation, rather than left to the database. A CHECK
+  // violation surfaces as a raw driver error at APPLY, long after the batch has
+  // been claimed, and a `0,00` line (a netted reversal, a notice line — banks
+  // emit them) would otherwise be offered all three cash kinds and confirmed
+  // 200. `derivableKinds` therefore offers nothing for such a row and it stays
+  // what it was: a reported line nobody can book, which is the truth.
+  if (amount === 0) {
+    return fail(
+      `This row's amount is zero, which is neither money in nor money out — ` +
+        'there is no cash movement to record. It stays reported, not imported.',
+    );
+  }
   if (fields.currency !== 'EUR') {
     return fail(
       `This row is stated in ${fields.currency}, and cash and dividends are recorded in EUR — ` +

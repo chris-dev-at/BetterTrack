@@ -774,9 +774,30 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * every row `duplicate` and applies nothing. Derived from live data, so
    * deleting a mis-imported entity makes the row importable again.
    */
-  async function collectExistingHashes(userId: string, portfolioId: string): Promise<Set<string>> {
+  async function collectExistingHashes(
+    userId: string,
+    portfolioId: string,
+    /**
+     * Which hash FAMILY the caller can actually collide with (#964 follow-up).
+     *
+     * `contentHash` keys on the row's kind, so a `deposit` can never collide
+     * with a transaction and a `buy` can never collide with a cash movement —
+     * the families are disjoint by construction. `applyBatch` needs all three
+     * because a batch holds every kind; a SINGLE row's re-check (a pin, a kind
+     * confirmation) needs exactly one, and the other two are a full portfolio
+     * scan spent to compare against hashes that cannot match.
+     *
+     * That mattered once the wizard's bulk sweep made this a per-row call: a
+     * 50-row statement paid 50 × (every transaction + every dividend + the
+     * whole paged cash ledger) to answer 50 questions about cash alone.
+     */
+    scope: 'all' | 'trade' | 'dividend' | 'cash' = 'all',
+  ): Promise<Set<string>> {
     const hashes = new Set<string>();
-    const txs = await transactionRepo.listForPortfolio(portfolioId);
+    const txs =
+      scope === 'all' || scope === 'trade'
+        ? await transactionRepo.listForPortfolio(portfolioId)
+        : [];
     for (const tx of txs) {
       hashes.add(
         contentHash({
@@ -789,7 +810,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }),
       );
     }
-    const { dividends } = await tax.listDividends(userId, portfolioId);
+    const { dividends } =
+      scope === 'all' || scope === 'dividend'
+        ? await tax.listDividends(userId, portfolioId)
+        : { dividends: [] };
     for (const d of dividends) {
       hashes.add(
         contentHash({
@@ -803,7 +827,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       );
     }
     let cursor: string | undefined;
-    do {
+    let morePages = scope === 'all' || scope === 'cash';
+    while (morePages) {
       const cash = await portfolio.getCashMovements(userId, portfolioId, { cursor, limit: 200 });
       for (const m of cash.movements) {
         if (m.kind !== 'deposit' && m.kind !== 'withdrawal') continue;
@@ -819,8 +844,15 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         );
       }
       cursor = cash.nextCursor ?? undefined;
-    } while (cursor != null);
+      morePages = cursor != null;
+    }
     return hashes;
+  }
+
+  /** The one hash family a row of this kind could possibly duplicate. */
+  function hashScopeFor(kind: NormalizedImportRow['kind']): 'trade' | 'dividend' | 'cash' {
+    if (kind === 'buy' || kind === 'sell') return 'trade';
+    return kind === 'dividend' ? 'dividend' : 'cash';
   }
 
   function toCounts(rows: ImportRowRecord[]): ImportBatchCounts {
@@ -1076,7 +1108,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       amountEur: row.amountEur,
     });
 
-    const duplicate = await isDuplicateHash(userId, batch, rows, row.id, hash);
+    const duplicate = await isDuplicateHash(userId, batch, rows, row.id, hash, row.kind);
 
     // The write is conditional on the batch still being `pending`, because
     // everything between the check above and this line is `await`ed and an
@@ -1109,8 +1141,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     rows: readonly ImportRowRecord[],
     exceptRowId: string,
     hash: string,
+    kind: NormalizedImportRow['kind'],
   ): Promise<boolean> {
-    const existing = await collectExistingHashes(userId, batch.portfolioId);
+    const existing = await collectExistingHashes(userId, batch.portfolioId, hashScopeFor(kind));
     if (existing.has(hash)) return true;
     return rows.some((r) => r.id !== exceptRowId && r.flag === 'mapped' && r.contentHash === hash);
   }
@@ -1210,8 +1243,22 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         (normalized.kind === 'buy' || normalized.kind === 'sell') &&
         asset.currency !== normalized.currency
       ) {
-        flag = 'error';
-        message = currencyMismatchMessage(asset, normalized);
+        // REFUSED, NOT RECORDED (review F3). Staging writes this collision as an
+        // `error` row because staging has no one to ask; a confirmation does,
+        // and committing it would spend the one shot on a row that can then
+        // never be booked — re-confirming is refused as decided, and pinning is
+        // refused because the row is no longer `unmapped`. A dead end reached
+        // through the affordance built to remove dead ends.
+        //
+        // So a confirm answers the way the PINNING path already answers the
+        // identical collision: same code, same shape, row untouched, decision
+        // still open. A confirmation never writes `error`.
+        throw badRequest(
+          `${asset.symbol} is quoted in ${asset.currency} but this row is ` +
+            `${normalized.currency} — the ${normalized.currency} listing has to exist in the ` +
+            'catalog before this row can be a trade.',
+          'IMPORT_ROW_CURRENCY_MISMATCH',
+        );
       }
     }
 
@@ -1223,7 +1270,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       price: normalized.price,
       amountEur: normalized.amountEur,
     });
-    if (flag === 'mapped' && (await isDuplicateHash(userId, batch, rows, row.id, hash))) {
+    if (
+      flag === 'mapped' &&
+      (await isDuplicateHash(userId, batch, rows, row.id, hash, normalized.kind))
+    ) {
       flag = 'duplicate';
       message = DUPLICATE_MESSAGE;
     }
@@ -1263,6 +1313,23 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       resolvedBy: 'user',
     });
     if (!written) {
+      // The write is conditional on TWO things — the batch still pending, and
+      // the row still undecided — so a refusal has two possible causes and the
+      // caller deserves the right one (review F4). Telling someone whose
+      // request lost a race with ANOTHER CONFIRMATION that their import "was
+      // already applied" sends them looking for a batch that is still sitting
+      // there, pending, waiting for the rest of their decisions.
+      //
+      // Re-read to find out which. This costs one query on a path that only
+      // runs when a write was already refused.
+      const refreshed = await importRepo.findBatchForOwner(userId, batch.id);
+      if (refreshed !== null && refreshed.status === 'pending') {
+        throw badRequest(
+          "This row's kind is not open for confirmation — only a row the pipeline left " +
+            'undecided can be confirmed, and only once.',
+          'IMPORT_ROW_KIND_DECIDED',
+        );
+      }
       throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
     }
   }
@@ -1729,7 +1796,26 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             record(row, 'failed', err.message);
             continue;
           }
-          throw err;
+          // EVERYTHING ELSE IS ALSO THIS ROW'S PROBLEM, not the batch's.
+          //
+          // Rethrowing here was a batch-stranding bug (review F1). The claim is
+          // already committed by this point — deliberately, so no row can book
+          // twice — so an escaping error leaves the batch permanently `applied`
+          // with the remaining rows never attempted and every retry a 409. A
+          // raw driver error is exactly how that happened: a cash CHECK
+          // violation (`portfolio_cash_movements_sign`) is a PostgresError, not
+          // an ApiError, and it walked straight through the branch above.
+          //
+          // Per-row tolerance is the framework's promise (§13.4) and it cannot
+          // be conditional on the failure having been anticipated. So the row
+          // is reported `failed` and the loop continues; the cause is LOGGED
+          // rather than returned, because a driver message is not something a
+          // user can act on and §10 keeps internals out of API responses.
+          deps.logger?.error?.(
+            { err, batchId: batch.id, rowId: row.id, rowIndex: row.rowIndex },
+            'import: row failed with an unexpected error; reported as failed',
+          );
+          record(row, 'failed', 'This row could not be recorded. Nothing was booked for it.');
         }
       }
 

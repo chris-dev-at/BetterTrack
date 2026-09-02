@@ -6,6 +6,7 @@ import {
   type ColumnMapResult,
   type HeaderMappingAiContext,
 } from './columnMapping';
+import { stripDecimalDecoration } from './csv';
 import { deriveRowForKind } from './kindDerivation';
 import { classifyRows, type ClassifiableRow, type ClassifyContext } from './rowClassifier';
 import {
@@ -231,16 +232,34 @@ export async function stageGenericFile(
   const verdicts = await classifyRows(classifiable, ctx.rows ?? {});
 
   /**
-   * Does this file's amount column carry SIGNS? One negative anywhere settles
-   * it — a column that writes one outflow as a negative writes them all that
-   * way, so its positives are inflows rather than unsigned magnitudes.
+   * Does this file's amount column carry SIGNS? One explicitly signed cell
+   * anywhere settles it — a column that marks direction marks it throughout, so
+   * its unmarked positives are inflows rather than unsigned magnitudes.
    *
    * A property of the FILE, decided once over every row, because a single row
    * cannot tell you: `2100.00` is exactly as consistent with "money in" as with
    * "the amount, direction stated elsewhere". It travels on the understanding
    * and is what lets a later confirmation refuse the wrong direction.
+   *
+   * IT READS THE RAW CELL, NOT THE PARSED NUMBER, and that is the whole point:
+   * `parseDecimal` strips a leading `+` on its way to the value (correctly —
+   * `+2.100,00` IS 2100), so asking the parsed number "are you negative?" reads
+   * a statement of nothing but explicit `+` credits as UNSIGNED. Every row of
+   * such a file was then confirmable as a withdrawal, and the wizard's bulk bar
+   * offered "confirm these as withdrawals" over unmistakable inflows. The sign
+   * survives only here, before the parse, so it is captured here.
    */
-  const amountsSigned = projected.some((row) => row.amountNum !== null && row.amountNum < 0);
+  const statesSign = (raw: string | null): boolean => {
+    if (raw === null) return false;
+    // The SAME decoration stripper the parsers use, so `+1.000,00 EUR` and a
+    // bare `+5` answer alike and a future decoration rule cannot make the two
+    // disagree.
+    const bare = stripDecimalDecoration(raw);
+    return bare !== null && (bare.startsWith('+') || bare.startsWith('-'));
+  };
+  const amountsSigned = projected.some(
+    (row) => row.amountNum !== null && (row.amountNum < 0 || statesSign(row.amount)),
+  );
   const derivation = { amountsSigned };
 
   const lines: MappedLine[] = projected.map((row) => {
