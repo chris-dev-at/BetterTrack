@@ -617,6 +617,7 @@ const componentSchemas = {
   MirrorInviteListResponse: contracts.mirrorInviteListResponseSchema,
   MirrorAcceptInviteResponse: contracts.mirrorAcceptInviteResponseSchema,
   MirrorActivityResponse: contracts.mirrorActivityResponseSchema,
+  MirrorRetrySyncResponse: contracts.mirrorRetrySyncResponseSchema,
 
   // Friend chat (§13.3 V3-P8)
   ChatConversationListResponse: contracts.chatConversationListResponseSchema,
@@ -4159,6 +4160,15 @@ const endpoints: EndpointDef[] = [
     body: R.TransferMirrorOwnershipRequest,
     status: 200,
     response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/mirrorchain/chains/{chainId}/retry-sync',
+    tag: 'Mirrorchain',
+    summary: "Retry sync — resume the caller's own stalled copy from its watermark.",
+    params: contracts.mirrorChainIdParamSchema,
+    status: 200,
+    response: R.MirrorRetrySyncResponse,
   },
   {
     method: 'post',

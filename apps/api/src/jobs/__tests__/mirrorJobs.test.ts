@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Logger } from '../../logger';
 import type { MirrorService } from '../../services/mirror/mirrorService';
-import { createMirrorReplicateJob, type MirrorReplicateJobDeps } from '../definitions';
+import {
+  MIRROR_REPLICATE_CHAIN_DELAY_MS,
+  createMirrorReplicateJob,
+  type MirrorReplicateJobDeps,
+} from '../definitions';
 import type { JobContext } from '../types';
 
 /**
@@ -12,6 +16,11 @@ import type { JobContext } from '../types';
  * `mirror.sync_stalled` notice must signal a GENUINE stall (retries exhausted →
  * dead-letter → Problems), never a transient blip that heals on retry — the job
  * fires `notifyChainStalled` only on the FINAL attempt, not on every failed one.
+ *
+ * The tail-catch re-enqueue must also be BOUNDED (#1611): a copy nothing can
+ * replay is reported as a skip, not a failure, so a run over it returns
+ * normally with `lagging > 0` forever — re-enqueueing on that alone is a tight
+ * infinite job loop that never syncs, never throws and never notifies anyone.
  */
 
 const logger = pino({ level: 'silent' }) as unknown as Logger;
@@ -47,35 +56,126 @@ function makeJob(
   } as unknown as Job<{ chainId: string }>;
 }
 
-function makeDeps(mirror: Partial<Pick<MirrorService, 'replicateChain' | 'notifyChainStalled'>>): {
+function makeDeps(
+  mirror: Partial<
+    Pick<MirrorService, 'replicateChain' | 'notifyChainStalled' | 'escalateStalledChain'>
+  >,
+): {
   deps: MirrorReplicateJobDeps;
   enqueue: ReturnType<typeof vi.fn>;
+  captureError: ReturnType<typeof vi.fn>;
 } {
   const enqueue = vi.fn().mockResolvedValue(undefined);
+  const captureError = vi.fn();
   return {
     deps: {
       mirror: {
-        replicateChain: vi.fn().mockResolvedValue({ applied: 0, lagging: 0 }),
+        replicateChain: vi
+          .fn()
+          .mockResolvedValue({ applied: 0, lagging: 0, skipped: 0, advanced: 0, stagnant: 0 }),
         notifyChainStalled: vi.fn().mockResolvedValue(undefined),
+        escalateStalledChain: vi.fn().mockResolvedValue({ escalated: true, stalled: 1 }),
         ...mirror,
       } as MirrorReplicateJobDeps['mirror'],
       enqueue,
+      problems: { captureError },
     },
     enqueue,
+    captureError,
   };
 }
 
 describe('mirror.replicate job — sync_stalled fires only on permanent failure', () => {
-  it('a successful run never notifies and chains a follow-up when copies still lag', async () => {
+  it('a successful run never notifies and chains a delayed follow-up when copies still lag', async () => {
     const { deps, enqueue } = makeDeps({
-      replicateChain: vi.fn().mockResolvedValue({ applied: 2, lagging: 1 }),
+      replicateChain: vi
+        .fn()
+        .mockResolvedValue({ applied: 2, lagging: 1, skipped: 0, advanced: 2, stagnant: 0 }),
     });
     const def = createMirrorReplicateJob(deps);
 
     await def.handler(makeJob('chain-1', { attemptsMade: 0, attempts: 3 }), makeCtx());
 
     expect(deps.mirror.notifyChainStalled).not.toHaveBeenCalled();
-    expect(enqueue).toHaveBeenCalledWith('chain-1'); // lagging > 0 → catch the tail
+    // lagging > 0 AND a watermark moved → catch the tail, spaced out.
+    expect(enqueue).toHaveBeenCalledWith('chain-1', { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
+    expect(deps.mirror.escalateStalledChain).not.toHaveBeenCalled();
+  });
+
+  it('a caught-up run chains nothing at all', async () => {
+    const { deps, enqueue } = makeDeps({
+      replicateChain: vi
+        .fn()
+        .mockResolvedValue({ applied: 3, lagging: 0, skipped: 0, advanced: 2, stagnant: 0 }),
+    });
+    const def = createMirrorReplicateJob(deps);
+
+    await def.handler(makeJob('chain-1', { attemptsMade: 0, attempts: 3 }), makeCtx());
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(deps.mirror.escalateStalledChain).not.toHaveBeenCalled();
+  });
+
+  it('a pass with zero forward progress stops chaining and escalates instead (no infinite loop)', async () => {
+    // The unreplayable-member state: nothing applied, nothing advanced, a copy
+    // still behind — the exact result the old handler re-enqueued on forever.
+    const { deps, enqueue, captureError } = makeDeps({
+      replicateChain: vi
+        .fn()
+        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 1, advanced: 0, stagnant: 1 }),
+    });
+    const def = createMirrorReplicateJob(deps);
+
+    for (let run = 0; run < 5; run++) {
+      await def.handler(makeJob('chain-1', { attemptsMade: 0, attempts: 3 }), makeCtx());
+    }
+
+    // The chain of jobs is BOUNDED — it never starts.
+    expect(enqueue).toHaveBeenCalledTimes(0);
+    expect(deps.mirror.escalateStalledChain).toHaveBeenCalledTimes(5);
+    expect(deps.mirror.escalateStalledChain).toHaveBeenCalledWith('chain-1');
+    // ...and the ops surface sees it (the Problems repository folds the repeats).
+    expect(captureError).toHaveBeenCalled();
+    expect((captureError.mock.calls[0]![0] as Error).name).toBe('mirror: chain cannot replicate');
+  });
+
+  it('lag that only appeared DURING the pass chains one more run instead of escalating', async () => {
+    // The blip: every copy was caught up when the pass started (`stagnant: 0`),
+    // then a write landed (or a member joined) while it swept — so nothing
+    // advanced and a copy lags, but nobody is stuck. Escalating here would mail
+    // the member "could not finish syncing… choose Retry sync" about a chain
+    // whose own scheduleReplicate is already on its way.
+    const { deps, enqueue, captureError } = makeDeps({
+      replicateChain: vi
+        .fn()
+        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 0, advanced: 0, stagnant: 0 }),
+    });
+    const def = createMirrorReplicateJob(deps);
+
+    await def.handler(makeJob('chain-1', { attemptsMade: 0, attempts: 3 }), makeCtx());
+
+    expect(deps.mirror.escalateStalledChain).not.toHaveBeenCalled();
+    expect(deps.mirror.notifyChainStalled).not.toHaveBeenCalled();
+    expect(captureError).not.toHaveBeenCalled();
+    // Bounded: ONE spaced follow-up, which either advances or reports the copy
+    // as stagnant (it is behind at that pass's start) and escalates then.
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledWith('chain-1', { delay: MIRROR_REPLICATE_CHAIN_DELAY_MS });
+  });
+
+  it('escalation without a stalled copy (the chain healed meanwhile) reports nothing', async () => {
+    const { deps, enqueue, captureError } = makeDeps({
+      replicateChain: vi
+        .fn()
+        .mockResolvedValue({ applied: 0, lagging: 1, skipped: 0, advanced: 0, stagnant: 1 }),
+      escalateStalledChain: vi.fn().mockResolvedValue({ escalated: false, stalled: 0 }),
+    });
+    const def = createMirrorReplicateJob(deps);
+
+    await def.handler(makeJob('chain-1', { attemptsMade: 0, attempts: 3 }), makeCtx());
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(captureError).not.toHaveBeenCalled();
   });
 
   it('a transient (non-final) attempt failure re-throws WITHOUT notifying — BullMQ will retry', async () => {

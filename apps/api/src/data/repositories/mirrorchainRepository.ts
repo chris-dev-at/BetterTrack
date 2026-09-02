@@ -65,6 +65,39 @@ export interface CreateChainInput {
   createdByUsername: string;
 }
 
+/**
+ * The op kinds whose apply REMOVES the entity's `mirror_rows` link on every copy
+ * (`applyLedgerOp`'s delete arms). After one of these, a caught-up copy having
+ * no link is the correct state — every other latest-op kind means the entity is
+ * alive and its absence on a caught-up copy is divergence.
+ */
+const MIRROR_ENTITY_REMOVING_OP_KINDS = ['tx.delete', 'dividend.delete', 'cash.delete'] as const;
+
+/** A logical entity the oplog keeps alive that a caught-up copy no longer has. */
+export interface MirrorDivergentRow {
+  chainId: string;
+  mirrorId: string;
+  portfolioId: string;
+  /** The entity's latest op — the one the copy has demonstrably applied. */
+  opKind: string;
+  opSeq: number;
+}
+
+/** A synced transaction whose stored money contradicts its latest op's full state. */
+export interface MirrorDivergentTransactionRow {
+  chainId: string;
+  mirrorId: string;
+  portfolioId: string;
+  localId: string;
+  opSeq: number;
+}
+
+/** `db.execute` hands back `{ rows }` on some drivers and a bare array on others. */
+function executedRows<T>(result: unknown): T[] {
+  const rows = (result as { rows?: unknown[] }).rows ?? result;
+  return Array.isArray(rows) ? (rows as T[]) : [];
+}
+
 export interface InsertMemberInput {
   chainId: string;
   userId: string;
@@ -1028,10 +1061,13 @@ export function createMirrorchainRepository(db: Database) {
      * (a) Origin-only mirror-linked rows whose `mirror_id` has **no op** (design
      * §2): the submit path's origin-commit-then-append crash window. Such a row
      * exists only on the origin copy and silently diverges (later full-state
-     * updates no-op on copies that lack it) until surfaced. Bounded by `limit`.
+     * updates no-op on copies that lack it) until surfaced. Bounded by `limit`,
+     * resumable past it via `offset` — the ORDER BY is a total order over the
+     * table's primary key, so successive sweep runs walk the residual set
+     * instead of re-reporting whichever rows the seq scan happened to hit first.
      * Vaulted portfolio rows are never surfaced to the server-side sweep.
      */
-    async listDanglingOriginRows(limit: number): Promise<MirrorRowRow[]> {
+    async listDanglingOriginRows(limit: number, offset = 0): Promise<MirrorRowRow[]> {
       return db
         .select()
         .from(mirrorRows)
@@ -1056,7 +1092,9 @@ export function createMirrorchainRepository(db: Database) {
             ),
           ),
         )
-        .limit(limit);
+        .orderBy(asc(mirrorRows.portfolioId), asc(mirrorRows.kind), asc(mirrorRows.mirrorId))
+        .limit(limit)
+        .offset(offset);
     },
 
     /**
@@ -1064,10 +1102,12 @@ export function createMirrorchainRepository(db: Database) {
      * `mirror_rows` link pointing at them (design §2): the tax-immutable
      * correction path's re-create-then-re-point crash residual — a safe-to-delete
      * local-only duplicate. Forks are excluded (only `status='active'` copies).
-     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`.
+     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`,
+     * resumable past it via `offset` under a total ORDER BY (see (a)).
      */
     async listOrphanedSyncedTransactions(
       limit: number,
+      offset = 0,
     ): Promise<{ id: string; portfolioId: string }[]> {
       return db
         .selectDistinct({ id: transactions.id, portfolioId: transactions.portfolioId })
@@ -1097,7 +1137,136 @@ export function createMirrorchainRepository(db: Database) {
             ),
           ),
         )
-        .limit(limit);
+        .orderBy(asc(transactions.portfolioId), asc(transactions.id))
+        .limit(limit)
+        .offset(offset);
+    },
+
+    /**
+     * (c) A logical entity the oplog says is ALIVE that a **caught-up** active
+     * copy no longer carries (design §2). This is the lost-`*.delete` residual
+     * the create-shaped detector (a) structurally cannot see: the delete arm
+     * removes the local row AND its `mirror_rows` link before the op is
+     * appended, so after a crash in that window there is nothing left on the
+     * origin to find, while every other copy keeps the entity forever.
+     *
+     * The rule is exact rather than heuristic: for the entity's latest op, any
+     * active copy whose watermark has already passed that op MUST carry the link
+     * unless the op is a terminal delete. A copy that is merely behind is not a
+     * finding — that is ordinary lag. Vaulted copies are never surfaced.
+     *
+     * Two states satisfy that rule, both worth reporting. The first is the lost
+     * `*.delete` above. The second is the SANCTIONED skip in `applyLedgerOp`:
+     * `tx.update` / `cash.update` on a copy whose link is already gone return
+     * `{ applied: false }` ("LWW keeps the delete") and still advance the
+     * watermark, so the latest op is an update, not a removing kind, and this
+     * scan names that copy. That is deliberate: the copy really has lost a row
+     * the oplog keeps alive for everyone else, and only a human can decide
+     * whether the delete or the entry should win.
+     */
+    async listDivergentMissingRows(limit: number, offset = 0): Promise<MirrorDivergentRow[]> {
+      const result = await db.execute(sql`
+        with latest as (
+          select distinct on (o.chain_id, o.mirror_id)
+            o.chain_id, o.mirror_id, o.seq, o.kind
+          from mirror_chain_ops o
+          where o.mirror_id is not null
+          order by o.chain_id, o.mirror_id, o.seq desc
+        )
+        select
+          l.chain_id    as "chainId",
+          l.mirror_id   as "mirrorId",
+          l.kind        as "opKind",
+          l.seq         as "opSeq",
+          m.portfolio_id as "portfolioId"
+        from latest l
+        join mirror_chain_members m
+          on m.chain_id = l.chain_id
+         and m.status = 'active'
+         and m.portfolio_id is not null
+         and m.applied_seq >= l.seq
+        join portfolios p on p.id = m.portfolio_id and p.vault_id is null
+        where l.kind not in (${sql.join(
+          MIRROR_ENTITY_REMOVING_OP_KINDS.map((kind) => sql`${kind}`),
+          sql`, `,
+        )})
+          and not exists (
+            select 1 from mirror_rows r
+            where r.chain_id = l.chain_id
+              and r.mirror_id = l.mirror_id
+              and r.portfolio_id = m.portfolio_id
+          )
+        order by l.chain_id, l.mirror_id, m.portfolio_id
+        limit ${limit} offset ${offset}
+      `);
+      return executedRows<MirrorDivergentRow>(result).map((row) => ({
+        ...row,
+        opSeq: Number(row.opSeq),
+      }));
+    },
+
+    /**
+     * (d) A synced transaction whose stored money no longer matches the FULL
+     * STATE its own latest op carries (design §3: ops are full state, never a
+     * field diff) — the lost-`tx.update` residual. The origin applies the edit
+     * locally and commits before it appends; a crash in that window leaves the
+     * origin at the new numbers and every other copy at the old ones with
+     * nothing in the oplog to reconcile them, invisible to (a), (b) and (c)
+     * because the link itself is intact on every copy.
+     *
+     * Only copies whose watermark has passed the op are compared, so ordinary
+     * lag is not a finding. Every comparison is made at the resolution the two
+     * sides actually share, or the detector cries wolf on ordinary data: the
+     * payload carries the submitted JS number unrounded, while the write path
+     * stores it through `numeric(20,8)` (quantity) / `numeric(20,6)` (price,
+     * fee) — so a crypto row priced `0.00000892` sits at `0.000009` on EVERY
+     * copy and a raw `is distinct from` would report the whole (converged)
+     * chain forever. Rounding the payload to the column's scale reproduces
+     * exactly what the insert did, so only a real difference survives.
+     * `executed_at` is compared at millisecond precision for the same reason —
+     * that is the resolution an ISO-8601 payload round-trips.
+     */
+    async listDivergentTransactionRows(
+      limit: number,
+      offset = 0,
+    ): Promise<MirrorDivergentTransactionRow[]> {
+      const result = await db.execute(sql`
+        with latest as (
+          select distinct on (o.chain_id, o.mirror_id)
+            o.chain_id, o.mirror_id, o.seq, o.kind, o.payload
+          from mirror_chain_ops o
+          where o.mirror_id is not null and o.kind in ('tx.create', 'tx.update')
+          order by o.chain_id, o.mirror_id, o.seq desc
+        )
+        select
+          l.chain_id     as "chainId",
+          l.mirror_id    as "mirrorId",
+          l.seq          as "opSeq",
+          r.portfolio_id as "portfolioId",
+          r.local_id     as "localId"
+        from latest l
+        join mirror_rows r
+          on r.chain_id = l.chain_id and r.mirror_id = l.mirror_id and r.kind = 'transaction'
+        join mirror_chain_members m
+          on m.chain_id = l.chain_id
+         and m.portfolio_id = r.portfolio_id
+         and m.status = 'active'
+         and m.applied_seq >= l.seq
+        join portfolios p on p.id = r.portfolio_id and p.vault_id is null
+        join transactions t on t.id = r.local_id
+        where t.side::text is distinct from (l.payload ->> 'side')
+           or t.quantity is distinct from round((l.payload ->> 'quantity')::numeric, 8)
+           or t.price is distinct from round((l.payload ->> 'price')::numeric, 6)
+           or t.fee is distinct from coalesce(round((l.payload ->> 'fee')::numeric, 6), 0)
+           or date_trunc('milliseconds', t.executed_at)
+              is distinct from (l.payload ->> 'executedAt')::timestamptz
+        order by l.chain_id, l.mirror_id, r.portfolio_id
+        limit ${limit} offset ${offset}
+      `);
+      return executedRows<MirrorDivergentTransactionRow>(result).map((row) => ({
+        ...row,
+        opSeq: Number(row.opSeq),
+      }));
     },
   };
 }

@@ -2,7 +2,7 @@ import type { MirrorOpPayload } from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
-import { portfolios } from '../data/schema';
+import { assets, portfolios, transactions } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -28,16 +28,19 @@ describe('mirrorchainRepository (M1)', () => {
     return row!.id;
   }
 
-  function txPayload(mirrorId: string): MirrorOpPayload {
+  function txPayload(
+    mirrorId: string,
+    money?: { quantity?: number; price?: number; fee?: number },
+  ): MirrorOpPayload {
     return {
       opVersion: 1,
       kind: 'tx.create',
       mirrorId,
       assetId: mirrorId,
       side: 'buy',
-      quantity: 1,
-      price: 10,
-      fee: 0,
+      quantity: money?.quantity ?? 1,
+      price: money?.price ?? 10,
+      fee: money?.fee ?? 0,
       executedAt: '2026-07-22T10:00:00.000Z',
       note: null,
       allowUncovered: false,
@@ -282,5 +285,168 @@ describe('mirrorchainRepository (M1)', () => {
     const NEW_LOCAL = '018f0000-0000-7000-8000-0000000000d3';
     await repo.repointMirrorRow('transaction', MIRROR, pid, NEW_LOCAL);
     expect((await repo.findMirrorRow('transaction', MIRROR, pid))?.localId).toBe(NEW_LOCAL);
+  });
+
+  /**
+   * #1611 — the residual scans are a REPORT that must eventually name every
+   * residual. Without a total ORDER BY they returned whatever the seq scan hit
+   * first, so a backlog past the limit meant the same arbitrary page forever
+   * and a permanently invisible tail.
+   */
+  it('the residual scans are deterministically ordered and page past their limit', async () => {
+    const { owner, chain, pid } = await seedChainWithOwner();
+    const mirrorIds = [
+      '018f0000-0000-7000-8000-0000000000f3',
+      '018f0000-0000-7000-8000-0000000000f1',
+      '018f0000-0000-7000-8000-0000000000f2',
+    ];
+    for (const mirrorId of mirrorIds) {
+      await repo.insertMirrorRow({
+        chainId: chain.id,
+        kind: 'transaction',
+        mirrorId,
+        portfolioId: pid,
+        localId: mirrorId,
+        createdBy: owner.id,
+        createdByUsername: owner.username,
+      });
+    }
+
+    const all = await repo.listDanglingOriginRows(10);
+    expect(all.map((row) => row.mirrorId)).toEqual([...mirrorIds].sort());
+    // Same order every time, and the pages tile the set without overlap or gap.
+    expect((await repo.listDanglingOriginRows(10)).map((r) => r.mirrorId)).toEqual(
+      all.map((r) => r.mirrorId),
+    );
+    expect((await repo.listDanglingOriginRows(2, 0)).map((r) => r.mirrorId)).toEqual(
+      all.slice(0, 2).map((r) => r.mirrorId),
+    );
+    expect((await repo.listDanglingOriginRows(2, 2)).map((r) => r.mirrorId)).toEqual(
+      all.slice(2).map((r) => r.mirrorId),
+    );
+    expect(await repo.listDanglingOriginRows(2, 10)).toEqual([]);
+  });
+
+  /**
+   * #1611 — the same ORDER BY … LIMIT … OFFSET contract for the two
+   * divergence scans, whose SQL is hand-written, plus the rule that keeps (d)
+   * honest: the op payload carries the raw submitted number while the column
+   * stores it at `numeric(20,8)` / `numeric(20,6)`, so the comparison must
+   * happen at the column's scale. Otherwise every ordinary sub-cent row (a
+   * crypto price, a >8 dp broker quantity) reads as "money divergence" on every
+   * caught-up copy, on every run, forever — and a detector that cries wolf on
+   * healthy data hides the real divergence it exists to surface.
+   */
+  it('the divergence scans are ordered, page past their limit, and ignore column rounding', async () => {
+    const { owner, chain, pid, member } = await seedChainWithOwner();
+    const mirrorIds = [
+      '018f0000-0000-7000-8000-0000000000e3',
+      '018f0000-0000-7000-8000-0000000000e1',
+      '018f0000-0000-7000-8000-0000000000e2',
+    ];
+    for (const mirrorId of mirrorIds) {
+      await repo.appendOps(chain.id, [
+        {
+          kind: 'tx.create',
+          mirrorId,
+          actorUserId: owner.id,
+          actorUsername: owner.username,
+          payload: txPayload(mirrorId),
+        },
+      ]);
+    }
+    // The copy has applied every op — only then is a mismatch divergence
+    // rather than ordinary lag.
+    await repo.advanceWatermark(member.id, (await repo.getChain(chain.id))!.lastSeq);
+
+    // (c) lost `*.delete`: the oplog keeps all three alive, the copy carries no
+    // link for any of them.
+    const missing = await repo.listDivergentMissingRows(10);
+    expect(missing.map((r) => r.mirrorId)).toEqual([...mirrorIds].sort());
+    expect((await repo.listDivergentMissingRows(2, 0)).map((r) => r.mirrorId)).toEqual(
+      missing.slice(0, 2).map((r) => r.mirrorId),
+    );
+    expect((await repo.listDivergentMissingRows(2, 2)).map((r) => r.mirrorId)).toEqual(
+      missing.slice(2).map((r) => r.mirrorId),
+    );
+    expect(await repo.listDivergentMissingRows(2, 10)).toEqual([]);
+
+    // Link each entity to a local row whose money contradicts its op (quantity
+    // 2 against the payload's 1) → (c) falls silent, (d) names all three.
+    const [asset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'DIVERGE.DE',
+        type: 'stock',
+        symbol: 'DIVERGE.DE',
+        name: 'Diverge Corp',
+        currency: 'EUR',
+        exchange: 'XETRA',
+      })
+      .returning();
+    const link = async (mirrorId: string, money: Record<string, string>) => {
+      const [tx] = await harness.db
+        .insert(transactions)
+        .values({
+          portfolioId: pid,
+          assetId: asset!.id,
+          side: 'buy',
+          quantity: '1',
+          price: '10',
+          fee: '0',
+          executedAt: new Date('2026-07-22T10:00:00.000Z'),
+          ...money,
+        })
+        .returning({ id: transactions.id });
+      await repo.insertMirrorRow({
+        chainId: chain.id,
+        kind: 'transaction',
+        mirrorId,
+        portfolioId: pid,
+        localId: tx!.id,
+        createdBy: owner.id,
+        createdByUsername: owner.username,
+      });
+    };
+    for (const mirrorId of mirrorIds) await link(mirrorId, { quantity: '2' });
+
+    expect(await repo.listDivergentMissingRows(10)).toEqual([]);
+    const divergent = await repo.listDivergentTransactionRows(10);
+    expect(divergent.map((r) => r.mirrorId)).toEqual([...mirrorIds].sort());
+    expect((await repo.listDivergentTransactionRows(2, 0)).map((r) => r.mirrorId)).toEqual(
+      divergent.slice(0, 2).map((r) => r.mirrorId),
+    );
+    expect((await repo.listDivergentTransactionRows(2, 2)).map((r) => r.mirrorId)).toEqual(
+      divergent.slice(2).map((r) => r.mirrorId),
+    );
+    expect(await repo.listDivergentTransactionRows(2, 10)).toEqual([]);
+
+    // A faithfully applied row whose submitted numbers carry MORE decimals than
+    // the columns keep: the copy rounds exactly as every other copy did, so it
+    // is converged, not divergent.
+    const ROUNDED = '018f0000-0000-7000-8000-0000000000e9';
+    const money = { quantity: 0.000000125, price: 0.00000892, fee: 0.0000005 };
+    await repo.appendOps(chain.id, [
+      {
+        kind: 'tx.create',
+        mirrorId: ROUNDED,
+        actorUserId: owner.id,
+        actorUsername: owner.username,
+        payload: txPayload(ROUNDED, money),
+      },
+    ]);
+    await repo.advanceWatermark(member.id, (await repo.getChain(chain.id))!.lastSeq);
+    // Written raw, exactly as the origin's insert does — Postgres rounds it to
+    // the column scale on the way in.
+    await link(ROUNDED, {
+      quantity: String(money.quantity),
+      price: String(money.price),
+      fee: String(money.fee),
+    });
+
+    expect((await repo.listDivergentTransactionRows(10)).map((r) => r.mirrorId)).not.toContain(
+      ROUNDED,
+    );
   });
 });

@@ -3551,7 +3551,8 @@
     "avatarStack": {
       "openAria": "{{name}} — {{count}} members. Open member sheet.",
       "membersCount": "{{count}} members",
-      "syncing": "Syncing… {{percent}} %"
+      "syncing": "Syncing… {{percent}} %",
+      "stalled": "Sync stalled"
     },
     "fork": {
       "provenance": "Forked from {{chain}} · {{date}}"
@@ -3575,6 +3576,7 @@
       "transfer": "Make owner",
       "leave": "Leave",
       "dissolve": "Dissolve group",
+      "retrySync": "Retry sync",
       "sendInvite": "Invite",
       "revokeInvite": "Cancel invite"
     },
@@ -3623,7 +3625,16 @@
     },
     "memberRow": {
       "you": "You",
-      "joined": "Joined {{date}}"
+      "joined": "Joined {{date}}",
+      "stalled": "Sync stalled at {{percent}} %"
+    },
+    "retrySync": {
+      "pending": "Retrying…",
+      "synced": "Your copy is up to date again.",
+      "syncing": "Sync resumed — the remaining entries are on their way.",
+      "stalled": "Sync still cannot continue. Try again later, or ask another member to make an entry — that restarts syncing for everyone.",
+      "notStalled": "This copy is already up to date.",
+      "error": "Could not retry the sync. Please try again."
     },
     "confirm": {
       "leave": {

@@ -154,6 +154,7 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
     { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
+    { method: 'POST', path: '/mirrorchain/chains/{chainId}/retry-sync' },
     { method: 'POST', path: '/mirrorchain/chains' },
     { method: 'POST', path: '/mirrorchain/chains/convert' },
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
@@ -182,7 +183,7 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
   const livePath = (path: string): string =>
     path.replace(/\{(?:chainId|inviteId|userId)\}/g, MISSING_ID);
 
-  it('pins the sixteen exact method + path templates and defaults every other route closed', () => {
+  it('pins the seventeen exact method + path templates and defaults every other route closed', () => {
     expect(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
       const path = livePath(route.path);
