@@ -287,6 +287,8 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/vaults/{vaultId}/media/server-candidate/{candidateId}' },
     { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge/challenge' },
     { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge' },
+    // #1529: session-only by the vault-namespace fence; bearer admission deferred.
+    { method: 'GET', path: '/portfolios/{portfolioId}/vault/import-batches' },
   ] as const;
 
   const SESSION_ONLY = [
@@ -372,6 +374,13 @@ describe('#1043 vault bearer policy', () => {
     expect(pathAcceptsBearer('/vaults/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'POST')).toBe(false);
     expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/future-transition`, 'POST')).toBe(false);
+    // #1529 (review F1): the import-capture read is content in the vault
+    // namespace — closed to EVERY bearer key by the fence, live path and
+    // OpenAPI template alike, until bearer admission is decided deliberately.
+    expect(pathAcceptsBearer(`/portfolios/${UUID_A}/vault/import-batches`, 'GET')).toBe(false);
+    expect(
+      openApiPathTemplateAcceptsBearer('/portfolios/{portfolioId}/vault/import-batches', 'GET'),
+    ).toBe(false);
     expect(
       openApiPathTemplateAcceptsBearer('/portfolios/{portfolioId}/vault/future-transition', 'POST'),
     ).toBe(false);

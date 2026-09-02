@@ -456,7 +456,7 @@ function validateFrozenTaxShape(
   if (!shapeIsValid) {
     invalidTaxFacts(kind, id, 'frozen tax mode, country, and parameters are inconsistent');
   }
-  if (mode === 'country_specific' && !isClientSupportedTaxCountry(country)) {
+  if (mode === 'country_specific' && !isClientSupportedFrozenTaxCountry(country)) {
     unsupportedTaxCountry(kind, id, country);
   }
   if (mode === 'none' && amountEur !== null && !isZeroDecimal(amountEur)) {
@@ -491,8 +491,24 @@ function unsupportedTaxCountry(
   );
 }
 
+/**
+ * A LIVING regime the client engine can derive: AT and DE have conformance
+ * vectors against the server; FI does not yet, so a portfolio whose settings
+ * select FI is refused as a whole (an honest per-portfolio failure).
+ */
 function isClientSupportedTaxCountry(country: unknown): country is 'AT' | 'DE' {
   return country === 'AT' || country === 'DE';
+}
+
+/**
+ * A FROZEN row country the client engine can classify (#1512): every country
+ * the shared row-engine oracle narrows — AT, DE and FI. A frozen FI row is
+ * re-derived under a living AT/DE regime like any other row and renders at
+ * its FIFO basis under the manual regime; only an UNWIRED country (the #669
+ * class the server also refuses to load) fails the snapshot here.
+ */
+function isClientSupportedFrozenTaxCountry(country: unknown): country is 'AT' | 'DE' | 'FI' {
+  return country === 'AT' || country === 'DE' || country === 'FI';
 }
 
 function validatePersistedTaxSettings(document: VaultDocument): void {
