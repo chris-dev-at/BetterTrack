@@ -119,6 +119,118 @@ export function costBasisStrategyForCountry(country: string | null | undefined):
   return country === TAX_COUNTRY_DE || country === TAX_COUNTRY_FI ? 'fifo' : 'moving-average';
 }
 
+// ---------------------------------------------------------------------------
+// Row-engine classification (#1512) — ONE classifier for both tax engines
+// ---------------------------------------------------------------------------
+
+/**
+ * The tax modes a persisted sell/dividend row can be frozen under
+ * (`transactions.tax_mode` / `dividends.tax_mode`); `null` on a buy or a row
+ * recorded before the tax engine existed.
+ */
+export type TaxRowMode = 'none' | 'manual_per_trade' | 'country_specific' | 'custom';
+
+/**
+ * The engine a row settles under: no engine, the user's own stated fact, one
+ * of the shipped country engines, or the custom parameter engine. This is
+ * also the vocabulary of a LIVING regime (what the portfolio's current
+ * settings put every derivable row under).
+ */
+export type TaxRowEngine = 'none' | 'manual' | SupportedTaxCountry | 'custom';
+
+/** The frozen facts the classifier reads off a row — nothing else. */
+export interface TaxRowEngineFacts {
+  taxMode: TaxRowMode | null;
+  taxCountry: string | null;
+}
+
+/**
+ * A row the classifier refuses to place: a `country_specific` row frozen under
+ * a country no engine is wired for, or an unknown mode. Both sides fail LOUD
+ * on it (server: `rowEngineCountry`, #669; client: `TAX_MODE_UNSUPPORTED`) —
+ * a row that cannot be classified must never fall through into the AT pool.
+ */
+export class TaxRowClassificationError extends Error {
+  constructor(
+    message: string,
+    readonly taxCountry: string | null,
+  ) {
+    super(message);
+    this.name = 'TaxRowClassificationError';
+  }
+}
+
+/**
+ * Narrow a frozen `tax_country` to a shipped engine. Legacy V3-P4 rows carry
+ * `null` and settle as AT; the three shipped countries are themselves; any
+ * OTHER value — including a re-cased or padded spelling — throws.
+ *
+ * This is the SINGLE narrowing both engines use (`rowEngineCountry` on the
+ * server, the frozen-row branch of the client `taxRegimeForRow`).
+ */
+export function frozenTaxCountryEngine(taxCountry: string | null): SupportedTaxCountry {
+  if (taxCountry === null || taxCountry === TAX_COUNTRY_AT) return TAX_COUNTRY_AT;
+  if (taxCountry === TAX_COUNTRY_DE || taxCountry === TAX_COUNTRY_FI) return taxCountry;
+  throw new TaxRowClassificationError(
+    `Tax engine: no settlement component for frozen tax country "${taxCountry}" — ` +
+      'wire it into SUPPORTED_TAX_COUNTRIES and the living-year country modules',
+    taxCountry,
+  );
+}
+
+/**
+ * Which engine one row settles under against the living regime — the single
+ * source of truth for the server report/derivation router and the paranoid
+ * client engine (#1512). The committed truth table lives in
+ * `taxVectors/rowEngine.ts`; both engines replay it.
+ *
+ *  1. A `manual_per_trade` row is a user-stated fact under EVERY regime.
+ *  2. A `country_specific` row's frozen country is narrowed FIRST, in every
+ *     regime, so an unwired country fails loud even where the living regime
+ *     would have re-derived the row (the server refuses to load such a row at
+ *     all; the client refuses it at the snapshot boundary).
+ *  3. Under any living regime but `manual`, every non-manual row is re-derived
+ *     under that regime — its frozen mode is history.
+ *  4. Under the `manual` living regime the row keeps its frozen engine.
+ */
+export function taxEngineForRow(row: TaxRowEngineFacts, living: TaxRowEngine): TaxRowEngine {
+  if (row.taxMode === 'manual_per_trade') return 'manual';
+  const frozenCountry =
+    row.taxMode === 'country_specific' ? frozenTaxCountryEngine(row.taxCountry) : null;
+  if (living !== 'manual') return living;
+  if (row.taxMode === null || row.taxMode === 'none') return 'none';
+  if (row.taxMode === 'country_specific') return frozenCountry!;
+  if (row.taxMode === 'custom') return 'custom';
+  throw new TaxRowClassificationError(
+    `Tax engine: unknown frozen tax mode "${String(row.taxMode)}"`,
+    row.taxCountry,
+  );
+}
+
+/**
+ * The cost-basis strategy a classified engine realizes sells under: DE/FI are
+ * FIFO by law, AT is the moving average, a custom engine takes the basis from
+ * its parameter snapshot, and rows outside any engine (`none`/`manual`) show
+ * the moving-average realized P/L both engines have always displayed for
+ * untaxed rows.
+ */
+export function costBasisStrategyForEngine(
+  engine: TaxRowEngine,
+  custom: { costBasis: CostBasisStrategy } | null,
+): CostBasisStrategy {
+  if (engine === 'custom') {
+    if (custom === null) {
+      throw new TaxRowClassificationError(
+        'Tax engine: a custom-engine row has no cost-basis parameter snapshot',
+        null,
+      );
+    }
+    return custom.costBasis;
+  }
+  if (engine === 'none' || engine === 'manual') return 'moving-average';
+  return costBasisStrategyForCountry(engine);
+}
+
 /**
  * The timezone whose calendar defines a tax year (§16 2026-07-08): trades are
  * bucketed by their trade date's year **in Europe/Vienna**, so a Dec-31 23:30

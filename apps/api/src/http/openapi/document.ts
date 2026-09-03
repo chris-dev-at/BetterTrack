@@ -228,6 +228,9 @@ const componentSchemas = {
   // Per-portfolio move pipeline (paranoid E4 #1414, E6 residual #1525)
   PortfolioVaultRevisionResponse: contracts.portfolioVaultRevisionResponseSchema,
   PortfolioVaultLifecycleResponse: contracts.portfolioVaultLifecycleResponseSchema,
+  // Lossless capture reads (#1529)
+  PortfolioVaultImportCaptureResponse: contracts.portfolioVaultImportCaptureResponseSchema,
+  CustomAssetVaultSnapshotsResponse: contracts.customAssetVaultSnapshotsResponseSchema,
   PortfolioVaultMoveInRequest: contracts.portfolioVaultMoveInRequestSchema,
   PortfolioVaultMoveInResponse: contracts.portfolioVaultMoveInResponseSchema,
   PortfolioVaultMoveOutChallengeRequest: contracts.portfolioVaultMoveOutChallengeRequestSchema,
@@ -2899,6 +2902,18 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/custom-assets/vault-snapshots',
+    tag: 'Custom Assets',
+    summary: 'Read the exact current state of the caller’s own manual assets (vault-entity rows).',
+    description:
+      'The lossless seam the per-portfolio vault move needs on both paths (#1529): each present asset in vault-entity row shape (decimal strings, verbatim meta) with every current value point; ids that are not the caller’s manual assets — unknown, catalog, another account’s — are simply absent (no oracle). `ids` is one comma-separated list of 1..200 UUIDs. Responses are no-store.',
+    query: contracts.customAssetVaultSnapshotsQuerySchema,
+    status: 200,
+    response: R.CustomAssetVaultSnapshotsResponse,
+    noStore: true,
+  },
+  {
+    method: 'get',
     path: '/custom-assets/{id}/value-points',
     tag: 'Custom Assets',
     summary: 'List value points (ascending by date).',
@@ -5082,6 +5097,23 @@ const endpoints: EndpointDef[] = [
       404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
       409: 'The portfolio is not stored in a vault, or its transition state is inconsistent.',
       429: 'The dedicated vault-transition rate limit was exceeded.',
+    },
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/vault/import-batches',
+    tag: 'Vault',
+    summary: 'Read a plain portfolio’s historical import batches and staging rows losslessly.',
+    description:
+      'The lossless capture read that lets the §9 move-in carry historical import batches into the encrypted portfolio document instead of refusing (#1529, lifting the #1528 fail-closed ruling). Owner-scoped; every batch keyed to the portfolio rides on every page, staging rows page by an opaque cursor, and every column is served exactly as stored (decimals as strings). Session-only by the vault-namespace fence (bearer admission deferred: raw staging rows and memos must not reach third-party keys) — NOT a transition carve-out: a vaulted portfolio is refused at the enforcement boundary. Responses are no-store.',
+    params: contracts.portfolioIdParamSchema,
+    query: contracts.portfolioVaultImportCaptureQuerySchema,
+    status: 200,
+    response: R.PortfolioVaultImportCaptureResponse,
+    noStore: true,
+    errorResponses: {
+      404: 'The portfolio is absent or not owned (PORTFOLIO_VAULT_NOT_FOUND).',
+      409: 'The portfolio is already stored in a vault, the cursor does not belong to this read, or a stored staging row cannot be served losslessly (PORTFOLIO_VAULT_CAPTURE_UNSERVABLE).',
     },
   },
   {
