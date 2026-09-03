@@ -254,6 +254,84 @@ describe('progressive limiter — escalation & decay (§10)', () => {
   });
 });
 
+describe('progressive limiter — per-request cost (§10 COST TABLE, #1643)', () => {
+  /** A roomier schedule, so a handful of weighted events fit inside the window. */
+  const COST_SCHEDULE: ProgressiveSchedule = { ...SCHEDULE, limit: 30 };
+
+  it('spends exactly `cost` units — a cost-N event equals N cost-1 events', async () => {
+    const weighted = createProgressiveLimiter(redis, 'weighted', COST_SCHEDULE);
+    const plain = createProgressiveLimiter(redis, 'plain', COST_SCHEDULE);
+
+    await weighted.consume('ip', 7);
+    for (let i = 0; i < 7; i += 1) await plain.consume('ip');
+
+    const weightedCount = await redis.get(progressiveKeys('weighted', 'ip').count);
+    const plainCount = await redis.get(progressiveKeys('plain', 'ip').count);
+    expect(weightedCount).toBe('7');
+    expect(plainCount).toBe(weightedCount);
+  });
+
+  it('gives the window opened by a weighted event the schedule TTL', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', COST_SCHEDULE);
+    await limiter.consume('ip', 9);
+    // The event that opens the window owns its expiry — a counter left without
+    // a TTL would be a permanent budget, never a per-window one.
+    const ttl = await redis.ttl(progressiveKeys('t', 'ip').count);
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(COST_SCHEDULE.windowSec);
+  });
+
+  it('defaults to one unit, and clamps a nonsense cost up to one', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', COST_SCHEDULE);
+    await limiter.consume('ip'); // default
+    await limiter.consume('ip', 0);
+    await limiter.consume('ip', -5);
+    await limiter.consume('ip', Number.NaN);
+    expect(await redis.get(progressiveKeys('t', 'ip').count)).toBe('4');
+  });
+
+  it('trips the SAME ladder, decay and Retry-After when the units run out', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', COST_SCHEDULE);
+    const keys = progressiveKeys('t', 'ip');
+
+    // Three 10-unit events: the third crosses the 30-unit allowance.
+    expect((await limiter.consume('ip', 10)).allowed).toBe(true);
+    expect((await limiter.consume('ip', 10)).allowed).toBe(true);
+    const tripped = await limiter.consume('ip', 10);
+    expect(tripped.allowed).toBe(true); // exactly AT the allowance still passes
+
+    const over = await limiter.consume('ip', 10);
+    expect(over.allowed).toBe(false);
+    expect(over.retryAfterSec).toBe(COST_SCHEDULE.cooldownsSec[0]);
+    expect(over.level).toBe(1);
+    expect(over.cooldownStarted).toBe(true);
+
+    // …and the ladder climbs on the next violation exactly as for counted
+    // requests: the cooldown elapsing leaves the escalation level armed.
+    await redis.del(keys.cooldown);
+    const again = await limiter.consume('ip', 31);
+    expect(again.allowed).toBe(false);
+    expect(again.retryAfterSec).toBe(COST_SCHEDULE.cooldownsSec[1]);
+    expect(again.level).toBe(2);
+  });
+
+  it('turns a heavy caller away in fewer requests than a cheap one', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', COST_SCHEDULE);
+    const requestsUntilDenied = async (id: string, cost: number) => {
+      let n = 0;
+      for (;;) {
+        n += 1;
+        const decision = await limiter.consume(id, cost);
+        if (!decision.allowed) return n;
+      }
+    };
+    // 30 units / 10 per request = the 4th request is refused; a cost-1 caller
+    // gets 30 through. Same limiter, same ladder — bounded by work, not count.
+    expect(await requestsUntilDenied('heavy', 10)).toBe(4);
+    expect(await requestsUntilDenied('cheap', 1)).toBe(COST_SCHEDULE.limit + 1);
+  });
+});
+
 describe('progressive limiter — independence (§10)', () => {
   it('tracks distinct callers under one limiter separately', async () => {
     const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);

@@ -1,3 +1,4 @@
+import { ANALYTICS_MAX_RANGE_DAYS } from '@bettertrack/contracts';
 import type {
   AnalyticsContributionRow,
   AnalyticsInflationPreset,
@@ -81,6 +82,21 @@ export interface AnalyticsService {
     portfolioId: string,
     query: AnalyticsSeriesQuery,
   ): Promise<AnalyticsSeriesResponse>;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Whole days between two ISO `YYYY-MM-DD` days, or `null` when either side is
+ * not a real calendar date (the query schema pins the SHAPE, not the validity,
+ * so `2026-13-45` reaches here). An unparseable pair simply skips the range
+ * bound below — it is a robustness guard, not a validity check.
+ */
+function daysBetweenIso(from: string, to: string): number | null {
+  const a = Date.parse(`${from}T00:00:00.000Z`);
+  const b = Date.parse(`${to}T00:00:00.000Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return Math.round((b - a) / DAY_MS);
 }
 
 /** ISO `YYYY-MM-DD` ascending comparator (lexicographic is correct for this format). */
@@ -286,6 +302,22 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       }
       if (query.from && query.to && query.from > query.to) {
         throw badRequest('`from` must be on or before `to`.', 'VALIDATION_ERROR');
+      }
+      // Hard range bound (#1643). Without `from` the window starts at the first
+      // day the portfolio held value — bounded by the data, not by the caller —
+      // so only an explicit `from` can make the request arbitrarily long. Its
+      // end is `to` when given, else today. Rejected, not clamped, so the
+      // echoed window always answers the question that was asked; see
+      // ANALYTICS_MAX_RANGE_DAYS for the reasoning behind the size.
+      if (query.from) {
+        const end = query.to ?? new Date().toISOString().slice(0, 10);
+        const span = daysBetweenIso(query.from, end);
+        if (span !== null && span > ANALYTICS_MAX_RANGE_DAYS) {
+          throw badRequest(
+            `The requested range is too long (maximum ${ANALYTICS_MAX_RANGE_DAYS} days).`,
+            'VALIDATION_ERROR',
+          );
+        }
       }
       const deflator = resolveDeflator(query);
 
