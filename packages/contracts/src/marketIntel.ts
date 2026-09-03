@@ -102,6 +102,18 @@ export type DividendsResponse = z.infer<typeof dividendsResponseSchema>;
 // per-asset shape: it is the global `MARKET_INTEL_ENABLED` gate, so the UI hides
 // the whole block when it is false (invisible when unconfigured).
 
+/**
+ * Roll-up completeness marker, shared by the three book-wide reads (dividend
+ * calendar, dividend projection, news digest). Those reads fan out one provider
+ * call per held/watched asset onto a shared, deliberately small outbound queue
+ * (§5.3), so the server caps the fan-out per request. Present and `true` ONLY
+ * when the caller's book exceeded that cap and the response therefore covers a
+ * deterministic subset of it (held before watchlist-only, then by symbol);
+ * absent means the whole book was covered. Optional so a complete roll-up keeps
+ * exactly the shape it has always had.
+ */
+export const rollupTruncatedSchema = z.literal(true).optional();
+
 /** Whether a calendar entry's asset is currently held or only watchlisted. */
 export const DIVIDEND_CALENDAR_SOURCES = ['holding', 'watchlist'] as const;
 export const dividendCalendarSourceSchema = z.enum(DIVIDEND_CALENDAR_SOURCES);
@@ -136,6 +148,7 @@ export const dividendCalendarResponseSchema = z
   .object({
     available: z.boolean(),
     entries: z.array(dividendCalendarEntrySchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type DividendCalendarResponse = z.infer<typeof dividendCalendarResponseSchema>;
@@ -174,6 +187,7 @@ export const projectedDividendIncomeResponseSchema = z
     monthlyTotalEur: z.number().nonnegative(),
     yearlyTotalEur: z.number().nonnegative(),
     holdings: z.array(projectedDividendHoldingSchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type ProjectedDividendIncomeResponse = z.infer<typeof projectedDividendIncomeResponseSchema>;
@@ -305,6 +319,7 @@ export const newsDigestResponseSchema = z
   .object({
     available: z.boolean(),
     groups: z.array(newsDigestGroupSchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type NewsDigestResponse = z.infer<typeof newsDigestResponseSchema>;

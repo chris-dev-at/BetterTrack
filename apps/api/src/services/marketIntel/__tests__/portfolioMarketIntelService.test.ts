@@ -11,6 +11,7 @@ import type {
 import { createStubMarketData, cachedIntel } from '../../../testing/marketDataStubs';
 import { FxRateUnavailableError } from '../../currency/currencyService';
 import { createPortfolioMarketIntelService } from '../portfolioMarketIntelService';
+import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../rollupBudget';
 
 /** Fixed clock inside the calendar fixtures' window. */
 const NOW = Date.parse('2026-07-18T00:00:00.000Z');
@@ -571,6 +572,173 @@ describe('portfolio dividend calendar (V5-P5)', () => {
     });
 
     expect(await service.dividendCalendar('user-1')).toEqual({ available: false, entries: [] });
+  });
+});
+
+describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
+  /** A book of `count` held positions, symbols H000…, each paying 1.0/share. */
+  const heldBook = (count: number) =>
+    Array.from({ length: count }, (_, i) => {
+      const suffix = String(i).padStart(3, '0');
+      return held({
+        assetId: `asset-h${suffix}`,
+        providerId: 'yahoo',
+        providerRef: `H${suffix}`,
+        symbol: `H${suffix}`,
+        name: `Held ${suffix}`,
+        currency: 'EUR',
+        quantity: 1,
+      });
+    });
+
+  it('dividendCalendar caps the provider calls for a 200-asset book and says it truncated', async () => {
+    const marketData = createStubMarketData({
+      dividends: () =>
+        cachedIntel(
+          makeDividends({
+            currency: 'EUR',
+            upcoming: [
+              {
+                exDate: '2026-07-20T00:00:00.000Z',
+                payDate: '2026-07-27T00:00:00.000Z',
+                amount: 1,
+                currency: 'EUR',
+              },
+            ],
+          }),
+        ),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: heldBook(200) }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const result = await service.dividendCalendar('user-1');
+    expect(marketData.calls.dividends).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(result.entries).toHaveLength(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(result.truncated).toBe(true);
+    // Deterministic selection: the alphabetically first held symbols.
+    expect(result.entries.map((e) => e.symbol).sort()).toEqual(
+      heldBook(MARKET_INTEL_ROLLUP_MAX_ASSETS).map((row) => row.symbol),
+    );
+  });
+
+  it('dividendCalendar keeps held positions over watch-only assets when it truncates', async () => {
+    const fetched: string[] = [];
+    const marketData = createStubMarketData({
+      dividends: (ref: AssetRef) => {
+        fetched.push(ref.providerRef);
+        return cachedIntel(makeDividends({ currency: 'EUR' }));
+      },
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      // One held row sorting LAST alphabetically, plus a full cap of watchlist.
+      repo: stubRepo({
+        held: [
+          held({
+            assetId: 'asset-zzz',
+            providerRef: 'ZZZ',
+            symbol: 'ZZZ',
+            name: 'Held last alphabetically',
+            currency: 'EUR',
+          }),
+        ],
+        watched: Array.from({ length: MARKET_INTEL_ROLLUP_MAX_ASSETS }, (_, i) => {
+          const suffix = String(i).padStart(3, '0');
+          return watched({
+            assetId: `asset-w${suffix}`,
+            providerRef: `W${suffix}`,
+            symbol: `W${suffix}`,
+            name: `Watched ${suffix}`,
+          });
+        }),
+      }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await service.dividendCalendar('user-1');
+    expect(marketData.calls.dividends).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    // The held asset survives even though its symbol sorts after every W###,
+    // and the last watch-only row is the one dropped to make room for it.
+    expect(fetched).toContain('ZZZ');
+    expect(fetched).not.toContain(
+      `W${String(MARKET_INTEL_ROLLUP_MAX_ASSETS - 1).padStart(3, '0')}`,
+    );
+  });
+
+  it('projectedIncome refuses an over-cap book without spending any provider budget', async () => {
+    const marketData = createStubMarketData({
+      dividends: () => cachedIntel(makeDividends({ currency: 'EUR', trailingAmount: 1 })),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: heldBook(200) }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    // All-or-nothing (#1616): a book too large to cover can never produce a
+    // publishable total, so it is refused before the fan-out, not after.
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+      truncated: true,
+    });
+    expect(marketData.calls.dividends).toBe(0);
+  });
+
+  it('a book exactly at the cap still resolves completely, with no truncation marker', async () => {
+    const marketData = createStubMarketData({
+      dividends: () => cachedIntel(makeDividends({ currency: 'EUR', trailingAmount: 1 })),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: heldBook(MARKET_INTEL_ROLLUP_MAX_ASSETS) }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const result = await service.projectedIncome('user-1');
+    expect(result.available).toBe(true);
+    expect(result.truncated).toBeUndefined();
+    expect(result.holdings).toHaveLength(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(result.yearlyTotalEur).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+  });
+
+  it('an UNRESOLVED holding inside the cap still hides the projection, and is not "truncated"', async () => {
+    // #1616's guarantee, kept distinguishable from the new cap refusal above.
+    const marketData = createStubMarketData({
+      dividends: (ref: AssetRef) => {
+        if (ref.providerRef === 'H001') throw new Error('upstream 429');
+        return cachedIntel(makeDividends({ currency: 'EUR', trailingAmount: 1 }));
+      },
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: heldBook(3) }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+    });
   });
 });
 
