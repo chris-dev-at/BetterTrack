@@ -588,28 +588,6 @@ export function SubTabLink({ className, ...rest }: NavLinkProps & { className?: 
   );
 }
 
-export function Avatar({
-  name,
-  size = 'md',
-  className,
-}: {
-  name: string;
-  size?: 'md' | 'lg';
-  className?: string;
-}) {
-  const initials = name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]!.toUpperCase())
-    .join('');
-  return (
-    <span aria-hidden className={cx('bt-avatar', size === 'lg' && 'bt-avatar--lg', className)}>
-      {initials || '·'}
-    </span>
-  );
-}
-
 export function Empty({
   title,
   children,

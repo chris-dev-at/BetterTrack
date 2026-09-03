@@ -77,7 +77,51 @@ by the `web`/nginx front proxy.
 - **On your LAN** — set `BT_OBS_BIND_HOST` to the host's LAN IP; **never**
   `0.0.0.0` on a public host.
 
-Log in with `BT_GRAFANA_ADMIN_USER` / `BT_GRAFANA_ADMIN_PASSWORD`.
+### The admin login (no default credential, still zero setup)
+
+Grafana ships with **no default password on any interface it binds to** — the
+LAN bind above included. The compose service has no inline
+`GF_SECURITY_ADMIN_PASSWORD`; its entrypoint seeds
+`/var/lib/grafana/.bettertrack-admin-password` inside the persistent
+`grafanadata` volume on first boot instead:
+
+- `BT_GRAFANA_ADMIN_PASSWORD` set to a real value → that is the credential.
+- unset, blank, `admin`, or left at the `.env` placeholder → a **random 32-char
+  password is generated once** into that file. Nothing to do before
+  `docker compose up`; nothing to do after it.
+
+Read it back on the deploy host (user = `BT_GRAFANA_ADMIN_USER`, default
+`admin`):
+
+```
+docker compose -f infra/docker-compose.yml exec grafana cat /var/lib/grafana/.bettertrack-admin-password
+```
+
+The file lives and dies with `grafana.db` in the same volume, so the password
+survives restarts and re-deploys; wiping the volume regenerates both.
+
+**Upgrading a stack that already booted** (its `grafanadata` volume predates
+this change, so `grafana.db` still holds the old `admin`/`admin` account):
+nothing to do. Grafana itself honours a bootstrap password only while it
+_creates_ the admin user, so the entrypoint applies the credential to the
+existing account for you — on the first boot after the upgrade it runs
+`grafana cli admin reset-admin-password` with the seeded value and records what
+it applied next to the credential file. The read-back command above therefore
+always prints the password that actually authenticates, on new and pre-existing
+volumes alike. If that apply ever fails the container refuses to start rather
+than leave the previous password answering on the bind, and logs the manual
+recovery command.
+
+**Rotating it later**: set `BT_GRAFANA_ADMIN_PASSWORD` (or delete the credential
+file to get a fresh random one) and restart the service — the entrypoint applies
+the new value to the existing account on the next boot. A password changed from
+inside the Grafana UI is left alone: the entrypoint only re-applies when the
+credential file's own content changes.
+
+`apps/api/src/scripts/checkProductionCompose.ts` fails the build if a hardcoded
+or defaulted Grafana admin password is ever reintroduced into the compose file,
+if the bootstrap stops refusing the known-unsafe literals, or if it stops
+applying the credential to an already-provisioned `grafana.db`.
 
 ## Reaching it from outside the LAN (opt-in, authenticated)
 
@@ -91,6 +135,12 @@ Common switch for either path:
 BT_OBS_EXTERNAL_ACCESS=true          # deploy-level opt-in (off by default)
 BT_GRAFANA_ADMIN_PASSWORD=<strong>   # required — exposure is refused while unset
 ```
+
+The auto-generated local credential deliberately does **not** arm this gate: the
+api only ever sees `BT_GRAFANA_ADMIN_PASSWORD`, so opening an external door
+stays an explicit, owner-chosen act. Set it and restart the grafana service —
+the entrypoint applies it to the existing account — before enabling external
+access.
 
 There is also a **runtime kill-switch** on the admin Diagnostics page (below):
 an admin can cut external reach on the next request with no redeploy. Effective
@@ -164,6 +214,10 @@ and degrading gracefully when the stack is down:
 
 - Default is safe: absent explicit external-access config, everything stays
   localhost/LAN-only exactly as before.
+- **No default credential on any bound interface** — the compose service carries
+  no inline `GF_SECURITY_ADMIN_PASSWORD`; an unset/placeholder/`admin` value is
+  replaced by a random password generated into the `grafanadata` volume, so the
+  documented LAN bind cannot produce an `admin`/`admin` Grafana.
 - **Prometheus is never directly public** — it has no auth; only Grafana (login)
   or the admin-auth proxy is reachable.
 - **No public exposure without a set Grafana admin password** — enforced in the

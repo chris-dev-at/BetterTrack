@@ -623,9 +623,24 @@ Prometheus. That opt-in is off by default and password-gated; see
   IP (e.g. `192.168.1.10`), `docker compose up -d`, then open
   `http://192.168.1.10:3001`. **Never** set it to `0.0.0.0` on a public host.
 
-Log in with `BT_GRAFANA_ADMIN_USER` / `BT_GRAFANA_ADMIN_PASSWORD` from
-`infra/.env` — change the default before first boot. Sign-up and anonymous
-access are disabled. See `infra/.env.production.example` for every knob.
+Log in as `BT_GRAFANA_ADMIN_USER` (default `admin`). There is **no default
+password on any of these interfaces**: when `BT_GRAFANA_ADMIN_PASSWORD` is
+unset, blank, `admin` or still the `.env` placeholder, the grafana service
+generates a random one on first boot into its persistent volume — read it with
+
+```
+docker compose -f infra/docker-compose.yml exec grafana cat /var/lib/grafana/.bettertrack-admin-password
+```
+
+That command is the credential on every stack, including one whose volume
+predates this bootstrap: the entrypoint applies the file to the existing
+`grafana.db` admin user, so an already-booted stack stops answering to
+`admin`/`admin` on the first restart after the upgrade — no manual step.
+
+Setting `BT_GRAFANA_ADMIN_PASSWORD` to a real value uses that instead (and is
+what arms external access); it is applied to the existing account on the next
+restart. Sign-up and anonymous access are disabled. See `docs/monitoring.md` for
+rotation and `infra/.env.production.example` for every knob.
 
 ## Troubleshooting
 

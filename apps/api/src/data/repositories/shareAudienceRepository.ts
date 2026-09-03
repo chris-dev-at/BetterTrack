@@ -46,7 +46,7 @@ import {
 export interface OwnerRef {
   ownerId: string;
   ownerUsername: string;
-  /** Owner's curated profile icon id (§13.5 V5-P0c) or `null` when unset. */
+  /** Owner's curated profile icon id (§13.5 V5-P0 (c)) or `null` when unset. */
   ownerProfileIcon: string | null;
 }
 

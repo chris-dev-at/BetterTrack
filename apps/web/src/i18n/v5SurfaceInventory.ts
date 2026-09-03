@@ -751,6 +751,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultRestorePicker.tsx',
       'user/vault/ui/VaultStateAction.tsx',
       'user/vault/ui/VaultUnlockDialog.tsx',
+      'user/vault/ui/VaultProvidePhraseDialog.tsx',
       'user/vault/ui/VaultReceivePhrase.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultTransferQr.tsx',
@@ -2009,7 +2010,7 @@ export type V5AsyncStateDebtLedger = Readonly<
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 213;
+export const V5_ASYNC_READ_SITE_BASELINE = 215;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

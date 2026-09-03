@@ -21,12 +21,12 @@ import type { E2EUser } from './users';
  * Three seams needed a decision, and each is recorded here rather than in a
  * comment beside one assertion:
  *
- *  - **"Lock" is a reload.** E3's endpoint keystore holds the unwrapped device
- *    key in memory on one module-scoped singleton (`keystore/runtime.ts`) and
- *    zeroes it when the session ends; nothing about a live wrapped session is
- *    persisted. A fresh document is therefore the product's own lock gesture for
- *    a per-vault endpoint session, and {@link lockVaultsByReload} names it so a
- *    future reader does not mistake `page.reload()` for incidental navigation.
+ *  - **"Lock" is the account menu's "Lock vault".** A reload USED to be the
+ *    lock (K_dev lived only in tab memory); since the owner's 2026-09-03
+ *    amendment to §12 a session belongs to the device and survives reloads, so
+ *    {@link lockVaults} drives the explicit gesture the product ships and a
+ *    `page.reload()` in these arcs is exactly what it looks like — a reload the
+ *    session is expected to outlive.
  *
  *  - **The "mocked camera" is the shipped paste seam.** E7's receiver
  *    (`VaultReceivePhrase.tsx`) exposes its scan input as a textarea —
@@ -79,7 +79,7 @@ export const E10_TRACEABILITY = [
       'The whole arc runs for real since the E6 capture residual closed (#1525): ceremony, ' +
       'unlock through the access surface, SPA-only walk to the move-in wizard (the endpoint ' +
       'session lives in page memory), the destructive commit with the §15 step-up, the ' +
-      'VAULTED_PORTFOLIO stub proof, lock by navigation, the locked-endpoint move-out ' +
+      'VAULTED_PORTFOLIO stub proof, the explicit device lock, the locked-endpoint move-out ' +
       'refusal, unlock via the stub’s own §12 affordance, and the same-UUID restore of the ' +
       'recorded transaction. [E10-A1] keeps the focused ceremony/lock/unlock coverage; ' +
       '[E10-A6] keeps the unready-state refusal pinned.',
@@ -329,20 +329,27 @@ async function readChallengedWordNumber(ceremony: Locator): Promise<number> {
 }
 
 /**
- * End every live endpoint session. E3 keeps the unwrapped device key only in
- * memory, so a fresh document IS the lock — see the module header.
+ * End every live endpoint session on this device — the product's OWN lock
+ * gesture: the account menu's "Lock vault" item (`useEndpointVaultLock`).
  *
- * Still true after VAULT-UX-B, and for the SAME reason: `docs/paranoid-design.md`
- * §12 keeps K_dev memory-only and nothing persists it. What that arc adds is a
- * live handoff between OPEN TABS of one device, so this helper only locks while
- * `page` is the account's last tab — which it is in every arc that calls it.
- * The sharing (and its revocation) has its own spec, `vault-session-sharing`.
+ * A reload used to be the lock (K_dev lived only in tab memory); since the
+ * owner's 2026-09-03 amendment to `docs/paranoid-design.md` §12 a session
+ * belongs to the device and SURVIVES reloads, tab closes and OAuth round-trips,
+ * so the only ways to end one are the explicit lock, sign-out, the PIN idle
+ * lock, an account switch, or the record's expiry. This helper drives the
+ * explicit one and then re-reads the manager so callers observe the locked
+ * state through the shipped surface. The sharing arc (`vault-session-sharing`)
+ * pins that a reload now keeps the session.
  */
-export async function lockVaultsByReload(page: Page): Promise<void> {
-  await page.reload();
-  await expect(page.getByRole('heading', { name: 'Vaults', exact: true })).toBeVisible({
-    timeout: 30_000,
-  });
+export async function lockVaults(page: Page): Promise<void> {
+  // The Control Center is an overlay whose scrim covers the rail, so the account
+  // menu is only clickable from an ordinary page. The session survives this
+  // navigation (that is the point of the amendment), so nothing is lost by it.
+  await page.goto('/portfolio');
+  await expect(page.locator('.bt-cc-root')).toHaveCount(0, { timeout: 30_000 });
+  await page.getByRole('button', { name: 'Account menu' }).first().click();
+  await page.getByRole('menuitem', { name: 'Lock vault', exact: true }).click();
+  await openPrivacyPanel(page);
 }
 
 export type VaultAccessAction =

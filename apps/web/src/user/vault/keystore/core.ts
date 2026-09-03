@@ -34,6 +34,11 @@ import {
 import { decodeBase64Url, encodeBase64Url } from './encoding';
 import { EndpointKeystoreError } from './errors';
 import { parseEndpointPasswordMetadata, parseStoredPhraseEntry } from './records';
+import {
+  createIndexedDbEndpointSessionPersistence,
+  ENDPOINT_SESSION_PERSISTENCE_TTL_MS,
+  type EndpointSessionPersistence,
+} from './sessionPersistence';
 import { createIndexedDbEndpointKeystoreStorage, type EndpointKeystoreStorage } from './storage';
 import {
   ENDPOINT_KEYSTORE_VERSION,
@@ -96,19 +101,31 @@ export interface EndpointVaultKeystoreOptions {
   sessionGrantTimeoutMs?: number;
   /** Correlation id for one request/grant pair. Not a secret; must be unique. */
   newRequestId?: () => string;
+  /**
+   * Where a live session outlives the tab (§12 as amended 2026-09-03, see
+   * `sessionPersistence.ts`). Absent ⇒ IndexedDB; pass
+   * `NO_ENDPOINT_SESSION_PERSISTENCE` for the memory-only behaviour.
+   */
+  sessionPersistence?: EndpointSessionPersistence;
+  /** Absolute lifetime of a persisted session. */
+  sessionPersistenceTtlMs?: number;
 }
 
 /**
- * Headless E3 endpoint keystore. The device password, K_dev, mnemonic entropy
- * and every K_c are held only by this object, in volatile memory, and are
- * synchronously zeroed when the session ends — `docs/paranoid-design.md` §12,
- * with no persisted-custody exception. Nothing in this class writes key material
+ * Headless E3 endpoint keystore. The device password, mnemonic entropy and
+ * every K_c are held only by this object, in volatile memory, and are
+ * synchronously zeroed when the session ends (`docs/paranoid-design.md` §12).
+ * Nothing in this class writes a password, a phrase, entropy or a content key
  * to IndexedDB, localStorage, sessionStorage, a cookie or a log.
  *
  * A session is scoped to the ENDPOINT, not to the tab: `sessionChannel.ts`
  * hands the live session to the account's other same-origin tabs over
- * `BroadcastChannel`, memory-only, dying with the last of them. See that file
- * for why §12 reads that way and what the trade-off is.
+ * `BroadcastChannel`, and — since the owner's 2026-09-03 amendment to §12 —
+ * `sessionPersistence.ts` keeps K_dev as a NON-EXTRACTABLE `CryptoKey` on the
+ * device for a bounded time, so a reload, an OAuth round-trip or a closed tab
+ * no longer ends the session. Every user-intended lock (manual, sign-out, PIN
+ * idle, account switch) writes the §12 marker first and then removes that
+ * record; the marker alone keeps a persisted key inert until the next password.
  */
 export class EndpointVaultKeystore {
   private readonly storage: EndpointKeystoreStorage;
@@ -134,9 +151,15 @@ export class EndpointVaultKeystore {
   private readonly vaultOpenedListeners = new Set<(vaultId: string) => void>();
   private sessionGeneration = 0;
   private sessionRevision: number | null = null;
+  private readonly sessionPersistence: EndpointSessionPersistence;
+  private readonly sessionPersistenceTtlMs: number;
 
   constructor(options: EndpointVaultKeystoreOptions = {}) {
     this.storage = options.storage ?? createIndexedDbEndpointKeystoreStorage();
+    this.sessionPersistence =
+      options.sessionPersistence ?? createIndexedDbEndpointSessionPersistence();
+    this.sessionPersistenceTtlMs =
+      options.sessionPersistenceTtlMs ?? ENDPOINT_SESSION_PERSISTENCE_TTL_MS;
     this.argon2 = options.argon2;
     this.randomBytes = options.randomBytes ?? secureRandomBytes;
     this.now = options.now ?? Date.now;
@@ -163,11 +186,18 @@ export class EndpointVaultKeystore {
   bindAccount(accountId: string | null): void {
     const next = accountId?.trim() || null;
     if (this.accountId === next) return;
-    const hadAccount = this.accountId !== null;
+    const previous = this.accountId;
+    const hadAccount = previous !== null;
     this.closeSessionTransport();
     this.accountId = next;
     this.sessionResume = null;
-    if (hadAccount) this.endSession();
+    if (hadAccount) {
+      this.endSession();
+      // An account switch is a revocation (see above), and since §12's 2026-09-03
+      // amendment a session also lives on the device — so the previous account's
+      // record goes with it, or signing back in would reopen without a password.
+      if (previous != null) this.forgetPersistedSession(previous);
+    }
     if (next != null) {
       this.transport = this.createSessionTransport(next, (message) =>
         this.onSessionMessage(message),
@@ -306,6 +336,10 @@ export class EndpointVaultKeystore {
         );
       }
       this.requireCurrentGeneration(generation);
+      // The mirror image of the resume's guard: if a speculative resume slipped
+      // its session in while the password was being verified, zero its copies
+      // instead of orphaning them under ours — the password is authoritative.
+      if (this.deviceKey != null) this.clearSessionSecrets();
       this.deviceKey = candidate;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
@@ -315,7 +349,10 @@ export class EndpointVaultKeystore {
       // The §12 marker's ONLY clearing edge. The user just proved the device
       // password, so "the last deliberate act on this device was a lock" has
       // stopped being true and sibling tabs may share this session again.
-      if (accountId != null) forgetEndpointDeviceLocked(accountId);
+      if (accountId != null) {
+        forgetEndpointDeviceLocked(accountId);
+        this.rememberSession(accountId, this.deviceKey);
+      }
       const unlockedVaultIds = [...this.wrappedEntropy.keys()].sort();
       // Tell the store resolver, so an unlock is enough on its own.
       //
@@ -350,11 +387,23 @@ export class EndpointVaultKeystore {
     if (this.deviceKey != null) {
       return { unlockedVaultIds: [...this.wrappedEntropy.keys()].sort() };
     }
-    this.sessionResume ??= this.runSessionResume()
-      .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
-      .finally(() => {
-        this.sessionResume = null;
-      });
+    // Deferred by one microtask so `this.sessionResume` is ASSIGNED before the
+    // resume body runs: a re-entrant caller inside that body (a synchronous
+    // query re-run, see `runSessionResume`) must find the in-flight promise and
+    // share it, never start a second resume.
+    if (this.sessionResume == null) {
+      const run: Promise<EndpointUnlockResult> = Promise.resolve()
+        .then(() => this.runSessionResume())
+        .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
+        .finally(() => {
+          // Only the run that owns the slot may vacate it. A lock or an account
+          // change nulls the memo early and a NEWER run may have taken the slot
+          // since; an older run settling must not evict it, or two resumes
+          // sharing one snapshot could both install.
+          if (this.sessionResume === run) this.sessionResume = null;
+        });
+      this.sessionResume = run;
+    }
     return this.sessionResume;
   }
 
@@ -381,12 +430,38 @@ export class EndpointVaultKeystore {
     const nothing: EndpointUnlockResult = { unlockedVaultIds: [] };
     const accountId = this.accountId;
     const transport = this.transport;
-    if (accountId == null || transport == null) return nothing;
+    if (accountId == null) return nothing;
     // (1) Fail closed, then arm the guard. Both statements are synchronous.
     if (isEndpointDeviceLocked(accountId)) return nothing;
-    const generation = this.beginSessionChange();
+    // SNAPSHOT the guard; do not mint one, and do not announce a session end.
+    // There is no session to end here (`deviceKey` is null by construction at
+    // entry, see the caller), and both alternatives are hazards:
+    //   • `beginSessionChange()` (the first shape) notified a session end from
+    //     inside a resume. The runtime's listener drops its resume memo, the
+    //     shell invalidates the endpoint-state queries in the same tick,
+    //     TanStack re-runs a query that already has data SYNCHRONOUSLY, its
+    //     queryFn asks for a resume again — and lands back here before
+    //     `sessionResume` was assigned: 300+ nested resumes (review of #1707).
+    //     Its `clearSessionSecrets()` also wiped plain-custody content keys a
+    //     resume has no business touching.
+    //   • Bumping the generation silently cancels a concurrent `unlock()` — the
+    //     user typed the password, a speculative resume raced it, and the
+    //     unlock died with "cancelled".
+    // A snapshot is enough: any lock OR unlock that lands during this resume
+    // bumps the generation itself, and `sessionStillCurrent` below then refuses
+    // to install — the lock keeps the device locked, the unlock keeps its own
+    // session. A resume never has to win a race.
+    const generation = this.sessionGeneration;
 
-    const deviceKey = await this.requestSessionGrant(transport, accountId);
+    // A sibling tab answers first (fast, and it proves the session is live on
+    // this device right now); with no sibling — or no channel at all — the
+    // device's persisted record (§12 as amended 2026-09-03) is the second
+    // source. Both go through the SAME verification below: neither is trusted
+    // for more than "a candidate".
+    const granted = transport == null ? null : await this.requestSessionGrant(transport, accountId);
+    if (!this.sessionStillCurrent(generation, accountId)) return nothing;
+    const deviceKey =
+      granted ?? (await this.sessionPersistence.read(accountId, this.now()).catch(() => null));
     if (deviceKey == null) return nothing;
     // The transport validates too, but a keystore that trusts its transport to
     // police key SHAPE would re-broadcast whatever it was handed: `grantSession`
@@ -443,11 +518,32 @@ export class EndpointVaultKeystore {
       }
       // (3) Last word before the session exists. Nothing may await past here.
       if (!this.sessionStillCurrent(generation, accountId)) return nothing;
+      // A session already standing here means an `unlock()` won the race — its
+      // own `beginSessionChange` is what this resume snapshotted, so the
+      // generation check above cannot see it. Installing beside it would
+      // overwrite the unlock's raw K_dev and entropy un-zeroed (§12) and fire a
+      // second vault-opened edge. The `finally` below zeroes our copies.
+      if (this.deviceKey != null) return nothing;
       this.deviceKey = deviceKey;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
       for (const [vaultId, bytes] of entropy) this.wrappedEntropy.set(vaultId, bytes);
       entropy.clear();
+      // A session granted by a sibling tab is now this device's session too, so
+      // it must survive this tab being the last one left — but only when the
+      // device holds no record yet. Re-persisting on every grant would restart
+      // the clock, and the TTL is ABSOLUTE from the unlock that created the
+      // session (§12); the re-check is one IDB read, off the critical path.
+      if (granted != null) {
+        void this.sessionPersistence
+          .read(accountId, this.now())
+          .then((existing) => {
+            if (existing == null && this.sessionStillCurrent(generation, accountId)) {
+              this.rememberSession(accountId, deviceKey);
+            }
+          })
+          .catch(() => undefined);
+      }
       const unlockedVaultIds = [...this.wrappedEntropy.keys()].sort();
       // The edge #1531/#1533 already built for exactly this question. A resolver
       // that finished against the locked endpoint milliseconds ago has published
@@ -555,11 +651,13 @@ export class EndpointVaultKeystore {
     const accountId = this.accountId;
     // Marker first, before anything that could throw: a lock whose broadcast
     // never lands must still fail closed on the next resume, here and in every
-    // other tab.
+    // other tab — and it is what keeps the persisted record inert while the
+    // asynchronous delete below is still in flight (or has failed).
     if (accountId != null) rememberEndpointDeviceLocked(accountId);
     this.sessionResume = null;
     this.endSession();
     if (accountId != null) {
+      this.forgetPersistedSession(accountId);
       this.transport?.post({ kind: 'session-lock', accountId });
     }
   }
@@ -577,6 +675,7 @@ export class EndpointVaultKeystore {
     if (accountId != null) rememberEndpointDeviceLocked(accountId);
     this.sessionResume = null;
     this.endSession();
+    if (accountId != null) this.forgetPersistedSession(accountId);
   }
 
   private closeSessionTransport(): void {
@@ -1237,6 +1336,33 @@ export class EndpointVaultKeystore {
     for (const vaultId of vaultIds) this.notifyVaultOpened(vaultId);
   }
 
+  /**
+   * Persist the live session for this device (§12 as amended 2026-09-03).
+   *
+   * Fire-and-forget on purpose: the session is already installed in memory and
+   * persistence is a convenience, so neither a slow IndexedDB nor a failing one
+   * may delay or fail the unlock. Raw K_dev is imported to a NON-EXTRACTABLE
+   * key first — the only shape that ever leaves process memory — and a runtime
+   * that hands back an extractable key persists nothing.
+   */
+  private rememberSession(accountId: string, deviceKey: EndpointDeviceKeyMaterial): void {
+    const generation = this.sessionGeneration;
+    const expiresAt = this.now() + this.sessionPersistenceTtlMs;
+    void (async () => {
+      const shareable = isShareableDeviceKey(deviceKey)
+        ? deviceKey
+        : await importShareableDeviceKey(deviceKey).catch(() => null);
+      if (shareable == null) return;
+      // A lock that landed while the import ran must win: persist nothing.
+      if (!this.sessionStillCurrent(generation, accountId)) return;
+      await this.sessionPersistence.persist(accountId, shareable, expiresAt);
+    })().catch(() => undefined);
+  }
+
+  private forgetPersistedSession(accountId: string): void {
+    void this.sessionPersistence.clear(accountId).catch(() => undefined);
+  }
+
   private notifyVaultOpened(vaultId: string): void {
     for (const listener of [...this.vaultOpenedListeners]) {
       try {
@@ -1302,6 +1428,13 @@ export class EndpointVaultKeystore {
           this.deviceKey = configured.deviceKey;
           this.devicePasswordMetadata = configured.metadata;
           this.sessionRevision = initialized.revision;
+          // The ceremony's first password IS this device's first session — so
+          // it also clears the §12 marker a previous `reset()`/lock left behind,
+          // exactly as `unlock()` does: the user just proved a password.
+          if (this.accountId != null) {
+            forgetEndpointDeviceLocked(this.accountId);
+            this.rememberSession(this.accountId, configured.deviceKey);
+          }
           return {
             deviceKey: configured.deviceKey,
             revision: initialized.revision,

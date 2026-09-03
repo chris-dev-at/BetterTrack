@@ -12,9 +12,11 @@ import type {
 } from './engine/portfolioDocumentSet';
 import { endpointVaultKeystore } from './keystore/runtime';
 import {
-  resolvePortfolioStores,
+  PortfolioStoreResolutionError,
+  resolvePortfolioStoresSettled,
   type PortfolioStoreResolverDependencies,
 } from './portfolioStoreResolver';
+import { EndpointKeystoreError } from './keystore/errors';
 import {
   createUnlockedVaultPortfolioAccess,
   type UnlockedVaultPortfolioAccess,
@@ -38,9 +40,27 @@ export interface VaultedPortfolioStoresInput {
   signal?: AbortSignal;
 }
 
+/**
+ * Why one vaulted portfolio could not be opened on this device although its
+ * vault is not (or not merely) locked. The `code` is the resolver's or the
+ * keystore's own typed code when there is one, so a surface can pick copy by
+ * it; `message` is the engineer-facing sentence, shown folded for a bug report.
+ */
+export interface VaultedPortfolioFailure {
+  vaultId: string;
+  code: string;
+  message: string;
+}
+
 export interface VaultedPortfolioStoresBatch {
   /** Vaulted portfolios unlocked on THIS device, by portfolio id. */
   unlocked: ReadonlyMap<string, UnlockedVaultPortfolioAccess>;
+  /**
+   * Vaulted portfolios this device tried to open and could not, by portfolio
+   * id. A LOCKED vault is not a failure (it never got as far as an open); this
+   * map holds the ones whose open or document set refused.
+   */
+  failures: ReadonlyMap<string, VaultedPortfolioFailure>;
   /** Revokes every access object in this batch and releases its lock listener. */
   dispose(): void;
 }
@@ -50,8 +70,30 @@ export interface VaultedPortfolioStoresOverrides {
   reader?: PortfolioStoreResolverDependencies['reader'];
   market?: MarketDataSource;
   plainStore?: PortfolioStore;
-  resolve?: typeof resolvePortfolioStores;
+  resolve?: typeof resolvePortfolioStoresSettled;
   subscribeToSessionEnd?: (listener: () => void) => () => void;
+}
+
+/** Name a resolution failure for the surface that has to show it. */
+export function describeVaultedPortfolioFailure(
+  vaultId: string,
+  cause: unknown,
+): VaultedPortfolioFailure {
+  if (cause instanceof PortfolioStoreResolutionError || cause instanceof EndpointKeystoreError) {
+    return { vaultId, code: cause.code, message: cause.message };
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    const code = (cause as { code: unknown }).code;
+    const message = (cause as { message?: unknown }).message;
+    if (typeof code === 'string') {
+      return { vaultId, code, message: typeof message === 'string' ? message : code };
+    }
+  }
+  return {
+    vaultId,
+    code: 'VAULT_OPEN_FAILED',
+    message: cause instanceof Error ? cause.message : String(cause),
+  };
 }
 
 /**
@@ -81,7 +123,11 @@ export async function resolveVaultedPortfolioStores(
   input: VaultedPortfolioStoresInput,
   overrides: VaultedPortfolioStoresOverrides = {},
 ): Promise<VaultedPortfolioStoresBatch> {
-  const empty: VaultedPortfolioStoresBatch = { unlocked: new Map(), dispose: () => {} };
+  const empty: VaultedPortfolioStoresBatch = {
+    unlocked: new Map(),
+    failures: new Map(),
+    dispose: () => {},
+  };
   if (!input.portfolios.some((portfolio) => portfolio.vaultId != null)) return empty;
 
   /**
@@ -118,17 +164,28 @@ export async function resolveVaultedPortfolioStores(
     },
   };
 
-  const resolve = overrides.resolve ?? resolvePortfolioStores;
-  let resolutions;
+  const resolve = overrides.resolve ?? resolvePortfolioStoresSettled;
+  let outcomes;
   try {
-    resolutions = await resolve(input.portfolios, input.vaults, dependencies, input.signal);
+    outcomes = await resolve(input.portfolios, input.vaults, dependencies, input.signal);
   } catch (cause) {
     releaseSessionListener();
     throw cause;
   }
 
   const unlocked = new Map<string, UnlockedVaultPortfolioAccess>();
-  for (const resolution of resolutions) {
+  const failures = new Map<string, VaultedPortfolioFailure>();
+  for (const outcome of outcomes) {
+    if (outcome.status === 'failed') {
+      const vaultId = outcome.portfolio.vaultId;
+      // A plain portfolio cannot fail here (its resolution is a constant); the
+      // guard only keeps the type honest.
+      if (vaultId != null) {
+        failures.set(outcome.portfolio.id, describeVaultedPortfolioFailure(vaultId, outcome.cause));
+      }
+      continue;
+    }
+    const { resolution } = outcome;
     if (resolution.kind !== 'vaulted-unlocked') continue;
     unlocked.set(
       resolution.portfolio.id,
@@ -141,6 +198,7 @@ export async function resolveVaultedPortfolioStores(
   let disposed = false;
   return {
     unlocked,
+    failures,
     dispose() {
       if (disposed) return;
       disposed = true;

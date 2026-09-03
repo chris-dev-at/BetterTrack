@@ -205,6 +205,7 @@ user/vault/ui/VaultManager.tsx
 user/vault/ui/VaultRestorePicker.tsx
 user/vault/ui/VaultStateAction.tsx
 user/vault/ui/VaultUnlockDialog.tsx
+user/vault/ui/VaultProvidePhraseDialog.tsx
 user/vault/ui/VaultReceivePhrase.tsx
 user/vault/ui/VaultSyncChip.tsx
 user/vault/ui/VaultTransferQr.tsx

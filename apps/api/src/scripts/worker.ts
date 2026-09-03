@@ -692,6 +692,9 @@ const definitions = assembleRegisteredJobDefinitions({
     vaultCandidates: createVaultBlobRepository(db),
     problems: createProblemRepository(db),
     usageEvents: createUsageAnalyticsRepository(db, lockDb),
+    // Delivered digest-queue rows (#1696) — the one operational table that had
+    // no sweep; pending rows are the live work list and are never eligible.
+    digestQueue: notificationDigestRepo,
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,

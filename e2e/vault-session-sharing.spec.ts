@@ -51,7 +51,7 @@ test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 const DEVICE_PASSWORD = 'Session-Device-Password-2026!';
 
 test.describe('per-vault endpoint session', () => {
-  test('re-locks on reload, unlocks in one step, is shared across tabs, and dies on lock', async ({
+  test('survives a reload, unlocks in one step, is shared across tabs, and dies on lock', async ({
     context,
   }, testInfo) => {
     test.skip(
@@ -81,21 +81,38 @@ test.describe('per-vault endpoint session', () => {
       });
       sensitive.push({ name: 'session-mnemonic', value: created.mnemonic });
 
-      await test.step('§12: a RELOAD re-locks, because K_dev is never persisted', async () => {
+      await test.step('§12 (amended 2026-09-03): a RELOAD keeps the device session', async () => {
         // PROVE THE PRECONDITION FIRST. The ceremony leaves the vault open, and
         // without this assertion the reload below would pass just as happily
-        // against a vault that was never unlocked at all — a locked-stays-locked
-        // tautology dressed up as a revocation test.
+        // against a vault that was never unlocked at all.
         await expectVaultState(page, name, 'Ready on this device');
 
-        // This is the only tab, so there is no live session anywhere on the
-        // device to rejoin. A1's claim, restated for this arc.
+        // This is the only tab, so no sibling can hand the session over: what
+        // brings it back is the device's persisted record (`sessionPersistence`)
+        // — the owner's "stays unlocked for the rest of the session", and the
+        // end of "it locks itself again whenever a sub-page opens".
+        await page.reload();
+        await expect(page.getByRole('heading', { name: 'Vaults', exact: true })).toBeVisible({
+          timeout: 30_000,
+        });
+        await expectVaultState(page, name, 'Ready on this device');
+        await shot(page, testInfo, '01-still-unlocked-after-reload');
+
+        // The explicit lock is now the ONLY way to end it from the UI, and it
+        // must beat the persisted record: after it, the same reload finds a
+        // locked device and asks for the password. (The Control Center's scrim
+        // covers the rail, so the account menu is reached from a plain page.)
+        await leaveControlCenter(page);
+        await page.getByRole('button', { name: 'Account menu' }).first().click();
+        await page.getByRole('menuitem', { name: 'Lock vault', exact: true }).click();
+        await openPrivacyPanel(page);
+        await expectVaultState(page, name, 'Locked on this device');
         await page.reload();
         await expect(page.getByRole('heading', { name: 'Vaults', exact: true })).toBeVisible({
           timeout: 30_000,
         });
         await expectVaultState(page, name, 'Locked on this device');
-        await shot(page, testInfo, '01-locked-after-reload');
+        await shot(page, testInfo, '01b-locked-after-explicit-lock');
       });
 
       await test.step('ONE password entry, in place, restores it where the user stands', async () => {
@@ -123,10 +140,9 @@ test.describe('per-vault endpoint session', () => {
         await expect(prompt).toBeHidden({ timeout: 60_000 });
 
         // The unlock resolved WHERE THE USER WAS. Every assertion here is
-        // deliberately in-place: `page.goto` would END the session, because with
-        // no sibling tab open there is nothing on this device left holding it —
-        // which is §12 working, not a defect. The proof is therefore the shell's
-        // own live state, not a settings page.
+        // deliberately in-place — the proof is the shell's own live state, not
+        // a settings page — so this step shows the prompt did its job without a
+        // navigation, whatever a later reload would or would not preserve.
         expect(new URL(page.url()).pathname).toBe('/portfolio');
         await expect(page.getByRole('button', { name: 'All synced ✓', exact: true })).toBeVisible({
           timeout: 30_000,
