@@ -456,6 +456,14 @@ describe('NotificationBell', () => {
       href: '/workbench/forecasts#standing-order-so-1',
     },
     { type: 'account.notice', payload: {}, href: '/settings/notifications' },
+    // A comment on an item YOU share → your own row's thread in My items — the
+    // only surface an item owner can moderate from (V5-P8, #1677).
+    {
+      type: 'comment.created',
+      payload: { itemKind: 'portfolio', itemId: 'p-1', commentId: 'c-1' },
+      href: '/people/shared#thread-portfolio-p-1',
+    },
+    { type: 'comment.created', payload: {}, href: '/people/shared' },
   ];
 
   test.each(DEEP_LINK_MATRIX)(

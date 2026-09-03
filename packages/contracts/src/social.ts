@@ -444,6 +444,26 @@ const mySharedAudienceFields = {
   audience: shareAudienceSchema,
   /** Number of named friends — non-zero only for `specific_friends`. */
   friendCount: z.number().int(),
+  /**
+   * The named circle a `group` share currently reaches (§13.5 V5-P8), with its
+   * LIVE roster size — re-read per request, so editing the group changes the
+   * reported reach on the very next read (nothing is cached).
+   *
+   * `null` for every non-`group` audience AND for a `group` share whose group
+   * was deleted (`group_id` nulls out, and the share then resolves to nobody).
+   * That pairing is deliberate: with the audience beside it, the owner surface
+   * can tell "not a group share" from "a group share that reaches nobody", and
+   * a populated circle from an empty one, without a second request.
+   */
+  group: z
+    .object({
+      id: z.string().uuid(),
+      name: z.string(),
+      /** Current roster size — `0` is a share nobody can see. */
+      memberCount: z.number().int(),
+    })
+    .strict()
+    .nullable(),
 };
 
 /** One of the caller's shared portfolios in **My Shared Items**, with its audience. */

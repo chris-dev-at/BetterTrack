@@ -24,18 +24,27 @@ import { Avatar } from '../components/Avatar';
 import { Alert } from '../components/ui';
 
 /**
- * Comments + reactions on a shared item (§13.5 V5-P8). Mounted ONLY on the
- * friend-shared read-only pages (never the public-link pages — those stay
- * read-only, §16). Anti-bloat: the whole surface is collapsed to a comment count
- * + the compact reaction chips until the viewer expands it; the thread and
- * composer only render on expand. Read/write is authorized server-side by the
- * item's audience — an unauthorized viewer never sees the page, so if this
- * mounts the viewer may participate.
+ * Comments + reactions on a shared item (§13.5 V5-P8). Mounted on the
+ * friend-shared read-only pages AND — since #1677 — on the OWNER's My items
+ * surface, which is the only place the owner can reach the thread they moderate
+ * (every friend-shared page inner-joins friendship, and nobody is their own
+ * friend). Never the public-link pages: those stay read-only, §16.
  *
- * A collapsed section reads ONLY the cheap summary (count + item reactions) and
- * does not poll: a thread of any length costs nothing until it is opened. On
- * expand the newest page loads and the 30 s poll starts; "load older" walks
- * backwards one page at a time. TanStack Query poll-refetches (no realtime).
+ * The component is viewer-agnostic on purpose. Authorization is entirely
+ * server-side, off the item's current audience, and it admits the owner by
+ * ownership rather than by a friendship row — so the same endpoints serve both
+ * mounts. `canDelete` arrives per comment (author, or the item owner on ALL of
+ * them), so the moderation affordance is simply what the server already says.
+ *
+ * Anti-bloat: the whole surface collapses to a comment count + the compact
+ * reaction chips until it is expanded; the thread and composer only render on
+ * expand. A collapsed section reads ONLY the cheap summary (count + item
+ * reactions) and does not poll: a thread of any length costs nothing until it is
+ * opened. `defaultExpanded` is for the mounts that ARE the thread (the owner's
+ * dialog, a `comment.created` deep link), where a second click to reveal what
+ * the user explicitly opened would be pure friction. On expand the newest page
+ * loads and the 30 s poll starts; "load older" walks backwards one page at a
+ * time. TanStack Query poll-refetches (no realtime).
  */
 
 const THREAD_POLL_MS = 30_000;
@@ -88,10 +97,19 @@ function ReactionChips({
   );
 }
 
-export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId: string }) {
+export function CommentThread({
+  kind,
+  subjectId,
+  defaultExpanded = false,
+}: {
+  kind: ShareKind;
+  subjectId: string;
+  /** Open the thread immediately — for mounts that ARE the thread (owner dialog). */
+  defaultExpanded?: boolean;
+}) {
   const t = useT();
   const queryClient = useQueryClient();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [draft, setDraft] = useState('');
 
   // Both queries hang off the same prefix, so one invalidation refreshes the

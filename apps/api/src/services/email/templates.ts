@@ -311,6 +311,38 @@ export function chatMessageEmail(params: {
 }
 
 /**
+ * New-comment notification email (§13.5 V5-P8). Sent by the dispatcher when the
+ * OWNER of a shared item routes `comment.created` to email (OFF by the
+ * lean-email default, so this only ships on an explicit opt-in). Names the
+ * commenter and the item, never the comment text — the body lives in the
+ * thread, behind the item's audience.
+ */
+export function commentCreatedEmail(params: {
+  actorUsername: string;
+  itemName: string;
+  threadUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { actorUsername, itemName, threadUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.commentCreated;
+  const vars = { actor: actorUsername, item: itemName };
+  return {
+    subject: fillText(c.subject, vars),
+    html: layout(
+      c.heading,
+      [
+        `<p>${fillHtml(c.body, vars)}</p>`,
+        `<p style="padding:8px 0 0;">${button(threadUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, vars), '', `${c.button}: ${threadUrl}`].join('\n'),
+  };
+}
+
+/**
  * Digest summary email (V5-P3): one send bundling a day's / week's deferred
  * notifications into a single list, each row the same title + body the instant
  * email would have carried. Rendered in the recipient's locale like every other

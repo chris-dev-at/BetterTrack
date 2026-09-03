@@ -1721,6 +1721,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     userRepo,
     paranoid: paranoidGuard,
     vaultedPortfolio: vaultedPortfolioGuard,
+    // The owner's arrival signal for the thread they moderate (§13.5 V5-P8):
+    // `comment.created` rides the ONE dispatcher like every other type.
+    notify,
+    events,
+    logger,
   });
 
   // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
