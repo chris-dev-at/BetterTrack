@@ -49,9 +49,20 @@ export interface AssetService {
   /** Price history for a range; interval follows the §5.3 table. */
   getHistory(userId: string, id: string, range: HistoryRange): Promise<HistoryResponse>;
   /**
-   * Full available **daily** close series (§5.3), forced to `1d` — the source
-   * for the transaction form's linked date ↔ price fields (#226). Best-effort:
-   * a degraded provider with nothing cached yields an empty series, never a 502.
+   * Full available **daily** close series (§5.3), forced to `1d`, on the
+   * **unadjusted** (raw traded close) basis — §16 2026-09-03. Best-effort: a
+   * degraded provider with nothing cached yields an empty series, never a 502.
+   *
+   * Both consumers want the raw close, and one of them is money:
+   *
+   *  - the vaulted/paranoid client engine values a portfolio here (§13 P13 —
+   *    a vaulted portfolio's transactions never reach the server, so its curve
+   *    is `qty × close` computed in the browser). Those quantities are stored
+   *    as transacted, so the series they multiply must be unadjusted like every
+   *    other valuation path;
+   *  - the transaction form's linked date ↔ price fields (#226) prefill an
+   *    *executed* trade price — the number on the contract note, not a
+   *    restated total-return point.
    */
   getDailyCloses(userId: string, id: string): Promise<DailyClosesResponse>;
 }
@@ -342,7 +353,12 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
           // loader §6.6) so the client always gets calendar-day granularity — the
           // §5.3 range→interval table would otherwise return weekly/monthly candles
           // for the multi-year windows this form needs.
-          const cached = await marketData.getHistory(
+          //
+          // `getUnadjustedHistory`, not `getHistory`: this series is multiplied
+          // by stored quantities on the vaulted client curve, so it is a
+          // valuation series (§16 2026-09-03) and must be on the same raw basis
+          // as `valueOverTime` and the snapshot engine.
+          const cached = await marketData.getUnadjustedHistory(
             { providerId: row.providerId, providerRef: row.providerRef },
             'MAX',
             '1d',

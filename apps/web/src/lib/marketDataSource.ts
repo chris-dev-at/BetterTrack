@@ -60,6 +60,13 @@ export interface MarketFxValue extends MarketDataValue<number> {
  */
 export interface MarketDataSource {
   quote(assetId: string, signal?: AbortSignal): Promise<MarketDataValue<Quote>>;
+  /**
+   * Daily closes on the **unadjusted** (raw traded close) basis — the only
+   * basis stored quantities may be valued against (§16 2026-09-03). Any
+   * replacement implementation of this seam owes the same guarantee: an
+   * adjusted series here would silently restate every historical point of a
+   * vaulted portfolio's value curve.
+   */
   history(
     assetId: string,
     range: HistoryRange,

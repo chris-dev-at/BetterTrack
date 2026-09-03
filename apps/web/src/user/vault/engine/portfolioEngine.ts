@@ -8,6 +8,7 @@ import {
 } from '@bettertrack/domain/cashLedger';
 import {
   QTY_EPSILON,
+  VALUATION_PRICE_BASIS,
   costBasisOverTime,
   deriveHoldings,
   netFlowsOverTime,
@@ -169,6 +170,15 @@ async function derive(
     assetId: entry.asset.id,
     currency: entry.asset.currency,
     prices: entry.prices,
+    /*
+     * Declared, not defaulted (§16 2026-09-03): this is the one valuation path
+     * that runs in the browser, so the basis contract with its source is stated
+     * where a future edit to that source would break it. A market asset's
+     * points come from `GET /assets/:id/daily-closes`, which serves
+     * `getUnadjustedHistory`; a local custom asset's points are the user's own
+     * value marks, which nothing ever restates.
+     */
+    priceBasis: VALUATION_PRICE_BASIS,
   }));
 
   const holdings = await deriveHoldings(domainTransactions, holdingAssets, converter);

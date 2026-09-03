@@ -1387,7 +1387,9 @@ function SplitBasisNotice({ portfolioId, enabled }: { portfolioId: string; enabl
                   .map((split) =>
                     t('portfolio.overview.splitBasis.split', {
                       ratio: split.ratio,
-                      date: split.date,
+                      // Localized like every other date on a money surface —
+                      // the raw ISO day reads as machine output beside DE copy.
+                      date: formatDate(split.date),
                     }),
                   )
                   .join(', '),

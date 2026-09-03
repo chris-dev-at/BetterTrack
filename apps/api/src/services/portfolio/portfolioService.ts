@@ -2277,7 +2277,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       );
 
       const resolved = splitInputs.filter((i): i is SplitBasisAssetInput => i !== null);
-      if (resolved.length === 0) return { available: false, positions: [], truncated: false };
+      // Every selected subject failed, so nothing could be told — but the cap
+      // may still have stopped the scan, and `truncated` reports that whatever
+      // the outcome. Reporting `false` here would contradict the flag's own
+      // contract, even where today's UI stays silent on `available: false`.
+      if (resolved.length === 0) return { available: false, positions: [], truncated };
 
       const positions: SplitBasisPositionDto[] = [];
       for (const mismatch of detectSplitBasisMismatches(domainTxns, resolved)) {

@@ -2406,7 +2406,7 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/assets/{id}/daily-closes',
     tag: 'Assets',
-    summary: 'Full daily close series for the linked transaction date ↔ price fields.',
+    summary: 'Full daily close series, raw traded closes (unadjusted basis).',
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.DailyClosesResponse,

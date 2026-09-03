@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { portfolioSplitBasisResponseSchema, type SplitEvents } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../services/marketIntel/rollupBudget';
 import { cachedIntel, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -175,6 +176,54 @@ describe('GET /api/v1/portfolios/:portfolioId/split-basis', () => {
     const res = await agent.get(`/api/v1/portfolios/${portfolioId}/split-basis`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ available: false, positions: [], truncated: false });
+  });
+
+  it('still reports the cap when it bit and every selected provider then failed', async () => {
+    // "We could not tell" and "we did not look at all of it" are two different
+    // facts, and the second one survives the first: reporting `truncated: false`
+    // on this exit would contradict the flag's own contract.
+    const h = await createTestApp({
+      marketData: createStubMarketData({
+        splits: () => {
+          throw new Error('upstream down');
+        },
+      }),
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const portfolioId = await defaultPortfolioId(agent);
+
+    const count = MARKET_INTEL_ROLLUP_MAX_ASSETS + 1;
+    const assetRows = await h.db
+      .insert(schema.assets)
+      .values(
+        Array.from({ length: count }, (_, i) => ({
+          providerId: 'yahoo',
+          providerRef: `SYM${i}`,
+          ownerId: null,
+          type: 'stock' as const,
+          symbol: `SYM${i}`,
+          name: `Symbol ${i}`,
+          exchange: 'NASDAQ',
+          currency: 'EUR',
+        })),
+      )
+      .returning();
+    await h.db.insert(schema.transactions).values(
+      assetRows.map((row) => ({
+        portfolioId,
+        assetId: row.id,
+        side: 'buy' as const,
+        quantity: '10',
+        price: '200',
+        fee: '0',
+        executedAt: new Date('2026-01-05T00:00:00.000Z'),
+      })),
+    );
+
+    const res = await agent.get(`/api/v1/portfolios/${portfolioId}/split-basis`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: false, positions: [], truncated: true });
   });
 
   it('spends no provider budget on a portfolio with no transactions', async () => {

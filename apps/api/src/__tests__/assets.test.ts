@@ -592,6 +592,29 @@ describe('GET /api/v1/assets/:id/daily-closes', () => {
     expect(parsed.data.asOf).toBe('2026-06-20T10:00:00.000Z');
   });
 
+  it('serves the RAW close series, never the adjusted one (§16 2026-09-03)', async () => {
+    // This series is money: the vaulted/paranoid client engine multiplies it by
+    // stored quantities to build a portfolio's whole value curve in the browser
+    // (§13 P13), and the transaction form prefills an *executed* trade price
+    // from it (#226). An adjusted close would silently restate both.
+    const marketData = createStubMarketData({
+      history: () => cachedHistory({ value: [{ time: '2026-06-19T00:00:00.000Z', close: 42 }] }),
+      unadjustedHistory: () =>
+        cachedHistory({ value: [{ time: '2026-06-19T00:00:00.000Z', close: 100 }] }),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/${asset.id}/daily-closes`);
+    expect(res.status).toBe(200);
+    const parsed = dailyClosesResponseSchema.parse(res.body);
+    expect(parsed.points).toEqual([{ time: '2026-06-19T00:00:00.000Z', close: 100 }]);
+    expect(marketData.calls.unadjustedHistory).toBe(1);
+    expect(marketData.calls.history).toBe(0);
+  });
+
   it('degrades to an empty series (not a 502) when the provider fails with nothing cached', async () => {
     const marketData = createStubMarketData({
       history: () => {

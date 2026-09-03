@@ -223,10 +223,13 @@ export type HistoryResponse = z.infer<typeof historyResponseSchema>;
 
 /**
  * `GET /assets/:id/daily-closes` response — the full available **daily** close
- * series (§5.3), forced to a `1d` interval regardless of range. Powers the
- * transaction form's linked date ↔ price fields (#226): the client fetches this
- * once when the dialog opens and resolves both directions (date → price,
- * price → date) locally, so lookups never make a synchronous provider call.
+ * series (§5.3), forced to a `1d` interval regardless of range, on the
+ * **unadjusted** (raw traded close) basis (§16 2026-09-03). Powers the
+ * transaction form's linked date ↔ price fields (#226) — which prefill an
+ * *executed* trade price, not a restated total-return point — and the
+ * vaulted/paranoid client engine, which multiplies these closes by stored
+ * quantities to build a portfolio's value curve in the browser. Both need the
+ * raw close; an adjusted series would silently restate the user's money.
  *
  * Best-effort like the portfolio series: when nothing is cached and the provider
  * is degraded, `points` is empty and `asOf` is `null` (linking simply disables)

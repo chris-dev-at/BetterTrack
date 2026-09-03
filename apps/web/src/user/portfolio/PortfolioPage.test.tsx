@@ -1865,7 +1865,9 @@ describe('PortfolioPage — split-basis notice (§16 2026-09-03, #1694)', () => 
     expect(
       await screen.findByText(/One holding may be missing a stock split\./),
     ).toBeInTheDocument();
-    expect(screen.getByText('AAPL — 10 recorded, split 4:1 on 2026-03-02')).toBeInTheDocument();
+    // The split day is localized like every other date on a money surface, not
+    // interpolated raw (the format locale defaults to `de-AT` in unit tests).
+    expect(screen.getByText('AAPL — 10 recorded, split 4:1 on 02.03.2026')).toBeInTheDocument();
   });
 
   test('says nothing when the read comes back clean', async () => {

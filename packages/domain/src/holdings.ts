@@ -508,15 +508,10 @@ export interface SplitBasisPosition {
 
 /**
  * How many days after a split's effective date a ledger correction still counts
- * as "the user booked it". A broker statement is reconciled within the week; a
- * quantity that matches the post-split expectation anywhere in that window is
- * evidence the split IS in the ledger, so the position is not flagged.
- */
-export const SPLIT_BOOKING_GRACE_DAYS = 7;
-
-/**
- * Two independent shapes of evidence that a split IS in the ledger, checked
- * across {@link SPLIT_BOOKING_GRACE_DAYS}:
+ * as "the user booked it". A broker statement is reconciled within the week, so
+ * evidence of the booking anywhere in that window clears the position.
+ *
+ * Two independent shapes of evidence are checked across this window:
  *
  *  - **total** — the net quantity on some day in the window equals
  *    `qtyBefore · numerator / denominator`, i.e. the position sits exactly where
@@ -533,6 +528,7 @@ export const SPLIT_BOOKING_GRACE_DAYS = 7;
  * is the residual false positive this detector accepts: it costs a dismissible
  * notice, never a wrong number.
  */
+export const SPLIT_BOOKING_GRACE_DAYS = 7;
 
 /** Relative tolerance when matching a booked quantity against the split factor. */
 const SPLIT_QTY_RELATIVE_TOLERANCE = 1e-6;
