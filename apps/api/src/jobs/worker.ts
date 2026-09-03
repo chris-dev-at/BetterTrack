@@ -35,6 +35,15 @@ export interface CreateJobWorkersDeps {
    * still-retryable attempt failures never fire it (that is normal backoff).
    */
   onPermanentFailure?: (err: unknown, meta: { queue: string; jobId?: string }) => void;
+  /**
+   * Capture hook for WORKER-scoped errors (§13.5 V5-P2): BullMQ emits `error`
+   * for failures that never become a per-job `failed` event — a dropped Redis
+   * connection, a lock that could not be extended, a payload that would not
+   * deserialize. Without this they were logged and dropped, so a long Redis
+   * outage left the admin Problems page — the stated Sentry replacement —
+   * showing nothing at all while the job system was down.
+   */
+  onWorkerError?: (err: unknown, meta: { queue: string }) => void;
 }
 
 /**
@@ -74,16 +83,47 @@ export function handleWorkerFailure(params: {
       .catch((recordErr) => {
         logger.error({ queue, err: recordErr }, 'failed to write dead-letter entry');
       });
+  } else if (!job) {
+    // A `failed` event with NO job record — a stalled job whose record could not
+    // be re-read, say. There is no attempts state to consult, nothing to
+    // dead-letter (the payload went with the record) and BullMQ will not deliver
+    // it again, so this is a definitive, permanent failure: count it and capture
+    // it (§13.5 V5-P2). Downgrading it to "will retry" lost the job silently.
+    jobOutcomesTotal.inc({ queue, outcome: 'failed' });
+    logger.error(
+      { queue, err: err?.message },
+      'job failed with no job record — permanently lost, capturing',
+    );
+    onPermanentFailure?.(err, { queue });
   } else {
     logger.warn(
-      { queue, jobId: job?.id, attemptsMade: job?.attemptsMade, err: err?.message },
+      { queue, jobId: job.id, attemptsMade: job.attemptsMade, err: err?.message },
       'job attempt failed — will retry',
     );
   }
 }
 
+/**
+ * The `error` listener body, extracted for the same reason as
+ * {@link handleWorkerFailure}. Worker-scoped errors are a failure of the job
+ * SYSTEM rather than of one job, so they are captured through
+ * {@link CreateJobWorkersDeps.onWorkerError} — the capture side folds and
+ * rate-caps them by fingerprint, so a sustained outage costs a bounded number of
+ * rows, not one per emitted event.
+ */
+export function handleWorkerError(params: {
+  queue: string;
+  err: unknown;
+  logger: Logger;
+  onWorkerError?: (err: unknown, meta: { queue: string }) => void;
+}): void {
+  const { queue, err, logger, onWorkerError } = params;
+  logger.error({ queue, err }, 'worker error');
+  onWorkerError?.(err, { queue });
+}
+
 export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
-  const { createConnection, definitions, ctx, logger, onPermanentFailure } = deps;
+  const { createConnection, definitions, ctx, logger, onPermanentFailure, onWorkerError } = deps;
 
   const workers = definitions.map((def) => {
     const worker = new Worker(
@@ -108,7 +148,7 @@ export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
     });
 
     worker.on('error', (err) => {
-      logger.error({ queue: def.name, err }, 'worker error');
+      handleWorkerError({ queue: def.name, err, logger, onWorkerError });
     });
 
     return worker;

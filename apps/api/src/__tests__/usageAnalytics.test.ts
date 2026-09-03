@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { usageAnalyticsResponseSchema } from '@bettertrack/contracts';
 
+import { flushTelemetryBuffers } from '../shutdown';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -120,6 +121,31 @@ describe('admin usage analytics', () => {
 
     expect(body.activeUsers.daily).toBeGreaterThanOrEqual(1);
     expect(body.features.length).toBeGreaterThan(0);
+  });
+
+  it('flushes buffered usage events at shutdown instead of discarding them', async () => {
+    // The buffer only reaches the DB on a flush, and the API is the sole
+    // producer — every restart used to drop up to a flush interval of DAU /
+    // feature-counter signal (§13.5 V5-P2).
+    const alice = await harness.seedUser({ email: 'shutdown@test.dev', username: 'shutdown_u' });
+    harness.ctx.usageAnalytics.capture({ userId: alice.id, feature: 'portfolio' });
+    harness.ctx.usageAnalytics.capture({ userId: alice.id, feature: 'assets', assetId: 'AAPL' });
+
+    // No explicit flush: the shutdown drain is what has to persist these.
+    await flushTelemetryBuffers({
+      problems: harness.ctx.problems,
+      usageAnalytics: harness.ctx.usageAnalytics,
+    });
+
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent.get('/api/v1/admin/usage-analytics');
+    const body = usageAnalyticsResponseSchema.parse(res.body);
+
+    expect(body.activeUsers.daily).toBe(1);
+    const byFeature = Object.fromEntries(body.features.map((f) => [f.feature, f.events]));
+    expect(byFeature.portfolio).toBe(1);
+    expect(byFeature.assets).toBe(1);
   });
 
   it('404s the usage-analytics surface for anonymous and user-kind callers', async () => {
