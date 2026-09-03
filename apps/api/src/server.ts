@@ -11,6 +11,7 @@ import {
   type QueueDepthSample,
 } from './metrics';
 import { createRedis } from './redis';
+import { flushTelemetryBuffers } from './shutdown';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -86,6 +87,16 @@ async function shutdown(signal: string): Promise<void> {
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await ctx.marketData.settled();
+    // Drain the first-party telemetry buffers while the DB pool is still open
+    // (§13.5 V5-P2): captured problems are fire-and-forget writes and usage
+    // events sit in memory until the flush timer fires, so closing the pool
+    // underneath them threw away exactly the signal a restart is worth having.
+    // Bounded — a wedged write cannot hold termination open.
+    await flushTelemetryBuffers({
+      problems: ctx.problems,
+      usageAnalytics: ctx.usageAnalytics,
+      logger,
+    });
     await ctx.events.close();
     await redis.quit();
     await lockClient.end();

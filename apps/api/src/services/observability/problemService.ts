@@ -61,6 +61,14 @@ export interface ProblemService {
   captureError(err: unknown, context?: ProblemCaptureContext): void;
   /** Capture a permanently-failed BullMQ job. */
   captureJobFailure(err: unknown, meta: { queue: string; jobId?: string }): void;
+  /**
+   * Capture a WORKER-scoped BullMQ error — a failure of the job system itself
+   * (Redis link down, lock extension, deserialization) that never becomes a
+   * per-job `failed` event, so {@link ProblemService.captureJobFailure} would
+   * name a job that does not exist. Same kind (`job`) so the admin's job filter
+   * shows it; the title says worker, not job.
+   */
+  captureWorkerError(err: unknown, meta: { queue: string }): void;
   /** Capture a provider failure (a circuit breaker tripping open). */
   captureProviderFailure(err: unknown, meta: { providerId?: string }): void;
   /** Await any in-flight capture writes (tests / graceful shutdown). */
@@ -305,6 +313,14 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       capture('job', `${meta.queue} job failed`, message, {
         queue: meta.queue,
         ...(meta.jobId ? { jobId: meta.jobId } : {}),
+      });
+    },
+
+    captureWorkerError(err, meta) {
+      const { message } = describeError(err);
+      capture('job', `${meta.queue} worker error`, message, {
+        queue: meta.queue,
+        scope: 'worker',
       });
     },
 

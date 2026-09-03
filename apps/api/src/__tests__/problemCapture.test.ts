@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import express from 'express';
 import request from 'supertest';
@@ -11,6 +13,8 @@ import {
   type ProblemService,
 } from '../services/observability/problemService';
 import type { ProblemRepository, UpsertProblemInput } from '../data/repositories/problemRepository';
+import { handleWorkerError } from '../jobs/worker';
+import { flushTelemetryBuffers } from '../shutdown';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -133,6 +137,24 @@ describe('problem capture (Sentry replacement)', () => {
     expect((job.context as Record<string, unknown>).jobId).toBe('job-1');
     const provider = rows.find((r) => r.kind === 'provider')!;
     expect(provider.title).toContain('yahoo');
+  });
+
+  it('captures a worker-scoped error as a job-kind problem naming the worker, not a job', async () => {
+    // A failure of the job SYSTEM: no `failed` event ever names a job for it, so
+    // `captureJobFailure` would invent one. Same kind, so the admin's job filter
+    // still shows it (§13.5 V5-P2).
+    harness.ctx.problems.captureWorkerError(new Error('connect ECONNREFUSED 127.0.0.1:6379'), {
+      queue: 'market.refresh',
+    });
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe('job');
+    expect(rows[0]!.title).toBe('market.refresh worker error');
+    const context = rows[0]!.context as Record<string, unknown>;
+    expect(context.queue).toBe('market.refresh');
+    expect(context.scope).toBe('worker');
   });
 
   it('persists an unhandled request error through the error-handler seam (zero config)', async () => {
@@ -325,6 +347,30 @@ describe('problem capture rate cap', () => {
     expect(service.droppedCaptures()).toBe(1);
   });
 
+  it('folds a sustained worker-error storm so a dead Redis cannot flood the table', async () => {
+    const { repo, writes, fingerprints } = fakeRepo();
+    const logger = { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
+    const service = createProblemService({ repo, now: () => 0, windowMs: 60_000 });
+
+    // One outage, hundreds of emitted `error` events — through the real worker
+    // listener body, so the wiring is what is under test, not just the cap.
+    for (let i = 0; i < 500; i += 1) {
+      handleWorkerError({
+        queue: 'market.refresh',
+        err: new Error('connect ECONNREFUSED 127.0.0.1:6379'),
+        logger: logger as never,
+        onWorkerError: (err, meta) => service.captureWorkerError(err, meta),
+      });
+    }
+    await service.flush();
+
+    expect(fingerprints()).toBe(1);
+    expect(writes()).toBeLessThanOrEqual(2);
+    // Folded, not refused: nothing about the outage went unrecorded.
+    expect(service.droppedCaptures()).toBe(0);
+    expect(logger.error).toHaveBeenCalledTimes(500);
+  });
+
   it('never drops silently — a refused capture is logged and counted', async () => {
     const { repo } = fakeRepo();
     const warn = vi.fn();
@@ -356,6 +402,69 @@ describe('problem capture rate cap', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({ dropped: 2 }),
       'problem captures dropped by the rate cap in the closed window',
+    );
+  });
+});
+
+/**
+ * The shutdown drain (§13.5 V5-P2). `captureError` issues a fire-and-forget DB
+ * write, so closing the pool underneath it threw away exactly the errors that
+ * PRECEDE a restart — a deploy, an OOM kill — which are the ones worth having.
+ */
+describe('shutdown telemetry flush', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createTestApp();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('persists a problem captured immediately before SIGTERM', async () => {
+    harness.ctx.problems.captureError(new Error('500 on the way down'));
+    // No explicit flush: the shutdown path is the ONLY thing that drains it.
+    await flushTelemetryBuffers({
+      problems: harness.ctx.problems,
+      usageAnalytics: harness.ctx.usageAnalytics,
+    });
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.message).toBe('500 on the way down');
+  });
+
+  it('runs before the API closes its DB pool', () => {
+    const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
+    const flushAt = source.indexOf('flushTelemetryBuffers({');
+    const poolCloseAt = source.indexOf('await client.end()');
+    expect(flushAt).toBeGreaterThan(-1);
+    expect(poolCloseAt).toBeGreaterThan(-1);
+    expect(flushAt).toBeLessThan(poolCloseAt);
+  });
+
+  it('is bounded — a wedged capture write cannot hold termination open', async () => {
+    const { repo } = fakeRepo();
+    const wedged: ProblemRepository = {
+      ...repo,
+      upsert: () => new Promise<void>(() => {}),
+    };
+    const warn = vi.fn();
+    const service = createProblemService({ repo: wedged });
+    service.captureError(new Error('never lands'));
+
+    const started = Date.now();
+    await flushTelemetryBuffers({
+      problems: service,
+      logger: { warn, error: vi.fn(), info: vi.fn(), debug: vi.fn() } as never,
+      timeoutMs: 25,
+    });
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 25 }),
+      expect.stringContaining('timed out'),
     );
   });
 });

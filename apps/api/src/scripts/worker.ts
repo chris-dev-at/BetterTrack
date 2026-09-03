@@ -718,6 +718,13 @@ const running = createJobWorkers({
     observability.captureException(err, meta);
     problems.captureJobFailure(err, meta);
   },
+  // Worker-scoped errors (Redis link dropped, lock extension failed, payload
+  // undeserializable) never arrive as a per-job `failed` event, so without this
+  // binding the Problems page reports calm while the job system is down.
+  onWorkerError: (err, meta) => {
+    observability.captureException(err, meta);
+    problems.captureWorkerError(err, meta);
+  },
 });
 
 // Prometheus scrape listener for the worker (#632): the `bettertrack_job_outcomes_total`
