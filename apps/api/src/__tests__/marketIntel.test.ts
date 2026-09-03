@@ -185,6 +185,38 @@ describe('GET /api/v1/assets/:id/intel/* — the four families', () => {
     expect(parsed.data.available).toBe(true);
     expect(parsed.data.history.length).toBeGreaterThan(0);
   });
+
+  it('splits: an ANNOUNCED (upcoming) split survives the service and the route', async () => {
+    // Yahoo exposes only past splits (`mapSplitEvents` returns an empty
+    // `upcoming`), so nothing in a live deployment proves the forward branch is
+    // reachable. A fixture provider that DOES announce one does: the row shape
+    // `mapSplitEvents` produces survives the read layer unmodified, all the way
+    // into the response the asset page's "Announced" row renders from.
+    const announced = {
+      date: '2026-09-01T00:00:00.000Z',
+      numerator: 2,
+      denominator: 1,
+      ratio: '2:1',
+    };
+    const h = await createTestApp({
+      marketData: createStubMarketData({
+        splits: () => cachedIntel(sampleSplitEvents({ upcoming: [announced] })),
+      }),
+    });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/${asset.id}/intel/splits`);
+    expect(res.status).toBe(200);
+    const parsed = splitsResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.available).toBe(true);
+    expect(parsed.data.upcoming).toEqual([announced]);
+    // Announced and past stay separate families — no cross-contamination.
+    expect(parsed.data.history).not.toContainEqual(announced);
+  });
 });
 
 describe('market intel — unconfigured shapes', () => {

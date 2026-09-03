@@ -1,7 +1,7 @@
-import type { FeatureFlagKey } from '@bettertrack/contracts';
+import type { DeployCapabilityKey, FeatureFlagKey } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import { useFeatureFlags } from '../../lib/featureFlags';
+import { useDeployCapabilities, useFeatureFlags } from '../../lib/featureFlags';
 import { ACTIVE_PORTFOLIO_PARAM } from '../portfolio/PortfolioSwitcher';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
@@ -36,6 +36,13 @@ export interface SectionNavChild {
   parked?: boolean;
   /** Rendered only while this runtime kill-switch is on (§13.5 V5-P2). */
   flag?: FeatureFlagKey;
+  /**
+   * Rendered only when this deployment has the capability at all (§13.5 V5-P5).
+   * Deploy-time env, not an admin toggle — a destination whose whole arc is
+   * unconfigured must be absent, not lead to a page that reports the
+   * kill-switch as empty content.
+   */
+  capability?: DeployCapabilityKey;
   /** Curated into the rail tree (the vital pages). Strip-only when absent. */
   rail?: boolean;
 }
@@ -96,7 +103,7 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
       { to: '/assets/watchlists', labelKey: 'assets.tabs.watchlists', rail: true },
       // User-scoped, not portfolio-scoped (`/api/v1/custom-assets`).
       { to: '/assets/custom-assets', labelKey: 'assets.tabs.customAssets' },
-      { to: '/assets/news', labelKey: 'assets.tabs.news', rail: true },
+      { to: '/assets/news', labelKey: 'assets.tabs.news', rail: true, capability: 'marketIntel' },
       { to: '/assets/discover', labelKey: 'assets.tabs.discover', parked: true },
       { to: '/assets/events', labelKey: 'assets.tabs.events', parked: true },
       { to: '/assets/screener', labelKey: 'assets.tabs.screener', parked: true },
@@ -117,12 +124,14 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
   },
 };
 
-/** The children a section shows right now (kill-switched entries dropped). */
+/** The children a section shows right now (kill-switched + unconfigured entries dropped). */
 export function useSectionNavChildren(section: SectionKey): readonly SectionNavChild[] {
   const flags = useFeatureFlags();
+  const capabilities = useDeployCapabilities();
   const privacyMode = useResolvedPrivacyMode();
   return SECTION_NAV[section].children.flatMap((child) => {
     if (child.flag !== undefined && !flags[child.flag]) return [];
+    if (child.capability !== undefined && !capabilities[child.capability]) return [];
     if (privacyMode !== 'paranoid') return [child];
     // Expense tracking is server-killed, but cash accounts remain local-vault
     // data. Point the shared Cash flow tab straight at that kept child so no
