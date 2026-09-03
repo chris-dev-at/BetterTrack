@@ -95,7 +95,7 @@ import {
 import {
   createWebhookBridge,
   createWebhookDispatcher,
-  createFetchWebhookTransport,
+  createPinnedWebhookTransport,
 } from '../services/webhooks';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
@@ -525,8 +525,10 @@ const webhookDispatcher = createWebhookDispatcher({
   deliveries: webhookDeliveryRepo,
   // No `dnsResolver` override: the guard re-resolves each user-supplied
   // destination through the system resolver before every attempt (§8 outbound
-  // safety), so a rebinding hostname is refused here, not delivered to.
-  transport: createFetchWebhookTransport(),
+  // safety), so a rebinding hostname is refused here, not delivered to — and
+  // the transport pins that vetted answer into the socket, so the connect
+  // cannot resolve it a second time.
+  transport: createPinnedWebhookTransport(),
   encryptionKey: config.twoFactor.encryptionKey,
   audit,
   logger,

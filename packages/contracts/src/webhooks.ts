@@ -218,10 +218,27 @@ export const WEBHOOK_DELIVERY_HEADER = 'X-BetterTrack-Delivery';
 /**
  * Signature scheme: the header value is `sha256=<hex>` where the hex is the
  * HMAC-SHA256 of `` `${timestamp}.${body}` `` under the subscription secret
- * (the GitHub/Stripe convention — the timestamp is bound in, so a captured body
- * cannot be replayed with a new timestamp).
+ * (the GitHub/Stripe convention). Binding the timestamp in means an attacker
+ * cannot re-stamp a captured body: any other timestamp invalidates the MAC. It
+ * does NOT stop the captured triple (timestamp + body + signature) being
+ * replayed verbatim — that is what {@link WEBHOOK_SIGNATURE_TOLERANCE_SECONDS}
+ * bounds.
  */
 export const WEBHOOK_SIGNATURE_SCHEME = 'sha256';
+
+/**
+ * How far a delivery's `X-BetterTrack-Timestamp` may sit from the receiver's own
+ * clock before the signature is refused: ±5 minutes, symmetric so that ordinary
+ * clock skew in either direction is tolerated while an old capture is not.
+ *
+ * Published for receivers: BetterTrack's own reference verifier
+ * (`verifyWebhookSignature`) enforces exactly this window, and a receiver that
+ * re-implements the check should use the same bound. Together with the
+ * per-delivery `X-BetterTrack-Delivery` id — stable across retries, so it
+ * doubles as a dedupe key — it bounds replay of a captured delivery to this
+ * window.
+ */
+export const WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300;
 
 /** The one-time secret's recognizable prefix — greppable in leak scans. */
 export const WEBHOOK_SECRET_PREFIX = 'whsec_';

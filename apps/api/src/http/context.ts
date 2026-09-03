@@ -200,7 +200,7 @@ import {
   createWebhookService,
   createWebhookDispatcher,
   createWebhookBridge,
-  createFetchWebhookTransport,
+  createPinnedWebhookTransport,
   type WebhookService,
   type WebhookBridge,
   type WebhookTransport,
@@ -1057,7 +1057,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     encryptionKey: config.twoFactor.encryptionKey,
     dnsResolver: deps.webhookUrlResolver,
   });
-  const webhookTransport: WebhookTransport = deps.webhookTransport ?? createFetchWebhookTransport();
+  const webhookTransport: WebhookTransport =
+    deps.webhookTransport ?? createPinnedWebhookTransport();
   const webhookDispatcher = createWebhookDispatcher({
     subscriptions: webhookSubscriptionRepo,
     deliveries: webhookDeliveryRepo,
