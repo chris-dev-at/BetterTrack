@@ -1,5 +1,6 @@
 import type { Request, RequestHandler } from 'express';
 
+import type { RequestCostKey } from '../../config/env';
 import { tooManyRequests } from '../../errors';
 import {
   createProgressiveLimiter,
@@ -42,6 +43,12 @@ export interface RateLimiters {
   /** Public native Google LINK callbacks, isolated from the shared login-IP budget. */
   googleLinkCallback: RequestHandler;
   general: RequestHandler;
+  /**
+   * Cost-metered guard for one expensive endpoint (§10 COST TABLE, #1643).
+   * Mounted per route with the endpoint's declared weight KEY — the units
+   * themselves live in `config/env.ts` and are never inlined at a call site.
+   */
+  cost: (endpoint: RequestCostKey) => RequestHandler;
   /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
   apiKey: RequestHandler;
   admin: RequestHandler;
@@ -72,6 +79,8 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     enabled,
     general,
     generalBurst,
+    expensive,
+    requestCosts,
     search,
     social,
     feedback,
@@ -88,10 +97,15 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
    * burst window in front of the generous steady-state window and either one
    * trips the same 429. A denial short-circuits, so the caller's later windows
    * aren't counted while it's already being turned away.
+   *
+   * `cost` is the number of allowance UNITS one request spends (§10 COST
+   * TABLE); it defaults to 1, which is the plain request-count behaviour every
+   * limiter but `expensive` uses.
    */
   const guard = (
     limiters: readonly ProgressiveLimiter[],
     keyGenerator: (req: Request) => string,
+    cost = 1,
   ): RequestHandler => {
     return (req, res, next) => {
       if (!enabled) {
@@ -101,7 +115,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
       const key = keyGenerator(req);
       void (async () => {
         for (const limiter of limiters) {
-          const decision = await limiter.consume(key);
+          const decision = await limiter.consume(key, cost);
           if (!decision.allowed) {
             // The SPA's fetch chokepoint reads Retry-After to drive its toast.
             res.setHeader('Retry-After', String(decision.retryAfterSec));
@@ -162,6 +176,9 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   // (its own namespace, the general ladder + decay) and fronts every /api/v1
   // route, since `general` is mounted app-wide before any per-router limiter.
   const generalBurstLimiter = createProgressiveLimiter(ctx.redis, 'general_burst', generalBurst);
+  // Cost dimension (#1643): its own namespace, so an endpoint's WORK budget is
+  // never spent by — and never spends — the request-count windows above.
+  const expensiveLimiter = createProgressiveLimiter(ctx.redis, 'expensive', expensive);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
   const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
@@ -177,6 +194,12 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     login: guard([loginLimiter], keyByIp),
     googleLinkCallback: guard([googleLinkCallbackLimiter], keyByIp),
     general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
+    // Cost-metered endpoints (§10 COST TABLE): keyed exactly like `general` —
+    // per user, falling back to the address only for anonymous callers — so one
+    // account's expensive traffic can never close another's. A route mounts
+    // this IN ADDITION to the app-wide `general` guard; whichever dimension
+    // runs out first produces the same 429 envelope.
+    cost: (endpoint) => guard([expensiveLimiter], keyByUserOrIp, requestCosts[endpoint]),
     apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.

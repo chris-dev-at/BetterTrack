@@ -10,6 +10,7 @@ import {
   type SharedSandboxPreviewRequest,
 } from '@bettertrack/contracts';
 
+import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -22,7 +23,7 @@ import type { AppContext } from '../context';
  * variant (`GET /conglomerates/:id/backtest`) reuses this service in a later
  * P4 issue.
  */
-export function createBacktestRouter(ctx: AppContext): Router {
+export function createBacktestRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
@@ -30,21 +31,31 @@ export function createBacktestRouter(ctx: AppContext): Router {
   // POST /backtest/preview — inline {positions, range, benchmark?, mode?,
   // rebalance?} → base-100 series + stats (+ §14 entry events in the
   // late-listing modes, + V4-P7 rebalance events under a schedule).
-  router.post('/preview', validateBody(backtestPreviewRequestSchema), async (req, res) => {
-    const body = req.valid?.body as BacktestPreviewRequest;
-    const result = await ctx.backtest.runPreview(
-      req.authUser!.id,
-      {
-        positions: body.positions,
-        range: body.range,
-        benchmark: body.benchmark ?? null,
-        mode: body.mode,
-        rebalance: body.rebalance,
-      },
-      { baseCurrency: req.authUser!.baseCurrency },
-    );
-    res.json(result);
-  });
+  //
+  // Cost-metered (§10 COST TABLE, #1643): perturbing the weight vector makes
+  // every request a cache MISS by construction, and a miss walks the positions'
+  // history sequentially through the provider layer — so this one spends 25
+  // work units, not one request.
+  router.post(
+    '/preview',
+    limiters.cost('backtestPreview'),
+    validateBody(backtestPreviewRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as BacktestPreviewRequest;
+      const result = await ctx.backtest.runPreview(
+        req.authUser!.id,
+        {
+          positions: body.positions,
+          range: body.range,
+          benchmark: body.benchmark ?? null,
+          mode: body.mode,
+          rebalance: body.rebalance,
+        },
+        { baseCurrency: req.authUser!.baseCurrency },
+      );
+      res.json(result);
+    },
+  );
 
   // POST /backtest/compare — overlay 2–6 of the caller's own conglomerates on
   // one shared window (§13.5 V5-P6): {conglomerateIds, range, mode?, rebalance?,

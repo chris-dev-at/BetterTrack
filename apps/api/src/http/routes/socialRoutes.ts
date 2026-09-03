@@ -313,7 +313,10 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   );
 
   // GET /social/shared — everything my friends share with me (audience-derived).
-  router.get('/shared', async (req, res) => {
+  // Cost-metered (§10 COST TABLE, #1643): the read fans out over friends ×
+  // shared items with no ceiling, so it spends 10 work units rather than the
+  // one request `general` would see.
+  router.get('/shared', limiters.cost('socialShared'), async (req, res) => {
     const result = await ctx.social.listSharedWithMe(req.authUser!.id, {
       baseCurrency: req.authUser!.baseCurrency,
     });

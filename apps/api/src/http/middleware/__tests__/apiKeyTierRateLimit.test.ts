@@ -23,6 +23,15 @@ const ctx = (): AppContext => {
       enabled: true,
       general: base,
       generalBurst: base,
+      // The cost dimension (§10 COST TABLE, #1643) is irrelevant to per-key
+      // tiers, but `createRateLimiters` builds every limiter up front.
+      expensive: base,
+      requestCosts: {
+        socialShared: 10,
+        backtestPreview: 25,
+        analyticsSeries: 10,
+        importCreate: 100,
+      },
       search: base,
       social: base,
       feedback: base,

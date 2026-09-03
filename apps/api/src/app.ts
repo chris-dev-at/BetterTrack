@@ -216,7 +216,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/standing-orders', createStandingOrdersRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
-  app.use('/api/v1/backtest', createBacktestRouter(ctx));
+  app.use('/api/v1/backtest', createBacktestRouter(ctx, limiters));
   app.use('/api/v1/ideas', createIdeasRouter(ctx));
   app.use('/api/v1/feedback', createFeedbackRouter(ctx, limiters));
   // Expense tracking (§13.5 V5-P9) — SUPERSEDED by `/api/v1/cash` below (V5 cash
@@ -228,8 +228,8 @@ export function createApp(ctx: AppContext) {
   // Runtime kill-switches (§13.5 V5-P2 arc (c)): `requireFeature` refuses the
   // whole router (clean 404) the moment an admin flips the flag OFF — evaluated
   // per request, no redeploy.
-  app.use('/api/v1/imports', requireFeature(ctx, 'imports'), createImportsRouter(ctx));
-  app.use('/api/v1/analytics', createAnalyticsRouter(ctx));
+  app.use('/api/v1/imports', requireFeature(ctx, 'imports'), createImportsRouter(ctx, limiters));
+  app.use('/api/v1/analytics', createAnalyticsRouter(ctx, limiters));
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
   app.use('/api/v1/mirrorchain', createMirrorchainRouter(ctx, limiters));
   app.use('/api/v1/chat', requireFeature(ctx, 'chat'), createChatRouter(ctx));

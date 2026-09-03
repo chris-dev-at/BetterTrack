@@ -16,6 +16,20 @@ beforeEach(async () => {
   await redis.flushall();
 });
 
+/**
+ * The SHIPPED §10 COST TABLE weights (#1643), in work units per request.
+ * `config/__tests__/rateLimitTable.test.ts` pins these against the real loader;
+ * they are restated here so the guard can be driven with production numbers.
+ */
+const SHIPPED_COSTS = {
+  socialShared: 10,
+  backtestPreview: 25,
+  analyticsSeries: 10,
+  importCreate: 100,
+} as const;
+/** The shipped unit budget: 3000 units / 60 s, per user. */
+const SHIPPED_EXPENSIVE_LIMIT = 3000;
+
 // A tiny enabled schedule so a couple of calls overflow the allowance. The guard
 // only reads `config.rateLimits` and `redis` off the context. `generalBurst`
 // mirrors the steady-state schedule here so the single-dimension escalation
@@ -27,6 +41,8 @@ const ctxWith = (limit: number, firstCooldown: number): AppContext => {
       enabled: true,
       general: schedule,
       generalBurst: schedule,
+      expensive: schedule,
+      requestCosts: SHIPPED_COSTS,
       search: schedule,
       social: schedule,
       feedback: schedule,
@@ -53,6 +69,8 @@ const burstCtx = (): AppContext => {
       enabled: true,
       general: { windowSec: 15 * 60, limit: 9000, ...ladder },
       generalBurst: { windowSec: 30, limit: 600, ...ladder },
+      expensive: { windowSec: 60, limit: SHIPPED_EXPENSIVE_LIMIT, ...ladder },
+      requestCosts: SHIPPED_COSTS,
       search: { windowSec: 60, limit: 300, ...ladder },
       social: { windowSec: 60 * 60, limit: 30, ...ladder },
       feedback: { windowSec: 60 * 60, limit: 5, ...ladder },
@@ -248,6 +266,105 @@ describe('general burst dimension — reload-flood hardening (§10, #202)', () =
     // quarter-hour at that cadence (30 windows of 30 s) still does not reach it.
     expect(Number(await redis.get(steadyCount))).toBe(spike * ROUNDS);
     expect(spike * 30).toBeLessThan(9000);
+  });
+});
+
+describe('cost-based limiting for the expensive reads (§10 COST TABLE, #1643)', () => {
+  /** `general`'s sustained request allowance, per user, per minute: 9000 / 15 min. */
+  const GENERAL_PER_MINUTE = 600;
+
+  /** Fire one request at a cost-metered endpoint as `user-1`. */
+  const hit = (
+    handler: ReturnType<typeof createRateLimiters>['cost'],
+    key: keyof typeof SHIPPED_COSTS,
+  ) => runFrom(handler(key), '10.0.0.1', 'user-1');
+
+  it('lets the modelled normal minute through all four endpoints with 3x room', async () => {
+    const { cost } = createRateLimiters(burstCtx());
+
+    // THE MODELLED NORMAL-USE BAR for the unit budget (§10 COST TABLE): one
+    // user pessimistically doing ALL FOUR expensive things inside one minute —
+    // a builder weight-tuning session (a debounced preview every ~3 s), an
+    // analytics page being re-ranged and re-filtered, the shared-with-me list
+    // refetching on focus/reconnect, and two CSV uploads.
+    const minute: Array<[keyof typeof SHIPPED_COSTS, number]> = [
+      ['backtestPreview', 20],
+      ['analyticsSeries', 12],
+      ['socialShared', 6],
+      ['importCreate', 2],
+    ];
+    let units = 0;
+    for (const [key, times] of minute) {
+      for (let i = 0; i < times; i += 1) {
+        const { err } = await hit(cost, key);
+        expect(err).toBeUndefined();
+        units += SHIPPED_COSTS[key];
+      }
+    }
+
+    expect(units).toBe(880);
+    expect(Number(await redis.get(progressiveKeys('expensive', 'u:user-1').count))).toBe(units);
+    // …and it clears by 3×, not by a hair (the §10 sizing rule).
+    expect(units * 3).toBeLessThanOrEqual(SHIPPED_EXPENSIVE_LIMIT);
+  });
+
+  it('turns a pathological caller away by COST, in fewer requests than the count limiter would', async () => {
+    for (const key of Object.keys(SHIPPED_COSTS) as Array<keyof typeof SHIPPED_COSTS>) {
+      await redis.flushall();
+      const { cost, general } = createRateLimiters(burstCtx());
+
+      let requests = 0;
+      let denial: { headers: Record<string, string>; err: unknown } | undefined;
+      while (!denial && requests < GENERAL_PER_MINUTE) {
+        requests += 1;
+        const res = await hit(cost, key);
+        if (res.err) denial = res;
+      }
+
+      // Bounded by the WORK asked for: budget / weight requests get through,
+      // the next one is refused — strictly before `general`'s 600 req/min would
+      // have noticed anything at all.
+      expect(denial, `${key} was never denied`).toBeDefined();
+      expect(requests).toBe(Math.floor(SHIPPED_EXPENSIVE_LIMIT / SHIPPED_COSTS[key]) + 1);
+      expect(requests).toBeLessThan(GENERAL_PER_MINUTE);
+
+      // The 429 envelope is the shipped one, unchanged: header + body detail.
+      const err = denial!.err as ApiError;
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.statusCode).toBe(429);
+      expect(err.code).toBe('RATE_LIMITED');
+      expect(err.details).toEqual({ retryAfter: 20 }); // first (short) rung
+      expect(denial!.headers['Retry-After']).toBe('20');
+
+      // The cost dimension is its own namespace: the caller never touched the
+      // request-count windows, and one more plain request still passes.
+      expect(await redis.get(progressiveKeys('general', 'u:user-1').count)).toBeNull();
+      expect((await runFrom(general, '10.0.0.1', 'user-1')).err).toBeUndefined();
+    }
+  }, 60_000);
+
+  it('meters units per user, so one account cannot spend another account budget', async () => {
+    const { cost } = createRateLimiters(burstCtx());
+    const guard = cost('importCreate'); // 100 units → 30 through, 31st refused
+
+    for (let i = 0; i < 30; i += 1) {
+      expect((await runFrom(guard, '203.0.113.7', 'alice')).err).toBeUndefined();
+    }
+    expect((await runFrom(guard, '203.0.113.7', 'alice')).err).toBeInstanceOf(ApiError);
+
+    // Bob shares the address and nothing else.
+    expect((await runFrom(guard, '203.0.113.7', 'bob')).err).toBeUndefined();
+    expect(await redis.get(progressiveKeys('expensive', 'u:bob').count)).toBe('100');
+  });
+
+  it('is a no-op when limiting is disabled (the API test suite)', async () => {
+    const ctx = burstCtx();
+    (ctx.config.rateLimits as { enabled: boolean }).enabled = false;
+    const { cost } = createRateLimiters(ctx);
+    const guard = cost('importCreate');
+    for (let i = 0; i < 40; i += 1) {
+      expect((await runFrom(guard, '10.0.0.1', 'user-1')).err).toBeUndefined();
+    }
   });
 });
 
