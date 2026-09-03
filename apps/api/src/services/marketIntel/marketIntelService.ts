@@ -22,6 +22,7 @@ import type { MarketIntelRepository } from '../../data/repositories/marketIntelR
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
+import { capRollupSubjects } from './rollupBudget';
 
 /**
  * The per-asset market-intelligence read API (PROJECTPLAN.md §13.5 V5-P5). A
@@ -64,7 +65,9 @@ export interface MarketIntelService {
    * asset (arc c). Groups are ordered by their newest headline and each group's
    * headlines are newest-first. Unavailable/empty when the gate is off; an asset
    * whose provider lacks the news capability (or errors, or has no headlines) is
-   * simply dropped.
+   * simply dropped. The provider fan-out is capped per request
+   * (`MARKET_INTEL_ROLLUP_MAX_ASSETS`); a book larger than the cap yields
+   * `truncated: true` rather than a silently partial digest.
    */
   newsDigest(userId: string): Promise<NewsDigestResponse>;
 }
@@ -328,10 +331,15 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
       // Invisible when unconfigured: the gate off ⇒ no book scan, no groups.
       if (!enabled) return { available: false, groups: [] };
 
-      const assets = await intelRepo.listUserWatchAndHoldAssets(userId);
+      // One provider call per asset lands on the queue every other consumer
+      // shares (§5.3), so the book is capped per request and the response says
+      // when that happened. See rollupBudget.ts for the sizing and the ordering.
+      const { selected, truncated } = capRollupSubjects(
+        await intelRepo.listUserWatchAndHoldAssets(userId),
+      );
       const groups: NewsDigestGroup[] = [];
       await Promise.all(
-        assets.map(async (a) => {
+        selected.map(async (a) => {
           const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
           // Skip assets whose resolved provider can't serve news.
           if (!marketData.intelCapabilities(ref).news) return;
@@ -367,7 +375,7 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         );
         return cmp !== 0 ? cmp : x.symbol.localeCompare(y.symbol);
       });
-      return { available: true, groups };
+      return { available: true, groups, ...(truncated ? { truncated: true as const } : {}) };
     },
   };
 }
