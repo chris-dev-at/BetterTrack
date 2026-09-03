@@ -2,7 +2,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { friendGroupSchema, friendGroupListResponseSchema } from '@bettertrack/contracts';
+import {
+  commentThreadResponseSchema,
+  friendGroupSchema,
+  friendGroupListResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createStubMarketData } from '../testing/marketDataStubs';
@@ -354,5 +358,50 @@ describe('group audience round-trips through the picker state', () => {
     expect((await aliceAgent.get(`/api/v1/social/audience/portfolio/${MISSING_ID}`)).status).toBe(
       404,
     );
+  });
+});
+
+describe('a group audience scopes the comment thread (§13.5 V5-P8)', () => {
+  function getThread(agent: Agent, subjectId: string): Promise<request.Response> {
+    return agent.get(`/api/v1/social/items/portfolio/${subjectId}/thread`);
+  }
+
+  it('admits exactly the current members and revokes on the next read after removal', async () => {
+    const { aliceAgent, bobAgent, carolAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+
+    // The member reads AND writes the thread; carol (a friend outside the
+    // group) is fail-closed on both, with the uniform 404.
+    const posted = await bobAgent
+      .post(`/api/v1/social/items/portfolio/${pid}/comments`)
+      .set(...XRW)
+      .send({ body: 'in the circle' });
+    expect(posted.status).toBe(201);
+    const memberThread = commentThreadResponseSchema.parse((await getThread(bobAgent, pid)).body);
+    expect(memberThread.comments.map((c) => c.body)).toEqual(['in the circle']);
+    expect((await getThread(carolAgent, pid)).status).toBe(404);
+
+    // Editing the group applies to the existing share: on the NEXT request the
+    // removed member no longer reaches the thread at all.
+    const removed = await aliceAgent
+      .delete(`/api/v1/social/groups/${groupId}/members/${bob.id}`)
+      .set(...XRW)
+      .send();
+    expect(removed.status).toBe(200);
+
+    expect((await getThread(bobAgent, pid)).status).toBe(404);
+    expect(
+      (await bobAgent.get(`/api/v1/social/items/portfolio/${pid}/thread/summary`)).status,
+    ).toBe(404);
+    expect(
+      (
+        await bobAgent
+          .post(`/api/v1/social/items/portfolio/${pid}/comments`)
+          .set(...XRW)
+          .send({ body: 'still here?' })
+      ).status,
+    ).toBe(404);
   });
 });

@@ -765,8 +765,10 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     subjectOwner: (kind, subjectId) => repo.getSubjectOwner(kind, subjectId),
 
     async clearForSubject(kind, subjectId) {
-      // Deleting a subject drops its audience row AND purges every bookmark of
-      // it (#439) — reads already degrade gracefully, this is pure hygiene.
+      // Deleting a subject drops its audience row, its whole comment thread and
+      // every reaction on it (§13.5 V5-P8 — polymorphic subject columns have no
+      // FK to cascade, and an orphaned comment can never be moderated again),
+      // AND purges every bookmark of it (#439).
       await repo.clearForSubject(kind, subjectId);
       await itemFollows?.clearForSubject(kind, subjectId);
     },

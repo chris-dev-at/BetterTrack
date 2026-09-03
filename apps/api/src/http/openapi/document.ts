@@ -602,6 +602,7 @@ const componentSchemas = {
 
   // Comments + reactions on shared items (§13.5 V5-P8)
   CommentThreadResponse: contracts.commentThreadResponseSchema,
+  CommentThreadSummaryResponse: contracts.commentThreadSummaryResponseSchema,
   CreateCommentRequest: contracts.createCommentRequestSchema,
   CreateCommentResponse: contracts.createCommentResponseSchema,
   ToggleReactionRequest: contracts.toggleReactionRequestSchema,
@@ -4020,10 +4021,21 @@ const endpoints: EndpointDef[] = [
     path: '/social/items/{kind}/{subjectId}/thread',
     tag: 'Social',
     summary:
-      'A shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
+      'One bounded page of a shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
     params: contracts.audienceParamSchema,
+    query: contracts.commentThreadQuerySchema,
     status: 200,
     response: R.CommentThreadResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/items/{kind}/{subjectId}/thread/summary',
+    tag: 'Social',
+    summary:
+      'The collapsed thread head — live comment count + item reactions, no bodies (audience-scoped).',
+    params: contracts.audienceParamSchema,
+    status: 200,
+    response: R.CommentThreadSummaryResponse,
   },
   {
     method: 'post',
