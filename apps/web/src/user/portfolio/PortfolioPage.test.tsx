@@ -969,6 +969,11 @@ describe('PortfolioPage — expandable rows', () => {
     const editButton = screen.getByRole('button', { name: /Edit transaction from/i });
     expect(editButton).toBeInTheDocument();
     expect(within(editButton.closest('tr')!).getByText('Buy')).toBeInTheDocument();
+    // FRONTEND-12: the seven-column detail table scrolls locally rather than
+    // pushing the page sideways at narrow widths.
+    const scroller = editButton.closest('table')!.parentElement!;
+    expect(scroller).toHaveClass('bt-phone-scroll-table');
+    expect(scroller).toHaveClass('overflow-x-auto');
   });
 
   test('390px uses action-complete cards for holdings and transaction ledgers', async () => {

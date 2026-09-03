@@ -47,6 +47,7 @@ import {
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
 import { Button, Field, Input, Select } from '../../../ui/origin';
+import { type AttributedError, useFieldErrors } from '../../components/fieldErrors';
 import { PinInput } from '../../components/PinInput';
 import { Alert } from '../../components/ui';
 import {
@@ -64,14 +65,24 @@ const ME_KEY = ['auth', 'me'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
 const PASSKEYS_KEY = ['auth', 'passkeys'] as const;
 
-/** Friendly message for the codes `POST /auth/change-password` can return. */
-function changeErrorMessage(t: TranslateFn, err: unknown): string {
+/** The controls a change-password failure can be attributed to. */
+type PasswordField = 'currentPassword' | 'newPassword' | 'confirmPassword';
+
+/**
+ * Friendly message for the codes `POST /auth/change-password` can return, with
+ * the field that owns it (FRONTEND-09): a rejected credential is about the
+ * current-password box, a policy rejection about the new one, an outage about
+ * the submission.
+ */
+function changeErrorMessage(t: TranslateFn, err: unknown): AttributedError<PasswordField> {
   if (err instanceof ApiError) {
-    if (err.code === 'INVALID_CREDENTIALS') return t('settings.password.currentWrong');
-    if (err.code === 'WEAK_PASSWORD') return err.message;
-    if (err.status >= 500) return t('common.genericError');
+    if (err.code === 'INVALID_CREDENTIALS') {
+      return { field: 'currentPassword', message: t('settings.password.currentWrong') };
+    }
+    if (err.code === 'WEAK_PASSWORD') return { field: 'newPassword', message: err.message };
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
   }
-  return t('settings.password.changeFailed');
+  return { field: null, message: t('settings.password.changeFailed') };
 }
 
 /**
@@ -85,7 +96,7 @@ function ChangePasswordGroup() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<PasswordField>();
   const [done, setDone] = useState(false);
 
   const mutation = useMutation({
@@ -101,25 +112,39 @@ function ChangePasswordGroup() {
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setDone(false);
     if (newPassword !== confirmPassword) {
-      setError(t('settings.password.mismatch'));
+      // The confirmation is the box that disagrees — the new password may be fine.
+      fail('confirmPassword', t('settings.password.mismatch'));
       return;
     }
     mutation.mutate(
       { currentPassword, newPassword },
-      { onError: (err) => setError(changeErrorMessage(t, err)) },
+      {
+        onError: (err) => {
+          const attributed = changeErrorMessage(t, err);
+          fail(attributed.field, attributed.message);
+        },
+      },
     );
   }
 
   return (
     <PanelGroup label={t('settings.password.title')}>
       <Row stack>
-        {error ? <Alert tone="error">{error}</Alert> : null}
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         {done ? <Alert tone="success">{t('settings.password.success')}</Alert> : null}
-        <PanelForm onSubmit={onSubmit}>
-          <Field htmlFor="currentPassword" label={t('settings.password.current')}>
+        <PanelForm formRef={formRef} onSubmit={onSubmit}>
+          <Field
+            error={fieldError('currentPassword')}
+            htmlFor="currentPassword"
+            label={t('settings.password.current')}
+          >
             <Input
               autoComplete="current-password"
               id="currentPassword"
@@ -131,6 +156,7 @@ function ChangePasswordGroup() {
             />
           </Field>
           <Field
+            error={fieldError('newPassword')}
             hint={t('settings.password.hint', { count: MIN_PASSWORD_LENGTH })}
             htmlFor="newPassword"
             label={t('settings.password.new')}
@@ -146,7 +172,11 @@ function ChangePasswordGroup() {
               value={newPassword}
             />
           </Field>
-          <Field htmlFor="confirmPassword" label={t('settings.password.confirm')}>
+          <Field
+            error={fieldError('confirmPassword')}
+            htmlFor="confirmPassword"
+            label={t('settings.password.confirm')}
+          >
             <Input
               autoComplete="new-password"
               id="confirmPassword"
@@ -179,6 +209,21 @@ function twoFactorErrorMessage(t: TranslateFn, err: unknown): string {
     if (err.status < 500) return err.message;
   }
   return t('common.genericError');
+}
+
+/**
+ * Which control a two-factor failure belongs to. A code the server refused is
+ * the code box's own failure — that is the only field-attributable case, so it
+ * is recognised by its code rather than inferred from the status class (review
+ * nit): a lapsed session (401), a forbidden state (403) and the enrollment
+ * codes (`TWO_FACTOR_NOT_PENDING`, `TWO_FACTOR_ALREADY_ENABLED`,
+ * `TWO_FACTOR_EMAIL_UNAVAILABLE`) are all non-429 4xx that judged nothing about
+ * the typed digits, and a rate limit judged nothing the user typed either.
+ * `TWO_FACTOR_INVALID_CODE` is what every refusing endpoint here actually
+ * returns (`twoFactorService.confirmTotp` / `confirmEmail` / `disable`).
+ */
+function twoFactorErrorField(err: unknown): 'code' | null {
+  return err instanceof ApiError && err.code === 'TWO_FACTOR_INVALID_CODE' ? 'code' : null;
 }
 
 /** Recovery codes, shown exactly once after the first method is enabled or a regenerate. */
@@ -245,11 +290,13 @@ function EnrollWizard({
 }) {
   const t = useT();
   const [code, setCode] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // A rejected confirmation code belongs to the code boxes; a failed enrollment
+  // start belongs to the step (there is no form to blame yet).
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'code'>();
 
   const enroll = useMutation({
     mutationFn: enrollTwoFactor,
-    onError: () => setError(t('settings.security.twoFactor.totp.enrollError')),
+    onError: () => fail(null, t('settings.security.twoFactor.totp.enrollError')),
   });
   const enrollStart = enroll.mutate;
 
@@ -261,22 +308,34 @@ function EnrollWizard({
   const confirm = useMutation({
     mutationFn: () => confirmTwoFactor({ code }),
     onSuccess: (data) => onEnrolled(data.recoveryCodes),
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(twoFactorErrorField(err), twoFactorErrorMessage(t, err)),
   });
 
   if (!enroll.data) {
-    return enroll.isError ? <Alert tone="error">{error}</Alert> : <Skeleton height="h-16" />;
+    // No form to blame yet — but the alert still has to be reachable, so it
+    // carries `alertRef` here too and the failure effect lands on it.
+    return enroll.isError ? (
+      <div ref={alertRef} tabIndex={-1}>
+        <Alert tone="error">{formError}</Alert>
+      </div>
+    ) : (
+      <Skeleton height="h-16" />
+    );
   }
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     confirm.mutate();
   }
 
   return (
-    <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-      {error ? <Alert tone="error">{error}</Alert> : null}
+    <form className="flex flex-col gap-3" onSubmit={onSubmit} ref={formRef}>
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
       <PanelNote>{t('settings.security.twoFactor.totp.scanInstructions')}</PanelNote>
       {/* QR needs a light quiet-zone to scan reliably against the dark theme. */}
       <div className="self-start rounded bg-white" style={{ padding: 10 }}>
@@ -299,6 +358,7 @@ function EnrollWizard({
       </PanelFold>
       <PinInput
         autoFocus
+        error={fieldError('code')}
         hint={t('settings.security.twoFactor.totp.confirmationCodeHint')}
         label={t('settings.security.twoFactor.totp.confirmationCodeLabel')}
         length={TOTP_CODE_LENGTH}
@@ -327,26 +387,33 @@ function EnrollWizard({
 function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCancel: () => void }) {
   const t = useT();
   const [code, setCode] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The server rejects the authorizing code itself, so the failure belongs to
+  // the code box; only an outage (>=500) is form-level.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'code'>();
 
   const disable = useMutation({
     mutationFn: () => disableTwoFactor({ code }),
     onSuccess: onDisabled,
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(twoFactorErrorField(err), twoFactorErrorMessage(t, err)),
   });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     disable.mutate();
   }
 
   return (
-    <PanelForm onSubmit={onSubmit}>
-      {error ? <Alert tone="error">{error}</Alert> : null}
+    <PanelForm formRef={formRef} onSubmit={onSubmit}>
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
       {/* Explicit `for`/`id`: the popup's Field renders a sibling label, so an
           implicit (nested) association would not exist. */}
       <Field
+        error={fieldError('code')}
         htmlFor="totp-disable-code"
         label={t('settings.security.twoFactor.totp.disableCodeLabel')}
       >
@@ -470,16 +537,19 @@ function EmailMethodRow({
   const [view, setView] = useState<EmailMethodView>('status');
   const [code, setCode] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Only the confirmation step has a field to blame: a refused mailbox code
+  // belongs to the code boxes. Sending the code and turning the method off are
+  // one-button actions, so their failures stay with the submission.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'code'>();
 
   const enroll = useMutation({
     mutationFn: enrollEmailTwoFactor,
     onSuccess: () => {
-      setError(null);
+      clear();
       setView('confirming');
     },
     // A missing SMTP config surfaces as a clear TWO_FACTOR_EMAIL_UNAVAILABLE message.
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(null, twoFactorErrorMessage(t, err)),
   });
 
   const confirm = useMutation({
@@ -491,22 +561,22 @@ function EmailMethodRow({
       else setNotice(t('settings.security.twoFactor.email.enabledNotice'));
       refresh();
     },
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(twoFactorErrorField(err), twoFactorErrorMessage(t, err)),
   });
 
   const disable = useMutation({
     mutationFn: disableEmailTwoFactor,
     onSuccess: () => {
       setNotice(t('settings.security.twoFactor.email.disabledNotice'));
-      setError(null);
+      clear();
       refresh();
     },
-    onError: (err) => setError(twoFactorErrorMessage(t, err)),
+    onError: (err) => fail(null, twoFactorErrorMessage(t, err)),
   });
 
   function onConfirm(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     confirm.mutate();
   }
 
@@ -517,7 +587,11 @@ function EmailMethodRow({
       stack={view === 'confirming'}
     >
       {notice ? <Alert tone="success">{notice}</Alert> : null}
-      {error ? <Alert tone="error">{error}</Alert> : null}
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
       {enabled ? (
         <>
           <span className="bt-pos" style={{ fontSize: 12.5 }}>
@@ -539,10 +613,11 @@ function EmailMethodRow({
           </Button>
         </>
       ) : view === 'confirming' ? (
-        <form className="flex flex-col gap-3" onSubmit={onConfirm}>
+        <form className="flex flex-col gap-3" onSubmit={onConfirm} ref={formRef}>
           <PanelNote>{t('settings.security.twoFactor.email.confirmInstructions')}</PanelNote>
           <PinInput
             autoFocus
+            error={fieldError('code')}
             hint={t('settings.security.twoFactor.email.codeHint')}
             label={t('settings.security.twoFactor.email.codeLabel')}
             length={TOTP_CODE_LENGTH}
@@ -563,7 +638,7 @@ function EmailMethodRow({
               onClick={() => {
                 setView('status');
                 setCode('');
-                setError(null);
+                clear();
               }}
               size="sm"
               type="button"
@@ -703,17 +778,49 @@ function TwoFactorGroup() {
   );
 }
 
-/** Map a passkey add/manage failure to a localized message. */
-function passkeyErrorMessage(t: TranslateFn, err: unknown): string {
-  if (isPasskeyCancellation(err)) return t('settings.security.passkeys.cancelled');
-  if (err instanceof ApiError) {
-    if (err.status === 429) return t('settings.security.passkeys.rateLimited');
-    if (err.code === 'PASSKEY_ALREADY_REGISTERED')
-      return t('settings.security.passkeys.alreadyRegistered');
-    if (err.status === 401) return t('settings.security.passkeys.wrongPassword');
-    if (err.status >= 500) return t('common.genericError');
+/** The controls a passkey add/manage failure can be attributed to. */
+type PasskeyField = 'name' | 'password';
+
+/**
+ * Map a passkey add/manage failure to a localized message and the control it
+ * belongs to (FRONTEND-09). A refused re-auth (401) is the one case that judges
+ * something typed — the password box — and only where such a box exists:
+ * renaming sends no password and renders no password field, so `canBlamePassword`
+ * gates the attribution at the mapper the way `registerErrorMessage` gates its
+ * token field. Blaming an unmounted control would otherwise lean on the
+ * `useFieldErrors` fail-safe to stay visible. A cancelled authenticator prompt,
+ * a rate limit, an already-registered credential and an outage judged nothing
+ * the user typed, so all of them stay with the submission.
+ *
+ * Exported for its own test: an ungated `401 → 'password'` would blame the
+ * rename form's absent password box, and the `useFieldErrors` fail-safe would
+ * silently demote that back to form-level — so the gate is invisible through the
+ * DOM and has to be asserted here.
+ */
+export function passkeyErrorMessage(
+  t: TranslateFn,
+  err: unknown,
+  { canBlamePassword }: { canBlamePassword: boolean },
+): AttributedError<PasskeyField> {
+  if (isPasskeyCancellation(err)) {
+    return { field: null, message: t('settings.security.passkeys.cancelled') };
   }
-  return t('settings.security.passkeys.genericError');
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      return { field: null, message: t('settings.security.passkeys.rateLimited') };
+    }
+    if (err.code === 'PASSKEY_ALREADY_REGISTERED') {
+      return { field: null, message: t('settings.security.passkeys.alreadyRegistered') };
+    }
+    if (err.status === 401) {
+      return {
+        field: canBlamePassword ? 'password' : null,
+        message: t('settings.security.passkeys.wrongPassword'),
+      };
+    }
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
+  }
+  return { field: null, message: t('settings.security.passkeys.genericError') };
 }
 
 /** Add-a-passkey form: name + password re-auth, then the authenticator prompt. */
@@ -721,24 +828,37 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
   const t = useT();
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // The re-auth password is the only control the server judges here, so a
+  // rejected credential is that box's failure (FRONTEND-09).
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<PasskeyField>();
 
   const add = useMutation({
     mutationFn: () => registerPasskey(name.trim(), { password }),
     onSuccess: onAdded,
-    onError: (err) => setError(passkeyErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = passkeyErrorMessage(t, err, { canBlamePassword: true });
+      fail(attributed.field, attributed.message);
+    },
   });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     add.mutate();
   }
 
   return (
-    <PanelForm onSubmit={onSubmit}>
-      {error ? <Alert tone="error">{error}</Alert> : null}
-      <Field htmlFor="passkey-add-name" label={t('settings.security.passkeys.nameLabel')}>
+    <PanelForm formRef={formRef} onSubmit={onSubmit}>
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
+      <Field
+        error={fieldError('name')}
+        htmlFor="passkey-add-name"
+        label={t('settings.security.passkeys.nameLabel')}
+      >
         <Input
           autoComplete="off"
           id="passkey-add-name"
@@ -750,6 +870,7 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
         />
       </Field>
       <Field
+        error={fieldError('password')}
         hint={t('settings.security.passkeys.reauthHint')}
         htmlFor="passkey-add-password"
         label={t('settings.security.passkeys.passwordLabel')}
@@ -794,7 +915,10 @@ function PasskeyRow({
   const [mode, setMode] = useState<'view' | 'rename' | 'delete'>('view');
   const [name, setName] = useState(passkey.name);
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // One attribution shared by both inline forms — only one is ever mounted. The
+  // delete form's re-auth password is blamable; renaming submits no credential,
+  // so nothing it sends can be judged and its failures stay form-level.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<PasskeyField>();
 
   const rename = useMutation({
     mutationFn: () => renamePasskey(passkey.id, name.trim()),
@@ -802,33 +926,52 @@ function PasskeyRow({
       setMode('view');
       refresh();
     },
-    onError: (err) => setError(passkeyErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = passkeyErrorMessage(t, err, { canBlamePassword: false });
+      fail(attributed.field, attributed.message);
+    },
   });
 
   const remove = useMutation({
     mutationFn: () => deletePasskey(passkey.id, { password }),
     onSuccess: refresh,
-    onError: (err) => setError(passkeyErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = passkeyErrorMessage(t, err, { canBlamePassword: true });
+      fail(attributed.field, attributed.message);
+    },
   });
 
   function reset() {
     setMode('view');
     setName(passkey.name);
     setPassword('');
-    setError(null);
+    clear();
   }
 
   if (mode === 'rename') {
     return (
-      <PanelListItem main={error ? <Alert tone="error">{error}</Alert> : null}>
+      <PanelListItem
+        main={
+          // The row's alert sits outside the form (same shape as EmailMethodRow):
+          // `formRef` keeps the invalid-field lookup scoped to the form, `alertRef`
+          // gives the form-level failure something to focus.
+          formError ? (
+            <div ref={alertRef} tabIndex={-1}>
+              <Alert tone="error">{formError}</Alert>
+            </div>
+          ) : null
+        }
+      >
         <PanelForm
+          formRef={formRef}
           onSubmit={(e) => {
             e.preventDefault();
-            setError(null);
+            clear();
             rename.mutate();
           }}
         >
           <Field
+            error={fieldError('name')}
             htmlFor={`passkey-rename-${passkey.id}`}
             label={t('settings.security.passkeys.nameLabel')}
           >
@@ -858,11 +1001,20 @@ function PasskeyRow({
 
   if (mode === 'delete') {
     return (
-      <PanelListItem main={error ? <Alert tone="error">{error}</Alert> : null}>
+      <PanelListItem
+        main={
+          formError ? (
+            <div ref={alertRef} tabIndex={-1}>
+              <Alert tone="error">{formError}</Alert>
+            </div>
+          ) : null
+        }
+      >
         <PanelForm
+          formRef={formRef}
           onSubmit={(e) => {
             e.preventDefault();
-            setError(null);
+            clear();
             remove.mutate();
           }}
         >
@@ -873,6 +1025,7 @@ function PasskeyRow({
               : t('settings.security.passkeys.deleteConfirm')}
           </PanelNote>
           <Field
+            error={fieldError('password')}
             htmlFor={`passkey-delete-${passkey.id}`}
             label={t('settings.security.passkeys.passwordLabel')}
           >
@@ -1011,13 +1164,19 @@ function PasskeysGroup() {
   );
 }
 
-function pinErrorMessage(t: TranslateFn, err: unknown): string {
+function pinErrorMessage(t: TranslateFn, err: unknown): AttributedError<PinField> {
   if (err instanceof ApiError) {
-    if (err.code === 'WEAK_PASSWORD' || err.code === 'VALIDATION_ERROR') return err.message;
-    if (err.status >= 500) return t('common.genericError');
+    // A rejected PIN is about the digits the user chose, not the confirmation.
+    if (err.code === 'WEAK_PASSWORD' || err.code === 'VALIDATION_ERROR') {
+      return { field: 'pin', message: err.message };
+    }
+    if (err.status >= 500) return { field: null, message: t('common.genericError') };
   }
-  return t('settings.security.pin.genericError');
+  return { field: null, message: t('settings.security.pin.genericError') };
 }
+
+/** The controls a PIN failure can be attributed to. */
+type PinField = 'pin' | 'confirm';
 
 /** Set/change form used both to enable a PIN and to change an existing one. */
 function PinForm({
@@ -1031,7 +1190,7 @@ function PinForm({
   const queryClient = useQueryClient();
   const [pin, setPinValue] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<PinField>();
 
   const mutation = useMutation({
     mutationFn: (body: SetPinRequest) => setPin(body),
@@ -1041,14 +1200,18 @@ function PinForm({
       setConfirm('');
       onDone(t('settings.security.pin.savedNotice'));
     },
-    onError: (err) => setError(pinErrorMessage(t, err)),
+    onError: (err) => {
+      const attributed = pinErrorMessage(t, err);
+      fail(attributed.field, attributed.message);
+    },
   });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     if (pin !== confirm) {
-      setError(t('settings.security.pin.mismatch'));
+      // The confirmation is the box that disagrees — the PIN itself may be fine.
+      fail('confirm', t('settings.security.pin.mismatch'));
       return;
     }
     mutation.mutate({ pin });
@@ -1057,11 +1220,16 @@ function PinForm({
   const tooShort = pin.length !== PIN_LENGTH || confirm.length !== PIN_LENGTH;
 
   return (
-    <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-      {error ? <Alert tone="error">{error}</Alert> : null}
+    <form className="flex flex-col gap-3" onSubmit={onSubmit} ref={formRef}>
+      {formError ? (
+        <div ref={alertRef} tabIndex={-1}>
+          <Alert tone="error">{formError}</Alert>
+        </div>
+      ) : null}
       {/* Labels are "PIN" / "Confirm PIN" — deliberately NOT password-shaped, so
           they never collide with this panel's two "Current password" fields. */}
       <PinInput
+        error={fieldError('pin')}
         hint={t('settings.security.pin.exactDigitsHint', { length: PIN_LENGTH })}
         label={t('settings.security.pin.pinLabel')}
         length={PIN_LENGTH}
@@ -1069,6 +1237,7 @@ function PinForm({
         value={pin}
       />
       <PinInput
+        error={fieldError('confirm')}
         label={t('settings.security.pin.confirmLabel')}
         length={PIN_LENGTH}
         onChange={setConfirm}
@@ -1171,7 +1340,9 @@ function PinGroup({
       setError(null);
       setNotice(t('settings.security.pin.disabledNotice'));
     },
-    onError: (err) => setError(pinErrorMessage(t, err)),
+    // Disabling is a button, not a form — there is no field to blame, so only
+    // the message is used here.
+    onError: (err) => setError(pinErrorMessage(t, err).message),
   });
 
   return (

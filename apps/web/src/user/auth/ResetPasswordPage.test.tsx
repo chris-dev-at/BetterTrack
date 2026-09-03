@@ -107,3 +107,30 @@ test('a no-2FA account is signed straight in after resetting the password', asyn
     newPassword: 'fresh-reset-password-1',
   });
 });
+
+test('a rejected password is attributed to the password field, which takes focus', async () => {
+  vi.mocked(api.completePasswordReset).mockRejectedValue(
+    new ApiError(400, 'WEAK_PASSWORD', 'That password is too common.'),
+  );
+
+  await submitNewPassword();
+
+  const field = await screen.findByLabelText('New password');
+  expect(field).toHaveAttribute('aria-invalid', 'true');
+  expect(field).toHaveAccessibleDescription(/That password is too common\./);
+  expect(field).toHaveFocus();
+});
+
+test('a spent reset link stays a form-level alert and blames no field', async () => {
+  vi.mocked(api.completePasswordReset).mockRejectedValue(
+    new ApiError(400, 'INVALID_RESET', 'nope'),
+  );
+
+  await submitNewPassword();
+
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/This reset link is invalid or has expired/);
+  expect(screen.getByLabelText('New password')).not.toHaveAttribute('aria-invalid');
+  // Focus lands on the alert (its focusable wrapper) when no field is blamed.
+  expect(document.activeElement).toContainElement(alert);
+});

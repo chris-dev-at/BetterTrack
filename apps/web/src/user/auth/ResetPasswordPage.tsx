@@ -8,11 +8,19 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
+import { type AttributedError, useFieldErrors } from '../components/fieldErrors';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 import { TwoFactorStep } from './LoginPage';
 
-/** Friendly message for the failure codes `POST /auth/password-reset/complete` returns. */
-function completeErrorMessage(t: TranslateFn, err: unknown): string {
+/** The controls a reset failure can be attributed to. */
+type ResetField = 'password';
+
+/**
+ * Friendly message for the failure codes `POST /auth/password-reset/complete`
+ * returns, with the field that owns it. A rejected password belongs to the
+ * password box; a spent token and an outage belong to the submission.
+ */
+function completeErrorMessage(t: TranslateFn, err: unknown): AttributedError<ResetField> {
   if (err instanceof ApiError) {
     if (err.status === 429) {
       const wait = err.retryAfterSeconds
@@ -25,18 +33,18 @@ function completeErrorMessage(t: TranslateFn, err: unknown): string {
             },
           )
         : t('auth.common.waitMoment');
-      return `${t('auth.resetPassword.rateLimited')}${wait}`;
+      return { field: null, message: `${t('auth.resetPassword.rateLimited')}${wait}` };
     }
     switch (err.code) {
       case 'WEAK_PASSWORD':
-        return err.message;
+        return { field: 'password', message: err.message };
       case 'INVALID_RESET':
-        return t('auth.resetPassword.invalidReset');
+        return { field: null, message: t('auth.resetPassword.invalidReset') };
       default:
-        if (err.status >= 500) return t('common.genericError');
+        if (err.status >= 500) return { field: null, message: t('common.genericError') };
     }
   }
-  return t('auth.resetPassword.failed');
+  return { field: null, message: t('auth.resetPassword.failed') };
 }
 
 /**
@@ -52,7 +60,7 @@ export function ResetPasswordPage() {
   const { status, completePasswordReset } = useAuth();
 
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<ResetField>();
   const [submitting, setSubmitting] = useState(false);
   // Non-null once the reset returns a 2FA challenge: the password was changed but
   // the session is withheld until a second factor verifies (§6.1).
@@ -69,7 +77,7 @@ export function ResetPasswordPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setSubmitting(true);
     try {
       const outcome = await completePasswordReset({ token, newPassword: password });
@@ -80,7 +88,8 @@ export function ResetPasswordPage() {
       }
       navigate('/', { replace: true });
     } catch (err) {
-      setError(completeErrorMessage(t, err));
+      const attributed = completeErrorMessage(t, err);
+      fail(attributed.field, attributed.message);
     } finally {
       setSubmitting(false);
     }
@@ -99,9 +108,14 @@ export function ResetPasswordPage() {
 
   return (
     <AuthCard subtitle={t('auth.resetPassword.subtitle')}>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <TextField
+          error={fieldError('password')}
           label={t('auth.resetPassword.newPasswordLabel')}
           name="password"
           type="password"

@@ -22,6 +22,7 @@ import {
 } from '../../lib/passkeys';
 import * as userApi from '../../lib/userApi';
 import { AdminAccountError, useAuth } from '../AuthContext';
+import { useFieldErrors } from '../components/fieldErrors';
 import {
   Alert,
   AuthCard,
@@ -132,7 +133,11 @@ export function LoginPage() {
   // path, which is driven by the #419 device binding above.
   const [identifier, setIdentifier] = useState(() => readLastLoginIdentifier() ?? '');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // Nothing here is ever attributed to a field: §6.1 forbids distinguishing "no
+  // such user" from "wrong password", and a rate limit, a suspended account or
+  // an outage belong to the submission. So the alert stays form-level and takes
+  // focus on failure — the "or an error summary" half of FRONTEND-09.
+  const { formRef, alertRef, formError, fail, clear } = useFieldErrors();
   const [submitting, setSubmitting] = useState(false);
   // Ticked by default: a normal login is persistent (§399 §A). Not shown in the
   // OAuth flow — the choice is deferred to the PIN-gated step below.
@@ -221,7 +226,7 @@ export function LoginPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setSubmitting(true);
     try {
       const outcome = await login({
@@ -258,19 +263,19 @@ export function LoginPage() {
               },
             )
           : t('auth.common.waitMoment');
-        setError(`${t('auth.login.rateLimited')}${wait}`);
+        fail(null, `${t('auth.login.rateLimited')}${wait}`);
       } else if (err instanceof AdminAccountError) {
         // Admin credentials on the user app: point them at the admin area (§10).
-        setError(err.message);
+        fail(null, err.message);
       } else if (err instanceof ApiError && err.status === 403 && err.code === 'ACCOUNT_DISABLED') {
         // Correct password but the account is suspended: a distinct message,
         // separate from bad-credentials and the rate-limit notice (§6.1, §16).
-        setError(t('auth.login.accountDisabled'));
+        fail(null, t('auth.login.accountDisabled'));
       } else if (isApiOutage(err)) {
-        setError(t('common.genericError'));
+        fail(null, t('common.genericError'));
       } else {
         // Never distinguish "no such user" from "wrong password" (§6.1).
-        setError(t('auth.login.invalidCredentials'));
+        fail(null, t('auth.login.invalidCredentials'));
       }
     } finally {
       setSubmitting(false);
@@ -282,7 +287,7 @@ export function LoginPage() {
   // auth — no 2FA step), so we just adopt the user and land. A user-cancelled
   // prompt is silent; any real failure shows a graceful inline error.
   async function onPasskeySignIn() {
-    setError(null);
+    clear();
     setPasskeyBusy(true);
     try {
       const me = await signInWithPasskey(staySignedIn);
@@ -292,9 +297,9 @@ export function LoginPage() {
       if (isPasskeyCancellation(err)) {
         // The user dismissed the prompt — leave the form as-is to retry.
       } else if (err instanceof ApiError && err.status === 429) {
-        setError(t('auth.login.passkeyRateLimited'));
+        fail(null, t('auth.login.passkeyRateLimited'));
       } else {
-        setError(t('auth.login.passkeyError'));
+        fail(null, t('auth.login.passkeyError'));
       }
     } finally {
       setPasskeyBusy(false);
@@ -368,7 +373,7 @@ export function LoginPage() {
           // Bail back to the password form — the pending challenge simply lapses.
           setChallenge(null);
           setPassword('');
-          setError(null);
+          clear();
         }}
       />
     );
@@ -412,8 +417,12 @@ export function LoginPage() {
         </div>
       ) : null}
       {/* (2) Password login form. */}
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         <TextField
           label={t('auth.login.identifierLabel')}
           name="identifier"
@@ -519,14 +528,16 @@ export function TwoFactorStep({
 
   const [useRecovery, setUseRecovery] = useState(false);
   const [value, setValue] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // A rejected code is the one failure this step can pin on its single field; a
+  // lapsed challenge and a rate limit are about the submission, not the digits.
+  const { formRef, alertRef, fieldError, formError, fail, clear } = useFieldErrors<'code'>();
   const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [sendingCode, setSendingCode] = useState(false);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    setError(null);
+    clear();
     setInfo(null);
     setSubmitting(true);
     try {
@@ -539,11 +550,11 @@ export function TwoFactorStep({
       onVerified(me);
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
-        setError(t('auth.twoFactor.tooManyCodes'));
+        fail(null, t('auth.twoFactor.tooManyCodes'));
       } else if (err instanceof ApiError && err.code === 'TWO_FACTOR_PENDING_INVALID') {
-        setError(t('auth.twoFactor.sessionExpired'));
+        fail(null, t('auth.twoFactor.sessionExpired'));
       } else {
-        setError(t('auth.twoFactor.invalidCode'));
+        fail('code', t('auth.twoFactor.invalidCode'));
       }
     } finally {
       setSubmitting(false);
@@ -551,7 +562,7 @@ export function TwoFactorStep({
   }
 
   async function onEmailCode() {
-    setError(null);
+    clear();
     setInfo(null);
     setSendingCode(true);
     try {
@@ -559,9 +570,9 @@ export function TwoFactorStep({
       setInfo(t('auth.twoFactor.emailCodeSent'));
     } catch (err) {
       if (err instanceof ApiError && err.code === 'TWO_FACTOR_PENDING_INVALID') {
-        setError(t('auth.twoFactor.sessionExpired'));
+        fail(null, t('auth.twoFactor.sessionExpired'));
       } else {
-        setError(t('auth.twoFactor.emailCodeFailed'));
+        fail(null, t('auth.twoFactor.emailCodeFailed'));
       }
     } finally {
       setSendingCode(false);
@@ -570,13 +581,18 @@ export function TwoFactorStep({
 
   return (
     <AuthCard subtitle={t('auth.twoFactor.subtitle')}>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
+      <form onSubmit={onSubmit} className="flex flex-col gap-4" ref={formRef}>
+        {formError ? (
+          <div ref={alertRef} tabIndex={-1}>
+            <Alert tone="error">{formError}</Alert>
+          </div>
+        ) : null}
         {info ? <Alert tone="info">{info}</Alert> : null}
         <p className="bt-muted text-sm">
           {useRecovery ? t('auth.twoFactor.recoveryPrompt') : codePrompt}
         </p>
         <TextField
+          error={fieldError('code')}
           label={
             useRecovery
               ? t('auth.twoFactor.recoveryCodeLabel')
@@ -605,7 +621,7 @@ export function TwoFactorStep({
             onClick={() => {
               setUseRecovery((v) => !v);
               setValue('');
-              setError(null);
+              clear();
               setInfo(null);
             }}
           >
