@@ -123,8 +123,10 @@ const envSchema = z.object({
   // interactive path's lack of a budget was an asymmetry, not a choice. These
   // two knobs are the interactive half of that one decision: a per-user window
   // admitting BT_SEARCH_ENRICHMENT_BUDGET *distinct* enrichment queries; a
-  // re-poll of an already-admitted query is free, so the client's
-  // "Searching providers…" refetch loop never spends the budget twice.
+  // re-poll of an already-admitted query is free within that window, so the
+  // client's "Searching providers…" refetch loop never spends the budget twice
+  // (a poll that crosses the window boundary opens a new accounting period and
+  // is charged once more — the fixed window's normal behaviour).
   //
   // 30 / 60 s models the client honestly: `useAssetSearch` fires one request per
   // debounced PREFIX (min 1 char), so ONE slowly-typed word can produce ~5-6

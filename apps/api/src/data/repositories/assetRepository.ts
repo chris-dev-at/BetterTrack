@@ -39,10 +39,18 @@ function visibleTo(userId: string, includeCustomAssets: boolean): SQL {
     : sql`${assets.ownerId} is null`;
 }
 
-/** postgres-js returns its RowList directly; PGlite wraps it in `rows`. */
+/**
+ * Rows of a raw `db.execute`: postgres-js returns its RowList directly, PGlite
+ * wraps it in `rows`. Both shapes are recognised explicitly, and a third one
+ * throws rather than degrading to `[]` — an empty array is a valid answer for
+ * both readers below ("no catalog match", "no watermark"), so a blind cast
+ * would turn an unsupported driver into a wrong answer served with a 200.
+ */
 function resultRows<T>(result: unknown): T[] {
-  const wrapped = result as { rows?: T[] } & T[];
-  return wrapped.rows ?? wrapped;
+  if (Array.isArray(result)) return result as T[];
+  const rows: unknown = (result as { rows?: unknown } | null)?.rows;
+  if (Array.isArray(rows)) return rows as T[];
+  throw new Error('Unsupported database driver result shape for a raw catalog read');
 }
 
 /** One ranked hit from the local catalog (§6.2): a global market asset or the caller's own custom asset. */
@@ -227,17 +235,21 @@ export function createAssetRepository(db: Database) {
      * safe, and content edits (a rename that keeps the id) are caught by the
      * per-request body ETag, not this watermark.
      *
-     * MONOTONIC (#1709). "Newest visible id" alone can move BACKWARDS: delete
-     * the newest visible row — an owner deleting a custom asset, the paranoid
-     * detach — and the watermark drops to the id before it, so a follow-up
-     * `If-Modified-Since` carrying the pre-delete value is satisfied by the
-     * smaller one and the caller is told 304 while still rendering the deleted
-     * asset. The second term closes that: `asset_catalog_deletions` is stamped
-     * by an AFTER DELETE trigger (migration 0110) with the deleted row's own
-     * creation instant plus one second, so any deletion that lowers the first
-     * term necessarily raises the max past where it was — and past the
-     * second-granular HTTP date the client echoes back. Both terms are read
-     * from the same UUIDv7 clock, so no server-clock skew enters the comparison.
+     * STEPS FORWARD ON DELETION (#1709). "Newest visible id" alone can move
+     * BACKWARDS: delete the newest visible row — an owner deleting a custom
+     * asset, the paranoid detach — and the watermark drops to the id before it,
+     * so a follow-up `If-Modified-Since` carrying the pre-delete value is
+     * satisfied by the smaller one and the caller is told 304 while still
+     * rendering the deleted asset. The second term closes that:
+     * `asset_catalog_deletions` is stamped by the statement-level AFTER DELETE
+     * trigger in migration 0110, which puts it one whole HTTP-date second past
+     * the newest row that is left (which dominates every caller's visible
+     * maximum) and past the newest row the statement removed. So the max here
+     * rises on EVERY deleting statement — including one whose row is older than
+     * the current stamp, and one that removed something below the visible
+     * maximum, both of which a merely-monotonic stamp would swallow. Both terms
+     * are read from the same UUIDv7 clock (the trigger never reads `now()`), so
+     * no server-clock skew enters the comparison.
      */
     async catalogWatermark(
       userId: string,

@@ -19,7 +19,7 @@
 -- (indexed tiers first, fuzzy only on a miss) or a `%` predicate with a pinned
 -- `pg_trgm.similarity_threshold` — not this index.
 DROP INDEX IF EXISTS "assets_symbol_name_trgm_gin";--> statement-breakpoint
--- (2) A monotonic deletion watermark for the conditional search read.
+-- (2) A forward-stepping deletion watermark for the conditional search read.
 --
 -- `catalogWatermark` derives `Last-Modified` from the newest visible asset's
 -- UUIDv7 creation time (the table has no per-row timestamp). Deleting the
@@ -31,49 +31,108 @@ DROP INDEX IF EXISTS "assets_symbol_name_trgm_gin";--> statement-breakpoint
 -- intermediary that strips ETags).
 --
 -- One row records the instant through which deletions are accounted for; the
--- read takes `greatest(newest visible, deleted_through)`, which cannot decrease.
+-- read takes `greatest(newest visible, deleted_through)`. The trigger below
+-- moves that stamp strictly past every instant the read could still be showing,
+-- so the watermark does not merely stop decreasing — it advances by at least
+-- one HTTP-date second on every deleting statement.
 CREATE TABLE "asset_catalog_deletions" (
 	"singleton" boolean PRIMARY KEY DEFAULT true NOT NULL,
 	"deleted_through" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
--- The stamp is derived from the DELETED ROW'S OWN id, not from a server clock:
--- the UUIDv7 leading 48 bits are its creation ms (§4.4), which is the very
--- quantity the read side decodes for the other half of the `greatest`. Both
--- terms therefore come from one clock, so the comparison cannot be skewed by an
--- API host running ahead of the database host.
+-- The UUIDv7 leading 48 bits are the row's creation ms (§4.4) — the very
+-- quantity the read side decodes for the other half of the `greatest`, so
+-- deriving the stamp from row ids keeps BOTH terms on one clock and no
+-- server-clock skew (an API host running ahead of the database host) can enter
+-- the comparison. `now()` is deliberately never read here.
+CREATE FUNCTION "bettertrack_uuidv7_instant"(asset_id uuid)
+RETURNS timestamptz
+LANGUAGE sql
+IMMUTABLE STRICT
+AS $$
+	SELECT to_timestamp(
+		(('x' || substr(replace(asset_id::text, '-', ''), 1, 12))::bit(48)::bigint) / 1000.0
+	)
+$$;
+--> statement-breakpoint
+-- The stamp must STEP FORWARD on every deletion, not merely never rewind.
+-- Monotonicity alone leaves the original false 304 fully reachable:
 --
--- The one-second offset is the HTTP-date resolution: `If-Modified-Since` and
--- `Last-Modified` are second-granular, so a row created and deleted inside the
--- same second still has to push the watermark into the NEXT second, or the
--- floored comparison would keep answering 304.
+--   * stamp already ahead. Delete a NEWER asset first (anyone's — the stamp is
+--     instance-wide), then the newest one still visible: the second deletion's
+--     own instant is below the stamp, so a `greatest(stamp, row)` write is a
+--     no-op, the watermark does not move, and the client's `If-Modified-Since`
+--     from before that deletion is still satisfied.
+--   * a NON-newest row. `greatest(newest visible, stamp)` is unchanged by
+--     deleting anything below the maximum, so the response shrinks while the
+--     watermark stands still.
 --
--- Deliberately a row-level trigger with no user or asset column: the table
--- stores a timestamp and nothing else, so it identifies neither the account nor
--- the asset, and no delete path can bypass it — the owner-scoped custom-asset
--- delete, the paranoid detach function and the account-deletion cascade all
--- issue a DELETE on "assets".
+-- Both close the same way: take the largest instant the read side could
+-- possibly be looking at — the newest row this statement deleted AND the newest
+-- row left in the table, which dominates every caller's visible maximum — and
+-- put the stamp one HTTP-second past it. `date_trunc('second', …) + 1s` is that
+-- resolution: `Last-Modified` / `If-Modified-Since` are second-granular, so
+-- pushing past the millisecond is not enough, the NEXT second has to be
+-- reached. The `ON CONFLICT` arm re-applies the step to the stored value, so a
+-- deletion whose own row is older than the current stamp still advances it.
+--
+-- Consequence, deliberate: N successive delete statements with no intervening
+-- insert leave the stamp N seconds ahead of the newest row, during which a
+-- newly created asset does not raise the watermark. That is bounded by the
+-- number of content-changing statements and is the same second-granularity
+-- limit RFC 9110 date validators have anyway (which is why the read also emits
+-- an ETag); the alternative — a stamp that sometimes does not move — is the
+-- unbounded staleness above.
+--
+-- Statement-level with a transition table, so an account-deletion cascade or a
+-- paranoid purge stamps ONCE for the whole DELETE instead of once per row: it
+-- takes the shared row's lock a single time per statement (concurrent deletes
+-- on "assets" serialise on it until commit) and not at all for a statement that
+-- deleted nothing. The table carries no user or asset column — a timestamp and
+-- nothing else, identifying neither account nor asset — and no delete path can
+-- bypass it: the owner-scoped custom-asset delete, the paranoid detach function
+-- and the account-deletion cascade all issue a DELETE on "assets".
 CREATE FUNCTION "bettertrack_asset_catalog_deletion_mark"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-	deleted_through timestamptz;
+	deleted_newest timestamptz;
+	remaining_newest timestamptz;
 BEGIN
-	deleted_through := to_timestamp(
-		(('x' || substr(replace(OLD."id"::text, '-', ''), 1, 12))::bit(48)::bigint) / 1000.0
-	) + interval '1 second';
+	SELECT max("bettertrack_uuidv7_instant"("id"))
+		INTO deleted_newest
+		FROM "bettertrack_deleted_assets";
+	-- An AFTER STATEMENT trigger also fires for a DELETE that matched no row.
+	IF deleted_newest IS NULL THEN
+		RETURN NULL;
+	END IF;
+
+	-- uuid order == time order, so this is an index scan on the primary key, not
+	-- an aggregate over the table. NULL (catalog now empty) drops out of
+	-- `greatest`, which ignores NULL arguments.
+	SELECT "bettertrack_uuidv7_instant"("id")
+		INTO remaining_newest
+		FROM "assets"
+		ORDER BY "id" DESC
+		LIMIT 1;
 
 	INSERT INTO "asset_catalog_deletions" ("singleton", "deleted_through")
-	VALUES (true, deleted_through)
+	VALUES (
+		true,
+		date_trunc('second', greatest(deleted_newest, remaining_newest)) + interval '1 second'
+	)
 	ON CONFLICT ("singleton") DO UPDATE
-		SET "deleted_through" = EXCLUDED."deleted_through"
-		WHERE "asset_catalog_deletions"."deleted_through" < EXCLUDED."deleted_through";
-	RETURN OLD;
+		SET "deleted_through" = date_trunc(
+			'second',
+			greatest("asset_catalog_deletions"."deleted_through", EXCLUDED."deleted_through")
+		) + interval '1 second';
+	RETURN NULL;
 END;
 $$;
 --> statement-breakpoint
 CREATE TRIGGER "assets_catalog_deletion_mark"
 AFTER DELETE ON "assets"
-FOR EACH ROW
+REFERENCING OLD TABLE AS "bettertrack_deleted_assets"
+FOR EACH STATEMENT
 EXECUTE FUNCTION "bettertrack_asset_catalog_deletion_mark"();

@@ -353,6 +353,69 @@ describe('conditional reads — catalog search (GET /api/v1/search)', () => {
     );
   });
 
+  it('answers 200 even when a newer asset — anyone’s — was deleted first (#1709)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const other = await harness.seedUser({
+      email: 'cond-other@bettertrack.test',
+      username: 'condother',
+    });
+
+    const customId = await seedAsset(harness, 'CONDX', user.id);
+    // Newer than everything I can see, invisible to me, and deleted FIRST. The
+    // deletion stamp is instance-wide, so this leaves it already ahead of my
+    // rows — which, once any account has tidied up a recent asset, is the
+    // instance's ordinary state and not a corner case. A stamp that only
+    // refuses to rewind would absorb my deletion below and answer 304.
+    const theirCustom = await seedAsset(harness, 'CONDY', other.id);
+    await harness.db.delete(schema.assets).where(eq(schema.assets.id, theirCustom));
+
+    const first = await agent.get('/api/v1/search?q=COND');
+    expect(first.status).toBe(200);
+    expect(first.body.results.map((r: { symbol: string }) => r.symbol)).toContain('CONDX');
+    const watermark = first.headers['last-modified'] as string;
+
+    await harness.db.delete(schema.assets).where(eq(schema.assets.id, customId));
+
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    expect(after.body.results.map((r: { symbol: string }) => r.symbol)).not.toContain('CONDX');
+  });
+
+  it('answers 200 when the deleted row was not the newest one visible (#1709)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    // Minted (UUIDv7 timestamp bits) well below every other row in the fixture,
+    // so the deletion cannot drag the watermark up as a side effect of the two
+    // rows being milliseconds apart.
+    const older = '018f6f00-0000-7000-8000-0000000000cd';
+    await harness.db.insert(schema.assets).values({
+      id: older,
+      providerId: 'manual',
+      providerRef: 'CONDX',
+      ownerId: user.id,
+      type: 'custom',
+      symbol: 'CONDX',
+      name: 'CONDX Corp',
+      currency: 'EUR',
+    });
+    await seedAsset(harness, 'CONDZ', user.id);
+
+    const first = await agent.get('/api/v1/search?q=COND');
+    const watermark = first.headers['last-modified'] as string;
+
+    // `max(newest visible)` is untouched by removing a row below it, so the
+    // body loses CONDX while the naive watermark stands still.
+    await harness.db.delete(schema.assets).where(eq(schema.assets.id, older));
+
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    const symbols = after.body.results.map((r: { symbol: string }) => r.symbol);
+    expect(symbols).not.toContain('CONDX');
+    expect(symbols).toContain('CONDZ');
+  });
+
   it('does not leak a catalog validator across the auth boundary', async () => {
     const userA = await harness.seedUser();
     const agentA = await loginAgent(harness.app, userA.email, userA.password);

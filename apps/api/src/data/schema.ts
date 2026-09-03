@@ -981,18 +981,21 @@ export const assets = pgTable(
  * before it, so a follow-up `If-Modified-Since: <old watermark>` is satisfied
  * and the caller is told `304 Not Modified` while still rendering the row that
  * was deleted. The watermark is `greatest(newest visible, this stamp)` instead,
- * which is monotonic by construction: the only thing that can lower the first
- * term is a deletion, and a deletion always raises the second past it.
+ * and the stamp does not merely refuse to decrease — every deleting statement
+ * moves it one HTTP-date second past the newest row anyone can still see. Not
+ * decreasing would not be enough: a stamp already ahead (because some newer
+ * asset — any account's, it is instance-wide) would swallow the next deletion
+ * silently, and so would deleting anything below the visible maximum.
  *
  * The stamp is written by the `assets_catalog_deletion_mark` AFTER DELETE
  * trigger (migration 0110), not by a repository, so no delete path — the
  * owner-scoped custom-asset delete, the paranoid detach function, an account
  * cascade — can bypass it. It holds no user id and no asset id: only a
- * timestamp derived from the deleted row's own id, so it identifies nothing and
- * survives a paranoid enable without leaving a residue (see
- * `services/export/manifest.ts`). Its cost is one shared row updated per asset
- * deletion, and over-invalidation across users — a 200 instead of a 304, always
- * the safe direction (§6.13).
+ * timestamp derived from row ids, so it identifies nothing and survives a
+ * paranoid enable without leaving a residue (see `services/export/manifest.ts`).
+ * The trigger is statement-level, so its cost is one shared row updated per
+ * deleting STATEMENT (a cascade of N rows stamps once), plus over-invalidation
+ * across users — a 200 instead of a 304, always the safe direction (§6.13).
  */
 export const assetCatalogDeletions = pgTable('asset_catalog_deletions', {
   /** Singleton guard: the trigger only ever writes `true`. */

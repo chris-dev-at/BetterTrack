@@ -149,11 +149,42 @@ describe('interactive enrichment budget', () => {
     expect(marketData.calls.search).toBe(4);
   });
 
+  it('admits exactly the budget when distinct queries arrive concurrently', async () => {
+    const { h, userId } = await makeSearch(3);
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    const budget = createSearchEnrichmentBudget({
+      redis,
+      logger: h.ctx.logger,
+      budget: 3,
+      windowSeconds: 60,
+    });
+
+    // Five distinct misses in flight at once — a debounced prefix burst. The
+    // count each decision is made on has to be the count that admission joined,
+    // or the answers disagree with the ceiling in both directions: read the set
+    // size after everyone has added and all five are over budget (nobody gets
+    // the fan-out they are entitled to).
+    const admitted = await Promise.all(
+      ['z', 'ze', 'zet', 'zeta', 'zetaf'].map((q) => budget.admit(userId, q)),
+    );
+
+    expect(admitted.filter(Boolean)).toHaveLength(3);
+    // …and the survivors still hold the set, so the window is genuinely spent
+    // rather than emptied by mutual refusal.
+    await expect(budget.admit(userId, 'zetafu')).resolves.toBe(false);
+  });
+
   it('fails closed when Redis is unavailable — the catalog still answers', async () => {
     const { h, service, marketData, userId } = await makeSearch(5);
+    const deadChain = {
+      scard: () => deadChain,
+      sadd: () => deadChain,
+      exec: () => Promise.reject(new Error('redis down')),
+    };
     const budget = createSearchEnrichmentBudget({
       redis: {
-        sadd: () => Promise.reject(new Error('redis down')),
+        multi: () => deadChain,
       } as unknown as Redis,
       logger: h.ctx.logger,
       budget: 5,

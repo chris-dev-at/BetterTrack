@@ -20,11 +20,15 @@ import type { Logger } from '../../logger';
  * (`BT_SEARCH_ENRICHMENT_BUDGET` / `BT_SEARCH_ENRICHMENT_WINDOW_SEC`).
  *
  * Shape: a fixed window per user holding the set of *distinct* queries admitted
- * in it. A re-poll of an already-admitted query costs nothing — the client
- * refetches every 1.5 s while the server reports `enriching: true`, and that
- * loop must not spend the budget it just paid for. A refused query is removed
- * again, so the set never holds more than the budget and a refused query cannot
- * be replayed as an "already admitted" one.
+ * in it. A re-poll of an already-admitted query costs nothing *within that
+ * window* — the client refetches every 1.5 s while the server reports
+ * `enriching: true`, and that loop must not spend the budget it just paid for.
+ * A poll that straddles the window boundary lands on the next window's key and
+ * is charged once more, which is the fixed window's normal behaviour: the query
+ * is genuinely being asked again in a new accounting period, and one slot of
+ * thirty is not worth a per-query timestamp log to avoid. A refused query is
+ * removed again, so the set never holds more than the budget and a refused
+ * query cannot be replayed as an "already admitted" one.
  */
 export interface SearchEnrichmentBudget {
   /**
@@ -70,11 +74,21 @@ export function createSearchEnrichmentBudget(
       // coalesce onto one guard key in the enrichment itself.
       const member = query.toLowerCase();
       try {
-        const added = await redis.sadd(key, member);
-        if (added === 0) return true; // already admitted in this window — free
-        const size = await redis.scard(key);
-        if (size === 1) await redis.expire(key, windowSeconds * 2);
-        if (size <= budget) return true;
+        // SCARD and SADD in one transaction, so the size this decision is made
+        // on is the size the member was added to. Read separately they can
+        // interleave: two concurrent DISTINCT queries at `budget - 1` both add
+        // before either counts, and the pair either over-admits (`budget + 1`
+        // fan-outs) or refuses one that was inside the budget.
+        const replies = await redis.multi().scard(key).sadd(key, member).exec();
+        const [countReply, addReply] = replies ?? [];
+        if (!countReply || !addReply) throw new Error('enrichment budget transaction aborted');
+        if (countReply[0]) throw countReply[0];
+        if (addReply[0]) throw addReply[0];
+
+        const sizeBefore = Number(countReply[1]);
+        if (Number(addReply[1]) === 0) return true; // already admitted in this window — free
+        if (sizeBefore === 0) await redis.expire(key, windowSeconds * 2);
+        if (sizeBefore + 1 <= budget) return true;
         await redis.srem(key, member);
         logger.debug({ userId, budget, windowSeconds }, 'search enrichment budget spent');
         return false;
