@@ -2095,6 +2095,7 @@
       },
       "perMonth": "prognostiziert / Monat",
       "perYear": "prognostiziert / Jahr",
+      "projectionUnresolved": "Ein prognostizierter Gesamtbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück. Die Termine unten sind davon nicht betroffen.",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
@@ -2761,6 +2762,7 @@
         "standingOrders": "Daueraufträge",
         "dividends": "Erwartete Dividenden"
       },
+      "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
       "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",

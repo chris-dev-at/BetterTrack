@@ -2095,6 +2095,7 @@
       },
       "perMonth": "projected / month",
       "perYear": "projected / year",
+      "projectionUnresolved": "We couldn't work out a projected total for this portfolio just now — part of the data it needs didn't come back. The dates below are unaffected.",
       "calendarTitle": "Upcoming ex-dividend dates",
       "exOn": "ex {{date}}",
       "payOn": "paid {{date}}",
@@ -2761,6 +2762,7 @@
         "standingOrders": "Standing orders",
         "dividends": "Projected dividends"
       },
+      "dividendsUnresolved": "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.",
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
       "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",

@@ -1594,17 +1594,24 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
   },
   {
     component: 'user/portfolio/PortfolioPage.tsx',
+    read: 'DividendIntelSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered", so an unresolved or failed read leaves the dividend block exactly as the two intel reads decide — there is no state of its own to draw, and the server stays the real boundary.',
+  },
+  {
+    component: 'user/portfolio/PortfolioPage.tsx',
     read: 'DividendIntelSection.calendar',
     states: ['loading', 'error'],
     reason:
-      'Binding P5 keeps the optional portfolio dividend block absent while capability is unresolved or unavailable, including request failure.',
+      'Binding P5 draws no calendar rows while this optional read is in flight or has failed; #1681 only lets the projection stand beside it, and neither read speaks for the other.',
   },
   {
     component: 'user/portfolio/PortfolioPage.tsx',
     read: 'DividendIntelSection.projection',
     states: ['loading', 'error'],
     reason:
-      'Binding P5 keeps the optional portfolio dividend block absent while capability is unresolved or unavailable, including request failure.',
+      'Binding P5 draws no projected total while this optional read is in flight or has failed. Only a resolved "available: false" — this portfolio could not be computed (#1616, #1681) — is explained in copy; an unsettled read says nothing about the portfolio and must not claim it did.',
   },
   {
     component: 'user/portfolio/PortfolioPage.tsx',
@@ -1780,6 +1787,13 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'This read decides whether the Drive-connections group EXISTS (an account with no vault has nothing to bind one to), so the group is deliberately absent while it is unresolved or failing rather than flashing a titled skeleton — and an error card at accounts that should never see the group would be worse than its absence. Once it resolves with a vault, DriveAccountsSection observes the very same query key and renders that read’s skeleton and load-error itself.',
     delegatedTo: 'DriveAccountsSection',
+  },
+  {
+    component: 'user/forecast/ProjectionSection.tsx',
+    read: 'ProjectionSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered", so an unresolved or failed read leaves the dividend factor gated on the projection read alone (#1681) — there is no state of its own to draw, and the server stays the real boundary.',
   },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
@@ -1995,7 +2009,7 @@ export type V5AsyncStateDebtLedger = Readonly<
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 211;
+export const V5_ASYNC_READ_SITE_BASELINE = 213;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
