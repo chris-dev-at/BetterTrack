@@ -72,6 +72,7 @@ import {
   isDeSell,
   portfolioHasDeRows,
   portfolioHasFiRows,
+  reportCostBasisStrategy,
   type DeRowView,
 } from './countryState';
 import {
@@ -1550,20 +1551,27 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
   /**
    * Automatic rows use the active regime's strategy in every year. Under the
-   * literal manual regime, stored DE/custom facts retain their original basis.
+   * literal manual regime, stored DE/FI/custom facts retain their original
+   * basis. The routing is the shared #1512 classifier
+   * (`reportCostBasisStrategy`), the same call the paranoid client makes —
+   * so a frozen FI sell now reads at the FIFO basis it was frozen under in
+   * manual mode too, instead of the moving average the hand-listed DE/custom
+   * branch fell through to.
    */
   function reportRealization(
     state: ReportState,
     t: TransactionRecord,
   ): SellRealizationEur | undefined {
-    if (state.liveRegime.kind !== 'manual' && isDerivableSell(t)) {
-      return state.liveStrategy === 'fifo'
-        ? state.deRealizations.get(t.id)
-        : state.realizations.get(t.id);
-    }
-    return isDeSell(t) || state.customFifoSellIds.has(t.id)
-      ? state.deRealizations.get(t.id)
-      : state.realizations.get(t.id);
+    const strategy = reportCostBasisStrategy(
+      t,
+      state.liveRegime,
+      t.taxMode === 'custom'
+        ? state.customFifoSellIds.has(t.id)
+          ? 'fifo'
+          : 'moving-average'
+        : null,
+    );
+    return strategy === 'fifo' ? state.deRealizations.get(t.id) : state.realizations.get(t.id);
   }
 
   /**

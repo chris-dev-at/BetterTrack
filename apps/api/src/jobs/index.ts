@@ -149,6 +149,7 @@ export {
   USAGE_ROLLUP_TZ,
   type UsageRollupJobDeps,
   createEarningsReminderJob,
+  earningsNotifyGate,
   EARNINGS_REMINDER_SCHEDULER_ID,
   EARNINGS_REMINDER_CRON,
   EARNINGS_REMINDER_TZ,

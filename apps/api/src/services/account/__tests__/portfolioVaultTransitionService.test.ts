@@ -14,6 +14,8 @@ import {
   serializePortfolioVaultMoveOutProofTranscript,
   serializeVaultRetirementVersionSet,
   VAULT_CONTENT_CIPHER,
+  VAULT_ENTITY_ROW_SCHEMAS,
+  type PortfolioVaultImportCaptureResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveOutRequest,
   type Quote,
@@ -3718,4 +3720,400 @@ describe('portfolio vault move-out strict restore', () => {
       ).toEqual([]);
     },
   );
+});
+
+describe('portfolio vault import-batch capture read (#1529 — lifting the ruled refusal)', () => {
+  const RICH_BATCH_ID = id(60);
+  const RICH_ROW_IDS = [id(61), id(62), id(63)] as const;
+  const CANDIDATE_ASSET_ID = id(64);
+  const RULE_TAG_ID = id(65);
+  const richAt = new Date('2026-08-19T07:30:00.000Z');
+
+  /** A second, fully populated batch beside the minimal seeded one. */
+  async function seedRichBatch(): Promise<void> {
+    await h.db.insert(importBatches).values({
+      id: RICH_BATCH_ID,
+      ownerId: user.id,
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      brokerId: 'generic',
+      filename: 'rich.csv',
+      status: 'applied',
+      cashSourceId: null,
+      createdAt: richAt,
+      appliedAt: TEST_VECTOR.at,
+      understanding: {
+        mappings: [
+          {
+            header: 'Datum',
+            field: 'date',
+            confidence: 0.97,
+            reason: 'header match',
+            needsReview: false,
+            alternative: { header: 'Buchungstag', confidence: 0.4 },
+            source: 'ai',
+          },
+        ],
+        unmappedHeaders: ['Notiz'],
+        delimiter: ';',
+        encoding: 'utf-8',
+        dateLocale: 'de-AT',
+        numberLocale: 'de-AT',
+        dateLocaleAmbiguous: true,
+      },
+    });
+    await h.db.insert(importRows).values([
+      {
+        id: RICH_ROW_IDS[0],
+        batchId: RICH_BATCH_ID,
+        rowIndex: 1,
+        raw: '20.08.2026;SAP;Kauf;0,12345678;123,456789',
+        kind: 'buy',
+        flag: 'mapped',
+        message: null,
+        executedAt: TEST_VECTOR.buyAt,
+        isin: 'DE0007164600',
+        symbol: 'SAP',
+        name: 'SAP SE',
+        quantity: '0.12345678',
+        price: '123.456789',
+        fee: '0.000001',
+        amountEur: null,
+        currency: 'EUR',
+        note: 'TEST VECTOR exact decimals',
+        assetId: TEST_VECTOR.assetId,
+        contentHash: 'rich-row-1',
+        result: 'applied',
+        resultMessage: null,
+        candidates: null,
+        ruleTagIds: null,
+        resolvedBy: 'user',
+        kindUndecided: false,
+      },
+      {
+        id: RICH_ROW_IDS[1],
+        batchId: RICH_BATCH_ID,
+        rowIndex: 2,
+        raw: '21.08.2026;UNKNOWN;Kauf;1;2',
+        kind: 'buy',
+        flag: 'unmapped',
+        message: 'No exact identity match',
+        executedAt: TEST_VECTOR.at,
+        isin: null,
+        symbol: 'UNKNOWN',
+        name: null,
+        quantity: '1.00000000',
+        price: '2.000000',
+        fee: null,
+        amountEur: null,
+        currency: 'EUR',
+        note: null,
+        assetId: null,
+        contentHash: 'rich-row-2',
+        result: 'skipped_unmapped',
+        resultMessage: 'unresolved',
+        candidates: [
+          {
+            id: CANDIDATE_ASSET_ID,
+            symbol: 'UNK.DE',
+            name: 'Unknown SE',
+            currency: 'EUR',
+            exchange: 'XETRA',
+            type: 'stock',
+          },
+        ],
+        ruleTagIds: null,
+        resolvedBy: null,
+        kindUndecided: false,
+      },
+      {
+        id: RICH_ROW_IDS[2],
+        batchId: RICH_BATCH_ID,
+        rowIndex: 3,
+        raw: '22.08.2026;;Einzahlung;;-0,000001',
+        kind: 'deposit',
+        flag: 'mapped',
+        message: null,
+        executedAt: TEST_VECTOR.at,
+        isin: null,
+        symbol: null,
+        name: null,
+        quantity: null,
+        price: null,
+        fee: null,
+        amountEur: '-0.000001',
+        currency: 'EUR',
+        note: 'memo',
+        assetId: null,
+        contentHash: 'rich-row-3',
+        result: 'applied',
+        resultMessage: null,
+        candidates: null,
+        ruleTagIds: [RULE_TAG_ID],
+        resolvedBy: null,
+        kindUndecided: true,
+      },
+    ]);
+  }
+
+  async function readAll(limit?: number) {
+    const batches: PortfolioVaultImportCaptureResponse['batches'][] = [];
+    const rows: PortfolioVaultImportCaptureResponse['rows'] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await h.ctx.portfolioVaultTransitions.captureImportBatches(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        { ...(cursor === undefined ? {} : { cursor }), ...(limit === undefined ? {} : { limit }) },
+      );
+      pages += 1;
+      batches.push(page.batches);
+      rows.push(...page.rows);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    return { batches, rows, pages };
+  }
+
+  it('serves every batch and staging row losslessly, in vault-document row shape', async () => {
+    await seedRichBatch();
+    const page = await h.ctx.portfolioVaultTransitions.captureImportBatches(
+      user.id,
+      TEST_VECTOR.targetPortfolioId,
+      {},
+    );
+    expect(page.nextCursor).toBeNull();
+    // Batches by (createdAt, id): the rich batch was created earlier. Rows by
+    // the (batchId, rowIndex, id) keyset the cursor pages on: the seeded
+    // target batch id sorts before the rich batch id.
+    expect(page.batches.map(({ id }) => id)).toEqual([RICH_BATCH_ID, TEST_VECTOR.targetBatchId]);
+    expect(page.rows.map(({ id }) => id)).toEqual([TEST_VECTOR.targetImportRowId, ...RICH_ROW_IDS]);
+    // Every row is its own full-column projection: it parses through the
+    // document contract WITHOUT a single field degrading (the `.catch(null)`
+    // tolerance never fires on what the server serves).
+    for (const batch of page.batches) {
+      expect(VAULT_ENTITY_ROW_SCHEMAS.importBatch.parse(batch.data)).toEqual(batch.data);
+    }
+    for (const row of page.rows) {
+      expect(VAULT_ENTITY_ROW_SCHEMAS.importRow.parse(row.data)).toEqual(row.data);
+    }
+    const rich = page.batches[0]!.data;
+    expect(rich).toMatchObject({
+      ownerId: user.id,
+      portfolioId: TEST_VECTOR.targetPortfolioId,
+      brokerId: 'generic',
+      filename: 'rich.csv',
+      status: 'applied',
+      cashSourceId: null,
+      createdAt: richAt.toISOString(),
+      appliedAt: TEST_VECTOR.at.toISOString(),
+    });
+    expect(rich.understanding).toEqual({
+      mappings: [
+        {
+          header: 'Datum',
+          field: 'date',
+          confidence: 0.97,
+          reason: 'header match',
+          needsReview: false,
+          alternative: { header: 'Buchungstag', confidence: 0.4 },
+          source: 'ai',
+        },
+      ],
+      unmappedHeaders: ['Notiz'],
+      delimiter: ';',
+      encoding: 'utf-8',
+      dateLocale: 'de-AT',
+      numberLocale: 'de-AT',
+      dateLocaleAmbiguous: true,
+    });
+    const [, exact, unresolved, cash] = page.rows.map(({ data }) => data);
+    expect(exact).toMatchObject({
+      quantity: '0.12345678',
+      price: '123.456789',
+      fee: '0.000001',
+      amountEur: null,
+      executedAt: TEST_VECTOR.buyAt.toISOString(),
+      assetId: TEST_VECTOR.assetId,
+      resolvedBy: 'user',
+      candidates: null,
+      ruleTagIds: null,
+      kindUndecided: false,
+    });
+    expect(unresolved).toMatchObject({
+      flag: 'unmapped',
+      result: 'skipped_unmapped',
+      resultMessage: 'unresolved',
+      candidates: [
+        {
+          id: CANDIDATE_ASSET_ID,
+          symbol: 'UNK.DE',
+          name: 'Unknown SE',
+          currency: 'EUR',
+          exchange: 'XETRA',
+          type: 'stock',
+        },
+      ],
+      resolvedBy: null,
+    });
+    expect(cash).toMatchObject({
+      kind: 'deposit',
+      amountEur: '-0.000001',
+      ruleTagIds: [RULE_TAG_ID],
+      kindUndecided: true,
+    });
+    // Exact decimals never pass through Number: a float would have printed 1e-6.
+    expect(JSON.stringify(page)).not.toContain('1e-6');
+  });
+
+  it('pages rows by an opaque cursor while the complete batch list rides on every page', async () => {
+    await seedRichBatch();
+    const whole = await h.ctx.portfolioVaultTransitions.captureImportBatches(
+      user.id,
+      TEST_VECTOR.targetPortfolioId,
+      {},
+    );
+    const paged = await readAll(2);
+    expect(paged.pages).toBe(2);
+    expect(paged.rows).toEqual(whole.rows);
+    for (const batches of paged.batches) expect(batches).toEqual(whole.batches);
+    const single = await readAll(1);
+    expect(single.pages).toBe(4);
+    expect(single.rows).toEqual(whole.rows);
+    // A cursor that names no row is not an error: the page after the last row is empty.
+    const beyond = await h.ctx.portfolioVaultTransitions.captureImportBatches(
+      user.id,
+      TEST_VECTOR.targetPortfolioId,
+      { cursor: `${RICH_BATCH_ID}:999999999:${id(9_999)}` },
+    );
+    expect(beyond.rows).toEqual([]);
+    expect(beyond.nextCursor).toBeNull();
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(user.id, TEST_VECTOR.targetPortfolioId, {
+        cursor: 'not-a-cursor',
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
+    // A row index past int4 is refused as a bad cursor, never cast into a 500 (review F3).
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(user.id, TEST_VECTOR.targetPortfolioId, {
+        cursor: `${RICH_BATCH_ID}:9999999999:${id(9_999)}`,
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
+  });
+
+  it('refuses a stored row the strict contract cannot serve losslessly with a TYPED 409, never a client 400 (review F2)', async () => {
+    await seedRichBatch();
+    // jsonb happily holds six candidates; the contract allows five. The read
+    // must answer with its own typed refusal — a bare ZodError would have been
+    // mapped to VALIDATION_ERROR "Invalid request." by the request validator.
+    await h.db
+      .update(importRows)
+      .set({
+        candidates: Array.from({ length: 6 }, (_, index) => ({
+          id: id(70 + index),
+          symbol: `C${index}`,
+          name: `Candidate ${index}`,
+          currency: 'EUR',
+          exchange: null,
+          type: 'stock' as const,
+        })),
+      })
+      .where(eq(importRows.id, RICH_ROW_IDS[1]));
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'CAPTURE_UNSERVABLE' });
+    expect(PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS.CAPTURE_UNSERVABLE).toEqual({
+      status: 409,
+      code: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE',
+    });
+  });
+
+  it('is owner-scoped, portfolio-scoped, and refuses a vaulted portfolio (its rows are purged)', async () => {
+    await seedRichBatch();
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(
+        viewer.id,
+        TEST_VECTOR.targetPortfolioId,
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(
+        user.id,
+        TEST_VECTOR.foreignPortfolioId,
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const sibling = await h.ctx.portfolioVaultTransitions.captureImportBatches(
+      user.id,
+      TEST_VECTOR.siblingPortfolioId,
+      {},
+    );
+    expect(sibling.batches.map(({ id }) => id)).toEqual([TEST_VECTOR.siblingBatchId]);
+    expect(sibling.rows).toEqual([]);
+
+    await moveTargetIn();
+    await expect(
+      h.ctx.portfolioVaultTransitions.captureImportBatches(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        {},
+      ),
+    ).rejects.toMatchObject({ code: 'ALREADY_VAULTED' });
+    expect(PORTFOLIO_VAULT_TRANSITION_HTTP_ERRORS.ALREADY_VAULTED.status).toBe(409);
+  });
+
+  it('ROUND TRIP: capture read → move-in purge → move-out restore → capture read is byte-identical', async () => {
+    await seedRichBatch();
+    const before = await readAll(2);
+    const capturedBatches = before.batches[0]!;
+    const capturedRows = before.rows;
+    expect(capturedBatches).toHaveLength(2);
+    expect(capturedRows).toHaveLength(4);
+
+    // The strict restore graph carries the batches/rows EXACTLY as read —
+    // the client capture does nothing more than wrap the served data in the
+    // entity envelope, so this is the server-side proof of the §9 table row
+    // "historical import batches ride the doc".
+    const base = restoreDocument();
+    const document: VaultStrictDocumentV1 = {
+      ...base,
+      entities: [
+        ...base.entities.filter(
+          (entity) => entity.kind !== 'importBatch' && entity.kind !== 'importRow',
+        ),
+        ...capturedBatches.map((batch) => strictEntity(batch.id, 'importBatch', batch.data)),
+        ...capturedRows.map((row) => strictEntity(row.id, 'importRow', row.data)),
+      ],
+    };
+
+    await moveTargetIn();
+    // The purge is real: nothing of the batches survives server-side.
+    expect(
+      await h.db
+        .select({ value: count() })
+        .from(importBatches)
+        .where(eq(importBatches.portfolioId, TEST_VECTOR.targetPortfolioId)),
+    ).toEqual([{ value: 0 }]);
+    await expect(
+      h.ctx.portfolioVaultTransitions.moveOut(
+        user.id,
+        TEST_VECTOR.targetPortfolioId,
+        moveOutRequest(document),
+      ),
+    ).resolves.toMatchObject({ moveOutId: TEST_VECTOR.moveOutId, idempotent: false });
+
+    const after = await readAll(2);
+    expect(JSON.stringify(after.batches[0])).toBe(JSON.stringify(capturedBatches));
+    expect(JSON.stringify(after.rows)).toBe(JSON.stringify(capturedRows));
+    // And the digest the client CAS binds to covers the restored rows again.
+    const { importBatchCount } = await h.ctx.portfolioVaultTransitions.revision(
+      user.id,
+      TEST_VECTOR.targetPortfolioId,
+    );
+    expect(importBatchCount).toBe(2);
+  });
 });

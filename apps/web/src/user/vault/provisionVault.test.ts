@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
   clearProof: vi.fn(),
 }));
 
-vi.mock('../../lib/vaultApi', () => ({
+vi.mock('../../lib/vaultApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/vaultApi')>()),
   createVault: mocks.createVault,
   createVaultDocument: mocks.createVaultDocument,
   readVaultHeaderDocument: mocks.readVaultHeaderDocument,

@@ -14,13 +14,17 @@ import {
   serializePortfolioVaultRestoreDocument,
   serializeVaultRetirementVersionSet,
   vaultStrictDocumentV1Schema,
+  type CustomAssetVaultSnapshot,
   type PerVaultMediaDocAttestation,
   type PerVaultMediaTransitionRequest,
   type PortfolioSummary,
+  type PortfolioVaultImportCaptureResponse,
   type VaultCommonDoc,
   type VaultConfig,
   type VaultDocEnvelopeHeader,
+  type VaultEntity,
   type VaultHeaderDoc,
+  type VaultPortfolioDoc,
 } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
@@ -53,6 +57,7 @@ const ASSET_ID = '018f0000-0000-7000-8000-0000000000b5';
 const SOURCE_ID = '018f0000-0000-7000-8000-0000000000b6';
 const MOVEMENT_ID = '018f0000-0000-7000-8000-0000000000b7';
 const TRANSACTION_ID = '018f0000-0000-7000-8000-0000000000b8';
+const DIVIDEND_ID = '018f0000-0000-7000-8000-0000000000bd';
 const KEY_ID = '018f0000-0000-7000-8000-0000000000b9';
 const REVISION = 'portfolio_move_capture_revision_vector';
 /** Typed into rows below; must NEVER appear in any byte written to the store. */
@@ -114,6 +119,167 @@ const MARKET_ASSET = {
   smoothing: null,
 };
 
+// ── #1529 lossless-capture fixtures ─────────────────────────────────────────
+const BATCH_ID = '018f0000-0000-7000-8000-0000000000c5';
+const ROW_IDS = [
+  '018f0000-0000-7000-8000-0000000000c6',
+  '018f0000-0000-7000-8000-0000000000c7',
+] as const;
+const CANDIDATE_ASSET_ID = '018f0000-0000-7000-8000-0000000000c8';
+const MANUAL_ASSET_ID = '018f0000-0000-7000-8000-0000000000c9';
+const MANUAL_TRANSACTION_ID = '018f0000-0000-7000-8000-0000000000ca';
+
+function importFixture(): {
+  batches: PortfolioVaultImportCaptureResponse['batches'];
+  rows: PortfolioVaultImportCaptureResponse['rows'];
+} {
+  return {
+    batches: [
+      {
+        id: BATCH_ID,
+        data: {
+          ownerId: ACCOUNT_ID,
+          portfolioId: PORTFOLIO_ID,
+          brokerId: 'generic',
+          filename: `${CLEARTEXT_CANARY}.csv`,
+          status: 'applied',
+          cashSourceId: SOURCE_ID,
+          createdAt: '2026-07-30T10:00:00.000Z',
+          appliedAt: '2026-07-30T10:05:00.000Z',
+          understanding: {
+            mappings: [
+              {
+                header: 'Datum',
+                field: 'date',
+                confidence: 0.97,
+                reason: 'header match',
+                needsReview: false,
+                alternative: { header: 'Buchungstag', confidence: 0.4 },
+                source: 'ai',
+              },
+            ],
+            unmappedHeaders: [CLEARTEXT_CANARY],
+            delimiter: ';',
+            encoding: 'utf-8',
+            dateLocale: 'de-AT',
+            numberLocale: 'de-AT',
+            dateLocaleAmbiguous: true,
+          },
+        },
+      },
+    ],
+    rows: [
+      {
+        id: ROW_IDS[0],
+        data: {
+          batchId: BATCH_ID,
+          rowIndex: 1,
+          raw: `01.08.2026;AAPL;Kauf;2;101,5;${CLEARTEXT_CANARY}`,
+          kind: 'buy',
+          flag: 'mapped',
+          message: null,
+          executedAt: '2026-08-01T10:00:00.000Z',
+          isin: 'US0378331005',
+          symbol: 'AAPL',
+          name: 'Apple Inc.',
+          quantity: '2.00000000',
+          price: '101.500000',
+          fee: '1.000000',
+          amountEur: null,
+          currency: 'USD',
+          note: CLEARTEXT_CANARY,
+          assetId: ASSET_ID,
+          contentHash: 'row-1-hash',
+          result: 'applied',
+          resultMessage: null,
+          candidates: null,
+          ruleTagIds: null,
+          resolvedBy: 'user',
+          kindUndecided: false,
+        },
+      },
+      {
+        id: ROW_IDS[1],
+        data: {
+          batchId: BATCH_ID,
+          rowIndex: 2,
+          raw: '02.08.2026;APLE?;Kauf;0,12345678;99,999999',
+          kind: 'buy',
+          flag: 'unmapped',
+          message: 'No exact identity match',
+          executedAt: '2026-08-02T10:00:00.000Z',
+          isin: null,
+          symbol: 'APLE?',
+          name: null,
+          quantity: '0.12345678',
+          price: '99.999999',
+          fee: null,
+          amountEur: null,
+          currency: 'USD',
+          note: null,
+          assetId: null,
+          contentHash: 'row-2-hash',
+          result: 'skipped_unmapped',
+          resultMessage: 'unresolved',
+          candidates: [
+            {
+              id: CANDIDATE_ASSET_ID,
+              symbol: 'APLE',
+              name: 'Apple Hospitality REIT',
+              currency: 'USD',
+              exchange: 'NYSE',
+              type: 'stock',
+            },
+          ],
+          ruleTagIds: null,
+          resolvedBy: null,
+          kindUndecided: true,
+        },
+      },
+    ],
+  };
+}
+
+function manualSnapshotFixture(): CustomAssetVaultSnapshot {
+  return {
+    id: MANUAL_ASSET_ID,
+    asset: {
+      providerId: 'manual',
+      providerRef: MANUAL_ASSET_ID,
+      ownerId: ACCOUNT_ID,
+      type: 'custom',
+      symbol: 'HOUSE',
+      name: `House ${CLEARTEXT_CANARY}`,
+      exchange: null,
+      currency: 'EUR',
+      // Exactly what jsonb holds — more than the rounded DTO ever showed.
+      meta: {
+        category: 'property',
+        smoothing: false,
+        valuation: { source: 'owner', nested: [1, null] },
+      },
+      searchText: `HOUSE House ${CLEARTEXT_CANARY}`,
+    },
+    values: [
+      // Beyond Number precision on purpose: the seam must never float.
+      { assetId: MANUAL_ASSET_ID, date: '2026-07-01', close: '98765432109876.654321' },
+      { assetId: MANUAL_ASSET_ID, date: '2026-07-15', close: '0.000001' },
+    ],
+  };
+}
+
+const MANUAL_ASSET_DTO = {
+  id: MANUAL_ASSET_ID,
+  symbol: 'HOUSE',
+  name: `House ${CLEARTEXT_CANARY}`,
+  exchange: null,
+  currency: 'EUR',
+  type: 'custom',
+  isCustom: true,
+  category: 'property',
+  smoothing: false,
+};
+
 function transactionFixture(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: TRANSACTION_ID,
@@ -128,6 +294,64 @@ function transactionFixture(overrides: Partial<Record<string, unknown>> = {}) {
     uncoveredEntryPrice: null,
     source: 'manual',
     asset: MARKET_ASSET,
+    ...overrides,
+  };
+}
+
+/** The one settled year the harness reports when `state.taxYear` is set. */
+const TAX_YEAR = 2026;
+
+function sellFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return transactionFixture({ side: 'sell', ...overrides });
+}
+
+/** One `taxYearSellSchema` row — the ONLY endpoint stating a sell's frozen facts. */
+function taxYearSellFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    transactionId: TRANSACTION_ID,
+    executedAt: '2026-08-01T10:00:00.000Z',
+    quantity: 2,
+    proceedsEur: 203,
+    costBasisEur: 200,
+    realizedPnlEur: 3,
+    taxMode: 'none',
+    taxAmountEur: null,
+    taxCountry: null,
+    taxParams: null,
+    ...overrides,
+  };
+}
+
+function dividendFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: DIVIDEND_ID,
+    portfolioId: PORTFOLIO_ID,
+    assetId: ASSET_ID,
+    cashSourceId: SOURCE_ID,
+    grossAmountEur: 12.5,
+    executedAt: '2026-08-02T10:00:00.000Z',
+    note: null,
+    taxMode: 'none',
+    taxCountry: null,
+    taxAmountEur: null,
+    taxParams: null,
+    source: 'manual',
+    createdAt: '2026-08-02T10:00:00.000Z',
+    asset: MARKET_ASSET,
+    ...overrides,
+  };
+}
+
+/** The year-report twin of {@link dividendFixture}; the two must agree. */
+function taxYearDividendFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    dividendId: DIVIDEND_ID,
+    executedAt: '2026-08-02T10:00:00.000Z',
+    grossAmountEur: 12.5,
+    taxMode: 'none',
+    taxAmountEur: null,
+    taxCountry: null,
+    taxParams: null,
     ...overrides,
   };
 }
@@ -151,13 +375,27 @@ interface Harness {
     /** FIFO of settled re-reads; the last entry answers every further read. */
     settledRevisions: Array<{ portfolioDataRevision: string; importBatchCount: number }>;
     transactions: ReturnType<typeof transactionFixture>[];
+    dividends: ReturnType<typeof dividendFixture>[];
+    /**
+     * The frozen facts the year drill-down states. `null` = no settled year at
+     * all, so `getTaxYearReport` must never be called (the default shape).
+     */
+    taxYear: {
+      sells: ReturnType<typeof taxYearSellFixture>[];
+      dividends: ReturnType<typeof taxYearDividendFixture>[];
+    } | null;
     lifecycleGeneration: number;
+    /** #1529: what the lossless import-capture read serves (all batches; rows paged). */
+    importBatches: PortfolioVaultImportCaptureResponse['batches'];
+    importRows: PortfolioVaultImportCaptureResponse['rows'];
+    /** #1529: the owner's manual assets the snapshot seam holds; anything else is absent. */
+    manualAssets: Map<string, CustomAssetVaultSnapshot>;
   };
 }
 
 async function seedVaultDocuments(
   harness: Harness,
-  options: { memberPortfolioDoc?: boolean } = {},
+  options: { memberPortfolioDoc?: boolean; commonEntities?: VaultCommonDoc['entities'] } = {},
 ): Promise<void> {
   const accountBinding = await deriveAccountBinding(ACCOUNT_ID);
   const clientSecurity = {
@@ -175,7 +413,7 @@ async function seedVaultDocuments(
   };
   const commonDocument: VaultCommonDoc = {
     schemaVersion: VAULT_DOC_SCHEMA_VERSION,
-    entities: {},
+    entities: options.commonEntities ?? {},
     mergeLog: [],
     mirrorProvenance: [],
     clientSecurity,
@@ -222,7 +460,12 @@ function createHarness(): Harness {
     revision: { portfolioDataRevision: REVISION, importBatchCount: 0 },
     settledRevisions: [{ portfolioDataRevision: REVISION, importBatchCount: 0 }],
     transactions: [transactionFixture()],
+    dividends: [],
+    taxYear: null,
     lifecycleGeneration: 1,
+    importBatches: [],
+    importRows: [],
+    manualAssets: new Map(),
   };
 
   const notCalled = (name: string) => async () => {
@@ -317,14 +560,29 @@ function createHarness(): Harness {
       mediaAttestedAt = null; // any live write voids the full-set proof (E1)
     }) as PortfolioMoveCaptureApi['writeVaultDocument'],
     listDividends: (async () => ({
-      dividends: [],
+      dividends: state.dividends,
     })) as unknown as PortfolioMoveCaptureApi['listDividends'],
     getTaxYearReports: (async () => ({
-      years: [],
+      years: state.taxYear === null ? [] : [{ year: TAX_YEAR }],
     })) as unknown as PortfolioMoveCaptureApi['getTaxYearReports'],
-    getTaxYearReport: notCalled(
-      'getTaxYearReport',
-    ) as unknown as PortfolioMoveCaptureApi['getTaxYearReport'],
+    getTaxYearReport: (async () => {
+      if (state.taxYear === null)
+        throw new Error('TEST VECTOR: getTaxYearReport must not be called');
+      return {
+        year: TAX_YEAR,
+        summary: {},
+        positions: [
+          {
+            asset: MARKET_ASSET,
+            realizedPnlEur: 0,
+            dividendsGrossEur: 0,
+            taxEur: 0,
+            sells: state.taxYear.sells,
+            dividends: state.taxYear.dividends,
+          },
+        ],
+      };
+    }) as unknown as PortfolioMoveCaptureApi['getTaxYearReport'],
     listStandingOrderRuns: (async () => ({
       runs: [],
     })) as unknown as PortfolioMoveCaptureApi['listStandingOrderRuns'],
@@ -337,6 +595,41 @@ function createHarness(): Harness {
     getParanoidForkProvenance: (async () => ({
       provenance: [],
     })) as PortfolioMoveCaptureApi['getParanoidForkProvenance'],
+    // #1529 capability seams. The harness mirrors the server: every batch on
+    // every page, rows paged by the (batchId, rowIndex, id) keyset cursor.
+    listPortfolioVaultImportBatches: (async (_portfolioId: string, query = {}) => {
+      const sorted = [...state.importRows].sort(
+        (left, right) =>
+          left.data.batchId.localeCompare(right.data.batchId) ||
+          left.data.rowIndex - right.data.rowIndex ||
+          left.id.localeCompare(right.id),
+      );
+      const start =
+        query.cursor === undefined
+          ? 0
+          : sorted.findIndex(
+              (row) => `${row.data.batchId}:${row.data.rowIndex}:${row.id}` === query.cursor,
+            ) + 1;
+      const limit = query.limit ?? 1; // one row per page: paging is exercised on every capture
+      const page = sorted.slice(start, start + limit);
+      const last = page.at(-1);
+      const hasMore = start + limit < sorted.length;
+      return {
+        batches: structuredClone(state.importBatches),
+        rows: structuredClone(page),
+        nextCursor:
+          hasMore && last ? `${last.data.batchId}:${last.data.rowIndex}:${last.id}` : null,
+      };
+    }) as PortfolioMoveCaptureApi['listPortfolioVaultImportBatches'],
+    getCustomAssetVaultSnapshots: (async (ids: readonly string[]) => {
+      const unique = [...new Set(ids)].sort();
+      return {
+        present: unique
+          .filter((id) => state.manualAssets.has(id))
+          .map((id) => structuredClone(state.manualAssets.get(id)!)),
+        absentIds: unique.filter((id) => !state.manualAssets.has(id)),
+      };
+    }) as PortfolioMoveCaptureApi['getCustomAssetVaultSnapshots'],
   };
 
   const keys: PortfolioVaultKeystore = {
@@ -591,11 +884,15 @@ describe('captureMoveIn', () => {
     );
   });
 
-  it('refuses import history before any ciphertext write', async () => {
+  it('refuses import history before any ciphertext write when the lossless read seam is absent (#1529: lifted by capability, not deleted)', async () => {
+    harness.api.listPortfolioVaultImportBatches = undefined;
     harness.state.settledRevisions = [{ portfolioDataRevision: REVISION, importBatchCount: 2 }];
+    // Byte-identical to the #1528 refusal: code AND message (review F4).
     await expect(runMoveIn(harness)).rejects.toMatchObject({
       name: 'PortfolioMoveCaptureError',
       code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+      message: 'This version cannot capture the portfolio’s historical import batches losslessly.',
+      retryable: false,
     });
     expect(harness.writes).toEqual([]);
     expect(harness.attestations).toEqual([]);
@@ -628,15 +925,19 @@ describe('captureMoveIn', () => {
     expect(harness.writes).toEqual([]);
   });
 
-  it('refuses rows imported from a broker (defense in depth under the count gate)', async () => {
+  it('refuses rows imported from a broker while the read seam is absent (defense in depth under the count gate)', async () => {
+    harness.api.listPortfolioVaultImportBatches = undefined;
     harness.state.transactions = [transactionFixture({ source: 'import:csv' })];
     await expect(runMoveIn(harness)).rejects.toMatchObject({
       code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+      message: `This version cannot capture imported rows losslessly (transaction ${TRANSACTION_ID}).`,
+      retryable: false,
     });
     expect(harness.writes).toEqual([]);
   });
 
-  it('refuses owner-manual assets until an exact-snapshot seam exists', async () => {
+  it('refuses owner-manual assets while the exact-snapshot seam is absent (#1529: lifted by capability, not deleted)', async () => {
+    harness.api.getCustomAssetVaultSnapshots = undefined;
     harness.state.transactions = [
       transactionFixture({
         asset: { ...MARKET_ASSET, isCustom: true, category: 'other', smoothing: false },
@@ -644,9 +945,90 @@ describe('captureMoveIn', () => {
     ];
     await expect(runMoveIn(harness)).rejects.toMatchObject({
       code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+      message: `This version cannot capture custom asset ${ASSET_ID} with exact values.`,
+      retryable: false,
     });
     expect(harness.writes).toEqual([]);
   });
+
+  // #1635: legacy V3-P4 rows freeze `country_specific` with NO country
+  // (`drizzle/0021_tax_engine.sql` shipped the column without a backfill). The
+  // server settles them as AT; the vault contract has no such fallback, so the
+  // capture must refuse them by NAME with its own typed code — not the untyped
+  // `Error` the frozen-fact assertion used to raise.
+  describe.each([
+    {
+      label: 'a sell whose year report states the legacy shape',
+      arrange: (target: Harness) => {
+        target.state.transactions = [sellFixture()];
+        target.state.taxYear = {
+          sells: [taxYearSellFixture({ taxMode: 'country_specific', taxCountry: null })],
+          dividends: [],
+        };
+      },
+      named: `sell ${TRANSACTION_ID}`,
+    },
+    {
+      label: 'a dividend carrying the legacy shape on both of its reads',
+      arrange: (target: Harness) => {
+        target.state.dividends = [dividendFixture({ taxMode: 'country_specific' })];
+        target.state.taxYear = {
+          sells: [],
+          dividends: [taxYearDividendFixture({ taxMode: 'country_specific', taxCountry: null })],
+        };
+      },
+      named: `dividend ${DIVIDEND_ID}`,
+    },
+  ])('legacy country-specific row with no frozen country: $label', ({ arrange, named }) => {
+    it('refuses with the typed code, names the row, and writes nothing', async () => {
+      arrange(harness);
+      await expect(runMoveIn(harness)).rejects.toMatchObject({
+        name: 'PortfolioMoveCaptureError',
+        code: 'VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED',
+        // Needs the `tax_country = 'AT'` backfill, so a retry cannot help.
+        retryable: false,
+        message: expect.stringContaining(named) as unknown as string,
+      });
+      expect(harness.writes).toEqual([]);
+      expect(harness.attestations).toEqual([]);
+    });
+  });
+
+  it('names every offending row, not just the one the loop reached first', async () => {
+    harness.state.transactions = [sellFixture()];
+    harness.state.dividends = [dividendFixture({ taxMode: 'country_specific' })];
+    harness.state.taxYear = {
+      sells: [taxYearSellFixture({ taxMode: 'country_specific', taxCountry: null })],
+      dividends: [taxYearDividendFixture({ taxMode: 'country_specific', taxCountry: null })],
+    };
+    const refusal = await runMoveIn(harness).then(
+      () => null,
+      (cause: unknown) => cause as Error & { code: string },
+    );
+    expect(refusal?.code).toBe('VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED');
+    expect(refusal?.message).toContain(`sell ${TRANSACTION_ID}`);
+    expect(refusal?.message).toContain(`dividend ${DIVIDEND_ID}`);
+    expect(harness.writes).toEqual([]);
+  });
+
+  // Negative space: `taxCountry === null` is the CORRECT frozen shape in every
+  // mode except `country_specific`. The refusal must not touch those rows.
+  it.each([['none'], ['manual_per_trade']])(
+    'leaves a %s row with a null frozen country alone',
+    async (taxMode) => {
+      harness.state.transactions = [sellFixture()];
+      harness.state.dividends = [dividendFixture({ taxMode })];
+      harness.state.taxYear = {
+        sells: [taxYearSellFixture({ taxMode, taxCountry: null })],
+        dividends: [taxYearDividendFixture({ taxMode, taxCountry: null })],
+      };
+      await expect(runMoveIn(harness)).resolves.toEqual({
+        docVersion: 1,
+        portfolioDataRevision: REVISION,
+      });
+      expect(harness.writes).toEqual([PORTFOLIO_ID, HEADER_DOC_ID, COMMON_DOC_ID]);
+    },
+  );
 
   it('WEDGE-PROBE (#1528 F1): a refused E4 commit after a completed capture does not wedge the vault — the retry re-captures end to end', async () => {
     // The reviewer's exact interleaving: capture → refused commit → retry.
@@ -1003,3 +1385,360 @@ function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
   }
   return false;
 }
+
+/**
+ * #1529 — the two ruled move-capture refusals (#1528, §16 2026-08-28) lift
+ * behind the lossless read seams. Every test here proves a loss class the old
+ * refusal existed for is now carried instead: served bytes in, identical
+ * bytes out, or a typed refusal before any ciphertext write.
+ */
+describe('lossless capture (#1529)', () => {
+  async function decryptDoc<T>(docId: string, docKind: 'portfolio' | 'common'): Promise<T> {
+    const stored = harness.docs.get(docId)!;
+    const accountBinding = await deriveAccountBinding(ACCOUNT_ID);
+    const opened = await decryptVaultDoc({
+      envelope: stored.envelope,
+      contentKey: CONTENT_KEY,
+      expected: { vaultId: VAULT_ID, docId, docKind, accountBinding, keyId: KEY_ID },
+    });
+    return JSON.parse(new TextDecoder().decode(opened.plaintext)) as T;
+  }
+  const liveRows = (entities: readonly VaultEntity[] | undefined) =>
+    (entities ?? []).filter((entity) => entity.deletedAt === null);
+
+  function withImportHistory(): void {
+    const fixture = importFixture();
+    harness.state.importBatches = fixture.batches;
+    harness.state.importRows = fixture.rows;
+    harness.state.settledRevisions = [{ portfolioDataRevision: REVISION, importBatchCount: 1 }];
+    harness.state.transactions = [transactionFixture({ source: 'import:generic' })];
+  }
+
+  function withManualAsset(): void {
+    harness.state.manualAssets.set(MANUAL_ASSET_ID, manualSnapshotFixture());
+    harness.state.transactions = [
+      ...harness.state.transactions,
+      transactionFixture({
+        id: MANUAL_TRANSACTION_ID,
+        assetId: MANUAL_ASSET_ID,
+        asset: MANUAL_ASSET_DTO,
+        quantity: 1,
+        price: 250000,
+        fee: 0,
+        executedAt: '2026-07-02T10:00:00.000Z',
+      }),
+    ];
+  }
+
+  it('captures historical import batches and staging rows exactly into the portfolio document (the refusal lifts)', async () => {
+    withImportHistory();
+    await expect(runMoveIn(harness)).resolves.toEqual({
+      docVersion: 1,
+      portfolioDataRevision: REVISION,
+    });
+    expect(harness.writes).toEqual([PORTFOLIO_ID, HEADER_DOC_ID, COMMON_DOC_ID]);
+
+    const canary = utf8(CLEARTEXT_CANARY);
+    for (const body of harness.putBodies) expect(containsBytes(body, canary)).toBe(false);
+
+    const document = await decryptDoc<VaultPortfolioDoc>(PORTFOLIO_ID, 'portfolio');
+    const served = importFixture();
+    expect(liveRows(document.entities.importBatch).map(({ id, data }) => ({ id, data }))).toEqual(
+      served.batches,
+    );
+    expect(liveRows(document.entities.importRow).map(({ id, data }) => ({ id, data }))).toEqual(
+      served.rows,
+    );
+    // The imported transaction rides as an ordinary row now, its provenance intact.
+    expect(
+      document.entities.transaction!.find(({ id }) => id === TRANSACTION_ID)!.data,
+    ).toMatchObject({
+      source: 'import:generic',
+    });
+  });
+
+  it('refuses before any write when a served row would not survive the document contract losslessly', async () => {
+    withImportHistory();
+    const overCap = harness.state.importRows[1]!;
+    overCap.data.candidates = Array.from({ length: 6 }, (_, index) => ({
+      id: `018f0000-0000-7000-8000-0000000000d${index}`,
+      symbol: `C${index}`,
+      name: `Candidate ${index}`,
+      currency: 'USD',
+      exchange: null,
+      type: 'stock' as const,
+    }));
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+    });
+    expect(harness.writes).toEqual([]);
+    expect(harness.attestations).toEqual([]);
+  });
+
+  it('maps the server’s typed "unservable row" answer to the import-history refusal, cause preserved, before any write (review F2)', async () => {
+    withImportHistory();
+    harness.api.listPortfolioVaultImportBatches = (async () => {
+      throw new ApiError(409, 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE', 'TEST VECTOR unservable row');
+    }) as PortfolioMoveCaptureApi['listPortfolioVaultImportBatches'];
+    const rejection = expect(runMoveIn(harness)).rejects;
+    await rejection.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_IMPORT_HISTORY_UNSUPPORTED',
+      retryable: false,
+    });
+    await rejection.toMatchObject({
+      cause: { name: 'ApiError', code: 'PORTFOLIO_VAULT_CAPTURE_UNSERVABLE', status: 409 },
+    });
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('maps the snapshot seam’s typed refusals (unservable, too large) to the manual-asset refusal, before any write (review F2)', async () => {
+    for (const code of [
+      'CUSTOM_ASSET_VAULT_SNAPSHOT_UNSERVABLE',
+      'CUSTOM_ASSET_VAULT_SNAPSHOT_TOO_LARGE',
+    ]) {
+      harness = createHarness();
+      await seedVaultDocuments(harness);
+      withManualAsset();
+      harness.api.getCustomAssetVaultSnapshots = (async () => {
+        throw new ApiError(409, code, `TEST VECTOR ${code}`);
+      }) as PortfolioMoveCaptureApi['getCustomAssetVaultSnapshots'];
+      await expect(runMoveIn(harness)).rejects.toMatchObject({
+        name: 'PortfolioMoveCaptureError',
+        code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+        retryable: false,
+        cause: { code },
+      });
+      expect(harness.writes).toEqual([]);
+    }
+  });
+
+  it('refuses a batch that is not historical yet (pending) as a state conflict, before any write', async () => {
+    withImportHistory();
+    harness.state.importBatches[0]!.data.status = 'pending';
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_STATE_CONFLICT',
+    });
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('refuses a served batch set that disagrees with the settled revision count, before any write', async () => {
+    withImportHistory();
+    harness.state.settledRevisions = [{ portfolioDataRevision: REVISION, importBatchCount: 2 }];
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_STATE_CONFLICT',
+    });
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('refuses a served batch or row that is not this portfolio’s (cross-portfolio injection), before any write', async () => {
+    withImportHistory();
+    harness.state.importBatches[0]!.data.portfolioId = '018f0000-0000-7000-8000-0000000000ff';
+    await expect(runMoveIn(harness)).rejects.toMatchObject({ code: 'VAULT_MOVE_STATE_CONFLICT' });
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('captures an owner-manual asset EXACTLY (row + every value point) into the common document (the refusal lifts)', async () => {
+    withManualAsset();
+    await expect(runMoveIn(harness)).resolves.toEqual({
+      docVersion: 1,
+      portfolioDataRevision: REVISION,
+    });
+    const canary = utf8(CLEARTEXT_CANARY);
+    for (const body of harness.putBodies) expect(containsBytes(body, canary)).toBe(false);
+
+    const common = await decryptDoc<VaultCommonDoc>(COMMON_DOC_ID, 'common');
+    const served = manualSnapshotFixture();
+    const asset = liveRows(common.entities.customAsset).find(({ id }) => id === MANUAL_ASSET_ID)!;
+    // The exact server row — NOT the rounded DTO's `ownedAssetSnapshotRow` projection.
+    expect(asset.data).toEqual(served.asset);
+    expect(
+      liveRows(common.entities.customAssetValue)
+        .filter(({ data }) => data.assetId === MANUAL_ASSET_ID)
+        .map(({ data }) => data)
+        .sort((left, right) => String(left.date).localeCompare(String(right.date))),
+    ).toEqual(served.values);
+    // The market asset still folds as the client-only catalog snapshot.
+    expect(
+      liveRows(common.entities.customAsset).find(({ id }) => id === ASSET_ID)!.data,
+    ).toMatchObject({
+      ownerId: null,
+      providerId: 'yahoo',
+    });
+  });
+
+  it('reconciles the common document to the exact server state: stale value replaced, missing added, extra tombstoned', async () => {
+    withManualAsset();
+    const STALE_ID = '018f0000-0000-7000-8000-0000000000e1';
+    const EXTRA_ID = '018f0000-0000-7000-8000-0000000000e2';
+    const staleEntity = (id: string, date: string, close: string): VaultEntity => ({
+      id,
+      rev: 3,
+      editedAt: '2026-07-20T00:00:00.000Z',
+      editedBy: '018f0000-0000-7000-8000-0000000000c0',
+      deletedAt: null,
+      data: { assetId: MANUAL_ASSET_ID, date, close },
+    });
+    harness.docs.clear();
+    await seedVaultDocuments(harness, {
+      commonEntities: {
+        customAsset: [
+          {
+            id: MANUAL_ASSET_ID,
+            rev: 2,
+            editedAt: '2026-07-20T00:00:00.000Z',
+            editedBy: '018f0000-0000-7000-8000-0000000000c0',
+            deletedAt: null,
+            data: { ...manualSnapshotFixture().asset, name: 'stale name' },
+          },
+        ],
+        customAssetValue: [
+          staleEntity(STALE_ID, '2026-07-01', '1'), // same date, stale close
+          staleEntity(EXTRA_ID, '2026-06-01', '5'), // no longer on the server
+        ],
+      },
+    });
+    await runMoveIn(harness);
+
+    const common = await decryptDoc<VaultCommonDoc>(COMMON_DOC_ID, 'common');
+    const asset = common.entities.customAsset!.find(({ id }) => id === MANUAL_ASSET_ID)!;
+    expect(asset.rev).toBe(3);
+    expect(asset.data).toEqual(manualSnapshotFixture().asset);
+    const values = common.entities.customAssetValue!;
+    const stale = values.find(({ id }) => id === STALE_ID)!;
+    expect(stale).toMatchObject({
+      rev: 4,
+      deletedAt: null,
+      data: { date: '2026-07-01', close: '98765432109876.654321' },
+    });
+    const extra = values.find(({ id }) => id === EXTRA_ID)!;
+    expect(extra.rev).toBe(4);
+    expect(extra.deletedAt).not.toBeNull();
+    expect(liveRows(values).map(({ data }) => data)).toEqual(
+      expect.arrayContaining(manualSnapshotFixture().values),
+    );
+    expect(liveRows(values)).toHaveLength(2);
+  });
+
+  it('refuses before any write when the server does not hold a referenced asset as the owner’s manual asset', async () => {
+    withManualAsset();
+    harness.state.manualAssets.clear();
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      name: 'PortfolioMoveCaptureError',
+      code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+    });
+    expect(harness.writes).toEqual([]);
+  });
+
+  it('refuses a snapshot whose identity is not the owner’s manual claim', async () => {
+    withManualAsset();
+    const forged = manualSnapshotFixture();
+    forged.asset.ownerId = '018f0000-0000-7000-8000-0000000000fe';
+    harness.state.manualAssets.set(MANUAL_ASSET_ID, forged);
+    await expect(runMoveIn(harness)).rejects.toMatchObject({
+      code: 'VAULT_MOVE_MANUAL_ASSETS_UNSUPPORTED',
+    });
+    expect(harness.writes).toEqual([]);
+  });
+
+  describe('round trip through move-out', () => {
+    it('ROUND TRIP: served import rows and the exact manual snapshot come back out of the strict restore document, and the authoring is byte-deterministic', async () => {
+      withImportHistory();
+      withManualAsset();
+      await runMoveIn(harness);
+      vaultThePortfolio(harness);
+
+      // Identical inputs AND identical id/clock sources: any remaining
+      // difference would be hidden nondeterminism in the authoring itself
+      // (iteration order, a stray Date.now). `deviceId` and fresh entity ids
+      // come from the `id` source, so each run gets the same fresh sequence.
+      const sequence = () => {
+        let next = 0;
+        return () => `018f0000-0000-7000-8000-${(++next).toString(16).padStart(12, '0')}`;
+      };
+      const authoring = () =>
+        createPortfolioVaultMoveCapture({
+          keys: harness.keys,
+          reader: harness.reader,
+          store: harness.store,
+          api: harness.api,
+          now: () => '2026-08-27T10:30:00.000Z',
+          id: sequence(),
+        }).captureMoveOut({ portfolioId: PORTFOLIO_ID, vault: VAULT });
+      const first = await authoring();
+      const second = await authoring();
+      expect(vaultStrictDocumentV1Schema.parse(first.document)).toEqual(first.document);
+      expect(
+        Buffer.from(serializePortfolioVaultRestoreDocument(first.document)).equals(
+          Buffer.from(serializePortfolioVaultRestoreDocument(second.document)),
+        ),
+      ).toBe(true);
+      expect(first.documentDigest).toBe(second.documentDigest);
+
+      const served = importFixture();
+      const entities = first.document.entities;
+      expect(
+        entities
+          .filter((entity) => entity.kind === 'importBatch')
+          .map(({ id, data }) => ({ id, data })),
+      ).toEqual(served.batches);
+      expect(
+        entities
+          .filter((entity) => entity.kind === 'importRow')
+          .map(({ id, data }) => ({ id, data })),
+      ).toEqual(served.rows);
+      const snapshot = manualSnapshotFixture();
+      const assets = entities.filter((entity) => entity.kind === 'customAsset');
+      expect(assets.map(({ id }) => id)).toEqual([MANUAL_ASSET_ID]); // the catalog snapshot is dropped by design
+      expect(assets[0]!.data).toEqual(snapshot.asset);
+      expect(
+        entities
+          .filter((entity) => entity.kind === 'customAssetValue')
+          .map(({ data }) => data)
+          .sort((left, right) => String(left.date).localeCompare(String(right.date))),
+      ).toEqual(snapshot.values);
+      // The imported transaction restores under its own id with its provenance.
+      expect(
+        entities.find((entity) => entity.kind === 'transaction' && entity.id === TRANSACTION_ID)!
+          .data,
+      ).toMatchObject({
+        source: 'import:generic',
+      });
+    });
+
+    it('uses the encrypted snapshot for an asset the server no longer holds (detached at move-in)', async () => {
+      withManualAsset();
+      await runMoveIn(harness);
+      vaultThePortfolio(harness);
+      harness.state.manualAssets.clear(); // exclusive asset: purged by E4 at move-in
+
+      const draft = await capture(harness).captureMoveOut({
+        portfolioId: PORTFOLIO_ID,
+        vault: VAULT,
+      });
+      const asset = draft.document.entities.find(
+        (entity) => entity.kind === 'customAsset' && entity.id === MANUAL_ASSET_ID,
+      )!;
+      expect(asset.data).toEqual(manualSnapshotFixture().asset);
+      expect(
+        draft.document.entities
+          .filter((entity) => entity.kind === 'customAssetValue')
+          .map(({ data }) => data)
+          .sort((left, right) => String(left.date).localeCompare(String(right.date))),
+      ).toEqual(manualSnapshotFixture().values);
+    });
+
+    it('refuses move-out for a manual-asset portfolio when the snapshot seam is absent (capability, not deletion)', async () => {
+      withManualAsset();
+      await runMoveIn(harness);
+      vaultThePortfolio(harness);
+      harness.api.getCustomAssetVaultSnapshots = undefined;
+      await expect(
+        capture(harness).captureMoveOut({ portfolioId: PORTFOLIO_ID, vault: VAULT }),
+      ).rejects.toMatchObject({ code: 'VAULT_RESTORE_MANUAL_SNAPSHOT_UNAVAILABLE' });
+    });
+  });
+});

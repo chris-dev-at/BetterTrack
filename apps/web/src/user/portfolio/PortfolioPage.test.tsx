@@ -5,7 +5,12 @@ import { cloneElement, isValidElement } from 'react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { PrivacyMode, Transaction } from '@bettertrack/contracts';
+import type {
+  DividendCalendarEntry,
+  PrivacyMode,
+  ProjectedDividendIncomeResponse,
+  Transaction,
+} from '@bettertrack/contracts';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +37,14 @@ vi.mock('../../lib/portfolioApi', () => ({
 }));
 
 vi.mock('../../lib/searchApi', () => ({ searchAssets: vi.fn() }));
+
+// The dividend-intel block (V5-P5) reads two portfolio-level endpoints; keep the
+// query keys real and stub only the two fetches.
+vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/marketIntelApi')>()),
+  getPortfolioDividendCalendar: vi.fn(),
+  getPortfolioDividendProjection: vi.fn(),
+}));
 
 // The transaction dialog fetches a daily-close series for its linked date ↔ price
 // fields (#226); keep it inert here so opening the dialog makes no real request.
@@ -83,6 +96,11 @@ vi.mock('recharts', async (importOriginal) => {
 });
 
 import { ApiError } from '../../lib/apiClient';
+import { formatDate } from '../../lib/format';
+import {
+  getPortfolioDividendCalendar,
+  getPortfolioDividendProjection,
+} from '../../lib/marketIntelApi';
 import {
   deleteTransaction,
   depositCash,
@@ -295,6 +313,35 @@ function transactionPage(
   };
 }
 
+/** The dividend block's "nothing to show" projection (gate off ⇒ block hidden). */
+const UNAVAILABLE_PROJECTION: ProjectedDividendIncomeResponse = {
+  available: false,
+  currency: 'EUR',
+  monthlyTotalEur: 0,
+  yearlyTotalEur: 0,
+  holdings: [],
+};
+
+/** An available projection with no per-holding rows — only the calendar renders. */
+const CALENDAR_ONLY_PROJECTION: ProjectedDividendIncomeResponse = {
+  ...UNAVAILABLE_PROJECTION,
+  available: true,
+};
+
+function calendarEntry(over: Partial<DividendCalendarEntry> = {}): DividendCalendarEntry {
+  return {
+    assetId: 'a1',
+    symbol: 'AAPL',
+    name: 'Apple Inc.',
+    source: 'holding',
+    exDate: '2026-08-08T00:00:00.000Z',
+    payDate: '2026-08-15T00:00:00.000Z',
+    amount: 0.24,
+    currency: 'USD',
+    ...over,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // The chart display mode is a device preference (board #68 item 4): start
@@ -307,6 +354,9 @@ beforeEach(() => {
   );
   vi.mocked(deleteTransaction).mockResolvedValue(undefined);
   vi.mocked(getValuePoints).mockResolvedValue({ points: [] });
+  // Market intel is invisible unless a case opts in (gate off ⇒ block hidden).
+  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(UNAVAILABLE_PROJECTION);
+  vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
   // No pending re-categorization by default → the banner stays hidden.
   vi.mocked(getRecategorizationStatus).mockResolvedValue({ pending: 0 });
   vi.mocked(dismissRecategorization).mockResolvedValue(undefined);
@@ -1617,5 +1667,48 @@ describe('PortfolioPage — recent-transactions source filter', () => {
       },
       expect.anything(),
     );
+  });
+});
+
+// ─── Dividend calendar (V5-P5) ────────────────────────────────────────────────
+
+describe('PortfolioPage — dividend calendar dates', () => {
+  beforeEach(() => {
+    vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue(CALENDAR_ONLY_PROJECTION);
+  });
+
+  test('labels a pay-date-only entry with its pay date instead of "ex —"', async () => {
+    // An event that has already gone ex is still upcoming until it is paid, and
+    // the provider may give no ex-date at all — the row must show the date it
+    // actually has.
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry({ exDate: null, payDate: '2026-08-15T00:00:00.000Z' })],
+    });
+
+    renderPage();
+
+    const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(
+      within(calendar).getByText(`paid ${formatDate('2026-08-15T00:00:00.000Z')}`),
+    ).toBeInTheDocument();
+    expect(within(calendar).queryByText(/^ex /)).not.toBeInTheDocument();
+    // The em dash is what `formatDate(null)` used to render into the ex-label.
+    expect(within(calendar).queryByText(/—/)).not.toBeInTheDocument();
+  });
+
+  test('still labels an ex-dated entry with its ex-date', async () => {
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry()],
+    });
+
+    renderPage();
+
+    const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(
+      within(calendar).getByText(`ex ${formatDate('2026-08-08T00:00:00.000Z')}`),
+    ).toBeInTheDocument();
   });
 });

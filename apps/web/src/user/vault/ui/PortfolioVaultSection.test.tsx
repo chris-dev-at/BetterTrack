@@ -21,7 +21,8 @@ vi.mock('../../../lib/userApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../lib/userApi')>()),
   verifySessionPassword: mocks.verifySessionPassword,
 }));
-vi.mock('../../../lib/vaultApi', () => ({
+vi.mock('../../../lib/vaultApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/vaultApi')>()),
   VAULTS_QUERY_KEY: ['vaults', 'configs'],
   listVaults: mocks.listVaults,
   getPortfolioVaultRevision: mocks.getPortfolioVaultRevision,

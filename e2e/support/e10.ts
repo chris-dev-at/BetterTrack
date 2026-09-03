@@ -85,6 +85,18 @@ export const E10_TRACEABILITY = [
       '[E10-A6] keeps the unready-state refusal pinned.',
   },
   {
+    arc: 'imported + owner-manual portfolio round trip (#1529)',
+    assertion: '[E10-A10b] imported + manual portfolio moves in and back out losslessly',
+    status: 'covered',
+    note:
+      'The two portfolio classes the #1528 ruling refused fail-closed — historical import ' +
+      'batches and owner-manual assets — now run the A10 arc through the #1529 lossless ' +
+      'read seams (the paged import-capture read and the exact manual-asset snapshot ' +
+      'read). The bar is re-read identity: the applied batch’s staging rows and the manual ' +
+      'asset’s value points come back byte-for-byte after move-out, and both buys restore ' +
+      'under their original ids.',
+  },
+  {
     arc: 'Drive-only vault round trip',
     assertion: '[E10-A5] Drive storage is refused honestly, not offered',
     status: 'blocked',

@@ -14,22 +14,34 @@ import type { NotificationCenter } from '../notifications/notificationCenter';
  * inside the reminder lead window — emits `earnings.reminder` through the
  * notification center onto the DURABLE `notifications.dispatch` queue (#368).
  *
- * The type is opt-in (default OFF on every channel); a recipient who never
- * enabled it simply has the delivery gated at the matrix. Firing is idempotent
- * per (user, asset, report date): a per-key Redis `SET NX` lock (TTL far longer
- * than the lead window, and the same (asset, date) never recurs — the next
- * report is a different date) keeps a daily re-scan across the multi-day window
- * from re-emitting, and the dispatcher's eventKey folds the same tuple as a
- * durable backstop. The lock is released when the enqueue itself fails, so a
- * Redis/queue hiccup can only re-attempt next scan, never strand a reminder.
+ * The type is opt-in (default OFF on every channel), and the opt-in is checked
+ * HERE, before any side effect: gating only at the delivery matrix would still
+ * let the dispatcher write its hidden dedupe marker (the inbox row doubles as
+ * that marker) and let this scan take its 45-day lock, so a recipient who
+ * enabled the type a day later would silently receive nothing for that report.
+ * Same rule, same reason as the sibling dividend scan.
+ *
+ * Firing is idempotent per (user, asset, report date): a per-key Redis `SET NX`
+ * lock (TTL far longer than the lead window, and the same (asset, date) never
+ * recurs — the next report is a different date) keeps a daily re-scan across the
+ * multi-day window from re-emitting, and the dispatcher's eventKey folds the
+ * same tuple as a durable backstop. The lock is released when the enqueue itself
+ * fails, so a Redis/queue hiccup can only re-attempt next scan, never strand a
+ * reminder.
  *
  * Gate-respecting: when `MARKET_INTEL_ENABLED` is off the scan is a no-op — no
  * reminders exist when the arc is unconfigured (invisible when unconfigured).
  */
 
-/** How far ahead of a report the reminder fires (days). */
+/**
+ * How far ahead of a report the reminder fires, in CALENDAR days. The window is
+ * compared as day strings (like the dividend scan), not as elapsed milliseconds:
+ * a fixed-hour daily cron measuring elapsed time gives an after-close reporter
+ * (report stamped 20:00) an effective two-day lead, because at the 06:00 scan
+ * three days earlier the delta is 3 d 14 h — just outside a 3 × 24 h window.
+ */
 export const EARNINGS_REMINDER_LEAD_DAYS = 3;
-/** The lead window in milliseconds. */
+/** The lead window in milliseconds — the offset the horizon day is taken from. */
 export const EARNINGS_REMINDER_LEAD_MS = EARNINGS_REMINDER_LEAD_DAYS * 86_400_000;
 
 /**
@@ -45,6 +57,9 @@ export function earningsReminderLockKey(userId: string, assetId: string, dateKey
   return `earnings:reminded:${userId}:${assetId}:${dateKey}`;
 }
 
+/** Whether the `earnings.reminder` type is enabled on ANY channel for a user. */
+export type EarningsNotifyGate = (userId: string) => Promise<boolean>;
+
 export interface EarningsReminderScanDeps {
   intelRepo: Pick<
     MarketIntelRepository,
@@ -54,6 +69,8 @@ export interface EarningsReminderScanDeps {
   redis: Redis;
   /** The central notification pipeline (#368) — reminders enter the durable queue here. */
   notify: NotificationCenter;
+  /** Per-user opt-in gate (skip a recipient who never enabled the type). */
+  isEnabled: EarningsNotifyGate;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
   /**
@@ -86,7 +103,7 @@ function errorMessage(err: unknown): string {
 export async function runEarningsReminderScan(
   deps: EarningsReminderScanDeps,
 ): Promise<EarningsReminderScanResult> {
-  const { intelRepo, marketData, redis, notify, enabled, logger } = deps;
+  const { intelRepo, marketData, redis, notify, isEnabled, enabled, logger } = deps;
   const now = deps.now ? deps.now() : Date.now();
 
   if (!enabled) return { scanned: 0, reminded: 0 };
@@ -97,6 +114,23 @@ export async function runEarningsReminderScan(
   const occurredAt = new Date(now).toISOString();
   const processed = new Set<string>();
   let reminded = 0;
+
+  // Calendar-day window: [today, today + LEAD_DAYS] as day strings. A report is
+  // "3 days out" by the date on the calendar, never by 3 × 24 h of elapsed time
+  // — see EARNINGS_REMINDER_LEAD_DAYS.
+  const todayKey = new Date(now).toISOString().slice(0, 10);
+  const horizonKey = new Date(now + EARNINGS_REMINDER_LEAD_MS).toISOString().slice(0, 10);
+
+  // One matrix read per user per run, shared by every row that user holds/watches.
+  const gateByUser = new Map<string, Promise<boolean>>();
+  const optedIn = (userId: string): Promise<boolean> => {
+    let gate = gateByUser.get(userId);
+    if (!gate) {
+      gate = isEnabled(userId);
+      gateByUser.set(userId, gate);
+    }
+    return gate;
+  };
 
   const processAsset = async (
     a: Awaited<ReturnType<MarketIntelRepository['listAllWatchAssets']>>[number],
@@ -125,13 +159,18 @@ export async function runEarningsReminderScan(
     }
 
     if (!next || !next.date) return;
-    const dueMs = Date.parse(next.date);
-    if (Number.isNaN(dueMs)) return;
-    // Only upcoming reports within the lead window; a past date is never a
-    // reminder (the ahead-of-time fires already landed on earlier scan days).
-    if (dueMs < now || dueMs - now > EARNINGS_REMINDER_LEAD_MS) return;
-
+    if (Number.isNaN(Date.parse(next.date))) return;
     const dateKey = next.date.slice(0, 10);
+    // Only reports on a day inside the lead window; a day already behind us is
+    // never a reminder (the ahead-of-time fires landed on earlier scan days).
+    if (dateKey < todayKey || dateKey > horizonKey) return;
+
+    // Opt-in gate, BEFORE the lock and the emit: a recipient who never enabled
+    // the type must leave no trace at all this run — neither the 45-day lock nor
+    // the dispatcher's hidden dedupe row, both of which would mask a later
+    // enable for this same (asset, report date).
+    if (!(await optedIn(a.userId))) return;
+
     const lockKey = earningsReminderLockKey(a.userId, a.assetId, dateKey);
     const acquired = await redis.set(lockKey, '1', 'EX', EARNINGS_REMINDER_LOCK_TTL_SECONDS, 'NX');
     if (acquired !== 'OK') return;

@@ -1,17 +1,21 @@
 import {
+  CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES,
+  CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX,
   customAssetCategorySchema,
+  customAssetVaultSnapshotsResponseSchema,
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
   type CustomAsset,
   type CustomAssetCategory,
   type CustomAssetListItem,
+  type CustomAssetVaultSnapshotsResponse,
   type UpdateCustomAssetRequest,
   type ValuePoint,
 } from '@bettertrack/contracts';
 
 import type { CustomAssetRepository } from '../../data/repositories/customAssetRepository';
 import type { AssetRow } from '../../data/schema';
-import { badRequest, notFound } from '../../errors';
+import { badRequest, conflict, notFound } from '../../errors';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import type { VaultedPortfolioGuard } from '../account/vaultedPortfolioEnforcement';
@@ -50,6 +54,16 @@ export interface CustomAssetService {
   remove(userId: string, id: string): Promise<void>;
   getValuePoints(userId: string, id: string): Promise<ValuePoint[]>;
   putValuePoints(userId: string, id: string, points: ValuePoint[]): Promise<ValuePoint[]>;
+  /**
+   * #1529: the exact current state of the caller's own manual assets among
+   * `ids`, in vault-entity row shape (decimal strings, verbatim `meta`) — the
+   * lossless seam the per-portfolio move needs in both directions. Ids that
+   * are not the caller's manual assets are simply absent (no oracle).
+   */
+  vaultSnapshots(
+    userId: string,
+    ids: readonly string[],
+  ): Promise<CustomAssetVaultSnapshotsResponse>;
   /** How many of the user's custom assets still need re-categorizing (V3-P2). */
   recategorizationStatus(userId: string): Promise<{ pending: number }>;
   /** Dismiss the re-categorize banner: clear every flag the user owns (V3-P2). */
@@ -222,6 +236,50 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       for (const ref of refs) {
         await snapshots.invalidate(ref.portfolioId, ref.fromDay);
       }
+    },
+
+    async vaultSnapshots(userId, ids) {
+      const { present, absentIds } = await repo.vaultSnapshotsForOwner(userId, ids);
+      const totalValues = present.reduce((total, { values }) => total + values.length, 0);
+      if (totalValues > CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX) {
+        // Size, not security: one response stays bounded; the client asks
+        // for fewer ids per request.
+        throw conflict(
+          `The requested manual assets carry ${totalValues} value points; at most ${CUSTOM_ASSET_VAULT_SNAPSHOT_VALUES_MAX} fit one read.`,
+          CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES.tooLarge,
+        );
+      }
+      const response = customAssetVaultSnapshotsResponseSchema.safeParse({
+        present: present.map(({ asset, values }) => ({
+          id: asset.id,
+          asset: {
+            providerId: asset.providerId,
+            providerRef: asset.providerRef,
+            ownerId: asset.ownerId,
+            type: asset.type,
+            symbol: asset.symbol,
+            name: asset.name,
+            exchange: asset.exchange,
+            currency: asset.currency,
+            meta: asset.meta ?? null,
+            // `search_text` is GENERATED ALWAYS server-side; the vault's own
+            // snapshot producer (`assetSnapshotRow`) spells it as `symbol name`.
+            searchText: `${asset.symbol} ${asset.name}`.trim(),
+          },
+          values: values.map(({ date, close }) => ({ assetId: asset.id, date, close })),
+        })),
+        absentIds,
+      });
+      if (!response.success) {
+        // TYPED (review F2): a bare ZodError would become a client 400 —
+        // but nothing about the request is invalid; a STORED row is not
+        // exactly servable, so the move must refuse the asset, not the request.
+        throw conflict(
+          'A stored manual-asset row cannot be served exactly in vault-entity shape.',
+          CUSTOM_ASSET_VAULT_SNAPSHOT_ERROR_CODES.unservable,
+        );
+      }
+      return response.data;
     },
 
     async getValuePoints(userId, id) {

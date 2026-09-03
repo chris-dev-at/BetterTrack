@@ -8,6 +8,7 @@ import {
   perVaultMediaTransitionResponseSchema,
   perVaultRetiredServerPurgeChallengeResponseSchema,
   perVaultRetiredServerPurgeResponseSchema,
+  portfolioVaultImportCaptureResponseSchema,
   portfolioVaultLifecycleResponseSchema,
   portfolioVaultMoveInResponseSchema,
   portfolioVaultMoveOutChallengeResponseSchema,
@@ -24,6 +25,8 @@ import {
   type PerVaultRetiredServerPurgeChallengeResponse,
   type PerVaultRetiredServerPurgeRequest,
   type PerVaultRetiredServerPurgeResponse,
+  type PortfolioVaultImportCaptureQuery,
+  type PortfolioVaultImportCaptureResponse,
   type PortfolioVaultLifecycleResponse,
   type PortfolioVaultMoveInRequest,
   type PortfolioVaultMoveInResponse,
@@ -158,6 +161,27 @@ export async function getPortfolioVaultLifecycle(
     signal,
   });
   return portfolioVaultLifecycleResponseSchema.parse(data);
+}
+
+/**
+ * #1529: one page of a PLAIN portfolio's historical import batches and staging
+ * rows in vault-document row shape — the lossless read that lets the §9
+ * capture carry them into the portfolio document instead of refusing.
+ */
+export async function listPortfolioVaultImportBatches(
+  portfolioId: string,
+  query: PortfolioVaultImportCaptureQuery = {},
+  signal?: AbortSignal,
+): Promise<PortfolioVaultImportCaptureResponse> {
+  const search = new URLSearchParams();
+  if (query.cursor !== undefined) search.set('cursor', query.cursor);
+  if (query.limit !== undefined) search.set('limit', String(query.limit));
+  const suffix = search.size > 0 ? `?${search.toString()}` : '';
+  const data = await apiRequest<unknown>(
+    `/portfolios/${segment(portfolioId)}/vault/import-batches${suffix}`,
+    { signal },
+  );
+  return portfolioVaultImportCaptureResponseSchema.parse(data);
 }
 
 export async function movePortfolioIntoVault(
