@@ -2632,8 +2632,19 @@ export const itemComments = pgTable(
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (t) => [
-    // Thread read: every live comment on one item, oldest-first at read time.
+    // Subject teardown / moderation: every comment on one item, tombstoned ones
+    // included — the partial index below deliberately cannot serve those.
     index('item_comments_subject_idx').on(t.kind, t.subjectId),
+    // The paged thread read (#1725): one item's LIVE comments in exactly
+    // `(created_at desc, id desc)` — the order `listForItem` asks for. The
+    // subject index above can filter but not order, so Postgres had to fetch
+    // every live comment of the thread and sort it for each 51-row page, on a
+    // surface the SPA polls every 30 s. Partial on the tombstone so the live
+    // count is an index-only scan over the same entries rather than a heap
+    // visit per row.
+    index('item_comments_thread_idx')
+      .on(t.kind, t.subjectId, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.deletedAt} is null`),
     index('item_comments_author_idx').on(t.authorId),
 
     index('item_comments_deleted_by_idx').on(t.deletedBy),

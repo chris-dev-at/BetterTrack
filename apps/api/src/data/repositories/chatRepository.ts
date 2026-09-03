@@ -153,43 +153,66 @@ export function createChatRepository(db: Database) {
 
       if (rows.length === 0) return [];
 
-      // Newest message per conversation for the preview — one query, no N+1.
-      const previews = await db
-        .select({
+      // Newest message per conversation for the preview — one query, no N+1,
+      // and (since #1725) at most ONE ROW PER CONVERSATION out of the database.
+      //
+      // This used to select every message of every listed conversation — bodies
+      // included, up to CHAT_MESSAGE_MAX each — and pick the newest per
+      // conversation in JS. `listConversations` polls every 20 s and the thread
+      // read every 10 s, so a long-lived thread re-materialised its entire
+      // history on each poll to produce one preview line. `DISTINCT ON` moves
+      // that pick into SQL, where `chat_messages_conversation_idx`
+      // (conversation_id, id) already supplies the exact ordering the dedup
+      // needs. The chip's vault join sits OUTSIDE the distinct so it runs over
+      // the previews, not over the history.
+      const newestPerConversation = db
+        .selectDistinctOn([chatMessages.conversationId], {
           conversationId: chatMessages.conversationId,
           senderId: chatMessages.senderId,
           body: chatMessages.body,
-          // A locked portfolio reference is absent even from the compact
-          // conversation preview. Missing/deleted references retain the legacy
-          // unavailable-chip marker in the full thread.
-          chipKind: sql<ChatChipKind | null>`case
-            when ${chatMessages.chipKind} = 'portfolio' and ${portfolios.vaultId} is not null
-              then null
-            else ${chatMessages.chipKind}
-          end`,
+          chipKind: chatMessages.chipKind,
+          chipSubjectId: chatMessages.chipSubjectId,
           createdAt: chatMessages.createdAt,
-          id: chatMessages.id,
         })
         .from(chatMessages)
-        .leftJoin(
-          portfolios,
-          and(
-            eq(chatMessages.chipKind, 'portfolio'),
-            eq(chatMessages.chipSubjectId, portfolios.id),
-          ),
-        )
         .where(
           inArray(
             chatMessages.conversationId,
             rows.map((r) => r.id),
           ),
         )
-        .orderBy(chatMessages.conversationId, desc(chatMessages.id));
+        // `DISTINCT ON (conversation_id)` keeps the FIRST row of each group in
+        // this order — id desc, i.e. the newest message, matching what the
+        // previous JS pick did.
+        .orderBy(chatMessages.conversationId, desc(chatMessages.id))
+        .as('newest_chat_message');
+
+      const previews = await db
+        .select({
+          conversationId: newestPerConversation.conversationId,
+          senderId: newestPerConversation.senderId,
+          body: newestPerConversation.body,
+          // A locked portfolio reference is absent even from the compact
+          // conversation preview. Missing/deleted references retain the legacy
+          // unavailable-chip marker in the full thread.
+          chipKind: sql<ChatChipKind | null>`case
+            when ${newestPerConversation.chipKind} = 'portfolio' and ${portfolios.vaultId} is not null
+              then null
+            else ${newestPerConversation.chipKind}
+          end`,
+          createdAt: newestPerConversation.createdAt,
+        })
+        .from(newestPerConversation)
+        .leftJoin(
+          portfolios,
+          and(
+            eq(newestPerConversation.chipKind, 'portfolio'),
+            eq(newestPerConversation.chipSubjectId, portfolios.id),
+          ),
+        );
 
       const previewByConversation = new Map<string, ChatMessagePreviewRow>();
       for (const p of previews) {
-        // Rows are id-desc within each conversation; the first seen is newest.
-        if (previewByConversation.has(p.conversationId)) continue;
         previewByConversation.set(p.conversationId, {
           senderId: p.senderId,
           body: p.body,

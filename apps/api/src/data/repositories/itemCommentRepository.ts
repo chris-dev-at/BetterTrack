@@ -75,6 +75,11 @@ export function createItemCommentRepository(db: Database) {
      * tombstone filter (a soft-deleted boundary row must still anchor the walk).
      * A cursor naming no such row resolves to NULL, which makes the comparison
      * NULL and yields an empty page — fail-closed, never a silent full read.
+     *
+     * `item_comments_thread_idx` (migration 0111) carries this exact filter and
+     * ordering, so the page is a bounded index scan that stops after `limit`
+     * entries. Before it existed only (kind, subject_id) was indexed and the
+     * database sorted the whole live thread per page (#1725).
      */
     async listForItem(
       kind: ShareKind,
@@ -150,6 +155,12 @@ export function createItemCommentRepository(db: Database) {
      * thread's `commentCount` both read it, so neither has to load bodies.
      * `authorIds` applies the SAME participant snapshot the page read uses, so a
      * count can never disclose a comment the page itself filters out.
+     *
+     * The thread read calls this only when its own page cannot prove the total
+     * (a page that filled, or an older page — see `buildThread`); an ordinary
+     * thread's poll never reaches here. When it is reached, the partial
+     * `item_comments_thread_idx` proves `deleted_at IS NULL` from the index, so
+     * the unfiltered form is an index-only scan over the thread's live entries.
      */
     async countForItem(
       kind: ShareKind,
