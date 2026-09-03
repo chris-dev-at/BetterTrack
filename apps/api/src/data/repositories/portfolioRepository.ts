@@ -1,6 +1,7 @@
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import { PORTFOLIO_KINDS, type PortfolioKind } from '@bettertrack/contracts';
+import type { PriceBasis } from '@bettertrack/domain/holdings';
 
 import type { Database } from '../db';
 import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
@@ -25,6 +26,12 @@ export interface AssetPriceRow {
   /** ISO `YYYY-MM-DD`. */
   date: string;
   close: number;
+  /**
+   * Which price basis {@link close} is on (§16 2026-09-03). The value engine
+   * merges only rows matching the basis it is building, so a legacy adjusted row
+   * outside the nightly heal window can never land in an unadjusted series.
+   */
+  basis: PriceBasis;
 }
 
 /** A portfolio row for the list / single-portfolio views (§6.8, §7.2). */
@@ -444,12 +451,18 @@ export function createPortfolioRepository(db: Database) {
           assetId: priceHistory.assetId,
           date: priceHistory.date,
           close: priceHistory.close,
+          basis: priceHistory.basis,
         })
         .from(priceHistory)
         .where(inArray(priceHistory.assetId, [...ids]))
         .orderBy(asc(priceHistory.assetId), asc(priceHistory.date));
       return rows
-        .map((r) => ({ assetId: r.assetId, date: r.date, close: Number(r.close) }))
+        .map((r): AssetPriceRow => {
+          // An unrecognised label is treated as `adjusted`, i.e. NOT usable for
+          // valuation: unknown provenance must fail closed on the money path.
+          const basis: PriceBasis = r.basis === 'unadjusted' ? 'unadjusted' : 'adjusted';
+          return { assetId: r.assetId, date: r.date, close: Number(r.close), basis };
+        })
         .filter((r) => Number.isFinite(r.close));
     },
 

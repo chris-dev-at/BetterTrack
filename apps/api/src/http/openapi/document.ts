@@ -411,6 +411,7 @@ const componentSchemas = {
   PortfolioListResponse: contracts.portfolioListResponseSchema,
   PortfolioMutationResponse: contracts.portfolioMutationResponseSchema,
   PortfolioResponse: contracts.portfolioResponseSchema,
+  PortfolioSplitBasisResponse: contracts.portfolioSplitBasisResponseSchema,
   UpdatePortfolioResponse: contracts.updatePortfolioResponseSchema,
   PortfolioHistoryResponse: contracts.portfolioHistoryResponseSchema,
   TransactionListResponse: contracts.transactionListResponseSchema,
@@ -2556,6 +2557,22 @@ const endpoints: EndpointDef[] = [
     params: contracts.portfolioIdParamSchema,
     status: 200,
     response: R.PortfolioResponse,
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/split-basis',
+    tag: 'Portfolios',
+    summary: 'Held positions whose stored quantities predate an unbooked stock split.',
+    description:
+      'Valuation multiplies stored quantities by the RAW traded close, so the price side of a ' +
+      'corporate action is correct. The quantity side is not: shares bought before a split are ' +
+      'more shares afterwards, and only the ledger can say so. This read names the affected ' +
+      'positions with the split date and ratio instead of mis-valuing them silently. ' +
+      '`available: false` means no held asset has a splits-capable provider — "cannot tell", ' +
+      'not "all clear".',
+    params: contracts.portfolioIdParamSchema,
+    status: 200,
+    response: R.PortfolioSplitBasisResponse,
   },
   {
     method: 'patch',

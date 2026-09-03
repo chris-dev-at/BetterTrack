@@ -306,6 +306,7 @@ const fixtures: VaultStrictEntity[] = [
       assetId: ASSET_ID,
       date: '2026-07-24',
       close: '456789.1234567',
+      basis: 'unadjusted',
     },
   },
   {
@@ -589,8 +590,32 @@ describe('strict vault document v1', () => {
     );
   });
 
+  it('admits a custom-asset value written before `basis` existed', () => {
+    // The second — and last — non-required field in the strict graph, for the
+    // same mechanical reason as `portfolio.kind`: documents already written
+    // carry no `basis` key, and a required field would lock those vaults out.
+    // Unlike `kind` it DEFAULTS rather than staying absent, because there is no
+    // user choice to fabricate: a custom asset's value marks are the user's own
+    // raw valuations — no issuer, no dividend, no split — so `unadjusted` is
+    // the only basis such a row can ever have been on (§16 2026-09-03).
+    const value = fixtures.find((fixture) => fixture.kind === 'customAssetValue');
+    if (value?.kind !== 'customAssetValue') throw new Error('customAssetValue fixture missing');
+    const { basis: _omitted, ...withoutBasis } = value.data;
+    const parsed = vaultStrictEntitySchema.parse({ ...value, data: withoutBasis });
+    if (parsed.kind !== 'customAssetValue') throw new Error('parse changed kind');
+    expect(parsed.data.basis).toBe('unadjusted');
+    // A bogus token is still refused — the default is a fallback, not a sponge.
+    expect(
+      vaultStrictEntitySchema.safeParse({
+        ...value,
+        data: { ...value.data, basis: 'total-return' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('admits a portfolio row written before `kind` existed, and never invents one', () => {
-    // The ONE optional field in the strict graph, and the reason is mechanical:
+    // One of the two non-required fields in the strict graph (see `basis`
+    // above), and the reason is mechanical:
     // disable strict-parses the rows a vault ALREADY holds, and every document
     // written before board #69 carries no `kind` key at all. Required would
     // lock every pre-existing paranoid vault out of disable. Absent stays

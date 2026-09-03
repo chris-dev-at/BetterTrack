@@ -30,6 +30,7 @@ export {
 export {
   AssetNotFoundError,
   CapabilityUnavailableError,
+  HistoryBasisUnavailableError,
   isNotFoundError,
   isRateLimitError,
 } from './errors';

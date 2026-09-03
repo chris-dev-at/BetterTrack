@@ -515,6 +515,7 @@ describe('buildPortfolioVaultRestoreDocument', () => {
           assetId: MANUAL_ASSET_ID,
           date: '2026-08-20',
           close: '98765432109876.654321',
+          basis: 'unadjusted',
         },
       }),
       expect.objectContaining({
@@ -522,6 +523,7 @@ describe('buildPortfolioVaultRestoreDocument', () => {
           assetId: MANUAL_ASSET_ID,
           date: '2026-08-21',
           close: '0.000001',
+          basis: 'unadjusted',
         },
       }),
     ]);
@@ -613,6 +615,7 @@ describe('buildPortfolioVaultRestoreDocument', () => {
           assetId: MANUAL_ASSET_ID,
           date: '2026-08-20',
           close: '12345678901234.123456',
+          basis: 'unadjusted',
         },
       }),
     ]);

@@ -1599,6 +1599,14 @@
         "loadError": "Der Portfolio-Verlauf konnte nicht geladen werden. Bitte versuche es erneut.",
         "ariaLabelPerformance": "Portfolio-Performance im Zeitverlauf",
         "ariaLabelValue": "Portfolio-Wert im Zeitverlauf"
+      },
+      "splitBasis": {
+        "messageOne": "Bei einer Position fehlt möglicherweise ein Aktiensplit. Ihre Stückzahl entspricht noch den Anteilen vor dem Split, daher können Wert und Gewinn stark abweichen. Bitte prüfe die Position und trage den Split ein.",
+        "messageOther": "Bei {{count}} Positionen fehlt möglicherweise ein Aktiensplit. Ihre Stückzahlen entsprechen noch den Anteilen vor dem Split, daher können Wert und Gewinn stark abweichen. Bitte prüfe die Positionen und trage die Splits ein.",
+        "row": "{{symbol}} — {{quantity}} erfasst, Split {{splits}}",
+        "split": "{{ratio}} am {{date}}",
+        "loading": "Positionen werden auf fehlende Aktiensplits geprüft…",
+        "loadError": "Es konnte nicht geprüft werden, ob bei einer Position ein Aktiensplit fehlt. Bitte versuche es erneut."
       }
     },
     "analytics": {

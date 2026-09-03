@@ -1,4 +1,5 @@
 import type { HistoryInterval, HistoryRange, PricePoint } from '@bettertrack/contracts';
+import type { PriceBasis } from '@bettertrack/domain/holdings';
 
 import type { Database } from '../../data/db';
 import {
@@ -44,6 +45,16 @@ export const REFRESH_DAILY_RANGE: HistoryRange = '1M';
 export const BACKFILL_RANGE: HistoryRange = 'MAX';
 /** Both price jobs persist *daily* closes (§5.3), so they force the 1d interval. */
 export const DAILY_INTERVAL: HistoryInterval = '1d';
+
+/**
+ * The basis both price jobs persist (§16 2026-09-03). `price_history` feeds the
+ * portfolio value engine, which multiplies it by AS-TRANSACTED stored
+ * quantities, so these rows must be the raw traded close — not the
+ * dividend/split-adjusted total-return series they used to be filled from.
+ * Backtests are unaffected: they read the adjusted series straight from the
+ * §5.3 cache (§5.2), never from this table.
+ */
+export const STORED_PRICE_BASIS: PriceBasis = 'unadjusted';
 
 /**
  * Worker rate limit for `prices.backfill`: at most one job per second across the
@@ -146,12 +157,16 @@ export function createPricesRefreshDailyJob(
       const failures: string[] = [];
       for (const asset of targets) {
         try {
-          const result = await deps.marketData.getHistory(
+          const result = await deps.marketData.getUnadjustedHistory(
             { providerId: asset.providerId, providerRef: asset.providerRef },
             REFRESH_DAILY_RANGE,
             DAILY_INTERVAL,
           );
-          const written = await repo.upsertDailyCloses(asset.id, toDailyCloses(result.value));
+          const written = await repo.upsertDailyCloses(
+            asset.id,
+            toDailyCloses(result.value),
+            STORED_PRICE_BASIS,
+          );
           if (written > 0) {
             await ctx.events.publish({ type: 'quote.updated', assetId: asset.id, occurredAt });
           }
@@ -210,12 +225,16 @@ export function createPricesBackfillJob(deps: MarketDataJobDeps): JobDefinition<
         return;
       }
 
-      const result = await deps.marketData.getHistory(
+      const result = await deps.marketData.getUnadjustedHistory(
         { providerId: asset.providerId, providerRef: asset.providerRef },
         BACKFILL_RANGE,
         DAILY_INTERVAL,
       );
-      const written = await repo.upsertDailyCloses(asset.id, toDailyCloses(result.value));
+      const written = await repo.upsertDailyCloses(
+        asset.id,
+        toDailyCloses(result.value),
+        STORED_PRICE_BASIS,
+      );
       ctx.logger.info({ assetId: asset.id, written }, 'prices.backfill complete');
       if (written > 0) {
         await ctx.events.publish({ type: 'quote.updated', assetId: asset.id, occurredAt });

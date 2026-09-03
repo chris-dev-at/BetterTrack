@@ -1599,6 +1599,14 @@
         "loadError": "Portfolio history couldn't be loaded. Please try again.",
         "ariaLabelPerformance": "Portfolio performance over time",
         "ariaLabelValue": "Portfolio value over time"
+      },
+      "splitBasis": {
+        "messageOne": "One holding may be missing a stock split. Its quantity still reflects the shares you owned before the split, so its value and profit can be far off. Check the position and record the split.",
+        "messageOther": "{{count}} holdings may be missing a stock split. Their quantities still reflect the shares you owned before the split, so their value and profit can be far off. Check the positions and record the splits.",
+        "row": "{{symbol}} — {{quantity}} recorded, split {{splits}}",
+        "split": "{{ratio}} on {{date}}",
+        "loading": "Checking your holdings for missing stock splits…",
+        "loadError": "Couldn't check whether any holding is missing a stock split. Please try again."
       }
     },
     "analytics": {

@@ -24,7 +24,12 @@ import {
   type CircuitBreakerSnapshot,
   type CircuitState,
 } from './circuitBreaker';
-import { CapabilityUnavailableError, isNotFoundError, isRateLimitError } from './errors';
+import {
+  CapabilityUnavailableError,
+  HistoryBasisUnavailableError,
+  isNotFoundError,
+  isRateLimitError,
+} from './errors';
 import {
   createFailoverResolver,
   NO_FAILOVER,
@@ -81,6 +86,23 @@ export interface MarketDataService {
    */
   pollQuote(ref: AssetRef): Promise<CachedResult<Quote>>;
   getHistory(
+    ref: AssetRef,
+    range: HistoryRange,
+    interval?: HistoryInterval,
+  ): Promise<CachedResult<PricePoint[]>>;
+  /**
+   * The same series on the raw traded (`unadjusted`) basis — the ONLY series the
+   * portfolio valuation path may multiply stored quantities against (§16
+   * 2026-09-03). Cached, coalesced and breaker-wrapped exactly like
+   * {@link getHistory}, under its own key segment so the two bases can never
+   * overwrite each other.
+   *
+   * Rejects with `HistoryBasisUnavailableError` when the asset's provider cannot
+   * produce that basis — the `historyBasis` declaration is read here, so a
+   * provider whose basis differs is refused instead of silently feeding the
+   * money math. Backtests keep {@link getHistory} (total return, §5.2).
+   */
+  getUnadjustedHistory(
     ref: AssetRef,
     range: HistoryRange,
     interval?: HistoryInterval,
@@ -329,6 +351,32 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
     );
 
   /**
+   * The `unadjusted` history series from one candidate provider, or a refusal
+   * (§16 2026-09-03). THIS is `historyBasis`'s consumer on the valuation path:
+   *
+   *  - a provider that already serves raw closes (`historyBasis: 'unadjusted'`,
+   *    e.g. Stooq and the local `manual` provider) answers with `getHistory`;
+   *  - an `adjusted` provider must offer an explicit `getUnadjustedHistory`
+   *    (Yahoo re-reads `close` from the same chart call);
+   *  - anything else — including a provider that declares no basis at all — is
+   *    refused, so it can never silently feed stored quantities a series they
+   *    are not on. The failover chain's own basis gate (`servesEquivalently`,
+   *    #1588) is unchanged and still runs first.
+   */
+  const unadjustedHistoryOf = (
+    provider: AssetProvider,
+    ref: AssetRef,
+    range: HistoryRange,
+    interval: HistoryInterval,
+  ): Promise<PricePoint[]> => {
+    if (typeof provider.getUnadjustedHistory === 'function') {
+      return provider.getUnadjustedHistory(ref, range, interval);
+    }
+    if (provider.historyBasis === 'unadjusted') return provider.getHistory(ref, range, interval);
+    return Promise.reject(new HistoryBasisUnavailableError(provider.id, 'unadjusted'));
+  };
+
+  /**
    * Revalidation gate: while a provider's breaker for this capability is open,
    * expired entries are served stale with no upstream attempt at all (§5.3 TTL
    * stretch). Once the cooldown elapses (half-open) the next revalidation is the
@@ -453,6 +501,33 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
         isNotFound: isNotFoundError,
         shouldRevalidate: () => resolver.anyAvailable(ref, 'history'),
         loader: () => runChained(ref, 'history', (p) => p.getHistory(ref, range, chosenInterval)),
+      });
+    },
+
+    getUnadjustedHistory(ref, range, interval) {
+      const provider = registry.for(ref);
+      const chosenInterval = interval ?? defaultIntervalForRange(range);
+      if (provider.local) {
+        return callUpstream(provider.id, 'history', () =>
+          unadjustedHistoryOf(provider, ref, range, chosenInterval),
+        ).then((value) => ({ value, stale: false, asOf: now() }));
+      }
+      return cache.getOrLoad<PricePoint[]>({
+        // Distinct key segment: the two bases are different money and must never
+        // share a cache entry (§16 2026-09-03).
+        key: cacheKey(
+          ref.providerId,
+          ref.providerRef,
+          'history',
+          `${range}@${chosenInterval}@unadjusted`,
+        ),
+        ttlSeconds: historyTtlSeconds(range),
+        staleTtlSeconds,
+        negativeTtlSeconds,
+        isNotFound: isNotFoundError,
+        shouldRevalidate: () => resolver.anyAvailable(ref, 'history'),
+        loader: () =>
+          runChained(ref, 'history', (p) => unadjustedHistoryOf(p, ref, range, chosenInterval)),
       });
     },
 

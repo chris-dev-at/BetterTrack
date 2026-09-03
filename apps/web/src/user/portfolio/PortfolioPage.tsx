@@ -16,7 +16,11 @@ import type {
   Transaction,
 } from '@bettertrack/contracts';
 
-import { dismissRecategorization, getRecategorizationStatus } from '../../lib/portfolioApi';
+import {
+  dismissRecategorization,
+  getPortfolioSplitBasis,
+  getRecategorizationStatus,
+} from '../../lib/portfolioApi';
 import {
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
   PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
@@ -1318,6 +1322,84 @@ type TxnDialogState =
   | { kind: 'create'; asset?: TransactionDialogAsset }
   | { kind: 'edit'; transaction: Transaction };
 
+// ─── Split-basis notice (V5-P5, §16 2026-09-03) ───────────────────────────────
+
+/**
+ * Held positions whose stored quantities predate a stock split their ledger
+ * never booked (#1694).
+ *
+ * Valuation now multiplies stored quantities by the RAW traded close, so the
+ * price side of a corporate action is right. The quantity side cannot be fixed
+ * from here — 10 shares bought before a 4:1 split are 40 shares afterwards, and
+ * only the user's ledger can say so. The app never rewrites transactions, so the
+ * affected positions are named instead of being mis-valued in silence.
+ *
+ * Compact by construction (anti-bloat): ONE line per affected position, and
+ * nothing at all in the overwhelmingly common case where the read comes back
+ * empty, unavailable, or failed. A failure here is not news — the portfolio is
+ * rendering fine, and this probe simply could not add to it.
+ */
+function SplitBasisNotice({ portfolioId, enabled }: { portfolioId: string; enabled: boolean }) {
+  const t = useT();
+  const query = useQuery({
+    queryKey: ['portfolio', portfolioId, 'split-basis'],
+    queryFn: ({ signal }) => getPortfolioSplitBasis(portfolioId, signal),
+    enabled,
+    staleTime: 10 * 60_000,
+  });
+
+  // Same discipline as RecategorizeBanner directly below: a normally invisible
+  // background probe keeps its arrival status available to assistive tech
+  // without adding visual noise, and only a real outage is actionable enough to
+  // interrupt the portfolio surface. A confirmed "nothing to say" is silent.
+  if (query.error && classifyApiError(query.error) !== 'outage') return null;
+  if (query.isLoading || query.error) {
+    return (
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        errorLabel={t('portfolio.overview.splitBasis.loadError')}
+        loadingLabel={t('portfolio.overview.splitBasis.loading')}
+        loadingPresentation="sr-only"
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
+
+  const positions = query.data?.positions ?? [];
+  if (!query.data?.available || positions.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <Alert tone="info">
+        <p>
+          {positions.length === 1
+            ? t('portfolio.overview.splitBasis.messageOne')
+            : t('portfolio.overview.splitBasis.messageOther', { count: positions.length })}
+        </p>
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {positions.map((position) => (
+            <li key={position.asset.id}>
+              {t('portfolio.overview.splitBasis.row', {
+                symbol: position.asset.symbol,
+                quantity: formatQuantity(position.quantity),
+                splits: position.splits
+                  .map((split) =>
+                    t('portfolio.overview.splitBasis.split', {
+                      ratio: split.ratio,
+                      date: split.date,
+                    }),
+                  )
+                  .join(', '),
+              })}
+            </li>
+          ))}
+        </ul>
+      </Alert>
+    </div>
+  );
+}
+
 // ─── Re-categorize banner (V3-P2) ─────────────────────────────────────────────
 
 /**
@@ -1963,6 +2045,13 @@ export function PortfolioPage() {
             onDeposit={() => setCashDialogKind('deposit')}
             onWithdraw={() => setCashDialogKind('withdrawal')}
           />
+
+          {/* Directly under the money it qualifies. Server-side detection only:
+              a vaulted portfolio's transactions never reach the server, so the
+              probe would have nothing to read (and the route refuses it). */}
+          {portfolioId ? (
+            <SplitBasisNotice portfolioId={portfolioId} enabled={capabilities.rowReads} />
+          ) : null}
 
           <section aria-label={t('portfolio.overview.chart.heading')} className="bt-section">
             <div className="bt-section__head">

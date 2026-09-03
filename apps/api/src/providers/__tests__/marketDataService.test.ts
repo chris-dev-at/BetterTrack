@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { cacheKey, freshCacheKey, negativeCacheKey, staleCacheKey } from '../cache';
 import { CircuitOpenError } from '../circuitBreaker';
-import { AssetNotFoundError } from '../errors';
+import { AssetNotFoundError, HistoryBasisUnavailableError } from '../errors';
 import {
   createMarketDataService,
   defaultIntervalForRange,
@@ -863,5 +863,86 @@ describe('MarketDataService — a failover never changes the history basis (§13
     expect(await redis.get(staleCacheKey(HISTORY_KEY))).toBeNull();
     // Transient, so not negative-cached either: the next read retries upstream.
     expect(await redis.get(negativeCacheKey(HISTORY_KEY))).toBeNull();
+  });
+});
+
+describe('getUnadjustedHistory — the valuation-path basis gate (§16 2026-09-03)', () => {
+  const RAW: PricePoint[] = [
+    { time: '2026-06-13T00:00:00.000Z', close: 196 },
+    { time: '2026-06-14T00:00:00.000Z', close: 198 },
+    { time: '2026-06-15T00:00:00.000Z', close: 200 },
+  ];
+
+  it('reads the raw series from an adjusted provider that offers one', async () => {
+    const { provider, service } = serviceWith(
+      createFakeProvider(
+        'fake',
+        {
+          history: () => Promise.resolve(sampleHistory()),
+          unadjustedHistory: () => Promise.resolve(RAW),
+        },
+        { historyBasis: 'adjusted' },
+      ),
+    );
+
+    await expect(service.getUnadjustedHistory(REF, '1M', '1d')).resolves.toMatchObject({
+      value: RAW,
+    });
+    expect(provider.calls.unadjustedHistory).toBe(1);
+    // The adjusted read is untouched — backtests still get total return (§5.2).
+    await expect(service.getHistory(REF, '1M', '1d')).resolves.toMatchObject({
+      value: sampleHistory(),
+    });
+    expect(provider.calls.history).toBe(1);
+  });
+
+  it('caches the two bases under different keys', async () => {
+    const { service } = serviceWith(
+      createFakeProvider(
+        'fake',
+        { unadjustedHistory: () => Promise.resolve(RAW) },
+        { historyBasis: 'adjusted' },
+      ),
+    );
+    await service.getHistory(REF, '1M', '1d');
+    await service.getUnadjustedHistory(REF, '1M', '1d');
+
+    expect(await redis.exists(freshCacheKey(cacheKey('fake', 'ACME', 'history', '1M@1d')))).toBe(1);
+    expect(
+      await redis.exists(freshCacheKey(cacheKey('fake', 'ACME', 'history', '1M@1d@unadjusted'))),
+    ).toBe(1);
+  });
+
+  it('uses getHistory for a provider whose declared basis is already unadjusted', async () => {
+    const { provider, service } = serviceWith(
+      createFakeProvider('fake', {}, { historyBasis: 'unadjusted' }),
+    );
+    await expect(service.getUnadjustedHistory(REF, '1M', '1d')).resolves.toMatchObject({
+      value: sampleHistory(),
+    });
+    expect(provider.calls.history).toBe(1);
+    expect(provider.calls.unadjustedHistory).toBe(0);
+  });
+
+  it('refuses an adjusted provider with no raw series rather than substituting one', async () => {
+    const { provider, service } = serviceWith(
+      createFakeProvider('fake', {}, { historyBasis: 'adjusted' }),
+    );
+    await expect(service.getUnadjustedHistory(REF, '1M', '1d')).rejects.toBeInstanceOf(
+      HistoryBasisUnavailableError,
+    );
+    // Never called: an adjusted series must not reach the money math at all.
+    expect(provider.calls.history).toBe(0);
+    // And it is NOT a not-found, so nothing is negative-cached over the asset.
+    expect(
+      await redis.exists(negativeCacheKey(cacheKey('fake', 'ACME', 'history', '1M@1d@unadjusted'))),
+    ).toBe(0);
+  });
+
+  it('refuses a provider that declares no basis at all — unknown is never equal', async () => {
+    const { service } = serviceWith(createFakeProvider('fake'));
+    await expect(service.getUnadjustedHistory(REF, '1M', '1d')).rejects.toBeInstanceOf(
+      HistoryBasisUnavailableError,
+    );
   });
 });

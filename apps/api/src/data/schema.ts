@@ -974,8 +974,23 @@ export const priceHistory = pgTable(
       .references(() => assets.id, { onDelete: 'cascade' }),
     date: date('date').notNull(),
     close: numeric('close').notNull(),
+    /**
+     * Which price basis this row's close is on (§16 2026-09-03). `unadjusted` =
+     * the raw traded close, the only basis stored quantities may be valued
+     * against; `adjusted` = a dividend/split-adjusted total-return point.
+     *
+     * Recorded per row because the PK is `(asset_id, date)` and the nightly
+     * refresh heals only a trailing window: without it, a stored row written
+     * before the basis rule landed would merge into a differently-based
+     * provider series and put a corporate-action-sized cliff mid-chart. The
+     * value engine reads ONLY rows on the basis it is building, so two bases
+     * can never mix within one asset. Every current writer produces raw values
+     * (hence the default); the migration marks the pre-existing upstream rows
+     * `adjusted`, and they age out as the price jobs rewrite them.
+     */
+    basis: text('basis').notNull().default('unadjusted'),
   },
-  // Daily adjusted closes; also FX pairs and custom-asset value points.
+  // Daily closes; also FX pairs and custom-asset value points.
   (t) => [primaryKey({ name: 'price_history_asset_date_pk', columns: [t.assetId, t.date] })],
 );
 

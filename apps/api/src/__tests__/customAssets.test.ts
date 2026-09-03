@@ -724,10 +724,18 @@ describe('GET /api/v1/custom-assets/vault-snapshots (#1529 lossless manual-asset
             },
             searchText: 'EXACT TEST VECTOR EXACT',
           },
-          // Ascending by date, decimals as the exact stored strings.
+          // Ascending by date, decimals as the exact stored strings. `basis` is
+          // the row schema's default (§16 2026-09-03, #1694): a custom asset's
+          // marks are the user's own raw valuations — no issuer, no dividend, no
+          // split — so `unadjusted` is the only basis a manual row can carry.
           values: [
-            { assetId, date: '2026-08-20', close: '98765432109876.654321' },
-            { assetId, date: '2026-08-21', close: '0.000001' },
+            {
+              assetId,
+              date: '2026-08-20',
+              close: '98765432109876.654321',
+              basis: 'unadjusted',
+            },
+            { assetId, date: '2026-08-21', close: '0.000001', basis: 'unadjusted' },
           ],
         },
       ],

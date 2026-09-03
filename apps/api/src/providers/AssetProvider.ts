@@ -101,6 +101,23 @@ export interface AssetProvider {
   /** Price series for a range/interval, on the declared {@link historyBasis} (§5.1, §5.3). */
   getHistory(ref: AssetRef, range: HistoryRange, interval: HistoryInterval): Promise<PricePoint[]>;
 
+  /**
+   * The SAME series on the raw traded (`unadjusted`) basis — what the portfolio
+   * valuation path multiplies stored quantities against (§16 2026-09-03).
+   *
+   * OPTIONAL, and only meaningful for a provider whose {@link historyBasis} is
+   * `adjusted`: one whose `getHistory` is already `unadjusted` needs nothing
+   * here, and the market-data service uses `getHistory` for it. A provider that
+   * is `adjusted` and does NOT implement this cannot serve the valuation path at
+   * all — the service refuses rather than handing the money math a series on a
+   * basis its quantities are not on.
+   */
+  getUnadjustedHistory?(
+    ref: AssetRef,
+    range: HistoryRange,
+    interval: HistoryInterval,
+  ): Promise<PricePoint[]>;
+
   /** Descriptive metadata: name, symbol, exchange, currency, type (§5.1). */
   getMeta(ref: AssetRef): Promise<AssetMeta>;
 

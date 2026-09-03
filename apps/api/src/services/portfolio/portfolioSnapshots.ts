@@ -30,7 +30,9 @@ import {
   dailyCloseSeries,
   netFlowsOverTime,
   valueOverTime,
+  VALUATION_PRICE_BASIS,
   type FlowPoint,
+  type PriceBasis,
   type PricePoint,
   type Transaction as DomainTransaction,
   type ValueOverTimeAsset,
@@ -184,6 +186,12 @@ const SERIES_EDGE_MARGIN_DAYS = 7;
 
 const SERIES_RANGE_LADDER: ReadonlyArray<'1M' | '6M' | '1Y' | '5Y'> = ['1M', '6M', '1Y', '5Y'];
 
+/** A stored `price_history` row as {@link mergeDailyPrices} consumes it. */
+export interface StoredPricePoint extends PricePoint {
+  /** The basis the row itself records — the merge admits only one (§16 2026-09-03). */
+  basis: PriceBasis;
+}
+
 /**
  * Smallest §5.3 range preset whose lookback (per {@link rangeStartMs}) covers
  * the first transaction day plus {@link SERIES_EDGE_MARGIN_DAYS}. The interval
@@ -204,15 +212,30 @@ function seriesHistoryRange(firstTxnDay: string, today: string): HistoryRange {
  * one daily series for {@link valueOverTime}. Provider candles collapse to one
  * close per calendar day (chronological order upstream, so the last candle of a
  * day wins) and take precedence over a stored row on the same date — they are
- * adjusted and fresher; stored rows fill dates the provider window missed and
- * carry the whole asset when the provider call failed.
+ * fresher; stored rows fill dates the provider window missed and carry the whole
+ * asset when the provider call failed.
+ *
+ * **One basis, always** (§16 2026-09-03). Both inputs are pinned to
+ * {@link VALUATION_PRICE_BASIS}: the provider series is fetched through
+ * `getUnadjustedHistory`, and stored rows are admitted only when the row itself
+ * records that basis. That is not belt-and-braces — the nightly refresh heals
+ * only a trailing 35-day window, so on any provider gap an older row written
+ * before this rule would otherwise merge into the raw series and put a
+ * corporate-action-sized cliff mid-chart. Dropping such a row degrades the
+ * series to whatever the provider supplies — normally the full history, since
+ * the fetch range spans the first transaction, and only under a provider outage
+ * a shorter curve. A curve that starts where trustworthy data starts is honest;
+ * a mixed one restates the user's money.
  */
-function mergeDailyPrices(
-  stored: readonly PricePoint[],
+export function mergeDailyPrices(
+  stored: readonly StoredPricePoint[],
   provider: readonly ProviderPricePoint[],
 ): PricePoint[] {
   const byDate = new Map<string, number>();
-  for (const p of stored) byDate.set(p.date, p.close);
+  for (const p of stored) {
+    if (p.basis !== VALUATION_PRICE_BASIS) continue;
+    byDate.set(p.date, p.close);
+  }
   for (const p of provider) {
     if (!Number.isFinite(p.close)) continue;
     byDate.set(p.time.slice(0, 10), p.close);
@@ -364,25 +387,28 @@ export function createPortfolioSnapshotService(
     }
 
     const priceRows = await portfolioRepo.pricesForAssets(usableAssetIds);
-    const storedByAsset = new Map<string, PricePoint[]>();
+    const storedByAsset = new Map<string, StoredPricePoint[]>();
     for (const row of priceRows) {
       const list = storedByAsset.get(row.assetId);
-      const point: PricePoint = { date: row.date, close: row.close };
+      const point: StoredPricePoint = { date: row.date, close: row.close, basis: row.basis };
       if (list) list.push(point);
       else storedByAsset.set(row.assetId, [point]);
     }
 
     // The primary layer is each asset's real daily history through the
-    // market-data keystone (cached, coalesced, serve-stale). Best-effort per
-    // asset: an outage past the stale window degrades that asset to its stored
-    // rows above — the chart renders what is available.
+    // market-data keystone (cached, coalesced, serve-stale), on the RAW traded
+    // basis: stored quantities are as-transacted, so only the unadjusted series
+    // may value them (§16 2026-09-03). Best-effort per asset: an outage past the
+    // stale window — or a provider that cannot serve that basis at all, which
+    // rejects rather than substituting one — degrades that asset to its stored
+    // rows above, so the chart renders what is available.
     const range = seriesHistoryRange(firstTxnDay, today);
     const providerPrices = await Promise.all(
       usableAssetIds.map(async (assetId): Promise<readonly ProviderPricePoint[]> => {
         const asset = assetsById.get(assetId);
         if (!asset) return [];
         try {
-          const cached = await marketData.getHistory(
+          const cached = await marketData.getUnadjustedHistory(
             { providerId: asset.providerId, providerRef: asset.providerRef },
             range,
             '1d',
@@ -401,6 +427,8 @@ export function createPortfolioSnapshotService(
         assetId,
         currency: asset.currency,
         prices: mergeDailyPrices(storedByAsset.get(assetId) ?? [], providerPrices[i] ?? []),
+        // Declared, not assumed: the domain rejects any other basis outright.
+        priceBasis: VALUATION_PRICE_BASIS,
       };
     });
 
