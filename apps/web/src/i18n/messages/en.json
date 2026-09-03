@@ -5007,7 +5007,12 @@
       "firstSeen": "First seen",
       "lastSeen": "Last seen",
       "fingerprint": "Fingerprint",
+      "route": "Route",
+      "httpStatus": "HTTP status",
+      "requestId": "Request ID",
+      "stack": "Stack",
       "context": "Context",
+      "dropped": "{{count}} captures were dropped by the rate cap in the current window — this list is incomplete.",
       "resolve": "Resolve",
       "reopen": "Reopen"
     },

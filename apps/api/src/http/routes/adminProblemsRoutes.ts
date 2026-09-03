@@ -29,13 +29,25 @@ const actorOf = (req: Request): ProblemAdminActor => ({ id: req.authUser!.id, ip
 export function registerAdminProblemsRoutes(router: Router, ctx: AppContext): void {
   router.get('/problems', validateQuery(problemListQuerySchema), async (req, res) => {
     const query = req.valid?.query as ProblemListQuery;
-    const { problems, openCount, total, hasMore } = await ctx.problems.list({
-      kind: query.kind,
-      status: query.status,
-      limit: query.limit,
-      offset: query.offset,
+    const { problems, openCount, total, hasMore, droppedCaptures, droppedCapturesTotal } =
+      await ctx.problems.list({
+        kind: query.kind,
+        status: query.status,
+        limit: query.limit,
+        offset: query.offset,
+      });
+    // The capture budget's refusals ride along with the list: a page showing 60
+    // rows of a 200-fingerprint incident must SAY so, and the admin surface is
+    // the only management surface (§16 2026-07-17) — the container log is not a
+    // channel the operator is expected to read.
+    res.json({
+      problems: problems.map(toProblem),
+      openCount,
+      total,
+      hasMore,
+      droppedCaptures,
+      droppedCapturesTotal,
     });
-    res.json({ problems: problems.map(toProblem), openCount, total, hasMore });
   });
 
   router.get('/problems/:id', validateParams(idParamSchema), async (req, res) => {

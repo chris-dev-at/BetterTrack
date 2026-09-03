@@ -46,6 +46,8 @@ const list: ProblemListResponse = {
   openCount: 1,
   total: 1,
   hasMore: false,
+  droppedCaptures: 0,
+  droppedCapturesTotal: 0,
 };
 
 /** One more row for the paging cases, distinguishable by title. */
@@ -108,8 +110,8 @@ test('loads the next page and keeps the rows already shown', async () => {
   const user = userEvent.setup();
   vi.mocked(api.listProblems).mockImplementation(async (params = {}) =>
     (params.offset ?? 0) === 0
-      ? { problems: [pageRow(1)], openCount: 2, total: 2, hasMore: true }
-      : { problems: [pageRow(2)], openCount: 2, total: 2, hasMore: false },
+      ? { ...list, problems: [pageRow(1)], openCount: 2, total: 2, hasMore: true }
+      : { ...list, problems: [pageRow(2)], openCount: 2, total: 2, hasMore: false },
   );
   renderPage();
 
@@ -125,8 +127,44 @@ test('loads the next page and keeps the rows already shown', async () => {
   expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
 });
 
+test('shows the failed request’s route, status and id, and the stack collapsed', async () => {
+  vi.mocked(api.listProblems).mockResolvedValue({
+    ...list,
+    problems: [
+      {
+        ...problem,
+        context: {
+          method: 'GET',
+          route: '/api/v1/portfolios/:id',
+          status: 500,
+          requestId: '018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f',
+          stack: 'TypeError: boom\n    at portfolioRoutes (portfolioRoutes.ts:1:1)',
+        },
+      },
+    ],
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('GET /api/v1/portfolios/:id')).toBeInTheDocument());
+  expect(screen.getByText('500')).toBeInTheDocument();
+  expect(screen.getByText('018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f')).toBeInTheDocument();
+
+  // Collapsed, not inline: the summary is what shows, the frames sit behind it.
+  const stack = screen.getByText('Stack');
+  expect(stack.closest('details')?.open).toBe(false);
+  expect(stack.closest('details')?.textContent).toContain('portfolioRoutes.ts:1:1');
+});
+
+test('warns that the list is incomplete when the capture budget dropped rows', async () => {
+  vi.mocked(api.listProblems).mockResolvedValue({ ...list, droppedCaptures: 140 });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText(/140 captures were dropped/)).toBeInTheDocument());
+});
+
 test('marks a resolved problem that came back as a regression', async () => {
   vi.mocked(api.listProblems).mockResolvedValue({
+    ...list,
     problems: [
       {
         ...problem,
