@@ -446,7 +446,10 @@ describe('account data export', () => {
     const lines = collected.csv.holdings.trim().split('\n');
     expect(lines[0]).toBe('portfolioId,assetId,netQuantity');
     expect(collected.csv.holdings).not.toContain(closed!.id);
-    expect(collected.csv.holdings).not.toMatch(/e-\d/);
+    // Dust would surface as scientific notation in the quantity column, so assert
+    // there rather than over the whole CSV: a UUID group boundary ("…b95e-1196…")
+    // matches /e-\d/ by itself, which failed this test on the ids alone.
+    for (const line of lines.slice(1)) expect(line.split(',').at(-1)).not.toMatch(/e/i);
     expect(lines.slice(1)).toEqual([`${portfolioId},${held!.id},2`]);
   });
 
