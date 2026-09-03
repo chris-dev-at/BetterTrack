@@ -4,7 +4,9 @@ import { useSearchParams } from 'react-router-dom';
 import {
   PROBLEM_KINDS,
   PROBLEM_STATUSES,
+  problemContextSchema,
   type Problem,
+  type ProblemContext,
   type ProblemKind,
   type ProblemListResponse,
   type ProblemStatus,
@@ -219,6 +221,13 @@ export function ProblemsPage() {
         </div>
       </Panel>
 
+      {/* The capture budget refused rows in this window: what is listed below
+          is then a TRUNCATED incident, and reading it as the whole one is the
+          exact mistake this banner exists to prevent. */}
+      {data && data.droppedCaptures > 0 ? (
+        <Alert tone="info">{t('admin.problems.dropped', { count: data.droppedCaptures })}</Alert>
+      ) : null}
+
       {resolve.error ? <Alert tone="error">{resolve.error}</Alert> : null}
       {reopen.error ? <Alert tone="error">{reopen.error}</Alert> : null}
 
@@ -270,6 +279,29 @@ export function ProblemsPage() {
   );
 }
 
+/** Context keys the row renders itself, so they are not repeated in the JSON. */
+const RENDERED_CONTEXT_KEYS = new Set(['method', 'route', 'status', 'requestId', 'stack']);
+
+/**
+ * Split the stored context into the request facts the row renders as their own
+ * lines, the stack it collapses, and whatever else is left for the JSON block.
+ * Parsed through the contract schema rather than cast: `context` is `jsonb`, so
+ * an older row (captured before the request facts existed) simply has none.
+ */
+function readContext(context: unknown): {
+  detail: ProblemContext | null;
+  rest: Record<string, unknown> | null;
+} {
+  const parsed = problemContextSchema.safeParse(context);
+  if (!parsed.success) return { detail: null, rest: null };
+  // The known keys get their own lines; `rest` is everything a non-request
+  // capture kind (job/provider/import) carries, shown as JSON below.
+  const rest = Object.fromEntries(
+    Object.entries(parsed.data).filter(([key]) => !RENDERED_CONTEXT_KEYS.has(key)),
+  );
+  return { detail: parsed.data, rest: Object.keys(rest).length > 0 ? rest : null };
+}
+
 function ProblemRow({
   problem,
   busy,
@@ -280,6 +312,8 @@ function ProblemRow({
   onMutate: (id: string, next: ProblemStatus) => void;
 }) {
   const t = useT();
+  const { detail, rest } = readContext(problem.context);
+  const stack = detail?.stack ?? null;
 
   return (
     <li>
@@ -331,6 +365,38 @@ function ProblemRow({
 
           <KeyValueList
             rows={[
+              // The request facts first: for an unhandled 500 they are what
+              // names the broken endpoint, and `requestId` is the handle back
+              // to the log line for the same request.
+              ...(detail?.route
+                ? [
+                    {
+                      label: t('admin.problems.route'),
+                      value: (
+                        <span className={TEXT_MONO}>
+                          {detail.method ? `${detail.method} ` : ''}
+                          {detail.route}
+                        </span>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(typeof detail?.status === 'number'
+                ? [
+                    {
+                      label: t('admin.problems.httpStatus'),
+                      value: <span className={TEXT_NUM}>{detail.status}</span>,
+                    },
+                  ]
+                : []),
+              ...(detail?.requestId
+                ? [
+                    {
+                      label: t('admin.problems.requestId'),
+                      value: <span className={TEXT_MONO}>{detail.requestId}</span>,
+                    },
+                  ]
+                : []),
               {
                 label: t('admin.problems.occurrencesLabel'),
                 value: <span className={TEXT_NUM}>{problem.occurrenceCount}</span>,
@@ -350,13 +416,27 @@ function ProblemRow({
             ]}
           />
 
-          {problem.context != null ? (
+          {/* Collapsed, never inline: the stack is the thing to hand a
+              developer, and expanded by default it would bury every other row
+              on the page. */}
+          {stack ? (
+            <details className="text-[12px]">
+              <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
+                {t('admin.problems.stack')}
+              </summary>
+              <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
+                {stack}
+              </pre>
+            </details>
+          ) : null}
+
+          {rest !== null || (detail === null && problem.context != null) ? (
             <details className="text-[12px]">
               <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
                 {t('admin.problems.context')}
               </summary>
               <pre className="mt-2 overflow-x-auto border border-neutral-800 bg-neutral-950 p-3 text-neutral-300">
-                {JSON.stringify(problem.context, null, 2)}
+                {JSON.stringify(rest ?? problem.context, null, 2)}
               </pre>
             </details>
           ) : null}
