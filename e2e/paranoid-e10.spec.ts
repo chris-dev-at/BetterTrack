@@ -914,8 +914,17 @@ test.describe('PARANOID E10 per-vault gate', () => {
    * neither does this spec — a test that flipped it would be exercising a build
    * that does not exist. Promote this when E5's per-connection data home lands
    * the provisioning path (#1415); [E10-A5] fails the moment the flag flips,
-   * which is the reminder. The account-level v1 Drive-only round trip is
-   * covered today by [PD9-A3] in `e2e/paranoid.spec.ts`.
+   * which is the reminder.
+   *
+   * NO OTHER SPEC CARRIES THIS COVERAGE. The account-level v1 Drive-only round
+   * trip in `e2e/paranoid.spec.ts` used to, but it is quarantined behind
+   * `test.skip(true, V1_ENABLE_ENTRY_RETIRED)` since the §16 2026-08-30
+   * entry-point retirement — so the product has no Drive-medium e2e at all,
+   * exactly as this file's header states at the top. (Until #1683 this comment
+   * claimed the opposite, and a reader who stopped here concluded coverage
+   * existed.) Both dead entries are registered as ONE waived V5-P14 scenario in
+   * `e2e/support/v5Gate.mjs`, so the nightly reports the gap by name instead of
+   * going green over it.
    */
   test.fixme('[E10-A9] Drive-only vault round trip (blocked: PER_VAULT_DRIVE_PROVISIONING_AVAILABLE === false)', () => {
     // Intentionally empty: see the block comment above.

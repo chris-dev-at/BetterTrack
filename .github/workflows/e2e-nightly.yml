@@ -16,11 +16,15 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # The current suite has 72 shared tests plus six mobile-gate tests that run
-    # only in the phone project: 150 project tests, or ~38 per shard. Eleven of
-    # the phone-project entries are E10's desktop-only vault arcs, which skip
-    # immediately there and cost a shard nothing; E10's twelfth ([E10-A0], the
-    # arc-inventory guard) needs no browser and runs in both projects.
+    # Sharded four ways across the two projects (`chromium` + `mobile-chromium`).
+    # Deliberately NO headcount here any more: the previous one ("72 shared tests
+    # … ~38 per shard") drifted the moment a spec landed and nobody reconciled
+    # it, so it was silently wrong while reading as budgeted fact. For the live
+    # figure run `pnpm exec playwright test --list`; the merged report prints the
+    # real per-shard totals for the run you are actually looking at. The
+    # desktop-only vault arcs skip immediately in the phone project and cost a
+    # shard nothing; the fixture-free guards ([E10-A0], the V5-P14 manifest gate)
+    # need no browser and run in both projects for the price of a file read.
     # The 60-minute soft test limit leaves ten minutes before the job deadline
     # for Playwright to flush its blob report and for artifact uploads.
     # A GitHub job timeout cancels the runner before those cleanup steps can run.
@@ -168,7 +172,26 @@ jobs:
           fi
           printf 'Merging %s Playwright blob report(s).\n' "${#reports[@]}"
 
-      - name: Verify PD9 cleartext proof
+      - name: Verify V5-P14 required scenarios
+        # THE PHASE GATE (#1683). V5-P14's acceptance line is "nightly e2e green
+        # incl. all new flows", and it names ten flows. Playwright's own exit
+        # code only means "nothing that ran, failed" — an unconditionally
+        # skipped spec, an empty `test.fixme`, or a spec that stopped being
+        # collected all report the same green. `e2e/support/v5Gate.mjs` maps
+        # each of the ten to the test that proves it; this step fails the run
+        # when a mapped test did not produce a passing result, and prints a
+        # covered/waived/failed count into the job summary so "green" can never
+        # again be read as "all ten ran".
+        #
+        # It SUBSUMES the former bespoke "Verify PD9 cleartext proof" step: that
+        # assertion is now `V5_STEP_PROOFS` in the same manifest, graded by the
+        # same parser instead of by a second hand-rolled one. It stays a STEP
+        # proof rather than a scenario because it counts occurrences of one step
+        # inside a test — two would mean a second, unaudited database. It is
+        # currently WAIVED, and says so in the summary: its host test is the same
+        # quarantined declaration the paranoid Drive-only scenario waives, so the
+        # old bespoke `!== 1` check could never have gone green. The waiver turns
+        # red again the moment the step starts occurring.
         shell: bash
         run: |
           shopt -s nullglob
@@ -179,60 +202,13 @@ jobs:
             unzip -p "$report" report.jsonl >> "$combined_report"
           done
 
-          node - "$combined_report" <<'NODE'
-          const { appendFileSync, readFileSync } = require('node:fs');
-
-          const reportPath = process.argv[2];
-          const records = readFileSync(reportPath, 'utf8')
-            .split('\n')
-            .filter(Boolean)
-            .map((line) => JSON.parse(line));
-          const proofTitle = '[PD9-A2] complete DB cleartext probe';
-
-          const successfulResults = new Set(
-            records
-              .filter(
-                (record) =>
-                  record.method === 'onTestEnd' && record.params?.result?.status === 'passed',
-              )
-              .map((record) => record.params.result.id),
-          );
-          const completedSteps = new Set(
-            records
-              .filter(
-                (record) =>
-                  record.method === 'onStepEnd' && !record.params?.step?.error,
-              )
-              .map(
-                (record) =>
-                  `${record.params.testId}:${record.params.resultId}:${record.params.step.id}`,
-              ),
-          );
-          const successfulProofs = records.filter((record) => {
-            if (
-              record.method !== 'onStepBegin' ||
-              record.params?.step?.title !== proofTitle ||
-              !successfulResults.has(record.params.resultId)
-            ) {
-              return false;
-            }
-            return completedSteps.has(
-              `${record.params.testId}:${record.params.resultId}:${record.params.step.id}`,
-            );
-          });
-
-          if (successfulProofs.length !== 1) {
-            throw new Error(
-              `Expected one successful ${proofTitle} step; found ${successfulProofs.length}.`,
-            );
-          }
-
-          const message = `Verified ${proofTitle} at ${process.env.GITHUB_SHA}.`;
-          console.log(message);
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- ${message}\n`);
-          NODE
+          node e2e/support/v5GateReport.mjs "$combined_report"
 
       - name: Merge Playwright reports
+        # The gate step above runs first and can fail the job, and the merged
+        # HTML report is exactly what a reader needs in order to act on that
+        # failure — losing it because the gate tripped is backwards.
+        if: ${{ !cancelled() }}
         run: pnpm exec playwright merge-reports --reporter=html,github,list ./all-blob-reports/blob-report
 
       - name: Upload merged Playwright report
