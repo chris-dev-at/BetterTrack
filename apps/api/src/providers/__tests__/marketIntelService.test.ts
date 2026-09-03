@@ -1,5 +1,5 @@
 import type { AssetProvider } from '../AssetProvider';
-import type { AssetRef, DividendEvents } from '@bettertrack/contracts';
+import type { AssetRef, DividendEvents, SplitEvents } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import { AssetNotFoundError, CapabilityUnavailableError } from '../errors';
 import { createMarketDataService, type MarketDataService } from '../marketDataService';
 import { createProviderRegistry, providerCapabilities } from '../registry';
 
+import { mapSplitEvents } from '../yahooMapping';
 import { createDeferred, sampleHistory, sampleMeta, sampleQuote } from './fakeProvider';
 
 const REF: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
@@ -226,4 +227,55 @@ describe('MarketDataService intel — per-family graceful degradation (dividends
       expect(calls).toBe(1); // answered from the negative cache, no upstream call
     },
   );
+});
+
+describe('MarketDataService intel — announced (upcoming) splits (§13.5 V5-P5 arc d)', () => {
+  // Yahoo is the only provider implementing splits today and it exposes only
+  // PAST ones, so `mapSplitEvents` always returns `upcoming: []` — nothing in a
+  // live deployment ever exercises the forward branch. The fixture below is
+  // literally the row shape that mapper emits, promoted to `upcoming` as a
+  // forward-capable provider would return it, so the branch is tested code
+  // rather than dead code.
+  const MAPPED = mapSplitEvents({
+    meta: { currency: 'USD' },
+    dividends: [],
+    splits: [
+      {
+        date: new Date('2026-09-01T00:00:00.000Z'),
+        numerator: 2,
+        denominator: 1,
+        splitRatio: '2:1',
+      },
+    ],
+  });
+  const ANNOUNCED: SplitEvents = { history: [], upcoming: MAPPED.history };
+
+  it('the mapper-shaped upcoming row survives the keystone, cached read included', () => {
+    expect(MAPPED.upcoming).toEqual([]); // the documented Yahoo limitation
+    expect(ANNOUNCED.upcoming).toEqual([
+      { date: '2026-09-01T00:00:00.000Z', numerator: 2, denominator: 1, ratio: '2:1' },
+    ]);
+  });
+
+  it('serves an announced split unchanged, on the live read and from cache', async () => {
+    const base = makeProvider({ withIntel: true });
+    let calls = 0;
+    const provider = {
+      ...base,
+      getSplitEvents: () => {
+        calls += 1;
+        return Promise.resolve(ANNOUNCED);
+      },
+    } as typeof base;
+    const { service } = serviceWith(provider);
+
+    const live = await service.getSplitEvents(REF);
+    expect(live.value).toEqual(ANNOUNCED);
+
+    // The cache round-trip (JSON in Redis) must not drop or reshape the
+    // announced rows — that is where a "temporary" forward payload would die.
+    const cached = await service.getSplitEvents(REF);
+    expect(cached.value).toEqual(ANNOUNCED);
+    expect(calls).toBe(1);
+  });
 });

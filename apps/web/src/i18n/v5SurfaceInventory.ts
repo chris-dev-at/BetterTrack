@@ -1579,6 +1579,13 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The privacy-sensitive shortcut is intentionally absent unless the owner audience read succeeds; loading, forbidden, and absent remain indistinguishable.',
   },
   {
+    component: 'user/components/CmdKPalette.tsx',
+    read: 'CmdKPalette.capabilities',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered", so an unresolved or failed read leaves the palette exactly as it was — there is no state to draw, and the server stays the real boundary.',
+  },
+  {
     component: 'user/workboard/WorkboardPage.tsx',
     read: 'UpcomingEarningsZone.data',
     states: ['loading', 'error'],
@@ -1980,8 +1987,15 @@ export type V5AsyncStateDebtLedger = Readonly<
  * item reactions, always read) and a paged thread read that only runs, and only
  * polls, while the section is expanded. Both carry loading and error states, and
  * the paged read draws its own empty thread, so the debt ceiling stays at zero.
+ *
+ * 210 → 211 with the V5-P5 market-intel visibility fix (#1661): `CmdKPalette`
+ * reads the deploy-time capability bootstrap so an unconfigured arc has no
+ * palette row leading into it. It deliberately draws no loading or error state —
+ * the read defaults to "offered", so an unresolved or failed fetch leaves the
+ * palette exactly as it was — which is recorded as an exemption above rather
+ * than as debt, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 210;
+export const V5_ASYNC_READ_SITE_BASELINE = 211;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

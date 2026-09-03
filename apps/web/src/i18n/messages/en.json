@@ -3001,7 +3001,9 @@
       "showLess": "Show less",
       "loadError": "Could not load the news digest. Please try again.",
       "emptyTitle": "No recent news",
-      "emptyDescription": "News appears here once there are headlines for the assets you hold or watch."
+      "emptyDescription": "News appears here once there are headlines for the assets you hold or watch.",
+      "unavailableTitle": "News is switched off here",
+      "unavailableDescription": "Market intelligence is not configured for this installation, so no headlines are collected."
     },
     "comingSoon": {
       "overview": {

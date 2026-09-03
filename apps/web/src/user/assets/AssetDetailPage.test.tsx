@@ -228,6 +228,16 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
     expect(screen.getByText('Announced')).toBeInTheDocument();
     expect(screen.getByText('2:1')).toBeInTheDocument();
     expect(screen.getByText('4:1')).toBeInTheDocument();
+
+    // The badge belongs to the UPCOMING row: no provider fills `upcoming` today
+    // (Yahoo exposes only past splits), so this fixture is the only thing
+    // keeping the announced branch live tested code rather than dead code.
+    const announcedRow = screen
+      .getByText('Announced')
+      .closest<HTMLElement>('div.flex.items-center');
+    expect(announcedRow).not.toBeNull();
+    expect(within(announcedRow!).getByText('2:1')).toBeInTheDocument();
+    expect(within(announcedRow!).queryByText('4:1')).not.toBeInTheDocument();
   });
 
   test('hides the splits block when there are no splits', async () => {

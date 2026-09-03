@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { FEATURE_FLAG_KEYS } from '@bettertrack/contracts';
+import { FEATURE_FLAG_KEYS, featureFlagsResponseSchema } from '@bettertrack/contracts';
 
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -51,6 +51,23 @@ describe('feature-flag advertisement (§13.5 V5-P2 arc (c))', () => {
     const res = await request(harness.app).get('/api/v1/feature-flags');
     expect(res.body.flags.chat).toBe(false);
     expect(res.body.flags.alerts).toBe(true);
+  });
+
+  it('advertises the deploy-time market-intel capability so the SPA can hide its destinations', async () => {
+    // Configured (the default): the News tab + palette entry are offered.
+    const on = await request(harness.app).get('/api/v1/feature-flags');
+    expect(on.status).toBe(200);
+    expect(featureFlagsResponseSchema.safeParse(on.body).success).toBe(true);
+    expect(on.body.capabilities).toEqual({ marketIntel: true });
+
+    // Unconfigured: the same read reports it OFF — the client's only way to
+    // learn a deploy-level gate it can never toggle.
+    const off = await createTestApp({ env: { MARKET_INTEL_ENABLED: 'false' } });
+    const res = await request(off.app).get('/api/v1/feature-flags');
+    expect(res.status).toBe(200);
+    expect(res.body.capabilities.marketIntel).toBe(false);
+    // …and it is NOT an admin runtime kill-switch: the registry is untouched.
+    expect(Object.keys(res.body.flags).sort()).toEqual([...FEATURE_FLAG_KEYS].sort());
   });
 });
 
