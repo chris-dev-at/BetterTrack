@@ -41,7 +41,7 @@
     "express-rate-limit": "^7.5.0",
     "fflate": "^0.8.3",
     "helmet": "^8.0.0",
-    "ioredis": "^5.4.2",
+    "ioredis": "^6.0.0",
     "jose": "^6.2.8",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.0",
