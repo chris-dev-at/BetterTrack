@@ -46,12 +46,20 @@ function grafanaCompose(service: Record<string, unknown>): RenderedCompose {
   return { services: { grafana: service } } as RenderedCompose;
 }
 
-const bootstrapEntrypoint = [
-  '/bin/sh',
-  '-c',
-  `cred="\${GF_SECURITY_ADMIN_PASSWORD__FILE:-${credentialFile}}"\n` +
-    'head -c 4096 /dev/urandom | tr -dc "A-Za-z0-9" | cut -c1-32\nexec /run.sh\n',
-];
+function bootstrapScript(overrides: { body?: string } = {}): string[] {
+  return [
+    '/bin/sh',
+    '-c',
+    overrides.body ??
+      `cred=${credentialFile}\n` +
+        "case \"$supplied\" in '' | admin | change_me_before_first_boot) supplied='' ;; esac\n" +
+        'head -c 4096 /dev/urandom | tr -dc "A-Za-z0-9" | cut -c1-32\n' +
+        'grafana cli admin reset-admin-password "$(cat "$cred")"\n' +
+        'exec /run.sh\n',
+  ];
+}
+
+const bootstrapEntrypoint = bootstrapScript();
 
 describe('production Compose Grafana credential gate', () => {
   it('accepts the shipped shape: a file-backed credential seeded by the bootstrap entrypoint', () => {
@@ -70,7 +78,8 @@ describe('production Compose Grafana credential gate', () => {
   it('fails when the compose file reintroduces a hardcoded admin password', () => {
     const rendered = grafanaCompose({
       environment: {
-        GF_SECURITY_ADMIN_PASSWORD: 'admin',
+        // Even a strong literal is refused: the key itself is the regression.
+        GF_SECURITY_ADMIN_PASSWORD: 'a-strong-inline-literal',
         GF_SECURITY_ADMIN_PASSWORD__FILE: credentialFile,
       },
       entrypoint: bootstrapEntrypoint,
@@ -83,7 +92,12 @@ describe('production Compose Grafana credential gate', () => {
 
   it('fails when a defaulted admin password renders (${BT_GRAFANA_ADMIN_PASSWORD:-admin} with the var unset)', () => {
     const rendered = grafanaCompose({
-      environment: { GF_SECURITY_ADMIN_PASSWORD: '', GF_SECURITY_ADMIN_PASSWORD__FILE: '' },
+      // What `GF_SECURITY_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-admin}'`
+      // renders to with the variable unset — the exact shape issue #1698 closed.
+      environment: {
+        GF_SECURITY_ADMIN_PASSWORD: 'admin',
+        GF_SECURITY_ADMIN_PASSWORD__FILE: credentialFile,
+      },
       entrypoint: bootstrapEntrypoint,
     });
 
@@ -135,6 +149,60 @@ describe('production Compose Grafana credential gate', () => {
 
     expect(() => assertGrafanaAdminCredential(rendered, 'test')).toThrow(
       'test: the grafana entrypoint must generate a random credential when none is supplied',
+    );
+  });
+
+  it('fails when the entrypoint stops refusing the known-unsafe literals, so it could seed `admin` itself', () => {
+    const rendered = grafanaCompose({
+      environment: { GF_SECURITY_ADMIN_PASSWORD__FILE: credentialFile },
+      entrypoint: bootstrapScript({
+        body:
+          `cred=${credentialFile}\n` +
+          'head -c 4096 /dev/urandom | tr -dc "A-Za-z0-9" | cut -c1-32\n' +
+          'grafana cli admin reset-admin-password "$(cat "$cred")"\n' +
+          'exec /run.sh\n',
+      }),
+    });
+
+    expect(() => assertGrafanaAdminCredential(rendered, 'test')).toThrow(
+      'test: the grafana entrypoint must keep refusing the known-unsafe credentials',
+    );
+  });
+
+  it('fails when the entrypoint exports GF_SECURITY_ADMIN_PASSWORD next to the __FILE variant (run.sh refuses both)', () => {
+    const rendered = grafanaCompose({
+      environment: { GF_SECURITY_ADMIN_PASSWORD__FILE: credentialFile },
+      entrypoint: bootstrapScript({
+        body:
+          `cred=${credentialFile}\n` +
+          "case \"$supplied\" in '' | admin | change_me_before_first_boot) supplied='' ;; esac\n" +
+          'head -c 4096 /dev/urandom | tr -dc "A-Za-z0-9" | cut -c1-32\n' +
+          'grafana cli admin reset-admin-password "$(cat "$cred")"\n' +
+          'GF_SECURITY_ADMIN_PASSWORD="$(cat "$cred")"\n' +
+          'export GF_SECURITY_ADMIN_PASSWORD\n' +
+          'exec /run.sh\n',
+      }),
+    });
+
+    expect(() => assertGrafanaAdminCredential(rendered, 'test')).toThrow(
+      'test: the grafana entrypoint must not set GF_SECURITY_ADMIN_PASSWORD',
+    );
+  });
+
+  it('fails when the entrypoint never applies the credential to an already-provisioned grafana.db', () => {
+    const rendered = grafanaCompose({
+      environment: { GF_SECURITY_ADMIN_PASSWORD__FILE: credentialFile },
+      entrypoint: bootstrapScript({
+        body:
+          `cred=${credentialFile}\n` +
+          "case \"$supplied\" in '' | admin | change_me_before_first_boot) supplied='' ;; esac\n" +
+          'head -c 4096 /dev/urandom | tr -dc "A-Za-z0-9" | cut -c1-32\n' +
+          'exec /run.sh\n',
+      }),
+    });
+
+    expect(() => assertGrafanaAdminCredential(rendered, 'test')).toThrow(
+      'test: the grafana entrypoint must apply /var/lib/grafana/.bettertrack-admin-password to an already-provisioned grafana.db',
     );
   });
 });

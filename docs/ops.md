@@ -632,10 +632,15 @@ generates a random one on first boot into its persistent volume — read it with
 docker compose -f infra/docker-compose.yml exec grafana cat /var/lib/grafana/.bettertrack-admin-password
 ```
 
-Setting `BT_GRAFANA_ADMIN_PASSWORD` to a real value before first boot uses that
-instead (and is what arms external access). Sign-up and anonymous access are
-disabled. See `docs/monitoring.md` for rotation and
-`infra/.env.production.example` for every knob.
+That command is the credential on every stack, including one whose volume
+predates this bootstrap: the entrypoint applies the file to the existing
+`grafana.db` admin user, so an already-booted stack stops answering to
+`admin`/`admin` on the first restart after the upgrade — no manual step.
+
+Setting `BT_GRAFANA_ADMIN_PASSWORD` to a real value uses that instead (and is
+what arms external access); it is applied to the existing account on the next
+restart. Sign-up and anonymous access are disabled. See `docs/monitoring.md` for
+rotation and `infra/.env.production.example` for every knob.
 
 ## Troubleshooting
 

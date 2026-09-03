@@ -379,8 +379,9 @@ services:
       # inline GF_SECURITY_ADMIN_PASSWORD ever comes back.
       GF_SECURITY_ADMIN_USER: '${BT_GRAFANA_ADMIN_USER:-admin}'
       GF_SECURITY_ADMIN_PASSWORD__FILE: '/var/lib/grafana/.bettertrack-admin-password'
-      # Read by the bootstrap only (Grafana itself never sees this name). Blank
-      # and the published placeholders are treated as "unset" here exactly as
+      # Read by the bootstrap only (Grafana itself never sees this name). The
+      # bootstrap trims, then lower-cases: blank, whitespace-only and the
+      # published placeholders are treated as "unset" here exactly as
       # `isUsableGrafanaPassword` treats them in apps/api/src/config/env.ts.
       BT_GRAFANA_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-}'
       GF_USERS_ALLOW_SIGN_UP: 'false'
@@ -405,7 +406,11 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
     # Admin-credential bootstrap, then the image's own entrypoint. Seeds the
     # credential file inside the persistent grafanadata volume — so its
-    # lifecycle matches grafana.db's — and exports the value for the server.
+    # lifecycle matches grafana.db's — and hands it to the server through the
+    # image's own `__FILE` convention. It deliberately does NOT put the password
+    # in the environment: `/run.sh` refuses to start when a GF_ variable and its
+    # `__FILE` twin are both set ("but are exclusive"), which would crash-loop
+    # the container under `restart: unless-stopped`.
     # `$$` is an escaped `$`: Compose must not interpolate these shell vars.
     entrypoint:
       - /bin/sh
@@ -413,7 +418,10 @@ services:
       - |
         set -eu
         cred=/var/lib/grafana/.bettertrack-admin-password
+        stamp=/var/lib/grafana/.bettertrack-admin-password.applied
+        db=/var/lib/grafana/grafana.db
         supplied="$${BT_GRAFANA_ADMIN_PASSWORD:-}"
+        supplied="$$(printf '%s' "$$supplied" | sed 's/^[[:space:]]*//; s/[[:space:]]*$$//')"
         case "$$(printf '%s' "$$supplied" | tr '[:upper:]' '[:lower:]')" in
           '' | admin | change_me_before_first_boot) supplied='' ;;
         esac
@@ -425,8 +433,27 @@ services:
           echo "bettertrack: generated a random Grafana admin password in $$cred"
         fi
         chmod 600 "$$cred" 2>/dev/null || true
-        GF_SECURITY_ADMIN_PASSWORD="$$(cat "$$cred")"
-        export GF_SECURITY_ADMIN_PASSWORD
+        # Grafana honours a bootstrap password ONLY while it CREATES the admin
+        # user. On a volume that already booted — every stack provisioned before
+        # this change — grafana.db keeps the old password, which is the default
+        # `admin`. Apply the file's credential to that existing account so the
+        # file is always the password that actually authenticates. The stamp
+        # makes it idempotent and keeps a password rotated inside the Grafana UI
+        # from being overwritten on every restart.
+        fingerprint="$$(sha256sum < "$$cred" | cut -d' ' -f1)"
+        if [ "$$fingerprint" != "$$(cat "$$stamp" 2>/dev/null || echo none)" ]; then
+          if [ -f "$$db" ]; then
+            if grafana cli --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --configOverrides="cfg:default.paths.data=/var/lib/grafana" admin reset-admin-password "$$(cat "$$cred")"; then
+              echo "bettertrack: applied $$cred to the Grafana admin user of the existing grafana.db"
+            else
+              echo "bettertrack: FAILED to apply $$cred to the existing Grafana admin user." >&2
+              echo "bettertrack: refusing to start rather than leave the previous (possibly default admin/admin) password answering on this bind." >&2
+              echo "bettertrack: recover with: docker compose exec grafana grafana cli --homepath=/usr/share/grafana admin reset-admin-password <the value in $$cred>" >&2
+              exit 1
+            fi
+          fi
+          (umask 077; printf '%s' "$$fingerprint" > "$$stamp")
+        fi
         exec /run.sh
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

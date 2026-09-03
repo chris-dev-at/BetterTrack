@@ -98,17 +98,30 @@ docker compose -f infra/docker-compose.yml exec grafana cat /var/lib/grafana/.be
 ```
 
 The file lives and dies with `grafana.db` in the same volume, so the password
-survives restarts and re-deploys; wiping the volume regenerates both. To take
-over the credential later, set `BT_GRAFANA_ADMIN_PASSWORD` and — because
-Grafana only reads a bootstrap password when it creates the admin user — apply
-it to the existing account once:
+survives restarts and re-deploys; wiping the volume regenerates both.
 
-```
-docker compose -f infra/docker-compose.yml exec grafana grafana-cli admin reset-admin-password "$BT_GRAFANA_ADMIN_PASSWORD"
-```
+**Upgrading a stack that already booted** (its `grafanadata` volume predates
+this change, so `grafana.db` still holds the old `admin`/`admin` account):
+nothing to do. Grafana itself honours a bootstrap password only while it
+_creates_ the admin user, so the entrypoint applies the credential to the
+existing account for you — on the first boot after the upgrade it runs
+`grafana cli admin reset-admin-password` with the seeded value and records what
+it applied next to the credential file. The read-back command above therefore
+always prints the password that actually authenticates, on new and pre-existing
+volumes alike. If that apply ever fails the container refuses to start rather
+than leave the previous password answering on the bind, and logs the manual
+recovery command.
+
+**Rotating it later**: set `BT_GRAFANA_ADMIN_PASSWORD` (or delete the credential
+file to get a fresh random one) and restart the service — the entrypoint applies
+the new value to the existing account on the next boot. A password changed from
+inside the Grafana UI is left alone: the entrypoint only re-applies when the
+credential file's own content changes.
 
 `apps/api/src/scripts/checkProductionCompose.ts` fails the build if a hardcoded
-or defaulted Grafana admin password is ever reintroduced into the compose file.
+or defaulted Grafana admin password is ever reintroduced into the compose file,
+if the bootstrap stops refusing the known-unsafe literals, or if it stops
+applying the credential to an already-provisioned `grafana.db`.
 
 ## Reaching it from outside the LAN (opt-in, authenticated)
 
@@ -125,8 +138,9 @@ BT_GRAFANA_ADMIN_PASSWORD=<strong>   # required — exposure is refused while un
 
 The auto-generated local credential deliberately does **not** arm this gate: the
 api only ever sees `BT_GRAFANA_ADMIN_PASSWORD`, so opening an external door
-stays an explicit, owner-chosen act. Set it (and run the `reset-admin-password`
-command above if the stack already booted) before enabling external access.
+stays an explicit, owner-chosen act. Set it and restart the grafana service —
+the entrypoint applies it to the existing account — before enabling external
+access.
 
 There is also a **runtime kill-switch** on the admin Diagnostics page (below):
 an admin can cut external reach on the next request with no redeploy. Effective
