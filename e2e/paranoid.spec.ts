@@ -122,6 +122,13 @@ test.use({ trace: 'off', screenshot: 'off', video: 'off' });
  *
  * UN-SKIP when either the entry point returns, or §17/§19 retires the v1 stack
  * and these arcs go with it. Do not weaken them in place.
+ *
+ * REGISTERED AS A WAIVER: "paranoid Drive-only round trip" is one of V5-P14's
+ * ten required scenarios, and with this arc quarantined AND [E10-A9] blocked it
+ * had no live test anywhere — which the nightly reported as green. Both dead
+ * entries are now the single `paranoid-drive-only-round-trip` waiver in
+ * `e2e/support/v5Gate.mjs`: waived against #1638, printed in the job summary as
+ * an explicit gap, and red the day either arc starts passing again.
  */
 const V1_ENABLE_ENTRY_RETIRED =
   'The account-level Paranoid enable entry was retired client-side (PROJECTPLAN §16, 2026-08-30). ' +
