@@ -397,6 +397,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'updateTransaction',
     'deleteTransaction',
     'getPortfolio',
+    'getSplitBasis',
     'getCashMovements',
     'listCashSources',
     'createCashSource',

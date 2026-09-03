@@ -18,6 +18,7 @@ import {
   portfolioListResponseSchema,
   portfolioMutationResponseSchema,
   portfolioResponseSchema,
+  portfolioSplitBasisResponseSchema,
   portfolioTaxSettingsResponseSchema,
   recategorizationStatusResponseSchema,
   setCashBalanceResponseSchema,
@@ -49,6 +50,7 @@ import {
   type PortfolioKind,
   type PortfolioListResponse,
   type PortfolioResponse,
+  type PortfolioSplitBasisResponse,
   type PortfolioSummary,
   type PortfolioTaxSettingsResponse,
   type RecategorizationStatusResponse,
@@ -166,6 +168,24 @@ export async function getPortfolio(
     signal,
   });
   return portfolioResponseSchema.parse(data);
+}
+
+/**
+ * `GET /portfolios/:id/split-basis` — held positions whose stored quantities
+ * predate a stock split their ledger never booked (§16 2026-09-03, #1694).
+ *
+ * A separate read from {@link getPortfolio} on purpose: it fans out to the
+ * splits capability per held asset, so the overview never waits on it.
+ */
+export async function getPortfolioSplitBasis(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<PortfolioSplitBasisResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/split-basis`,
+    { signal },
+  );
+  return portfolioSplitBasisResponseSchema.parse(data);
 }
 
 /**

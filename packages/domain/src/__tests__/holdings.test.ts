@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   dailyCloseSeries,
   deriveHoldings,
+  detectSplitBasisMismatches,
   netFlowsOverTime,
   OversellError,
   QTY_EPSILON,
@@ -1658,5 +1659,342 @@ describe('rebasePerformance', () => {
     expect(() => rebasePerformance([{ date: '2026-01-01', pct: -100 }])).toThrow(
       /non-positive base/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Price basis (§16 2026-09-03, #1694)
+// ---------------------------------------------------------------------------
+
+describe('valuation price basis', () => {
+  /** 10 shares of a dividend payer, held across a three-year window. */
+  const DIVIDEND_TXNS: Transaction[] = [
+    tx({ assetId: 'D', side: 'buy', quantity: 10, price: 100, executedAt: '2023-01-02T00:00:00Z' }),
+  ];
+  /**
+   * The ACTUAL traded closes — what a contract note that day would say — and,
+   * beside them, Yahoo's `adjclose` for the same days. The payer distributes
+   * every year, so the adjusted series is pulled progressively further BELOW
+   * the actual close the further back you look, and only converges at the last
+   * bar. No split is involved: this drift is structural for any dividend payer.
+   */
+  const ACTUAL_CLOSES = [
+    { date: '2023-01-02', close: 100 },
+    { date: '2024-01-02', close: 120 },
+    { date: '2025-01-02', close: 140 },
+    { date: '2026-01-02', close: 150 },
+  ];
+  const ADJUSTED_CLOSES = [
+    { date: '2023-01-02', close: 80 },
+    { date: '2024-01-02', close: 108 },
+    { date: '2025-01-02', close: 133 },
+    { date: '2026-01-02', close: 150 },
+  ];
+
+  const valueOn = (points: Array<{ date: string; valueEur: number }>, date: string) =>
+    points.find((p) => p.date === date)?.valueEur;
+
+  it('values a dividend payer at its actual closes across a multi-year window', async () => {
+    const points = await valueOverTime({
+      transactions: DIVIDEND_TXNS,
+      assets: [{ assetId: 'D', currency: 'EUR', prices: ACTUAL_CLOSES, priceBasis: 'unadjusted' }],
+      today: '2026-01-02',
+      converter: stubConverter(),
+    });
+
+    // 2023-01-02 … 2026-01-02 inclusive: 365 + 366 + 365 day steps + 1.
+    expect(points).toHaveLength(1097);
+    expect(points[0]).toEqual({ date: '2023-01-02', valueEur: 1000 });
+    // Carry-forward between closes — still the last ACTUAL close, not a
+    // restated one.
+    expect(valueOn(points, '2023-12-31')).toBe(1000);
+    expect(valueOn(points, '2024-01-02')).toBe(1200);
+    expect(valueOn(points, '2025-01-02')).toBe(1400);
+    expect(points.at(-1)).toEqual({ date: '2026-01-02', valueEur: 1500 });
+  });
+
+  it('refuses the adjusted series that used to understate the curve', async () => {
+    // What the pre-#1694 pipeline fed: value(2023-01-02) = 10 × 80 = 800 against
+    // an untouched cost basis of 10 × 100 = 1000, i.e. a fabricated −20 %
+    // unrealised loss on the very day of purchase, decaying to 0 only at the
+    // last bar. It is now a hard refusal, not a plausible number.
+    await expect(
+      valueOverTime({
+        transactions: DIVIDEND_TXNS,
+        assets: [
+          { assetId: 'D', currency: 'EUR', prices: ADJUSTED_CLOSES, priceBasis: 'adjusted' },
+        ],
+        today: '2026-01-02',
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/may only be valued on the unadjusted basis/);
+  });
+
+  it('treats an undeclared basis as the valuation basis', async () => {
+    const points = await valueOverTime({
+      transactions: DIVIDEND_TXNS,
+      // No `priceBasis`: every existing caller supplies raw closes, and a caller
+      // holding an adjusted series cannot get it past the boundary above.
+      assets: [{ assetId: 'D', currency: 'EUR', prices: ACTUAL_CLOSES }],
+      today: '2023-01-02',
+      converter: stubConverter(),
+    });
+    expect(points).toEqual([{ date: '2023-01-02', valueEur: 1000 }]);
+  });
+
+  it('lands the "today" point on the same basis as the rest of the curve', async () => {
+    // The last point is always computed fresh from the live spot quote, which
+    // carries no adjustment basis. With the series on the raw basis too, the
+    // final series point and the holdings view agree EXACTLY — before #1694 the
+    // last point sat on a different basis from every point before it.
+    const spot = 150;
+    const points = await valueOverTime({
+      transactions: DIVIDEND_TXNS,
+      assets: [
+        {
+          assetId: 'D',
+          currency: 'EUR',
+          prices: [...ACTUAL_CLOSES.slice(0, 3), { date: '2026-01-02', close: spot }],
+          priceBasis: 'unadjusted',
+        },
+      ],
+      today: '2026-01-02',
+      converter: stubConverter(),
+    });
+    const holdings = await deriveHoldings(
+      DIVIDEND_TXNS,
+      [{ assetId: 'D', currency: 'EUR', quote: { price: spot, prevClose: 140 } }],
+      stubConverter(),
+    );
+
+    expect(points.at(-1)?.valueEur).toBe(1500);
+    expect(holdings[0]?.marketValueEur).toBe(1500);
+    // No discontinuity: the step into the last point is the real price move
+    // (140 → 150 on 10 shares), not a change of basis.
+    expect(points.at(-1)!.valueEur - valueOn(points, '2026-01-01')!).toBe(100);
+  });
+
+  it('fabricates a jump when one asset mixes two bases — the merge must not', async () => {
+    // The provider-gap path: `prices.refreshDaily` heals only a trailing window,
+    // so a row written before #1694 still holds the ADJUSTED close for an old
+    // date while the provider window returns RAW closes for recent ones. Merging
+    // both puts a basis step inside one asset's series.
+    const mixed = await valueOverTime({
+      transactions: [
+        tx({
+          assetId: 'D',
+          side: 'buy',
+          quantity: 10,
+          price: 100,
+          executedAt: '2024-01-02T00:00:00Z',
+        }),
+      ],
+      assets: [
+        {
+          assetId: 'D',
+          currency: 'EUR',
+          prices: [
+            { date: '2024-01-02', close: 80 }, // stale ADJUSTED stored row
+            { date: '2026-01-01', close: 150 }, // fresh RAW provider candle
+          ],
+          priceBasis: 'unadjusted',
+        },
+      ],
+      today: '2026-01-01',
+      converter: stubConverter(),
+    });
+    // €800 → €1500: a reported +87.5 % where the holding actually rose 50 %.
+    expect(valueOn(mixed, '2024-01-02')).toBe(800);
+    expect(valueOn(mixed, '2026-01-01')).toBe(1500);
+
+    const single = await valueOverTime({
+      transactions: [
+        tx({
+          assetId: 'D',
+          side: 'buy',
+          quantity: 10,
+          price: 100,
+          executedAt: '2024-01-02T00:00:00Z',
+        }),
+      ],
+      assets: [
+        {
+          assetId: 'D',
+          currency: 'EUR',
+          prices: [
+            { date: '2024-01-02', close: 100 }, // the same day's ACTUAL close
+            { date: '2026-01-01', close: 150 },
+          ],
+          priceBasis: 'unadjusted',
+        },
+      ],
+      today: '2026-01-01',
+      converter: stubConverter(),
+    });
+    expect(valueOn(single, '2024-01-02')).toBe(1000);
+    expect(valueOn(single, '2026-01-01')).toBe(1500);
+  });
+});
+
+describe('detectSplitBasisMismatches', () => {
+  const SPLIT_4_FOR_1 = { date: '2026-03-02', numerator: 4, denominator: 1, ratio: '4:1' };
+  /** 10 shares bought two months before a 4:1 split, never adjusted in the ledger. */
+  const BUY_BEFORE: Transaction = tx({
+    assetId: 'S',
+    side: 'buy',
+    quantity: 10,
+    price: 200,
+    executedAt: '2026-01-05T00:00:00Z',
+  });
+
+  it('flags a held position whose ledger never booked the split', () => {
+    expect(
+      detectSplitBasisMismatches([BUY_BEFORE], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([{ assetId: 'S', quantity: 10, splits: [SPLIT_4_FOR_1] }]);
+  });
+
+  it('is exactly the mis-valuation the basis rule cannot fix', async () => {
+    // The price side is right — these ARE the actual traded closes, 200 before
+    // the split and 50 after. The quantity side is not: the ledger still says
+    // 10 shares when the user holds 40, so the position renders at a quarter of
+    // its worth. Hence the warning rather than a silent number.
+    const points = await valueOverTime({
+      transactions: [BUY_BEFORE],
+      assets: [
+        {
+          assetId: 'S',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-05', close: 200 },
+            { date: '2026-03-02', close: 50 },
+          ],
+          priceBasis: 'unadjusted',
+        },
+      ],
+      today: '2026-03-02',
+      converter: stubConverter(),
+    });
+    expect(points[0]).toEqual({ date: '2026-01-05', valueEur: 2000 });
+    expect(points.at(-1)).toEqual({ date: '2026-03-02', valueEur: 500 }); // true worth: 2000
+  });
+
+  it('stays silent when the ledger booked the split on the day', () => {
+    const booked = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 30,
+      price: 0,
+      executedAt: '2026-03-02T00:00:00Z',
+    });
+    expect(
+      detectSplitBasisMismatches([BUY_BEFORE, booked], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([]);
+  });
+
+  it('stays silent when the split was booked inside the reconciliation window', () => {
+    const booked = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 30,
+      price: 0,
+      executedAt: '2026-03-09T00:00:00Z', // +7 days, the last day of the grace window
+    });
+    expect(
+      detectSplitBasisMismatches([BUY_BEFORE, booked], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([]);
+  });
+
+  it('flags again once the correction falls outside the window', () => {
+    const late = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 30,
+      price: 0,
+      executedAt: '2026-03-10T00:00:00Z', // +8 days
+    });
+    expect(
+      detectSplitBasisMismatches([BUY_BEFORE, late], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([{ assetId: 'S', quantity: 40, splits: [SPLIT_4_FOR_1] }]);
+  });
+
+  it('flags a reverse split on a held position', () => {
+    const reverse = { date: '2026-03-02', numerator: 1, denominator: 10, ratio: '1:10' };
+    const buy = tx({
+      assetId: 'R',
+      side: 'buy',
+      quantity: 100,
+      price: 3,
+      executedAt: '2026-01-05T00:00:00Z',
+    });
+    expect(detectSplitBasisMismatches([buy], [{ assetId: 'R', splits: [reverse] }])).toEqual([
+      { assetId: 'R', quantity: 100, splits: [reverse] },
+    ]);
+  });
+
+  it('reports several unbooked splits ascending by date', () => {
+    const older = { date: '2025-06-02', numerator: 2, denominator: 1, ratio: '2:1' };
+    expect(
+      detectSplitBasisMismatches(
+        [
+          tx({
+            assetId: 'S',
+            side: 'buy',
+            quantity: 10,
+            price: 400,
+            executedAt: '2025-01-05T00:00:00Z',
+          }),
+        ],
+        [{ assetId: 'S', splits: [SPLIT_4_FOR_1, older] }],
+      ),
+    ).toEqual([{ assetId: 'S', quantity: 10, splits: [older, SPLIT_4_FOR_1] }]);
+  });
+
+  it('ignores splits the position was not open across', () => {
+    const bought_after = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 10,
+      price: 50,
+      executedAt: '2026-04-01T00:00:00Z',
+    });
+    expect(
+      detectSplitBasisMismatches([bought_after], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([]);
+  });
+
+  it('ignores closed positions — nothing is being mis-valued', () => {
+    const sold = tx({
+      assetId: 'S',
+      side: 'sell',
+      quantity: 10,
+      price: 50,
+      executedAt: '2026-04-01T00:00:00Z',
+    });
+    expect(
+      detectSplitBasisMismatches([BUY_BEFORE, sold], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([]);
+  });
+
+  it('skips ratios and dates it cannot act on instead of throwing', () => {
+    expect(
+      detectSplitBasisMismatches(
+        [BUY_BEFORE],
+        [
+          {
+            assetId: 'S',
+            splits: [
+              { date: 'not-a-date', numerator: 4, denominator: 1, ratio: '4:1' },
+              { date: '2026-03-02', numerator: 1, denominator: 1, ratio: '1:1' },
+              { date: '2026-03-02', numerator: 0, denominator: 1, ratio: '0:1' },
+              { date: '2026-03-02', numerator: 4, denominator: Number.NaN, ratio: '4:?' },
+            ],
+          },
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  it('ignores assets with no transactions at all', () => {
+    expect(detectSplitBasisMismatches([], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }])).toEqual([]);
   });
 });

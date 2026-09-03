@@ -258,5 +258,19 @@ export function createManualProvider(deps: CreateManualProviderDeps): AssetProvi
 
   // `local: true`: values live in our own DB, so the market-data service skips
   // the §5.3 TTL/negative caching — an edited value point is visible immediately.
-  return { id: PROVIDER_ID, local: true, search, getQuote, getHistory, getMeta };
+  //
+  // `historyBasis: 'unadjusted'`: a custom asset's value marks are the user's own
+  // raw valuations — there is no issuer, no dividend and no split, so nothing is
+  // ever adjusted away. Declaring it lets the valuation path source these marks
+  // through the same basis gate as a listed asset (§16 2026-09-03) instead of
+  // treating an undeclared basis as unknown and dropping the asset's curve.
+  return {
+    id: PROVIDER_ID,
+    local: true,
+    historyBasis: 'unadjusted',
+    search,
+    getQuote,
+    getHistory,
+    getMeta,
+  };
 }

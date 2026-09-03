@@ -50,6 +50,7 @@ import {
   type PortfolioVaultMoveOutChallengeRequest,
   type PortfolioVaultMoveOutRequest,
   type PortfolioMutationResponse,
+  type PortfolioSplitBasisResponse,
   type SetCashBalanceRequest,
   type UpdateCashMovementRequest,
   type TaxExportLocale,
@@ -394,6 +395,23 @@ export function createPortfolioRouter(ctx: AppContext, limiters: RateLimiters): 
       const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
       if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
       res.json(portfolio);
+    },
+  );
+
+  // GET /portfolios/:portfolioId/split-basis — held positions whose stored
+  // quantities predate a split their ledger never booked (§16 2026-09-03,
+  // #1694). Its own read, not part of the overview body: it fans out to the
+  // splits capability per held asset and the overview is the hottest read.
+  router.get(
+    '/:portfolioId/split-basis',
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body: PortfolioSplitBasisResponse = await ctx.portfolio.getSplitBasis(
+        req.authUser!.id,
+        portfolioId,
+      );
+      res.json(body);
     },
   );
 

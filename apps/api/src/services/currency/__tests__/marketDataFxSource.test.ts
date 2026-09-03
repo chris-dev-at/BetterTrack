@@ -81,6 +81,9 @@ function stubMarketData(
     isLocalProvider: () => false,
     getQuote,
     getHistory,
+    // FX history is a rate series with no corporate actions, so the basis is
+    // irrelevant here; the source only ever calls `getHistory`.
+    getUnadjustedHistory: unused('getUnadjustedHistory'),
     search: unused('search'),
     getMeta: unused('getMeta'),
     pollQuote: unused('pollQuote'),

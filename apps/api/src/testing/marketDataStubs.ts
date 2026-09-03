@@ -40,6 +40,17 @@ export interface StubMarketDataControls {
     range: HistoryRange,
     interval?: HistoryInterval,
   ) => Promise<CachedResult<PricePoint[]>> | CachedResult<PricePoint[]>;
+  /**
+   * Raw-basis history behaviour (§16 2026-09-03), the series the valuation path
+   * reads. Unset ⇒ the `history` fixture stands for BOTH bases, which is what a
+   * test that does not care about the basis wants; set it to model a provider
+   * that serves the two bases differently, or that refuses the raw one.
+   */
+  unadjustedHistory?: (
+    ref: AssetRef,
+    range: HistoryRange,
+    interval?: HistoryInterval,
+  ) => Promise<CachedResult<PricePoint[]>> | CachedResult<PricePoint[]>;
   /** Meta behaviour (unused by the read API, which sources meta from the DB row). */
   meta?: (ref: AssetRef) => Promise<CachedResult<AssetMeta>> | CachedResult<AssetMeta>;
   // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
@@ -77,6 +88,7 @@ export interface StubMarketData extends MarketDataService {
     search: number;
     quote: number;
     history: number;
+    unadjustedHistory: number;
     meta: number;
     poll: number;
     dividends: number;
@@ -96,6 +108,7 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     search: 0,
     quote: 0,
     history: 0,
+    unadjustedHistory: 0,
     meta: 0,
     poll: 0,
     dividends: 0,
@@ -141,6 +154,14 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
       return poll(ref);
     },
     async getHistory(ref, range, interval) {
+      calls.history += 1;
+      return history(ref, range, interval);
+    },
+    async getUnadjustedHistory(ref, range, interval) {
+      calls.unadjustedHistory += 1;
+      if (controls.unadjustedHistory) return controls.unadjustedHistory(ref, range, interval);
+      // Serving the shared fixture: count it as a history call too, so existing
+      // coalescing assertions on `calls.history` keep meaning what they meant.
       calls.history += 1;
       return history(ref, range, interval);
     },

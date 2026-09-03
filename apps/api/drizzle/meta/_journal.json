@@ -771,6 +771,13 @@
       "when": 1788400000000,
       "tag": "0109_usage_activation_marker",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1788500000000,
+      "tag": "0110_price_history_basis",
+      "breakpoints": true
     }
   ]
 }

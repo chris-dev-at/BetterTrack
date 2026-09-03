@@ -262,8 +262,18 @@ function manualSnapshotFixture(): CustomAssetVaultSnapshot {
     },
     values: [
       // Beyond Number precision on purpose: the seam must never float.
-      { assetId: MANUAL_ASSET_ID, date: '2026-07-01', close: '98765432109876.654321' },
-      { assetId: MANUAL_ASSET_ID, date: '2026-07-15', close: '0.000001' },
+      {
+        assetId: MANUAL_ASSET_ID,
+        date: '2026-07-01',
+        close: '98765432109876.654321',
+        basis: 'unadjusted' as const,
+      },
+      {
+        assetId: MANUAL_ASSET_ID,
+        date: '2026-07-15',
+        close: '0.000001',
+        basis: 'unadjusted' as const,
+      },
     ],
   };
 }

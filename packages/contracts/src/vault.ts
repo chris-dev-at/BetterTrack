@@ -1179,6 +1179,14 @@ const customAssetValueRowSchema = z
     assetId: uuidSchema,
     date: daySchema,
     close: decimalStringSchema,
+    /**
+     * Price basis of {@link close} (§16 2026-09-03, #1694), mirroring the
+     * `price_history.basis` column. **Defaulted, never required:** a custom
+     * asset's value marks are the user's own raw valuations — no issuer, no
+     * dividend, no split — so `unadjusted` is the only value a manual row can
+     * carry, and documents written before the column existed parse unchanged.
+     */
+    basis: z.enum(['unadjusted', 'adjusted']).default('unadjusted'),
   })
   .strict();
 

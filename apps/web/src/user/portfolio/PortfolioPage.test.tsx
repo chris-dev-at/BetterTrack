@@ -28,6 +28,7 @@ vi.mock('../../lib/portfolioApi', () => ({
   getValuePoints: vi.fn(),
   putValuePoints: vi.fn(),
   getRecategorizationStatus: vi.fn(),
+  getPortfolioSplitBasis: vi.fn(),
   dismissRecategorization: vi.fn(),
   getCashMovements: vi.fn(),
   depositCash: vi.fn(),
@@ -117,6 +118,7 @@ import {
   dismissRecategorization,
   getPortfolio,
   getPortfolioHistory,
+  getPortfolioSplitBasis,
   getRecategorizationStatus,
   getValuePoints,
   listCashSources,
@@ -389,6 +391,8 @@ beforeEach(() => {
   vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
   // No pending re-categorization by default → the banner stays hidden.
   vi.mocked(getRecategorizationStatus).mockResolvedValue({ pending: 0 });
+  // No unbooked splits by default → the split-basis notice stays hidden.
+  vi.mocked(getPortfolioSplitBasis).mockResolvedValue({ available: true, positions: [] });
   vi.mocked(dismissRecategorization).mockResolvedValue(undefined);
   vi.mocked(previewCash).mockResolvedValue({
     availableEur: 5000,
@@ -1827,5 +1831,63 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
       screen.queryByRole('region', { name: 'Dividend income and calendar' }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(UNRESOLVED_NOTE)).not.toBeInTheDocument();
+  });
+});
+
+describe('PortfolioPage — split-basis notice (§16 2026-09-03, #1694)', () => {
+  test('names the position, its recorded quantity and the split it never booked', async () => {
+    vi.mocked(getPortfolioSplitBasis).mockResolvedValue({
+      available: true,
+      positions: [
+        {
+          asset: {
+            id: 'a1',
+            symbol: 'AAPL',
+            name: 'Apple Inc.',
+            type: 'stock',
+            currency: 'USD',
+            exchange: 'NASDAQ',
+            isCustom: false,
+          },
+          quantity: 10,
+          splits: [{ date: '2026-03-02', numerator: 4, denominator: 1, ratio: '4:1' }],
+        },
+      ],
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByText(/One holding may be missing a stock split\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText('AAPL — 10 recorded, split 4:1 on 2026-03-02')).toBeInTheDocument();
+  });
+
+  test('says nothing when the read comes back clean', async () => {
+    renderPage();
+    await screen.findByRole('region', { name: 'Portfolio totals' });
+    await waitFor(() => expect(getPortfolioSplitBasis).toHaveBeenCalled());
+
+    expect(screen.queryByText(/missing a stock split/)).not.toBeInTheDocument();
+  });
+
+  test('says nothing when no provider can answer — "cannot tell" is not an alarm', async () => {
+    vi.mocked(getPortfolioSplitBasis).mockResolvedValue({ available: false, positions: [] });
+
+    renderPage();
+    await screen.findByRole('region', { name: 'Portfolio totals' });
+    await waitFor(() => expect(getPortfolioSplitBasis).toHaveBeenCalled());
+
+    expect(screen.queryByText(/missing a stock split/)).not.toBeInTheDocument();
+  });
+
+  test('stays silent when the probe itself fails — the portfolio still renders', async () => {
+    vi.mocked(getPortfolioSplitBasis).mockRejectedValue(new Error('boom'));
+
+    renderPage();
+    await screen.findByRole('region', { name: 'Portfolio totals' });
+    await waitFor(() => expect(getPortfolioSplitBasis).toHaveBeenCalled());
+
+    expect(screen.queryByText(/missing a stock split/)).not.toBeInTheDocument();
   });
 });

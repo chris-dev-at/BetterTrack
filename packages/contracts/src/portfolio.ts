@@ -932,6 +932,59 @@ export const portfolioTotalsSchema = z
   .strict();
 export type PortfolioTotals = z.infer<typeof portfolioTotalsSchema>;
 
+// --- Split-basis warnings (`GET /portfolios/:id/split-basis`) ---------------
+
+/**
+ * One past split a held position lived through but never booked. Mirrors
+ * `marketIntel.splitEventSchema` minus the nullable date — a split the detector
+ * could not place in time is dropped rather than reported.
+ */
+export const splitBasisSplitSchema = z
+  .object({
+    /** Effective day, ISO `YYYY-MM-DD`. */
+    date: z.string(),
+    numerator: z.number().positive(),
+    denominator: z.number().positive(),
+    /** The provider's display string, e.g. `"4:1"`. */
+    ratio: z.string(),
+  })
+  .strict();
+export type SplitBasisSplit = z.infer<typeof splitBasisSplitSchema>;
+
+/** One flagged position: the asset, what the ledger says it holds, and the gap. */
+export const splitBasisPositionSchema = z
+  .object({
+    asset: portfolioAssetSchema,
+    /** Net quantity the stored transactions fold to — the number in doubt. */
+    quantity: z.number(),
+    splits: z.array(splitBasisSplitSchema).min(1),
+  })
+  .strict();
+export type SplitBasisPosition = z.infer<typeof splitBasisPositionSchema>;
+
+/**
+ * `GET /portfolios/:portfolioId/split-basis` — held positions whose stored
+ * quantities predate a split their ledger never recorded (§16 2026-09-03).
+ *
+ * Valuation is pinned to the raw traded close, which fixes the price side of the
+ * basis mismatch. It cannot fix the quantity side: 10 shares bought before a 4:1
+ * split are 40 shares afterwards, and only the user's ledger can say so. This
+ * app never rewrites transactions, so the affected positions are named here
+ * instead of being silently mis-valued.
+ *
+ * A SEPARATE read from `GET /portfolios/:portfolioId` on purpose: it fans out to
+ * the splits capability per held asset, which the overview — the hottest read in
+ * the app — must not pay for. `available: false` ⇒ no held asset's provider
+ * offers splits (or the read failed), i.e. "we cannot tell", not "all clear".
+ */
+export const portfolioSplitBasisResponseSchema = z
+  .object({
+    available: z.boolean(),
+    positions: z.array(splitBasisPositionSchema),
+  })
+  .strict();
+export type PortfolioSplitBasisResponse = z.infer<typeof portfolioSplitBasisResponseSchema>;
+
 /** `GET /portfolios/:id` response — holdings + totals (§6.9, §8). */
 export const portfolioResponseSchema = z
   .object({

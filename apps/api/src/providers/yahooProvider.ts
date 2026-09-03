@@ -13,7 +13,7 @@ import type {
   SplitEvents,
 } from '@bettertrack/contracts';
 
-import type { AssetProvider } from './AssetProvider';
+import type { AssetProvider, HistoryBasis } from './AssetProvider';
 import { AssetNotFoundError } from './errors';
 import { rangeStartMs } from './historyWindow';
 import { createRequestQueue, type RequestQueue, type RequestQueueOptions } from './requestQueue';
@@ -165,10 +165,11 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
     };
   }
 
-  async function getHistory(
+  async function fetchHistory(
     ref: AssetRef,
     range: HistoryRange,
     interval: HistoryInterval,
+    basis: HistoryBasis,
   ): Promise<PricePoint[]> {
     const end = now();
     const start = rangeStartMs(end, range);
@@ -185,13 +186,31 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
     const points: PricePoint[] = [];
     for (const candle of candles) {
       // Adjusted close = dividend/split-adjusted total return (§5.2); fall back
-      // to the raw close for intraday candles, where Yahoo omits adjclose. Null
-      // closes (holidays / data gaps) are skipped.
-      const raw = candle.adjclose ?? candle.close;
+      // to the raw close for intraday candles, where Yahoo omits adjclose. The
+      // `unadjusted` basis takes `close` and never falls back to `adjclose` —
+      // a silent basis swap is exactly what the valuation path must not get
+      // (§16 2026-09-03). Null closes (holidays / data gaps) are skipped.
+      const raw = basis === 'unadjusted' ? candle.close : (candle.adjclose ?? candle.close);
       if (typeof raw !== 'number') continue;
       points.push({ time: toIso(candle.date, end), close: raw * priceScale });
     }
     return points;
+  }
+
+  function getHistory(
+    ref: AssetRef,
+    range: HistoryRange,
+    interval: HistoryInterval,
+  ): Promise<PricePoint[]> {
+    return fetchHistory(ref, range, interval, 'adjusted');
+  }
+
+  function getUnadjustedHistory(
+    ref: AssetRef,
+    range: HistoryRange,
+    interval: HistoryInterval,
+  ): Promise<PricePoint[]> {
+    return fetchHistory(ref, range, interval, 'unadjusted');
   }
 
   async function getMeta(ref: AssetRef): Promise<AssetMeta> {
@@ -288,6 +307,10 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
     search,
     getQuote,
     getHistory,
+    // Same chart call, raw `close` instead of `adjclose` — the series the
+    // portfolio valuation path multiplies stored quantities against (§16
+    // 2026-09-03). Backtests keep `getHistory` (total return, §5.2).
+    getUnadjustedHistory,
     getMeta,
     getDividendEvents,
     getEarningsEvents,

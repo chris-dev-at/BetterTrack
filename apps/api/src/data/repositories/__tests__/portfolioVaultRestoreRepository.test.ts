@@ -273,6 +273,7 @@ describe('portfolio vault restore repository', () => {
         assetId: TEST_VECTOR.manualAssetId,
         date: '2026-08-20',
         close: '2',
+        basis: 'unadjusted',
       },
     };
 
@@ -359,7 +360,12 @@ describe('portfolio vault restore repository', () => {
     const customValue: EntityOf<'customAssetValue'> = {
       ...meta(TEST_VECTOR.assetValueEntityId),
       kind: 'customAssetValue',
-      data: { assetId: TEST_VECTOR.manualAssetId, date: '2026-08-20', close: '1' },
+      data: {
+        assetId: TEST_VECTOR.manualAssetId,
+        date: '2026-08-20',
+        close: '1',
+        basis: 'unadjusted',
+      },
     };
 
     await expect(
@@ -404,6 +410,7 @@ describe('portfolio vault restore repository', () => {
         assetId: TEST_VECTOR.manualAssetId,
         date: '2026-08-20',
         close: '99999999999999.000002',
+        basis: 'unadjusted',
       },
     };
 

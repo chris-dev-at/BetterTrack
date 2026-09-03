@@ -2008,8 +2008,15 @@ export type V5AsyncStateDebtLedger = Readonly<
  * the read defaults to "offered", so an unresolved or failed fetch leaves the
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
+ *
+ * 213 → 214 with the V5-P5 split-basis notice (#1694): `SplitBasisNotice` adds
+ * one read — held positions whose stored quantities predate a split their ledger
+ * never booked. It is a background probe, so it follows `RecategorizeBanner`
+ * exactly: silent on a confirmed nothing-to-say and on a non-outage error,
+ * sr-only while loading, and a retryable state only for a real outage. Loading
+ * AND error are both handled, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 213;
+export const V5_ASYNC_READ_SITE_BASELINE = 214;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

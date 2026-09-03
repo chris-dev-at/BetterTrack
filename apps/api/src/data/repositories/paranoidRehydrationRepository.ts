@@ -192,6 +192,7 @@ export function createParanoidRehydrationSourceRepository(
             assetId: entity.data.assetId,
             date: entity.data.date,
             close: entity.data.close,
+            basis: entity.data.basis,
           })),
         );
       });

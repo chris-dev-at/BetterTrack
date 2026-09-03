@@ -98,3 +98,24 @@ export class CapabilityUnavailableError extends Error {
     this.name = 'CapabilityUnavailableError';
   }
 }
+
+/**
+ * The valuation path asked for a history series on a specific price basis and
+ * the provider cannot produce it (§16 2026-09-03) — it declares `adjusted` and
+ * implements no `getUnadjustedHistory`, or declares no basis at all (unknown is
+ * never "equal", the same rule the failover chain applies).
+ *
+ * Deliberately NOT a not-found: the asset exists and the provider is healthy, so
+ * negative-caching it would blank the asset for a whole TTL window. It is a
+ * refusal — the caller degrades (portfolio history falls back to its stored
+ * rows) instead of multiplying stored quantities by a series on the wrong basis.
+ */
+export class HistoryBasisUnavailableError extends Error {
+  constructor(
+    public readonly providerId: string,
+    public readonly basis: string,
+  ) {
+    super(`Provider "${providerId}" cannot serve history on the "${basis}" basis`);
+    this.name = 'HistoryBasisUnavailableError';
+  }
+}

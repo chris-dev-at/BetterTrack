@@ -28,6 +28,8 @@ import type {
   PortfolioPerformancePoint,
   PortfolioListResponse,
   PortfolioResponse,
+  PortfolioSplitBasisResponse,
+  SplitBasisPosition as SplitBasisPositionDto,
   PortfolioSummary,
   PortfolioTotals,
   TransactionInput,
@@ -81,6 +83,7 @@ import {
 } from '../../domain/cashLedger';
 import {
   deriveHoldings,
+  detectSplitBasisMismatches,
   netFlowsOverTime,
   OversellError,
   rebasePerformance,
@@ -89,12 +92,14 @@ import {
   type FlowPoint,
   type Holding,
   type HoldingAssetInput,
+  type SplitBasisAssetInput,
   type Transaction as DomainTransaction,
 } from '../../domain/holdings';
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
+import { capRollupSubjects, type RollupSubject } from '../marketIntel/rollupBudget';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -310,6 +315,12 @@ export interface PortfolioService {
     portfolioId: string,
     opts?: { baseCurrency?: string },
   ): Promise<PortfolioResponse>;
+  /**
+   * Held positions whose stored quantities predate a split the ledger never
+   * booked (§16 2026-09-03, #1694). Deliberately its own read: it fans out to
+   * the splits capability per held asset, and the overview must not pay for it.
+   */
+  getSplitBasis(userId: string, portfolioId: string): Promise<PortfolioSplitBasisResponse>;
   /**
    * One newest-first page of the portfolio's cash movements + rolled-up balance
    * + sources with per-source balances — the liquidity split (§14, #220,
@@ -1260,8 +1271,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     try {
       // 1D/1W fetch over their own range; 1M over the recent month `fetchRange`.
       // The provider interval is the resolved grid's (IN3): the finest native
-      // §5.3 interval no coarser than the grid step.
-      const history = await marketData.getHistory(ref, grid.fetchRange, grid.fetchInterval);
+      // §5.3 interval no coarser than the grid step. Raw basis (§16 2026-09-03):
+      // these candles scale the daily snapshot series, which is unadjusted, and
+      // a `1d` grid step would otherwise pull an adjusted series into a ratio
+      // against it — the two only agree until the next corporate action.
+      const history = await marketData.getUnadjustedHistory(
+        ref,
+        grid.fetchRange,
+        grid.fetchInterval,
+      );
       for (const point of history.value) {
         const atMs = Date.parse(point.time);
         if (!Number.isNaN(atMs) && atMs >= candleStartMs && Number.isFinite(point.close)) {
@@ -2185,6 +2203,92 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         portfolioId,
         minDay([dayOf(existing.executedAt), ...taxCorrections.map((c) => dayOf(c.executedAt))]),
       );
+    },
+
+    async getSplitBasis(userId, portfolioId) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const txns = await transactionRepo.listForPortfolio(portfolioId);
+      if (txns.length === 0) return { available: false, positions: [] };
+
+      const assetIds = [...new Set(txns.map((t) => t.assetId))];
+      const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
+      const domainTxns = txns.map(recordToDomain);
+
+      // Only currently-held positions can be mis-valued, and only an asset whose
+      // provider advertises splits can be checked at all. Both filters run
+      // BEFORE any upstream call, so a book of closed positions costs nothing.
+      const held = new Map<string, number>();
+      for (const h of await deriveHoldings(
+        domainTxns,
+        assetIds.map((assetId) => ({
+          assetId,
+          currency: assetsById.get(assetId)?.currency ?? 'EUR',
+          quote: null,
+        })),
+        fxFor(),
+      )) {
+        if (h.quantity > 0) held.set(h.assetId, h.quantity);
+      }
+
+      const subjects: Array<RollupSubject & { providerId: string; providerRef: string }> = [];
+      for (const assetId of held.keys()) {
+        const asset = assetsById.get(assetId);
+        if (!asset) continue;
+        const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
+        if (!marketData.intelCapabilities(ref).splits) continue;
+        subjects.push({ assetId, symbol: asset.symbol, held: true, ...ref });
+      }
+      if (subjects.length === 0) return { available: false, positions: [] };
+
+      // Same shared outbound queue as every other roll-up, so the same cap
+      // (§13.5 V5-P5). A truncated book simply checks fewer positions this
+      // request; `available` stays true because the ones checked are real.
+      const { selected } = capRollupSubjects(subjects);
+      const splitInputs = await Promise.all(
+        selected.map(async (subject): Promise<SplitBasisAssetInput | null> => {
+          try {
+            const cached = await marketData.getSplitEvents({
+              providerId: subject.providerId,
+              providerRef: subject.providerRef,
+            });
+            return {
+              assetId: subject.assetId,
+              // PAST splits only, and only those the provider placed in time —
+              // an announced future split has nothing to book yet.
+              splits: cached.value.history.flatMap((s) =>
+                s.date === null
+                  ? []
+                  : [
+                      {
+                        date: s.date.slice(0, 10),
+                        numerator: s.numerator,
+                        denominator: s.denominator,
+                        ratio: s.ratio,
+                      },
+                    ],
+              ),
+            };
+          } catch {
+            // One unreachable asset must not blank the whole warning.
+            return null;
+          }
+        }),
+      );
+
+      const resolved = splitInputs.filter((i): i is SplitBasisAssetInput => i !== null);
+      if (resolved.length === 0) return { available: false, positions: [] };
+
+      const positions: SplitBasisPositionDto[] = [];
+      for (const mismatch of detectSplitBasisMismatches(domainTxns, resolved)) {
+        const asset = assetsById.get(mismatch.assetId);
+        if (!asset) continue;
+        positions.push({
+          asset: assetToDto(asset),
+          quantity: mismatch.quantity,
+          splits: mismatch.splits,
+        });
+      }
+      return { available: true, positions };
     },
 
     async getPortfolio(userId, portfolioId, opts) {

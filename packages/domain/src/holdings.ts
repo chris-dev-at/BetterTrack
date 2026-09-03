@@ -13,6 +13,9 @@
  *  3. {@link valueOverTime} — the portfolio value-over-time series, daily from
  *     the first transaction to a given `today`, summing every asset's held
  *     quantity × that day's price, converted at that day's FX rate.
+ *  3b. {@link detectSplitBasisMismatches} — held positions whose stored
+ *     quantities predate a split the ledger never booked, so the mis-valuation
+ *     the basis rule cannot fix is surfaced instead of silently rendered.
  *  4. {@link netFlowsOverTime} + {@link timeWeightedReturn} — the cash-flow-
  *     neutralized performance series (daily time-weighted return, issue #125):
  *     deposits/withdrawals cause no jump; the curve moves only when holdings
@@ -388,6 +391,12 @@ export interface Holding {
  * `null` (nothing is held to value). Every transacted asset must have a matching
  * entry in `assets` — a missing currency/quote is a programming error and
  * throws.
+ *
+ * **Basis (§16 2026-09-03):** `quote.price`/`quote.prevClose` are spot prices,
+ * which carry no adjustment basis — the same
+ * {@link VALUATION_PRICE_BASIS} the series path is pinned to. Never hand this
+ * function an adjusted historical close as a stand-in quote: the position's
+ * quantity is as-transacted, so the two would not describe the same share.
  */
 export async function deriveHoldings(
   transactions: readonly Transaction[],
@@ -464,6 +473,152 @@ export async function deriveHoldings(
 }
 
 // ---------------------------------------------------------------------------
+// Split-basis mismatch detection (§16 2026-09-03)
+// ---------------------------------------------------------------------------
+
+/**
+ * A past stock split as the market-intelligence splits feed reports it
+ * (`packages/contracts/marketIntel.splitEventSchema`), reduced to what the
+ * detector needs. A 4-for-1 split is `numerator: 4, denominator: 1`.
+ */
+export interface KnownSplit {
+  /** Effective day, ISO `YYYY-MM-DD`. */
+  date: string;
+  numerator: number;
+  denominator: number;
+  /** The provider's display string, e.g. `"4:1"` — passed through for the UI. */
+  ratio: string;
+}
+
+/** Per-asset input for {@link detectSplitBasisMismatches}. */
+export interface SplitBasisAssetInput {
+  assetId: string;
+  /** The asset's PAST splits (any order). Announced/upcoming ones do not belong. */
+  splits: readonly KnownSplit[];
+}
+
+/** One currently-held position whose ledger never booked a split it lived through. */
+export interface SplitBasisPosition {
+  assetId: string;
+  /** Net quantity held today, as the stored transactions fold to it. */
+  quantity: number;
+  /** The unbooked splits, ascending by date. Never empty. */
+  splits: KnownSplit[];
+}
+
+/**
+ * How many days after a split's effective date a ledger correction still counts
+ * as "the user booked it". A broker statement is reconciled within the week; a
+ * quantity that matches the post-split expectation anywhere in that window is
+ * evidence the split IS in the ledger, so the position is not flagged.
+ */
+export const SPLIT_BOOKING_GRACE_DAYS = 7;
+
+/** Relative tolerance when matching a booked quantity against the split factor. */
+const SPLIT_QTY_RELATIVE_TOLERANCE = 1e-6;
+
+/** Net quantity through `day` inclusive, clamped at 0 (no shorts, issue #369). */
+function netQuantityThrough(sorted: ReadonlyArray<{ day: string; signed: number }>, day: string) {
+  let qty = 0;
+  for (const t of sorted) {
+    if (t.day > day) break;
+    qty += t.signed;
+    if (qty < QTY_EPSILON) qty = 0;
+  }
+  return qty;
+}
+
+/** ISO day `offset` days after `day` (pure; no clock read). */
+function shiftDay(day: string, offset: number): string {
+  return new Date(dateToMs(day) + offset * MS_PER_DAY).toISOString().slice(0, 10);
+}
+
+/**
+ * Held positions whose stored transactions predate a known split that the
+ * ledger never booked (§16 2026-09-03).
+ *
+ * The valuation basis rule pins prices to the raw traded close, which makes the
+ * *price* side correct. It cannot fix the *quantity* side: a user who bought 10
+ * shares before a 4:1 split and never recorded the split still holds a stored
+ * quantity of 10 against a post-split price of a quarter the size. That is a
+ * defect in the user's ledger, not in the price series, and this app never
+ * rewrites the user's transactions — so it is detected here and surfaced.
+ *
+ * A split is reported for an asset when ALL of:
+ *
+ *  - the position is currently held (net quantity above {@link QTY_EPSILON});
+ *  - the position was already open the day *before* the split's effective date,
+ *    so it lived through the event;
+ *  - the ratio actually changes the share count (`numerator !== denominator`);
+ *  - and no ledger quantity in `[splitDay, splitDay + {@link SPLIT_BOOKING_GRACE_DAYS}]`
+ *    matches `qtyBefore · numerator / denominator` — i.e. the user did not book
+ *    the split themselves in the reconciliation window.
+ *
+ * Deterministic and total: malformed dates and non-finite/non-positive ratio
+ * legs are skipped rather than throwing, because the input is provider data on a
+ * read path — an unparseable upstream row must never break the portfolio page.
+ * Assets with no transactions, and splits before the first transaction, produce
+ * nothing.
+ */
+export function detectSplitBasisMismatches(
+  transactions: readonly Transaction[],
+  assets: readonly SplitBasisAssetInput[],
+): SplitBasisPosition[] {
+  const byAsset = new Map<string, Transaction[]>();
+  for (const t of transactions) {
+    const list = byAsset.get(t.assetId);
+    if (list) list.push(t);
+    else byAsset.set(t.assetId, [t]);
+  }
+
+  const out: SplitBasisPosition[] = [];
+  for (const asset of assets) {
+    const txns = byAsset.get(asset.assetId);
+    if (!txns || txns.length === 0) continue;
+
+    const quantity = reducePosition(txns).quantity;
+    if (quantity <= QTY_EPSILON) continue;
+
+    // Day-keyed signed deltas, ascending. Within-day order is irrelevant: the
+    // cut-offs below are all whole days, exactly like `valueOverTime`.
+    const sorted = txns
+      .map((t) => ({
+        day: dayOf(t.executedAt),
+        signed: t.side === 'buy' ? t.quantity : -t.quantity,
+      }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+
+    const unbooked: KnownSplit[] = [];
+    for (const split of asset.splits) {
+      if (!ISO_DATE.test(split.date)) continue;
+      const { numerator, denominator } = split;
+      if (!Number.isFinite(numerator) || !Number.isFinite(denominator)) continue;
+      if (numerator <= 0 || denominator <= 0 || numerator === denominator) continue;
+
+      const before = netQuantityThrough(sorted, shiftDay(split.date, -1));
+      if (before <= QTY_EPSILON) continue; // not held across the event
+
+      const expected = (before * numerator) / denominator;
+      const tolerance = Math.max(QTY_EPSILON, expected * SPLIT_QTY_RELATIVE_TOLERANCE);
+      let booked = false;
+      for (let offset = 0; offset <= SPLIT_BOOKING_GRACE_DAYS; offset += 1) {
+        const day = shiftDay(split.date, offset);
+        if (Math.abs(netQuantityThrough(sorted, day) - expected) <= tolerance) {
+          booked = true;
+          break;
+        }
+      }
+      if (!booked) unbooked.push(split);
+    }
+
+    if (unbooked.length === 0) continue;
+    unbooked.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    out.push({ assetId: asset.assetId, quantity, splits: unbooked });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Value over time
 // ---------------------------------------------------------------------------
 
@@ -478,6 +633,33 @@ export interface PricePoint {
   close: number;
 }
 
+/**
+ * Which basis a price series is on (§16 2026-09-03, money).
+ *
+ *  - `unadjusted` — the raw traded close, exactly the number printed on a
+ *    contract note that day. A share count from that day multiplies against it.
+ *  - `adjusted` — the dividend/split-adjusted total-return series. Historical
+ *    points are restated so that reinvested dividends and split factors are
+ *    folded into the *price*, which means a past point no longer describes what
+ *    one share cost that day.
+ *
+ * The two are NOT interchangeable on the valuation path. Stored transaction
+ * quantities are **as transacted**: raw share counts on the trading basis of
+ * their execution date. Multiplying them by an adjusted close is a category
+ * error — for any dividend payer the adjusted close sits below the actual close
+ * for the whole history, so the value curve is understated along its entire
+ * length while the cost curve is not, i.e. a permanent phantom loss.
+ */
+export type PriceBasis = 'unadjusted' | 'adjusted';
+
+/**
+ * The only basis stored quantities may be valued against (§16 2026-09-03).
+ * {@link valueOverTime} enforces it; the live-quote path is already on it (a
+ * spot price has no adjustment basis), so the whole curve — including the
+ * always-fresh "today" point — sits on one basis with no discontinuity.
+ */
+export const VALUATION_PRICE_BASIS = 'unadjusted' satisfies PriceBasis;
+
 /** Per-asset inputs for {@link valueOverTime}: currency and its price history. */
 export interface ValueOverTimeAsset {
   assetId: string;
@@ -489,6 +671,14 @@ export interface ValueOverTimeAsset {
    * treatment of sparse custom-asset data (§6.8).
    */
   prices: readonly PricePoint[];
+  /**
+   * Basis of {@link prices}. Only {@link VALUATION_PRICE_BASIS} may value
+   * stored quantities; anything else throws rather than silently restating the
+   * user's money (§16 2026-09-03). Omitted ⇒ the valuation basis, so a caller
+   * that supplies raw closes needs no declaration — but a caller holding an
+   * adjusted series cannot get it past this boundary.
+   */
+  priceBasis?: PriceBasis;
 }
 
 export interface ValueOverTimeInput {
@@ -648,6 +838,18 @@ export async function valueOverTime(input: ValueOverTimeInput): Promise<ValuePoi
       const dayB = dayOf(b.executedAt);
       return dayA < dayB ? -1 : dayA > dayB ? 1 : 0;
     });
+    // Basis gate (§16 2026-09-03): `qty_held(d)` below is a raw fold over the
+    // stored transactions, so the series it multiplies must be the raw traded
+    // close. An adjusted series would restate every historical point and drift
+    // the value curve away from the (unadjusted) cost curve — silently, with a
+    // plausible-looking number. Fail loud, exactly like a missing quote.
+    const priceBasis = asset.priceBasis ?? VALUATION_PRICE_BASIS;
+    if (priceBasis !== VALUATION_PRICE_BASIS) {
+      throw new Error(
+        `valueOverTime: asset ${asset.assetId} supplies ${priceBasis} prices; stored quantities ` +
+          `are as-transacted and may only be valued on the ${VALUATION_PRICE_BASIS} basis.`,
+      );
+    }
     // Validate every point up front — a sort comparator never runs for 0/1
     // element arrays, so validation there would let a lone malformed date or a
     // NaN close silently mis-value the asset.

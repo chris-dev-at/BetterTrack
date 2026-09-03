@@ -1,3 +1,4 @@
+import type { PriceBasis } from '@bettertrack/domain/holdings';
 import { eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
@@ -94,18 +95,28 @@ export function createPriceJobsRepository(db: Database) {
      * erroring or duplicating (§9: backfill/refresh must be idempotent). Returns
      * the number of rows written. Callers must pass at most one row per date — a
      * single `ON CONFLICT DO UPDATE` statement cannot touch the same row twice.
+     *
+     * `basis` travels with the close and is overwritten on conflict alongside it
+     * (§16 2026-09-03): a row's basis is a property of the value stored in it,
+     * so a re-run that replaces an `adjusted` close with the raw one must
+     * relabel the row in the same statement — otherwise the pair would disagree
+     * and the value engine would filter on a lie.
      */
-    async upsertDailyCloses(assetId: string, closes: DailyClose[]): Promise<number> {
+    async upsertDailyCloses(
+      assetId: string,
+      closes: DailyClose[],
+      basis: PriceBasis = 'unadjusted',
+    ): Promise<number> {
       if (closes.length === 0) return 0;
       let written = 0;
       for (let i = 0; i < closes.length; i += UPSERT_CHUNK) {
         const chunk = closes.slice(i, i + UPSERT_CHUNK);
         await db
           .insert(priceHistory)
-          .values(chunk.map((c) => ({ assetId, date: c.date, close: c.close })))
+          .values(chunk.map((c) => ({ assetId, date: c.date, close: c.close, basis })))
           .onConflictDoUpdate({
             target: [priceHistory.assetId, priceHistory.date],
-            set: { close: sql`excluded.close` },
+            set: { close: sql`excluded.close`, basis: sql`excluded.basis` },
           });
         written += chunk.length;
       }

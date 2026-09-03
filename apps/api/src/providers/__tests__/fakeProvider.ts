@@ -77,11 +77,23 @@ export interface FakeProviderControls {
   quote: () => Promise<Quote>;
   search: () => Promise<AssetSearchResult[]>;
   history: () => Promise<PricePoint[]>;
+  /**
+   * How `getUnadjustedHistory` behaves. Omitted ⇒ the provider does NOT
+   * implement the method at all, which is what an `adjusted` provider without a
+   * raw series looks like to the valuation path (§16 2026-09-03).
+   */
+  unadjustedHistory?: () => Promise<PricePoint[]>;
   meta: () => Promise<AssetMeta>;
 }
 
 export interface FakeProvider extends AssetProvider {
-  readonly calls: { quote: number; search: number; history: number; meta: number };
+  readonly calls: {
+    quote: number;
+    search: number;
+    history: number;
+    unadjustedHistory: number;
+    meta: number;
+  };
 }
 
 /** Declarations (not behaviour) a fake provider can carry. */
@@ -100,7 +112,7 @@ export function createFakeProvider(
   controls: Partial<FakeProviderControls> = {},
   declarations: FakeProviderDeclarations = {},
 ): FakeProvider {
-  const calls = { quote: 0, search: 0, history: 0, meta: 0 };
+  const calls = { quote: 0, search: 0, history: 0, unadjustedHistory: 0, meta: 0 };
   const behaviour: FakeProviderControls = {
     quote: controls.quote ?? (() => Promise.resolve(sampleQuote())),
     search: controls.search ?? (() => Promise.resolve([sampleSearchResult({ providerId: id })])),
@@ -128,6 +140,18 @@ export function createFakeProvider(
       calls.history += 1;
       return behaviour.history();
     },
+    ...(controls.unadjustedHistory
+      ? {
+          getUnadjustedHistory(
+            _ref: AssetRef,
+            _range: HistoryRange,
+            _interval: HistoryInterval,
+          ): Promise<PricePoint[]> {
+            calls.unadjustedHistory += 1;
+            return controls.unadjustedHistory!();
+          },
+        }
+      : {}),
     getMeta(_ref: AssetRef): Promise<AssetMeta> {
       calls.meta += 1;
       return behaviour.meta();

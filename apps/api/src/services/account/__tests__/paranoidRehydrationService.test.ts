@@ -683,6 +683,7 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       assetId: ASSET_ID,
       date: '2026-07-24',
       close: '125.1234567',
+      basis: 'unadjusted',
     }),
     entity('018f0000-0000-7000-8000-00000000000e', 'portfolioSetting', {
       portfolioId: PORTFOLIO_ID,
@@ -1198,6 +1199,7 @@ describe('paranoid rehydration service', () => {
         assetId: ASSET_ID,
         date: '2026-07-24',
         close: '0.1234567',
+        basis: 'unadjusted',
       }),
     );
     const service = createParanoidRehydrationService({ db });
@@ -1219,6 +1221,7 @@ describe('paranoid rehydration service', () => {
         assetId: ASSET_ID,
         date: '2026-07-24',
         close: '-1',
+        basis: 'unadjusted',
       }),
     );
 
@@ -2550,6 +2553,7 @@ describe('paranoid rehydration service', () => {
         assetId: ASSET_ID,
         date: '2026-07-24',
         close: '250000.0000000',
+        basis: 'unadjusted',
       }),
     );
     // The migrated document names the owner's custom asset and nothing else.
