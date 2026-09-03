@@ -102,6 +102,23 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     expect(symbols).toEqual(['AAPL', 'MSFT']);
   });
 
+  test('says a capped digest is partial rather than rendering it as complete', async () => {
+    vi.mocked(getNewsDigest).mockResolvedValue({ ...AVAILABLE, truncated: true });
+    renderPage();
+    expect(
+      await screen.findByText(
+        'Partial digest: you hold or watch more assets than we look up in one pass, so some are missing below.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('stays silent about truncation for a digest that covered the whole book', async () => {
+    vi.mocked(getNewsDigest).mockResolvedValue(AVAILABLE);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Apple ships a thing')).toBeInTheDocument());
+    expect(screen.queryByText(/Partial digest/)).not.toBeInTheDocument();
+  });
+
   test('shows a graceful empty state when there is no news', async () => {
     vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [] });
     renderPage();

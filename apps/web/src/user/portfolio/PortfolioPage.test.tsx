@@ -1749,6 +1749,10 @@ describe('PortfolioPage — dividend calendar dates', () => {
 describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => {
   const UNRESOLVED_NOTE =
     "We couldn't work out a projected total for this portfolio just now — part of the data it needs didn't come back. The dates below are unaffected.";
+  const TRUNCATED_PROJECTION_NOTE =
+    'You hold more assets than we project in one pass, so no total is shown. The dates below are unaffected.';
+  const TRUNCATED_CALENDAR_NOTE =
+    'Partial: you hold or watch more assets than we look up in one pass, so some are missing below.';
 
   beforeEach(() => {
     vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
@@ -1801,6 +1805,44 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
     expect(
       within(block).queryByRole('group', { name: 'Projected income period' }),
     ).not.toBeInTheDocument();
+  });
+
+  test('names the fan-out budget for an over-cap projection, not the unresolved reason', async () => {
+    // #1690 refuses a book past MARKET_INTEL_ROLLUP_MAX_ASSETS before it computes
+    // anything, so `available:false` arrives with `truncated:true`. "Too many
+    // holdings to fan out" is not "one holding could not be computed".
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+      ...UNAVAILABLE_PROJECTION,
+      truncated: true,
+    });
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry()],
+      truncated: true,
+    });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(block).getByText(TRUNCATED_PROJECTION_NOTE)).toBeInTheDocument();
+    expect(within(block).queryByText(UNRESOLVED_NOTE)).not.toBeInTheDocument();
+    // …and the calendar beside it says on its own line that it covered only part
+    // of the book, rather than reading as every upcoming date there is.
+    expect(within(block).getByText(TRUNCATED_CALENDAR_NOTE)).toBeInTheDocument();
+  });
+
+  test('says nothing about truncation for roll-ups that covered the whole book', async () => {
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue(RESOLVED_PROJECTION);
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry()],
+    });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(block).queryByText(TRUNCATED_PROJECTION_NOTE)).not.toBeInTheDocument();
+    expect(within(block).queryByText(TRUNCATED_CALENDAR_NOTE)).not.toBeInTheDocument();
   });
 
   test('keeps the projection when the calendar has nothing to show', async () => {

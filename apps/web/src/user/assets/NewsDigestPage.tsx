@@ -70,6 +70,10 @@ export function NewsDigestPage() {
 
   const unavailable = data !== undefined && !data.available;
   const groups = data?.available ? data.groups : [];
+  // The server caps the per-request provider fan-out (§5.3), so a book past that
+  // budget yields a digest covering only part of it. Say so on a single line —
+  // a partial digest rendered as complete reads as "nothing else happened".
+  const truncated = data?.available === true && data.truncated === true;
 
   return (
     <div className="flex flex-col gap-6">
@@ -109,6 +113,7 @@ export function NewsDigestPage() {
           />
         ) : (
           <div className="flex flex-col gap-3">
+            {truncated ? <p className="bt-meta">{t('assets.news.truncated')}</p> : null}
             {groups.map((g) => (
               <NewsGroupCard key={g.assetId} group={g} />
             ))}

@@ -266,12 +266,15 @@ export type EarningsCalendarEntry = z.infer<typeof earningsCalendarEntrySchema>;
  * `GET /assets/intel/earnings-calendar` — the caller's upcoming-earnings feed
  * across held + watched assets, ascending by date (the Workboard panel, arc b).
  * `available` is false (and `entries` empty) whenever the global gate is off, so
- * the panel stays invisible when the arc is unconfigured.
+ * the panel stays invisible when the arc is unconfigured. `truncated` is set
+ * when the book exceeded the roll-up fan-out budget and the calendar therefore
+ * covers only part of it — the panel must say so rather than read as complete.
  */
 export const earningsCalendarResponseSchema = z
   .object({
     available: z.boolean(),
     entries: z.array(earningsCalendarEntrySchema),
+    truncated: rollupTruncatedSchema,
   })
   .strict();
 export type EarningsCalendarResponse = z.infer<typeof earningsCalendarResponseSchema>;

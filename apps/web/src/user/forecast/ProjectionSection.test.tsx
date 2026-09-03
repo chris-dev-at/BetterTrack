@@ -479,6 +479,26 @@ test('an unresolved projection leaves the dividend factor visible but disabled',
   expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
 });
 
+const DIVIDENDS_TRUNCATED_NOTE =
+  'You hold more assets than we project in one pass, so this factor stays out of the projection.';
+
+test('an over-cap projection names the fan-out budget, not the unresolvable-holding reason', async () => {
+  // #1690 refuses a book past MARKET_INTEL_ROLLUP_MAX_ASSETS before spending any
+  // provider budget, so `available:false` arrives with `truncated:true`. The two
+  // refusals are different answers and must not share copy.
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    ...DIVIDENDS_OFF,
+    truncated: true,
+  });
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(screen.getByText(DIVIDENDS_TRUNCATED_NOTE)).toBeInTheDocument();
+  expect(screen.queryByText(DIVIDENDS_UNRESOLVED_NOTE)).not.toBeInTheDocument();
+});
+
 test('a disabled dividend factor contributes nothing to the projected curve', async () => {
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_OFF);
   renderSection();

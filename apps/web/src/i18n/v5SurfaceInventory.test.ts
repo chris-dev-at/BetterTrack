@@ -126,8 +126,11 @@ user/forecast/ProjectionChart.tsx
 user/forecast/ProjectionSection.tsx
 user/forecast/StandingOrderDialog.tsx
 user/forecast/StandingOrdersSection.tsx
+user/home/AddWidgetDrawer.tsx
 user/home/HomePage.tsx
 user/home/WidgetFrame.tsx
+user/home/widgets/DividendsWidget.tsx
+user/home/widgets/NewsWidget.tsx
 user/home/widgets/PortfolioCardsWidget.tsx
 user/oauth/ConsentPage.tsx
 user/parked/ParkedPage.tsx

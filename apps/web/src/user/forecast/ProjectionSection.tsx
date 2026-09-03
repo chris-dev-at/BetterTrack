@@ -217,6 +217,11 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const dividendProjection = marketIntel ? dividendQuery.data : undefined;
   const dividendAvailable = dividendProjection?.available === true;
   const dividendUnresolved = dividendProjection?.available === false;
+  // A fourth state, and NOT the third one wearing its copy (#1690): the book is
+  // past the per-request provider fan-out budget (§5.3), so the projection
+  // refused before computing anything. "Too many holdings to fan out" and "one
+  // holding could not be computed" are different answers to the user.
+  const dividendTruncated = dividendProjection?.truncated === true;
   const monthlyDividendEur =
     dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalEur : 0;
 
@@ -383,7 +388,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
               label={t('forecast.projection.factor.dividends')}
               checked={dividendEnabled && dividendAvailable}
               disabled={dividendUnresolved}
-              note={dividendUnresolved ? t('forecast.projection.dividendsUnresolved') : undefined}
+              note={
+                dividendTruncated
+                  ? t('forecast.projection.dividendsTruncated')
+                  : dividendUnresolved
+                    ? t('forecast.projection.dividendsUnresolved')
+                    : undefined
+              }
               onChange={setDividendEnabled}
             />
           ) : null}
