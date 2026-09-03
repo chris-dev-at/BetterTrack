@@ -9,6 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type {
+  AudienceReachSummary,
   FriendConglomerateRow,
   FriendIdeaRow,
   FriendPortfolioRow,
@@ -186,11 +187,15 @@ export interface AudienceService {
     kind: ShareKind,
     subjectIds: readonly string[],
   ): Promise<Map<string, ShareAudience>>;
-  /** Audience + named-friend count per subject (missing = private/0) — the "who sees this" summary. */
+  /**
+   * Audience + reach per subject (missing = private/0) — the "who sees this"
+   * summary: the named-friend count, and for a `group` share the circle's name
+   * and LIVE roster size (§13.5 V5-P8).
+   */
   audienceSummariesForSubjects(
     kind: ShareKind,
     subjectIds: readonly string[],
-  ): Promise<Map<string, { audience: ShareAudience; friendCount: number }>>;
+  ): Promise<Map<string, AudienceReachSummary>>;
   /**
    * The owner's own `public_link` items — the exact set a public profile composes
    * (V3-P6). Reuses the audience model: a non-public item is structurally absent.

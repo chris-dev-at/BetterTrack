@@ -2199,6 +2199,9 @@ export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
   'dividend.event': 'recipient',
   'budget.exceeded': 'recipient',
   'standing_order.skipped': 'recipient',
+  // V5-P8: recipient = the item owner, actor = the commenter. Both are
+  // principals of the same shared item, so both accounts' modes decide.
+  'comment.created': 'recipientAndActor',
 } as const satisfies Partial<
   Record<DomainEvent['type'], 'recipient' | 'recipientAndActor' | 'mirrorPrincipals'>
 >;

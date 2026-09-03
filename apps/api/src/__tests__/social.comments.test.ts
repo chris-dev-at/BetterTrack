@@ -2,17 +2,19 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 
 import {
   COMMENT_PAGE_SIZE,
   commentThreadResponseSchema,
   commentThreadSummaryResponseSchema,
   itemCommentSchema,
+  notificationListResponseSchema,
   reactionListResponseSchema,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -258,6 +260,158 @@ describe('comment moderation (§13.5 V5-P8)', () => {
           .send()
       ).status,
     ).toBe(204);
+  });
+});
+
+/**
+ * The OWNER's half of the thread (§13.5 V5-P8, #1677). Every friend-shared page
+ * inner-joins friendship against the owner column, and nobody is their own
+ * friend — so the owner reaches their own thread only through the ownership
+ * branch of the audience layer. These pin that branch: it needs NO friendship
+ * row to exist at all, it grants moderation over every comment, and it stays
+ * exactly as audience-scoped as the viewer path (uniform 404, never a 403).
+ */
+describe('the item owner reaches their own thread (§13.5 V5-P8)', () => {
+  it('serves the owner the thread with no friendship row in existence', async () => {
+    const { alice, aliceAgent, bobAgent, bob, carol, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const posted = await postComment(bobAgent, pid, 'from bob');
+    expect(posted.status).toBe(201);
+
+    // Strip EVERY friendship alice has: her own access must not depend on one.
+    await aliceAgent
+      .delete(`/api/v1/social/friends/${bob.id}`)
+      .set(...XRW)
+      .send();
+    await aliceAgent
+      .delete(`/api/v1/social/friends/${carol.id}`)
+      .set(...XRW)
+      .send();
+    const rows = await harness.db
+      .select({ id: schema.friendships.userA })
+      .from(schema.friendships)
+      .where(or(eq(schema.friendships.userA, alice.id), eq(schema.friendships.userB, alice.id)));
+    expect(rows).toHaveLength(0);
+
+    const thread = await getThread(aliceAgent, pid);
+    expect(thread.status).toBe(200);
+    const parsed = commentThreadResponseSchema.parse(thread.body);
+    expect(parsed.commentCount).toBe(1);
+    expect(parsed.comments[0]!.body).toBe('from bob');
+    // The moderation right rides on ownership, not on the (now absent) share.
+    expect(parsed.comments[0]!.canDelete).toBe(true);
+    expect((await getThreadSummary(aliceAgent, pid)).status).toBe(200);
+  });
+
+  it('moderates any comment from the owner path, and only owner/author may', async () => {
+    const { aliceAgent, bobAgent, carolAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const bobComment = (await postComment(bobAgent, pid, 'from bob')).body.id as string;
+    const carolComment = (await postComment(carolAgent, pid, 'from carol')).body.id as string;
+
+    // Non-owner, non-author: 404 — the same opaque answer as an unknown id.
+    const del = (agent: Agent, id: string) =>
+      agent
+        .delete(`/api/v1/social/comments/${id}`)
+        .set(...XRW)
+        .send();
+    expect((await del(carolAgent, bobComment)).status).toBe(404);
+    // Author deletes their own.
+    expect((await del(carolAgent, carolComment)).status).toBe(204);
+    // Owner moderates somebody else's.
+    expect((await del(aliceAgent, bobComment)).status).toBe(204);
+
+    const thread = commentThreadResponseSchema.parse((await getThread(aliceAgent, pid)).body);
+    expect(thread.commentCount).toBe(0);
+  });
+
+  it('never exposes a thread for an item the caller does not own — 404, never 403', async () => {
+    const { aliceAgent, bobAgent, carolAgent, pid } = await scenario();
+    // Private: bob is a friend, carol is a friend, neither owns it.
+    for (const agent of [bobAgent, carolAgent]) {
+      expect((await getThread(agent, pid)).status).toBe(404);
+      expect((await getThreadSummary(agent, pid)).status).toBe(404);
+    }
+    // An id nobody owns is the same 404 (no enumeration).
+    expect((await getThread(bobAgent, '00000000-0000-0000-7000-000000000000')).status).toBe(404);
+    // And the owner's own read is unaffected by any of it.
+    expect((await getThread(aliceAgent, pid)).status).toBe(200);
+  });
+});
+
+/**
+ * The owner's ARRIVAL signal (§13.5 V5-P8, #1677). Moderation the owner cannot
+ * discover is not moderation: posting emits `comment.created` for the item owner
+ * through the ONE notification center, so the matrix, quiet hours and the digest
+ * all apply exactly as they do to every other type.
+ */
+describe('a comment notifies the item owner (§13.5 V5-P8)', () => {
+  async function scenarioWithCapture() {
+    const captured: DispatchableEvent[] = [];
+    harness = await createTestApp({
+      marketData: stubMarketData(),
+      notificationEnqueue: async (event) => {
+        captured.push(event);
+      },
+    });
+    return { captured, ...(await scenario()) };
+  }
+
+  it('emits exactly one comment.created to the owner, naming the item + author', async () => {
+    const { captured, alice, bob, aliceAgent, bobAgent, pid } = await scenarioWithCapture();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    captured.length = 0;
+
+    const posted = await postComment(bobAgent, pid, 'nice one');
+    expect(posted.status).toBe(201);
+
+    const events = captured.filter((e) => e.type === 'comment.created');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'comment.created',
+      userId: alice.id,
+      actorId: bob.id,
+      actorUsername: 'bob',
+      itemKind: 'portfolio',
+      itemId: pid,
+      commentId: posted.body.id,
+    });
+    // The item's own name rides along so the bell/email render without a lookup.
+    expect((events[0] as { itemName: string }).itemName.length).toBeGreaterThan(0);
+  });
+
+  it('never notifies the commenter about their own comment', async () => {
+    const { captured, aliceAgent, pid } = await scenarioWithCapture();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    captured.length = 0;
+
+    expect((await postComment(aliceAgent, pid, 'note to self')).status).toBe(201);
+    expect(captured.filter((e) => e.type === 'comment.created')).toHaveLength(0);
+  });
+
+  it('lands as an in-app bell row for the owner, deep-linked to the thread', async () => {
+    // No capture override here: the default harness dispatches for real, so this
+    // exercises the whole matrix-routed path down to the inbox row.
+    const { aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const posted = await postComment(bobAgent, pid, 'nice one');
+    expect(posted.status).toBe(201);
+
+    const inbox = await aliceAgent.get('/api/v1/notifications');
+    expect(inbox.status).toBe(200);
+    const rows = notificationListResponseSchema.parse(inbox.body).items;
+    const row = rows.find((n) => n.type === 'comment.created');
+    expect(row).toBeDefined();
+    expect(row!.payload).toMatchObject({ itemKind: 'portfolio', itemId: pid });
+    expect(row!.payload?.eventKey).toBe(`comment.created:${posted.body.id}`);
+
+    // The commenter's own inbox stays clean.
+    const bobInbox = await bobAgent.get('/api/v1/notifications');
+    expect(
+      notificationListResponseSchema
+        .parse(bobInbox.body)
+        .items.filter((n) => n.type === 'comment.created'),
+    ).toHaveLength(0);
   });
 });
 

@@ -74,6 +74,15 @@ function notificationLink(notification: Notification): string | null {
       const conversationId = payloadString(p, 'conversationId');
       return conversationId ? `/people/chat/c/${enc(conversationId)}` : '/people/chat';
     }
+    // A comment on an item YOU share → that item's thread on My items, the
+    // one surface the owner moderates from (§13.5 V5-P8).
+    case 'comment.created': {
+      const itemKind = payloadString(p, 'itemKind');
+      const itemId = payloadString(p, 'itemId');
+      return itemKind && itemId
+        ? `/people/shared#thread-${enc(itemKind)}-${enc(itemId)}`
+        : '/people/shared';
+    }
     // Feedback updates share the compact Control Center surface. The payload's
     // feedbackId/messageId remain available for clients with a detail route.
     case 'feedback.status_changed':
