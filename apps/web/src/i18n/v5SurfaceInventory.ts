@@ -1974,8 +1974,14 @@ export type V5AsyncStateDebtLedger = Readonly<
  * the queue read carries its own explicit empty AND unavailable states — an
  * idle queue set and a process that cannot see the queues are drawn
  * differently, on purpose. The debt ceiling stays at zero.
+ *
+ * 209 → 210 with the V5-P8 comment-thread bound (#1613): `CommentThread` splits
+ * its ONE unbounded thread read into two — a cheap collapsed summary (count +
+ * item reactions, always read) and a paged thread read that only runs, and only
+ * polls, while the section is expanded. Both carry loading and error states, and
+ * the paged read draws its own empty thread, so the debt ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 209;
+export const V5_ASYNC_READ_SITE_BASELINE = 210;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

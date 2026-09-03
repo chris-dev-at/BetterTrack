@@ -510,7 +510,12 @@ export function AudiencePicker({
                           />
                           <span className="bt-soft flex-1 truncate">{g.name}</span>
                           <span className="bt-meta shrink-0">
-                            {t('sharing.groupMemberCount', { count: g.memberCount })}
+                            {t(
+                              `sharing.groupMemberCount.${g.memberCount === 1 ? 'one' : 'other'}`,
+                              {
+                                count: g.memberCount,
+                              },
+                            )}
                           </span>
                           <CheckMark active={checked} />
                         </label>

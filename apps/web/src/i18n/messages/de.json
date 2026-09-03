@@ -3151,7 +3151,7 @@
     "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
     "share": "Teilen…",
     "groupsNone": "Du hast noch keine Gruppen. Erstelle auf der Freunde-Seite eine, um mit einem Kreis zu teilen.",
-    "groupMemberCount": "{{count}} Mitglieder",
+    "groupMemberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
     "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
   },
   "watchlists": {
@@ -3460,7 +3460,7 @@
       "cloneError": "Diese Idee konnte nicht geklont werden."
     },
     "comments": {
-      "count": "{{count}} Kommentare",
+      "count": { "one": "{{count}} Kommentar", "other": "{{count}} Kommentare" },
       "empty": "Noch keine Kommentare.",
       "loadError": "Die Kommentare konnten nicht geladen werden. Bitte versuche es erneut.",
       "placeholder": "Kommentar hinzufügen…",
@@ -3468,6 +3468,9 @@
       "posting": "Wird gesendet…",
       "delete": "Löschen",
       "postError": "Kommentar konnte nicht gesendet werden.",
+      "deleteError": "Kommentar konnte nicht gelöscht werden.",
+      "reactionError": "Reaktion konnte nicht gespeichert werden.",
+      "loadOlder": "Ältere Kommentare laden",
       "itemReactionsLabel": "Auf dieses Element reagieren",
       "commentReactionsLabel": "Auf diesen Kommentar reagieren"
     },
@@ -3482,7 +3485,7 @@
       "loadError": "Deine Gruppen konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Noch keine Gruppen",
       "emptyDescription": "Erstelle eine Gruppe, um mit einem bestimmten Freundeskreis zu teilen.",
-      "memberCount": "{{count}} Mitglieder",
+      "memberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
       "nameLabel": "Gruppenname",
       "renameAction": "Umbenennen",
       "membersHeading": "Mitglieder",
@@ -3736,6 +3739,7 @@
       "deleteAction": "Leeren Tresor löschen",
       "deleteReferenced": "Dieser Tresor enthält noch ein Portfolio. Verschiebe alle Portfolios heraus, bevor du ihn löschst.",
       "deleteError": "Der Tresor konnte nicht gelöscht werden. Es wurde nichts geändert.",
+      "deferredFold": "Warum manche Aktionen noch nicht verfügbar sind",
       "deferred": {
         "rotate": "Das Wechseln der Wiederherstellungswörter ist noch nicht verfügbar: Es braucht einen geprüften Durchlauf auf jedem Speicher dieses Tresors. Bis dahin bleiben dieser Tresor und seine Wörter genau so, wie sie sind.",
         "startFresh": "Neu anfangen ist noch nicht verfügbar: Das Verwerfen der verschlüsselten Kopien braucht denselben geprüften Speicher-Durchlauf. Um einen Tresor heute zu entfernen, bewege seine Portfolios hinaus und lösche ihn.",
@@ -3880,6 +3884,7 @@
         "code": "Authenticator-Code",
         "recoveryCode": "Wiederherstellungscode"
       },
+      "preconditionBlocked": "Erforderlich",
       "precondition": {
         "mirrorchain": "Verlasse oder löse die aktive Gruppe dieses Portfolios auf, bevor du es verschiebst.",
         "mirrorchainFix": "Gruppeneinstellungen öffnen",

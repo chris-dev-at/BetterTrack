@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 
 import type { EndpointVaultState } from '../keystore';
 
 import { useT } from '../../../i18n';
-import { Button } from '../../../ui/origin';
+import { Button, LinkButton } from '../../../ui/origin';
 import { vaultStateAffordance, vaultStateActionHref } from '../vaultStateAffordance';
 import { VaultUnlockDialog } from './VaultUnlockDialog';
 
@@ -32,6 +31,7 @@ export function VaultStateAction({
   vaultName,
   onAction,
   inPlace = false,
+  emphasis = 'quiet',
   onUnlocked,
 }: {
   state: EndpointVaultState;
@@ -41,28 +41,40 @@ export function VaultStateAction({
   onAction?: () => void;
   /** Prompt for the device password here instead of linking into settings. */
   inPlace?: boolean;
+  /**
+   * `'primary'` where this IS the row's headline act — the vault manager, where
+   * everything else on the row is maintenance. Purely visual: the affordance,
+   * the target and the element type are identical either way, so a row can have
+   * exactly one primary without any surface changing what it does.
+   */
+  emphasis?: 'quiet' | 'primary';
   onUnlocked?: (() => void) | undefined;
 }) {
   const t = useT();
   const affordance = vaultStateAffordance(state);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  const variant = emphasis === 'primary' ? 'primary' : 'quiet';
 
   if (!onAction && affordance.action === 'provide-phrase') {
     return (
-      <span className="flex flex-wrap gap-3">
-        <Link className="bt-link text-sm" to={vaultStateActionHref(vaultId, 'provide-phrase')}>
+      <span className="flex flex-wrap gap-2">
+        <LinkButton
+          size="sm"
+          to={vaultStateActionHref(vaultId, 'provide-phrase')}
+          variant={variant}
+        >
           {t(affordance.labelKey)}
-        </Link>
-        <Link className="bt-link text-sm" to={vaultStateActionHref(vaultId, 'scan-qr')}>
+        </LinkButton>
+        <LinkButton size="sm" to={vaultStateActionHref(vaultId, 'scan-qr')} variant="quiet">
           {t('vault.manager.action.scanQr')}
-        </Link>
+        </LinkButton>
       </span>
     );
   }
 
   if (onAction) {
     return (
-      <Button onClick={onAction} size="sm" type="button" variant="quiet">
+      <Button onClick={onAction} size="sm" type="button" variant={variant}>
         {t(affordance.labelKey)}
       </Button>
     );
@@ -71,7 +83,7 @@ export function VaultStateAction({
   if (inPlace && affordance.action === 'unlock') {
     return (
       <>
-        <Button onClick={() => setUnlockOpen(true)} size="sm" type="button" variant="quiet">
+        <Button onClick={() => setUnlockOpen(true)} size="sm" type="button" variant={variant}>
           {t(affordance.labelKey)}
         </Button>
         {/* Mounted only while open. The dialog is the one piece of this
@@ -91,9 +103,14 @@ export function VaultStateAction({
     );
   }
 
+  // The settings-sized flows keep their deep link, because they ARE navigation:
+  // a `<button onClick={navigate}>` would cost middle-click, open-in-new-tab
+  // and the `link` role these targets are asserted by. What changes is that it
+  // stops being bare underlined text and wears the quiet button skin the rest
+  // of the app gives a secondary action.
   return (
-    <Link className="bt-link text-sm" to={vaultStateActionHref(vaultId, affordance.action)}>
+    <LinkButton size="sm" to={vaultStateActionHref(vaultId, affordance.action)} variant={variant}>
       {t(affordance.labelKey)}
-    </Link>
+    </LinkButton>
   );
 }

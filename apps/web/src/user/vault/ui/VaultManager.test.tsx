@@ -411,6 +411,77 @@ describe('VaultManager', () => {
     expect(await screen.findByText(/still contains a portfolio/i)).toBeInTheDocument();
   });
 
+  it('renders the row as a state badge, an action bar and ONE fold — not a link line', async () => {
+    // The screenshot the owner reacted to: five underlined words in a row
+    // (three of them `<span>`s only pretending to be links) followed by three
+    // stacked "isn’t available yet" paragraphs above the fold.
+    mocks.stateFor.mockResolvedValue({
+      status: 'stored+wrapped',
+      session: 'locked',
+      requiredAction: { kind: 'unlock', credential: 'device-password' },
+    });
+    const { container } = renderManager();
+    await screen.findByText('Long-term vault');
+
+    // The live state is a badge beside the name, and its tone — not its copy —
+    // is what separates "locked" from "locked out".
+    const badge = await screen.findByText('Locked on this device');
+    expect(badge).toHaveClass('bt-badge', 'bt-badge--gold');
+
+    // One primary act; the maintenance actions are quiet buttons beside it.
+    expect(screen.getByRole('link', { name: 'Unlock' })).toHaveClass('bt-btn--primary');
+    expect(screen.getByRole('button', { name: 'Rename' })).toHaveClass('bt-btn', 'bt-btn--quiet');
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveClass('bt-btn--danger');
+
+    // Deferred actions stay reachable and announced instead of vanishing from
+    // the tab order (§12: never a SILENT disabled control), and each points at
+    // the one fold that names what is missing.
+    const rotate = screen.getByRole('button', { name: 'Rotate recovery words' });
+    expect(rotate).toHaveAttribute('aria-disabled', 'true');
+    const fold = container.querySelector('details.bt-disclosure');
+    expect(fold).not.toBeNull();
+    expect(rotate.getAttribute('aria-describedby')).toBe(fold?.parentElement?.id);
+
+    // All three reasons live in that ONE fold now.
+    expect(container.querySelectorAll('details.bt-disclosure')).toHaveLength(1);
+    expect(screen.getByText('Why some actions aren’t available yet')).toBeInTheDocument();
+    expect(fold?.textContent).toContain('Rotating the recovery words isn’t available yet');
+    expect(fold?.textContent).toContain('Starting fresh isn’t available yet');
+    expect(fold?.textContent).toContain('Changing where a vault is stored isn’t available yet');
+
+    // And nothing on the row is a bare underlined affordance any more.
+    expect(container.querySelector('.bt-link')).toBeNull();
+  });
+
+  it('points each live maintenance action at its OWN deep link', async () => {
+    // Both rows are deferred in the shipped configuration, so the link branch
+    // ships untested: swapping `action=rotate` for `action=start-fresh` passed
+    // the whole suite. Supply the operations that make them live, then pin the
+    // targets — one of these sends a user to a destructive flow.
+    const managerOperations: VaultManagerOperations = {
+      ...operations,
+      rotate: vi.fn(async () => undefined),
+      startFresh: vi.fn(async () => undefined),
+    };
+    renderManager('/control/privacy', managerOperations);
+    await screen.findByText('Long-term vault');
+
+    expect(screen.getByRole('link', { name: 'Rotate recovery words' })).toHaveAttribute(
+      'href',
+      `/control/privacy?vault=${VAULT_ID}&action=rotate`,
+    );
+    expect(screen.getByRole('link', { name: 'Start fresh' })).toHaveAttribute(
+      'href',
+      `/control/privacy?vault=${VAULT_ID}&action=start-fresh`,
+    );
+    // The fold stays — "Change storage" is deferred unconditionally in this
+    // build — but it must no longer claim the two actions that just went live.
+    const fold = screen.getByText('Why some actions aren’t available yet').closest('details');
+    expect(fold?.textContent).toContain('Changing where a vault is stored isn’t available yet');
+    expect(fold?.textContent).not.toContain('Rotating the recovery words');
+    expect(fold?.textContent).not.toContain('Starting fresh isn’t available yet');
+  });
+
   it('names an open portfolio in the membership chip instead of repeating the vault', async () => {
     // FAILURE MAP #6: the chip read "Private Holdings" under a vault called
     // "Private Holdings" — the vault named after itself. Locked stays alias.

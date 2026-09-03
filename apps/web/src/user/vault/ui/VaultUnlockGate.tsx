@@ -5,10 +5,10 @@ import type { VaultMediaSet } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { getTwoFactorStatus } from '../../../lib/twoFactorApi';
-import { Button as OriginButton } from '../../../ui/origin';
+import { Button as OriginButton, CheckRow, Disclosure } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { AsyncReadState } from '../../components/AsyncReadState';
-import { Alert, AuthCard, Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
+import { Alert, AuthCard, Button, TextField } from '../../components/ui';
 import { VaultCryptoError } from '../errors';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
 import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
@@ -111,21 +111,10 @@ export function VaultUnlockGate({
           value={passphrase}
         />
 
-        <label className="bt-soft flex items-start gap-2 text-sm">
-          <input
-            checked={keepUnlocked}
-            disabled={busy}
-            onChange={(event) => setKeepUnlocked(event.target.checked)}
-            style={CHECKBOX_STYLE}
-            type="checkbox"
-          />
-          <span>
-            {t('vault.unlock.keepUnlocked')}
-            <span className="bt-muted mt-1 block text-xs">
-              {t('vault.unlock.keepUnlockedHint')}
-            </span>
-          </span>
-        </label>
+        <CheckRow checked={keepUnlocked} disabled={busy} onChange={setKeepUnlocked}>
+          {t('vault.unlock.keepUnlocked')}
+          <span className="bt-muted mt-1 block text-xs">{t('vault.unlock.keepUnlockedHint')}</span>
+        </CheckRow>
 
         <div className="bt-panel flex flex-col gap-2 p-3">
           <label className="bt-row-title" htmlFor="vault-recovery-kit">
@@ -262,9 +251,8 @@ function StuckFold({
   }
 
   return (
-    <details className="bt-panel p-3">
-      <summary className="bt-row-title cursor-pointer">{t('vault.unlock.stuck.title')}</summary>
-      <div className="mt-3 flex flex-col gap-3">
+    <Disclosure summary={t('vault.unlock.stuck.title')}>
+      <div className="flex flex-col gap-3">
         <p className="bt-soft text-sm">{t('vault.unlock.stuck.body')}</p>
         <p className="bt-muted text-xs">{t('vault.unlock.stuck.keptHint')}</p>
         {/* Nothing can reach the user's Drive without a decrypted session, so
@@ -311,14 +299,16 @@ function StuckFold({
             definition lost the latter. */}
         <p className="bt-muted text-xs">{t('vault.unlock.stuck.credentialHint')}</p>
         {codeAvailable ? (
-          <button
-            className="bt-link self-start text-xs"
+          <OriginButton
+            className="self-start"
             disabled={working}
             onClick={() => setUseCode((previous) => !previous)}
+            size="sm"
             type="button"
+            variant="quiet"
           >
             {t(useCode ? 'vault.unlock.stuck.usePassword' : 'vault.unlock.stuck.useCode')}
-          </button>
+          </OriginButton>
         ) : null}
         {failed ? <Alert tone="error">{t('vault.unlock.stuck.error')}</Alert> : null}
         <OriginButton
@@ -331,7 +321,7 @@ function StuckFold({
           {working ? t('vault.unlock.stuck.working') : t('vault.unlock.stuck.action')}
         </OriginButton>
       </div>
-    </details>
+    </Disclosure>
   );
 }
 
