@@ -167,6 +167,11 @@ describe('Origin phone chrome', () => {
    * the left edge of a 360px screen (#1663). The measuring half is the overlay
    * sweep in `e2e/mobile-overflow.spec.ts`; this is the fast text guard that
    * the re-anchor is still declared, and that every menu still opts in.
+   *
+   * The file list is exactly the components that render a direct child of
+   * `.bt-topbar__actions` — the only container the CSS rule targets, so a
+   * popover anywhere else neither needs the opt-in nor is helped by it. Add a
+   * file here when a new chip or menu joins that row.
    */
   it('re-anchors phone topbar menus to the header instead of their trigger', () => {
     const phoneCss = phoneBlock();
@@ -175,12 +180,19 @@ describe('Origin phone chrome', () => {
       /\.bt-topbar__actions > \.bt-menu-anchor \{[^}]*position: static;[^}]*\}/,
     );
 
-    for (const source of ['OriginShell', 'NotificationBell'] as const) {
-      const tsx = readFileSync(resolve(process.cwd(), `src/user/components/${source}.tsx`), 'utf8');
-      const anchors = tsx.match(/bt-menu-anchor/g) ?? [];
+    const topbarActionSources = [
+      'src/user/components/OriginShell.tsx',
+      'src/user/components/NotificationBell.tsx',
+      'src/user/vault/ui/VaultSyncChip.tsx',
+    ] as const;
+    for (const source of topbarActionSources) {
+      const tsx = readFileSync(resolve(process.cwd(), source), 'utf8');
+      // Count the class where it is APPLIED, so a mention in a comment cannot
+      // stand in for a wrapper that actually opts in.
+      const anchors = tsx.match(/className="bt-menu-anchor/g) ?? [];
       const popovers = tsx.match(/className="bt-popover/g) ?? [];
-      expect(popovers.length, `${source}.tsx should still render a popover`).toBeGreaterThan(0);
-      expect(anchors.length, `${source}.tsx must anchor every popover it renders`).toBe(
+      expect(popovers.length, `${source} should still render a popover`).toBeGreaterThan(0);
+      expect(anchors.length, `${source} must anchor every popover it renders`).toBe(
         popovers.length,
       );
     }

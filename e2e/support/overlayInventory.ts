@@ -56,14 +56,37 @@ export const OVERLAY_PRIMITIVE_SOURCES = [
  */
 export const REQUIRED_OVERLAY_PRIMITIVES = ['Dialog', 'ODialog', 'Drawer'] as const;
 
-/** Popover class the shell-owned menus are painted with. */
+/**
+ * Popover class the shell-owned menus are painted with.
+ *
+ * Deliberately a whole-token match rather than a substring: a file whose only
+ * popover markup is a BEM child (`bt-popover__body`) paints part of a popover
+ * some OTHER component owns and opens, so it is not a surface of its own — and
+ * `bt-popover-ish` look-alikes are not popovers at all. The owner always carries
+ * the bare token, so the surface is still discovered, just at the right file.
+ */
 const POPOVER_CLASS_TOKEN = /(^|[^\w-])bt-popover([^\w-]|$)/;
+
+/** The name a default export is published under, in export-map terms. */
+const DEFAULT_EXPORT_NAME = 'default';
 
 /** Reads a repo-relative source file, or returns undefined if it does not exist. */
 export type SourceReader = (relativePath: string) => string | undefined;
 
-/** Lists the source files (excluding tests) under a repo-relative directory. */
+/**
+ * Lists the source files (excluding tests) under a repo-relative directory.
+ *
+ * `.ts` as well as `.tsx`: a primitive can be a JSX-free `createPortal` wrapper,
+ * and the registry check below is the half that has to fail loudly when one
+ * appears unregistered — it cannot do that for a file it never lists.
+ */
 export type SourceLister = (relativeDirectory: string) => string[];
+
+/** Whether a listed path is a non-test TypeScript source. */
+function isScannableSource(path: string): boolean {
+  if (path.endsWith('.test.ts') || path.endsWith('.test.tsx')) return false;
+  return path.endsWith('.ts') || path.endsWith('.tsx');
+}
 
 export interface OverlayDetection {
   reader: SourceReader;
@@ -87,7 +110,7 @@ const diskLister: SourceLister = (relativeDirectory) =>
     (entry) => {
       const path = `${relativeDirectory}/${entry.name}`;
       if (entry.isDirectory()) return diskLister(path);
-      return entry.isFile() && path.endsWith('.tsx') && !path.endsWith('.test.tsx') ? [path] : [];
+      return entry.isFile() && isScannableSource(path) ? [path] : [];
     },
   );
 
@@ -115,12 +138,7 @@ export function virtualOverlayDetection(
   return {
     reader: (relativePath) => files[relativePath],
     list: (relativeDirectory) =>
-      paths.filter(
-        (path) =>
-          path.startsWith(`${relativeDirectory}/`) &&
-          path.endsWith('.tsx') &&
-          !path.endsWith('.test.tsx'),
-      ),
+      paths.filter((path) => path.startsWith(`${relativeDirectory}/`) && isScannableSource(path)),
     primitiveSources: new Set(OVERLAY_PRIMITIVE_SOURCES),
     userRoot: USER_OVERLAY_SOURCE_ROOT,
     uiRoot: SHARED_UI_SOURCE_ROOT,
@@ -194,18 +212,22 @@ function buildsOverlay(node: ts.Node, sourceFile: ts.SourceFile): boolean {
   return found;
 }
 
-function isExported(node: ts.Node): boolean {
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   return (
     ts.canHaveModifiers(node) &&
-    (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+    (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === kind)
   );
 }
 
 /**
- * The exported components of a file that BUILD an overlay — i.e. the overlay
- * primitives that file owns. Derived from the source, so a primitive that is
- * renamed or added inside a registered source is picked up without editing any
- * list.
+ * The overlay primitives a file owns, under the names it PUBLISHES them as.
+ *
+ * Derived from the source, so a primitive that is renamed or added inside a
+ * registered source is picked up without editing any list. The published name
+ * is what matters, not the declared one: `export { Dialog as Modal }` is
+ * imported as `Modal`, and `export default function ODialog` is reachable only
+ * as `default` — recording the declared name in either case would leave the
+ * real consumers unrecognised.
  */
 export function overlayPrimitiveExports(
   relativePath: string,
@@ -215,20 +237,41 @@ export function overlayPrimitiveExports(
   if (!sourceFile) return [];
 
   const portalLocals = new Set<string>();
-  const exportedNames = new Set<string>();
-  const locallyExported = new Set<string>();
+  /** local declaration name → every name the module publishes it under. */
+  const publishedAs = new Map<string, Set<string>>();
+  const publish = (local: string, exported: string) => {
+    const names = publishedAs.get(local) ?? new Set<string>();
+    names.add(exported);
+    publishedAs.set(local, names);
+  };
 
   for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name) {
-      if (buildsOverlay(statement, sourceFile)) portalLocals.add(statement.name.text);
-      if (isExported(statement)) exportedNames.add(statement.name.text);
+    const exported = hasModifier(statement, ts.SyntaxKind.ExportKeyword);
+    const isDefault = hasModifier(statement, ts.SyntaxKind.DefaultKeyword);
+
+    if (ts.isFunctionDeclaration(statement)) {
+      // `export default function () {}` has no declared name; key it by the
+      // only name it is reachable under.
+      const local = statement.name?.text ?? (isDefault ? DEFAULT_EXPORT_NAME : undefined);
+      if (local === undefined) continue;
+      if (buildsOverlay(statement, sourceFile)) portalLocals.add(local);
+      if (exported) publish(local, isDefault ? DEFAULT_EXPORT_NAME : local);
     } else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
         if (buildsOverlay(declaration.initializer, sourceFile)) {
           portalLocals.add(declaration.name.text);
         }
-        if (isExported(statement)) exportedNames.add(declaration.name.text);
+        if (exported) publish(declaration.name.text, declaration.name.text);
+      }
+    } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      // `export default Dialog` — the declaration itself is elsewhere in the
+      // file, so publish under the identifier it names.
+      if (ts.isIdentifier(statement.expression)) {
+        publish(statement.expression.text, DEFAULT_EXPORT_NAME);
+      } else if (buildsOverlay(statement.expression, sourceFile)) {
+        portalLocals.add(DEFAULT_EXPORT_NAME);
+        publish(DEFAULT_EXPORT_NAME, DEFAULT_EXPORT_NAME);
       }
     } else if (
       ts.isExportDeclaration(statement) &&
@@ -237,18 +280,37 @@ export function overlayPrimitiveExports(
       ts.isNamedExports(statement.exportClause)
     ) {
       // `export { Dialog }` after the declaration counts the same as an inline
-      // `export function Dialog`.
+      // `export function Dialog`; `export { Dialog as Modal }` publishes the
+      // same declaration under `Modal`.
       for (const element of statement.exportClause.elements) {
         if (element.isTypeOnly) continue;
-        locallyExported.add((element.propertyName ?? element.name).text);
+        publish((element.propertyName ?? element.name).text, element.name.text);
       }
     }
   }
 
-  return [...portalLocals].filter((name) => exportedNames.has(name) || locallyExported.has(name));
+  const published = new Set<string>();
+  for (const local of portalLocals) {
+    for (const name of publishedAs.get(local) ?? []) published.add(name);
+  }
+  return [...published].sort();
 }
 
-/** Resolve a relative import/export specifier to a repo-relative source path. */
+/**
+ * Resolve a relative import/export specifier to a repo-relative source path.
+ *
+ * Relative specifiers only — `apps/web` declares no path aliases, and a bare
+ * specifier is a package, not a primitive source. An unresolvable specifier
+ * yields no primitives, which is the one direction where this detector is
+ * NARROWER than the literal tag matching it replaced: consumers behind it go
+ * undiscovered instead of being matched by name. Two barrel forms therefore
+ * must not be introduced without teaching this resolver about them first —
+ * a path-aliased re-export (`export … from '@/ui/origin'`), and an
+ * import-then-export barrel (`import { ODialog } from './components';
+ * export { ODialog };`, which {@link primitiveExportsOf} does not follow
+ * because it only walks `export … from` chains). Every barrel in the tree
+ * today uses the supported `export … from` form.
+ */
 function resolveModule(
   fromRelativePath: string,
   specifier: string,
@@ -269,25 +331,39 @@ function resolveModule(
  * file that defines it, so resolution has to walk `export { … } from './…'`
  * chains — including renames — before it can say whether an imported name is a
  * primitive.
+ *
+ * Results are MEMOISED rather than merely cycle-guarded: a module reached twice
+ * through a diamond of barrels must return the same export map both times, not
+ * an empty one on the second visit. Only the in-progress frames on `stack` — a
+ * genuine import cycle — resolve to nothing, and those are never cached.
  */
 function primitiveExportsOf(
   relativePath: string,
   detection: OverlayDetection,
-  seen: Set<string> = new Set(),
+  cache: Map<string, Map<string, string>> = new Map(),
+  stack: Set<string> = new Set(),
 ): Map<string, string> {
+  const cached = cache.get(relativePath);
+  if (cached) return cached;
   const exports = new Map<string, string>();
-  if (seen.has(relativePath)) return exports;
-  seen.add(relativePath);
+  if (stack.has(relativePath)) return exports;
+  stack.add(relativePath);
 
   if (detection.primitiveSources.has(relativePath)) {
     for (const name of overlayPrimitiveExports(relativePath, detection)) {
       exports.set(name, relativePath);
     }
+    stack.delete(relativePath);
+    cache.set(relativePath, exports);
     return exports;
   }
 
   const sourceFile = parseSource(relativePath, detection.reader);
-  if (!sourceFile) return exports;
+  if (!sourceFile) {
+    stack.delete(relativePath);
+    cache.set(relativePath, exports);
+    return exports;
+  }
   for (const statement of sourceFile.statements) {
     if (
       !ts.isExportDeclaration(statement) ||
@@ -299,7 +375,7 @@ function primitiveExportsOf(
     }
     const target = resolveModule(relativePath, statement.moduleSpecifier.text, detection.reader);
     if (!target) continue;
-    const reachable = primitiveExportsOf(target, detection, seen);
+    const reachable = primitiveExportsOf(target, detection, cache, stack);
     if (reachable.size === 0) continue;
     const clause = statement.exportClause;
     if (clause === undefined) {
@@ -312,6 +388,8 @@ function primitiveExportsOf(
       }
     }
   }
+  stack.delete(relativePath);
+  cache.set(relativePath, exports);
   return exports;
 }
 
@@ -325,6 +403,9 @@ interface OverlayBindings {
 function overlayBindings(sourceFile: ts.SourceFile, detection: OverlayDetection): OverlayBindings {
   const components = new Set<string>();
   const namespaces = new Map<string, Set<string>>();
+  // One cache per file, so two imports that reach the same barrel resolve it
+  // once and both see the same export map.
+  const cache = new Map<string, Map<string, string>>();
 
   for (const statement of sourceFile.statements) {
     if (
@@ -341,8 +422,14 @@ function overlayBindings(sourceFile: ts.SourceFile, detection: OverlayDetection)
       detection.reader,
     );
     if (!target) continue;
-    const reachable = primitiveExportsOf(target, detection);
+    const reachable = primitiveExportsOf(target, detection, cache);
     if (reachable.size === 0) continue;
+
+    // `import ODialog from './components'` — a default-exported primitive is
+    // published as `default` and bound under whatever name the consumer picks.
+    if (statement.importClause.name && reachable.has(DEFAULT_EXPORT_NAME)) {
+      components.add(statement.importClause.name.text);
+    }
 
     const bindings = statement.importClause.namedBindings;
     if (bindings && ts.isNamedImports(bindings)) {

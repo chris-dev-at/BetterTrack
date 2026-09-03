@@ -16,6 +16,7 @@ import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
 import {
+  overlayPrimitiveExports,
   overlayPrimitiveRegistryProblems,
   overlaySurfaceSources,
   rendersOverlay,
@@ -1760,7 +1761,9 @@ async function sweepPinGate(
   await page.evaluate((key) => localStorage.removeItem(key), PIN_ACTIVITY_STORAGE_KEY);
   await page.reload();
 
-  const gate = page.locator('.bt-gate__card');
+  // `.bt-gate__card` is worn by the delete-account and consent gates too; the
+  // segmented PIN input is what makes this *the PIN gate*, so assert on that.
+  const gate = page.locator('[data-pin-input="true"] input').first();
   await expect(gate, 'a PIN-enabled account must open into the PIN gate').toBeVisible({
     timeout: 20_000,
   });
@@ -1866,13 +1869,24 @@ test('overlay discovery survives aliased imports and renamed primitives', () => 
     export function BottomSheet({ children }) {
       return createPortal(<div className="bt-sheet">{children}</div>, document.body);
     }
+    // Published under a name it is not declared with …
+    function InnerPopover({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    export { InnerPopover as RenamedExport };
+    // … and one reachable only as \`default\`.
+    export default function DeclaredButDefault({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
     export function Button(props) {
       return <button {...props} />;
     }
   `;
   const files = {
     'apps/web/src/ui/origin/components.tsx': primitiveSource,
-    'apps/web/src/ui/origin/index.ts': `export { BottomSheet, Button, ODialog } from './components';`,
+    'apps/web/src/ui/origin/index.ts':
+      `export { BottomSheet, Button, ODialog, RenamedExport } from './components';\n` +
+      `export { default as DefaultSheet } from './components';`,
     'apps/web/src/user/fixtures/AliasedSheet.tsx': `
       import { ODialog as Sheet } from '../../ui/origin';
       export function AliasedSheet() {
@@ -1889,6 +1903,28 @@ test('overlay discovery survives aliased imports and renamed primitives', () => 
       import * as origin from '../../ui/origin';
       export function NamespacedSheet() {
         return <origin.ODialog open>namespaced</origin.ODialog>;
+      }
+    `,
+    // The primitive is published under a name it is not declared with, through
+    // a barrel that renames it again on the way out.
+    'apps/web/src/user/fixtures/RenamedExportSheet.tsx': `
+      import { RenamedExport } from '../../ui/origin';
+      export function RenamedExportSheet() {
+        return <RenamedExport open>renamed export</RenamedExport>;
+      }
+    `,
+    // A default-exported primitive: named through the barrel's
+    // \`export { default as … }\`, and imported directly as a default elsewhere.
+    'apps/web/src/user/fixtures/DefaultSheet.tsx': `
+      import { DefaultSheet } from '../../ui/origin';
+      export function DefaultSheetSurface() {
+        return <DefaultSheet open>default via barrel</DefaultSheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/DirectDefaultSheet.tsx': `
+      import AnyLocalName from '../../ui/origin/components';
+      export function DirectDefaultSheet() {
+        return <AnyLocalName open>default imported directly</AnyLocalName>;
       }
     `,
     'apps/web/src/user/fixtures/PlainPage.tsx': `
@@ -1911,10 +1947,24 @@ test('overlay discovery survives aliased imports and renamed primitives', () => 
   const detection = virtualOverlayDetection(files);
   expect(overlaySurfaceSources(detection)).toEqual([
     'apps/web/src/user/fixtures/AliasedSheet.tsx',
+    'apps/web/src/user/fixtures/DefaultSheet.tsx',
+    'apps/web/src/user/fixtures/DirectDefaultSheet.tsx',
     'apps/web/src/user/fixtures/NamespacedSheet.tsx',
+    'apps/web/src/user/fixtures/RenamedExportSheet.tsx',
     'apps/web/src/user/fixtures/RenamedPrimitive.tsx',
   ]);
   expect(rendersOverlay('apps/web/src/user/fixtures/PlainPage.tsx', detection)).toBe(false);
+
+  // Primitives are recorded under the names the module PUBLISHES, not the ones
+  // it declares: `InnerPopover` is only importable as `RenamedExport`, and
+  // `DeclaredButDefault` only as the default export. Recording the declared
+  // name instead would leave the two fixtures above unrecognised.
+  expect(overlayPrimitiveExports('apps/web/src/ui/origin/components.tsx', detection)).toEqual([
+    'BottomSheet',
+    'ODialog',
+    'RenamedExport',
+    'default',
+  ]);
 });
 
 /**
