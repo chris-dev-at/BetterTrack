@@ -8,7 +8,10 @@ import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { useDeployCapability } from '../../lib/featureFlags';
 import { formatMoney } from '../../lib/format';
-import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
+import {
+  getPortfolioDividendProjectionFor,
+  PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY,
+} from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
 import { MAIN_SERIES } from '../../ui/charts/palette';
@@ -129,9 +132,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     staleTime: 60_000,
   });
 
+  // Scoped to the portfolio this section projects, key included: the starting
+  // value is ONE portfolio's `totalValueEur`, so a user-wide dividend total
+  // would add the other portfolios' income to this portfolio's curve, and a
+  // portfolio-less key would then serve that figure to the next portfolio too.
   const dividendQuery = useQuery({
-    queryKey: ['portfolio', 'dividend-projection'],
-    queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
+    queryKey: PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY(portfolioId ?? ''),
+    queryFn: ({ signal }) => getPortfolioDividendProjectionFor(portfolioId!, signal),
     enabled: portfolioId !== null && privacyMode === 'normal' && marketIntel,
     staleTime: 60_000,
   });

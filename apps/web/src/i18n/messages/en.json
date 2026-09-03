@@ -2793,7 +2793,8 @@
     "calculators": {
       "title": "Calculators",
       "description": "Standalone tools, each pre-fillable from your portfolio.",
-      "prefillUnavailable": "Add or open a portfolio to enable prefill. The calculators still run with the fields you type."
+      "prefillUnavailable": "Add or open a portfolio to enable prefill. The calculators still run with the fields you type.",
+      "ratePctClamped": "Rates are limited to -100% to 100%. The nearest value is used for this calculation."
     },
     "compound": {
       "title": "Compound interest",

@@ -192,6 +192,20 @@ export const projectedDividendIncomeResponseSchema = z
   .strict();
 export type ProjectedDividendIncomeResponse = z.infer<typeof projectedDividendIncomeResponseSchema>;
 
+/**
+ * Query for `GET /assets/portfolio/dividend-projection`. Omitted ⇒ the read
+ * stays user-wide across every active, non-vaulted portfolio (what the portfolio
+ * page's income line has always shown). `portfolioId` narrows it to ONE
+ * portfolio — the V5-P6b Forecast projects a single portfolio's net worth, so
+ * its dividend factor may only carry that portfolio's income. A portfolio the
+ * caller does not own simply matches no holdings (the repository is
+ * user-scoped), so the answer is an empty projection, never another user's.
+ */
+export const projectedDividendIncomeQuerySchema = z
+  .object({ portfolioId: z.string().uuid().optional() })
+  .strict();
+export type ProjectedDividendIncomeQuery = z.infer<typeof projectedDividendIncomeQuerySchema>;
+
 // ── Earnings (arc b) ─────────────────────────────────────────────────────────
 
 /**

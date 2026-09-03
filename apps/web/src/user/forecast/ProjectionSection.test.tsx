@@ -35,7 +35,11 @@ vi.mock('../../lib/portfolioApi', () => ({
 }));
 vi.mock('../../lib/analyticsApi', () => ({ getAnalyticsSeries: vi.fn() }));
 vi.mock('../../lib/standingOrdersApi', () => ({ listStandingOrders: vi.fn() }));
-vi.mock('../../lib/marketIntelApi', () => ({ getPortfolioDividendProjection: vi.fn() }));
+// Keep the real query-key helpers (the section imports the scoped one).
+vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/marketIntelApi')>()),
+  getPortfolioDividendProjectionFor: vi.fn(),
+}));
 
 // Deploy-time market intel (§13.5 V5-P5) vs. a projection this portfolio could
 // not resolve (#1681) are separate states, and the dividend factor renders them
@@ -50,7 +54,7 @@ vi.mock('../../lib/featureFlags', async (importOriginal) => ({
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { ApiError } from '../../lib/apiClient';
 import { formatMoney } from '../../lib/format';
-import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
+import { getPortfolioDividendProjectionFor } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
@@ -162,10 +166,15 @@ function makeOrder(over: Partial<StandingOrder>): StandingOrder {
   };
 }
 
-function renderSection(portfolios = PORTFOLIOS, mode: 'normal' | 'paranoid' = 'normal') {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 0 } },
-  });
+function makeClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+}
+
+function renderSection(
+  portfolios = PORTFOLIOS,
+  mode: 'normal' | 'paranoid' = 'normal',
+  client = makeClient(),
+) {
   return render(
     <QueryClientProvider client={client}>
       <ResolvedPrivacyModeProvider mode={mode}>
@@ -185,14 +194,14 @@ function projectedStat(): HTMLElement {
  * with in these tests (50 000 € start, 5 %/yr, no orders, no dividends). `asOf`
  * is irrelevant without standing orders — nothing is booked on a calendar day.
  */
-function engineFinalValue(horizonYears: number): number {
+function engineFinalValue(horizonYears: number, monthlyDividendEur = 0): number {
   const result = projectNetWorth({
     asOf: '2026-01-01',
     startingNetWorthEur: 50000,
     horizonYears,
     annualReturnPct: 5,
     standingOrders: [],
-    monthlyDividendEur: 0,
+    monthlyDividendEur,
     whatIfPlans: [],
   });
   return result.base[result.base.length - 1]!.value;
@@ -205,7 +214,7 @@ beforeEach(() => {
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(getAnalyticsSeries).mockResolvedValue(analytics(5));
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] } as StandingOrderListResponse);
-  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_OFF);
 });
 
 test('renders the base projection series and headline stats', async () => {
@@ -260,7 +269,7 @@ test('renders an empty state when there is no portfolio to project', () => {
 });
 
 test('does not start portfolio-scoped reads for an empty account when dividends are offline', () => {
-  vi.mocked(getPortfolioDividendProjection).mockRejectedValue(new Error('dividends offline'));
+  vi.mocked(getPortfolioDividendProjectionFor).mockRejectedValue(new Error('dividends offline'));
   renderSection([]);
 
   expect(screen.getByText('No portfolio to project yet')).toBeInTheDocument();
@@ -268,7 +277,7 @@ test('does not start portfolio-scoped reads for an empty account when dividends 
   expect(listStandingOrders).not.toHaveBeenCalled();
   expect(getAnalyticsSeries).not.toHaveBeenCalled();
   expect(getPortfolioHistory).not.toHaveBeenCalled();
-  expect(getPortfolioDividendProjection).not.toHaveBeenCalled();
+  expect(getPortfolioDividendProjectionFor).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
 });
 
@@ -298,7 +307,7 @@ test('an outage declared before a confirmed rejection retries only the outage re
 test('an outage declared after a confirmed rejection keeps its own recovery', async () => {
   const user = userEvent.setup();
   vi.mocked(getAnalyticsSeries).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
-  vi.mocked(getPortfolioDividendProjection).mockRejectedValue(
+  vi.mocked(getPortfolioDividendProjectionFor).mockRejectedValue(
     new ApiError(503, 'UNAVAILABLE', 'down'),
   );
   renderSection();
@@ -306,7 +315,7 @@ test('an outage declared after a confirmed rejection keeps its own recovery', as
   const retry = await screen.findByRole('button', { name: 'Try again' });
   await user.click(retry);
 
-  await waitFor(() => expect(getPortfolioDividendProjection).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(getPortfolioDividendProjectionFor).toHaveBeenCalledTimes(2));
   expect(getAnalyticsSeries).toHaveBeenCalledTimes(1);
   expect(screen.queryByText('secret')).not.toBeInTheDocument();
 });
@@ -441,7 +450,7 @@ const DIVIDENDS_UNRESOLVED_NOTE =
 test('the dividend factor toggle is absent when this deployment has no market intel', async () => {
   deployCapabilities.marketIntel = false;
   // The projection would answer — the capability alone removes the control.
-  vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
     available: true,
     currency: 'EUR',
     monthlyTotalEur: 100,
@@ -453,14 +462,14 @@ test('the dividend factor toggle is absent when this deployment has no market in
 
   expect(screen.queryByRole('checkbox', { name: 'Projected dividends' })).not.toBeInTheDocument();
   expect(screen.queryByText(DIVIDENDS_UNRESOLVED_NOTE)).not.toBeInTheDocument();
-  expect(getPortfolioDividendProjection).not.toHaveBeenCalled();
+  expect(getPortfolioDividendProjectionFor).not.toHaveBeenCalled();
 });
 
 test('an unresolved projection leaves the dividend factor visible but disabled', async () => {
   // Market intel is configured; this portfolio's total came back unavailable
   // (#1616 is all-or-nothing). The control must explain the missing income
   // rather than vanish and leave a lower curve unexplained.
-  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_OFF);
   renderSection();
   await screen.findByTestId('projection-series-base');
 
@@ -471,7 +480,7 @@ test('an unresolved projection leaves the dividend factor visible but disabled',
 });
 
 test('a disabled dividend factor contributes nothing to the projected curve', async () => {
-  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_OFF);
   renderSection();
   await screen.findByTestId('projection-series-base');
   await screen.findByRole('checkbox', { name: 'Projected dividends' });
@@ -485,7 +494,7 @@ test('a disabled dividend factor contributes nothing to the projected curve', as
 });
 
 test('the dividend factor toggle appears when the provider is configured', async () => {
-  vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
     available: true,
     currency: 'EUR',
     monthlyTotalEur: 100,
@@ -504,5 +513,85 @@ test('the dividend factor toggle appears when the provider is configured', async
   await user.click(toggle);
   await waitFor(() =>
     expect(screen.getByTestId('projection-series-base').textContent).not.toBe(before),
+  );
+});
+
+// ─── Dividend factor scope (#1662) ───────────────────────────────────────────
+//
+// The projection's starting value is ONE portfolio's `totalValueEur`, so its
+// dividend factor may only carry that portfolio's income. The read was user-wide
+// and its query key carried no portfolio, so a second portfolio's dividends were
+// added to the first one's curve — and then served from cache to the next.
+
+const SECOND_PORTFOLIO_ID = '33333333-3333-3333-3333-333333333333';
+const SECOND_PORTFOLIOS: PortfolioSummary[] = [
+  { ...PORTFOLIOS[0]!, id: SECOND_PORTFOLIO_ID, name: 'Second' },
+];
+
+/** Monthly income per portfolio — the two must never be summed into one curve. */
+const INCOME_BY_PORTFOLIO: Record<string, number> = {
+  [PORTFOLIO_ID]: 100,
+  [SECOND_PORTFOLIO_ID]: 900,
+};
+
+function projectionFor(portfolioId: string): ProjectedDividendIncomeResponse {
+  const monthlyTotalEur = INCOME_BY_PORTFOLIO[portfolioId] ?? 0;
+  return {
+    available: true,
+    currency: 'EUR',
+    monthlyTotalEur,
+    yearlyTotalEur: monthlyTotalEur * 12,
+    holdings: [],
+  };
+}
+
+test('the dividend factor carries only the shown portfolio’s income', async () => {
+  vi.mocked(getPortfolioDividendProjectionFor).mockImplementation(async (portfolioId: string) =>
+    projectionFor(portfolioId),
+  );
+  renderSection();
+  await screen.findByRole('checkbox', { name: 'Projected dividends' });
+
+  expect(getPortfolioDividendProjectionFor).toHaveBeenCalledWith(PORTFOLIO_ID, expect.anything());
+  expect(getPortfolioDividendProjectionFor).not.toHaveBeenCalledWith(
+    SECOND_PORTFOLIO_ID,
+    expect.anything(),
+  );
+  // 100 €/mo (this portfolio) — never 1 000 €/mo (both portfolios summed).
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 100))),
+  );
+  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineFinalValue(20, 1000)));
+});
+
+test('switching portfolios refetches rather than serving the other one’s figure', async () => {
+  vi.mocked(getPortfolioDividendProjectionFor).mockImplementation(async (portfolioId: string) =>
+    projectionFor(portfolioId),
+  );
+  // One cache across both renders: only a portfolio-scoped query key can tell
+  // the two answers apart here.
+  const client = makeClient();
+  const view = renderSection(PORTFOLIOS, 'normal', client);
+  await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 100))),
+  );
+
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <ResolvedPrivacyModeProvider mode="normal">
+        <ProjectionSection portfolios={SECOND_PORTFOLIOS} />
+      </ResolvedPrivacyModeProvider>
+    </QueryClientProvider>,
+  );
+
+  await waitFor(() =>
+    expect(getPortfolioDividendProjectionFor).toHaveBeenCalledWith(
+      SECOND_PORTFOLIO_ID,
+      expect.anything(),
+    ),
+  );
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 900))),
   );
 });
