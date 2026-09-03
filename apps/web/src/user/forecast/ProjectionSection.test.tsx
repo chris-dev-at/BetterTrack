@@ -37,6 +37,16 @@ vi.mock('../../lib/analyticsApi', () => ({ getAnalyticsSeries: vi.fn() }));
 vi.mock('../../lib/standingOrdersApi', () => ({ listStandingOrders: vi.fn() }));
 vi.mock('../../lib/marketIntelApi', () => ({ getPortfolioDividendProjection: vi.fn() }));
 
+// Deploy-time market intel (§13.5 V5-P5) vs. a projection this portfolio could
+// not resolve (#1681) are separate states, and the dividend factor renders them
+// differently — absent vs. present-but-disabled. Drive the capability directly.
+const deployCapabilities = vi.hoisted(() => ({ marketIntel: true }));
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapability: (key: string) =>
+    key === 'marketIntel' ? deployCapabilities.marketIntel : true,
+}));
+
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { ApiError } from '../../lib/apiClient';
 import { formatMoney } from '../../lib/format';
@@ -190,6 +200,7 @@ function engineFinalValue(horizonYears: number): number {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  deployCapabilities.marketIntel = true;
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(getAnalyticsSeries).mockResolvedValue(analytics(5));
@@ -424,11 +435,53 @@ test('a fractional horizon labels the integer horizon the engine actually projec
   expect(screen.getByTestId('projection-series-base')).toHaveTextContent(formatMoney(projected));
 });
 
-test('the dividend factor toggle is hidden when the provider is unconfigured', async () => {
+const DIVIDENDS_UNRESOLVED_NOTE =
+  "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.";
+
+test('the dividend factor toggle is absent when this deployment has no market intel', async () => {
+  deployCapabilities.marketIntel = false;
+  // The projection would answer — the capability alone removes the control.
+  vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+    available: true,
+    currency: 'EUR',
+    monthlyTotalEur: 100,
+    yearlyTotalEur: 1200,
+    holdings: [],
+  });
   renderSection();
   await screen.findByTestId('projection-series-base');
-  // Provider off ⇒ no dividend toggle, and the surface still renders cleanly.
+
   expect(screen.queryByRole('checkbox', { name: 'Projected dividends' })).not.toBeInTheDocument();
+  expect(screen.queryByText(DIVIDENDS_UNRESOLVED_NOTE)).not.toBeInTheDocument();
+  expect(getPortfolioDividendProjection).not.toHaveBeenCalled();
+});
+
+test('an unresolved projection leaves the dividend factor visible but disabled', async () => {
+  // Market intel is configured; this portfolio's total came back unavailable
+  // (#1616 is all-or-nothing). The control must explain the missing income
+  // rather than vanish and leave a lower curve unexplained.
+  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(toggle).not.toBeChecked();
+  expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
+});
+
+test('a disabled dividend factor contributes nothing to the projected curve', async () => {
+  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await screen.findByRole('checkbox', { name: 'Projected dividends' });
+
+  // Same fixture, same engine answer as a run with no dividend factor at all:
+  // making the control visible changed the explanation, not the money.
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+  expect(screen.getByTestId('projection-series-base')).toHaveTextContent(
+    formatMoney(engineFinalValue(20)),
+  );
 });
 
 test('the dividend factor toggle appears when the provider is configured', async () => {

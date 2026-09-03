@@ -26,6 +26,7 @@ import {
 import { useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
+import { useDeployCapability } from '../../lib/featureFlags';
 import { assetTypeLabels } from './assetTypeLabels';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
@@ -1380,53 +1381,72 @@ function RecategorizeBanner() {
 
 /**
  * Projected dividend income (monthly/yearly EUR) + the upcoming ex/pay calendar
- * across held + watchlist assets. Both read the same `MARKET_INTEL_ENABLED`
- * gate: gate off (or nothing to show) ⇒ the whole block renders NOTHING, so the
- * portfolio page is byte-identical when unconfigured (anti-bloat "invisible when
- * unconfigured"). Compact: one income line with a monthly/yearly toggle and a
+ * across held + watchlist assets.
+ *
+ * Two different absences (#1681). The deployment's `MARKET_INTEL_ENABLED`
+ * capability decides whether this block exists at all: off ⇒ NOTHING renders,
+ * so the portfolio page is byte-identical when unconfigured (§6.3 "blocks
+ * simply disappear"). With it on, the two reads stand on their own feet: the
+ * projection answers all-or-nothing (#1616 — one unresolvable holding makes the
+ * whole total `available: false`), and that must not take a calendar that
+ * computed perfectly down with it. So an unresolved projection renders the
+ * calendar plus a short reason, and an empty calendar still renders the
+ * projection. Only when neither has anything to say does the block stay hidden
+ * (anti-bloat). Compact: one income line with a monthly/yearly toggle and a
  * calendar truncated to three rows with an expand toggle.
  */
 function DividendIntelSection() {
   const t = useT();
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
   const [showAll, setShowAll] = useState(false);
+  const marketIntel = useDeployCapability('marketIntel');
 
   const projection = useQuery({
     queryKey: PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
     queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
   const calendar = useQuery({
     queryKey: PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
     queryFn: ({ signal }) => getPortfolioDividendCalendar(signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
 
-  // Invisible when unconfigured: nothing rendered until we know the gate is on.
-  if (!projection.data?.available) return null;
+  // Invisible when unconfigured: no heading, no empty state, no explanation.
+  if (!marketIntel) return null;
 
   const proj = projection.data;
   const entries = calendar.data?.available ? calendar.data.entries : [];
-  const hasProjection = proj.holdings.length > 0;
-  // Nothing at all to surface → stay hidden (anti-bloat).
+  const hasProjection = proj?.available === true && proj.holdings.length > 0;
+  // A definite "could not compute" — distinct from a read still in flight or
+  // failed, which says nothing about this portfolio and draws nothing.
+  const projectionUnresolved = proj?.available === false;
+  // Nothing at all to surface → stay hidden (anti-bloat). An unresolved
+  // projection is only worth explaining beside a calendar that did resolve.
   if (!hasProjection && entries.length === 0) return null;
 
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
-  const total = view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
+  const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
 
   return (
     <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.dividends.title')}</h2>
-        <Seg
-          ariaLabel={t('portfolio.dividends.viewGroupLabel')}
-          onChange={setView}
-          options={[
-            { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
-            { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
-          ]}
-          value={view}
-        />
+        {/* The period toggle switches a projected total; without one it would
+            control nothing, so a calendar-only block does not carry it. */}
+        {hasProjection ? (
+          <Seg
+            ariaLabel={t('portfolio.dividends.viewGroupLabel')}
+            onChange={setView}
+            options={[
+              { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
+              { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
+            ]}
+            value={view}
+          />
+        ) : null}
       </div>
 
       {hasProjection ? (
@@ -1440,6 +1460,8 @@ function DividendIntelSection() {
               : t('portfolio.dividends.perYear')}
           </span>
         </p>
+      ) : projectionUnresolved ? (
+        <p className="bt-meta">{t('portfolio.dividends.projectionUnresolved')}</p>
       ) : null}
 
       {entries.length > 0 ? (
