@@ -13,6 +13,7 @@ import type {
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { CurrencyService } from '../currency/currencyService';
+import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
 
 /**
  * The portfolio-level dividend intelligence surfaces (§13.5 V5-P5, arc a): the
@@ -30,9 +31,17 @@ import type { CurrencyService } from '../currency/currencyService';
  * series shape the V5-P6b Forecast will consume.
  */
 export interface PortfolioMarketIntelService {
-  /** Upcoming ex/pay events across held + watchlist assets, ascending (arc a). */
+  /**
+   * Upcoming ex/pay events across held + watchlist assets, ascending (arc a).
+   * The provider fan-out is capped per request (`MARKET_INTEL_ROLLUP_MAX_ASSETS`);
+   * a larger book yields `truncated: true` beside the entries it did cover.
+   */
   dividendCalendar(userId: string): Promise<DividendCalendarResponse>;
-  /** Projected dividend income for the whole portfolio, monthly + yearly EUR (arc a). */
+  /**
+   * Projected dividend income for the whole portfolio, monthly + yearly EUR
+   * (arc a). All-or-nothing (#1616), so a book over the fan-out cap returns the
+   * unavailable shape with `truncated: true` and issues no provider calls.
+   */
   projectedIncome(userId: string): Promise<ProjectedDividendIncomeResponse>;
 }
 
@@ -117,9 +126,21 @@ export function createPortfolioMarketIntelService(
       // come: that pay date is exactly what the Home widget renders for it.
       const todayStart = new Date(now()).toISOString().slice(0, 10);
 
+      // One provider call per asset lands on the queue every other consumer
+      // shares (§5.3), so the book is capped per request and the response says
+      // when that happened. See rollupBudget.ts for the sizing and the ordering.
+      const { selected, truncated } = capRollupSubjects(
+        [...byAsset.values()].map(({ row, source }) => ({
+          ...row,
+          source,
+          held: source === 'holding',
+        })),
+      );
+
       const entries: DividendCalendarEntry[] = [];
       await Promise.all(
-        [...byAsset.values()].map(async ({ row, source }) => {
+        selected.map(async (row) => {
+          const source = row.source;
           const ref = refOf(row);
           if (!marketData.intelCapabilities(ref).dividends) return;
           let events;
@@ -152,13 +173,23 @@ export function createPortfolioMarketIntelService(
         return cmp !== 0 ? cmp : a.symbol.localeCompare(b.symbol);
       });
 
-      return { available: true, entries };
+      return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
     },
 
     async projectedIncome(userId) {
       if (!enabled) return UNAVAILABLE_PROJECTION;
 
       const held = await repo.listHeldPositionsForUser(userId);
+
+      // The projection is all-or-nothing (#1616): a total that misses holdings
+      // is never published. So a book over the fan-out cap can only ever produce
+      // an unavailable response — refuse it BEFORE spending any of the shared
+      // provider budget (§5.3) on payloads that would be discarded anyway, and
+      // flag `truncated` so the caller can tell "too large to compute" apart
+      // from "one holding could not be resolved".
+      if (held.length > MARKET_INTEL_ROLLUP_MAX_ASSETS) {
+        return { ...UNAVAILABLE_PROJECTION, truncated: true as const };
+      }
 
       const holdings: ProjectedDividendHolding[] = [];
       // Set by any holding whose contribution could NOT be resolved — a provider
