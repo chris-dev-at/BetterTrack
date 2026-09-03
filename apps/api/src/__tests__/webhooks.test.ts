@@ -15,6 +15,7 @@ import {
   WEBHOOK_EVENT_TYPES,
   WEBHOOK_SECRET_PREFIX,
   WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_SIGNATURE_TOLERANCE_SECONDS,
   WEBHOOK_TIMESTAMP_HEADER,
   WEBHOOK_URL_BLOCKED_CODE,
   createWebhookSubscriptionResponseSchema,
@@ -55,7 +56,10 @@ import { isParanoidKilledWebhookEvent } from '../services/account/paranoidEnforc
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
-import type { OutboundUrlResolver } from '../services/security/outboundUrlGuard';
+import type {
+  OutboundUrlResolver,
+  ResolvedOutboundUrl,
+} from '../services/security/outboundUrlGuard';
 import {
   createWebhookBridge,
   createWebhookDispatcher,
@@ -94,6 +98,8 @@ interface RecordedRequest {
   url: string;
   headers: Record<string, string>;
   body: string;
+  /** The addresses the guard vetted for this attempt; the transport must pin them. */
+  target: ResolvedOutboundUrl;
 }
 
 /** A transport that records every POST and replies with a scripted status. */
@@ -304,6 +310,21 @@ describe('signed delivery', () => {
     // The receiver-side check succeeds only with the real secret + exact body.
     expect(verifyWebhookSignature(secret, timestamp, req!.body, signature)).toBe(true);
     expect(verifyWebhookSignature('whsec_wrong', timestamp, req!.body, signature)).toBe(false);
+
+    // …and only while the timestamp is fresh: the captured triple (timestamp,
+    // body, signature) stops verifying once the published tolerance elapses, so
+    // a receiver following the reference verifier cannot be replayed forever.
+    const signedAtMs = Number(timestamp) * 1000;
+    expect(
+      verifyWebhookSignature(secret, timestamp, req!.body, signature, {
+        now: signedAtMs + WEBHOOK_SIGNATURE_TOLERANCE_SECONDS * 1000,
+      }),
+    ).toBe(true);
+    expect(
+      verifyWebhookSignature(secret, timestamp, req!.body, signature, {
+        now: signedAtMs + (WEBHOOK_SIGNATURE_TOLERANCE_SECONDS + 1) * 1000,
+      }),
+    ).toBe(false);
 
     const payload = JSON.parse(req!.body) as { type: string; data: { alertId: string } };
     expect(payload.type).toBe('alert.triggered');
@@ -1225,6 +1246,33 @@ describe('destination guard: user-supplied webhook URLs cannot reach the deploym
     expect(refused).toBeDefined();
     expect(refused!.responseStatus).toBeNull();
     expect(refused!.error).toBe(WEBHOOK_DELIVERY_REFUSED_ERROR);
+  });
+
+  it('pins the address the guard vetted into the delivery the transport sends', async () => {
+    // The guard's answer only helps if the socket uses it. The dispatcher must
+    // resolve once per attempt and hand those addresses to the transport, which
+    // pins them — otherwise the transport's own lookup could land elsewhere.
+    const resolver = vi.fn(publicTestResolver);
+    const delivering = recordingTransport(200);
+    const h = await createTestApp({
+      webhookTransport: delivering.transport,
+      webhookUrlResolver: resolver,
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    expect((await postSubscription(agent, 'https://receiver.test/hook')).status).toBe(201);
+    const resolutionsAtCreate = resolver.mock.calls.length;
+
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+
+    expect(delivering.requests).toHaveLength(1);
+    const delivered = delivering.requests[0]!;
+    // Exactly one resolution for the attempt — the vetted one, not one of two.
+    expect(resolver.mock.calls.length - resolutionsAtCreate).toBe(1);
+    // The hostname is preserved (Host header/SNI/certificate) while the socket
+    // may only go to the vetted address.
+    expect(delivered.target.url.href).toBe('https://receiver.test/hook');
+    expect(delivered.target.addresses).toEqual([{ address: '93.184.216.34', family: 4 }]);
   });
 
   it('records a refusal as terminal — it consumes no retry attempt', async () => {
