@@ -541,6 +541,7 @@ function release(token: string): void {
   entry.released = true;
   entry.pendingVaultOpens.clear();
   entry.rerunVaultIds.clear();
+  entry.rerunRequested = false;
   entry.abort.abort();
   entry.releaseKeystoreListeners?.();
   entry.releaseKeystoreListeners = null;

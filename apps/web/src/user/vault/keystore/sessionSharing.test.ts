@@ -177,8 +177,10 @@ describe('endpoint session sharing (§12: memory-only, endpoint-scoped)', () => 
 describe('the race discipline (reviewer finding B2, probes P1/P1b)', () => {
   /**
    * R1. A lock that lands while a grant is still in flight. The generation is
-   * minted BEFORE the exchange, so the lock this instance observed is visible to
-   * the guard that runs after it. Against the pre-fix ordering this is red.
+   * SNAPSHOTTED before the exchange (a resume mints nothing of its own since
+   * the #1707 review — minting cancelled a concurrent unlock), and the lock
+   * bumps it, so the lock this instance observed is visible to the guard that
+   * runs after it. Against the pre-fix ordering this is red.
    */
   it('R1: a lock during an in-flight grant must leave this tab locked', async () => {
     const granter = tab();
@@ -266,8 +268,9 @@ describe('the race discipline (reviewer finding B2, probes P1/P1b)', () => {
   /**
    * R1d. The generation guard's OWN job, isolated: the marker cannot be written
    * at all (private mode, a wedged quota), so the only thing between the grant
-   * in flight and an installed session is the counter minted before the
-   * exchange. Moving `beginSessionChange()` back below the await turns this red.
+   * in flight and an installed session is the counter snapshotted before the
+   * exchange and bumped by the lock. Taking the snapshot after the await would
+   * turn this red.
    */
   it('R1d: a lock whose marker cannot be written still refuses the grant', async () => {
     const granter = tab();

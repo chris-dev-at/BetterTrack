@@ -226,4 +226,36 @@ describe('endpoint session resume is not re-entrant through the state invalidati
     await sessionAfterResume().toBe('unlocked');
     expect(sessionEnds, 'the unlock itself is the only session end').toBeLessThanOrEqual(1);
   });
+
+  it('a password typed while a valid record exists installs ONE session — the resume yields', async () => {
+    // The device holds a record (the unlock above persisted it) and the marker
+    // is unset. A drift teardown (no lock) ends the session; the stub flickers
+    // "locked" and the user types the password before the record's resume
+    // lands. Round 2 of the #1707 review: the resume snapshots the generation
+    // the unlock minted, so the generation guard alone cannot refuse it — the
+    // standing-session check must, or two sessions install on top of each
+    // other and the unlock's raw K_dev and entropy are orphaned un-zeroed.
+    let vaultOpened = 0;
+    const releaseOpened = endpointVaultKeystore.subscribeToVaultOpened(() => {
+      vaultOpened += 1;
+    });
+    try {
+      endpointVaultKeystore.endSession();
+      resetCounters();
+      await expect(endpointVaultKeystore.unlock(PASSWORD)).resolves.toEqual({
+        unlockedVaultIds: [VAULT_1],
+      });
+      await sessionAfterResume().toBe('unlocked');
+      await settle();
+      await settle();
+      await settle();
+      // The unlock's own edge, and the speculative resume's — which must not
+      // have fired, because it found a session standing and yielded.
+      expect(vaultOpened, 'exactly one install').toBe(1);
+      expect(sessionEnds).toBeLessThanOrEqual(1);
+      expect(await endpointVaultKeystore.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    } finally {
+      releaseOpened();
+    }
+  });
 });

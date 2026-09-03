@@ -336,6 +336,10 @@ export class EndpointVaultKeystore {
         );
       }
       this.requireCurrentGeneration(generation);
+      // The mirror image of the resume's guard: if a speculative resume slipped
+      // its session in while the password was being verified, zero its copies
+      // instead of orphaning them under ours — the password is authoritative.
+      if (this.deviceKey != null) this.clearSessionSecrets();
       this.deviceKey = candidate;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
@@ -387,12 +391,19 @@ export class EndpointVaultKeystore {
     // resume body runs: a re-entrant caller inside that body (a synchronous
     // query re-run, see `runSessionResume`) must find the in-flight promise and
     // share it, never start a second resume.
-    this.sessionResume ??= Promise.resolve()
-      .then(() => this.runSessionResume())
-      .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
-      .finally(() => {
-        this.sessionResume = null;
-      });
+    if (this.sessionResume == null) {
+      const run: Promise<EndpointUnlockResult> = Promise.resolve()
+        .then(() => this.runSessionResume())
+        .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
+        .finally(() => {
+          // Only the run that owns the slot may vacate it. A lock or an account
+          // change nulls the memo early and a NEWER run may have taken the slot
+          // since; an older run settling must not evict it, or two resumes
+          // sharing one snapshot could both install.
+          if (this.sessionResume === run) this.sessionResume = null;
+        });
+      this.sessionResume = run;
+    }
     return this.sessionResume;
   }
 
@@ -507,6 +518,12 @@ export class EndpointVaultKeystore {
       }
       // (3) Last word before the session exists. Nothing may await past here.
       if (!this.sessionStillCurrent(generation, accountId)) return nothing;
+      // A session already standing here means an `unlock()` won the race — its
+      // own `beginSessionChange` is what this resume snapshotted, so the
+      // generation check above cannot see it. Installing beside it would
+      // overwrite the unlock's raw K_dev and entropy un-zeroed (§12) and fire a
+      // second vault-opened edge. The `finally` below zeroes our copies.
+      if (this.deviceKey != null) return nothing;
       this.deviceKey = deviceKey;
       this.devicePasswordMetadata = metadata;
       this.sessionRevision = listed.revision;
