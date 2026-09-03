@@ -52,8 +52,18 @@ describe('mergeDailyPrices basis discipline', () => {
 
   it('drops EVERY stored row when the provider call failed, rather than serving a mixed curve', () => {
     // The "carry the whole asset when the provider call failed" path: with no
-    // provider points at all, an adjusted book contributes nothing. A curve that
-    // starts where trustworthy data starts beats one that restates the money.
+    // provider points at all, an adjusted book contributes nothing.
+    //
+    // Be precise about the consequence, because it is worse than a short curve:
+    // `valueOverTime` skips an asset with no price at all, so the holding
+    // contributes €0 to EVERY day — a silent understatement, not a carry-forward
+    // (carry-forward needs a prior point, and there is none). That is why the
+    // relabel does not stand alone: `prices.refreshDaily` sweeps for assets
+    // still holding off-basis rows and enqueues a full `prices.backfill` per
+    // asset, and the first-reference probe ignores off-basis rows — so the raw
+    // fallback layer is REBUILT rather than left empty, and the API's series
+    // builder logs any asset that still ends up with no usable price
+    // (§16 2026-09-03).
     expect(
       mergeDailyPrices(
         [stored('2024-01-02', 80, 'adjusted'), stored('2024-01-03', 81, 'adjusted')],

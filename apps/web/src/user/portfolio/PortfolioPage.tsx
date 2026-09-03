@@ -1395,6 +1395,13 @@ function SplitBasisNotice({ portfolioId, enabled }: { portfolioId: string; enabl
             </li>
           ))}
         </ul>
+        {/* The shared roll-up cap can stop the scan short of the whole book (or
+            a provider can fail to answer for one holding). Said once, only when
+            there is already a warning to qualify — a big book must not read as
+            "checked, clean" for the positions nobody looked at. */}
+        {query.data.truncated ? (
+          <p className="mt-1">{t('portfolio.overview.splitBasis.truncated')}</p>
+        ) : null}
       </Alert>
     </div>
   );

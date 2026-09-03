@@ -1444,6 +1444,17 @@ const portfolioSnapshotStateRowSchema = z
     portfolioId: uuidSchema,
     computedThrough: daySchema,
     dirtyFrom: daySchema.nullable(),
+    /**
+     * Price basis the snapshot rows were computed on (§16 2026-09-03, #1694).
+     * **Defaulted, never required** — the same mechanical reason as
+     * `customAssetValue.basis`: documents written before the column existed
+     * carry no key, and a required field would lock those vaults out. The
+     * default is `adjusted`, i.e. the pre-rule basis, matching the column's own
+     * default: a state row restored from such a document describes rows an
+     * older engine computed, and the read path rebuilds them rather than
+     * trusting a label the document never carried.
+     */
+    priceBasis: z.enum(['unadjusted', 'adjusted']).default('adjusted'),
     updatedAt: timestampSchema,
   })
   .strict();

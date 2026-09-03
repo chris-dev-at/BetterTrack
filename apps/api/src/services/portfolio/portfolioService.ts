@@ -2208,7 +2208,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async getSplitBasis(userId, portfolioId) {
       await requireOwnedPortfolio(userId, portfolioId);
       const txns = await transactionRepo.listForPortfolio(portfolioId);
-      if (txns.length === 0) return { available: false, positions: [] };
+      if (txns.length === 0) return { available: false, positions: [], truncated: false };
 
       const assetIds = [...new Set(txns.map((t) => t.assetId))];
       const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
@@ -2238,12 +2238,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         if (!marketData.intelCapabilities(ref).splits) continue;
         subjects.push({ assetId, symbol: asset.symbol, held: true, ...ref });
       }
-      if (subjects.length === 0) return { available: false, positions: [] };
+      if (subjects.length === 0) return { available: false, positions: [], truncated: false };
 
       // Same shared outbound queue as every other roll-up, so the same cap
-      // (§13.5 V5-P5). A truncated book simply checks fewer positions this
-      // request; `available` stays true because the ones checked are real.
-      const { selected } = capRollupSubjects(subjects);
+      // (§13.5 V5-P5). A truncated book checks fewer positions this request, and
+      // the response SAYS so: the ones checked are real (hence `available`), but
+      // the unchecked tail must not read as a clean bill of health.
+      const { selected, truncated } = capRollupSubjects(subjects);
       const splitInputs = await Promise.all(
         selected.map(async (subject): Promise<SplitBasisAssetInput | null> => {
           try {
@@ -2276,7 +2277,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       );
 
       const resolved = splitInputs.filter((i): i is SplitBasisAssetInput => i !== null);
-      if (resolved.length === 0) return { available: false, positions: [] };
+      if (resolved.length === 0) return { available: false, positions: [], truncated: false };
 
       const positions: SplitBasisPositionDto[] = [];
       for (const mismatch of detectSplitBasisMismatches(domainTxns, resolved)) {
@@ -2288,7 +2289,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           splits: mismatch.splits,
         });
       }
-      return { available: true, positions };
+      // Unchecked is unchecked, whichever end it happened at: the cap, or a
+      // provider that could not answer for a subject we did select.
+      return {
+        available: true,
+        positions,
+        truncated: truncated || resolved.length < selected.length,
+      };
     },
 
     async getPortfolio(userId, portfolioId, opts) {

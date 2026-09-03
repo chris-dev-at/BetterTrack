@@ -1,7 +1,7 @@
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import { PORTFOLIO_KINDS, type PortfolioKind } from '@bettertrack/contracts';
-import type { PriceBasis } from '@bettertrack/domain/holdings';
+import { VALUATION_PRICE_BASIS, type PriceBasis } from '@bettertrack/domain/holdings';
 
 import type { Database } from '../db';
 import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
@@ -471,6 +471,12 @@ export function createPortfolioRepository(db: Database) {
      * read path's fallback price for the fresh "today" point when the live
      * quote is unavailable — mirroring how the value engine would carry the
      * last known close forward.
+     *
+     * Restricted to the valuation basis (§16 2026-09-03): this price is
+     * multiplied by an as-transacted quantity exactly like every point of the
+     * series, so an adjusted row would put the LAST point of the curve on a
+     * different basis from the rest. An asset with no row on that basis is
+     * simply absent, and the caller carries yesterday's value forward instead.
      */
     async latestClosesForAssets(ids: readonly string[]): Promise<Map<string, number>> {
       if (ids.length === 0) return new Map();
@@ -480,7 +486,12 @@ export function createPortfolioRepository(db: Database) {
           close: priceHistory.close,
         })
         .from(priceHistory)
-        .where(inArray(priceHistory.assetId, [...ids]))
+        .where(
+          and(
+            inArray(priceHistory.assetId, [...ids]),
+            eq(priceHistory.basis, VALUATION_PRICE_BASIS),
+          ),
+        )
         .orderBy(asc(priceHistory.assetId), desc(priceHistory.date));
       const latest = new Map<string, number>();
       for (const row of rows) {

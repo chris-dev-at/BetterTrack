@@ -16,7 +16,7 @@ import type {
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
-import type { AssetProvider, ProviderCapability } from './AssetProvider';
+import type { AssetProvider, HistoryBasis, ProviderCapability } from './AssetProvider';
 import { cacheKey, createMarketCache, type MarketCache } from './cache';
 import {
   CircuitBreaker,
@@ -210,6 +210,15 @@ export interface CreateMarketDataServiceDeps {
 }
 
 /**
+ * The basis {@link MarketDataService.getUnadjustedHistory} names — the only one
+ * stored quantities may be valued against (§16 2026-09-03). Mirrors the domain's
+ * `VALUATION_PRICE_BASIS`; kept as the provider layer's own constant because
+ * this module resolves it per PROVIDER (declaration + escape hatch), while the
+ * domain enforces it per SERIES.
+ */
+const VALUATION_HISTORY_BASIS: HistoryBasis = 'unadjusted';
+
+/**
  * Default candle interval for each range (§5.3). Range determines interval in
  * v1; callers may still override it explicitly.
  */
@@ -341,6 +350,13 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
     ref: AssetRef,
     capability: ProviderCapability,
     op: (provider: AssetProvider) => Promise<T>,
+    /**
+     * The basis `op` asks every candidate for, when the caller named one
+     * (§16 2026-09-03). Passing it swaps the chain's "same basis as the
+     * primary declares" gate for "can serve this basis" — the right question
+     * when the request itself is basis-specific and cached under its own key.
+     */
+    requireBasis?: HistoryBasis,
   ): Promise<T> =>
     resolver.run(
       ref,
@@ -348,6 +364,7 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
       op,
       isNotFoundError,
       capability,
+      requireBasis,
     );
 
   /**
@@ -360,8 +377,10 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
    *    (Yahoo re-reads `close` from the same chart call);
    *  - anything else — including a provider that declares no basis at all — is
    *    refused, so it can never silently feed stored quantities a series they
-   *    are not on. The failover chain's own basis gate (`servesEquivalently`,
-   *    #1588) is unchanged and still runs first.
+   *    are not on. The chain gate agrees with this resolution: for a
+   *    basis-named request it keeps exactly the candidates that pass here, so
+   *    a raw secondary stays available for an adjusted primary's asset while
+   *    #1588's rule for the (basis-implied) `getHistory` is untouched.
    */
   const unadjustedHistoryOf = (
     provider: AssetProvider,
@@ -372,8 +391,10 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
     if (typeof provider.getUnadjustedHistory === 'function') {
       return provider.getUnadjustedHistory(ref, range, interval);
     }
-    if (provider.historyBasis === 'unadjusted') return provider.getHistory(ref, range, interval);
-    return Promise.reject(new HistoryBasisUnavailableError(provider.id, 'unadjusted'));
+    if (provider.historyBasis === VALUATION_HISTORY_BASIS) {
+      return provider.getHistory(ref, range, interval);
+    }
+    return Promise.reject(new HistoryBasisUnavailableError(provider.id, VALUATION_HISTORY_BASIS));
   };
 
   /**
@@ -527,7 +548,16 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
         isNotFound: isNotFoundError,
         shouldRevalidate: () => resolver.anyAvailable(ref, 'history'),
         loader: () =>
-          runChained(ref, 'history', (p) => unadjustedHistoryOf(p, ref, range, chosenInterval)),
+          runChained(
+            ref,
+            'history',
+            (p) => unadjustedHistoryOf(p, ref, range, chosenInterval),
+            // Every candidate is asked for the SAME named series, so a raw
+            // secondary may answer for an adjusted primary's asset here — the
+            // #1588 rule (a secondary must match the primary's declaration)
+            // still governs `getHistory`, whose basis is only implied.
+            VALUATION_HISTORY_BASIS,
+          ),
       });
     },
 

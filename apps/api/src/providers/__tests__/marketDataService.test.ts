@@ -853,6 +853,27 @@ describe('MarketDataService — a failover never changes the history basis (§13
     });
   });
 
+  it('the VALUATION read does fail over to the raw secondary — the request named that basis', async () => {
+    // The mirror image of the case above, and the reason the gate is not simply
+    // "same as the primary declares": `getUnadjustedHistory` asks every
+    // candidate for the SAME named series under its own cache key, so Stooq's
+    // raw closes are the correct answer for a dead adjusted primary rather than
+    // a silent substitution. Refusing here would cost availability on the money
+    // path for no correctness gain.
+    const { service, state } = basisFailoverService();
+    state.yahooUp = false;
+
+    const served = await service.getUnadjustedHistory(AAPL, '1Y', '1d');
+    expect(served.value).toEqual([{ time: '2026-07-15T00:00:00.000Z', close: 140 }]);
+    expect(state.stooqHistoryCalls).toBe(1);
+    // The adjusted key is untouched: the two bases never share a cache entry.
+    expect(await redis.get(freshCacheKey(HISTORY_KEY))).toBeNull();
+    expect(service.failoverStatus().chains[0]).toMatchObject({
+      primaryId: 'yahoo',
+      serving: 'stooq',
+    });
+  });
+
   it('with a cold cache the history read fails with the primary error rather than serving a raw series', async () => {
     const { service, state } = basisFailoverService();
     state.yahooUp = false;

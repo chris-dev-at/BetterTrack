@@ -43,16 +43,19 @@ async function defaultPortfolioId(agent: ReturnType<typeof request.agent>): Prom
   return def.id as string;
 }
 
-async function seedAsset(h: TestHarness) {
+async function seedAsset(
+  h: TestHarness,
+  overrides: { providerRef?: string; symbol?: string; name?: string } = {},
+) {
   const [row] = await h.db
     .insert(schema.assets)
     .values({
       providerId: 'yahoo',
-      providerRef: 'AAPL',
+      providerRef: overrides.providerRef ?? 'AAPL',
       ownerId: null,
       type: 'stock',
-      symbol: 'AAPL',
-      name: 'Apple Inc.',
+      symbol: overrides.symbol ?? 'AAPL',
+      name: overrides.name ?? 'Apple Inc.',
       exchange: 'NASDAQ',
       currency: 'EUR',
     })
@@ -103,6 +106,8 @@ describe('GET /api/v1/portfolios/:portfolioId/split-basis', () => {
     expect(res.status).toBe(200);
     const body = portfolioSplitBasisResponseSchema.parse(res.body);
     expect(body.available).toBe(true);
+    // The whole (one-asset) book was checked, so the answer is complete.
+    expect(body.truncated).toBe(false);
     expect(body.positions).toHaveLength(1);
     expect(body.positions[0]?.asset.symbol).toBe('AAPL');
     expect(body.positions[0]?.quantity).toBe(10);
@@ -121,7 +126,39 @@ describe('GET /api/v1/portfolios/:portfolioId/split-basis', () => {
 
     const res = await agent.get(`/api/v1/portfolios/${portfolioId}/split-basis`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ available: true, positions: [] });
+    expect(res.body).toEqual({ available: true, positions: [], truncated: false });
+  });
+
+  it('marks the answer truncated when a held position could not be checked', async () => {
+    // The scan is capped against the shared outbound queue, and one provider can
+    // fail on its own. Either way part of the book went unlooked-at, and a money
+    // warning must say so rather than let the tail read as a clean bill.
+    const h = await createTestApp({
+      marketData: createStubMarketData({
+        splits: (ref) => {
+          if (ref.providerRef === 'MSFT') throw new Error('upstream down');
+          return cachedIntel(SPLIT_4_FOR_1);
+        },
+      }),
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const portfolioId = await defaultPortfolioId(agent);
+    const checked = await seedAsset(h);
+    const unreachable = await seedAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft',
+    });
+    await seedBuy(h, portfolioId, checked.id, 10, '2026-01-05T00:00:00.000Z');
+    await seedBuy(h, portfolioId, unreachable.id, 5, '2026-01-05T00:00:00.000Z');
+
+    const res = await agent.get(`/api/v1/portfolios/${portfolioId}/split-basis`);
+    expect(res.status).toBe(200);
+    const body = portfolioSplitBasisResponseSchema.parse(res.body);
+    expect(body.available).toBe(true);
+    expect(body.positions.map((p) => p.asset.symbol)).toEqual(['AAPL']);
+    expect(body.truncated).toBe(true);
   });
 
   it('reports "cannot tell" when no held asset has a splits-capable provider', async () => {
@@ -137,7 +174,7 @@ describe('GET /api/v1/portfolios/:portfolioId/split-basis', () => {
 
     const res = await agent.get(`/api/v1/portfolios/${portfolioId}/split-basis`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ available: false, positions: [] });
+    expect(res.body).toEqual({ available: false, positions: [], truncated: false });
   });
 
   it('spends no provider budget on a portfolio with no transactions', async () => {
@@ -149,7 +186,7 @@ describe('GET /api/v1/portfolios/:portfolioId/split-basis', () => {
 
     const res = await agent.get(`/api/v1/portfolios/${portfolioId}/split-basis`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ available: false, positions: [] });
+    expect(res.body).toEqual({ available: false, positions: [], truncated: false });
     expect(marketData.calls.splits).toBe(0);
   });
 

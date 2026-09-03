@@ -39,6 +39,7 @@ import {
   createProviderRegistry,
 } from '../../providers';
 import { createStubMarketData, type StubMarketDataControls } from '../../testing/marketDataStubs';
+import type { BackfillScheduler } from '../backfillScheduler';
 import { createDeadLetter } from '../deadLetter';
 import {
   BACKFILL_LIMITER,
@@ -96,6 +97,24 @@ function makeCtx(events: EventBus): JobContext {
 
 /** The run's real execution instant — every event this suite asserts is stamped with it. */
 const RUN_AT = Date.parse('2026-06-23T01:00:00.000Z');
+
+/** Backfill port for the cases that assert nothing about the repair sweep. */
+const noBackfill: BackfillScheduler = {
+  async enqueue() {
+    /* intentionally empty */
+  },
+};
+
+/** Backfill port that records which assets the off-basis repair sweep queued. */
+function recordingBackfill(): BackfillScheduler & { enqueued: string[] } {
+  const enqueued: string[] = [];
+  return {
+    enqueued,
+    async enqueue(assetId) {
+      enqueued.push(assetId);
+    },
+  };
+}
 
 function makeJob<T>(data: T): Job<T> {
   return {
@@ -189,6 +208,7 @@ describe('prices.refreshDaily', () => {
   it('is scheduled nightly at 03:00 Europe/Vienna', () => {
     const job = createPricesRefreshDailyJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData(),
     });
     expect(job.name).toBe('prices.refreshDaily');
@@ -244,7 +264,11 @@ describe('prices.refreshDaily', () => {
       TSLA: [point('2026-06-23', 999)],
     });
     const events = recordingBus();
-    const job = createPricesRefreshDailyJob({ db, marketData: createStubMarketData({ history }) });
+    const job = createPricesRefreshDailyJob({
+      db,
+      marketData: createStubMarketData({ history }),
+      backfill: noBackfill,
+    });
 
     await job.handler(makeJob({}), makeCtx(events));
 
@@ -280,6 +304,7 @@ describe('prices.refreshDaily', () => {
 
     const first = createPricesRefreshDailyJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({
         history: recordingHistory({ AAPL: [point('2026-06-23', 100)] }).history,
       }),
@@ -290,6 +315,7 @@ describe('prices.refreshDaily', () => {
     // Re-run with a revised close — overwrites in place, no duplicate-key error.
     const second = createPricesRefreshDailyJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({
         history: recordingHistory({ AAPL: [point('2026-06-23', 105)] }).history,
       }),
@@ -314,7 +340,7 @@ describe('prices.refreshDaily', () => {
       },
     });
     const events = recordingBus();
-    const job = createPricesRefreshDailyJob({ db, marketData });
+    const job = createPricesRefreshDailyJob({ db, marketData, backfill: noBackfill });
 
     await expect(job.handler(makeJob({}), makeCtx(events))).rejects.toThrow(/1\/2 assets failed/);
 
@@ -328,10 +354,80 @@ describe('prices.refreshDaily', () => {
     const events = recordingBus();
     const job = createPricesRefreshDailyJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({ history: () => ({ value: [], stale: false, asOf: 0 }) }),
     });
     await job.handler(makeJob({}), makeCtx(events));
     expect(events.published).toEqual([]);
+  });
+
+  /**
+   * The off-basis repair sweep (§16 2026-09-03, #1694). Migration 0110 labelled
+   * every pre-existing upstream row `adjusted`, which makes it invisible to the
+   * value engine. Nothing else would ever rewrite the ones outside this job's
+   * trailing month — `prices.backfill` is otherwise enqueued only for an asset
+   * with NO history at all — so the durable fallback layer would stay
+   * permanently empty for every asset that existed before the rule, and a
+   * provider outage would drop such a holding to a silent zero.
+   */
+  it('enqueues a full backfill for assets still holding pre-rule rows, and only for those', async () => {
+    const legacy = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
+    const modern = await seedAsset(db, { providerRef: 'MSFT', type: 'stock' });
+    const wl = await seedWatchlist(db, userId);
+    await db.insert(schema.workboardItems).values([
+      { userId, watchlistId: wl, assetId: legacy, sortOrder: 0 },
+      { userId, watchlistId: wl, assetId: modern, sortOrder: 1 },
+    ]);
+    // What migration 0110 leaves behind: an old `adjusted` history, outside the
+    // month this job refreshes, plus a raw row for the asset that is already fine.
+    await db.insert(schema.priceHistory).values([
+      { assetId: legacy, date: '2024-03-01', close: '80', basis: 'adjusted' },
+      { assetId: legacy, date: '2024-03-04', close: '81', basis: 'adjusted' },
+      { assetId: modern, date: '2024-03-01', close: '300', basis: 'unadjusted' },
+    ]);
+
+    const backfill = recordingBackfill();
+    const job = createPricesRefreshDailyJob({
+      db,
+      backfill,
+      marketData: createStubMarketData({
+        history: recordingHistory({
+          AAPL: [point('2026-06-23', 100)],
+          MSFT: [point('2026-06-23', 310)],
+        }).history,
+      }),
+    });
+    await job.handler(makeJob({}), makeCtx(recordingBus()));
+
+    expect(backfill.enqueued).toEqual([legacy]);
+  });
+
+  it('does not fail the refresh when a repair enqueue throws', async () => {
+    const legacy = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
+    const wl = await seedWatchlist(db, userId);
+    await db
+      .insert(schema.workboardItems)
+      .values({ userId, watchlistId: wl, assetId: legacy, sortOrder: 0 });
+    await db
+      .insert(schema.priceHistory)
+      .values({ assetId: legacy, date: '2024-03-01', close: '80', basis: 'adjusted' });
+
+    const job = createPricesRefreshDailyJob({
+      db,
+      backfill: {
+        async enqueue() {
+          throw new Error('queue down');
+        },
+      },
+      marketData: createStubMarketData({
+        history: recordingHistory({ AAPL: [point('2026-06-23', 100)] }).history,
+      }),
+    });
+
+    // The refresh itself succeeded; a queue hiccup must not dead-letter it, and
+    // tomorrow's run re-scans (the sweep is a projection of durable state).
+    await expect(job.handler(makeJob({}), makeCtx(recordingBus()))).resolves.toBeUndefined();
+    expect(await closesFor(db, legacy)).toMatchObject({ '2026-06-23': '100' });
   });
 });
 
@@ -366,6 +462,7 @@ describe('price jobs × custom assets (smoothing must not be persisted)', () => 
     });
     return {
       db,
+      backfill: noBackfill,
       marketData: service,
       isLocalProvider: (id) => registry.has(id) && registry.get(id).local === true,
     };
@@ -447,7 +544,11 @@ describe('prices.backfill', () => {
   });
 
   it('is rate-limited to ~1 asset/sec and has no schedule (on demand)', () => {
-    const job = createPricesBackfillJob({ db, marketData: createStubMarketData() });
+    const job = createPricesBackfillJob({
+      db,
+      marketData: createStubMarketData(),
+      backfill: noBackfill,
+    });
     expect(job.name).toBe('prices.backfill');
     expect(job.schedule).toBeUndefined();
     expect(job.workerOptions?.limiter).toEqual(BACKFILL_LIMITER);
@@ -460,7 +561,11 @@ describe('prices.backfill', () => {
       AAPL: [point('2020-01-02', 70), point('2020-01-03', 71), point('2026-06-23', 200)],
     });
     const events = recordingBus();
-    const job = createPricesBackfillJob({ db, marketData: createStubMarketData({ history }) });
+    const job = createPricesBackfillJob({
+      db,
+      marketData: createStubMarketData({ history }),
+      backfill: noBackfill,
+    });
 
     await job.handler(makeJob({ assetId }), makeCtx(events));
 
@@ -481,6 +586,7 @@ describe('prices.backfill', () => {
     const assetId = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
     const deps = {
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({
         history: () => ({
           value: [point('2026-06-22', 99), point('2026-06-23', 100)],
@@ -495,10 +601,61 @@ describe('prices.backfill', () => {
     expect(await closesFor(db, assetId)).toEqual({ '2026-06-22': '99', '2026-06-23': '100' });
   });
 
+  it('rewrites a pre-rule history raw and drops what the provider could not replace', async () => {
+    const assetId = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
+    // A delisted-era row the provider no longer serves, plus two the max-range
+    // fetch does cover — all on the pre-rule basis (migration 0110).
+    await db.insert(schema.priceHistory).values([
+      { assetId, date: '2019-01-02', close: '40', basis: 'adjusted' },
+      { assetId, date: '2020-01-02', close: '69', basis: 'adjusted' },
+      { assetId, date: '2020-01-03', close: '70', basis: 'adjusted' },
+    ]);
+
+    const job = createPricesBackfillJob({
+      db,
+      backfill: noBackfill,
+      marketData: createStubMarketData({
+        history: recordingHistory({
+          AAPL: [point('2020-01-02', 72), point('2020-01-03', 73)],
+        }).history,
+      }),
+    });
+    await job.handler(makeJob({ assetId }), makeCtx(recordingBus()));
+
+    // The covered days carry raw closes; the row nothing could replace is gone
+    // rather than lingering as a value the engine may never read (which would
+    // also re-trigger the nightly sweep forever).
+    expect(await closesFor(db, assetId)).toEqual({ '2020-01-02': '72', '2020-01-03': '73' });
+    const bases = await db
+      .select({ basis: schema.priceHistory.basis })
+      .from(schema.priceHistory)
+      .where(eq(schema.priceHistory.assetId, assetId));
+    expect(bases.map((r) => r.basis)).toEqual(['unadjusted', 'unadjusted']);
+  });
+
+  it('never empties the table when the provider answers with nothing', async () => {
+    const assetId = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
+    await db
+      .insert(schema.priceHistory)
+      .values({ assetId, date: '2020-01-02', close: '69', basis: 'adjusted' });
+
+    const job = createPricesBackfillJob({
+      db,
+      backfill: noBackfill,
+      marketData: createStubMarketData({ history: () => ({ value: [], stale: false, asOf: 0 }) }),
+    });
+    await job.handler(makeJob({ assetId }), makeCtx(recordingBus()));
+
+    // Deleting is conditional on a write that actually landed: an empty upstream
+    // answer must never be able to clear an asset's durable rows.
+    expect(await closesFor(db, assetId)).toEqual({ '2020-01-02': '69' });
+  });
+
   it('no-ops for an asset that no longer exists', async () => {
     const events = recordingBus();
     const job = createPricesBackfillJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({ history: () => ({ value: [], stale: false, asOf: 0 }) }),
     });
     // Missing id must not throw (would otherwise dead-letter for no reason).
@@ -519,7 +676,11 @@ describe('fx.refreshSpot', () => {
   });
 
   it('is scheduled hourly', () => {
-    const job = createFxRefreshSpotJob({ db, marketData: createStubMarketData() });
+    const job = createFxRefreshSpotJob({
+      db,
+      marketData: createStubMarketData(),
+      backfill: noBackfill,
+    });
     expect(job.name).toBe('fx.refreshSpot');
     expect(job.schedule).toMatchObject({ id: 'fx.refreshSpot', pattern: FX_REFRESH_SPOT_CRON });
     expect(FX_REFRESH_SPOT_CRON).toBe('0 * * * *');
@@ -540,7 +701,11 @@ describe('fx.refreshSpot', () => {
       };
     };
     const events = recordingBus();
-    const job = createFxRefreshSpotJob({ db, marketData: createStubMarketData({ quote }) });
+    const job = createFxRefreshSpotJob({
+      db,
+      marketData: createStubMarketData({ quote }),
+      backfill: noBackfill,
+    });
 
     await job.handler(makeJob({}), makeCtx(events));
 
@@ -555,6 +720,7 @@ describe('fx.refreshSpot', () => {
     const events = recordingBus();
     const job = createFxRefreshSpotJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({
         quote: () => {
           throw new Error('should not be called');
@@ -569,6 +735,7 @@ describe('fx.refreshSpot', () => {
     await seedAsset(db, { providerRef: 'EURUSD=X', type: 'fx', currency: 'USD' });
     const job = createFxRefreshSpotJob({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData({
         quote: () => {
           throw new Error('rate-limited');
@@ -608,6 +775,7 @@ describe('createJobDefinitions registration', () => {
     const db = await makeDb();
     const defs = createJobDefinitions({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData(),
       notify: inertNotify,
       paranoid: inertParanoid,
@@ -625,6 +793,7 @@ describe('createJobDefinitions registration', () => {
     const db = await makeDb();
     const defs = createJobDefinitions({
       db,
+      backfill: noBackfill,
       marketData: createStubMarketData(),
       notify: inertNotify,
       paranoid: inertParanoid,

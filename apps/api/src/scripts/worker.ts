@@ -559,6 +559,9 @@ const coreJobDeps = {
   marketData,
   notify,
   paranoid: paranoidGuard,
+  // The nightly refresh enqueues a full backfill for any asset whose stored
+  // history is still on the pre-rule price basis (§16 2026-09-03).
+  backfill: createBackfillScheduler(registry),
   // Custom assets (the `manual` provider) are durable in our own DB; the price
   // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
   isLocalProvider: (providerId: string) =>

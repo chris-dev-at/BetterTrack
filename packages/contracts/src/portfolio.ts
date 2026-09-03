@@ -981,6 +981,16 @@ export const portfolioSplitBasisResponseSchema = z
   .object({
     available: z.boolean(),
     positions: z.array(splitBasisPositionSchema),
+    /**
+     * True when the shared roll-up fan-out cap (§13.5 V5-P5) stopped this
+     * request short of the whole book. The listed positions are real either
+     * way, but the ones beyond the cap were NOT looked at — so on a truncated
+     * response "no warning" means "not checked", not "clean". Carried on the
+     * wire rather than inferred, because a money warning that silently narrows
+     * its own scope is exactly the kind of quiet claim this endpoint exists to
+     * stop.
+     */
+    truncated: z.boolean(),
   })
   .strict();
 export type PortfolioSplitBasisResponse = z.infer<typeof portfolioSplitBasisResponseSchema>;

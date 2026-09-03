@@ -1,3 +1,4 @@
+import { VALUATION_PRICE_BASIS } from '@bettertrack/domain/holdings';
 import { and, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
@@ -242,15 +243,22 @@ export function createAssetRepository(db: Database) {
     },
 
     /**
-     * Whether at least one `price_history` row exists for this asset — the
-     * emptiness probe behind the first-reference backfill trigger (§6.2/§9,
+     * Whether at least one USABLE `price_history` row exists for this asset —
+     * the emptiness probe behind the first-reference backfill trigger (§6.2/§9,
      * `services/assets/referenceBackfill.ts`).
+     *
+     * "Usable" means on the valuation basis (§16 2026-09-03): rows the value
+     * engine may never read are not history as far as this probe is concerned,
+     * so an asset carrying only pre-rule `adjusted` rows is backfilled the next
+     * time it is referenced instead of being treated as already warm.
      */
     async hasPriceHistory(assetId: string): Promise<boolean> {
       const rows = await db
         .select({ assetId: priceHistory.assetId })
         .from(priceHistory)
-        .where(eq(priceHistory.assetId, assetId))
+        .where(
+          and(eq(priceHistory.assetId, assetId), eq(priceHistory.basis, VALUATION_PRICE_BASIS)),
+        )
         .limit(1);
       return rows.length > 0;
     },

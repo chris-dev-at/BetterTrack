@@ -13,6 +13,7 @@ import type {
   NewSnapshotRow,
   PortfolioSnapshotRepository,
   SnapshotRowRecord,
+  SnapshotStateRecord,
 } from '../../data/repositories/portfolioSnapshotRepository';
 import type {
   TransactionRecord,
@@ -432,6 +433,22 @@ export function createPortfolioSnapshotService(
       };
     });
 
+    // An asset with NO usable price point is not worth zero — it is unvaluable,
+    // and `valueOverTime` skips it, so the position quietly contributes €0 to
+    // every day of the curve. It takes both layers failing at once: the provider
+    // call failed (outage past the stale window, or a basis it cannot serve) AND
+    // the durable rows hold nothing on the valuation basis. The off-basis repair
+    // sweep (§9 `prices.refreshDaily`) exists so the second condition cannot
+    // become permanent; this line makes the moment itself visible instead of
+    // rendering a plausible number with no signal at all.
+    const unpriced = valueAssets.filter((a) => a.prices.length === 0).map((a) => a.assetId);
+    if (unpriced.length > 0) {
+      logger?.warn(
+        { assetIds: unpriced, basis: VALUATION_PRICE_BASIS },
+        'portfolio series: no usable prices for transacted asset(s); they contribute 0 to the curve',
+      );
+    }
+
     return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay };
   }
 
@@ -633,7 +650,38 @@ export function createPortfolioSnapshotService(
       seenUpdatedAt: seen.updatedAt,
       seenDirtyFrom: seen.dirtyFrom,
       healFrom,
+      // The engine only ever values on this basis (`buildValueAssets` declares
+      // it and the domain rejects anything else), so the rows carry that label.
+      priceBasis: VALUATION_PRICE_BASIS,
     });
+  }
+
+  /**
+   * The day a BASIS CHANGE forces the writer to heal from (§16 2026-09-03), or
+   * null when the stored rows are already on the valuation basis.
+   *
+   * Stored snapshot rows are money, not a price cache: rows computed from
+   * adjusted closes stay wrong after `price_history` is relabelled, and the
+   * ordinary refill is insert-missing-only while the nightly roll re-heals just
+   * a trailing month. So the first computation that meets a pre-rule state row
+   * overwrites the WHOLE series — from the first point the run produced — and
+   * `saveComputation` stamps the new basis in the same statement. It happens
+   * once per portfolio, on whichever comes first: the next read or the next
+   * nightly roll.
+   */
+  function basisHealFrom(
+    state: SnapshotStateRecord | null,
+    artifacts: EngineArtifacts,
+  ): string | null {
+    if (state === null || state.priceBasis === VALUATION_PRICE_BASIS) return null;
+    return artifacts.points[0]?.date ?? null;
+  }
+
+  /** The earlier of two heal floors (either may be null = "no floor"). */
+  function earlierDay(a: string | null, b: string | null): string | null {
+    if (a === null) return b;
+    if (b === null) return a;
+    return a < b ? a : b;
   }
 
   /**
@@ -849,7 +897,10 @@ export function createPortfolioSnapshotService(
         portfolioId,
         artifacts,
         { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
-        opts.healFrom ?? null,
+        // The nightly roll heals a trailing window; a pre-rule basis widens that
+        // to the whole series, so the sweep converges every portfolio within one
+        // night even if nobody reads it.
+        earlierDay(opts.healFrom ?? null, basisHealFrom(state, artifacts)),
       );
       if (!result.applied) {
         logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
@@ -884,7 +935,16 @@ export function createPortfolioSnapshotService(
 
       const today = todayIso();
       const yesterday = daysBefore(today, 1);
-      if (state !== null && state.dirtyFrom === null && state.computedThrough >= yesterday) {
+      // The basis is part of "may these rows be trusted", exactly like the dirty
+      // marker: a row computed from adjusted closes is wrong money, and no
+      // amount of freshness makes it right (§16 2026-09-03). Serving it would
+      // reproduce the phantom loss one layer above `price_history.basis`.
+      if (
+        state !== null &&
+        state.dirtyFrom === null &&
+        state.priceBasis === VALUATION_PRICE_BASIS &&
+        state.computedThrough >= yesterday
+      ) {
         const rows = await snapshotRepo.listForPortfolio(portfolioId);
         // Zero rows with live events means the whole history started today —
         // serve that via the engine below instead of guessing usable assets.
@@ -907,7 +967,9 @@ export function createPortfolioSnapshotService(
 
       // Fallback: the live engine (identical math), refilled opportunistically
       // so the next read hits the snapshot path. A failed persist never fails
-      // the read.
+      // the read. Rows left by a pre-basis-rule writer are REWRITTEN here, not
+      // merely skipped — the refill is otherwise insert-missing-only, so they
+      // would survive and be served again on the next read.
       const artifacts = await computeArtifacts(portfolioId);
       if (artifacts === null) return emptySeries();
       try {
@@ -915,7 +977,7 @@ export function createPortfolioSnapshotService(
           portfolioId,
           artifacts,
           { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
-          null,
+          basisHealFrom(state, artifacts),
         );
       } catch (err) {
         logger?.warn({ err, portfolioId }, 'snapshot refill failed; served engine output');

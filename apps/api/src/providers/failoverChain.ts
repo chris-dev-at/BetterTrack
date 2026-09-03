@@ -1,6 +1,6 @@
 import type { AssetRef, AssetType } from '@bettertrack/contracts';
 
-import type { AssetProvider, ProviderCapability } from './AssetProvider';
+import type { AssetProvider, HistoryBasis, ProviderCapability } from './AssetProvider';
 import type { CircuitState } from './circuitBreaker';
 import type { ProviderRegistry } from './registry';
 
@@ -138,8 +138,17 @@ export interface FailoverResolver {
    * With a `capability`, secondaries that cannot serve it equivalently are
    * dropped too — today that is the `history` price basis (money gate). Omitted
    * ⇒ the capability-independent chain (what the admin surface reports).
+   *
+   * `requireBasis` names the basis the CALLER asked for (the valuation path's
+   * `getUnadjustedHistory`, §16 2026-09-03): the gate then keeps every candidate
+   * that can produce that exact series, rather than only those matching the
+   * primary's declaration.
    */
-  candidates(ref: AssetRef, capability?: ProviderCapability): AssetProvider[];
+  candidates(
+    ref: AssetRef,
+    capability?: ProviderCapability,
+    requireBasis?: HistoryBasis,
+  ): AssetProvider[];
   /** True if any candidate's breaker is not open — a fresh fetch could succeed. */
   anyAvailable(ref: AssetRef, capability?: ProviderCapability): boolean;
   /**
@@ -155,7 +164,9 @@ export interface FailoverResolver {
    * `capability` names the read being made: it scopes the breaker lookups and
    * gates which secondaries may answer (history basis). It is the LAST parameter
    * and optional so the capability-independent chain stays callable as-is;
-   * every production call site passes one.
+   * every production call site passes one. `requireBasis` additionally pins the
+   * basis `op` itself asks every candidate for (§16 2026-09-03), which replaces
+   * the "same as the primary declares" gate with "can serve this one".
    */
   run<T>(
     ref: AssetRef,
@@ -163,6 +174,7 @@ export interface FailoverResolver {
     op: (provider: AssetProvider) => Promise<T>,
     isNotFound: (err: unknown) => boolean,
     capability?: ProviderCapability,
+    requireBasis?: HistoryBasis,
   ): Promise<T>;
   /** Attribution + switch + chain snapshot for the admin health surface. */
   status(): FailoverStatus;
@@ -255,18 +267,43 @@ export function createFailoverResolver(deps: FailoverResolverDeps): FailoverReso
    * cached under the primary's key and consumed by backtests and portfolio
    * history as one continuous series, so an adjusted→unadjusted swap would
    * silently restate returns. An undeclared basis is unknown, never equal.
+   *
+   * `requireBasis` is the one case where the primary's declaration is NOT the
+   * standard: the caller asked for a specific basis by name (§16 2026-09-03 —
+   * `getUnadjustedHistory`, the valuation path), which is cached under its own
+   * key segment. There, "equivalent" means "can serve THAT basis", so a raw
+   * secondary is exactly the right answer for an adjusted primary's asset —
+   * refusing it would cost availability on the money path for no gain, since
+   * every candidate is asked for the same, named series.
    */
   function servesEquivalently(
     primary: AssetProvider | undefined,
     secondary: AssetProvider,
     capability: ProviderCapability | undefined,
+    requireBasis: HistoryBasis | undefined,
   ): boolean {
     if (capability !== 'history') return true;
+    if (requireBasis !== undefined) return servesBasis(secondary, requireBasis);
     const basis = primary?.historyBasis;
     return basis !== undefined && secondary.historyBasis === basis;
   }
 
-  function candidates(ref: AssetRef, capability?: ProviderCapability): AssetProvider[] {
+  /**
+   * Whether a provider can produce a named basis: it either declares it, or (for
+   * `unadjusted`) offers the explicit `getUnadjustedHistory` escape hatch. Same
+   * resolution the market-data service applies per candidate, so the chain never
+   * offers a provider that would only reject.
+   */
+  function servesBasis(provider: AssetProvider, basis: HistoryBasis): boolean {
+    if (provider.historyBasis === basis) return true;
+    return basis === 'unadjusted' && typeof provider.getUnadjustedHistory === 'function';
+  }
+
+  function candidates(
+    ref: AssetRef,
+    capability?: ProviderCapability,
+    requireBasis?: HistoryBasis,
+  ): AssetProvider[] {
     const primaryId = ref.providerId;
     const out: AssetProvider[] = [];
     const primary = registry.has(primaryId) ? registry.get(primaryId) : undefined;
@@ -278,7 +315,7 @@ export function createFailoverResolver(deps: FailoverResolverDeps): FailoverReso
       // A secondary that cannot map this ref is skipped, so its "not found" is
       // never mistaken for the asset's answer.
       if (provider.canServe && !provider.canServe(ref)) continue;
-      if (!servesEquivalently(primary, provider, capability)) continue;
+      if (!servesEquivalently(primary, provider, capability, requireBasis)) continue;
       out.push(provider);
       seen.add(id);
     }
@@ -393,8 +430,9 @@ export function createFailoverResolver(deps: FailoverResolverDeps): FailoverReso
     op: (provider: AssetProvider) => Promise<T>,
     isNotFound: (err: unknown) => boolean,
     capability?: ProviderCapability,
+    requireBasis?: HistoryBasis,
   ): Promise<T> {
-    const chain = candidates(ref, capability);
+    const chain = candidates(ref, capability, requireBasis);
     const primaryId = ref.providerId;
     // The transient primary error is what we surface if every source fails, so a
     // primary outage never looks like a not-found (which would be negative-cached).

@@ -21,6 +21,11 @@ import type { Logger } from '../../logger';
  * ever", so it is cheap to call on every reference and self-heals if an earlier
  * backfill found nothing. Conglomerate positions (P4) must call
  * {@link ReferenceBackfill.ensureHistory} from their create/update path too.
+ *
+ * "No history" means no row the value engine may read, i.e. none on the
+ * valuation basis (§16 2026-09-03) — an asset left holding only pre-rule
+ * `adjusted` rows is warmed here the next time a user touches it, which is the
+ * user-facing half of the repair the nightly refresh sweeps for in bulk.
  */
 export interface ReferenceBackfill {
   /**

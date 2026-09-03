@@ -26,3 +26,24 @@ ALTER TABLE "price_history" ADD COLUMN "basis" text DEFAULT 'unadjusted' NOT NUL
 UPDATE "price_history"
 SET "basis" = 'adjusted'
 WHERE "asset_id" IN (SELECT "id" FROM "assets" WHERE "provider_id" <> 'manual');
+--> statement-breakpoint
+-- The SERVED curve, one layer up. `portfolio_daily_snapshots` rows are the
+-- precomputed value series the read path serves verbatim while the state is
+-- clean, and every existing row was computed from adjusted closes. Relabelling
+-- prices alone would leave a warm deployment serving adjusted values for
+-- everything older than the nightly 35-day heal window and raw values inside
+-- it — the same corporate-action-sized cliff, in the derived table.
+--
+-- So the state row records the basis its rows were computed on, and the read
+-- path refuses to serve rows whose recorded basis is not the valuation basis:
+-- it falls through to the live engine and rewrites them (a full heal, not the
+-- insert-missing-only refill), per portfolio, on first read or at the next
+-- nightly roll — whichever comes first.
+--
+-- Default `adjusted`, the opposite of `price_history.basis`, and deliberately:
+-- every writer that KNOWS about this column states its basis explicitly, so the
+-- default means "written by code that predates the basis rule". That covers
+-- both the rows already on disk and anything the still-running old image writes
+-- between `migrate` and `up -d` (the documented deploy order) — all of it is
+-- rebuilt rather than trusted.
+ALTER TABLE "portfolio_snapshot_state" ADD COLUMN "price_basis" text DEFAULT 'adjusted' NOT NULL;

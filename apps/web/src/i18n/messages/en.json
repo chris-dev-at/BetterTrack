@@ -1606,7 +1606,8 @@
         "row": "{{symbol}} — {{quantity}} recorded, split {{splits}}",
         "split": "{{ratio}} on {{date}}",
         "loading": "Checking your holdings for missing stock splits…",
-        "loadError": "Couldn't check whether any holding is missing a stock split. Please try again."
+        "loadError": "Couldn't check whether any holding is missing a stock split. Please try again.",
+        "truncated": "Not every holding could be checked this time — the ones not listed were not looked at."
       }
     },
     "analytics": {

@@ -986,7 +986,14 @@ export const priceHistory = pgTable(
      * value engine reads ONLY rows on the basis it is building, so two bases
      * can never mix within one asset. Every current writer produces raw values
      * (hence the default); the migration marks the pre-existing upstream rows
-     * `adjusted`, and they age out as the price jobs rewrite them.
+     * `adjusted`, which makes them invisible to the value engine — so they are
+     * not left to "age out" (the nightly refresh only rewrites a trailing
+     * month, and a max-range backfill is only ever enqueued for an asset with
+     * NO history at all). `prices.refreshDaily` sweeps for assets that still
+     * carry rows on a foreign basis and enqueues a full `prices.backfill` for
+     * each, which rewrites the history raw and drops whatever the provider
+     * could not replace. Until that lands the asset simply has a shorter
+     * durable fallback; the provider series still spans its first transaction.
      */
     basis: text('basis').notNull().default('unadjusted'),
   },
@@ -2107,7 +2114,8 @@ export const portfolioDailySnapshots = pgTable(
  * `dirty_from` non-null means a history-mutating write invalidated the tail
  * from that day and a recompute is owed — readers must not serve the rows.
  * Rows are valid exactly when `dirty_from IS NULL AND computed_through ≥
- * yesterday`; anything else falls back to the live engine (which refills).
+ * yesterday AND price_basis = the valuation basis`; anything else falls back to
+ * the live engine (which refills).
  */
 export const portfolioSnapshotState = pgTable('portfolio_snapshot_state', {
   portfolioId: uuid('portfolio_id')
@@ -2115,6 +2123,24 @@ export const portfolioSnapshotState = pgTable('portfolio_snapshot_state', {
     .references(() => portfolios.id, { onDelete: 'cascade' }),
   computedThrough: date('computed_through').notNull(),
   dirtyFrom: date('dirty_from'),
+  /**
+   * The price basis these rows were computed on (§16 2026-09-03). The stored
+   * values are money, not a cache of prices: relabelling `price_history` does
+   * nothing for a row that was already computed from adjusted closes, and the
+   * nightly roll only re-heals a trailing 35-day window — so without this label
+   * a warm deployment would serve adjusted values for all older history and raw
+   * values inside the window, i.e. the corporate-action cliff one layer up.
+   *
+   * A state row whose basis is not `VALUATION_PRICE_BASIS` is not served: the
+   * read path (and the nightly roll) recompute and REWRITE every row from
+   * inception, then record the new basis here.
+   *
+   * The default is `adjusted` — the pre-rule basis — on purpose: every writer
+   * that knows about this column states its basis explicitly, so the default
+   * means "written by code older than the rule", which is exactly the row that
+   * must be rebuilt rather than trusted.
+   */
+  priceBasis: text('price_basis').notNull().default('adjusted'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

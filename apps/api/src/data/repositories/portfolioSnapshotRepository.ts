@@ -1,3 +1,4 @@
+import { VALUATION_PRICE_BASIS, type PriceBasis } from '@bettertrack/domain/holdings';
 import { and, asc, eq, exists, inArray, isNull, min, notExists, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
@@ -61,6 +62,13 @@ export interface SnapshotStateRecord {
   computedThrough: string;
   /** Earliest invalidated day, or null when clean. */
   dirtyFrom: string | null;
+  /**
+   * The price basis the stored rows were computed on (§16 2026-09-03). Anything
+   * other than {@link VALUATION_PRICE_BASIS} means the rows are money computed
+   * on a basis the app no longer values on, and must be rebuilt rather than
+   * served.
+   */
+  priceBasis: PriceBasis;
   updatedAt: Date;
 }
 
@@ -102,6 +110,10 @@ function toStateRecord(row: PortfolioSnapshotStateRow): SnapshotStateRecord {
     portfolioId: row.portfolioId,
     computedThrough: row.computedThrough,
     dirtyFrom: row.dirtyFrom ?? null,
+    // Fail closed on the money path: only the exact valuation label counts as
+    // "computed on the current basis". Anything else — the pre-rule default, an
+    // unrecognised value — degrades to `adjusted`, i.e. rebuild these rows.
+    priceBasis: row.priceBasis === VALUATION_PRICE_BASIS ? VALUATION_PRICE_BASIS : 'adjusted',
     updatedAt: row.updatedAt,
   };
 }
@@ -152,11 +164,24 @@ export function createPortfolioSnapshotRepository(db: Database) {
      * `updated_at` bumps so an in-flight computation's compare-and-set fails.
      * Inserting the state row on first touch keeps the marker durable even for
      * a portfolio that has never been snapshotted.
+     *
+     * `price_basis` on an EXISTING row is never touched — an invalidation
+     * describes rows, not a computation, so a pre-rule label survives until the
+     * computation that actually rewrites those rows replaces it. The first-touch
+     * INSERT does write the current basis: there are no stored rows for it to
+     * mislabel (this branch means the portfolio had no state row at all), and
+     * taking the column's pre-rule default there would order a full-history heal
+     * on the next computation of every freshly-invalidated portfolio.
      */
     async markDirty(portfolioId: string, fromDay: string): Promise<void> {
       await db
         .insert(portfolioSnapshotState)
-        .values({ portfolioId, computedThrough: fromDay, dirtyFrom: fromDay })
+        .values({
+          portfolioId,
+          computedThrough: fromDay,
+          dirtyFrom: fromDay,
+          priceBasis: VALUATION_PRICE_BASIS,
+        })
         .onConflictDoUpdate({
           target: portfolioSnapshotState.portfolioId,
           set: {
@@ -198,7 +223,8 @@ export function createPortfolioSnapshotRepository(db: Database) {
      *     days are never rewritten — except rows on/after `healFrom` (the
      *     nightly roll's trailing self-heal window for provider close
      *     revisions), which overwrite.
-     *  4. The state row records `computed_through` and clears `dirty_from`.
+     *  4. The state row records `computed_through`, the basis the rows were
+     *     computed on, and clears `dirty_from`.
      */
     async saveComputation(input: {
       portfolioId: string;
@@ -210,8 +236,15 @@ export function createPortfolioSnapshotRepository(db: Database) {
       seenDirtyFrom: string | null;
       /** Rows on/after this day overwrite instead of DO NOTHING (nightly heal). */
       healFrom?: string | null;
+      /**
+       * The price basis these rows were computed on (§16 2026-09-03). Stamped
+       * onto the state row so a later read can tell rows computed under the
+       * current valuation rule from rows a pre-rule writer left behind.
+       */
+      priceBasis: PriceBasis;
     }): Promise<{ applied: boolean }> {
-      const { portfolioId, rows, computedThrough, seenUpdatedAt, seenDirtyFrom } = input;
+      const { portfolioId, rows, computedThrough, seenUpdatedAt, seenDirtyFrom, priceBasis } =
+        input;
       const healFrom = input.healFrom ?? null;
 
       return db.transaction(async (tx) => {
@@ -263,12 +296,15 @@ export function createPortfolioSnapshotRepository(db: Database) {
 
         await tx
           .insert(portfolioSnapshotState)
-          .values({ portfolioId, computedThrough, dirtyFrom: null })
+          .values({ portfolioId, computedThrough, dirtyFrom: null, priceBasis })
           .onConflictDoUpdate({
             target: portfolioSnapshotState.portfolioId,
             set: {
               computedThrough: sql`excluded.computed_through`,
               dirtyFrom: sql`null`,
+              // Travels with the rows it describes: the label and the values it
+              // labels are written in the same statement, never separately.
+              priceBasis: sql`excluded.price_basis`,
               updatedAt: sql`now()`,
             },
           });

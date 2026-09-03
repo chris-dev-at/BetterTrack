@@ -1,5 +1,5 @@
 import type { PriceBasis } from '@bettertrack/domain/holdings';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -121,6 +121,50 @@ export function createPriceJobsRepository(db: Database) {
         written += chunk.length;
       }
       return written;
+    },
+
+    /**
+     * Of `assetIds`, those still holding at least one `price_history` row on a
+     * basis OTHER than `basis` — the assets whose durable fallback layer is
+     * (partly or wholly) invisible to the value engine (§16 2026-09-03).
+     *
+     * This is the repair trigger, not a diagnostic. Migration `0110` labelled
+     * every pre-existing upstream row `adjusted`, and nothing would otherwise
+     * rewrite the ones outside the nightly month: `prices.backfill` is only ever
+     * enqueued for an asset with NO history at all. Left alone, the fallback
+     * would stay permanently empty for every asset that existed before the rule
+     * — so on a provider outage the asset would contribute nothing at all,
+     * which the curve renders as a silent zero.
+     */
+    async listAssetsOffBasis(
+      assetIds: readonly string[],
+      basis: PriceBasis = 'unadjusted',
+    ): Promise<string[]> {
+      if (assetIds.length === 0) return [];
+      const rows = await db
+        .selectDistinct({ assetId: priceHistory.assetId })
+        .from(priceHistory)
+        .where(and(inArray(priceHistory.assetId, [...assetIds]), ne(priceHistory.basis, basis)));
+      return rows.map((r) => r.assetId);
+    },
+
+    /**
+     * Drop one asset's `price_history` rows that are NOT on `basis`, returning
+     * how many went. Called only after a successful full-range rewrite: the
+     * survivors are dates the provider could not replace, and a row the value
+     * engine may never read is not a fallback — keeping it would only make
+     * {@link listAssetsOffBasis} re-enqueue the same repair every night.
+     *
+     * Deleting is safe because these rows are derived market data, re-fetchable
+     * from the provider, never user input: custom-asset value marks are on the
+     * valuation basis by construction (§5.1) and so are never selected here.
+     */
+    async deleteOffBasisRows(assetId: string, basis: PriceBasis = 'unadjusted'): Promise<number> {
+      const deleted = await db
+        .delete(priceHistory)
+        .where(and(eq(priceHistory.assetId, assetId), ne(priceHistory.basis, basis)))
+        .returning({ date: priceHistory.date });
+      return deleted.length;
     },
   };
 }

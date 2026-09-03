@@ -672,3 +672,106 @@ describe('daily snapshots — §16 invalidation rules (#553)', () => {
     expect(await snapshotState(h, doomedId)).toBeNull();
   });
 });
+
+/**
+ * The served curve, not just the price rows (§16 2026-09-03, #1694). Snapshot
+ * rows are stored MONEY: relabelling `price_history` leaves rows that were
+ * computed from adjusted closes exactly as wrong as they were, and the ordinary
+ * refill is insert-missing-only while the nightly roll re-heals a trailing 35
+ * days — so a warm deployment would keep serving the phantom loss for
+ * everything older than that window. The state row's basis is what makes those
+ * rows untrustworthy on sight.
+ */
+describe('daily snapshots — price-basis rebuild (§16 2026-09-03, #1694)', () => {
+  /**
+   * A primed portfolio whose stored rows were left by a pre-rule writer. The
+   * history deliberately starts 60 days back — well beyond the nightly roll's
+   * 35-day heal window — so "the roll fixes it anyway" is not what passes.
+   */
+  async function preRuleFixture() {
+    const marketData = createStubMarketData({
+      history: cannedHistory({
+        'BAYN.DE': [
+          { date: dayOffset(-60), close: 100 },
+          { date: dayOffset(-2), close: 103 },
+          { date: dayOffset(-1), close: 105 },
+        ],
+      }),
+      quote: cannedQuotes({ 'BAYN.DE': 104 }),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h);
+    await buy(agent, pid, asset.id, 2, 100, tsOffset(-60));
+
+    // Prime: the engine runs and refills the rows on the current basis.
+    const primed = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(primed.status).toBe(200);
+    expect((await h.ctx.snapshots.getSeries(pid)).fromSnapshots).toBe(true);
+    const correct = await snapshotRows(h, pid);
+    expect(correct.length).toBeGreaterThan(0);
+
+    // Rewind to what a pre-rule deployment actually has on disk: every stored
+    // value computed from adjusted closes (understated for a dividend payer),
+    // and a state row that predates the `price_basis` column, i.e. its default.
+    await h.db
+      .update(schema.portfolioDailySnapshots)
+      .set({ valueEur: '1.5', plEur: '-198.5' })
+      .where(eq(schema.portfolioDailySnapshots.portfolioId, pid));
+    await h.db
+      .update(schema.portfolioSnapshotState)
+      .set({ priceBasis: 'adjusted' })
+      .where(eq(schema.portfolioSnapshotState.portfolioId, pid));
+    return { h, agent, pid, marketData, correct };
+  }
+
+  it('refuses to serve rows computed on the old basis, rewrites them, and relabels the state', async () => {
+    const { h, agent, pid, correct } = await preRuleFixture();
+
+    // The state is clean and fresh — only the basis is stale, and that alone
+    // must take the read off the snapshot path.
+    const stale = await snapshotState(h, pid);
+    expect(stale?.dirtyFrom).toBeNull();
+    expect(stale?.computedThrough).toBe(dayOffset(-1));
+
+    const series = await h.ctx.snapshots.getSeries(pid);
+    expect(series.fromSnapshots).toBe(false);
+    const priorPoint = series.points.find((p) => p.date === dayOffset(-2));
+    expect(priorPoint?.valueEur).toBeCloseTo(206, 9); // 2 × 103, the raw close
+    expect(priorPoint?.valueEur).not.toBeCloseTo(1.5, 9);
+
+    // Rewritten, not merely skipped: the refill is insert-missing-only unless a
+    // basis change widens it to a full heal, so this is the assertion that
+    // separates "served correctly once" from "fixed on disk".
+    const rebuilt = await snapshotRows(h, pid);
+    expect(rebuilt.map((r) => r.date)).toEqual(correct.map((r) => r.date));
+    expect(rebuilt.map((r) => Number(r.valueEur))).toEqual(correct.map((r) => Number(r.valueEur)));
+    expect(rebuilt.every((r) => Number(r.valueEur) > 1.5)).toBe(true);
+    expect((await snapshotState(h, pid))?.priceBasis).toBe('unadjusted');
+
+    // And the next read is back on the fast path, serving the rebuilt rows.
+    const after = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(after.status).toBe(200);
+    expect(
+      after.body.points.find((p: { date: string }) => p.date === dayOffset(-2)).valueEur,
+    ).toBeCloseTo(206, 9);
+    expect((await h.ctx.snapshots.getSeries(pid)).fromSnapshots).toBe(true);
+  });
+
+  it('the nightly roll rebuilds a pre-rule portfolio nobody reads, past its 35-day heal window', async () => {
+    const { h, pid, correct } = await preRuleFixture();
+
+    // The roll heals only a trailing window; the pre-rule basis must widen that
+    // to the whole series, or an unread portfolio keeps its wrong history
+    // forever. This fixture's oldest rows sit 60 days back, so the 35-day
+    // window alone would leave them corrupted.
+    await h.ctx.snapshots.recomputeAll({ healFrom: dayOffset(-35) });
+
+    const rebuilt = await snapshotRows(h, pid);
+    expect(rebuilt.some((r) => r.date < dayOffset(-35))).toBe(true);
+    expect(rebuilt.map((r) => Number(r.valueEur))).toEqual(correct.map((r) => Number(r.valueEur)));
+    expect((await snapshotState(h, pid))?.priceBasis).toBe('unadjusted');
+  });
+});

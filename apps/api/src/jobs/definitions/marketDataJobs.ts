@@ -8,6 +8,7 @@ import {
   type JobAsset,
 } from '../../data/repositories/priceJobsRepository';
 import type { MarketDataService } from '../../providers';
+import type { BackfillScheduler } from '../backfillScheduler';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -66,6 +67,14 @@ export const BACKFILL_LIMITER = { max: 1, duration: 1000 } as const;
 export interface MarketDataJobDeps {
   db: Database;
   marketData: MarketDataService;
+  /**
+   * Enqueues `prices.backfill` for one asset — the same port the first-reference
+   * trigger uses (§6.2/§9). The nightly refresh needs it for the off-basis
+   * repair sweep: an asset whose stored history predates the valuation-basis
+   * rule (§16 2026-09-03) needs a FULL rewrite, not the trailing month this job
+   * fetches, and the backfill queue is the rate-limited place for that.
+   */
+  backfill: BackfillScheduler;
   /**
    * True for providers whose data is already durable in our own DB — today only
    * the `manual` provider, whose custom-asset value marks *are* their
@@ -179,8 +188,40 @@ export function createPricesRefreshDailyJob(
         }
       }
 
+      // Off-basis repair sweep (§16 2026-09-03). The refresh above only rewrites
+      // a trailing month, so an asset that predates the basis rule keeps an
+      // `adjusted` history the value engine cannot read — a durable fallback
+      // layer that is empty exactly when it is needed (a provider outage past
+      // the stale window), which the curve would render as a silent zero for
+      // that holding. A full `prices.backfill` rewrites the series raw; the
+      // queue's 1/s limiter drains a whole estate politely, and each repaired
+      // asset drops out of this scan for good.
+      const offBasis = await repo.listAssetsOffBasis(
+        targets.map((asset) => asset.id),
+        STORED_PRICE_BASIS,
+      );
+      let repairsQueued = 0;
+      for (const assetId of offBasis) {
+        try {
+          await deps.backfill.enqueue(assetId);
+          repairsQueued += 1;
+        } catch (err) {
+          // A queue hiccup must not fail the refresh: the scan is idempotent and
+          // re-runs tomorrow, and the asset keeps serving from the provider.
+          ctx.logger.warn(
+            { assetId, err: errorMessage(err) },
+            'prices.refreshDaily: off-basis repair enqueue failed',
+          );
+        }
+      }
+
       ctx.logger.info(
-        { total: targets.length, failed: failures.length },
+        {
+          total: targets.length,
+          failed: failures.length,
+          offBasis: offBasis.length,
+          repairsQueued,
+        },
         'prices.refreshDaily complete',
       );
       if (failures.length > 0) {
@@ -235,7 +276,12 @@ export function createPricesBackfillJob(deps: MarketDataJobDeps): JobDefinition<
         toDailyCloses(result.value),
         STORED_PRICE_BASIS,
       );
-      ctx.logger.info({ assetId: asset.id, written }, 'prices.backfill complete');
+      // Whatever the max-range rewrite did not replace is a row on a basis the
+      // value engine may never read — dead weight that would also re-trigger the
+      // off-basis sweep every night. Only after a write that actually landed:
+      // an empty provider answer must never be able to empty the table.
+      const dropped = written > 0 ? await repo.deleteOffBasisRows(asset.id, STORED_PRICE_BASIS) : 0;
+      ctx.logger.info({ assetId: asset.id, written, dropped }, 'prices.backfill complete');
       if (written > 0) {
         await ctx.events.publish({ type: 'quote.updated', assetId: asset.id, occurredAt });
       }

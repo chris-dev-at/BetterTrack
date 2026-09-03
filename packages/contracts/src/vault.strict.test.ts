@@ -417,6 +417,7 @@ const fixtures: VaultStrictEntity[] = [
       portfolioId: PORTFOLIO_ID,
       computedThrough: '2026-07-24',
       dirtyFrom: '2026-07-01',
+      priceBasis: 'unadjusted' as const,
       updatedAt: AT,
     },
   },
@@ -591,7 +592,7 @@ describe('strict vault document v1', () => {
   });
 
   it('admits a custom-asset value written before `basis` existed', () => {
-    // The second — and last — non-required field in the strict graph, for the
+    // One of the two basis fields that default rather than stay absent, for the
     // same mechanical reason as `portfolio.kind`: documents already written
     // carry no `basis` key, and a required field would lock those vaults out.
     // Unlike `kind` it DEFAULTS rather than staying absent, because there is no
@@ -613,9 +614,24 @@ describe('strict vault document v1', () => {
     ).toBe(false);
   });
 
+  it('admits a snapshot state written before `priceBasis` existed, defaulting to the OLD basis', () => {
+    // Same mechanism as `basis` above, opposite default — and deliberately so.
+    // A snapshot state row describes stored VALUES: one restored from a
+    // document that predates the rule describes rows an older engine computed
+    // from adjusted closes, so it must default to `adjusted` and be rebuilt,
+    // never trusted (§16 2026-09-03).
+    const state = fixtures.find((fixture) => fixture.kind === 'portfolioSnapshotState');
+    if (state?.kind !== 'portfolioSnapshotState') throw new Error('snapshot state fixture missing');
+    const { priceBasis: _omitted, ...withoutBasis } = state.data;
+    const parsed = vaultStrictEntitySchema.parse({ ...state, data: withoutBasis });
+    if (parsed.kind !== 'portfolioSnapshotState') throw new Error('parse changed kind');
+    expect(parsed.data.priceBasis).toBe('adjusted');
+  });
+
   it('admits a portfolio row written before `kind` existed, and never invents one', () => {
-    // One of the two non-required fields in the strict graph (see `basis`
-    // above), and the reason is mechanical:
+    // The one field in the strict graph that stays ABSENT rather than
+    // defaulting (the two `basis` fields above default), and the reason is
+    // mechanical:
     // disable strict-parses the rows a vault ALREADY holds, and every document
     // written before board #69 carries no `kind` key at all. Required would
     // lock every pre-existing paranoid vault out of disable. Absent stays

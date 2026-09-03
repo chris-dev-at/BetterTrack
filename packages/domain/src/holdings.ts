@@ -514,6 +514,26 @@ export interface SplitBasisPosition {
  */
 export const SPLIT_BOOKING_GRACE_DAYS = 7;
 
+/**
+ * Two independent shapes of evidence that a split IS in the ledger, checked
+ * across {@link SPLIT_BOOKING_GRACE_DAYS}:
+ *
+ *  - **total** — the net quantity on some day in the window equals
+ *    `qtyBefore · numerator / denominator`, i.e. the position sits exactly where
+ *    the split would leave an untouched holding;
+ *  - **jump** — some single day in the window multiplies the running quantity by
+ *    the split factor (`qty(d) ≈ qty(d−1) · numerator / denominator`), i.e. the
+ *    booking day itself is visible as a delta.
+ *
+ * The jump test exists because trading around a split is ordinary: buy more the
+ * day after a 4:1 and the absolute total no longer matches anything, even though
+ * the split was booked correctly. Matching the RATIO of a one-day move survives
+ * that, and stays specific — an arbitrary trade lands on `qty · num/den` only by
+ * coincidence. Booking a split and trading on the SAME day defeats both, which
+ * is the residual false positive this detector accepts: it costs a dismissible
+ * notice, never a wrong number.
+ */
+
 /** Relative tolerance when matching a booked quantity against the split factor. */
 const SPLIT_QTY_RELATIVE_TOLERANCE = 1e-6;
 
@@ -598,15 +618,27 @@ export function detectSplitBasisMismatches(
       const before = netQuantityThrough(sorted, shiftDay(split.date, -1));
       if (before <= QTY_EPSILON) continue; // not held across the event
 
-      const expected = (before * numerator) / denominator;
-      const tolerance = Math.max(QTY_EPSILON, expected * SPLIT_QTY_RELATIVE_TOLERANCE);
+      const factor = numerator / denominator;
+      const expected = before * factor;
+      const withinTolerance = (value: number, target: number): boolean =>
+        Math.abs(value - target) <=
+        Math.max(QTY_EPSILON, Math.abs(target) * SPLIT_QTY_RELATIVE_TOLERANCE);
+
       let booked = false;
+      let previous = before;
       for (let offset = 0; offset <= SPLIT_BOOKING_GRACE_DAYS; offset += 1) {
-        const day = shiftDay(split.date, offset);
-        if (Math.abs(netQuantityThrough(sorted, day) - expected) <= tolerance) {
+        const current = netQuantityThrough(sorted, shiftDay(split.date, offset));
+        // Either shape of evidence ends it (see SPLIT_BOOKING_GRACE_DAYS): the
+        // untouched post-split total, or the booking day's own ×factor jump —
+        // the latter survives the very common "booked it AND traded that week".
+        if (
+          withinTolerance(current, expected) ||
+          (previous > QTY_EPSILON && withinTolerance(current, previous * factor))
+        ) {
           booked = true;
           break;
         }
+        previous = current;
       }
       if (!booked) unbooked.push(split);
     }
@@ -908,6 +940,15 @@ export async function valueOverTime(input: ValueOverTimeInput): Promise<ValuePoi
 
       // Clamp float dust / closed positions to exactly flat.
       const heldQty = c.qty > QTY_EPSILON ? c.qty : 0;
+      // `lastClose === null` means "no price is known for this asset YET" — the
+      // days before its first close, and (for an asset with no prices at all)
+      // every day. Such a holding contributes nothing, which is right for a
+      // pre-history day but is a SILENT UNDERSTATEMENT if the caller handed us
+      // an empty series for a held position. Nothing here can tell the two
+      // apart, so the caller must not let the second case happen: the API's
+      // series builder logs it, and `price_history` keeps a raw fallback layer
+      // per asset precisely so an outage degrades to carry-forward instead
+      // (§16 2026-09-03).
       if (heldQty === 0 || c.lastClose === null) continue;
 
       const native = heldQty * c.lastClose;

@@ -1904,6 +1904,47 @@ describe('detectSplitBasisMismatches', () => {
     ).toEqual([]);
   });
 
+  it('stays silent when the user booked the split AND traded the same week', () => {
+    // Trading around a corporate action is ordinary, and it breaks the absolute
+    // "net quantity equals qtyBefore × 4" test: 40 becomes 45 the next day. The
+    // booking day's own ×4 jump is still there, and that is what counts.
+    const booked = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 30,
+      price: 0,
+      executedAt: '2026-03-03T00:00:00Z',
+    });
+    const alsoBought = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 5,
+      price: 50,
+      executedAt: '2026-03-04T00:00:00Z',
+    });
+    expect(
+      detectSplitBasisMismatches(
+        [BUY_BEFORE, booked, alsoBought],
+        [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }],
+      ),
+    ).toEqual([]);
+  });
+
+  it('still flags when the week only holds ordinary trades, not the booking', () => {
+    // The guard against the jump test turning into a blanket amnesty: buying a
+    // few more shares neither lands on 40 nor multiplies the holding by 4.
+    const topUp = tx({
+      assetId: 'S',
+      side: 'buy',
+      quantity: 5,
+      price: 50,
+      executedAt: '2026-03-03T00:00:00Z',
+    });
+    expect(
+      detectSplitBasisMismatches([BUY_BEFORE, topUp], [{ assetId: 'S', splits: [SPLIT_4_FOR_1] }]),
+    ).toEqual([{ assetId: 'S', quantity: 15, splits: [SPLIT_4_FOR_1] }]);
+  });
+
   it('flags again once the correction falls outside the window', () => {
     const late = tx({
       assetId: 'S',

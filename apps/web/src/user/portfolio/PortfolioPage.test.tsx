@@ -392,7 +392,11 @@ beforeEach(() => {
   // No pending re-categorization by default → the banner stays hidden.
   vi.mocked(getRecategorizationStatus).mockResolvedValue({ pending: 0 });
   // No unbooked splits by default → the split-basis notice stays hidden.
-  vi.mocked(getPortfolioSplitBasis).mockResolvedValue({ available: true, positions: [] });
+  vi.mocked(getPortfolioSplitBasis).mockResolvedValue({
+    available: true,
+    positions: [],
+    truncated: false,
+  });
   vi.mocked(dismissRecategorization).mockResolvedValue(undefined);
   vi.mocked(previewCash).mockResolvedValue({
     availableEur: 5000,
@@ -1853,6 +1857,7 @@ describe('PortfolioPage — split-basis notice (§16 2026-09-03, #1694)', () => 
           splits: [{ date: '2026-03-02', numerator: 4, denominator: 1, ratio: '4:1' }],
         },
       ],
+      truncated: false,
     });
 
     renderPage();
@@ -1872,13 +1877,46 @@ describe('PortfolioPage — split-basis notice (§16 2026-09-03, #1694)', () => 
   });
 
   test('says nothing when no provider can answer — "cannot tell" is not an alarm', async () => {
-    vi.mocked(getPortfolioSplitBasis).mockResolvedValue({ available: false, positions: [] });
+    vi.mocked(getPortfolioSplitBasis).mockResolvedValue({
+      available: false,
+      positions: [],
+      truncated: false,
+    });
 
     renderPage();
     await screen.findByRole('region', { name: 'Portfolio totals' });
     await waitFor(() => expect(getPortfolioSplitBasis).toHaveBeenCalled());
 
     expect(screen.queryByText(/missing a stock split/)).not.toBeInTheDocument();
+  });
+
+  test('says so when the scan was capped short of the whole book', async () => {
+    // The roll-up cap (or a provider that could not answer) narrows the scan.
+    // The warning it already shows must not read as a clean bill of health for
+    // the positions nobody looked at.
+    vi.mocked(getPortfolioSplitBasis).mockResolvedValue({
+      available: true,
+      positions: [
+        {
+          asset: {
+            id: 'a1',
+            symbol: 'AAPL',
+            name: 'Apple Inc.',
+            type: 'stock',
+            currency: 'USD',
+            exchange: 'NASDAQ',
+            isCustom: false,
+          },
+          quantity: 10,
+          splits: [{ date: '2026-03-02', numerator: 4, denominator: 1, ratio: '4:1' }],
+        },
+      ],
+      truncated: true,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText(/the ones not listed were not looked at/)).toBeInTheDocument();
   });
 
   test('stays silent when the probe itself fails — the portfolio still renders', async () => {

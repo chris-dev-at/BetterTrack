@@ -1870,6 +1870,8 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         computedThrough: '2026-07-24',
         dirtyFrom: null,
+        // Derived rows carry the basis they were computed on (§16 2026-09-03).
+        priceBasis: 'unadjusted',
         updatedAt: editedAt,
       }),
       entity('018f0000-0000-7000-8000-000000000035', 'expenseBudgetFire', {
