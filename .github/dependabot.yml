@@ -27,3 +27,10 @@ updates:
       # parked behind #1031 — remove when the deliberate migration lands
       - dependency-name: '@asteasolutions/zod-to-openapi'
         update-types: ['version-update:semver-major']
+      # 0.x minors are breaking: drizzle spans the schema layer, so every bump
+      # needs a dedicated tested PR that re-runs db:generate (#1217). Patches
+      # still flow through the grouped lane.
+      - dependency-name: drizzle-orm
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
+      - dependency-name: drizzle-kit
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
