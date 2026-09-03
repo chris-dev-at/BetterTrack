@@ -349,6 +349,26 @@ export const realtimeChatMessageSchema = z.object({
 });
 export type RealtimeChatMessage = z.infer<typeof realtimeChatMessageSchema>;
 
+/**
+ * The realtime features an admin kill switch (§13.5 V5-P2 arc (c)) can shed on
+ * work that is ALREADY established, not just on the next handshake: `realtime`
+ * owns the connection itself, `liveMode` owns the shared upstream poll loop.
+ */
+export const REALTIME_SHEDDABLE_FEATURES = ['realtime', 'liveMode'] as const;
+
+/**
+ * `feature.disabled` → one socket right before the server sheds its work: the
+ * `realtime` variant is the last frame before a server-initiated close, the
+ * `liveMode` variant leaves the connection up and only reports that this
+ * socket's live watches were released. It exists so the client can tell an
+ * intentional kill switch apart from a network drop and render "realtime
+ * disabled" — the §4.5 poll/refetch fallback carries the data either way.
+ */
+export const realtimeFeatureDisabledSchema = z.object({
+  feature: z.enum(REALTIME_SHEDDABLE_FEATURES),
+});
+export type RealtimeFeatureDisabled = z.infer<typeof realtimeFeatureDisabledSchema>;
+
 /** Server → client event names. */
 export const REALTIME_SERVER_EVENTS = {
   notificationNew: 'notification.new',
@@ -358,4 +378,6 @@ export const REALTIME_SERVER_EVENTS = {
   chatMessage: 'chat.message',
   /** `live.frame` → the `asset:{id}` room, once per shared poll tick (§6.3). */
   liveFrame: 'live.frame',
+  /** `feature.disabled` → one socket when a kill switch sheds its work (§13.5 V5-P2 arc (c)). */
+  featureDisabled: 'feature.disabled',
 } as const;
