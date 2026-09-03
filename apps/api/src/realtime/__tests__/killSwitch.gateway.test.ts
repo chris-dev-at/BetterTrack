@@ -25,6 +25,7 @@ import { createStubMarketData, type StubMarketData } from '../../testing/marketD
 import {
   REALTIME_FEATURE_SHED_MAX_DELAY_MS,
   REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
+  REALTIME_SOCKET_SWEEP_TICK_NAME,
 } from '../gateway';
 
 /**
@@ -76,14 +77,18 @@ beforeEach(async () => {
   baseUrl = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
 
   // Capture the sweep callback the gateway installs at attach so a test can run
-  // one pass on demand instead of waiting out a 30 s wall-clock interval.
+  // one pass on demand instead of waiting out a 30 s wall-clock interval. The
+  // callback is identified by its own name, not by its delay: another 30 s
+  // interval installed during `attach` must not silently steal the capture.
   triggerSweep = null;
   const nativeSetInterval = globalThis.setInterval;
   const intervalSpy = vi
     .spyOn(globalThis, 'setInterval')
     .mockImplementation((callback, delay, ...args) => {
       const timer = nativeSetInterval(callback, delay, ...args);
-      if (delay === REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS) {
+      if (callback.name === REALTIME_SOCKET_SWEEP_TICK_NAME) {
+        expect(delay).toBe(REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS);
+        expect(triggerSweep).toBeNull();
         triggerSweep = () => callback(...args);
       }
       return timer;

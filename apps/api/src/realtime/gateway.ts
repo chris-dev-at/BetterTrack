@@ -111,6 +111,11 @@ export interface WatchableAsset {
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
 export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
 /**
+ * Name of the sweep's interval callback, so a test can identify exactly that
+ * timer instead of matching on a delay another 30 s interval could share.
+ */
+export const REALTIME_SOCKET_SWEEP_TICK_NAME = 'realtimeSocketSweepTick';
+/**
  * Worst-case delay between an admin flipping `realtime`/`liveMode` OFF and this
  * gateway shedding the work that was ALREADY established when the flip landed
  * (§13.5 V5-P2 arc (c)). Enforcement rides the revalidation sweep rather than a
@@ -1664,20 +1669,29 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * upstream loop drains exactly as it does when the last viewer leaves (§6.3),
    * and a watch still resolving is canceled by its generation watermark instead
    * of registering a loop behind the sweep's back.
+   *
+   * The decision is synchronous and the release is not awaited here: every
+   * watermark is stamped before this returns, so the shed is already fenced,
+   * while the Redis round trips ride the same fire-and-forget cleanup tracking
+   * the disconnect handler uses. Awaiting them inside the sweep's running guard
+   * would let one stalled `releaseWatch` — the admission client queues commands
+   * offline indefinitely rather than rejecting — wedge principal revalidation
+   * for the whole process, exactly when an incident is under way. Per socket the
+   * releases stay ordered; across sockets they overlap, so a fleet-wide flip
+   * costs the slowest socket's chain, not the sum of every watch's round trip.
    */
-  async function shedDisabledLiveWatches(sockets: readonly Socket[]): Promise<void> {
+  function shedDisabledLiveWatches(sockets: readonly Socket[]): void {
     for (const socket of sockets) {
-      const assetIds = new Set([
-        ...liveAssetsOf(socket).keys(),
-        ...pendingLiveWatchAssetsOf(socket).keys(),
-      ]);
-      let shed = false;
-      for (const assetId of assetIds) {
-        if (!markLiveCleanupIntent(socket, assetId)) continue;
-        shed = true;
-        await runLiveCleanup(socket, assetId);
-      }
-      if (shed) emitFeatureDisabled(socket, 'liveMode');
+      const assetIds = [
+        ...new Set([...liveAssetsOf(socket).keys(), ...pendingLiveWatchAssetsOf(socket).keys()]),
+      ].filter((assetId) => markLiveCleanupIntent(socket, assetId));
+      if (assetIds.length === 0) continue;
+      emitFeatureDisabled(socket, 'liveMode');
+      trackSocketCleanup(
+        (async () => {
+          for (const assetId of assetIds) await runLiveCleanup(socket, assetId);
+        })(),
+      );
     }
   }
 
@@ -1686,6 +1700,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * here (§13.5 V5-P2 arc (c)) and runs FIRST: shedding beats revalidating work
    * that is about to go away, and a `realtime` shed makes the rest of the pass
    * moot. Cost is one flag read per sweep, never per emit or per poll tick.
+   *
+   * Every await inside the running guard is deadline-bounded: the flag read by
+   * {@link REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS} and each revalidation by
+   * {@link REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS}. The kill-switch sheds
+   * add no unbounded I/O to it — both decide synchronously and hand their
+   * release work to the tracked cleanup paths.
    */
   async function sweepConnectedSockets(server: SocketIOServer): Promise<void> {
     const sockets = [...server.sockets.sockets.values()];
@@ -1695,13 +1715,15 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       for (const socket of sockets) shedDisabledRealtime(socket);
       return;
     }
-    if (!flags.liveMode) await shedDisabledLiveWatches(sockets);
+    if (!flags.liveMode) shedDisabledLiveWatches(sockets);
     await Promise.allSettled(sockets.map((socket) => revalidateSocket(socket)));
   }
 
   function startPrincipalRevalidation(server: SocketIOServer): void {
     if (principalRevalidationTimer) return;
-    principalRevalidationTimer = setInterval(() => {
+    // Named so a test can identify THIS interval's callback among any other
+    // timer the gateway installs, rather than guessing from the delay.
+    principalRevalidationTimer = setInterval(function realtimeSocketSweepTick() {
       if (principalRevalidationRunning) return;
       principalRevalidationRunning = true;
       void sweepConnectedSockets(server)
