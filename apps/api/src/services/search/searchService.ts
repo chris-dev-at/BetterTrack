@@ -3,6 +3,7 @@ import type { SearchResponse, SearchResultItem } from '@bettertrack/contracts';
 import type { AssetRepository, CatalogSearchMatch } from '../../data/repositories/assetRepository';
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { CatalogEnrichment } from './catalogEnrichment';
+import { unlimitedEnrichmentBudget, type SearchEnrichmentBudget } from './enrichmentBudget';
 
 /**
  * Local-first search (PROJECTPLAN.md §6.2): `GET /search?q=` answers from the
@@ -42,6 +43,16 @@ export interface SearchOptions {
    * catalog-only pass before explicitly admitting provider work.
    */
   allowEnrichment?: boolean;
+  /**
+   * The caller already carries its own admission ceiling, so it is not charged
+   * the per-user interactive budget (#1709). The one such caller is the import
+   * resolver: `IMPORT_ENRICHMENT_QUERY_BUDGET` (16 queries + a wait budget, per
+   * import) bounds exactly the same fan-out for a flow that is itself gated by
+   * the expensive `importCreate` limiter, and double-charging it would let a
+   * minute of ordinary searching silently leave an import's instruments
+   * unresolved.
+   */
+  budgetedByCaller?: boolean;
 }
 
 /** Cap on returned rows — the UI shows a short list, not a browse page (§6.2). */
@@ -64,6 +75,12 @@ export interface SearchServiceDeps {
   enrichment: CatalogEnrichment;
   /** Mixed global/custom catalog filtering under the account transition lock. */
   paranoid?: Pick<ParanoidModeGuard, 'runAllowedWithOptional'>;
+  /**
+   * Per-user ceiling on interactive provider fallbacks (#1709). Omitted ⇒
+   * unlimited, which is only ever right for a caller that carries its own
+   * budget (the import path) or a test that asserts the fallback itself.
+   */
+  enrichmentBudget?: SearchEnrichmentBudget;
 }
 
 const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
@@ -85,6 +102,7 @@ const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
 
 export function createSearchService(deps: SearchServiceDeps): SearchService {
   const { assetRepo, enrichment, paranoid } = deps;
+  const enrichmentBudget = deps.enrichmentBudget ?? unlimitedEnrichmentBudget;
 
   async function withCatalogVisibility<T>(
     userId: string,
@@ -109,8 +127,15 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
     const results = matches.map(toResultItem);
 
     const marketMatches = matches.filter((m) => m.ownerId === null).length;
+    const thin = options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD;
+    // The budget is spent per DISTINCT query per user per window (#1709). The
+    // enrichment coalesces on the query itself, so distinct misses are exactly
+    // the provider fan-out — and the global-catalog growth behind it — that no
+    // other layer bounds. A spent budget only removes the background work: the
+    // local results below still stand, and `enriching: false` stops the client
+    // refetch loop instead of leaving it spinning.
     const enriching =
-      options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD
+      thin && (options?.budgetedByCaller === true || (await enrichmentBudget.admit(userId, query)))
         ? // Fire-and-forget: resolves after the coalescing decision, never
           // waits on a provider (§6.2). False when it ran recently, so a
           // refetching client doesn't spin forever.
