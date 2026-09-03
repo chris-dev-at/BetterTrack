@@ -187,7 +187,11 @@ jobs:
         # assertion is now `V5_STEP_PROOFS` in the same manifest, graded by the
         # same parser instead of by a second hand-rolled one. It stays a STEP
         # proof rather than a scenario because it counts occurrences of one step
-        # inside a test — two would mean a second, unaudited database.
+        # inside a test — two would mean a second, unaudited database. It is
+        # currently WAIVED, and says so in the summary: its host test is the same
+        # quarantined declaration the paranoid Drive-only scenario waives, so the
+        # old bespoke `!== 1` check could never have gone green. The waiver turns
+        # red again the moment the step starts occurring.
         shell: bash
         run: |
           shopt -s nullglob
@@ -201,6 +205,10 @@ jobs:
           node e2e/support/v5GateReport.mjs "$combined_report"
 
       - name: Merge Playwright reports
+        # The gate step above runs first and can fail the job, and the merged
+        # HTML report is exactly what a reader needs in order to act on that
+        # failure — losing it because the gate tripped is backwards.
+        if: ${{ !cancelled() }}
         run: pnpm exec playwright merge-reports --reporter=html,github,list ./all-blob-reports/blob-report
 
       - name: Upload merged Playwright report

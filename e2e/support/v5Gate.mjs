@@ -21,10 +21,14 @@
  * `allowJs`/`checkJs` and includes `./support/**\/*.mjs`, so it is typechecked
  * like the rest of the suite). One manifest, one grader, two readers.
  *
+ * The same waiver rule governs `V5_STEP_PROOFS` below: a step proof whose host
+ * test is quarantined is a reported gap, not a build failure — and, like a
+ * waived scenario, it goes red the moment it starts running again.
+ *
  * MAINTENANCE: `e2e/v5-gate.spec.ts` re-reads every spec named below and fails
  * if a mapped title has disappeared, has become unconditionally dead, or if a
- * waived entry has quietly come back to life. The manifest cannot drift away
- * from the suite without a red test.
+ * waived entry (scenario OR step proof) has quietly come back to life. The
+ * manifest cannot drift away from the suite without a red test.
  */
 
 /**
@@ -44,6 +48,11 @@
 /**
  * Proven outside the browser suite. Counted as covered, but the nightly report
  * cannot see it, so the summary says where the real gate lives.
+ *
+ * The nightly's assertion for this kind is the EXISTENCE of `spec` and nothing
+ * more (`e2e/v5-gate.spec.ts` reads the file; deleting it turns the gate red,
+ * emptying or `describe.skip`ping it does not). The suite's own content is
+ * gated per-PR by the package's vitest run, which is what `note` must say.
  *
  * @typedef {object} VitestCoverage
  * @property {'vitest'} kind
@@ -256,10 +265,30 @@ export const V5_REQUIRED_SCENARIOS = [
       spec: 'apps/web/src/i18n/v5SurfaceInventory.test.ts',
       note:
         'Covered mechanically by an AST inventory over every v5 surface rather than by a browser ' +
-        'walk, and gated per-PR by the web vitest suite — not by this nightly run.',
+        'walk, and gated per-PR by the web vitest suite — not by this nightly run. This manifest ' +
+        'asserts only that the named suite still EXISTS; whether it still asserts anything is the ' +
+        "web package's own vitest gate.",
     },
   },
 ];
+
+/**
+ * A named STEP proof, as opposed to a whole-test proof.
+ *
+ * `host` is the test the step lives inside, so `e2e/v5-gate.spec.ts` can hold a
+ * step proof to the same liveness rule as a mapped scenario: a proof whose host
+ * is dead MUST carry `waived`, and a waived proof whose host has come back to
+ * life MUST lose it.
+ *
+ * @typedef {object} StepProof
+ * @property {string} id
+ * @property {string} step the exact `test.step(...)` title
+ * @property {number} expected how many successful occurrences a live run owes
+ * @property {string} why
+ * @property {SpecTest} host the test declaration the step runs inside
+ * @property {{ reason: string, blockedBy: number, waivedOn: string } | undefined} [waived]
+ *   set only while the host is quarantined; reported as a gap, not a failure
+ */
 
 /**
  * Named STEP proofs, as opposed to whole-test proofs.
@@ -271,7 +300,14 @@ export const V5_REQUIRED_SCENARIOS = [
  * in the merge job. Rather than leave a second bespoke report parser alongside
  * this one, it is subsumed here: same records, same run, same summary.
  *
- * @type {readonly { id: string, step: string, expected: number, why: string }[]}
+ * It is subsumed WITH its own waiver, because the step is in exactly the state
+ * this manifest exists to make visible: its host test is the very declaration
+ * the `paranoid-drive-only-round-trip` scenario waives, so the probe cannot run
+ * and the old hand-rolled `!== 1` check was an unreachable green. A waived step
+ * proof is a `::warning::` gap like a waived scenario — and, like a waived
+ * scenario, it turns the gate RED the moment the step starts occurring again.
+ *
+ * @type {readonly StepProof[]}
  */
 export const V5_STEP_PROOFS = [
   {
@@ -279,6 +315,23 @@ export const V5_STEP_PROOFS = [
     step: '[PD9-A2] complete DB cleartext probe',
     expected: 1,
     why: 'Exactly one successful sweep of the whole database for paranoid cleartext.',
+    host: {
+      spec: 'e2e/paranoid.spec.ts',
+      title:
+        'Drive-only enable → lock/reload → tamper fail-closed → verified media switch → disable',
+    },
+    waived: {
+      reason:
+        'The probe is a step inside the account-level Drive-only arc, which opts out ' +
+        'unconditionally since the §16 2026-08-30 entry-point retirement — the same declaration the ' +
+        '`paranoid-drive-only-round-trip` scenario waives. A skipped test emits no step records, so ' +
+        'requiring the probe would keep the nightly red forever while proving nothing. The ' +
+        'server-side half of the guarantee still runs: PARANOID_PROBE_HANDLER_NAMES and the ' +
+        'purge/probe repositories are covered by the API suite. Retire this waiver together with ' +
+        'the sibling scenario waiver when a live Drive-medium arc returns.',
+      blockedBy: 1638,
+      waivedOn: '2026-09-03',
+    },
   },
 ];
 
@@ -302,23 +355,51 @@ export function parseReportRecords(text) {
 }
 
 /**
+ * Last path segment, so a repo-relative manifest path (`e2e/forecast.spec.ts`)
+ * and whatever the report calls the same file (Playwright titles file suites
+ * relative to `testDir`) reduce to the same key.
+ *
+ * @param {unknown} path
+ * @returns {string}
+ */
+function fileKey(path) {
+  const cleaned = String(path ?? '').replaceAll('\\', '/');
+  return cleaned.slice(cleaned.lastIndexOf('/') + 1);
+}
+
+/**
+ * `spec::title` — the key grading is done on, so two specs may share a title
+ * without grading each other's results.
+ *
+ * @param {string} spec
+ * @param {string} title
+ * @returns {string}
+ */
+function qualifiedKey(spec, title) {
+  return `${fileKey(spec)}::${title}`;
+}
+
+/**
  * @param {any} suite
- * @param {Map<string, string>} titleByTestId
+ * @param {string} file the enclosing file suite's title
+ * @param {Map<string, { title: string, file: string }>} testsById
  * @returns {void}
  */
-function collectSuiteTests(suite, titleByTestId) {
+function collectSuiteTests(suite, file, testsById) {
   for (const entry of suite?.entries ?? []) {
     if (typeof entry?.testId === 'string') {
-      titleByTestId.set(entry.testId, String(entry.title));
+      testsById.set(entry.testId, { title: String(entry.title), file });
     } else {
-      collectSuiteTests(entry, titleByTestId);
+      collectSuiteTests(entry, file, testsById);
     }
   }
 }
 
 /**
  * @typedef {object} ReportIndex
- * @property {Map<string, string[]>} statusesByTitle every result status seen per title
+ * @property {Map<string, string[]>} statusesByKey every result status seen per `spec::title`
+ * @property {Set<string>} collectedKeys every `spec::title` the run collected, run or not
+ * @property {Map<string, string[]>} statusesByTitle the same, keyed on title alone
  * @property {Set<string>} collectedTitles every title the run collected, run or not
  */
 
@@ -338,30 +419,67 @@ function collectSuiteTests(suite, titleByTestId) {
  * @returns {ReportIndex}
  */
 export function indexReport(records) {
-  /** @type {Map<string, string>} */
-  const titleByTestId = new Map();
+  /** @type {Map<string, { title: string, file: string }>} */
+  const testsById = new Map();
   for (const record of records) {
     if (record.method !== 'onProject') continue;
     for (const suite of record.params?.project?.suites ?? []) {
-      collectSuiteTests(suite, titleByTestId);
+      collectSuiteTests(suite, fileKey(suite?.title), testsById);
     }
   }
 
   /** @type {Map<string, string[]>} */
+  const statusesByKey = new Map();
+  /** @type {Map<string, string[]>} */
   const statusesByTitle = new Map();
+  /** @type {(map: Map<string, string[]>, key: string, status: string) => void} */
+  const record_ = (map, key, status) => {
+    const seen = map.get(key);
+    if (seen) seen.push(status);
+    else map.set(key, [status]);
+  };
   for (const record of records) {
     if (record.method !== 'onTestEnd') continue;
     const testId = record.params?.test?.testId;
     const status = record.params?.result?.status;
     if (typeof testId !== 'string' || typeof status !== 'string') continue;
-    const title = titleByTestId.get(testId);
-    if (title === undefined) continue;
-    const seen = statusesByTitle.get(title);
-    if (seen) seen.push(status);
-    else statusesByTitle.set(title, [status]);
+    const test = testsById.get(testId);
+    if (test === undefined) continue;
+    record_(statusesByKey, `${test.file}::${test.title}`, status);
+    record_(statusesByTitle, test.title, status);
   }
 
-  return { statusesByTitle, collectedTitles: new Set(titleByTestId.values()) };
+  const collected = [...testsById.values()];
+  return {
+    statusesByKey,
+    collectedKeys: new Set(collected.map((test) => `${test.file}::${test.title}`)),
+    statusesByTitle,
+    collectedTitles: new Set(collected.map((test) => test.title)),
+  };
+}
+
+/**
+ * Look one manifest entry up in the index.
+ *
+ * Qualified (`spec::title`) first, so two specs cannot grade each other's
+ * results. The title-only fallback exists for one case only: a report that
+ * carried no recognisable file title for the test (a tele-reporter shape
+ * change). Falling back there degrades to the pre-#1683 behaviour instead of
+ * reporting a false "never collected" for a whole green run.
+ *
+ * @param {ReportIndex} index
+ * @param {SpecTest} test
+ * @returns {{ collected: boolean, statuses: string[] }}
+ */
+function lookup(index, test) {
+  const key = qualifiedKey(test.spec, test.title);
+  if (index.collectedKeys.has(key)) {
+    return { collected: true, statuses: index.statusesByKey.get(key) ?? [] };
+  }
+  if (index.collectedTitles.has(test.title)) {
+    return { collected: true, statuses: index.statusesByTitle.get(test.title) ?? [] };
+  }
+  return { collected: false, statuses: [] };
 }
 
 /**
@@ -375,19 +493,19 @@ export function indexReport(records) {
 
 /**
  * @param {ReportIndex} index
- * @param {string} title
- * @returns {string | null} a problem description, or null when the title passed
+ * @param {SpecTest} test
+ * @returns {string | null} a problem description, or null when the test passed
  */
-function passProblem(index, title) {
-  const statuses = index.statusesByTitle.get(title) ?? [];
+function passProblem(index, test) {
+  const { collected, statuses } = lookup(index, test);
   if (statuses.includes('passed')) return null;
-  if (!index.collectedTitles.has(title)) {
-    return `"${title}" was never collected by the run (spec renamed, moved or not discovered).`;
+  if (!collected) {
+    return `${test.spec} — "${test.title}" was never collected by the run (spec renamed, moved or not discovered).`;
   }
   if (statuses.length === 0) {
-    return `"${title}" was collected but produced no result.`;
+    return `${test.spec} — "${test.title}" was collected but produced no result.`;
   }
-  return `"${title}" never passed; results were: ${statuses.join(', ')}.`;
+  return `${test.spec} — "${test.title}" never passed; results were: ${statuses.join(', ')}.`;
 }
 
 /**
@@ -416,7 +534,7 @@ export function evaluateRequiredScenarios(index, scenarios = V5_REQUIRED_SCENARI
       // skip: it keeps reporting a gap the suite has actually closed. Fail on
       // it so the manifest is forced back into agreement with reality.
       const revived = coverage.deadTests.filter((test) =>
-        (index.statusesByTitle.get(test.title) ?? []).includes('passed'),
+        lookup(index, test).statuses.includes('passed'),
       );
       return {
         id: scenario.id,
@@ -431,7 +549,7 @@ export function evaluateRequiredScenarios(index, scenarios = V5_REQUIRED_SCENARI
     }
 
     const problems = coverage.tests
-      .map((test) => passProblem(index, test.title))
+      .map((test) => passProblem(index, test))
       .filter(/** @returns {problem is string} */ (problem) => problem !== null);
     return {
       id: scenario.id,
@@ -447,20 +565,27 @@ export function evaluateRequiredScenarios(index, scenarios = V5_REQUIRED_SCENARI
  * @typedef {object} StepProofEvaluation
  * @property {string} id
  * @property {string} step
- * @property {number} expected
+ * @property {number} expected how many occurrences a LIVE proof owes
  * @property {number} found
- * @property {boolean} ok
+ * @property {'proven' | 'waived' | 'failed'} status
+ * @property {string} proof one-line, human-readable provenance
+ * @property {string[]} problems empty unless `status === 'failed'`
  */
 
 /**
- * Count the successful occurrences of each named step proof.
+ * Count the successful occurrences of each named step proof, and grade them.
  *
  * A step counts only when its own `onStepEnd` carried no error AND the result
  * it belongs to ended `passed` — a step that "completed" inside a test that
  * later blew up proves nothing.
  *
+ * A `waived` proof inverts the rule: its host test is quarantined, so the step
+ * MUST NOT occur. Zero occurrences is the reported gap; any occurrence means
+ * the host is alive again and the waiver is stale, which fails exactly like a
+ * revived scenario waiver does.
+ *
  * @param {ReportRecord[]} records
- * @param {readonly { id: string, step: string, expected: number, why: string }[]} [proofs]
+ * @param {readonly StepProof[]} [proofs]
  * @returns {StepProofEvaluation[]}
  */
 export function evaluateStepProofs(records, proofs = V5_STEP_PROOFS) {
@@ -492,12 +617,36 @@ export function evaluateStepProofs(records, proofs = V5_STEP_PROOFS) {
         `${record.params.testId}:${record.params.resultId}:${record.params.step.id}`,
       );
     }).length;
+
+    if (proof.waived) {
+      const stale = found > 0;
+      return {
+        id: proof.id,
+        step: proof.step,
+        expected: proof.expected,
+        found,
+        /** @type {'waived' | 'failed'} */ status: stale ? 'failed' : 'waived',
+        proof: `waived — blocked by #${proof.waived.blockedBy} since ${proof.waived.waivedOn}`,
+        problems: stale
+          ? [
+              `"${proof.step}" ran ${found} time(s), so the #${proof.waived.blockedBy} waiver is stale — ` +
+                'restore it as a required step proof in e2e/support/v5Gate.mjs.',
+            ]
+          : [],
+      };
+    }
+
+    const ok = found === proof.expected;
     return {
       id: proof.id,
       step: proof.step,
       expected: proof.expected,
       found,
-      ok: found === proof.expected,
+      /** @type {'proven' | 'failed'} */ status: ok ? 'proven' : 'failed',
+      proof: `${found}/${proof.expected} successful`,
+      problems: ok
+        ? []
+        : [`Expected ${proof.expected} successful "${proof.step}" step(s); found ${found}.`],
     };
   });
 }
@@ -552,19 +701,21 @@ export function formatGateReport(evaluations, stepProofs) {
     }
   }
 
+  const stepBadge = { proven: '✅', waived: '⚠️', failed: '❌' };
   for (const proof of stepProofs) {
-    summary.push(
-      `- ${proof.ok ? '✅' : '❌'} step proof \`${proof.step}\`: ${proof.found}/${proof.expected} successful.`,
-    );
-    if (!proof.ok) {
+    summary.push(`- ${stepBadge[proof.status]} step proof \`${proof.step}\`: ${proof.proof}.`);
+    if (proof.status === 'waived') {
       annotations.push(
-        `::error::Expected ${proof.expected} successful "${proof.step}" step(s); found ${proof.found}.`,
+        `::warning::V5-P14 step proof "${proof.step}" is WAIVED — ${proof.proof}. Its host test is quarantined, so the probe does not run. It is a known gap, not coverage.`,
       );
+    }
+    for (const problem of proof.problems) {
+      annotations.push(`::error::V5-P14 step proof: ${problem}`);
     }
   }
 
   return {
-    ok: failed === 0 && stepProofs.every((proof) => proof.ok),
+    ok: failed === 0 && stepProofs.every((proof) => proof.status !== 'failed'),
     covered,
     waived,
     failed,
