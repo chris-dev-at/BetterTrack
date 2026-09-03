@@ -16,7 +16,7 @@ const LAST_IDENTIFIER_KEY = 'bettertrack.lastLoginIdentifier';
 const rememberedAccount = {
   userId: '8d7cf3d6-e8b8-4fa4-98a4-8712cddc05bf',
   username: 'jane',
-  avatarUrl: null,
+  profileIcon: null,
 };
 
 beforeEach(() => localStorage.clear());
@@ -31,7 +31,7 @@ describe('rememberedAccount — the client-side chooser record', () => {
     expect(readRememberedAccount()).toEqual(rememberedAccount);
   });
 
-  it('stores AT MOST user id + username + avatar — never a token or scope', () => {
+  it('stores AT MOST user id + username + profile icon — never a token or scope', () => {
     // A caller (or a compromised earlier write) tries to smuggle secrets in.
     writeRememberedAccount({
       ...rememberedAccount,
@@ -40,10 +40,54 @@ describe('rememberedAccount — the client-side chooser record', () => {
       scopes: ['portfolio:read'],
     });
     const raw = localStorage.getItem(REMEMBERED_KEY) ?? '{}';
-    expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['avatarUrl', 'userId', 'username']);
+    expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['profileIcon', 'userId', 'username']);
     expect(raw).not.toContain('super-secret');
     expect(raw).not.toContain('portfolio:read');
     expect(readRememberedAccount()).toEqual(rememberedAccount);
+  });
+
+  it('keeps a record written before the icon field, degrading it to no icon (V5-P0 (c))', () => {
+    // The pre-#1684 shape: the dead `avatarUrl`, no `profileIcon`. An in-place
+    // upgrade must NOT log the device out of its own memory.
+    localStorage.setItem(
+      REMEMBERED_KEY,
+      JSON.stringify({
+        userId: rememberedAccount.userId,
+        username: rememberedAccount.username,
+        avatarUrl: null,
+      }),
+    );
+    expect(readRememberedAccount()).toEqual({ ...rememberedAccount, profileIcon: null });
+    expect(localStorage.getItem(REMEMBERED_KEY)).not.toBeNull();
+  });
+
+  it('still clears a legacy-shaped record that smuggles anything else in', () => {
+    // The one-key migration above is not a licence for arbitrary extra fields.
+    localStorage.setItem(
+      REMEMBERED_KEY,
+      JSON.stringify({
+        userId: rememberedAccount.userId,
+        username: rememberedAccount.username,
+        avatarUrl: null,
+        token: 'leak',
+      }),
+    );
+    expect(readRememberedAccount()).toBeNull();
+    expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+  });
+
+  it('rejects and clears a stored icon id outside the curated set', () => {
+    localStorage.setItem(
+      REMEMBERED_KEY,
+      JSON.stringify({ ...rememberedAccount, profileIcon: 'not-a-real-avatar' }),
+    );
+    expect(readRememberedAccount()).toBeNull();
+    expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+  });
+
+  it('round-trips a picked curated icon', () => {
+    writeRememberedAccount({ ...rememberedAccount, profileIcon: 'fox' });
+    expect(readRememberedAccount()).toEqual({ ...rememberedAccount, profileIcon: 'fox' });
   });
 
   it('rejects and clears a contract-invalid stored record', () => {

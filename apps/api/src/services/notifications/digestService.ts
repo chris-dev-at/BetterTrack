@@ -39,14 +39,93 @@ import type { WebPushChannel } from './webPush';
  * who moves their timezone or window between defer and release would otherwise
  * be woken inside their NEW quiet window, the precise outcome quiet hours exist
  * to prevent; such a row is re-deferred to the new window end instead of sent.
+ * That re-evaluation covers a deferred digest SUMMARY too (#1696): it carries a
+ * manifest of the types it summarizes, so the matrix is re-checked against those
+ * rather than waved through on the synthetic summary type.
  */
 
 /**
  * The synthetic type a rendered digest summary carries. It is not a matrix type
- * — its constituent items were already routed at enqueue — so the release-time
- * matrix re-check skips it (a mute still drops it).
+ * — its constituent items were already routed at enqueue — so it cannot be fed
+ * to the release-time matrix re-check directly; a summary is checked against the
+ * types it CARRIES instead (see {@link DIGEST_SUMMARY_ITEMS_KEY}).
  */
 export const DIGEST_SUMMARY_TYPE = 'notifications.digest';
+
+/**
+ * Reserved `data` key on a quiet-hours-deferred digest summary (#1696): the
+ * manifest of the items that summary carries, so the release-time matrix
+ * re-check can resolve the real types behind {@link DIGEST_SUMMARY_TYPE}. Pure
+ * bookkeeping — it is stripped from the outbound push payload — and it rides in
+ * the existing `data` column, so no migration is involved.
+ */
+export const DIGEST_SUMMARY_ITEMS_KEY = 'digestItems';
+
+/** One item a deferred summary carries: its matrix type + its rendered line. */
+interface CarriedDigestItem {
+  type: string;
+  /** The `title: body` line an email summary renders for it (email rows only). */
+  line?: string;
+}
+
+/** The manifest for the items a summary of `channel` is about to carry. */
+function carriedItemsOf(
+  channel: DigestChannel,
+  items: readonly DigestQueueItem[],
+): CarriedDigestItem[] {
+  return items.map((item) =>
+    channel === 'email'
+      ? { type: item.type, line: `${item.title}: ${item.body}` }
+      : { type: item.type },
+  );
+}
+
+/** The manifest as the row's `data` payload. */
+function encodeCarried(carried: readonly CarriedDigestItem[]): Record<string, string> {
+  return { [DIGEST_SUMMARY_ITEMS_KEY]: JSON.stringify(carried) };
+}
+
+/**
+ * The manifest a claimed row carries, or `null` when it has none — a summary
+ * queued before #1696, or anything unparseable. `null` means "no manifest to
+ * check", which keeps the pre-#1696 behaviour (delivered as queued) rather than
+ * silently dropping a row whose types cannot be resolved.
+ */
+function decodeCarried(data: Record<string, string> | null): CarriedDigestItem[] | null {
+  const raw = data?.[DIGEST_SUMMARY_ITEMS_KEY];
+  if (typeof raw !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const carried: CarriedDigestItem[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const { type, line } = entry as { type?: unknown; line?: unknown };
+    if (typeof type !== 'string' || type.length === 0) return null;
+    carried.push(typeof line === 'string' ? { type, line } : { type });
+  }
+  return carried.length > 0 ? carried : null;
+}
+
+/** The email summary body: one rendered line per carried item. */
+function emailSummaryBody(carried: readonly CarriedDigestItem[]): string {
+  return carried
+    .map((item) => item.line ?? '')
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+/** A push payload never carries this module's own bookkeeping key outbound. */
+function pushData(data: Record<string, string> | null): Record<string, string> {
+  if (!data) return {};
+  const rest = { ...data };
+  delete rest[DIGEST_SUMMARY_ITEMS_KEY];
+  return rest;
+}
 
 /**
  * The period key an item is grouped under — `d:YYYY-MM-DD` / `w:GGGG-Www` — in
@@ -161,9 +240,11 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
 
   /**
    * Whether a claimed item's (type, channel) is STILL routed on, resolved once
-   * per (user, type) within a run (#1590). Without the `routing` dep, or for a
-   * rendered digest summary (whose items were routed individually at enqueue),
-   * the answer is yes — only an explicit off wins.
+   * per (user, type) within a run (#1590). Without the `routing` dep the answer
+   * is yes — only an explicit off wins. {@link DIGEST_SUMMARY_TYPE} is not a
+   * matrix type and never resolves here: a summary is checked against its
+   * carried types instead (#1696), and a pre-#1696 summary with no manifest
+   * keeps the old "deliver it" answer.
    */
   async function stillRouted(
     userId: string,
@@ -189,8 +270,20 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
   ): PushMessage {
     const copy = notificationCopy(resolveEmailLocale(locale)).digest;
     const title = cadence === 'daily' ? copy.pushTitleDaily : copy.pushTitleWeekly;
-    const body = copy.pushBody.replace('{count}', String(items.length));
-    return { type: DIGEST_SUMMARY_TYPE, title, body, data: { cadence } };
+    return {
+      type: DIGEST_SUMMARY_TYPE,
+      title,
+      body: pushSummaryBody(items.length, locale),
+      data: { cadence },
+    };
+  }
+
+  /** The push summary body for `count` items, localized. */
+  function pushSummaryBody(count: number, locale: string): string {
+    return notificationCopy(resolveEmailLocale(locale)).digest.pushBody.replace(
+      '{count}',
+      String(count),
+    );
   }
 
   /**
@@ -199,6 +292,10 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
    * window end: email as generic title+body, push/webpush as the same message
    * the digest would have pushed. Content mirrors the digest (localized chrome,
    * the already-rendered item strings), so nothing is lost across the defer.
+   *
+   * The row also carries the manifest of the items it summarizes (#1696), which
+   * is what lets the release-time matrix re-check resolve real types rather than
+   * the synthetic summary type.
    */
   function deferredSummaryRow(
     cadence: DigestCadence,
@@ -209,10 +306,18 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
     deliverAfter: Date,
   ): EnqueueDeferredItemInput {
     const copy = notificationCopy(resolveEmailLocale(locale)).digest;
+    const carried = carriedItemsOf(channel, items);
     if (channel === 'email') {
       const title = cadence === 'daily' ? copy.subjectDaily : copy.subjectWeekly;
-      const body = items.map((i) => `${i.title}: ${i.body}`).join('\n');
-      return { userId, type: DIGEST_SUMMARY_TYPE, channel, title, body, deliverAfter };
+      return {
+        userId,
+        type: DIGEST_SUMMARY_TYPE,
+        channel,
+        title,
+        body: emailSummaryBody(carried),
+        data: encodeCarried(carried),
+        deliverAfter,
+      };
     }
     const message = pushDigest(cadence, items, locale);
     return {
@@ -221,7 +326,7 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
       channel,
       title: message.title,
       body: message.body,
-      data: message.data,
+      data: { ...message.data, ...encodeCarried(carried) },
       deliverAfter,
     };
   }
@@ -383,7 +488,36 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
           dropped += 1;
           continue;
         }
-        if (!(await stillRouted(item.userId, item.type, item.channel, routingCache))) {
+        const locale = recipient.locale ?? 'en';
+        // A deferred digest SUMMARY is re-checked against the types it carries
+        // (#1696), not against its synthetic type: these are the longest-lived
+        // rows in the table — a whole quiet window sits between the enqueue-time
+        // routing decision and this moment — so exempting them defeats the
+        // release-time re-check precisely where it matters most. Items whose
+        // (type, channel) went off meanwhile are dropped from the summary, which
+        // is re-rendered from what remains; nothing left ⇒ the whole row is
+        // dropped, exactly as the grouped path drops a claimed item. A row with
+        // no manifest (queued before #1696) keeps the old behaviour.
+        const carried = item.type === DIGEST_SUMMARY_TYPE ? decodeCarried(item.data) : null;
+        let body = item.body;
+        if (carried) {
+          const routed: CarriedDigestItem[] = [];
+          for (const entry of carried) {
+            if (await stillRouted(item.userId, entry.type, item.channel, routingCache)) {
+              routed.push(entry);
+            }
+          }
+          if (routed.length === 0) {
+            dropped += 1;
+            continue;
+          }
+          if (routed.length < carried.length) {
+            body =
+              item.channel === 'email'
+                ? emailSummaryBody(routed)
+                : pushSummaryBody(routed.length, locale);
+          }
+        } else if (!(await stillRouted(item.userId, item.type, item.channel, routingCache))) {
           dropped += 1;
           continue;
         }
@@ -416,7 +550,6 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
           }
           continue;
         }
-        const locale = recipient.locale ?? 'en';
         if (item.channel === 'email') {
           if (email && recipient.email) {
             try {
@@ -424,7 +557,7 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
                 to: recipient.email,
                 userId: recipient.id,
                 title: item.title,
-                body: item.body,
+                body,
                 locale,
               });
               sent += 1;
@@ -437,8 +570,10 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
         const message: PushMessage = {
           type: item.type,
           title: item.title,
-          body: item.body,
-          data: item.data ?? {},
+          body,
+          // The carried-items manifest is bookkeeping for the re-check above —
+          // it never reaches the device.
+          data: pushData(item.data),
         };
         if (item.channel === 'push' && fcm) {
           try {

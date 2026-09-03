@@ -161,7 +161,7 @@ describe('ProfilePanel', () => {
     );
   });
 
-  // ─── Icon picker (§13.5 V5-P0c) ─────────────────────────────────────────────
+  // ─── Icon picker (§13.5 V5-P0 (c)) ─────────────────────────────────────────────
 
   test('the icon grid stays collapsed until opened, then picks a curated icon', async () => {
     const user = userEvent.setup();

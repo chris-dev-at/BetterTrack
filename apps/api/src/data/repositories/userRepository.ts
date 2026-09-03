@@ -340,7 +340,7 @@ function createUserQueries(db: Database) {
     },
 
     /**
-     * Set (or clear) the caller's curated profile icon id (§13.5 V5-P0c). The
+     * Set (or clear) the caller's curated profile icon id (§13.5 V5-P0 (c)). The
      * service layer validates against the finite allow-list before calling; a
      * `null` clears the picked icon and returns the user to the deterministic
      * default the SPA renders.

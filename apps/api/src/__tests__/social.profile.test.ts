@@ -351,7 +351,7 @@ describe('public profile (V3-P6)', () => {
   });
 });
 
-describe('profile icons (§13.5 V5-P0c, #549)', () => {
+describe('profile icons (§13.5 V5-P0 (c), #549)', () => {
   it('rejects an unknown icon id (server-side allow-list, defense-in-depth)', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);

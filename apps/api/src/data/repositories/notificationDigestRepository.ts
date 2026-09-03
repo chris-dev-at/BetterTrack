@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, lt, lte, sql } from 'drizzle-orm';
 
 import {
   DEFAULT_NOTIFICATION_CADENCE,
@@ -282,6 +282,39 @@ export function createNotificationDigestRepository(db: Database) {
         )
         .returning();
       return rows.map(toItem);
+    },
+
+    /**
+     * Retention drain (#1696): delete at most `limit` rows whose delivery
+     * already happened before `cutoff`. A claim only stamps `delivered_at`, so
+     * without this the queue keeps every rendered `title`/`body` it ever
+     * delivered — chat previews, alert bodies — forever, unlike every sibling
+     * operational table.
+     *
+     * A row still awaiting delivery (`delivered_at IS NULL`) is never eligible,
+     * however old it is: the pending set is the live work list (a quiet-hours
+     * deferral can legitimately sit there, and a re-defer restarts its wait), and
+     * deleting from it would silently drop a notification. Bounded by `limit` and
+     * driven by {@link deleteInBatches} so one run never locks the table; it
+     * works off existing columns only, so no migration rides along.
+     */
+    async deleteDeliveredOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: notificationDigestQueue.id })
+        .from(notificationDigestQueue)
+        .where(
+          and(
+            isNotNull(notificationDigestQueue.deliveredAt),
+            lt(notificationDigestQueue.deliveredAt, cutoff),
+          ),
+        )
+        .orderBy(asc(notificationDigestQueue.deliveredAt), asc(notificationDigestQueue.id))
+        .limit(limit);
+      const deleted = await db
+        .delete(notificationDigestQueue)
+        .where(inArray(notificationDigestQueue.id, candidates))
+        .returning({ id: notificationDigestQueue.id });
+      return deleted.length;
     },
   };
 }
