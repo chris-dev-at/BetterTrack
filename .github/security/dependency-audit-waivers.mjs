@@ -9,9 +9,9 @@
 export const dependencyAuditWaivers = {
   // Direct runtime packages need a separately reviewed compatibility update.
   'GHSA-gpj5-g38j-94v9': {
-    expires: '2026-09-04',
+    expires: '2026-09-18',
     moduleName: 'drizzle-orm',
     reason:
-      'Renewed 2026-08-14: the dedicated 0.38→0.45 upgrade (#1217) is needs-human-blocked — drizzle/meta snapshots end at 0022 while the journal runs to 0087, so the upgraded kit cannot no-op db:generate; awaiting the owner’s snapshot-baseline decision.',
+      'Renewed 2026-09-03 (fourth renewal; #1170, #1215, #1243 before it) as a 14-day bridge: #1651 (2026-09-02) landed the schema baseline as migration 0108 with a regenerated drizzle/meta/0108_snapshot.json, so the dedicated 0.38→0.45 upgrade (#1217) is UNBLOCKED and re-armed for the factory — it bumps drizzle-orm to ≥0.45.2, proves db:generate no-ops against the 0108 snapshot, and deletes this entry. Reachability today: the advisory needs untrusted input in sql.identifier()/alias construction; every such site in apps/api is a literal or a closed whitelist (audited 2026-09-03 in PR #1668).',
   },
 };
