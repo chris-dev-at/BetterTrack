@@ -132,6 +132,7 @@ describe('IdeasListPage', () => {
           hasThesis: true,
           audience: 'all_friends',
           friendCount: 0,
+          group: null,
         },
       ],
     });

@@ -72,6 +72,7 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
   'mirror.sync_stalled': 'mirrorSyncStalled',
   'feedback.status_changed': 'feedbackStatusChanged',
   'feedback.reply_created': 'feedbackReplyCreated',
+  'comment.created': 'commentCreated',
 };
 
 /**

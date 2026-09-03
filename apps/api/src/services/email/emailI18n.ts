@@ -34,6 +34,12 @@ export interface NotificationEmailCopy {
   watchlistShared: { subject: string; heading: string; body: string; button: string };
   conglomerateShared: { subject: string; heading: string; body: string; button: string };
   chatMessage: { subject: string; heading: string; body: string; button: string };
+  /**
+   * A comment landed on an item the recipient shares (§13.5 V5-P8). Names the
+   * commenter + the item, never the comment text — the thread is where the body
+   * belongs. Email is OFF by the lean default; this only ships when opted in.
+   */
+  commentCreated: { subject: string; heading: string; body: string; button: string };
   /** Alert body sentence is supplied by the caller (the same phrasing as the bell). */
   alertTriggered: { subject: string; heading: string; button: string };
   /**
@@ -150,6 +156,12 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       heading: 'New message',
       body: '{actor} sent you a new message on BetterTrack.',
       button: 'Open chat',
+    },
+    commentCreated: {
+      subject: '{actor} commented on {item}',
+      heading: 'New comment',
+      body: '{actor} commented on “{item}”, an item you share on BetterTrack. Open the thread to read and moderate it.',
+      button: 'Open the thread',
     },
     alertTriggered: {
       subject: 'Price alert: {symbol}',
@@ -307,6 +319,12 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       heading: 'Neue Nachricht',
       body: '{actor} hat dir eine neue Nachricht auf BetterTrack gesendet.',
       button: 'Chat öffnen',
+    },
+    commentCreated: {
+      subject: '{actor} hat {item} kommentiert',
+      heading: 'Neuer Kommentar',
+      body: '{actor} hat „{item}“ kommentiert — einen Eintrag, den du teilst. Öffne den Verlauf, um ihn zu lesen und zu moderieren.',
+      button: 'Verlauf öffnen',
     },
     alertTriggered: {
       subject: 'Preisalarm: {symbol}',

@@ -1,14 +1,21 @@
 import { readFileSync } from 'node:fs';
+import { Agent as HttpAgent, createServer as createHttpServer, request } from 'node:http';
+import { Agent as HttpsAgent } from 'node:https';
+import { request as httpsRequest } from 'node:https';
+import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   OUTBOUND_URL_BLOCKED,
   UnsafeOutboundUrlError,
   WEBHOOK_RECEIVER_URL_POLICY,
   assertSafeOutboundUrl,
+  createPinnedAgent,
   isOutboundPolicyRefusal,
+  resolveSafeOutboundUrl,
   type OutboundUrlResolver,
+  type ResolvedOutboundUrl,
 } from '../outboundUrlGuard';
 
 const BLOCKED_LITERALS = [
@@ -226,5 +233,187 @@ describe('outbound URL guard — strict callers stay strict', () => {
     await expect(
       assertSafeOutboundUrl('https://[fd12:3456::1]/subscription', { resolveDns: false }),
     ).rejects.toMatchObject({ code: OUTBOUND_URL_BLOCKED, reason: 'blocked_address' });
+  });
+});
+
+/**
+ * The pin (§8 outbound safety). A vetted answer is worth nothing if the socket
+ * resolves the hostname again — that second lookup is exactly the DNS-rebinding
+ * window. These tests run real connections: the guard-time answer points at one
+ * address and a simulated connect-time resolver at another, and only the pinned
+ * one may be reached. `127.0.0.1` stands in for the vetted public address and
+ * `127.0.0.2` for the private one the rebind would swap in; both listeners share
+ * a port so the address is the only thing that distinguishes them.
+ */
+describe('outbound URL guard — pinned agents close the rebinding window', () => {
+  const VETTED = '127.0.0.1';
+  const REBOUND = '127.0.0.2';
+
+  const closers: (() => Promise<void>)[] = [];
+
+  afterEach(async () => {
+    await Promise.all(closers.splice(0).map((close) => close()));
+  });
+
+  function track(server: { close: (cb: () => void) => void }): void {
+    closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  }
+
+  function listenOn(
+    server: {
+      listen: (port: number, host: string, cb: () => void) => void;
+      address: () => unknown;
+    },
+    host: string,
+    port = 0,
+  ): Promise<number> {
+    return new Promise<number>((resolve) => {
+      server.listen(port, host, () => {
+        const address = server.address();
+        resolve(
+          typeof address === 'object' && address !== null
+            ? (address as { port: number }).port
+            : port,
+        );
+      });
+    });
+  }
+
+  /** Two HTTP listeners on the same port, one per address; each records its hits. */
+  async function twoHttpReceivers(): Promise<{ port: number; hits: Record<string, number> }> {
+    const hits: Record<string, number> = { [VETTED]: 0, [REBOUND]: 0 };
+    const build = (host: string) => {
+      const server = createHttpServer((req, res) => {
+        hits[host] = (hits[host] ?? 0) + 1;
+        req.resume();
+        res.writeHead(204).end();
+      });
+      track(server);
+      return server;
+    };
+    const port = await listenOn(build(VETTED), VETTED);
+    await listenOn(build(REBOUND), REBOUND, port);
+    return { port, hits };
+  }
+
+  /** Two bare TCP listeners on the same port: enough to observe where TLS dialled. */
+  async function twoTcpReceivers(): Promise<{ port: number; hits: Record<string, number> }> {
+    const hits: Record<string, number> = { [VETTED]: 0, [REBOUND]: 0 };
+    const build = (host: string) => {
+      const server: TcpServer = createTcpServer((socket) => {
+        hits[host] = (hits[host] ?? 0) + 1;
+        socket.destroy();
+      });
+      track(server);
+      return server;
+    };
+    const port = await listenOn(build(VETTED), VETTED);
+    await listenOn(build(REBOUND), REBOUND, port);
+    return { port, hits };
+  }
+
+  function pinnedTarget(url: string, address = VETTED): ResolvedOutboundUrl {
+    return { url: new URL(url), addresses: [{ address, family: 4 }] };
+  }
+
+  function postHttp(url: string, agent: HttpAgent): Promise<{ status: number | null }> {
+    return new Promise((resolve) => {
+      const req = request(url, { method: 'POST', agent }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode ?? null }));
+      });
+      req.on('error', () => resolve({ status: null }));
+      req.end('{}');
+    });
+  }
+
+  function postHttps(url: string, agent: HttpsAgent): Promise<{ status: number | null }> {
+    return new Promise((resolve) => {
+      const req = httpsRequest(url, { method: 'POST', agent }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode ?? null }));
+      });
+      req.on('error', () => resolve({ status: null }));
+      req.end('{}');
+    });
+  }
+
+  it('sends a plain-http request to the vetted address even though DNS now answers a private one', async () => {
+    const { port, hits } = await twoHttpReceivers();
+    const url = `http://receiver.rebind.test:${port}/hook`;
+
+    // Control: an agent that resolves at connect time — what a bare `fetch`
+    // does — lands on the rebound private address.
+    const rebinding = new HttpAgent({
+      keepAlive: false,
+      lookup: (_hostname, options, callback) => {
+        if (options.all) callback(null, [{ address: REBOUND, family: 4 }]);
+        else callback(null, REBOUND, 4);
+      },
+    });
+    expect(await postHttp(url, rebinding)).toEqual({ status: 204 });
+    expect(hits).toEqual({ [VETTED]: 0, [REBOUND]: 1 });
+    rebinding.destroy();
+
+    // Pinned: the same URL, the same hostname, but the guard's vetted address.
+    const agent = createPinnedAgent(pinnedTarget(url));
+    expect(agent).not.toBeInstanceOf(HttpsAgent);
+    expect(await postHttp(url, agent)).toEqual({ status: 204 });
+    agent.destroy();
+
+    expect(hits).toEqual({ [VETTED]: 1, [REBOUND]: 1 });
+  });
+
+  it('dials only the vetted address for an https receiver', async () => {
+    const { port, hits } = await twoTcpReceivers();
+    const url = `https://receiver.rebind.test:${port}/hook`;
+
+    const agent = createPinnedAgent(pinnedTarget(url));
+    expect(agent).toBeInstanceOf(HttpsAgent);
+    // A bare TCP listener never completes the handshake, so the request fails —
+    // but which listener saw the connection is the whole point.
+    expect(await postHttps(url, agent as HttpsAgent)).toEqual({ status: null });
+    agent.destroy();
+
+    expect(hits).toEqual({ [VETTED]: 1, [REBOUND]: 0 });
+  });
+
+  it('refuses to serve a hostname other than the one that was vetted', async () => {
+    const { port, hits } = await twoHttpReceivers();
+    const agent = createPinnedAgent(pinnedTarget(`http://receiver.rebind.test:${port}/hook`));
+
+    expect(await postHttp(`http://other.rebind.test:${port}/hook`, agent)).toEqual({
+      status: null,
+    });
+    agent.destroy();
+
+    expect(hits).toEqual({ [VETTED]: 0, [REBOUND]: 0 });
+  });
+
+  it('has nothing to dial when the target carries no vetted address', async () => {
+    const { port, hits } = await twoHttpReceivers();
+    const url = `http://receiver.rebind.test:${port}/hook`;
+    const agent = createPinnedAgent({ url: new URL(url), addresses: [] });
+
+    expect(await postHttp(url, agent)).toEqual({ status: null });
+    agent.destroy();
+
+    expect(hits).toEqual({ [VETTED]: 0, [REBOUND]: 0 });
+  });
+
+  it('resolves the webhook policy once and hands back the addresses to pin', async () => {
+    const resolver: OutboundUrlResolver = vi.fn(async () => [
+      { address: '192.168.1.50', family: 4 },
+    ]);
+
+    const target = await resolveSafeOutboundUrl('http://nas.home.example/hook', {
+      ...WEBHOOK_RECEIVER_URL_POLICY,
+      resolver,
+    });
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(target.url.href).toBe('http://nas.home.example/hook');
+    expect(target.addresses).toEqual([{ address: '192.168.1.50', family: 4 }]);
+    expect(createPinnedAgent(target)).not.toBeInstanceOf(HttpsAgent);
   });
 });
