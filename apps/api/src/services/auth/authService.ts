@@ -28,6 +28,7 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, tooManyRequests, unauthorized } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import { coerceProfileIcon } from '../../http/serializers';
 import type { Logger } from '../../logger';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
@@ -1671,9 +1672,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
       return {
         deviceId,
-        // The client's whole record: never a token or scope (avatar is always null
-        // — the app has no avatar system yet; the chooser renders initials).
-        record: { userId: user.id, username: user.username, avatarUrl: null },
+        // The client's whole record: never a token or scope. The avatar is the
+        // user's curated profile icon (§13.5 V5-P0 (c)) — re-validated against the
+        // finite allow-list here, so a stale or hand-edited row degrades to `null`
+        // (the chooser's lettered tile) instead of reaching the renderer.
+        record: {
+          userId: user.id,
+          username: user.username,
+          profileIcon: coerceProfileIcon(user.profileIcon),
+        },
       };
     },
 

@@ -1,6 +1,5 @@
 export { Icon, ICON_NAMES, type IconName, type IconProps } from './icons';
 export {
-  Avatar,
   Badge,
   Button,
   CheckRow,

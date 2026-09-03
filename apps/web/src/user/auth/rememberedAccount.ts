@@ -11,8 +11,9 @@ import {
  * this record is only what the page needs to *render* the chooser.
  *
  * It may hold AT MOST what the server hands back from `POST /auth/remembered-device`:
- * user id + username + avatar url — NEVER a token or scope (owner note). Storage
- * failures degrade to "nobody remembered" (a blank login), never a throw.
+ * user id + username + curated profile icon id — NEVER a token or scope (owner
+ * note). Storage failures degrade to "nobody remembered" (a blank login), never a
+ * throw.
  */
 export type RememberedAccount = RememberedDeviceResponse;
 
@@ -58,12 +59,27 @@ function safeRemove(key: string): void {
   }
 }
 
+/**
+ * Records written before the curated icon replaced the always-null `avatarUrl`
+ * (§13.5 V5-P0 (c)) carry that dead key and lack `profileIcon`. Rewrite exactly
+ * that one shape so an in-place upgrade keeps the device remembered and simply
+ * degrades to the lettered tile; every OTHER unexpected key still fails the
+ * strict contract below and clears the record.
+ */
+function migrateStoredRecord(value: unknown): unknown {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (!('avatarUrl' in record) || 'profileIcon' in record) return value;
+  const { avatarUrl: _avatarUrl, ...rest } = record;
+  return { ...rest, profileIcon: null };
+}
+
 /** The remembered identity for this device, or `null` when nobody is remembered. */
 export function readRememberedAccount(): RememberedAccount | null {
   const raw = safeGet(REMEMBERED_KEY);
   if (raw == null) return null;
   try {
-    const result = rememberedDeviceResponseSchema.safeParse(JSON.parse(raw));
+    const result = rememberedDeviceResponseSchema.safeParse(migrateStoredRecord(JSON.parse(raw)));
     if (!result.success) {
       safeRemove(REMEMBERED_KEY);
       return null;
@@ -81,7 +97,7 @@ export function writeRememberedAccount(account: RememberedAccount): void {
   const record: RememberedAccount = {
     userId: account.userId,
     username: account.username,
-    avatarUrl: account.avatarUrl,
+    profileIcon: account.profileIcon,
   };
   safeSet(REMEMBERED_KEY, JSON.stringify(record));
 }
