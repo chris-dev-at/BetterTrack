@@ -3,8 +3,18 @@ import { useMemo, useState } from 'react';
 import type { DriveConnection, VaultMedia } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { Button, Field, Input, Select } from '../../../ui/origin';
-import { CHECKBOX_STYLE } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  CheckRow,
+  Choice,
+  ChoiceGroup,
+  Field,
+  Input,
+  Panel,
+  Select,
+  Stepper,
+} from '../../../ui/origin';
 import {
   createMnemonicWordChallenge,
   generateMnemonic,
@@ -122,10 +132,15 @@ export function VaultCreationCeremony({
 
   return (
     <section aria-label={t('vault.creation.title')} className="bt-panel flex flex-col gap-4 p-4">
-      <div>
-        <p className="bt-label">{t('vault.creation.step', { current: step, total: 6 })}</p>
-        <h3 className="bt-h2">{t(`vault.creation.steps.${step}`)}</h3>
-      </div>
+      {/* The same dot stepper the portfolio and import wizards wear, so a
+          six-step ceremony reads as one of this app's flows rather than a bare
+          "Step 3 of 6" label above a heading. */}
+      <Stepper
+        current={step}
+        label={t('vault.creation.step', { current: step, total: 6 })}
+        title={t(`vault.creation.steps.${step}`)}
+        total={6}
+      />
 
       {step === 1 ? (
         <Field htmlFor="vault-create-name" label={t('vault.creation.nameLabel')}>
@@ -141,23 +156,24 @@ export function VaultCreationCeremony({
 
       {step === 2 ? (
         <div className="flex flex-col gap-3">
-          {(['server', 'both', 'drive'] as const).map((choice) => (
-            <label className="bt-panel flex items-start gap-3 p-3" key={choice}>
-              <input
-                checked={mediaChoice === choice}
-                disabled={choice !== 'server' && !driveProvisioningAvailable}
-                onChange={() => setMediaChoice(choice)}
-                type="radio"
-              />
-              <span>
-                <span className="bt-row-title">{t(`vault.manager.media.${choice}`)}</span>
-                <span className="bt-row-sub block">{t(`vault.creation.media.${choice}`)}</span>
-                {choice !== 'server' && !driveProvisioningAvailable ? (
-                  <span className="bt-row-sub block">{t('vault.creation.media.driveSoon')}</span>
-                ) : null}
-              </span>
-            </label>
-          ))}
+          <ChoiceGroup label={t('vault.creation.steps.2')}>
+            {(['server', 'both', 'drive'] as const).map((choice) => {
+              const unavailable = choice !== 'server' && !driveProvisioningAvailable;
+              return (
+                <Choice
+                  description={t(`vault.creation.media.${choice}`)}
+                  disabled={unavailable}
+                  key={choice}
+                  muted={unavailable}
+                  name="vault-create-media"
+                  note={unavailable ? t('vault.creation.media.driveSoon') : undefined}
+                  onSelect={() => setMediaChoice(choice)}
+                  selected={mediaChoice === choice}
+                  title={t(`vault.manager.media.${choice}`)}
+                />
+              );
+            })}
+          </ChoiceGroup>
           {needsDrive ? (
             <Field htmlFor="vault-create-drive" label={t('vault.creation.driveConnectionLabel')}>
               <Select
@@ -182,13 +198,21 @@ export function VaultCreationCeremony({
       {step === 3 ? (
         <div className="flex flex-col gap-3">
           <p className="bt-gold-note">{t('vault.creation.wordsHint')}</p>
-          <ol className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
-            {words.map((word, index) => (
-              <li className="bt-num text-sm" key={`${index}-${word}`}>
-                <span className="bt-muted">{index + 1}.</span> {word}
-              </li>
-            ))}
-          </ol>
+          {/* The one screen a user is asked to copy by hand. On its own surface,
+              with the ordinals ranged right, the twelve words read as a block to
+              transcribe rather than as loose text in a form. */}
+          <Panel className="p-3" pad={false} soft>
+            <ol className="grid grid-cols-2 gap-x-5 gap-y-1.5 sm:grid-cols-3">
+              {words.map((word, index) => (
+                <li className="flex items-baseline gap-2" key={`${index}-${word}`}>
+                  <span className="bt-muted bt-num shrink-0 text-xs tabular-nums">
+                    {index + 1}.
+                  </span>
+                  <span className="bt-num text-sm">{word}</span>
+                </li>
+              ))}
+            </ol>
+          </Panel>
         </div>
       ) : null}
 
@@ -219,33 +243,49 @@ export function VaultCreationCeremony({
 
       {step === 5 ? (
         <div className="flex flex-col gap-3">
-          <p className="bt-soft text-sm">{t('vault.creation.lossContrast')}</p>
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              aria-label={t('vault.creation.lossAcknowledgment')}
-              checked={lossAcknowledged}
-              onChange={(event) => setLossAcknowledged(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.creation.lossAcknowledgment')}</span>
-          </label>
+          <Panel className="p-3" pad={false} soft>
+            <p className="bt-soft text-sm">{t('vault.creation.lossContrast')}</p>
+          </Panel>
+          <CheckRow
+            aria-label={t('vault.creation.lossAcknowledgment')}
+            checked={lossAcknowledged}
+            onChange={setLossAcknowledged}
+            tone="gold"
+          >
+            {t('vault.creation.lossAcknowledgment')}
+          </CheckRow>
         </div>
       ) : null}
 
       {step === 6 ? (
         <div className="flex flex-col gap-3">
-          <label className="bt-panel flex items-start gap-3 p-3">
-            <input
-              checked={custody === 'wrapped'}
-              onChange={() => setCustody('wrapped')}
-              type="radio"
+          {/* The custody choice used to be ONE visible option plus a
+              `<summary className="bt-link">Advanced device custody</summary>`
+              hiding the other. A choice with a hidden branch is not a choice —
+              and hiding this particular branch was worse than useless, since a
+              user who wants it goes looking and a user who does not is not
+              protected by a fold. Both options are on the page now: the
+              unwrapped one carries its own "advanced" mark, muted ink and its
+              warning, which de-emphasises it far more honestly than concealment
+              did. */}
+          <ChoiceGroup label={t('vault.creation.steps.6')}>
+            <Choice
+              description={t('vault.creation.custody.wrappedHint')}
+              name="vault-create-custody"
+              onSelect={() => setCustody('wrapped')}
+              selected={custody === 'wrapped'}
+              title={t('vault.creation.custody.wrapped')}
             />
-            <span>
-              <span className="bt-row-title">{t('vault.creation.custody.wrapped')}</span>
-              <span className="bt-row-sub block">{t('vault.creation.custody.wrappedHint')}</span>
-            </span>
-          </label>
+            <Choice
+              badge={<Badge outline>{t('vault.creation.custody.plainOption')}</Badge>}
+              description={t('vault.creation.custody.plainWarning')}
+              muted
+              name="vault-create-custody"
+              onSelect={() => setCustody('plain')}
+              selected={custody === 'plain'}
+              title={t('vault.creation.custody.plain')}
+            />
+          </ChoiceGroup>
           {custody === 'wrapped' ? (
             <Field htmlFor="vault-device-password" label={t('vault.creation.devicePassword')}>
               <Input
@@ -257,33 +297,15 @@ export function VaultCreationCeremony({
               />
             </Field>
           ) : null}
-          <details>
-            <summary className="bt-link cursor-pointer text-sm">
-              {t('vault.creation.custody.plainOption')}
-            </summary>
-            <label className="bt-panel mt-2 flex items-start gap-3 p-3">
-              <input
-                checked={custody === 'plain'}
-                onChange={() => setCustody('plain')}
-                type="radio"
-              />
-              <span>
-                <span className="bt-row-title">{t('vault.creation.custody.plain')}</span>
-                <span className="bt-row-sub block">{t('vault.creation.custody.plainWarning')}</span>
-              </span>
-            </label>
-            {custody === 'plain' ? (
-              <label className="bt-soft mt-2 flex items-start gap-2 text-sm">
-                <input
-                  checked={plainRiskAcknowledged}
-                  onChange={(event) => setPlainRiskAcknowledged(event.target.checked)}
-                  style={CHECKBOX_STYLE}
-                  type="checkbox"
-                />
-                <span>{t('vault.creation.custody.plainAcknowledgment')}</span>
-              </label>
-            ) : null}
-          </details>
+          {custody === 'plain' ? (
+            <CheckRow
+              checked={plainRiskAcknowledged}
+              onChange={setPlainRiskAcknowledged}
+              tone="gold"
+            >
+              {t('vault.creation.custody.plainAcknowledgment')}
+            </CheckRow>
+          ) : null}
           {failure ? (
             <p className="bt-neg text-sm" role="alert">
               {t(failure.key, { name: failure.leftoverVault ?? '' })}

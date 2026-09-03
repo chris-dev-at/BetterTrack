@@ -1353,6 +1353,199 @@
   background: var(--bt-gold-on);
 }
 
+/* ── One-of-N choices + acknowledgments ──────────────────────────────────────
+ *
+ * The house rule, stated twice before this and made reusable here: a set of
+ * options is HAIRLINE-RULED ROWS INSIDE ONE GROUP, never a card per option
+ * (`.bt-pfw__choices`, `.bt-cc-modes`). Selection is background + ink. There is
+ * no left-edge accent bar — the gold edge line belongs to the active main-rail
+ * item and nowhere else.
+ *
+ * The control is a native radio/checkbox tinted with `accent-color`, the same
+ * way `.bt-cc-mode__radio` does it: the gold arrives for free and the platform
+ * keeps arrow-key group navigation, the focus ring and the accessible name.
+ */
+.bt-choices {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.bt-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  min-width: 0;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-choice + .bt-choice {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-choice:hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-choice.is-selected {
+  background: var(--bt-selected);
+}
+
+.bt-choice.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The steered-away-from option: quieter, still readable, never hidden. */
+.bt-choice--muted:not(.is-selected) .bt-choice__name {
+  color: var(--bt-muted);
+  font-weight: 570;
+}
+
+/* `:not(.is-selected)` is load-bearing, not decoration. `.bt-choice:focus-within`
+   and `.bt-choice.is-selected` are both (0,2,0), and this rule is the later of
+   the two — so tabbing onto the CHECKED radio repainted its row as unselected
+   and the group briefly showed no selection at all. Excluding the selected row
+   hands it back; its own radio still draws the platform focus ring. */
+.bt-choice:not(.is-selected):focus-within {
+  background: var(--bt-surface-hover);
+}
+
+.bt-choice__control {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex: none;
+  margin-top: 2px;
+  accent-color: var(--bt-gold-graphic);
+}
+
+.bt-choice__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.bt-choice__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.bt-choice__name {
+  color: var(--bt-text-soft);
+  font-size: 13.5px;
+  font-weight: 590;
+}
+
+.bt-choice.is-selected .bt-choice__name {
+  color: var(--bt-text);
+}
+
+.bt-choice__desc {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.bt-choice__note {
+  color: var(--bt-faint);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* An acknowledgment stands alone rather than in a group, so it carries its own
+   border — but it is the same row, the same control and the same selected ink
+   as `.bt-choice`, so a ceremony reads as one surface. */
+.bt-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  min-width: 0;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-check:hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-check:focus-within {
+  background: var(--bt-surface-hover);
+}
+
+.bt-check.is-checked {
+  background: var(--bt-selected);
+  color: var(--bt-text);
+}
+
+.bt-check.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* The consequence a ceremony must not let pass unread. */
+.bt-check--gold {
+  border-color: var(--bt-border-accent);
+  background: var(--bt-gold-soft);
+}
+
+.bt-check--gold.is-checked {
+  background: var(--bt-gold-soft);
+}
+
+/* `.bt-check:focus-within` is (0,2,0) and `.bt-check--gold` only (0,1,0), so
+   source order could never have saved it: tabbing to an UNTICKED gold consent
+   row dropped the gold wash that marks it as the consequence you must read. */
+.bt-check--gold:focus-within {
+  background: var(--bt-gold-soft);
+}
+
+.bt-check__control {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex: none;
+  margin-top: 2px;
+  accent-color: var(--bt-gold-graphic);
+}
+
+.bt-check__body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An action bar: quiet buttons sitting together as peers.
+ *
+ * `.bt-btn--quiet` is borderless by design — it is the app's least-weight
+ * control, right for a lone action against a busy surface. Line five of them up
+ * and that same absence reads as a sentence of grey words, which is precisely
+ * what the vault row was accused of. Inside a bar, they get a resting hairline
+ * so the eye counts controls instead of reading text. */
+.bt-action-bar .bt-btn--quiet {
+  border-color: var(--bt-border);
+}
+
+.bt-action-bar .bt-btn--quiet:hover {
+  border-color: var(--bt-border-strong);
+}
+
 /* Keyboard hint */
 .bt-kbd {
   display: inline-flex;
@@ -5438,12 +5631,19 @@
   overflow-wrap: anywhere;
 }
 
-/* Disclosures stay the popup's way to fold a long block away. */
-.bt-cc-fold {
+/* Disclosures stay the popup's way to fold a long block away.
+ *
+ * `.bt-disclosure` is the same grammar promoted out of the Control Center for
+ * Origin's `<Disclosure>`, so a surface elsewhere in the app folds a block the
+ * way the popup does instead of hand-rolling `<summary className="bt-link">`.
+ * One rule set, two names — never a second look for the same gesture. */
+.bt-cc-fold,
+.bt-disclosure {
   border-bottom: 1px solid var(--bt-border);
 }
 
-.bt-cc-fold > summary {
+.bt-cc-fold > summary,
+.bt-disclosure > summary {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5455,11 +5655,13 @@
   list-style: none;
 }
 
-.bt-cc-fold > summary::-webkit-details-marker {
+.bt-cc-fold > summary::-webkit-details-marker,
+.bt-disclosure > summary::-webkit-details-marker {
   display: none;
 }
 
-.bt-cc-fold > summary::after {
+.bt-cc-fold > summary::after,
+.bt-disclosure > summary::after {
   content: '▸';
   margin-left: auto;
   color: var(--bt-faint);
@@ -5467,16 +5669,19 @@
   transition: transform var(--bt-t-fast);
 }
 
-.bt-cc-fold[open] > summary::after {
+.bt-cc-fold[open] > summary::after,
+.bt-disclosure[open] > summary::after {
   transform: rotate(90deg);
 }
 
-.bt-cc-fold__body {
+.bt-cc-fold__body,
+.bt-disclosure__body {
   padding: 2px 0 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bt-cc-fold > summary::after {
+  .bt-cc-fold > summary::after,
+  .bt-disclosure > summary::after {
     transition: none;
   }
 }

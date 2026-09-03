@@ -3736,6 +3736,7 @@
       "deleteAction": "Delete empty vault",
       "deleteReferenced": "This vault still contains a portfolio. Move every portfolio out before deleting it.",
       "deleteError": "The vault could not be deleted. Nothing changed.",
+      "deferredFold": "Why some actions aren’t available yet",
       "deferred": {
         "rotate": "Rotating the recovery words isn’t available yet: it needs a verified round trip on every storage this vault uses. Until then this vault and its words stay exactly as they are.",
         "startFresh": "Starting fresh isn’t available yet: discarding a vault’s encrypted copies needs the same verified storage round trip. To remove a vault today, move its portfolios out and delete it.",
@@ -3880,6 +3881,7 @@
         "code": "Authenticator code",
         "recoveryCode": "Recovery code"
       },
+      "preconditionBlocked": "Needed",
       "precondition": {
         "mirrorchain": "Leave or dissolve this portfolio’s active group before moving it.",
         "mirrorchainFix": "Open group settings",

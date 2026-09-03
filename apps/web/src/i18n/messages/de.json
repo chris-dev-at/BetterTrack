@@ -3736,6 +3736,7 @@
       "deleteAction": "Leeren Tresor löschen",
       "deleteReferenced": "Dieser Tresor enthält noch ein Portfolio. Verschiebe alle Portfolios heraus, bevor du ihn löschst.",
       "deleteError": "Der Tresor konnte nicht gelöscht werden. Es wurde nichts geändert.",
+      "deferredFold": "Warum manche Aktionen noch nicht verfügbar sind",
       "deferred": {
         "rotate": "Das Wechseln der Wiederherstellungswörter ist noch nicht verfügbar: Es braucht einen geprüften Durchlauf auf jedem Speicher dieses Tresors. Bis dahin bleiben dieser Tresor und seine Wörter genau so, wie sie sind.",
         "startFresh": "Neu anfangen ist noch nicht verfügbar: Das Verwerfen der verschlüsselten Kopien braucht denselben geprüften Speicher-Durchlauf. Um einen Tresor heute zu entfernen, bewege seine Portfolios hinaus und lösche ihn.",
@@ -3880,6 +3881,7 @@
         "code": "Authenticator-Code",
         "recoveryCode": "Wiederherstellungscode"
       },
+      "preconditionBlocked": "Erforderlich",
       "precondition": {
         "mirrorchain": "Verlasse oder löse die aktive Gruppe dieses Portfolios auf, bevor du es verschiebst.",
         "mirrorchainFix": "Gruppeneinstellungen öffnen",

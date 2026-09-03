@@ -221,6 +221,41 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
   });
 
+  test('renders the paranoid section on Origin primitives, below the converted vault manager', async () => {
+    // This section sits directly under the vault manager in the same scroll, so
+    // it was the half of `/control/privacy` still answering "just text and
+    // hyperlink anchor text" after lane E's first pass.
+    const user = userEvent.setup();
+    privacyMode = 'paranoid';
+    mediaState = {
+      mediaSet: ['server'],
+      driveAttestedVersion: null,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+    syncStatus = 'synced';
+
+    const { container } = renderPanel();
+    await screen.findByText('Encrypted on BetterTrack');
+
+    // The route is button-skinned and still a route.
+    const manage = screen.getByRole('link', { name: 'Manage storage' });
+    expect(manage).toHaveClass('bt-btn', 'bt-btn--sm');
+    expect(manage).toHaveAttribute('href', '/control/connections');
+
+    // Each destructive consent is a CheckRow carrying the gold tone, and the
+    // control inside it is still the platform's checkbox.
+    await user.click(screen.getByText('Rotate vault key'));
+    await user.click(screen.getByText('Start fresh'));
+    await user.click(screen.getByText('Disable Paranoid mode'));
+    const consents = container.querySelectorAll('.bt-check');
+    expect(consents).toHaveLength(3);
+    for (const consent of consents) {
+      expect(consent).toHaveClass('bt-check--gold');
+      expect(consent.querySelector('input[type="checkbox"]')).not.toBeNull();
+    }
+    expect(container.querySelector('.bt-link')).toBeNull();
+  });
+
   test('disable stays closed while the vault sync is split — the other branch would be lost', async () => {
     privacyMode = 'paranoid';
     mediaState = {

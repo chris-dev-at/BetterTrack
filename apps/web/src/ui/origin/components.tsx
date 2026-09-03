@@ -12,7 +12,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { NavLink, type NavLinkProps } from 'react-router-dom';
+import { Link, NavLink, type LinkProps, type NavLinkProps } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
@@ -72,6 +72,43 @@ export function Button({
       {icon ? <Icon name={icon} size={size === 'sm' ? 15 : 16} /> : null}
       {iconOnly ? null : children}
     </button>
+  );
+}
+
+/**
+ * A route that LOOKS like a button and stays a link.
+ *
+ * The vault surfaces were a field of bare `<Link className="bt-link">` anchors
+ * ("just text and hyperlink anchor text"), so the fix is the button skin — but
+ * navigation must not become `onClick={navigate}`: that costs middle-click,
+ * open-in-new-tab, the status-bar preview and the `link` role every one of
+ * these targets is asserted by. Same classes as {@link Button}, same `href`.
+ */
+export function LinkButton({
+  variant = 'neutral',
+  size = 'md',
+  icon,
+  className,
+  children,
+  ...rest
+}: LinkProps & {
+  variant?: ButtonVariant;
+  size?: 'sm' | 'md';
+  icon?: IconName;
+}) {
+  return (
+    <Link
+      className={cx(
+        'bt-btn',
+        variant !== 'neutral' && `bt-btn--${variant}`,
+        size === 'sm' && 'bt-btn--sm',
+        className,
+      )}
+      {...rest}
+    >
+      {icon ? <Icon name={icon} size={size === 'sm' ? 15 : 16} /> : null}
+      {children}
+    </Link>
   );
 }
 
@@ -311,6 +348,224 @@ export function Seg<T extends string>({
           {option.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * One-of-N, in this app's own grammar: hairline-ruled rows inside a single
+ * bordered group — NOT a card per option.
+ *
+ * That is a house rule with two prior statements, and this primitive exists so
+ * the third surface stops re-deciding it: "One choice per line, separated by a
+ * rule rather than boxed into cards" (`.bt-pfw__choices`) and "A one-of-N choice
+ * as hairline-ruled rows instead of a card per option… there is no edge marker"
+ * (`.bt-cc-modes`). Selection is background + ink only.
+ *
+ * The NATIVE radio stays the control. Every alternative — a `role="radio"` div,
+ * a visually-hidden input, a `Seg` — would trade away arrow-key group
+ * navigation or the label-text accessible name these options already carry, to
+ * buy a custom glyph. `accent-color` gets the gold for free, exactly as the
+ * Control Center's own mode list does.
+ */
+export function ChoiceGroup({
+  children,
+  label,
+}: {
+  children: ReactNode;
+  /** Names the group for assistive tech; the rows are its radios. */
+  label?: string;
+}) {
+  return (
+    <div aria-label={label} className="bt-choices" role="radiogroup">
+      {children}
+    </div>
+  );
+}
+
+export function Choice({
+  badge,
+  children,
+  description,
+  disabled = false,
+  muted = false,
+  name,
+  note,
+  onSelect,
+  selected,
+  title,
+}: {
+  badge?: ReactNode;
+  children?: ReactNode;
+  description?: ReactNode;
+  disabled?: boolean;
+  /**
+   * The option a flow steers AWAY from — the risky custody, the Drive-only
+   * medium. It de-emphasises; it never hides. An option a user cannot find is
+   * not a choice, and a `<details>` wrapped around it was how these surfaces
+   * used to pretend otherwise.
+   */
+  muted?: boolean;
+  name?: string;
+  /** A caption inside the row: why this option is unavailable, or its cost. */
+  note?: ReactNode;
+  onSelect: () => void;
+  selected: boolean;
+  title: ReactNode;
+}) {
+  return (
+    <label
+      className={cx(
+        'bt-choice',
+        selected && 'is-selected',
+        muted && 'bt-choice--muted',
+        disabled && 'is-disabled',
+      )}
+    >
+      <input
+        checked={selected}
+        className="bt-choice__control"
+        disabled={disabled}
+        name={name}
+        onChange={onSelect}
+        type="radio"
+      />
+      <span className="bt-choice__body">
+        <span className="bt-choice__head">
+          <span className="bt-choice__name">{title}</span>
+          {badge}
+        </span>
+        {description ? <span className="bt-choice__desc">{description}</span> : null}
+        {note ? <span className="bt-choice__note">{note}</span> : null}
+        {children}
+      </span>
+    </label>
+  );
+}
+
+/**
+ * The acknowledgment row — a native checkbox on a real surface, so a consent
+ * that gates a destructive step reads as a decision instead of a stray tick
+ * beside a sentence. Same reasoning as {@link Choice}: the input stays native,
+ * the design lives around it.
+ */
+export function CheckRow({
+  checked,
+  children,
+  className,
+  disabled = false,
+  onChange,
+  tone = 'neutral',
+  ...rest
+}: {
+  checked: boolean;
+  children: ReactNode;
+  className?: string;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+  /** `gold` for the consequence a ceremony must not let pass unread. */
+  tone?: 'neutral' | 'gold';
+} & Omit<
+  InputHTMLAttributes<HTMLInputElement>,
+  'checked' | 'className' | 'disabled' | 'onChange' | 'type'
+>) {
+  return (
+    <label
+      className={cx(
+        'bt-check',
+        checked && 'is-checked',
+        disabled && 'is-disabled',
+        tone === 'gold' && 'bt-check--gold',
+        className,
+      )}
+    >
+      <input
+        checked={checked}
+        className="bt-check__control"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+        {...rest}
+      />
+      <span className="bt-check__body">{children}</span>
+    </label>
+  );
+}
+
+/**
+ * A fold, in the Control Center's disclosure grammar — the marker-less
+ * `<summary>` with the chevron pushed to the right edge — promoted out of
+ * `panelKit` so surfaces outside the popup stop hand-rolling
+ * `<summary className="bt-link">`.
+ *
+ * Native `<details>` on purpose: the keyboard behaviour, the open state and the
+ * find-in-page reveal are the platform's, not ours. It follows that a closed
+ * fold still YIELDS ITS TEXT to content scripts and find-in-page — anything
+ * whose mere presence in the DOM is the risk (a recovery phrase) must gate its
+ * own render on the open state as well, which is why this takes `open`.
+ */
+export function Disclosure({
+  children,
+  onToggle,
+  open,
+  summary,
+}: {
+  children: ReactNode;
+  onToggle?: (open: boolean) => void;
+  /** Controlled open state; omit to let the browser own it. */
+  open?: boolean;
+  summary: ReactNode;
+}) {
+  return (
+    <details
+      className="bt-disclosure"
+      onToggle={(event) => onToggle?.(event.currentTarget.open)}
+      open={open}
+    >
+      <summary>{summary}</summary>
+      <div className="bt-disclosure__body">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * The step header of a multi-step flow, in the portfolio/import wizards' own
+ * chrome: filling dots plus one "Step N of M" line.
+ *
+ * The dots are `aria-hidden`; the position is stated in the text line, which is
+ * the only thing assistive tech needs. Deliberately NOT list markup — a
+ * `<ol>`/`<li>` stepper would inject items into wizards whose own step body is
+ * a list (the creation ceremony's twelve recovery words are asserted by count)
+ * and would announce steps that are not navigable.
+ */
+export function Stepper({
+  current,
+  total,
+  label,
+  title,
+}: {
+  /** 1-based. */
+  current: number;
+  total: number;
+  /** The "Step 2 of 6" line, already localized and interpolated. */
+  label: ReactNode;
+  title?: ReactNode;
+}) {
+  return (
+    <div className="bt-pfw__stepper">
+      <div aria-hidden="true" className="bt-pfw__dots">
+        {Array.from({ length: total }, (_, position) => (
+          <span
+            className="bt-pfw__dot"
+            data-state={
+              position === current - 1 ? 'current' : position < current - 1 ? 'done' : 'upcoming'
+            }
+            key={position}
+          />
+        ))}
+      </div>
+      <p className="bt-pfw__stepnow">{label}</p>
+      {title ? <h3 className="bt-h2">{title}</h3> : null}
     </div>
   );
 }
