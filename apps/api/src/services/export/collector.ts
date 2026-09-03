@@ -1,5 +1,5 @@
 import { QTY_EPSILON } from '@bettertrack/domain/holdings';
-import { eq, inArray, or } from 'drizzle-orm';
+import { count, eq, inArray, or } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
 import {
@@ -51,6 +51,7 @@ import {
   workboardItems,
 } from '../../data/schema';
 
+import { EXPORT_MAX_ROWS, ExportTooLargeError } from './limits';
 import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from './manifest';
 
 /**
@@ -214,8 +215,9 @@ export function assertCollectorCoverage(built: readonly string[]): void {
 export async function collectUserExport(
   db: Database,
   userId: string,
-  options: { serverOnly?: boolean } = {},
+  options: { serverOnly?: boolean; maxRows?: number } = {},
 ): Promise<CollectedExport> {
+  const maxRows = options.maxRows ?? EXPORT_MAX_ROWS;
   // Owner-id sets that the indirected tables key off. Resolved first so their
   // dependents can `inArray` on them (empty set ⇒ no rows, never a broad scan).
   const [portfolioRows, conglomerateRows, audienceRows, customAssetRows, feedbackRows] =
@@ -248,6 +250,63 @@ export async function collectUserExport(
   /** Query a table only when its owner-id set is non-empty. */
   const inIds = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>): Promise<T[]> =>
     ids.length === 0 ? [] : run(ids);
+
+  // ── Pre-flight row ceiling (#1714) ────────────────────────────────────────
+  // The collection below materializes every row of every exported table at
+  // once, and the packaging then copies those rows three more times. Counting
+  // the append-only tables first — the only ones that grow without a user
+  // action per row — refuses a runaway account BEFORE a single row is
+  // allocated, so an oversized export fails cleanly instead of OOM-killing the
+  // worker that hosts every other background job.
+  const countRows = async (rows: PromiseLike<{ value: number }[]>): Promise<number> =>
+    Number((await rows)[0]?.value ?? 0);
+  /** Count only when the owner-id set is non-empty (an empty set is zero rows). */
+  const countScoped = async (
+    ids: string[],
+    run: (ids: string[]) => PromiseLike<{ value: number }[]>,
+  ): Promise<number> => (ids.length === 0 ? 0 : countRows(run(ids)));
+  const growthRows = await Promise.all([
+    countScoped(cleartextPortfolioIds, (ids) =>
+      db
+        .select({ value: count() })
+        .from(transactions)
+        .where(inArray(transactions.portfolioId, ids)),
+    ),
+    countScoped(cleartextPortfolioIds, (ids) =>
+      db
+        .select({ value: count() })
+        .from(portfolioCashMovements)
+        .where(inArray(portfolioCashMovements.portfolioId, ids)),
+    ),
+    countScoped(cleartextPortfolioIds, (ids) =>
+      db.select({ value: count() }).from(dividends).where(inArray(dividends.portfolioId, ids)),
+    ),
+    countScoped(customAssetIds, (ids) =>
+      db.select({ value: count() }).from(priceHistory).where(inArray(priceHistory.assetId, ids)),
+    ),
+    countRows(
+      db.select({ value: count() }).from(notifications).where(eq(notifications.userId, userId)),
+    ),
+    countRows(
+      db.select({ value: count() }).from(chatMessages).where(eq(chatMessages.senderId, userId)),
+    ),
+    // The expense ledger is the expense area's analogue of `transactions`: an
+    // append-only, user-scoped table this export now materializes in full
+    // (V5-P9). The remaining expense/cash-fusion tables are per-user config
+    // (categories, rules, budgets, tags) or link rows bounded by the movements
+    // already counted above, so they stay out of the pre-flight for the same
+    // reason the other config tables do.
+    countRows(
+      db
+        .select({ value: count() })
+        .from(expenseTransactions)
+        .where(eq(expenseTransactions.userId, userId)),
+    ),
+  ]);
+  const totalGrowthRows = growthRows.reduce((sum, value) => sum + value, 0);
+  if (totalGrowthRows > maxRows) {
+    throw new ExportTooLargeError('rows', totalGrowthRows, maxRows);
+  }
 
   const [
     accountRows,

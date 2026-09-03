@@ -72,6 +72,7 @@ const NO_EXPORT: ExportStatusResponse = {
   requestedAt: null,
   expiresAt: null,
   sizeBytes: null,
+  error: null,
 };
 
 const READY_EXPORT: ExportStatusResponse = {
@@ -80,6 +81,17 @@ const READY_EXPORT: ExportStatusResponse = {
   requestedAt: '2026-07-16T09:00:00.000Z',
   expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   sizeBytes: 4096,
+  error: null,
+};
+
+/** A build refused for size: actionable, and distinct from a transient failure. */
+const TOO_LARGE_EXPORT: ExportStatusResponse = {
+  status: 'failed',
+  jobId: '00000000-0000-0000-0000-0000000000ab',
+  requestedAt: '2026-07-16T09:00:00.000Z',
+  expiresAt: null,
+  sizeBytes: null,
+  error: 'EXPORT_TOO_LARGE',
 };
 
 const REQUEST_RESPONSE: ExportRequestResponse = {
@@ -149,6 +161,16 @@ describe('AccountPanel', () => {
 
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getAllByText('Export my data')).not.toHaveLength(0);
+  });
+
+  // #1714: a build refused for size is terminal for that account, so the note
+  // has to say so — a generic "try again" would send the user in a loop.
+  test('names a size-refused export and says the allowance was not used', async () => {
+    vi.mocked(getDataExportStatus).mockResolvedValue(TOO_LARGE_EXPORT);
+    renderPanel();
+
+    expect(await screen.findByText(/more data than a single export archive/i)).toBeInTheDocument();
+    expect(screen.getByText(/daily allowance was not used/i)).toBeInTheDocument();
   });
 
   test('renders identity rows; the base currency has its own picker (V3-P10d)', async () => {

@@ -322,6 +322,14 @@ function ExportRow() {
         <PanelNote>{t('settings.export.pending')}</PanelNote>
       ) : current?.status === 'expired' ? (
         <PanelNote>{t('settings.export.expired')}</PanelNote>
+      ) : current?.status === 'failed' ? (
+        // A refusal for size is actionable in a way a transient build failure is
+        // not: requesting the same export again cannot succeed (#1714).
+        <PanelNote>
+          {current.error === 'EXPORT_TOO_LARGE'
+            ? t('settings.export.failedTooLarge')
+            : t('settings.export.failed')}
+        </PanelNote>
       ) : null}
 
       {!isPending ? (

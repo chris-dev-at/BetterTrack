@@ -548,6 +548,13 @@ export const exportStatusResponseSchema = z
     expiresAt: z.string().datetime().nullable(),
     /** Zip size in bytes once ready (null otherwise). */
     sizeBytes: z.number().int().nonnegative().nullable(),
+    /**
+     * Coarse reason a `failed` job failed — never a stack or a secret. Lets the
+     * surface distinguish an actionable refusal (`EXPORT_TOO_LARGE`: the account
+     * is past the packaging ceiling, so retrying unchanged cannot help) from a
+     * transient build failure. Null unless the job failed.
+     */
+    error: z.string().nullable(),
   })
   .strict();
 export type ExportStatusResponse = z.infer<typeof exportStatusResponseSchema>;
