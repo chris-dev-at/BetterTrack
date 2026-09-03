@@ -2468,10 +2468,10 @@ describe('V5-P14 surface traceability inventory', () => {
         offender.component === 'user/forecast/ProjectionSection.tsx' &&
         offender.states.includes('error'),
     );
-    expect(projectionReads, 'ProjectionSection async reads').toHaveLength(5);
+    expect(projectionReads, 'ProjectionSection async reads').toHaveLength(6);
     expect(
       projectionErrors,
-      `ProjectionSection must keep all five read errors out of the worklist.\n${report}`,
+      `ProjectionSection must keep all six read errors out of the worklist.\n${report}`,
     ).toHaveLength(0);
 
     const declaredBoundary = V5_NON_HOOK_ASYNC_BOUNDARY.map(

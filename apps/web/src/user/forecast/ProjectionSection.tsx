@@ -6,6 +6,7 @@ import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contr
 import { useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
+import { useDeployCapability } from '../../lib/featureFlags';
 import { formatMoney } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
@@ -67,6 +68,10 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const t = useT();
   const store = usePortfolioStore();
   const privacyMode = useResolvedPrivacyMode();
+  // Whether this deployment has market intelligence at all (§13.5 V5-P5). Off ⇒
+  // the dividend factor does not exist here; that is a different statement from
+  // "configured, but this portfolio's projection could not be computed".
+  const marketIntel = useDeployCapability('marketIntel');
 
   const portfolioId = useMemo(() => {
     const available = portfolios.filter((portfolio) => !isVaultedPortfolio(portfolio));
@@ -127,7 +132,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const dividendQuery = useQuery({
     queryKey: ['portfolio', 'dividend-projection'],
     queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
-    enabled: portfolioId !== null && privacyMode === 'normal',
+    enabled: portfolioId !== null && privacyMode === 'normal' && marketIntel,
     staleTime: 60_000,
   });
 
@@ -194,9 +199,19 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const standingOrders = ordersEnabled
     ? normalizeStandingOrders(ordersQuery.data?.orders ?? [])
     : [];
-  const dividendAvailable = dividendQuery.data?.available === true;
+  // Three distinct dividend-factor states (#1681). No market intel on this
+  // deployment, or an account mode that never reads the endpoint (paranoid
+  // vaults project locally) ⇒ `dividendProjection` stays undefined and no
+  // control renders. A resolved projection ⇒ a normal toggle. A projection this
+  // portfolio could not resolve — #1616 makes the total all-or-nothing, so one
+  // unresolvable holding lands here — ⇒ the control stays on the page, disabled
+  // and explained, rather than removing the reason for the lower curve. Either
+  // way an unusable factor contributes exactly 0, as before.
+  const dividendProjection = marketIntel ? dividendQuery.data : undefined;
+  const dividendAvailable = dividendProjection?.available === true;
+  const dividendUnresolved = dividendProjection?.available === false;
   const monthlyDividendEur =
-    dividendEnabled && dividendAvailable ? dividendQuery.data!.monthlyTotalEur : 0;
+    dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalEur : 0;
 
   const whatIfPlans: ForecastWhatIfPlan[] = plans.map((plan, index) => ({
     id: plan.id,
@@ -356,10 +371,12 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             checked={ordersEnabled}
             onChange={setOrdersEnabled}
           />
-          {dividendAvailable ? (
+          {dividendAvailable || dividendUnresolved ? (
             <FactorToggle
               label={t('forecast.projection.factor.dividends')}
-              checked={dividendEnabled}
+              checked={dividendEnabled && dividendAvailable}
+              disabled={dividendUnresolved}
+              note={dividendUnresolved ? t('forecast.projection.dividendsUnresolved') : undefined}
               onChange={setDividendEnabled}
             />
           ) : null}
@@ -490,27 +507,39 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
 // ─── Small building blocks ───────────────────────────────────────────────────
 
-/** A labelled checkbox factor toggle; the wrapping label is its accessible name. */
+/**
+ * A labelled checkbox factor toggle; the wrapping label is its accessible name.
+ * An optional `note` sits outside that label — a disabled factor has to say why
+ * without renaming the control the assertion and the user both look for.
+ */
 function FactorToggle({
   label,
   checked,
   onChange,
+  disabled = false,
+  note,
 }: {
   label: string;
   checked: boolean;
   onChange: (next: boolean) => void;
+  disabled?: boolean;
+  note?: string;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm bt-soft">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded"
-        style={{ accentColor: 'var(--bt-gold-graphic)' }}
-      />
-      <span>{label}</span>
-    </label>
+    <div className="flex flex-col gap-1">
+      <label className={cx('flex items-center gap-2 text-sm bt-soft', disabled && 'opacity-60')}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          className="h-4 w-4 rounded"
+          style={{ accentColor: 'var(--bt-gold-graphic)' }}
+        />
+        <span>{label}</span>
+      </label>
+      {note ? <p className="text-xs bt-muted">{note}</p> : null}
+    </div>
   );
 }
 
