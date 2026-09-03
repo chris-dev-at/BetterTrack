@@ -51,8 +51,26 @@ interface Journal {
   entries: JournalEntry[];
 }
 
+/**
+ * Two references, two questions (#1655):
+ *
+ *  - `baseRef` answers "did this PR CHANGE or DELETE a released entry?" It must
+ *    be the commit the PR's journal actually descends from — the merge-base —
+ *    because a PR merely BEHIND main has not deleted the migrations main gained
+ *    since; comparing against main's tip instead failed every open PR the
+ *    moment any migration landed (five factory escalations on 2026-09-03).
+ *  - `releasedRef` answers "is a NEW entry newer than everything a deployed DB
+ *    may already have recorded?" That bar is main's TIP, not the merge-base: a
+ *    branch cut before a later migration landed carries an earlier `when`, and
+ *    only the tip knows it. Entries that already exist at `releasedRef` are
+ *    released, not new — they are exempt from that check.
+ *
+ * CI passes `merge-base`, `HEAD`, `origin/main`; a local run with no arguments
+ * compares the working tree against `origin/main` for both.
+ */
 const baseRef = process.argv[2] ?? 'origin/main';
 const headRef = process.argv[3] ?? null;
+const releasedRef = process.argv[4] ?? baseRef;
 
 // Anchor filesystem reads to the repo root so the check works regardless of the
 // process cwd (pnpm --filter runs it from apps/api, git paths are repo-relative).
@@ -122,20 +140,35 @@ for (const base of baseJournal.entries) {
 // deployed DB silently skips them forever (see the header). The base tail is
 // the bar: `max(when)` over the base journal, matching what the applier reads
 // out of `drizzle.__drizzle_migrations` on a DB that is up to date with base.
+// The released bar is the tip of the target branch (see the header): everything
+// a deployed DB may already have recorded. When no separate released ref was
+// given it is the base journal itself.
+let releasedJournal: Journal = baseJournal;
+if (releasedRef !== baseRef) {
+  try {
+    releasedJournal = JSON.parse(show(releasedRef, JOURNAL)) as Journal;
+  } catch {
+    console.log(`No journal at ${releasedRef} — using ${baseRef} as the released bar.`);
+  }
+}
 const baseIdx = new Set(baseJournal.entries.map((e) => e.idx));
-const baseMaxWhen = baseJournal.entries.reduce(
+const releasedIdx = new Set(releasedJournal.entries.map((e) => e.idx));
+const releasedMaxWhen = releasedJournal.entries.reduce(
   (max, e) => (e.when > max ? e.when : max),
   -Infinity,
 );
-const baseTail = baseJournal.entries.find((e) => e.when === baseMaxWhen);
-const newEntries = headJournal.entries.filter((e) => !baseIdx.has(e.idx));
+const releasedTail = releasedJournal.entries.find((e) => e.when === releasedMaxWhen);
+// NEW = this PR's own entries: absent from its base AND not already released.
+const newEntries = headJournal.entries.filter(
+  (e) => !baseIdx.has(e.idx) && !releasedIdx.has(e.idx),
+);
 
 for (const entry of newEntries) {
-  if (entry.when > baseMaxWhen) continue;
+  if (entry.when > releasedMaxWhen) continue;
   violations.push(
     `${entry.tag}: NEW entry has \`when\` ${entry.when}, which is NOT greater than the newest ` +
-      `released \`when\` ${baseMaxWhen} (${baseTail?.tag ?? 'unknown'}) at ${baseRef}. ` +
-      `A deployed DB has already recorded ${baseMaxWhen} as its latest migration, so drizzle ` +
+      `released \`when\` ${releasedMaxWhen} (${releasedTail?.tag ?? 'unknown'}) at ${releasedRef}. ` +
+      `A deployed DB has already recorded ${releasedMaxWhen} as its latest migration, so drizzle ` +
       `would skip this migration permanently and silently — the schema change never lands.`,
   );
 }
@@ -150,7 +183,7 @@ if (violations.length > 0) {
       `in a NEW migration. If drizzle-kit regenerated the journal during a rebase, revert\n` +
       `${JOURNAL} to the base version and re-append only your own entry.\n` +
       `\nFix (NEW entry not after the released tail): your branch was cut before a migration\n` +
-      `that has since landed on ${baseRef}. Rebase, then re-stamp your entry's \`when\` to the\n` +
+      `that has since landed on ${releasedRef}. Rebase, then re-stamp your entry's \`when\` to the\n` +
       `CURRENT epoch millis (\`node -e "console.log(Date.now())"\`) and renumber its idx/tag to\n` +
       `follow the new tail. Never lower an already-released \`when\` to make room.\n`,
   );
