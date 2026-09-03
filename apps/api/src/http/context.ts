@@ -1314,6 +1314,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Portfolio-level dividend intelligence (§13.5 V5-P5, arc a): calendar +
   // projected income over the caller's held + watchlist assets. Same gate as the
   // per-asset reads; pure on-read computation, no storage.
+  //
+  // No `paranoid:` dep, deliberately, and it is NOT the asymmetry it looks like
+  // next to `createMarketIntelService` above: both roll-ups AND
+  // `marketIntel.newsDigest` are holdings-derived reads that are KILLED outright
+  // for a paranoid account by the registry bindings
+  // (`PARANOID_SERVICE_BINDINGS`: `portfolioMarketIntel.*` and
+  // `marketIntel.newsDigest`, capability `portfolioServer`), applied to the
+  // objects below by `guardRegisteredServices`. The constructor dep exists only
+  // where a service must stay PARTLY available under the lock — that is
+  // `marketIntel.earningsCalendar`, which keeps its route and filters
+  // holding-derived provenance inside `runAllowedWithOptional`. Adding a second
+  // guard here would sit unreachable behind the first.
   const portfolioMarketIntel = createPortfolioMarketIntelService({
     marketData,
     repo: createMarketIntelRepository(db),
