@@ -65,6 +65,11 @@ export const NOTIFICATION_TYPES = [
   // email OFF through the lean defaults, and both honour quiet hours.
   'feedback.status_changed',
   'feedback.reply_created',
+  // V5-P8 comments: somebody commented on an item the recipient shares. The
+  // owner-facing arrival signal for the thread they moderate — a normal
+  // (non-opt-in) type: in-app / push ON, email OFF by the lean-email default,
+  // honouring the matrix, quiet hours and digests like every other type.
+  'comment.created',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
@@ -142,6 +147,7 @@ export const NOTIFICATION_MESSAGE_KEYS = [
   'feedbackStatusDeclined',
   'feedbackStatusShipped',
   'feedbackReplyCreated',
+  'commentCreated',
 ] as const;
 export type NotificationMessageKey = (typeof NOTIFICATION_MESSAGE_KEYS)[number];
 export const notificationMessageKeySchema = z.enum(NOTIFICATION_MESSAGE_KEYS);
@@ -248,6 +254,10 @@ export const NOTIFICATION_CATEGORIES = [
       'follow.published',
       'follow.alert.created',
       'follow.alert.fired',
+      // V5-P8: a comment on an item YOU share is activity on your own sharing
+      // surface, so it routes beside the other share notices rather than
+      // earning a category of its own (anti-bloat).
+      'comment.created',
     ],
   },
   { key: 'chat', types: ['chat.message'] },

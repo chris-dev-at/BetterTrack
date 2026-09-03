@@ -122,7 +122,9 @@ export function portfolioIdForPortfolioContentEvent(event: DomainEvent): string 
     return event.portfolioId;
   }
   if (
-    (event.type === 'friend.activity' || event.type === 'follow.published') &&
+    (event.type === 'friend.activity' ||
+      event.type === 'follow.published' ||
+      event.type === 'comment.created') &&
     event.itemKind === 'portfolio'
   ) {
     return event.itemId;
