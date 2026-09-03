@@ -117,17 +117,29 @@ export function VaultUnlockDialog({
     <ODialog
       foot={
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Button
-            onClick={() => {
-              onClose();
-              navigate(vaultStateActionHref(vaultId, withdrawn ? 'reset-endpoint' : 'unlock'));
-            }}
-            size="sm"
-            type="button"
-            variant="quiet"
-          >
-            {t('vault.unlockDialog.moreOptions')}
-          </Button>
+          {/* The ONLY way out of this dialog other than unlocking or cancelling,
+              and it appears only once the password has failed. The owner's
+              complaint was a prompt that kept offering journeys ("More vault
+              options" → the Control Center) instead of the one thing asked
+              for; a user who typed the right password never sees this. The
+              §12 reset is destructive-on-this-device and lives in the vault
+              manager on purpose, so it stays a link — one link, named for what
+              it is. */}
+          {failure ? (
+            <Button
+              onClick={() => {
+                onClose();
+                navigate(vaultStateActionHref(vaultId, 'reset-endpoint'));
+              }}
+              size="sm"
+              type="button"
+              variant="quiet"
+            >
+              {t('vault.unlockDialog.forgot')}
+            </Button>
+          ) : (
+            <span />
+          )}
           <div className="flex flex-wrap gap-2">
             <Button onClick={onClose} type="button" variant="quiet">
               {t('common.cancel')}

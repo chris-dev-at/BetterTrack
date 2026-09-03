@@ -8,7 +8,10 @@ import { useOptionalAuth } from '../AuthContext';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 import { removePlaintextQueries } from './plaintextQueries';
 import type { UnlockedVaultPortfolioAccess } from './resolvedPortfolioStore';
-import type { VaultedPortfolioStoresBatch } from './vaultedPortfolioStores';
+import type {
+  VaultedPortfolioFailure,
+  VaultedPortfolioStoresBatch,
+} from './vaultedPortfolioStores';
 
 /**
  * The one seam production surfaces use to ask "can this device read that
@@ -35,12 +38,26 @@ import type { VaultedPortfolioStoresBatch } from './vaultedPortfolioStores';
 export interface VaultedPortfolioStores {
   /** Vaulted portfolios unlocked on this device, by portfolio id. */
   unlocked: ReadonlyMap<string, UnlockedVaultPortfolioAccess>;
+  /**
+   * Vaulted portfolios this device tried to open and could not, by portfolio
+   * id — a vault that IS unlocked but whose documents refused, or a resolution
+   * that failed before any vault was looked at (the vault directory could not
+   * be read, the heavy chunk failed to load). Never a merely locked vault: the
+   * stub for one of those still shows its unlock step, not an error.
+   *
+   * Surfacing these is what turns "unlock worked, portfolio still shows the
+   * locked stub with an Open link" into a sentence the user can act on.
+   */
+  failures: ReadonlyMap<string, VaultedPortfolioFailure>;
 }
 
-const NO_UNLOCKED_PORTFOLIOS: VaultedPortfolioStores = { unlocked: new Map() };
+const NO_UNLOCKED_PORTFOLIOS: VaultedPortfolioStores = { unlocked: new Map(), failures: new Map() };
 
 interface RegistryEntry {
   refs: number;
+  /** The account and roster this entry resolves for — kept so a re-run can be asked for from outside the hook. */
+  accountId: string | null;
+  portfolios: readonly PortfolioSummary[];
   /** Stable snapshot identity — `useSyncExternalStore` compares by reference. */
   stores: VaultedPortfolioStores;
   batch: VaultedPortfolioStoresBatch | null;
@@ -255,6 +272,8 @@ function subscribe(token: string, onChange: () => void): () => void {
 function placeholderEntry(): RegistryEntry {
   return {
     refs: 0,
+    accountId: null,
+    portfolios: [],
     stores: NO_UNLOCKED_PORTFOLIOS,
     batch: null,
     listeners: new Set(),
@@ -294,9 +313,27 @@ function acquire(token: string, accountId: string, portfolios: readonly Portfoli
   // stays because `release`'s keep-the-entry decision is the one that is
   // allowed to change: reusing an entry is only ever safe with a live signal.
   if (entry.abort.signal.aborted) entry.abort = new AbortController();
+  entry.accountId = accountId;
+  entry.portfolios = portfolios;
   registry.set(token, entry);
 
   void load(entry, accountId, portfolios);
+}
+
+/**
+ * Ask every live roster to resolve again — the "Retry" behind a surfaced
+ * failure. It re-runs exactly what a mount would, against the same registry
+ * entries, so a stub that just reported "could not be opened" re-asks the
+ * keystore and the media instead of waiting for the next navigation. Entries
+ * nothing is rendering are left alone.
+ */
+export function rerunVaultedPortfolioStores(): void {
+  for (const entry of registry.values()) {
+    if (entry.refs <= 0 || entry.released || entry.accountId === null || entry.resolving) continue;
+    entry.batch?.dispose();
+    entry.batch = null;
+    void load(entry, entry.accountId, entry.portfolios, true);
+  }
 }
 
 async function load(
@@ -373,18 +410,42 @@ async function load(
     }
     entry.batch?.dispose();
     entry.batch = batch;
-    publish(entry, { unlocked: batch.unlocked });
-  } catch {
-    // Fail closed to the stub. Nothing here is worth a console line: a locked
-    // vault, a cancelled navigation and a failed chunk load all produce the
-    // same, already-correct, screen.
-    if (!superseded()) publish(entry, NO_UNLOCKED_PORTFOLIOS);
+    publish(entry, { unlocked: batch.unlocked, failures: batch.failures });
+  } catch (cause) {
+    // Fail closed to the stub — but SAY SO. A cancelled navigation is silent
+    // (its entry is superseded); everything else that reaches here failed
+    // before a single vault could be judged — the vault directory read, the
+    // heavy chunk, the resolver's own preconditions — and hiding that behind
+    // a "Locked" stub is what made a working unlock look broken. Every vaulted
+    // portfolio in the roster carries the same failure, because the failure
+    // is the roster's.
+    if (!superseded()) publish(entry, rosterWideFailure(portfolios, cause));
   } finally {
     if (entry.loadSeq === seq) {
       entry.resolving = false;
       consumeVaultOpenEdges(entry, accountId, portfolios);
     }
   }
+}
+
+function rosterWideFailure(
+  portfolios: readonly PortfolioSummary[],
+  cause: unknown,
+): VaultedPortfolioStores {
+  const failures = new Map<string, VaultedPortfolioFailure>();
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const code =
+    typeof cause === 'object' &&
+    cause !== null &&
+    'code' in cause &&
+    typeof (cause as { code: unknown }).code === 'string'
+      ? (cause as { code: string }).code
+      : 'VAULT_RESOLUTION_FAILED';
+  for (const portfolio of portfolios) {
+    if (!isVaultedPortfolio(portfolio)) continue;
+    failures.set(portfolio.id, { vaultId: portfolio.vaultId, code, message });
+  }
+  return { unlocked: new Map(), failures };
 }
 
 /** Does any portfolio in this roster live in that vault? */

@@ -94,23 +94,27 @@ describe('endpoint session runtime', () => {
     expect(keystore.resumeSessionFromOpenTabs).toHaveBeenCalledTimes(2);
   });
 
-  it('stops retrying as soon as one attempt resumes nothing', async () => {
+  it('asks again exactly once per session end, and never between ends', async () => {
     bindEndpointKeystoreAccount(ACCOUNT_A);
     keystore.resumeSessionFromOpenTabs.mockResolvedValue({ unlockedVaultIds: [VAULT_1] });
     await resumeEndpointSessionOnce();
 
-    // A real lock: `lockDevice` has already written the §12 marker before the
-    // session end this listener sees, so the one retry it earns finds a locked
-    // device — and disarms.
+    // Since §12's 2026-09-03 amendment a session can also come back from the
+    // device's persisted record, so EVERY session end — a real lock included —
+    // earns one re-attempt. A real lock has already written the §12 marker, so
+    // that attempt finds a locked device and resumes nothing; what must never
+    // happen is a second attempt without a new end in between (a poll).
     keystore.resumeSessionFromOpenTabs.mockResolvedValue({ unlockedVaultIds: [] });
     keystore.endSession();
     await resumeEndpointSessionOnce();
-    keystore.endSession();
     await resumeEndpointSessionOnce();
-    keystore.endSession();
     await resumeEndpointSessionOnce();
-
     expect(keystore.resumeSessionFromOpenTabs).toHaveBeenCalledTimes(2);
+
+    keystore.endSession();
+    await resumeEndpointSessionOnce();
+    await resumeEndpointSessionOnce();
+    expect(keystore.resumeSessionFromOpenTabs).toHaveBeenCalledTimes(3);
   });
 
   it('rebinds the keystore and forgets the memo when the account changes', async () => {

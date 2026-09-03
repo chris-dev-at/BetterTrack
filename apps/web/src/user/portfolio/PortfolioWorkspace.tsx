@@ -49,7 +49,7 @@ export function PortfolioWorkspace() {
     [portfolios.data, searchParams],
   );
   const roster = useMemo(() => portfolios.data?.portfolios ?? [], [portfolios.data]);
-  const { unlocked } = useVaultedPortfolioStores(roster);
+  const { unlocked, failures } = useVaultedPortfolioStores(roster);
   // Membership alone no longer decides the fork (#1416). A vaulted portfolio is
   // LOCKED unless this device holds a live resolution for it — the currency
   // check is synchronous and re-asked on every render, so the moment the vault
@@ -107,7 +107,7 @@ export function PortfolioWorkspace() {
             </Button>
           </div>
         ) : locked ? (
-          <LockedPortfolioStub portfolio={active} />
+          <LockedPortfolioStub failure={failures.get(active.id) ?? null} portfolio={active} />
         ) : opened && isVaultedPortfolio(active) ? (
           <UnlockedVaultPortfolio access={opened} portfolio={active}>
             {onOverview ? <Outlet /> : null}

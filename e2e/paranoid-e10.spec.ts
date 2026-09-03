@@ -34,7 +34,7 @@ import {
   listDriveConnectionsApi,
   listVaultsApi,
   driveOwnerDigestInBrowser,
-  lockVaultsByReload,
+  lockVaults,
   openPrivacyPanel,
   openVaultAction,
   openTransferReceiver,
@@ -283,8 +283,8 @@ test.describe('PARANOID E10 per-vault gate', () => {
         ).toBeVisible();
       });
 
-      await test.step('LOCK: a fresh document ends the in-memory endpoint session', async () => {
-        await lockVaultsByReload(page);
+      await test.step('LOCK: the account menu’s "Lock vault" ends the device session', async () => {
+        await lockVaults(page);
         await expectVaultState(page, name, 'Locked on this device');
         await expect(
           vaultRow(page, name).getByRole('link', { name: 'Unlock', exact: true }),
@@ -364,7 +364,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         devicePassword: DEVICE_PASSWORD,
       });
       sensitive.push({ name: 'e10-mnemonic', value: created.mnemonic });
-      await lockVaultsByReload(page);
+      await lockVaults(page);
       await expectVaultState(page, name, 'Locked on this device');
 
       await test.step('POSITIVE CONTROL: the correct password opens it right now', async () => {
@@ -377,7 +377,7 @@ test.describe('PARANOID E10 per-vault gate', () => {
         await expect(section).toBeHidden({ timeout: 60_000 });
         await expectVaultState(page, name, 'Ready on this device');
         // Re-lock, so the ladder below starts from the same state it did before.
-        await lockVaultsByReload(page);
+        await lockVaults(page);
         await expectVaultState(page, name, 'Locked on this device');
       });
 
@@ -971,10 +971,13 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
 
       await test.step('a locked target vault is stated as a blocking step and stays blocked', async () => {
-        // The full-page navigation IS the lock: E3 keeps the unwrapped device
-        // key only in memory, so the settings page opens with the freshly
-        // created vault locked on this endpoint — a genuinely-unready state
-        // even though the E6 capture engine resolves (#1525).
+        // The ceremony leaves the vault open and (§12 as amended 2026-09-03)
+        // the session survives navigation, so the locked precondition this step
+        // is about has to be produced by the product's own lock gesture.
+        await lockVaults(page);
+        // The settings page now opens with the freshly created vault locked on
+        // this endpoint — a genuinely-unready state even though the E6 capture
+        // engine resolves (#1525).
         await page.goto(`/portfolio/settings?portfolio=${encodeURIComponent(portfolioId)}`);
         await page.getByRole('button', { name: 'Move into vault', exact: true }).click();
         const wizard = page.getByRole('region', { name: 'Move portfolio into a vault' });
@@ -1119,11 +1122,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       };
 
       await test.step('MOVE-IN through the wizard on an unlocked endpoint', async () => {
-        // Unlock FIRST through the real access surface. The endpoint session
-        // lives only in page memory, so every navigation from here to the
-        // commit must be an SPA transition — a page load would relock it.
-        const access = await attemptUnlock(page, created.vaultId, DEVICE_PASSWORD);
-        await expect(access).toBeHidden({ timeout: 60_000 });
+        // The ceremony's device password IS this device's session, and since
+        // §12's 2026-09-03 amendment it survives every navigation below — so
+        // the endpoint is already open here, and the arc proves that rather
+        // than re-entering the password it never lost.
+        await openPrivacyPanel(page);
         await expectVaultState(page, name, 'Ready on this device');
 
         // Leave the Control Center popup the product's own way (SPA), then
@@ -1163,7 +1166,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
       });
 
       await test.step('LOCK, and the stub refuses move-out from a locked endpoint', async () => {
-        // The full-page navigation IS the lock (E3 memory-only session).
+        // The product's own lock gesture; a navigation no longer ends a session
+        // (§12 as amended 2026-09-03).
+        await lockVaults(page);
         await page.goto(`/portfolio?portfolio=${encodeURIComponent(portfolioId)}`);
         const stub = page.getByTestId('locked-portfolio-stub');
         await expect(stub).toBeVisible({ timeout: 30_000 });
@@ -1764,20 +1769,25 @@ test.describe('PARANOID E10 per-vault gate', () => {
       await test.step('the received phrase is real custody, not a one-shot open', async () => {
         // The state must have moved off "Words needed on this device" for good.
         // A fresh document is asserted deliberately: the transfer wrote a
-        // WRAPPED endpoint entry, so after a reload this device must present
-        // the same locked-but-known vault a locally created one does — the
-        // phrase is stored here now, and only the device password is missing.
+        // WRAPPED endpoint entry AND (§12 as amended 2026-09-03) the device
+        // session it established, so after a reload this device presents the
+        // vault as READY — the phrase is stored here now and the session
+        // survived the reload — never as "Words needed" again.
         await openPrivacyPanel(receiverPage);
-        await expectVaultState(receiverPage, name, 'Locked on this device');
-        await expect(
-          vaultRow(receiverPage, name).getByRole('link', { name: 'Unlock', exact: true }),
-        ).toBeVisible({ timeout: 30_000 });
+        await expectVaultState(receiverPage, name, 'Ready on this device');
         await expect(
           vaultRow(receiverPage, name).getByRole('link', { name: 'Enter words', exact: true }),
           'the second device must no longer be asking for the words',
         ).toHaveCount(0);
 
-        // And the transferred phrase really opens it here.
+        // Locked on purpose, the stored phrase is the locked-but-known vault a
+        // locally created one is — only the device password is missing — and
+        // the transferred phrase really opens it here.
+        await lockVaults(receiverPage);
+        await expectVaultState(receiverPage, name, 'Locked on this device');
+        await expect(
+          vaultRow(receiverPage, name).getByRole('link', { name: 'Unlock', exact: true }),
+        ).toBeVisible({ timeout: 30_000 });
         const section = await attemptUnlock(receiverPage, created.vaultId, DEVICE_PASSWORD);
         await expect(section).toBeHidden({ timeout: 60_000 });
         await expectVaultState(receiverPage, name, 'Ready on this device');
@@ -1786,8 +1796,11 @@ test.describe('PARANOID E10 per-vault gate', () => {
       await test.step('the handoff is endpoint-local: the first device is unchanged', async () => {
         expect(await listVaultsApi(owner!)).toHaveLength(1);
         await openPrivacyPanel(owner!.page);
-        // The first device reloads into the same locked-but-known state; the
-        // transfer neither revoked nor duplicated its custody.
+        // The first device still holds its own session (the transfer neither
+        // revoked nor duplicated its custody); locked on purpose, its own
+        // password still opens it.
+        await expectVaultState(owner!.page, name, 'Ready on this device');
+        await lockVaults(owner!.page);
         await expectVaultState(owner!.page, name, 'Locked on this device');
         const section = await attemptUnlock(owner!.page, created.vaultId, DEVICE_PASSWORD);
         await expect(section).toBeHidden({ timeout: 60_000 });

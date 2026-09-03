@@ -19,15 +19,27 @@ import {
 import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 import { useVaultRuntime } from '../VaultRuntimeContext';
 import { vaultStateTone } from '../vaultStateAffordance';
+import type { EndpointVaultLock } from './useEndpointVaultLock';
 import { VaultStateAction } from './VaultStateAction';
 
 type VaultSyncChipProps =
-  | { media: ParanoidVaultMediaState; vaults?: never }
-  | { media?: never; vaults: readonly VaultDirectorySyncInput[] };
+  | { media: ParanoidVaultMediaState; vaults?: never; lock?: never; portfolioCounts?: never }
+  | {
+      media?: never;
+      vaults: readonly VaultDirectorySyncInput[];
+      /** §12's explicit "Lock vaults", offered from the chip's own popover. */
+      lock?: EndpointVaultLock | undefined;
+      /** Portfolios per vault id, from the roster the shell already reads; absent ⇒ not shown. */
+      portfolioCounts?: ReadonlyMap<string, number> | undefined;
+    };
 
 export function VaultSyncChip(props: VaultSyncChipProps) {
   return props.vaults !== undefined ? (
-    <DirectoryVaultSyncChip vaults={props.vaults} />
+    <DirectoryVaultSyncChip
+      lock={props.lock}
+      portfolioCounts={props.portfolioCounts}
+      vaults={props.vaults}
+    />
   ) : (
     <LegacyVaultSyncChip media={props.media} />
   );
@@ -235,12 +247,33 @@ function aggregateSyncLabel(
   return t(projection.messageKey);
 }
 
-function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyncInput[] }) {
+/**
+ * The chip is where the owner looks for "all synced" — so its popover is the
+ * one-glance vault manager: every vault, how many portfolios it holds, how it
+ * is stored and synced, its state on this device with the state's action IN
+ * PLACE, and the device-wide lock. The Control Center page remains for the
+ * settings-sized acts (create, rename, storage, reset, start fresh).
+ */
+function DirectoryVaultSyncChip({
+  vaults,
+  lock,
+  portfolioCounts,
+}: {
+  vaults: readonly VaultDirectorySyncInput[];
+  lock?: EndpointVaultLock | undefined;
+  portfolioCounts?: ReadonlyMap<string, number> | undefined;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const projection = useMemo(() => projectVaultMediaSyncStatus({ vaults }), [vaults]);
   const label = aggregateSyncLabel(t, projection);
+  const portfolioCountLabel = (vaultId: string): string | null => {
+    if (portfolioCounts === undefined) return null;
+    const count = portfolioCounts.get(vaultId) ?? 0;
+    if (count === 0) return t('vault.sync.portfoliosNone');
+    return count === 1 ? t('vault.sync.portfoliosOne') : t('vault.sync.portfolios', { count });
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -313,6 +346,9 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
                           ? 'vault.manager.media.both'
                           : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
                       )}
+                      {portfolioCountLabel(row.vault.id) ? (
+                        <> · {portfolioCountLabel(row.vault.id)}</>
+                      ) : null}
                     </span>
                     <dl className="bt-kv">
                       {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
@@ -366,15 +402,32 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
                 </li>
               ))}
             </ul>
-            <div className="bt-t-rule pt-3">
+            <div className="bt-t-rule flex flex-wrap items-center justify-between gap-2 pt-3">
               <LinkButton
                 onClick={() => setOpen(false)}
                 size="sm"
                 to="/control/privacy"
                 variant="quiet"
               >
-                {t('vault.sync.restore')}
+                {t('vault.sync.manage')}
               </LinkButton>
+              {/* The device-wide lock, where the state is read. `canLock` is
+                  false while nothing is unlocked, and a control that could
+                  only refuse is not offered (§12). */}
+              {lock?.canLock ? (
+                <Button
+                  icon="lock"
+                  onClick={() => {
+                    lock.lock();
+                    setOpen(false);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="quiet"
+                >
+                  {t('vault.sync.lockAll')}
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
