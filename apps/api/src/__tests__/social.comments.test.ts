@@ -2,8 +2,12 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { and, eq, sql } from 'drizzle-orm';
+
 import {
+  COMMENT_PAGE_SIZE,
   commentThreadResponseSchema,
+  commentThreadSummaryResponseSchema,
   itemCommentSchema,
   reactionListResponseSchema,
 } from '@bettertrack/contracts';
@@ -87,8 +91,13 @@ function putAudience(
     .send({ confirmWiden: true, ...body });
 }
 
-function getThread(agent: Agent, subjectId: string): Promise<request.Response> {
-  return agent.get(`/api/v1/social/items/portfolio/${subjectId}/thread`);
+function getThread(agent: Agent, subjectId: string, cursor?: string): Promise<request.Response> {
+  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+  return agent.get(`/api/v1/social/items/portfolio/${subjectId}/thread${query}`);
+}
+
+function getThreadSummary(agent: Agent, subjectId: string): Promise<request.Response> {
+  return agent.get(`/api/v1/social/items/portfolio/${subjectId}/thread/summary`);
 }
 
 function postComment(agent: Agent, subjectId: string, body: string): Promise<request.Response> {
@@ -293,6 +302,240 @@ describe('reactions (§13.5 V5-P8)', () => {
     const thread = commentThreadResponseSchema.parse((await getThread(bobAgent, pid)).body);
     // bob (a different viewer) sees the count but `reacted: false`.
     expect(thread.comments[0]!.reactions).toEqual([{ emoji: '👍', count: 1, reacted: false }]);
+  });
+});
+
+describe('the thread is served in bounded pages (§13.5 V5-P8)', () => {
+  /** Seed `n` live comments straight into SQL, one second apart, oldest first. */
+  async function seedComments(pid: string, authorId: string, n: number): Promise<void> {
+    const base = Date.parse('2026-07-01T00:00:00.000Z');
+    await harness.db.insert(schema.itemComments).values(
+      Array.from({ length: n }, (_unused, index) => ({
+        kind: 'portfolio' as const,
+        subjectId: pid,
+        authorId,
+        body: `comment ${index}`,
+        createdAt: new Date(base + index * 1000),
+      })),
+    );
+  }
+
+  it('returns the newest page + a cursor, and the cursor reaches the tail in stable order', async () => {
+    const { alice, aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const total = COMMENT_PAGE_SIZE + 5;
+    await seedComments(pid, alice.id, total);
+
+    const first = commentThreadResponseSchema.parse((await getThread(bobAgent, pid)).body);
+    // The whole thread is never served: one page, plus the true total count.
+    expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
+    expect(first.commentCount).toBe(total);
+    expect(first.nextCursor).not.toBeNull();
+    // Newest page, oldest-first inside the page.
+    expect(first.comments[0]!.body).toBe(`comment ${total - COMMENT_PAGE_SIZE}`);
+    expect(first.comments.at(-1)!.body).toBe(`comment ${total - 1}`);
+
+    const older = commentThreadResponseSchema.parse(
+      (await getThread(bobAgent, pid, first.nextCursor!)).body,
+    );
+    // The tail is reachable and the walk terminates — no overlap, no gap.
+    expect(older.comments).toHaveLength(5);
+    expect(older.nextCursor).toBeNull();
+    expect(older.comments.map((c) => c.body)).toEqual([
+      'comment 0',
+      'comment 1',
+      'comment 2',
+      'comment 3',
+      'comment 4',
+    ]);
+
+    const walked = [...older.comments, ...first.comments].map((c) => c.body);
+    expect(new Set(walked).size).toBe(total);
+  });
+
+  it('does not skip a comment that shares a millisecond with the page boundary', async () => {
+    const { alice, aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const total = COMMENT_PAGE_SIZE + 1;
+    await seedComments(pid, alice.id, total);
+    // `created_at` is filled by the DB at MICROsecond precision. Push the two
+    // oldest rows into the same millisecond with different microseconds:
+    // `comment 0` then sits strictly between the millisecond `comment 1`
+    // truncates to and `comment 1`'s real key. A cursor carrying a truncated
+    // timestamp would filter `comment 0` out of every later page forever.
+    await harness.db.execute(
+      sql`update item_comments set created_at = '2026-07-01T00:00:00.123400Z'::timestamptz
+          where subject_id = ${pid} and body = 'comment 0'`,
+    );
+    await harness.db.execute(
+      sql`update item_comments set created_at = '2026-07-01T00:00:00.123900Z'::timestamptz
+          where subject_id = ${pid} and body = 'comment 1'`,
+    );
+
+    // Guard the fixture itself: if the store ever rounded to milliseconds, this
+    // test would silently stop covering the regression it exists for.
+    const [stored] = await harness.db
+      .select({ ts: sql<string>`${schema.itemComments.createdAt}::text` })
+      .from(schema.itemComments)
+      .where(
+        and(eq(schema.itemComments.subjectId, pid), eq(schema.itemComments.body, 'comment 0')),
+      );
+    expect(stored!.ts).toContain('.1234');
+
+    const first = commentThreadResponseSchema.parse((await getThread(bobAgent, pid)).body);
+    expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
+    expect(first.commentCount).toBe(total);
+    // The boundary row is the sub-millisecond one, and the cursor names it by id.
+    expect(first.comments[0]!.body).toBe('comment 1');
+    expect(first.nextCursor).toBe(first.comments[0]!.id);
+
+    const older = commentThreadResponseSchema.parse(
+      (await getThread(bobAgent, pid, first.nextCursor!)).body,
+    );
+    // The row inside the boundary's millisecond is still reachable.
+    expect(older.comments.map((c) => c.body)).toEqual(['comment 0']);
+    expect(older.nextCursor).toBeNull();
+  });
+
+  it('serves an empty page for a cursor that names no comment of this thread', async () => {
+    const { alice, aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    await seedComments(pid, alice.id, 3);
+
+    const stranger = '00000000-0000-4000-8000-000000000abc';
+    const page = commentThreadResponseSchema.parse((await getThread(bobAgent, pid, stranger)).body);
+    // Fail-closed: an unresolvable boundary yields nothing, never the whole thread.
+    expect(page.comments).toEqual([]);
+    expect(page.nextCursor).toBeNull();
+    expect(page.commentCount).toBe(3);
+  });
+
+  it('rejects a malformed cursor at the edge (400)', async () => {
+    const { aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    expect((await getThread(bobAgent, pid, 'not-a-cursor')).status).toBe(400);
+  });
+
+  it('serves the collapsed count + item reactions without any body, under the same audience rule', async () => {
+    const { alice, aliceAgent, bobAgent, carolAgent, carol, pid } = await scenario();
+    await aliceAgent
+      .delete(`/api/v1/social/friends/${carol.id}`)
+      .set(...XRW)
+      .send();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    await seedComments(pid, alice.id, 3);
+    await reactItem(aliceAgent, pid, '🔥');
+
+    const summary = commentThreadSummaryResponseSchema.parse(
+      (await getThreadSummary(bobAgent, pid)).body,
+    );
+    expect(summary.commentCount).toBe(3);
+    expect(summary.reactions).toEqual([{ emoji: '🔥', count: 1, reacted: false }]);
+
+    // The excluded viewer gets the same uniform 404 the thread itself gives.
+    expect((await getThreadSummary(carolAgent, pid)).status).toBe(404);
+  });
+});
+
+describe('subject teardown purges the conversation (§13.5 V5-P8)', () => {
+  async function commentRowsFor(kind: 'portfolio' | 'watchlist', subjectId: string) {
+    return harness.db
+      .select()
+      .from(schema.itemComments)
+      .where(and(eq(schema.itemComments.kind, kind), eq(schema.itemComments.subjectId, subjectId)));
+  }
+
+  it('deleting a shared portfolio removes its comments and both kinds of reaction', async () => {
+    const { aliceAgent, bobAgent } = await scenario();
+    // A second portfolio, so the delete is not the account's last one.
+    const created = await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Side pot' });
+    expect(created.status).toBe(201);
+    const sidePid = created.body.portfolio.id as string;
+    await putAudience(aliceAgent, sidePid, { audience: 'all_friends' });
+
+    const posted = await postComment(bobAgent, sidePid, 'my broker is X, account 1234');
+    expect(posted.status).toBe(201);
+    const commentId = posted.body.id as string;
+    expect((await reactItem(bobAgent, sidePid, '🔥')).status).toBe(200);
+    expect(
+      (
+        await aliceAgent
+          .post(`/api/v1/social/comments/${commentId}/reactions`)
+          .set(...XRW)
+          .send({ emoji: '👍' })
+      ).status,
+    ).toBe(200);
+
+    expect((await aliceAgent.delete(`/api/v1/portfolios/${sidePid}`).set(...XRW)).status).toBe(204);
+
+    expect(await commentRowsFor('portfolio', sidePid)).toHaveLength(0);
+    const reactions = await harness.db.select().from(schema.itemReactions);
+    expect(reactions).toHaveLength(0);
+  });
+
+  it('does the same for a watchlist (the hook is universal, not portfolio-only)', async () => {
+    const { aliceAgent, bobAgent } = await scenario();
+    const created = await aliceAgent
+      .post('/api/v1/workboard/watchlists')
+      .set(...XRW)
+      .send({ name: 'Ideas' });
+    expect(created.status).toBe(201);
+    const watchlistId = created.body.id as string;
+    const shared = await aliceAgent
+      .put(`/api/v1/social/audience/watchlist/${watchlistId}`)
+      .set(...XRW)
+      .send({ audience: 'all_friends', confirmWiden: true });
+    expect(shared.status).toBe(200);
+
+    const posted = await bobAgent
+      .post(`/api/v1/social/items/watchlist/${watchlistId}/comments`)
+      .set(...XRW)
+      .send({ body: 'watching this too' });
+    expect(posted.status).toBe(201);
+    expect(
+      (
+        await bobAgent
+          .post(`/api/v1/social/items/watchlist/${watchlistId}/reactions`)
+          .set(...XRW)
+          .send({ emoji: '👍' })
+      ).status,
+    ).toBe(200);
+
+    expect(
+      (await aliceAgent.delete(`/api/v1/workboard/watchlists/${watchlistId}`).set(...XRW)).status,
+    ).toBe(204);
+
+    expect(await commentRowsFor('watchlist', watchlistId)).toHaveLength(0);
+    expect(await harness.db.select().from(schema.itemReactions)).toHaveLength(0);
+  });
+
+  it('lets the author delete a comment orphaned before the purge existed', async () => {
+    const { bob, bobAgent } = await scenario();
+    // The pre-purge state: a comment whose subject no longer resolves an owner.
+    const [orphan] = await harness.db
+      .insert(schema.itemComments)
+      .values({
+        kind: 'portfolio',
+        subjectId: '00000000-0000-0000-7000-0000000000ff',
+        authorId: bob.id,
+        body: 'my broker is X, account 1234',
+      })
+      .returning();
+
+    const removed = await bobAgent
+      .delete(`/api/v1/social/comments/${orphan!.id}`)
+      .set(...XRW)
+      .send();
+    expect(removed.status).toBe(204);
+
+    const [row] = await harness.db
+      .select()
+      .from(schema.itemComments)
+      .where(eq(schema.itemComments.id, orphan!.id));
+    expect(row!.deletedAt).not.toBeNull();
   });
 });
 

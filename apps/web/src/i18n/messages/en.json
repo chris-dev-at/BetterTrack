@@ -3151,7 +3151,7 @@
     "friendsNoMatch": "No friends match “{{query}}”.",
     "share": "Share…",
     "groupsNone": "You have no groups yet. Create one on the Friends page to share with a circle.",
-    "groupMemberCount": "{{count}} members",
+    "groupMemberCount": { "one": "{{count}} member", "other": "{{count}} members" },
     "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
   },
   "watchlists": {
@@ -3460,7 +3460,7 @@
       "cloneError": "Couldn't clone this idea."
     },
     "comments": {
-      "count": "{{count}} comments",
+      "count": { "one": "{{count}} comment", "other": "{{count}} comments" },
       "empty": "No comments yet.",
       "loadError": "Couldn't load the comments. Please try again.",
       "placeholder": "Add a comment…",
@@ -3468,6 +3468,9 @@
       "posting": "Posting…",
       "delete": "Delete",
       "postError": "Couldn’t post your comment.",
+      "deleteError": "Couldn’t delete that comment.",
+      "reactionError": "Couldn’t save your reaction.",
+      "loadOlder": "Load older comments",
       "itemReactionsLabel": "React to this item",
       "commentReactionsLabel": "React to this comment"
     },
@@ -3482,7 +3485,7 @@
       "loadError": "Could not load your groups. Please try again.",
       "emptyTitle": "No groups yet",
       "emptyDescription": "Create a group to share with a specific circle of friends.",
-      "memberCount": "{{count}} members",
+      "memberCount": { "one": "{{count}} member", "other": "{{count}} members" },
       "nameLabel": "Group name",
       "renameAction": "Rename",
       "membersHeading": "Members",

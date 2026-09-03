@@ -133,7 +133,9 @@ function GroupCard({ group }: { group: FriendGroup }) {
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="bt-row-title truncate">{group.name}</span>
           <span className="bt-row-sub truncate">
-            {t('social.groups.memberCount', { count: group.memberCount })}
+            {t(`social.groups.memberCount.${group.memberCount === 1 ? 'one' : 'other'}`, {
+              count: group.memberCount,
+            })}
           </span>
         </span>
         <Icon

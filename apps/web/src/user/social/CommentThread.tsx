@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   COMMENT_BODY_MAX,
@@ -13,6 +13,7 @@ import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import {
   deleteComment,
   getCommentThread,
+  getCommentThreadSummary,
   postComment,
   toggleCommentReaction,
   toggleItemReaction,
@@ -29,7 +30,12 @@ import { Alert } from '../components/ui';
  * + the compact reaction chips until the viewer expands it; the thread and
  * composer only render on expand. Read/write is authorized server-side by the
  * item's audience — an unauthorized viewer never sees the page, so if this
- * mounts the viewer may participate. TanStack Query poll-refetches (no realtime).
+ * mounts the viewer may participate.
+ *
+ * A collapsed section reads ONLY the cheap summary (count + item reactions) and
+ * does not poll: a thread of any length costs nothing until it is opened. On
+ * expand the newest page loads and the 30 s poll starts; "load older" walks
+ * backwards one page at a time. TanStack Query poll-refetches (no realtime).
  */
 
 const THREAD_POLL_MS = 30_000;
@@ -88,12 +94,29 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
 
+  // Both queries hang off the same prefix, so one invalidation refreshes the
+  // collapsed head and every loaded page together.
   const threadKey = ['social', 'thread', kind, subjectId] as const;
-  const { data, error, isLoading, isError, refetch } = useQuery({
-    queryKey: threadKey,
-    queryFn: ({ signal }) => getCommentThread(kind, subjectId, signal),
-    // Poll refetch is the only freshness mechanism (no realtime for comments).
-    refetchInterval: THREAD_POLL_MS,
+  const {
+    data: summary,
+    error,
+    isLoading,
+    isError,
+    refetch,
+  } = useQuery({
+    queryKey: [...threadKey, 'summary'],
+    queryFn: ({ signal }) => getCommentThreadSummary(kind, subjectId, signal),
+    retry: false,
+  });
+
+  const thread = useInfiniteQuery({
+    queryKey: [...threadKey, 'pages'],
+    queryFn: ({ pageParam, signal }) => getCommentThread(kind, subjectId, pageParam, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    // Nothing is fetched — and nothing polls — while the section is collapsed.
+    enabled: expanded,
+    refetchInterval: expanded ? THREAD_POLL_MS : false,
     retry: false,
   });
 
@@ -139,8 +162,14 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
     );
   }
 
-  const count = data?.commentCount ?? 0;
+  // Page 0 is the newest window and carries the authoritative live count, so an
+  // expanded thread keeps its header honest off the poll it already runs; the
+  // collapsed head falls back to the cheap summary (which never polls).
+  const count = thread.data?.pages[0]?.commentCount ?? summary?.commentCount ?? 0;
   const trimmed = draft.trim();
+  // Pages arrive newest-first (page 0 is the newest window); render oldest-first.
+  const comments = [...(thread.data?.pages ?? [])].reverse().flatMap((page) => page.comments);
+  const reactionError = itemReactionMutation.isError || commentReactionMutation.isError;
 
   return (
     <section
@@ -156,14 +185,16 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
           variant="quiet"
         >
           <span aria-hidden="true">💬</span>
-          {isLoading ? t('common.loading') : t('social.comments.count', { count })}
+          {isLoading
+            ? t('common.loading')
+            : t(`social.comments.count.${count === 1 ? 'one' : 'other'}`, { count })}
           <span aria-hidden="true" className="bt-muted">
             {expanded ? '▲' : '▼'}
           </span>
         </Button>
-        {data ? (
+        {summary ? (
           <ReactionChips
-            reactions={data.reactions}
+            reactions={summary.reactions}
             onToggle={(emoji) => itemReactionMutation.mutate(emoji)}
             pending={itemReactionMutation.isPending}
             ariaLabel={t('social.comments.itemReactionsLabel')}
@@ -171,15 +202,43 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
         ) : null}
       </div>
 
+      {/* A failed toggle must not look like a toggle that simply did nothing. */}
+      {reactionError ? (
+        <span className="bt-neg" style={{ fontSize: 12 }}>
+          {t('social.comments.reactionError')}
+        </span>
+      ) : null}
+
       {expanded ? (
         <div className="flex flex-col gap-4">
-          {isLoading ? (
+          {deleteMutation.isError ? (
+            <span className="bt-neg" style={{ fontSize: 12 }}>
+              {t('social.comments.deleteError')}
+            </span>
+          ) : null}
+          {thread.isLoading ? (
             <p className="bt-meta">{t('common.loading')}</p>
-          ) : count === 0 ? (
+          ) : thread.isError ? (
+            <p className="bt-neg">{t('social.comments.loadError')}</p>
+          ) : comments.length === 0 ? (
             <p className="bt-meta">{t('social.comments.empty')}</p>
           ) : (
             <ul className="bt-band flex flex-col">
-              {data?.comments.map((comment) => (
+              {thread.hasNextPage ? (
+                <li className="py-2">
+                  <Button
+                    disabled={thread.isFetchingNextPage}
+                    onClick={() => void thread.fetchNextPage()}
+                    size="sm"
+                    variant="quiet"
+                  >
+                    {thread.isFetchingNextPage
+                      ? t('common.loading')
+                      : t('social.comments.loadOlder')}
+                  </Button>
+                </li>
+              ) : null}
+              {comments.map((comment) => (
                 <li key={comment.id} className="bt-comment-row flex gap-3 py-3">
                   <Avatar
                     name={comment.author.username}
