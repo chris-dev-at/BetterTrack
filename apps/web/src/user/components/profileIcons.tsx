@@ -4,7 +4,7 @@ import type { ProfileIconId } from '@bettertrack/contracts';
 import { PROFILE_ICON_IDS } from '@bettertrack/contracts';
 
 /**
- * The curated profile-icon set (§13.5 V5-P0c) — one bundled SVG per id from
+ * The curated profile-icon set (§13.5 V5-P0 (c)) — one bundled SVG per id from
  * {@link PROFILE_ICON_IDS}. Old-Xbox-style avatars: bold shapes, two-tone
  * palette per icon, no fine detail. Rendered inline (no `<img>` fetch) so the
  * picker + every render site paints in the same paint as the surface, and no

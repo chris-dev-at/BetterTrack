@@ -7,7 +7,7 @@ import { Avatar } from './Avatar';
 import { defaultProfileIconIdFor } from './profileIcons';
 
 /**
- * V5-P0c — the curated profile-icon Avatar. Two contract-level invariants
+ * V5-P0 (c) — the curated profile-icon Avatar. Two contract-level invariants
  * matter more than any pixel: (1) a user who never picked an icon still shows
  * an avatar, deterministic from their name so it never flickers between reloads;
  * (2) an unknown / stale id from an older client falls back to that same
@@ -20,7 +20,7 @@ function firstSvgPathData(container: HTMLElement): string {
   return svg.innerHTML;
 }
 
-describe('Avatar (§13.5 V5-P0c)', () => {
+describe('Avatar (§13.5 V5-P0 (c))', () => {
   test('renders the picked curated icon when `iconId` is set', () => {
     const { container } = render(<Avatar name="alice" iconId="fox" />);
     const { container: expected } = render(<Avatar name="different" iconId="fox" />);

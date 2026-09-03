@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { decryptSecret, encryptSecret } from '../../services/crypto/secretBox';
-import { loadConfig } from '../env';
+import { loadConfig, UNSAFE_GRAFANA_PASSWORDS } from '../env';
 
 /**
  * Topology & derived-origin coverage (PROJECTPLAN.md §4.6, §10, §11). Proves the
@@ -352,6 +352,29 @@ describe('observability grafana public URL (#632)', () => {
 
   it('a non-empty but invalid URL still fails loudly', () => {
     expect(() => config({ BT_GRAFANA_PUBLIC_URL: 'not-a-url' })).toThrow();
+  });
+});
+
+describe('grafana admin-password gate (#1698)', () => {
+  // The same literals the compose credential bootstrap refuses to seed into
+  // Grafana: neither door — the LAN bind nor the external proxy — may ever
+  // answer to one of them.
+  it('exports the unsafe literals the compose bootstrap mirrors', () => {
+    expect([...UNSAFE_GRAFANA_PASSWORDS].sort()).toEqual(['admin', 'change_me_before_first_boot']);
+  });
+
+  it.each([undefined, '', '   ', 'admin', 'ADMIN', '  Admin  ', 'CHANGE_ME_BEFORE_FIRST_BOOT'])(
+    'treats %p as unset, so external exposure stays refused',
+    (password) => {
+      const c = config(password === undefined ? {} : { BT_GRAFANA_ADMIN_PASSWORD: password });
+      expect(c.observability.grafanaPasswordSet).toBe(false);
+    },
+  );
+
+  it('counts a real password as set, and never retains it on the resolved config', () => {
+    const c = config({ BT_GRAFANA_ADMIN_PASSWORD: 'grafana-strong-secret-9' });
+    expect(c.observability.grafanaPasswordSet).toBe(true);
+    expect(JSON.stringify(c)).not.toContain('grafana-strong-secret-9');
   });
 });
 

@@ -115,9 +115,14 @@ makes a dev-box session cookie replayable against production, and a shared
 
 ```bash
 openssl rand -hex 64        # SESSION_SECRET, BT_DATA_ENCRYPTION_KEY
-openssl rand -base64 24     # POSTGRES_PASSWORD, ADMIN_PASSWORD, BT_GRAFANA_ADMIN_PASSWORD
+openssl rand -base64 24     # POSTGRES_PASSWORD, ADMIN_PASSWORD
 openssl rand -hex 32        # the edge secret, if you enable the gate
 ```
+
+`BT_GRAFANA_ADMIN_PASSWORD` is the exception: leave the placeholder alone unless
+you want external Grafana access on the dev box. The grafana service refuses the
+placeholder and generates its own random admin password into
+`/var/lib/grafana/.bettertrack-admin-password` (see `docs/monitoring.md`).
 
 `infra/.env.devbox` is git-ignored. Never commit a filled-in copy.
 

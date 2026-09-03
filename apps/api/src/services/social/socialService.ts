@@ -80,7 +80,7 @@ export interface SocialServiceDeps {
   itemFollows: ItemFollowsRepository;
   /** Public-profile settings + per-viewer activity-alert preferences (V3-P6). */
   profile: ProfileRepository;
-  /** User row writes — only used here for the profile-icon picker (§13.5 V5-P0c). */
+  /** User row writes — only used here for the profile-icon picker (§13.5 V5-P0 (c)). */
   userRepo: UserRepository;
   /** The single sharing-enforcement layer — consulted by every read path here. */
   audience: AudienceService;
@@ -1207,7 +1207,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           isPublic: input.isPublic,
           bio: bio === undefined ? current.bio : bio,
         });
-        // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
+        // Profile-icon picker (§13.5 V5-P0 (c)). `undefined` = untouched; `null` clears
         // the choice; a valid id from the finite allow-list persists. The service
         // re-validates the id against {@link profileIconIdSchema} — the request
         // body already did, but defense-in-depth keeps a hand-crafted call honest.

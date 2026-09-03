@@ -299,7 +299,10 @@ const envSchema = z.object({
   // The Grafana admin password. The api reads it ONLY to gate external exposure
   // (never retained on the resolved config, never logged, never sent to a
   // client): exposure is refused while it is unset or left at a known
-  // placeholder, so the app never puts `admin/admin` on a public door.
+  // placeholder, so the app never puts `admin/admin` on a public door. Unset is
+  // a supported steady state — the compose bootstrap then generates Grafana's
+  // local credential itself (docs/monitoring.md) and only external access is
+  // withheld.
   BT_GRAFANA_ADMIN_PASSWORD: z.string().optional(),
   // Optional explicit public Grafana URL for the auth-gated-subdomain path
   // (e.g. https://grafana.bettertrack.at). When set the Diagnostics panel embeds
@@ -518,12 +521,22 @@ function parsePreviousDataEncryptionKeys(value: string | undefined): SecretBoxKe
 }
 
 /**
- * Known-unsafe Grafana admin passwords that must NEVER count as "set" for the
- * external-exposure gate: the image default and the `.env.*.example` placeholder.
- * Treating these as unset keeps `admin/admin` (and an un-edited placeholder) off
- * any public door (owner directive 2026-07-19).
+ * Known-unsafe Grafana admin passwords that must NEVER count as "set": the image
+ * default and the `.env.*.example` placeholder. Treating these as unset keeps
+ * `admin/admin` (and an un-edited placeholder) off any public door (owner
+ * directive 2026-07-19).
+ *
+ * The same list is the invariant the Grafana credential bootstrap in
+ * `infra/docker-compose.yml` enforces on the LOCAL door: an unsafe (or absent)
+ * `BT_GRAFANA_ADMIN_PASSWORD` is not seeded into Grafana at all — a random
+ * password is generated into the grafanadata volume instead — so no interface
+ * Grafana binds to, loopback or LAN, ever answers to one of these. Exported so
+ * `checkProductionCompose` can assert the compose render against it.
  */
-const UNSAFE_GRAFANA_PASSWORDS = new Set(['admin', 'change_me_before_first_boot']);
+export const UNSAFE_GRAFANA_PASSWORDS: ReadonlySet<string> = new Set([
+  'admin',
+  'change_me_before_first_boot',
+]);
 
 function isUsableGrafanaPassword(value: string | undefined): boolean {
   if (value === undefined) return false;
