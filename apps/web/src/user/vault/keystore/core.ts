@@ -383,7 +383,12 @@ export class EndpointVaultKeystore {
     if (this.deviceKey != null) {
       return { unlockedVaultIds: [...this.wrappedEntropy.keys()].sort() };
     }
-    this.sessionResume ??= this.runSessionResume()
+    // Deferred by one microtask so `this.sessionResume` is ASSIGNED before the
+    // resume body runs: a re-entrant caller inside that body (a synchronous
+    // query re-run, see `runSessionResume`) must find the in-flight promise and
+    // share it, never start a second resume.
+    this.sessionResume ??= Promise.resolve()
+      .then(() => this.runSessionResume())
       .catch(() => ({ unlockedVaultIds: [] }) as EndpointUnlockResult)
       .finally(() => {
         this.sessionResume = null;
@@ -417,7 +422,25 @@ export class EndpointVaultKeystore {
     if (accountId == null) return nothing;
     // (1) Fail closed, then arm the guard. Both statements are synchronous.
     if (isEndpointDeviceLocked(accountId)) return nothing;
-    const generation = this.beginSessionChange();
+    // SNAPSHOT the guard; do not mint one, and do not announce a session end.
+    // There is no session to end here (`deviceKey` is null by construction at
+    // entry, see the caller), and both alternatives are hazards:
+    //   • `beginSessionChange()` (the first shape) notified a session end from
+    //     inside a resume. The runtime's listener drops its resume memo, the
+    //     shell invalidates the endpoint-state queries in the same tick,
+    //     TanStack re-runs a query that already has data SYNCHRONOUSLY, its
+    //     queryFn asks for a resume again — and lands back here before
+    //     `sessionResume` was assigned: 300+ nested resumes (review of #1707).
+    //     Its `clearSessionSecrets()` also wiped plain-custody content keys a
+    //     resume has no business touching.
+    //   • Bumping the generation silently cancels a concurrent `unlock()` — the
+    //     user typed the password, a speculative resume raced it, and the
+    //     unlock died with "cancelled".
+    // A snapshot is enough: any lock OR unlock that lands during this resume
+    // bumps the generation itself, and `sessionStillCurrent` below then refuses
+    // to install — the lock keeps the device locked, the unlock keeps its own
+    // session. A resume never has to win a race.
+    const generation = this.sessionGeneration;
 
     // A sibling tab answers first (fast, and it proves the session is live on
     // this device right now); with no sibling — or no channel at all — the
@@ -490,8 +513,20 @@ export class EndpointVaultKeystore {
       for (const [vaultId, bytes] of entropy) this.wrappedEntropy.set(vaultId, bytes);
       entropy.clear();
       // A session granted by a sibling tab is now this device's session too, so
-      // it must survive this tab being the last one left.
-      if (granted != null) this.rememberSession(accountId, deviceKey);
+      // it must survive this tab being the last one left — but only when the
+      // device holds no record yet. Re-persisting on every grant would restart
+      // the clock, and the TTL is ABSOLUTE from the unlock that created the
+      // session (§12); the re-check is one IDB read, off the critical path.
+      if (granted != null) {
+        void this.sessionPersistence
+          .read(accountId, this.now())
+          .then((existing) => {
+            if (existing == null && this.sessionStillCurrent(generation, accountId)) {
+              this.rememberSession(accountId, deviceKey);
+            }
+          })
+          .catch(() => undefined);
+      }
       const unlockedVaultIds = [...this.wrappedEntropy.keys()].sort();
       // The edge #1531/#1533 already built for exactly this question. A resolver
       // that finished against the locked endpoint milliseconds ago has published
@@ -1376,8 +1411,13 @@ export class EndpointVaultKeystore {
           this.deviceKey = configured.deviceKey;
           this.devicePasswordMetadata = configured.metadata;
           this.sessionRevision = initialized.revision;
-          // The ceremony's first password IS this device's first session.
-          if (this.accountId != null) this.rememberSession(this.accountId, configured.deviceKey);
+          // The ceremony's first password IS this device's first session — so
+          // it also clears the §12 marker a previous `reset()`/lock left behind,
+          // exactly as `unlock()` does: the user just proved a password.
+          if (this.accountId != null) {
+            forgetEndpointDeviceLocked(this.accountId);
+            this.rememberSession(this.accountId, configured.deviceKey);
+          }
           return {
             deviceKey: configured.deviceKey,
             revision: initialized.revision,

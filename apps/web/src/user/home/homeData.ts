@@ -85,6 +85,14 @@ export type Rollup = ReadyRollup | UnavailableRollup;
 export type HomePortfolioRead =
   | { state: 'loading' }
   | { state: 'error' }
+  /**
+   * A vaulted member whose vault IS open on this device but whose portfolio
+   * could not be opened (`useVaultedPortfolioStores().failures`). Not a lock —
+   * calling it one would disguise a failure as the user's own choice — and not
+   * a number either: it makes the whole roll-up unavailable, exactly as an
+   * errored plain member does.
+   */
+  | { state: 'unavailable' }
   | {
       state: 'success';
       /** Provenance is part of the value: an old API-cache hit is not an unlocked vault read. */
@@ -165,7 +173,7 @@ export function usePortfolioSummaries(portfolios: readonly PortfolioSummary[]) {
 export function useUnlockedVaultReads(
   portfolios: readonly PortfolioSummary[],
 ): Map<string, HomePortfolioRead> {
-  const { unlocked } = useVaultedPortfolioStores(portfolios);
+  const { unlocked, failures } = useVaultedPortfolioStores(portfolios);
   const openable = portfolios.filter((portfolio) => unlocked.has(portfolio.id));
   const results = useQueries({
     queries: openable.map((portfolio) => {
@@ -177,7 +185,7 @@ export function useUnlockedVaultReads(
       };
     }),
   });
-  return new Map(
+  const reads = new Map(
     openable.map((portfolio, index): [string, HomePortfolioRead] => {
       const access = unlocked.get(portfolio.id)!;
       const result = results[index];
@@ -198,6 +206,11 @@ export function useUnlockedVaultReads(
       ];
     }),
   );
+  // A settled failure is neither "locked" nor a number (see `HomePortfolioRead`).
+  for (const portfolioId of failures.keys()) {
+    if (!reads.has(portfolioId)) reads.set(portfolioId, { state: 'unavailable' });
+  }
+  return reads;
 }
 
 /** Roll the per-portfolio summaries up into the figures every headline widget needs. */
@@ -245,10 +258,12 @@ export function homePortfolioRead(
 /**
  * Safety-critical Home composition boundary.
  *
- * A vaulted read failure is a locked member, never a zero-valued visible one.
- * A plain read failure cannot honestly be described as locked, so the whole
- * roll-up becomes unavailable and exposes no number at all. Successful values
- * are merged only through E6's structured composition seam.
+ * A LOCKED vaulted member (no client read at all) is a locked member, never a
+ * zero-valued visible one. A plain read failure — and, since the settled
+ * resolver, a vaulted member whose open FAILED although its vault is unlocked
+ * (`state: 'unavailable'`) — cannot honestly be described as locked, so the
+ * whole roll-up becomes unavailable and exposes no number at all. Successful
+ * values are merged only through E6's structured composition seam.
  */
 export function composeHomeRollup(
   portfolios: readonly PortfolioSummary[],
@@ -280,10 +295,10 @@ export function composeHomeRollup(
     portfolio,
     totals: normalizedReads[index]?.state === 'success' ? normalizedReads[index].totals : null,
   }));
-  const loading = portfolios.some(
-    (_, index) =>
-      normalizedReads[index]?.state !== 'success' && normalizedReads[index]?.state !== 'error',
-  );
+  const loading = portfolios.some((_, index) => {
+    const state = normalizedReads[index]?.state;
+    return state !== 'success' && state !== 'error' && state !== 'unavailable';
+  });
   if (loading) {
     return {
       status: 'unavailable',
@@ -297,9 +312,12 @@ export function composeHomeRollup(
       coverage: { kind: 'unavailable', unavailablePortfolioCount: 0 },
     };
   }
-  const unavailablePortfolioCount = portfolios.filter(
-    (portfolio, index) => portfolio.vaultId == null && normalizedReads[index]?.state === 'error',
-  ).length;
+  const unavailablePortfolioCount = portfolios.filter((portfolio, index) => {
+    const state = normalizedReads[index]?.state;
+    // An errored PLAIN read, or a vaulted member that is unlocked but failed to
+    // open. A vaulted `error` is the locked case and is qualified, not counted.
+    return (portfolio.vaultId == null && state === 'error') || state === 'unavailable';
+  }).length;
   if (unavailablePortfolioCount > 0) {
     return {
       status: 'unavailable',

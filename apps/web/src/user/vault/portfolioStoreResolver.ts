@@ -490,16 +490,20 @@ export type SettledPortfolioStoreResolution =
  * `resolvePortfolioStores`, but one portfolio's failure never hides another's
  * outcome — and, more to the point, never hides ITSELF.
  *
- * The all-or-nothing shape above was right for account composition (a Home
- * total that silently omitted one vault would be a wrong number). It was wrong
- * for the portfolio page: a vault that unlocked fine but whose document set
- * refused to open (a roster mismatch, a stale header, a medium the client
- * cannot reach) took the WHOLE batch down with it, the loader fell closed to
- * the stub, and the user saw "Locked" with an "Open" link after a successful
+ * The all-or-nothing shape above took the WHOLE batch down when one vault
+ * unlocked fine but its document set refused to open (a roster mismatch, a
+ * stale header, a medium the client cannot reach): the loader fell closed to
+ * the stub and the user saw "Locked" with an "Open" link after a successful
  * unlock — the owner's "it still doesn't work". Settled resolution keeps the
- * same coordination (one endpoint read, one open, one document set per vault),
+ * same coordination (one endpoint read, one open, one document set per vault)
  * and hands the failure back beside the portfolio it belongs to, so a surface
  * can SAY what went wrong instead of pretending the vault is locked.
+ *
+ * Every production consumer goes through `resolveVaultedPortfolioStores`, which
+ * uses THIS variant — the portfolio page and Home's roll-up alike. A failed
+ * member is excluded from any composed figure and flagged (`failures`), so a
+ * partial roster never composes a silent number; `resolvePortfolioStores` above
+ * stays for callers and tests that want the rejection instead.
  */
 export async function resolvePortfolioStoresSettled(
   portfolios: readonly PortfolioSummary[],

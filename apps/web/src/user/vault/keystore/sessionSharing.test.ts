@@ -256,9 +256,10 @@ describe('the race discipline (reviewer finding B2, probes P1/P1b)', () => {
 
     bus.releaseGrants();
     await expect(resuming).resolves.toEqual({ unlockedVaultIds: [] });
-    // Proof the generation guard was NOT what refused: nothing bumped it after
-    // the resume's own `beginSessionChange`.
-    expect(sessionGeneration(joining)).toBe(generationBefore + 1);
+    // Proof the generation guard was NOT what refused: a resume only SNAPSHOTS
+    // the generation (review of #1707 — minting one cancelled a concurrent
+    // unlock, and announcing a session end cascaded), and nothing else bumped it.
+    expect(sessionGeneration(joining)).toBe(generationBefore);
     await expect(joining.readMnemonic(VAULT_1)).rejects.toThrow();
   });
 

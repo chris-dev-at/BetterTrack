@@ -129,7 +129,7 @@ function disposedAccess(accessId: string) {
 }
 
 beforeEach(() => {
-  mocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map() });
+  mocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map(), failures: new Map() });
 });
 
 describe('Home roll-up over an unlocked vault', () => {
@@ -142,9 +142,35 @@ describe('Home roll-up over an unlocked vault', () => {
     expect(screen.getByTestId('locked')).toHaveTextContent('1');
   });
 
+  it('reports unavailable — not "locked" — when an unlocked vault’s portfolio failed to open', async () => {
+    // The settled resolver hands back a failure for a member whose vault IS
+    // open on this device. Calling it "locked" would disguise a failure as the
+    // user's choice, and composing around it would print a number the client
+    // has no basis for — so the roll-up exposes none.
+    mocks.useVaultedPortfolioStores.mockReturnValue({
+      unlocked: new Map(),
+      failures: new Map([
+        [
+          VAULTED.id,
+          {
+            vaultId: VAULT_ID,
+            code: 'VAULT_DOCUMENT_INVALID',
+            message: 'The vault header roster disagrees with the server membership.',
+          },
+        ],
+      ]),
+    });
+
+    renderRollup([PLAIN, VAULTED]);
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unavailable'));
+    expect(screen.getByTestId('coverage')).toHaveTextContent('unavailable');
+  });
+
   it('adds the client-served vaulted figures once the resolver opens it', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[VAULTED.id, access(() => true)]]),
+      failures: new Map(),
     });
 
     renderRollup([PLAIN, VAULTED]);
@@ -157,6 +183,7 @@ describe('Home roll-up over an unlocked vault', () => {
   it('falls back to the locked qualifier when the session stops being current', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[VAULTED.id, access(() => false)]]),
+      failures: new Map(),
     });
 
     renderRollup([PLAIN, VAULTED]);
@@ -176,6 +203,7 @@ describe('Home roll-up over an unlocked vault', () => {
     // error for a portfolio it can read perfectly well.
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[VAULTED.id, disposedAccess('vault-access-dead')]]),
+      failures: new Map(),
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const tree = (portfolios: PortfolioSummary[]) => (
@@ -201,6 +229,7 @@ describe('Home roll-up over an unlocked vault', () => {
 
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[VAULTED.id, access(() => true, { accessId: 'vault-access-live' })]]),
+      failures: new Map(),
     });
     view.rerender(tree([PLAIN, VAULTED]));
 
@@ -211,6 +240,7 @@ describe('Home roll-up over an unlocked vault', () => {
   it('reports unknown rather than a lone client total when the plain member fails', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[VAULTED.id, access(() => true)]]),
+      failures: new Map(),
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(

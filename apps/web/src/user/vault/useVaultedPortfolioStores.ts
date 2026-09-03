@@ -91,6 +91,8 @@ interface RegistryEntry {
    * bound (see `consumeVaultOpenEdges`), per vault instead of per run.
    */
   rerunVaultIds: Set<string>;
+  /** A user Retry that landed while a run was in flight; honoured when it settles. */
+  rerunRequested: boolean;
   /**
    * Id of the newest resolution on this entry. A run whose id is no longer
    * current has been superseded (a re-acquire, a re-run) and must publish
@@ -283,6 +285,7 @@ function placeholderEntry(): RegistryEntry {
     resolving: false,
     pendingVaultOpens: new Set(),
     rerunVaultIds: new Set(),
+    rerunRequested: false,
     loadSeq: 0,
   };
 }
@@ -329,7 +332,14 @@ function acquire(token: string, accountId: string, portfolios: readonly Portfoli
  */
 export function rerunVaultedPortfolioStores(): void {
   for (const entry of registry.values()) {
-    if (entry.refs <= 0 || entry.released || entry.accountId === null || entry.resolving) continue;
+    if (entry.refs <= 0 || entry.released || entry.accountId === null) continue;
+    if (entry.resolving) {
+      // A Retry pressed while a run is in flight is not a no-op: the run that
+      // is settling may be the very one that will fail again, so one more run
+      // is queued and starts the moment this one settles (see `load`'s finally).
+      entry.rerunRequested = true;
+      continue;
+    }
     entry.batch?.dispose();
     entry.batch = null;
     void load(entry, entry.accountId, entry.portfolios, true);
@@ -423,7 +433,16 @@ async function load(
   } finally {
     if (entry.loadSeq === seq) {
       entry.resolving = false;
-      consumeVaultOpenEdges(entry, accountId, portfolios);
+      if (entry.rerunRequested && !entry.released) {
+        // A Retry that arrived mid-run (see `rerunVaultedPortfolioStores`).
+        entry.rerunRequested = false;
+        entry.batch?.dispose();
+        entry.batch = null;
+        void load(entry, accountId, portfolios, true);
+      } else {
+        entry.rerunRequested = false;
+        consumeVaultOpenEdges(entry, accountId, portfolios);
+      }
     }
   }
 }

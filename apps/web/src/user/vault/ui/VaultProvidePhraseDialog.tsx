@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useT } from '../../../i18n';
 import { listVaults, readVaultHeaderDocument, VAULTS_QUERY_KEY } from '../../../lib/vaultApi';
 import { Button, Field, Input, ODialog, Textarea } from '../../../ui/origin';
+import { MnemonicError } from '../bip39/mnemonic';
 import { EndpointKeystoreError } from '../keystore/errors';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import { VAULT_ENDPOINT_STATE_QUERY_PREFIX } from './useVaultEndpointState';
@@ -166,6 +167,10 @@ export function VaultProvidePhraseDialog({
 }
 
 function provideFailureKey(cause: unknown): string {
+  // A malformed phrase (wrong word count, a word outside the wordlist, a bad
+  // checksum) is refused before the header is even fetched — and it is still
+  // "wrong words", not a storage problem.
+  if (cause instanceof MnemonicError) return 'vault.providePhrase.wrongWords';
   if (!(cause instanceof EndpointKeystoreError)) return 'vault.providePhrase.error';
   switch (cause.code) {
     case 'wrong-password':
