@@ -50,10 +50,15 @@ function NewsGroupCard({ group }: { group: NewsDigestGroup }) {
  * `/assets/news` — the portfolio news digest (PROJECTPLAN.md §13.5 V5-P5, arc
  * c). Aggregates recent headlines across the caller's held + watchlist assets,
  * grouped per asset and newest-first, over the same `MARKET_INTEL_ENABLED` gate
- * as the per-asset feeds. When the arc is unconfigured (or the provider serves
- * no news) the endpoint returns the "unconfigured" shape and this view shows a
- * calm empty state — no news content renders anywhere (regression-guarded). Each
- * group's feed is compact + expandable per the anti-bloat rule.
+ * as the per-asset feeds. Each group's feed is compact + expandable per the
+ * anti-bloat rule.
+ *
+ * The destination itself disappears when the arc is unconfigured (the section
+ * nav and the ⌘K registry both gate on `capabilities.marketIntel`), so this
+ * page is only reachable by direct URL then — and it says so: `available:
+ * false` renders an explicit unavailable state, NEVER the "no headlines yet"
+ * empty state, which would misreport a deploy-level kill-switch as a quiet news
+ * day.
  */
 export function NewsDigestPage() {
   const t = useT();
@@ -63,6 +68,7 @@ export function NewsDigestPage() {
     staleTime: NEWS_DIGEST_STALE_MS,
   });
 
+  const unavailable = data !== undefined && !data.available;
   const groups = data?.available ? data.groups : [];
 
   return (
@@ -89,6 +95,12 @@ export function NewsDigestPage() {
             <Alert tone="error">{t('assets.news.loadError')}</Alert>
             <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
           </div>
+        ) : unavailable ? (
+          <EmptyState
+            icon="🚫"
+            title={t('assets.news.unavailableTitle')}
+            description={t('assets.news.unavailableDescription')}
+          />
         ) : groups.length === 0 ? (
           <EmptyState
             icon="📰"

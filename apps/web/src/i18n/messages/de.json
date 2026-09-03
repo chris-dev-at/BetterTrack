@@ -3001,7 +3001,9 @@
       "showLess": "Weniger anzeigen",
       "loadError": "Der Nachrichten-Überblick konnte nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Keine aktuellen Nachrichten",
-      "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest."
+      "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest.",
+      "unavailableTitle": "Nachrichten sind hier deaktiviert",
+      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt."
     },
     "comingSoon": {
       "overview": {

@@ -11,12 +11,14 @@ import {
   SUGGESTED_COMMANDS,
   commandPath,
   filterCommands,
+  isCommandConfigured,
   sectionLabelKeyFor,
   withPortfolioScope,
   type CommandEntry,
   type CommandGroup,
 } from './commands';
 import { ACTIVE_PORTFOLIO_PARAM } from '../routeParams';
+import { useDeployCapabilities } from '../../lib/featureFlags';
 import { useAssetSearch } from './useAssetSearch';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
@@ -104,6 +106,9 @@ interface PaletteSection {
 export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const t = useT();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
+  // Deploy-time capabilities (§13.5 V5-P5): an unconfigured arc's destination is
+  // absent from the palette, exactly as it is from the section nav.
+  const capabilities = useDeployCapabilities();
   const navigate = useNavigate();
   // The portfolio the palette was opened over, carried into the create rows
   // that write into one portfolio (`withPortfolioScope`).
@@ -140,9 +145,11 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const commands = useMemo(
     () =>
       filterCommands(trimmed, t).filter(
-        (command) => !paranoid || !isParanoidKilledPath(commandPath(command.to)),
+        (command) =>
+          isCommandConfigured(command, capabilities) &&
+          (!paranoid || !isParanoidKilledPath(commandPath(command.to))),
       ),
-    [paranoid, trimmed, t],
+    [capabilities, paranoid, trimmed, t],
   );
 
   const sections = useMemo<PaletteSection[]>(() => {
@@ -152,7 +159,9 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
           key: 'suggested',
           labelKey: 'palette.group.suggested',
           rows: SUGGESTED_COMMANDS.filter(
-            (entry) => !paranoid || !isParanoidKilledPath(commandPath(entry.to)),
+            (entry) =>
+              isCommandConfigured(entry, capabilities) &&
+              (!paranoid || !isParanoidKilledPath(commandPath(entry.to))),
           ).map((entry, i) => commandRow(entry, `s${i}`, t, activePortfolioId)),
         },
       ];
@@ -201,6 +210,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
     assets.isError,
     assets.isFetching,
     assets.results,
+    capabilities,
     commands,
     paranoid,
     t,

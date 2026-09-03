@@ -883,7 +883,7 @@ const endpoints: EndpointDef[] = [
     path: '/feature-flags',
     tag: 'Meta',
     summary:
-      'Effective runtime feature flags advertised to the SPA (killed features hide client-side).',
+      'Effective runtime feature flags plus deploy-time capabilities advertised to the SPA (killed or unconfigured features hide client-side).',
     status: 200,
     response: R.FeatureFlagsResponse,
   },

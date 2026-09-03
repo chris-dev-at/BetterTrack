@@ -124,11 +124,20 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     expect(getNewsDigest).toHaveBeenCalledTimes(2);
   });
 
-  test('renders no news UI when the capability is unconfigured (regression)', async () => {
+  test('says the arc is unconfigured, never "no headlines yet" (regression)', async () => {
     vi.mocked(getNewsDigest).mockResolvedValue({ available: false, groups: [] });
     renderPage();
-    // The unconfigured shape resolves to the empty state — never any headlines.
-    expect(await screen.findByText('No recent news')).toBeInTheDocument();
+    // Reachable by direct URL only (the nav + palette entries are gone): it has
+    // to name the deploy-level kill-switch rather than pass it off as a quiet
+    // news day.
+    expect(await screen.findByText('News is switched off here')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Market intelligence is not configured for this installation, so no headlines are collected.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No recent news')).not.toBeInTheDocument();
+    // …and never any headlines.
     expect(screen.queryByText('Held')).not.toBeInTheDocument();
     expect(screen.queryByText('Watched')).not.toBeInTheDocument();
   });
