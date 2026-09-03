@@ -10,12 +10,15 @@ import { StatCard } from '../../ui';
 import { Alert, Button, Spinner, TextField } from '../components/ui';
 
 import {
+  clampForecastReturnPct,
   compoundInterest,
   dividendPlan,
   savingsPlanContribution,
   withdrawalHorizon,
   FORECAST_CALC_MAX_YEARS,
   FORECAST_CALC_MIN_YEARS,
+  FORECAST_RETURN_MAX_PCT,
+  FORECAST_RETURN_MIN_PCT,
   type CompoundInterestInput,
   type DividendPlanInput,
   type SavingsContributionInput,
@@ -220,6 +223,48 @@ function PrefillButton({ label, disabled, onClick }: PrefillButtonProps) {
   );
 }
 
+// ─── Rate field ──────────────────────────────────────────────────────────────
+
+interface RateFieldProps {
+  t: TranslateFn;
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}
+
+/**
+ * Every percent-per-year field in the suite, held to the one bound the whole
+ * Forecast tab uses ({@link clampForecastReturnPct}). The `min`/`max` attributes
+ * only tell the browser; these are bare number inputs outside any form, so a
+ * typed or pasted `-2000` reaches state verbatim and the MATH is what clamps it
+ * (each solver in `./calc` does that itself). The notice mirrors the
+ * projection's own clamp alert — a card that silently answers a different
+ * question than the one typed is the defect, not the bounded answer.
+ */
+function RateField({ t, label, value, onChange }: RateFieldProps) {
+  const entered = safeNumber(value);
+  const isClamped = entered !== clampForecastReturnPct(entered);
+  return (
+    <div className="flex flex-col gap-1">
+      <TextField
+        type="number"
+        inputMode="decimal"
+        min={FORECAST_RETURN_MIN_PCT}
+        max={FORECAST_RETURN_MAX_PCT}
+        step="any"
+        label={label}
+        value={value}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
+      />
+      {isClamped ? (
+        <p role="alert" className="text-xs bt-gold-note">
+          {t('forecast.calculators.ratePctClamped')}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // ─── Compound interest card ──────────────────────────────────────────────────
 
 function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
@@ -256,12 +301,11 @@ function CompoundInterestCard({ prefill, t }: { prefill: Prefill; t: TranslateFn
           value={monthlyContribution}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setMonthlyContribution(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.compound.ratePct')}
           value={ratePctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setRatePctPerYear(e.target.value)}
+          onChange={setRatePctPerYear}
         />
         <TextField
           type="number"
@@ -347,12 +391,11 @@ function SavingsPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
           value={principal}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setPrincipal(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.savings.ratePct')}
           value={ratePctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setRatePctPerYear(e.target.value)}
+          onChange={setRatePctPerYear}
         />
         <TextField
           type="number"
@@ -423,19 +466,17 @@ function DividendCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }) {
           value={positionValue}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setPositionValue(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.dividend.yieldPct')}
           value={yieldPctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setYieldPctPerYear(e.target.value)}
+          onChange={setYieldPctPerYear}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.dividend.growthPct')}
           value={growthPctPerYear}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setGrowthPctPerYear(e.target.value)}
+          onChange={setGrowthPctPerYear}
         />
         <TextField
           type="number"
@@ -489,9 +530,13 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
   const result = withdrawalHorizon(input);
   const canPrefill = prefill.portfolioValueEur !== null || prefill.averageReturnPctPerYear !== null;
 
+  // A non-finite horizon is treated exactly like `null`. The card interpolates
+  // its months into copy rather than routing them through `formatMoney`, so a
+  // `NaN` that slipped past this guard would render as the literal "NaN months"
+  // — the one place in the suite where a bad figure is not even an em-dash.
   const horizonValue = result.sustainable
     ? t('forecast.withdrawal.sustainable')
-    : result.months === null
+    : result.months === null || !Number.isFinite(result.months)
       ? t('forecast.withdrawal.notComputable')
       : t('forecast.withdrawal.monthsValue', {
           months: Math.max(0, Math.round(result.months * 10) / 10),
@@ -515,12 +560,11 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
           value={monthlyWithdrawal}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setMonthlyWithdrawal(e.target.value)}
         />
-        <TextField
-          type="number"
-          inputMode="decimal"
+        <RateField
+          t={t}
           label={t('forecast.withdrawal.annualReturnPct')}
           value={annualReturnPct}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => setAnnualReturnPct(e.target.value)}
+          onChange={setAnnualReturnPct}
         />
       </div>
       <PrefillButton

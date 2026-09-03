@@ -446,3 +446,174 @@ describe('withdrawalRate', () => {
     expect(result.monthlyWithdrawal).toBe(0);
   });
 });
+
+// ─── Rate bounds (#1662) ─────────────────────────────────────────────────────
+//
+// Every solver clamps its percent-per-year inputs to the projection's own range
+// (`FORECAST_RETURN_MIN_PCT`..`FORECAST_RETURN_MAX_PCT`) before any power or
+// logarithm touches them. Below −100 %/yr `1 + r` turns negative, which used to
+// produce `NaN` (a fractional power / a logarithm of a negative number), a
+// negative final balance from a positive principal, or a dividend stream that
+// flips sign every year. The fields are bare number inputs outside any form, so
+// their `min`/`max` validate nothing on their own — these cases are what makes
+// the bound real.
+
+/** The absurd rates a user can type into an unbounded field. */
+const ABSURD_RATES = [-1_000_000, -2000, -200, -100, 1_000_000];
+
+/** Every numeric field of a result is finite; `null` (an explicit "no answer") passes. */
+function expectFiniteOrNull(result: object) {
+  for (const [key, value] of Object.entries(result)) {
+    if (value === null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) expect(Number.isFinite(item), `${key} item ${item}`).toBe(true);
+      continue;
+    }
+    if (typeof value !== 'number') continue;
+    expect(Number.isFinite(value), `${key} = ${value}`).toBe(true);
+  }
+}
+
+describe('rate bounds', () => {
+  test.each(ABSURD_RATES)('compoundInterest stays finite at %d %%/yr', (rate) => {
+    expectFiniteOrNull(
+      compoundInterest({
+        principal: 10000,
+        monthlyContribution: 250,
+        ratePctPerYear: rate,
+        // A fractional horizon is what turned `Math.pow(1 + rp, N)` into `NaN`
+        // once `1 + rp` was negative.
+        years: 5.5,
+        compoundingPerYear: 1,
+      }),
+    );
+  });
+
+  test.each(ABSURD_RATES)(
+    'compoundInterest never reports less than nothing at %d %%/yr',
+    (rate) => {
+      // A non-negative principal plus non-negative contributions cannot end
+      // below zero, whatever the loss: at the −100 %/yr floor the balance is the
+      // contributions that arrived after the wipeout, never a negative figure.
+      const result = compoundInterest({
+        principal: 10000,
+        monthlyContribution: 250,
+        ratePctPerYear: rate,
+        years: 3,
+        compoundingPerYear: 1,
+      });
+      expect(result.finalBalance).toBeGreaterThanOrEqual(0);
+    },
+  );
+
+  test.each(ABSURD_RATES)('savingsPlanContribution stays finite at %d %%/yr', (rate) => {
+    const result = savingsPlanContribution({
+      target: 100000,
+      principal: 10000,
+      ratePctPerYear: rate,
+      years: 15,
+      compoundingPerYear: 12,
+    });
+    expectFiniteOrNull(result);
+    expect(result.monthlyContribution).toBeGreaterThanOrEqual(0);
+  });
+
+  test.each(ABSURD_RATES)('savingsPlanYears stays finite or null at %d %%/yr', (rate) => {
+    const result = savingsPlanYears({
+      target: 100000,
+      principal: 10000,
+      monthlyContribution: 250,
+      ratePctPerYear: rate,
+      compoundingPerYear: 12,
+    });
+    expectFiniteOrNull(result);
+    if (result.years !== null) expect(result.years).toBeGreaterThanOrEqual(0);
+  });
+
+  test('savingsPlanYears reports no horizon at a total annual wipeout', () => {
+    // −100 %/yr compounded once a year leaves no growth base at all
+    // (`log(1 + rp)` is −∞), so no horizon reaches the target.
+    expect(
+      savingsPlanYears({
+        target: 100000,
+        principal: 10000,
+        monthlyContribution: 250,
+        ratePctPerYear: -100,
+        compoundingPerYear: 1,
+      }),
+    ).toEqual({ years: null, feasible: false });
+  });
+
+  test.each(ABSURD_RATES)('dividendPlan stays finite at %d %%/yr on both rates', (rate) => {
+    expectFiniteOrNull(
+      dividendPlan({
+        positionValue: 10000,
+        yieldPctPerYear: rate,
+        growthPctPerYear: rate,
+        years: 10,
+      }),
+    );
+  });
+
+  test.each(ABSURD_RATES)('dividendPlan never flips the stream sign at %d %%/yr growth', (rate) => {
+    const result = dividendPlan({
+      positionValue: 10000,
+      yieldPctPerYear: 3,
+      growthPctPerYear: rate,
+      years: 10,
+    });
+    // A positive position paying a positive yield: at the clamped floor `1 + g`
+    // is 0, so the stream shrinks to zero rather than alternating ±10^n.
+    for (const dividend of result.yearlyDividends) expect(dividend).toBeGreaterThanOrEqual(0);
+    expect(result.yieldOnCostFinalPct).toBeGreaterThanOrEqual(0);
+  });
+
+  test.each(ABSURD_RATES)('withdrawalHorizon stays finite or null at %d %%/yr', (rate) => {
+    const result = withdrawalHorizon({
+      balance: 100000,
+      monthlyWithdrawal: 500,
+      annualReturnPct: rate,
+    });
+    expectFiniteOrNull(result);
+    if (result.months !== null) expect(result.months).toBeGreaterThanOrEqual(0);
+  });
+
+  test('withdrawalHorizon: the -2000 %/yr case that rendered "≈ NaN months"', () => {
+    const result = withdrawalHorizon({
+      balance: 100000,
+      monthlyWithdrawal: 500,
+      annualReturnPct: -2000,
+    });
+    expect(Number.isNaN(result.months)).toBe(false);
+    // Clamped to −100 %/yr: rm = −1/12, so the balance shrinks alongside the
+    // draw and the horizon is the real answer for the bounded rate.
+    expect(result).toEqual(
+      withdrawalHorizon({ balance: 100000, monthlyWithdrawal: 500, annualReturnPct: -100 }),
+    );
+    expect(result.months).toBeCloseTo(33.0035, 3);
+    expect(result.sustainable).toBe(false);
+  });
+
+  test.each(ABSURD_RATES)('withdrawalRate stays finite at %d %%/yr', (rate) => {
+    const result = withdrawalRate({ balance: 100000, months: 240, annualReturnPct: rate });
+    expectFiniteOrNull(result);
+    expect(result.monthlyWithdrawal).toBeGreaterThanOrEqual(0);
+  });
+
+  test('an in-range rate is untouched by the clamp', () => {
+    // The bound may not move any answer a real user gets: the fixture above
+    // still holds verbatim.
+    expect(
+      withdrawalRate({ balance: 100000, months: 240, annualReturnPct: 5 }).monthlyWithdrawal,
+    ).toBeCloseTo(659.9557, 3);
+    expect(
+      compoundInterest({
+        principal: 1000,
+        monthlyContribution: 0,
+        ratePctPerYear: 5,
+        years: 10,
+        compoundingPerYear: 1,
+      }).finalBalance,
+    ).toBeCloseTo(1628.894626777, 6);
+  });
+});

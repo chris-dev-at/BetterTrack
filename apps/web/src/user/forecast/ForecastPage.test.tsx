@@ -11,6 +11,7 @@ import type {
   PortfolioHistoryResponse,
   PortfolioListResponse,
   PortfolioResponse,
+  ProjectedDividendIncomeResponse,
 } from '@bettertrack/contracts';
 
 // Recharts' ResponsiveContainer measures the DOM (0×0 under jsdom); hand its
@@ -48,15 +49,26 @@ vi.mock('../../lib/standingOrdersApi', async (importOriginal) => ({
 vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/marketIntelApi')>()),
   getPortfolioDividendProjection: vi.fn(),
+  getPortfolioDividendProjectionFor: vi.fn(),
 }));
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { EM_DASH, formatMoney, formatPercent } from '../../lib/format';
-import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
+import {
+  getPortfolioDividendProjection,
+  getPortfolioDividendProjectionFor,
+} from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
-import { dividendPlan, FORECAST_CALC_MAX_YEARS, FORECAST_CALC_MIN_YEARS } from './calc';
+import {
+  dividendPlan,
+  withdrawalHorizon,
+  FORECAST_CALC_MAX_YEARS,
+  FORECAST_CALC_MIN_YEARS,
+  FORECAST_RETURN_MAX_PCT,
+  FORECAST_RETURN_MIN_PCT,
+} from './calc';
 import { ForecastPage } from './ForecastPage';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -161,13 +173,15 @@ beforeEach(() => {
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
-  vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+  const noProjection: ProjectedDividendIncomeResponse = {
     available: false,
     currency: 'EUR',
     monthlyTotalEur: 0,
     yearlyTotalEur: 0,
     holdings: [],
-  });
+  };
+  vi.mocked(getPortfolioDividendProjection).mockResolvedValue(noProjection);
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(noProjection);
 });
 
 test('shows prefill progress without hiding the standalone calculators', async () => {
@@ -444,4 +458,65 @@ test('when the portfolio prefill has no data available, cards fall back to stand
   await user.click(screen.getByRole('button', { name: /Compound interest/i }));
   const button = screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!;
   expect(button).toBeDisabled();
+});
+
+test('the withdrawal card renders a bounded horizon for an absurd rate, never "NaN months"', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  await user.click(await screen.findByRole('button', { name: /Withdrawal plan/i }));
+  const rate = screen.getByLabelText('Expected annual return (%)');
+  expect(rate).toHaveAttribute('min', String(FORECAST_RETURN_MIN_PCT));
+  expect(rate).toHaveAttribute('max', String(FORECAST_RETURN_MAX_PCT));
+
+  await user.clear(rate);
+  await user.type(rate, '-2000');
+  // The field is a bare number input with no enclosing form, so -2000 does reach
+  // state — the math is what has to bound it.
+  expect(rate).toHaveValue(-2000);
+
+  // The horizon stat used to interpolate a raw NaN into its copy (it does not
+  // route through formatMoney, so not even an em-dash covered for it).
+  const horizon = screen.getByText('Depletion horizon').parentElement!;
+  expect(horizon).not.toHaveTextContent('NaN');
+  expect(horizon).not.toHaveTextContent('Infinity');
+  // What it shows instead is the answer for the bounded rate.
+  const bounded = withdrawalHorizon({
+    balance: 100000,
+    monthlyWithdrawal: 500,
+    annualReturnPct: FORECAST_RETURN_MIN_PCT,
+  });
+  expect(horizon).toHaveTextContent(`≈ ${Math.round(bounded.months! * 10) / 10} months`);
+  // …and the card says the rate was bounded rather than quietly answering a
+  // different question.
+  expect(
+    within(document.getElementById('forecast-withdrawal-region')!).getByRole('alert'),
+  ).toHaveTextContent(
+    'Rates are limited to -100% to 100%. The nearest value is used for this calculation.',
+  );
+});
+
+test('every calculator rate field states the clamp range', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  const rateFields: Array<[RegExp, string[]]> = [
+    [/Compound interest/i, ['Annual return (%)']],
+    [/Savings plan/i, ['Annual return (%)']],
+    [/Dividend \/ yield projection/i, ['Current dividend yield (%)', 'Annual dividend growth (%)']],
+    [/Withdrawal plan/i, ['Expected annual return (%)']],
+  ];
+  for (const [card, labels] of rateFields) {
+    const toggle = await screen.findByRole('button', { name: card });
+    await user.click(toggle);
+    for (const label of labels) {
+      const field = screen.getByLabelText(label);
+      expect(field, label).toHaveAttribute('min', String(FORECAST_RETURN_MIN_PCT));
+      expect(field, label).toHaveAttribute('max', String(FORECAST_RETURN_MAX_PCT));
+    }
+    // Fold the card again before the next one: the compound and savings cards
+    // share the label "Annual return (%)", and `TextField` derives the input id
+    // from the label, so two open cards would collide on it.
+    await user.click(toggle);
+  }
 });
