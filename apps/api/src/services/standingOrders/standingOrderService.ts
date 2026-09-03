@@ -1,5 +1,6 @@
 import {
   SOURCE_TAG_STANDING_ORDER,
+  standingOrderQuoteRefusal,
   type CreateStandingOrderRequest,
   type StandingOrder,
   type StandingOrderListResponse,
@@ -317,7 +318,9 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       let assetId: string | null = null;
       if (input.kind === 'buy-asset') {
         // The asset must be visible to the caller; its native currency is stored
-        // for display (the buy executes at the quote's currency).
+        // on the order and becomes the booking contract — a quote answered in
+        // any other currency is refused rather than booked (see
+        // {@link resolveBookQuote}).
         const asset = await assetRepo.findByIdForUser(input.assetId!, userId);
         if (!asset) throw badRequest('Asset not found.', 'STANDING_ORDER_ASSET_NOT_FOUND');
         assetId = asset.id;
@@ -501,24 +504,25 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             return;
           }
 
-          // Retriable pre-checks BEFORE claiming, so a failure never claims the
-          // period and it retries cleanly next run (no double-book risk).
+          // The one retriable pre-check BEFORE claiming, so a failure never
+          // claims the period and it retries cleanly next run (no double-book
+          // risk). Only the buy's quote lives out here: it is a network read
+          // that must not hold the portfolio lock. Everything that TOUCHES the
+          // portfolio — provisioning its Main cash source included — waits for
+          // the lock below (#1712).
           let bookPrice: number | null = null;
-          let cashSourceId: string | null = null;
           let quoteRecordedAt: Date | null = null;
           try {
             if (order.kind === 'buy-asset') {
               const bookQuote = await resolveBookQuote(order, executedAt);
               bookPrice = bookQuote.price;
               quoteRecordedAt = bookQuote.recordedAt;
-            } else {
-              cashSourceId = (await cashSourceRepo.getOrCreateMain(order.portfolioId)).id;
             }
           } catch (err) {
             result.deferred += 1;
             logger?.warn(
               { orderId: order.id, kind: order.kind, due, err },
-              'standing order: period deferred (provider failure / insufficient cash), will retry',
+              'standing order: period deferred (provider failure / unbookable quote), will retry',
             );
             // A same-day transient is not yet "deferred past its anchor". If it
             // remains unbooked, a later scan emits one stable notice for this
@@ -530,15 +534,25 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
 
           // The scan's `listActive` result is intentionally only an optimistic
           // candidate list. Archive or vault move-in can commit while a quote
-          // is in flight, so the final eligible check, claim and money write
-          // share one portfolio mutation lock. A transition that wins that lock
-          // makes this a no-op; an execution that wins finishes while the
-          // portfolio is still active and non-vaulted.
+          // is in flight, so the final eligible check, cash-source
+          // provisioning, claim and money write share one portfolio mutation
+          // lock. A transition that wins that lock makes this a no-op; an
+          // execution that wins finishes while the portfolio is still active
+          // and non-vaulted.
           const outcome = await repo.withActivePortfolioLock(
             order.portfolioId,
             order.id,
             due,
             async (tx) => {
+              // Provisioning Main is itself a cleartext write, so it belongs
+              // inside the lock and inside this transaction: outside, a
+              // move-in that purged `portfolio_cash_sources` a moment earlier
+              // would be handed a fresh orphan row across the vault boundary
+              // (#1712).
+              const cashSourceId =
+                order.kind === 'buy-asset'
+                  ? null
+                  : (await cashSourceRepo.getOrCreateMain(order.portfolioId, tx)).id;
               if (order.kind === 'cash-deduct') {
                 const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
                 if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
@@ -690,6 +704,12 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
    * value-point day, routinely months old without indicating an outage — and
    * record the scan instant instead. Either way the stamp is record-only
    * (`lastRunAt`); the money row is dated at the scan instant.
+   *
+   * The PRICE itself is judged by {@link standingOrderQuoteRefusal} — the rule
+   * the vault twin enforces too (#1712): the quote must be denominated in the
+   * order's and the asset's currency, and be finite, positive and below the
+   * manual path's {@link MAX_TRANSACTION_PRICE} ceiling. A refusal throws like
+   * any other pre-check failure, so the period stays unclaimed and retries.
    */
   async function resolveBookQuote(order: StandingOrderWithAsset, scanAt: Date): Promise<BookQuote> {
     if (!order.assetProviderId || !order.assetProviderRef) {
@@ -700,6 +720,22 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       providerRef: order.assetProviderRef,
     };
     const quote = await marketData.pollQuote(ref);
+    // The asset's own currency is the join `listActive` carries for exactly
+    // this check: the stored price is a bare number that later converts at
+    // `assets.currency`, so quote, order and asset must all agree.
+    const refusal = standingOrderQuoteRefusal({
+      price: quote.value.price,
+      quoteCurrency: quote.value.currency,
+      orderCurrency: order.currency,
+      assetCurrency: order.assetCurrency,
+    });
+    if (refusal !== null) {
+      throw new Error(
+        `standing order ${order.id}: quote refused (${refusal}) — ` +
+          `${quote.value.price} ${quote.value.currency} against ${order.currency} order / ` +
+          `${order.assetCurrency ?? 'unknown'} asset`,
+      );
+    }
     if (marketData.isLocalProvider(ref)) {
       return { price: quote.value.price, recordedAt: new Date(scanAt.getTime()) };
     }
