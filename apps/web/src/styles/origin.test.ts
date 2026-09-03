@@ -160,6 +160,32 @@ describe('Origin phone chrome', () => {
     expect(phoneCss).toContain('.bt-topbar .bt-popover :is(a, button, input, select, textarea)');
   });
 
+  /**
+   * The topbar menus position themselves with inline `right: 0`, which is only
+   * safe while the containing block is the header itself — anchored to their
+   * own trigger instead, a menu wider than the gap to the right gutter runs off
+   * the left edge of a 360px screen (#1663). The measuring half is the overlay
+   * sweep in `e2e/mobile-overflow.spec.ts`; this is the fast text guard that
+   * the re-anchor is still declared, and that every menu still opts in.
+   */
+  it('re-anchors phone topbar menus to the header instead of their trigger', () => {
+    const phoneCss = phoneBlock();
+
+    expect(phoneCss).toMatch(
+      /\.bt-topbar__actions > \.bt-menu-anchor \{[^}]*position: static;[^}]*\}/,
+    );
+
+    for (const source of ['OriginShell', 'NotificationBell'] as const) {
+      const tsx = readFileSync(resolve(process.cwd(), `src/user/components/${source}.tsx`), 'utf8');
+      const anchors = tsx.match(/bt-menu-anchor/g) ?? [];
+      const popovers = tsx.match(/className="bt-popover/g) ?? [];
+      expect(popovers.length, `${source}.tsx should still render a popover`).toBeGreaterThan(0);
+      expect(anchors.length, `${source}.tsx must anchor every popover it renders`).toBe(
+        popovers.length,
+      );
+    }
+  });
+
   it('turns opted-in money dialogs into one-axis full-height phone sheets', () => {
     const phoneCss = phoneBlock();
 
