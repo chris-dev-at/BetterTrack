@@ -35,7 +35,7 @@ import { listConglomerates } from '../../lib/conglomerateApi';
 import { listIdeas } from '../../lib/ideasApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { usePresence, useRealtimeEvent } from '../../lib/realtime';
-import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
+import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { formatDateTime } from '../../lib/format';
 import { useT, type TranslateFn } from '../../i18n';
 import { EmptyState } from '../../ui';
@@ -250,9 +250,10 @@ const isShareKind = (kind: ChatChip['kind']): kind is ShareKind =>
  * (`PUT /social/audience/:kind/:subjectId`): it only ever ADDS this one named
  * friend to the item's audience (private → `specific_friends` + them; or add them
  * to the existing set). The shared audience lattice makes that widening explicit
- * before submit. A current group audience can only be replaced after a specific
- * warning that the group will be lost. Assets carry no audience, so the shortcut
- * never shows for them.
+ * before submit. A current group audience is resolved against its live roster
+ * first: members are carried into the new set so nobody loses access, and the
+ * "the group will be lost" warning stays for a group that admits nobody. Assets
+ * carry no audience, so the shortcut never shows for them.
  */
 function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: ChipRecipient }) {
   const t = useT();
@@ -266,7 +267,27 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
     enabled: shareKind !== null,
   });
   const state = audienceQuery.data;
-  const existing = state?.audience === 'specific_friends' ? state.friendIds : [];
+
+  // The `group` rung admits against the group's LIVE roster (§6.9), which the
+  // audience read does not carry. Resolve it from the owner's own groups list —
+  // the same read the AudiencePicker makes, so it is usually already cached.
+  const groupAudienceId = state?.audience === 'group' ? state.groupId : null;
+  const groupsQuery = useQuery({
+    queryKey: ['social', 'groups'],
+    queryFn: ({ signal }) => listGroups(signal),
+    enabled: groupAudienceId !== null,
+  });
+  const groupMemberIds = useMemo(() => {
+    if (groupAudienceId === null) return [];
+    const group = groupsQuery.data?.groups.find((g) => g.id === groupAudienceId);
+    // A group that no longer resolves admits nobody (§6.9), so it carries nobody.
+    return group ? group.members.map((m) => m.id) : [];
+  }, [groupAudienceId, groupsQuery.data]);
+
+  // Whoever the current audience already admits by name stays admitted: the
+  // named set for `specific_friends`, the live roster for `group`. Widening off
+  // a group therefore never costs the circle its access.
+  const existing = state?.audience === 'specific_friends' ? state.friendIds : groupMemberIds;
   const friendIds = existing.includes(recipient.id) ? existing : [...existing, recipient.id];
   const nextSelection = { audience: 'specific_friends' as const, friendIds };
   const requiresWidenConfirmation = state
@@ -274,9 +295,10 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
     : false;
   const [widenConfirmed, setWidenConfirmed] = useState(false);
 
+  const carriedKey = existing.join(':');
   useEffect(() => {
     setWidenConfirmed(false);
-  }, [state?.audience, state?.groupId, state?.friendIds.join(':')]);
+  }, [state?.audience, state?.groupId, carriedKey]);
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -299,13 +321,22 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
   if (shareKind === null) return null;
   if (!state) return null; // loading, or a read the owner can't make — offer nothing.
 
-  // Mirror the enforcement layer's audience-grant rule: a friend recipient is
-  // admitted by `all_friends` / `public_link`, or by `specific_friends` naming
-  // them. Anything else (private, or a set without them) means they can't see it.
+  // A group audience cannot be judged before its roster resolves: prompting on a
+  // pending or failed read would both claim a recipient the server already
+  // admits can't see the item, and compute the widening from an unknown circle.
+  // Stay silent until it lands — the AudiencePicker remains the full path.
+  if (groupAudienceId !== null && !groupsQuery.isSuccess) return null;
+
+  // Mirror the enforcement layer's audience-grant rule (shareAudienceRepository,
+  // four rungs): a friend recipient is admitted by `all_friends` / `public_link`,
+  // by `specific_friends` naming them, or by a `group` whose roster contains
+  // them. Anything else (private, or a set/circle without them) means they can't
+  // see it.
   const admitted =
     state.audience === 'all_friends' ||
     state.audience === 'public_link' ||
-    (state.audience === 'specific_friends' && state.friendIds.includes(recipient.id));
+    (state.audience === 'specific_friends' && state.friendIds.includes(recipient.id)) ||
+    (state.audience === 'group' && groupMemberIds.includes(recipient.id));
   if (admitted) return null;
 
   return (
@@ -322,7 +353,11 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
             onChange={(event) => setWidenConfirmed(event.target.checked)}
           />
           <span>
-            {state.audience === 'group'
+            {/* The group-replacement warning belongs to the case it describes:
+                a circle that admits nobody today is replaced by a share with
+                only this friend. When the circle has members they are carried
+                over, so the honest statement is the plain widening one. */}
+            {state.audience === 'group' && groupMemberIds.length === 0
               ? t('social.chat.chip.shortcut.confirmGroupReplace', {
                   username: recipient.username,
                 })
