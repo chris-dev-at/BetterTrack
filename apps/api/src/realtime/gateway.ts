@@ -29,6 +29,7 @@ import {
   type RealtimeBearerCapability,
   type RealtimeChatMessage,
   type RealtimeConnectionError,
+  type RealtimeFeatureDisabled,
   type RealtimeLiveFrame,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
@@ -109,6 +110,16 @@ export interface WatchableAsset {
 /** Bounded fail-closed backstop when a lifecycle pub/sub signal is missed. */
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
 export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
+/**
+ * Worst-case delay between an admin flipping `realtime`/`liveMode` OFF and this
+ * gateway shedding the work that was ALREADY established when the flip landed
+ * (§13.5 V5-P2 arc (c)). Enforcement rides the revalidation sweep rather than a
+ * per-emit or per-tick flag read, so a kill switch costs one extra flag read per
+ * sweep — never a busy poll — and the shed is bounded by exactly one interval.
+ */
+export const REALTIME_FEATURE_SHED_MAX_DELAY_MS = REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS;
+/** A stuck flag read must not wedge the sweep's running guard — bound it. */
+export const REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS = 2_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 /** Cross-process live frames; each gateway emits remote frames into its local rooms. */
 export const REALTIME_LIVE_FANOUT_CHANNEL = 'bt:live:frames';
@@ -918,10 +929,19 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * watches even when either command bucket rejects the frame.
    */
   function scheduleLiveCleanup(socket: Socket, assetId: string): void {
+    void runLiveCleanup(socket, assetId);
+  }
+
+  /**
+   * The awaitable body of {@link scheduleLiveCleanup}. A cleanup already queued
+   * for this asset resolves immediately — the in-flight pass owns the release,
+   * and re-entering would only duplicate it.
+   */
+  function runLiveCleanup(socket: Socket, assetId: string): Promise<void> {
     const queued = queuedLiveCleanupsOf(socket);
-    if (queued.has(assetId)) return;
+    if (queued.has(assetId)) return Promise.resolve();
     queued.add(assetId);
-    void (async () => {
+    return (async () => {
       try {
         const entry = liveAssetsOf(socket).get(assetId);
         if (entry) await releaseLiveWatch(socket, assetId, entry, true);
@@ -1110,7 +1130,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     // Runtime kill-switch (§13.5 V5-P2 arc (c)): `liveMode` flipped OFF stops new
-    // watches on the next op; the SPA falls back to its poll cadence.
+    // watches on the next op; the SPA falls back to its poll cadence. Watches
+    // already registered are released by the sweep, which drains the shared
+    // upstream loop instead of leaving it polling for nobody.
     if (!(await featureEnabled('liveMode'))) {
       respond({ ok: false, error: 'UNAVAILABLE' });
       return;
@@ -1509,12 +1531,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
-  async function withPrincipalRevalidationDeadline<T>(operation: () => Promise<T>): Promise<T> {
+  /** Race one sweep operation against a timer that never holds the process open. */
+  async function withDeadline<T>(
+    timeoutMs: number,
+    message: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        reject(new Error('realtime principal revalidation timed out'));
-      }, REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS);
+        reject(new Error(message));
+      }, timeoutMs);
       timer.unref?.();
     });
     try {
@@ -1522,6 +1549,14 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  function withPrincipalRevalidationDeadline<T>(operation: () => Promise<T>): Promise<T> {
+    return withDeadline(
+      REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS,
+      'realtime principal revalidation timed out',
+      operation,
+    );
   }
 
   /**
@@ -1575,16 +1610,107 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     schedulePrincipalExpiry(socket, next);
   }
 
+  /** Tell one socket why the server is about to shed its work, before shedding it. */
+  function emitFeatureDisabled(socket: Socket, feature: RealtimeFeatureDisabled['feature']): void {
+    if (socket.disconnected) return;
+    const payload: RealtimeFeatureDisabled = { feature };
+    socket.emit(REALTIME_SERVER_EVENTS.featureDisabled, payload);
+  }
+
+  /**
+   * Read the two kill switches that gate LONG-LIVED work, bounded so one stuck
+   * flag read cannot wedge the sweep's running guard. Fails OPEN: a flag-store
+   * blip must never disconnect every connected client, and the next sweep re-
+   * reads it. (Failing closed is right at the handshake, where refusing costs
+   * one connection; here it would cost all of them.)
+   */
+  async function killSwitchState(): Promise<{ realtime: boolean; liveMode: boolean }> {
+    try {
+      return await withDeadline(
+        REALTIME_FEATURE_FLAG_READ_TIMEOUT_MS,
+        'realtime kill-switch read timed out',
+        async () => {
+          const [realtime, liveMode] = await Promise.all([
+            featureEnabled('realtime'),
+            deps.liveMode ? featureEnabled('liveMode') : Promise.resolve(true),
+          ]);
+          return { realtime, liveMode };
+        },
+      );
+    } catch (err) {
+      logger.warn({ err }, 'realtime kill-switch read failed');
+      return { realtime: true, liveMode: true };
+    }
+  }
+
+  /**
+   * `realtime` OFF sheds the connection itself: the socket learns WHY, then the
+   * server closes it. Socket.IO reports a server-initiated close, so the client
+   * does not reconnect into a gateway that would refuse the handshake anyway —
+   * during the incident this switch exists for, the load simply goes away and
+   * the SPA's permanent poll/refetch fallback carries every feature (§4.5).
+   * Flipping the switch back ON admits handshakes again with no restart.
+   */
+  function shedDisabledRealtime(socket: Socket): void {
+    if (socket.disconnected) return;
+    emitFeatureDisabled(socket, 'realtime');
+    socket.disconnect(true);
+  }
+
+  /**
+   * `liveMode` OFF sheds Live Mode ONLY — `realtime` owns the connection, so the
+   * socket stays up and its other pushes keep flowing. Every watch is released
+   * through the same path the client's own `live.unwatch` takes, so the shared
+   * upstream loop drains exactly as it does when the last viewer leaves (§6.3),
+   * and a watch still resolving is canceled by its generation watermark instead
+   * of registering a loop behind the sweep's back.
+   */
+  async function shedDisabledLiveWatches(sockets: readonly Socket[]): Promise<void> {
+    for (const socket of sockets) {
+      const assetIds = new Set([
+        ...liveAssetsOf(socket).keys(),
+        ...pendingLiveWatchAssetsOf(socket).keys(),
+      ]);
+      let shed = false;
+      for (const assetId of assetIds) {
+        if (!markLiveCleanupIntent(socket, assetId)) continue;
+        shed = true;
+        await runLiveCleanup(socket, assetId);
+      }
+      if (shed) emitFeatureDisabled(socket, 'liveMode');
+    }
+  }
+
+  /**
+   * One bounded pass over every connected socket. Kill-switch enforcement rides
+   * here (§13.5 V5-P2 arc (c)) and runs FIRST: shedding beats revalidating work
+   * that is about to go away, and a `realtime` shed makes the rest of the pass
+   * moot. Cost is one flag read per sweep, never per emit or per poll tick.
+   */
+  async function sweepConnectedSockets(server: SocketIOServer): Promise<void> {
+    const sockets = [...server.sockets.sockets.values()];
+    if (sockets.length === 0) return;
+    const flags = await killSwitchState();
+    if (!flags.realtime) {
+      for (const socket of sockets) shedDisabledRealtime(socket);
+      return;
+    }
+    if (!flags.liveMode) await shedDisabledLiveWatches(sockets);
+    await Promise.allSettled(sockets.map((socket) => revalidateSocket(socket)));
+  }
+
   function startPrincipalRevalidation(server: SocketIOServer): void {
     if (principalRevalidationTimer) return;
     principalRevalidationTimer = setInterval(() => {
       if (principalRevalidationRunning) return;
       principalRevalidationRunning = true;
-      void Promise.allSettled(
-        [...server.sockets.sockets.values()].map((socket) => revalidateSocket(socket)),
-      ).finally(() => {
-        principalRevalidationRunning = false;
-      });
+      void sweepConnectedSockets(server)
+        .catch((err) => {
+          logger.warn({ err }, 'realtime socket sweep failed');
+        })
+        .finally(() => {
+          principalRevalidationRunning = false;
+        });
     }, REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS);
     principalRevalidationTimer.unref?.();
   }
@@ -1802,7 +1928,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         socket.conn.once('close', fence.onClose);
         void (async () => {
           // Runtime kill-switch (§13.5 V5-P2 arc (c)): with `realtime` flipped
-          // OFF the gateway refuses the very next handshake.
+          // OFF the gateway refuses the very next handshake — and the sweep
+          // (see {@link REALTIME_FEATURE_SHED_MAX_DELAY_MS}) sheds the sockets
+          // that were already established when the flip landed.
           if (!(await featureEnabled('realtime'))) {
             disarmPreConnectCloseFence(socket);
             next(handshakeError('UNAVAILABLE'));
