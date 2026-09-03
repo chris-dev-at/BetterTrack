@@ -15,6 +15,7 @@ import {
 
 import { badRequest } from '../../errors';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
+import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -29,7 +30,7 @@ import type { AppContext } from '../context';
  * Imports are a portfolio surface, so the bearer middleware maps `/imports` to
  * the `portfolio:read` / `portfolio:write` scope pair.
  */
-export function createImportsRouter(ctx: AppContext): Router {
+export function createImportsRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
@@ -95,23 +96,39 @@ export function createImportsRouter(ctx: AppContext): Router {
 
   // POST /imports — upload a CSV (multipart: `file` + portfolioId [+ brokerId]);
   // parses/normalizes/resolves/dedupes into a staged batch and returns the preview.
-  router.post('/', uploadFile, validateBody(createImportBatchFieldsSchema), async (req, res) => {
-    const fields = req.valid?.body as CreateImportBatchFields;
-    if (!req.file) {
-      throw badRequest('A CSV file is required.', 'IMPORT_FILE_REQUIRED');
-    }
-    const result = await ctx.imports.createBatch(req.authUser!.id, {
-      portfolioId: fields.portfolioId,
-      brokerId: fields.brokerId,
-      filename: req.file.originalname || 'import.csv',
-      content: req.file.buffer.toString('utf8'),
-      // The generic path sniffs the encoding itself, so it needs the bytes: a
-      // UTF-16LE or windows-1252 statement has already lost that evidence once
-      // it is a UTF-8 string. The broker mappers keep reading `content`.
-      contentBytes: req.file.buffer,
-    });
-    res.status(201).json(result);
-  });
+  //
+  // Cost-metered (§10 COST TABLE, #1643) at 100 work units: staging one batch
+  // drives the row classifier through ≈450 `pg_trgm` scans. The guard runs
+  // BEFORE multer, so an over-budget caller is turned away without the API
+  // reading (or buffering) the upload at all. The price of that ordering is on
+  // the wire, not in the contract: the 429 is written while the multipart body
+  // is still in flight, so Node closes the connection rather than draining it
+  // and a client may observe a reset instead of the response. Accepted — not
+  // buffering an unbounded upload we have already decided to refuse is worth
+  // more than a graceful close on a request that is over budget anyway.
+  router.post(
+    '/',
+    limiters.cost('importCreate'),
+    uploadFile,
+    validateBody(createImportBatchFieldsSchema),
+    async (req, res) => {
+      const fields = req.valid?.body as CreateImportBatchFields;
+      if (!req.file) {
+        throw badRequest('A CSV file is required.', 'IMPORT_FILE_REQUIRED');
+      }
+      const result = await ctx.imports.createBatch(req.authUser!.id, {
+        portfolioId: fields.portfolioId,
+        brokerId: fields.brokerId,
+        filename: req.file.originalname || 'import.csv',
+        content: req.file.buffer.toString('utf8'),
+        // The generic path sniffs the encoding itself, so it needs the bytes: a
+        // UTF-16LE or windows-1252 statement has already lost that evidence once
+        // it is a UTF-8 string. The broker mappers keep reading `content`.
+        contentBytes: req.file.buffer,
+      });
+      res.status(201).json(result);
+    },
+  );
 
   // GET /imports/:batchId — re-read a staged batch's preview.
   router.get('/:batchId', validateParams(importBatchIdParamSchema), async (req, res) => {

@@ -2,6 +2,8 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { ANALYTICS_MAX_RANGE_DAYS } from '@bettertrack/contracts';
+
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import { createStubMarketData } from '../testing/marketDataStubs';
@@ -263,6 +265,43 @@ describe('analytics — filtered series, stats & contributions', () => {
       `/api/v1/analytics/portfolios/${pid}/series?inflation=flat&inflationRate=-150`,
     );
     expect(belowBound.status).toBe(400);
+  });
+
+  it('rejects a requested window longer than the maximum range (#1643)', async () => {
+    // The window used to be unbounded: any `from`/`to` the ISO pattern matched
+    // was accepted, so one request's work was entirely caller-chosen.
+    const absurd = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=0001-01-01&to=9999-12-31`,
+    );
+    expect(absurd.status).toBe(400);
+    expect(absurd.body.error.code).toBe('VALIDATION_ERROR');
+
+    // An open-ended `from` is measured against today, so it cannot escape the
+    // bound by omitting `to`.
+    const openEnded = await agent.get(`/api/v1/analytics/portfolios/${pid}/series?from=0001-01-01`);
+    expect(openEnded.status).toBe(400);
+
+    // Exactly at the bound is still a legal request…
+    const atBound = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=${dayOffset(-ANALYTICS_MAX_RANGE_DAYS)}&to=${dayOffset(0)}`,
+    );
+    expect(atBound.status).toBe(200);
+    // …and one day past it is not.
+    const overBound = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=${dayOffset(-ANALYTICS_MAX_RANGE_DAYS - 1)}&to=${dayOffset(0)}`,
+    );
+    expect(overBound.status).toBe(400);
+  });
+
+  it('leaves the SPA windows untouched: no `from` is inception, presets are bounded', async () => {
+    // The `max` preset sends no `from` at all — the window starts at the first
+    // day the portfolio held value, which the DATA bounds, not the caller.
+    const max = await agent.get(`/api/v1/analytics/portfolios/${pid}/series`);
+    expect(max.status).toBe(200);
+    const oneYear = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?from=${dayOffset(-365)}&to=${dayOffset(0)}`,
+    );
+    expect(oneYear.status).toBe(200);
   });
 
   it('404s a portfolio the caller does not own', async () => {

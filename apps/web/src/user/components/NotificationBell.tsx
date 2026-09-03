@@ -250,7 +250,7 @@ export function NotificationBell() {
   const items = query.data?.items ?? [];
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="bt-menu-anchor relative">
       <button
         ref={triggerRef}
         type="button"

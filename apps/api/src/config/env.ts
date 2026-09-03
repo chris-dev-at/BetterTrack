@@ -600,6 +600,21 @@ export function deriveOrigins(e: {
   };
 }
 
+/**
+ * The endpoints metered by COST rather than by request count (§10 cost table,
+ * #1643). Each key names one route whose per-request work is either unbounded
+ * or scales with user-controlled input, so `general`'s request counter cannot
+ * describe what it spends. The weights live in `rateLimits.requestCosts` below;
+ * the routes reference the KEY only, never a number.
+ */
+export const REQUEST_COST_KEYS = [
+  'socialShared',
+  'backtestPreview',
+  'analyticsSeries',
+  'importCreate',
+] as const;
+export type RequestCostKey = (typeof REQUEST_COST_KEYS)[number];
+
 export interface AppConfig {
   nodeEnv: 'development' | 'test' | 'production';
   isProduction: boolean;
@@ -893,6 +908,15 @@ export interface AppConfig {
     /** General API request rate, per user (falls back to IP when anonymous). */
     general: ProgressiveSchedule;
     /**
+     * COST budget for the expensive reads, per user — a second dimension in
+     * WORK UNITS rather than in requests (§10 cost table, #1643). Only the
+     * routes that declare a {@link RequestCostKey} weight meter against it;
+     * everything else never touches its counter.
+     */
+    expensive: ProgressiveSchedule;
+    /** Per-request weight of each cost-metered endpoint, in units (§10 cost table). */
+    requestCosts: Record<RequestCostKey, number>;
+    /**
      * Short-window burst dimension layered on the general limiter: same key,
      * same escalation ladder, a tighter window that trips a reload flood the
      * generous steady-state allowance can't (§10, owner report #202).
@@ -1017,6 +1041,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // |------------------|--------------------|--------|-------|---------|
   // | general          | user id, else IP   | 15 min | 9000  | no      |
   // | generalBurst     | user id, else IP   | 30 s   |  600  | no      |
+  // | expensive        | user id, else IP   |  1 min | 3000  | no      | (COST units, not requests)
   // | admin            | user id, else IP   | 15 min | 9000  | no      | (reuses `general`)
   // | search           | user id, else IP   |  1 min |  300  | no      |
   // | vault (writes)   | user id, else IP   |  1 min |   60  | no      |
@@ -1052,6 +1077,65 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //
   // The exact arithmetic behind those three numbers is pinned, term by term, in
   // `config/__tests__/rateLimitTable.test.ts`.
+  //
+  // ── §10 COST TABLE — weights for the expensive reads (#1643) ──────────────
+  //
+  // `general` is a REQUEST-COUNT limiter: it cannot tell a 2 ms `GET /auth/me`
+  // apart from a request that fans out N database round trips or blocks on a
+  // provider. Raising its ceiling to 600 req/min (above) therefore raised the
+  // ceiling on those too. The four endpoints below were the ones for which
+  // `general` is the ONLY guard and whose per-request work is unbounded or
+  // scales with user-controlled input; they now also spend from a second
+  // dimension measured in WORK UNITS (`expensive`, 3000 units / min per user).
+  //
+  // ONE UNIT ≈ one ordinary cheap read (a couple of indexed queries). The
+  // weights are cost ESTIMATES read off the code, in the same spirit as the
+  // modelled bar above — argue with them and correct them, don't treat them as
+  // measurements:
+  //
+  // | endpoint                                  | key             | units | why |
+  // |-------------------------------------------|-----------------|-------|-----|
+  // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
+  // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
+  // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
+  // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
+  //
+  // A note on `analyticsSeries`, so the next reader does not re-derive it from
+  // the wrong bound: its work is sized by the DATA, never by the requested
+  // window. `getAssetValueSeries` takes no window at all, and all three compare
+  // resolvers fetch a full history and then post-filter it into [from, to]. The
+  // `ANALYTICS_MAX_RANGE_DAYS` rejection added alongside this table is a
+  // request-sanity/UX guard on an absurd window — it is NOT what makes this
+  // weight sound, and shrinking it would not shrink the weight.
+  //
+  // KNOWN FOLLOW-UP — the enumeration above is the set #1643 scoped, not the
+  // exhaustive set. `POST /backtest/compare` runs 2–6 conglomerate previews per
+  // request, so it is strictly heavier than the 25-unit `/preview` beside it and
+  // is still metered at one request. It wants a weight of its own (≈ `/preview`
+  // × the overlay count) in a follow-up.
+  //
+  // MODELLED NORMAL-USE BAR for the unit budget — the same one active user,
+  // pessimistically doing all four things inside the SAME minute (nobody
+  // actually does):
+  //
+  //   * builder weight-tuning, one debounced preview every ~3 s  = 20 × 25 = 500
+  //   * analytics range/filter/compare changes, ~12 refetches     = 12 × 10 = 120
+  //   * shared-with-me list on focus + reconnect refetch, ~6      =  6 × 10 =  60
+  //   * two CSV uploads                                          =  2 × 100 = 200
+  //
+  //   ⇒ worst realistic 1 min ≈ 880 units → expensive 3000  (3.4×)
+  //
+  // …and, on the other side, every weight is large enough that the COST budget
+  // bites BEFORE the request COUNT one would: a caller doing nothing but these
+  // is stopped after 120 previews, 30 uploads or 300 shared/analytics reads per
+  // minute — all under `general`'s 600 req/min. That is the point of the
+  // dimension: a pathological caller is bounded by the WORK it asks for, not by
+  // how many requests that work happens to arrive in. Both numbers are pinned
+  // in `config/__tests__/rateLimitTable.test.ts`.
+  //
+  // The REQUEST-COUNT bar above is unchanged by this table: these four are a
+  // handful of requests inside the modelled 30 s / 15 min windows (they are
+  // expensive, not chatty), and no ceiling set by the 2026-09-02 pass moved.
   //
   // The STRICT rows are abuse controls, not capacity controls, and are NOT
   // sized by this rule: credential stuffing (loginIp/loginAccount, which also
@@ -1291,6 +1375,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         limit: e.RATE_LIMIT_BURST_LIMIT,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
+      },
+      // COST dimension (#1643): 3000 WORK UNITS per minute per user, on the
+      // same key and the SAME escalation ladder as `general`, so a caller that
+      // overspends work gets the identical short-then-climbing 429 it would get
+      // for overspending requests — nothing about the envelope or the client's
+      // backoff changes. Only the routes in the §10 COST TABLE above meter
+      // against it; every other request leaves this counter untouched.
+      expensive: {
+        windowSec: 60,
+        limit: 3000,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
+      },
+      // Per-endpoint weights, in units. Rationale for each number — and the
+      // modelled bar the budget above clears by 3.4× — is in the §10 COST TABLE.
+      requestCosts: {
+        socialShared: 10,
+        backtestPreview: 25,
+        analyticsSeries: 10,
+        importCreate: 100,
       },
       // Provider search, per user (§6.2). 300/min — its own generous budget
       // rather than a share of `general`, because the read is cheap and bounded:
