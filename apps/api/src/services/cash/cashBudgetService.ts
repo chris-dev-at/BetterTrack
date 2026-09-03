@@ -20,6 +20,7 @@ import type {
 import type { CashSummaryRepository } from '../../data/repositories/cashSummaryRepository';
 import type { CashTagRepository } from '../../data/repositories/cashTagRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
+import { isDriverErrorCode } from '../../data/driverError';
 import { badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -58,7 +59,7 @@ const BUDGET_EXISTS = () =>
   conflict('That tag already has a budget for this period.', 'CASH_BUDGET_EXISTS');
 
 function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err && err.code === '23505';
+  return isDriverErrorCode(err, '23505');
 }
 
 /** `YYYY-MM` of an instant, in UTC — the bucket every cash surface uses. */

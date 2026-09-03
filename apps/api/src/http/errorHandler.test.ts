@@ -1,9 +1,11 @@
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import express from 'express';
 import type { Request, Response } from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
+import { MAX_ERROR_MESSAGE_CHARS } from '../data/driverError';
 import { ApiError } from '../errors';
 import { createLogger, type Logger } from '../logger';
 import { loadConfig } from '../config/env';
@@ -128,5 +130,43 @@ describe('createErrorHandler PII-safe reporting', () => {
     expect(status).not.toHaveBeenCalled();
     expect(json).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledWith(err);
+  });
+
+  it('logs the driver failure, not drizzle’s SQL-and-parameters wrapper', () => {
+    // A `DrizzleQueryError` message is the failing statement plus every bound
+    // parameter (drizzle-orm ≥0.44). Logged verbatim it writes the row's
+    // contents into the log as ONE string, which pino's key-based `redact`
+    // cannot reach. The reporter still receives the error exactly as thrown.
+    const errorLogger = { error: vi.fn() } as unknown as Logger;
+    const report = vi.fn();
+    const handler = createErrorHandler(errorLogger, report);
+    const { res } = mockRes();
+    const wrapped = new DrizzleQueryError(
+      'insert into "portfolio_cash_movements" ("note") values ($1)',
+      ['rent for the Berlin flat'],
+      new Error('duplicate key value violates unique constraint "cash_movements_pkey"'),
+    );
+
+    handler(wrapped, {} as Request, res, vi.fn());
+
+    expect(errorLogger.error).toHaveBeenCalledWith(
+      { err: 'duplicate key value violates unique constraint "cash_movements_pkey"' },
+      'Unhandled request error',
+    );
+    expect(report).toHaveBeenCalledWith(wrapped);
+  });
+
+  it('caps a pathological error message before it reaches the log', () => {
+    const errorLogger = { error: vi.fn() } as unknown as Logger;
+    const handler = createErrorHandler(errorLogger);
+    const { res } = mockRes();
+
+    handler(new Error('A'.repeat(50_000)), {} as Request, res, vi.fn());
+
+    const logged = (errorLogger.error as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      err: string;
+    };
+    expect(logged.err.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
+    expect(logged.err).toContain('[truncated]');
   });
 });

@@ -18,6 +18,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { driverError } from '../driverError';
 import {
   driveConnections,
   portfolioVaultTransitionStates,
@@ -240,7 +241,7 @@ function sameBytes(left: Buffer, right: Buffer): boolean {
 }
 
 function foreignKeyConstraint(error: unknown): string {
-  const candidate = error as {
+  const candidate = driverError(error) as {
     code?: unknown;
     constraint?: unknown;
     constraint_name?: unknown;

@@ -27,6 +27,7 @@ import type {
   ExpenseTransactionRecord,
   ExpenseTransactionRepository,
 } from '../../data/repositories/expenseRepository';
+import { isDriverErrorCode } from '../../data/driverError';
 import { isSupportedExpenseRuleRegex } from './ruleEngine';
 
 /**
@@ -151,12 +152,7 @@ const RULE_REGEX_UNSUPPORTED = () =>
 
 /** A Postgres unique-constraint violation (23505) — both postgres-js and PGlite set `.code`. */
 function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: string }).code === '23505'
-  );
+  return isDriverErrorCode(err, '23505');
 }
 
 function toCategory(record: ExpenseCategoryRecord): ExpenseCategory {

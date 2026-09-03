@@ -3,6 +3,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import type { CreateDriveConnectionRequest, DriveConnection } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { driverError } from '../driverError';
 import { driveConnections, vaults } from '../schema';
 
 export interface DetachedVault {
@@ -56,7 +57,7 @@ function dto(row: typeof driveConnections.$inferSelect): DriveConnection {
 }
 
 function isVaultDriveForeignKey(error: unknown): boolean {
-  const candidate = error as {
+  const candidate = driverError(error) as {
     code?: unknown;
     constraint?: unknown;
     constraint_name?: unknown;

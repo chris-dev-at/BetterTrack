@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { expectDbRefusal } from '../testing/dbRefusals';
 
 /**
  * Constraint coverage for the V5 cash-fusion tables (migration 0075), driven
@@ -79,9 +80,7 @@ describe('cash fusion schema (migration 0075)', () => {
   describe('tags', () => {
     it('is case-insensitively unique per owner, and scoped to that owner', async () => {
       await insertTag({ name: 'Groceries' });
-      await expect(insertTag({ name: 'groceries' })).rejects.toThrow(
-        /cash_tags_user_name_lower_unique/,
-      );
+      await expectDbRefusal(insertTag({ name: 'groceries' }), /cash_tags_user_name_lower_unique/);
       // The SAME name for a different account is fine — tags are per user.
       await expect(
         h.db.insert(schema.cashTags).values({ userId: otherUserId, name: 'Groceries' }),
@@ -89,21 +88,24 @@ describe('cash fusion schema (migration 0075)', () => {
     });
 
     it('ties `system` and `system_key` together in both directions', async () => {
-      await expect(insertTag({ name: 'Half system', system: true })).rejects.toThrow(
+      await expectDbRefusal(
+        insertTag({ name: 'Half system', system: true }),
         /cash_tags_system_key_iff_system/,
       );
-      await expect(
+      await expectDbRefusal(
         insertTag({ name: 'Half key', system: false, systemKey: 'dividend' }),
-      ).rejects.toThrow(/cash_tags_system_key_iff_system/);
+        /cash_tags_system_key_iff_system/,
+      );
       await expect(
         insertTag({ name: 'Proper system', system: true, systemKey: 'dividend' }),
       ).resolves.toBeDefined();
     });
 
     it('allows one row per (owner, system key) and unlimited user tags', async () => {
-      await expect(
+      await expectDbRefusal(
         insertTag({ name: 'Second dividend', system: true, systemKey: 'dividend' }),
-      ).rejects.toThrow(/cash_tags_user_system_key_unique/);
+        /cash_tags_user_system_key_unique/,
+      );
     });
   });
 
@@ -116,9 +118,10 @@ describe('cash fusion schema (migration 0075)', () => {
         { movementId, tagId: food },
         { movementId, tagId: drink },
       ]);
-      await expect(
+      await expectDbRefusal(
         h.db.insert(schema.cashMovementTags).values({ movementId, tagId: food }),
-      ).rejects.toThrow(/cash_movement_tags_movement_tag_unique/);
+        /cash_movement_tags_movement_tag_unique/,
+      );
 
       const rows = await h.db
         .select()
@@ -169,9 +172,10 @@ describe('cash fusion schema (migration 0075)', () => {
     it('allows one recurring target per (portfolio, tag) — the partial index', async () => {
       const tagId = await insertTag({ name: 'Budgeted' });
       await h.db.insert(schema.cashBudgets).values({ portfolioId, tagId, amount: '300.00' });
-      await expect(
+      await expectDbRefusal(
         h.db.insert(schema.cashBudgets).values({ portfolioId, tagId, amount: '250.00' }),
-      ).rejects.toThrow(/cash_budgets_portfolio_tag_recurring_unique/);
+        /cash_budgets_portfolio_tag_recurring_unique/,
+      );
       // A month-specific override alongside the recurring one is legal…
       await expect(
         h.db
@@ -179,28 +183,32 @@ describe('cash fusion schema (migration 0075)', () => {
           .values({ portfolioId, tagId, periodKey: '2026-12', amount: '400.00' }),
       ).resolves.toBeDefined();
       // …but only once per month.
-      await expect(
+      await expectDbRefusal(
         h.db
           .insert(schema.cashBudgets)
           .values({ portfolioId, tagId, periodKey: '2026-12', amount: '410.00' }),
-      ).rejects.toThrow(/cash_budgets_portfolio_tag_period_unique/);
+        /cash_budgets_portfolio_tag_period_unique/,
+      );
     });
 
     it('rejects a non-positive amount and a malformed period', async () => {
       const tagId = await insertTag({ name: 'Guarded budget' });
-      await expect(
+      await expectDbRefusal(
         h.db.insert(schema.cashBudgets).values({ portfolioId, tagId, amount: '0.00' }),
-      ).rejects.toThrow(/cash_budgets_amount_positive/);
-      await expect(
+        /cash_budgets_amount_positive/,
+      );
+      await expectDbRefusal(
         h.db
           .insert(schema.cashBudgets)
           .values({ portfolioId, tagId, periodKey: '2026-13', amount: '10.00' }),
-      ).rejects.toThrow(/cash_budgets_period_key_format/);
-      await expect(
+        /cash_budgets_period_key_format/,
+      );
+      await expectDbRefusal(
         h.db
           .insert(schema.cashBudgets)
           .values({ portfolioId, tagId, periodKey: '2026-1', amount: '10.00' }),
-      ).rejects.toThrow(/cash_budgets_period_key_format/);
+        /cash_budgets_period_key_format/,
+      );
     });
 
     it('claims a fired period exactly once — the alert idempotency key', async () => {
@@ -213,9 +221,10 @@ describe('cash fusion schema (migration 0075)', () => {
         .insert(schema.cashBudgetFires)
         .values({ budgetId: budget!.id, periodKey: '2026-05' });
       await expect(claim).resolves.toBeDefined();
-      await expect(
+      await expectDbRefusal(
         h.db.insert(schema.cashBudgetFires).values({ budgetId: budget!.id, periodKey: '2026-05' }),
-      ).rejects.toThrow(/cash_budget_fires_period_unique/);
+        /cash_budget_fires_period_unique/,
+      );
       // A different month may fire.
       await expect(
         h.db.insert(schema.cashBudgetFires).values({ budgetId: budget!.id, periodKey: '2026-06' }),
@@ -253,9 +262,10 @@ describe('cash fusion schema (migration 0075)', () => {
         { ruleId: rule!.id, tagId: a },
         { ruleId: rule!.id, tagId: b },
       ]);
-      await expect(
+      await expectDbRefusal(
         h.db.insert(schema.cashRuleTags).values({ ruleId: rule!.id, tagId: a }),
-      ).rejects.toThrow(/cash_rule_tags_rule_tag_unique/);
+        /cash_rule_tags_rule_tag_unique/,
+      );
 
       await h.db.delete(schema.cashTags).where(eq(schema.cashTags.id, a));
       expect(
@@ -278,7 +288,8 @@ describe('cash fusion schema (migration 0075)', () => {
   describe('the two new movement columns', () => {
     it('dedupes an import per portfolio while leaving hand entries alone', async () => {
       await insertMovement({ dedupHash: 'statement-row-1' });
-      await expect(insertMovement({ dedupHash: 'statement-row-1' })).rejects.toThrow(
+      await expectDbRefusal(
+        insertMovement({ dedupHash: 'statement-row-1' }),
         /portfolio_cash_movements_dedup_unique/,
       );
       // NULL hashes are distinct — any number of manual rows coexist.
@@ -307,7 +318,8 @@ describe('cash fusion schema (migration 0075)', () => {
     });
 
     it('keeps "NULL means EUR" a true invariant', async () => {
-      await expect(insertMovement({ originalCurrency: 'EUR' })).rejects.toThrow(
+      await expectDbRefusal(
+        insertMovement({ originalCurrency: 'EUR' }),
         /portfolio_cash_movements_original_currency_not_eur/,
       );
       const id = await insertMovement({ originalCurrency: 'USD' });
