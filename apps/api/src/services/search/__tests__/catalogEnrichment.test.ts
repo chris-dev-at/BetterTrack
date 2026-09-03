@@ -17,6 +17,7 @@ import {
   ENRICH_GUARD_DONE,
   ENRICH_GUARD_RUNNING,
   ENRICH_GUARD_TTL_SECONDS,
+  ENRICH_MAX_HITS,
 } from '../catalogEnrichment';
 
 /**
@@ -59,6 +60,29 @@ describe('catalogEnrichment', () => {
     expect(await assetRepo.findGlobal('yahoo', 'BAYN.DE')).not.toBeNull();
     expect(await assetRepo.findGlobal('yahoo', 'MSFT')).not.toBeNull();
     expect(backfill.enqueued).toHaveLength(2);
+  });
+
+  it('caps how many provider hits one enrichment writes into the catalog', async () => {
+    const overflow = ENRICH_MAX_HITS + 5;
+    const { marketData, assetRepo, backfill, enrichment, h } = await makeEnrichment({
+      search: () =>
+        Array.from({ length: overflow }, (_, i) =>
+          providerHit({ providerRef: `HIT${i}`, symbol: `HIT${i}`, name: `Hit ${i}` }),
+        ),
+    });
+
+    await enrichment.request('hit');
+    await enrichment.settled();
+
+    expect(marketData.calls.search).toBe(1);
+    const rows = await h.db.select({ id: schema.assets.id }).from(schema.assets);
+    expect(rows).toHaveLength(ENRICH_MAX_HITS);
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+    // The admitted prefix is upserted…
+    expect(await assetRepo.findGlobal('yahoo', `HIT${ENRICH_MAX_HITS - 1}`)).not.toBeNull();
+    // …and everything past the cap is neither upserted nor enqueued.
+    expect(await assetRepo.findGlobal('yahoo', `HIT${ENRICH_MAX_HITS}`)).toBeNull();
+    expect(await assetRepo.findGlobal('yahoo', `HIT${overflow - 1}`)).toBeNull();
   });
 
   it('a request racing the guard write coalesces onto it and still reports enriching', async () => {

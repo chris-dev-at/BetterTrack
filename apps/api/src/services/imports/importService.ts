@@ -253,6 +253,14 @@ export const IMPORT_ENRICHMENT_WAIT_BUDGET_MS = 5_000;
  * staying far below the 150-instrument file cap. A query may coalesce or hit a
  * provider cache, but it still spends one slot because it could start upstream
  * work.
+ *
+ * The INTERACTIVE half of this same decision is `BT_SEARCH_ENRICHMENT_BUDGET`
+ * (`config/env.ts`, applied in `services/search/enrichmentBudget.ts`, #1709):
+ * distinct enrichment queries per user per window, with the identical
+ * "coalesced still spends a slot" rule. Both exist because one enrichment
+ * writes into the shared global catalog and enqueues a backfill per new row;
+ * the two budgets differ only in the unit that gets a ceiling — one import
+ * versus one user-minute.
  */
 export const IMPORT_ENRICHMENT_QUERY_BUDGET = 16;
 
@@ -746,7 +754,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       if (budget.remainingQueries <= 0 || budget.remainingWaitMs <= 0) return null;
 
       budget.remainingQueries -= 1;
-      const result = await search.search(userId, attempt.query);
+      // `budgetedByCaller`: the slot just spent above IS the ceiling for this
+      // fan-out (#1709), so the per-user interactive budget must not charge it
+      // a second time and leave an import's instruments unresolved.
+      const result = await search.search(userId, attempt.query, { budgetedByCaller: true });
       if (candidates) captureCandidates(candidates, attempt.query, result.results);
       const immediateHit = result.results.find(attempt.matches);
       if (immediateHit) return immediateHit;
