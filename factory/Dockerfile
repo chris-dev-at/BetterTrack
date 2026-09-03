@@ -22,14 +22,14 @@ RUN apt-get update && apt-get install -y git curl jq \
 # a fresh named volume mounted at /work/state inherits factory ownership and is writable.
 RUN useradd -m factory && mkdir -p /work/state && chown -R factory:factory /work
 USER factory
-# Antigravity CLI (agy) — the multi-factory's gemini provider. Installs to
-# ~/.local/bin; auth is NOT baked in (autorun.sh bind-mounts synced host auth
-# into /home/factory/.gemini at runtime).
+# The Antigravity CLI (agy) install lived here for the gemini provider, which
+# #1623 removed after it had never run a single production role. The ~/.local/bin
+# entry stays on PATH: it is the conventional per-user bin dir for anything a
+# provider bootstrap installs at runtime.
 ENV HOME=/home/factory
 ENV PATH="/home/factory/.local/bin:${PATH}"
 ENV CCR_EXPECTED_VERSION=3.0.7
 ENV CCR_FACTORY_PROFILE=bettertrack-factory-claudex
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 WORKDIR /work
 COPY --chown=factory run.sh lib.sh /work/
 # Bake prompts into the image as a fallback; compose bind-mounts factory/prompts
