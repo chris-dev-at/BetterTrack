@@ -1446,29 +1446,42 @@ function DividendIntelSection() {
         <div className="flex flex-col gap-1.5" style={{ marginTop: 12 }}>
           <h3 className="bt-label">{t('portfolio.dividends.calendarTitle')}</h3>
           <ul className="bt-band flex flex-col">
-            {visibleEntries.map((entry) => (
-              <li
-                key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
-                className="flex items-center justify-between gap-3 py-2 text-sm"
-              >
-                <Link
-                  className="bt-row-title"
-                  style={{ textDecoration: 'none' }}
-                  title={entry.name}
-                  to={`/assets/${entry.assetId}`}
+            {visibleEntries.map((entry) => {
+              // An entry may carry only a pay date (an event already gone ex, or
+              // a provider that gave no ex-date). Label the date we actually
+              // have, like the Home widget — rendering "ex —" for it is a lie.
+              const isEx = entry.exDate !== null;
+              const date = entry.exDate ?? entry.payDate;
+              return (
+                <li
+                  key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
+                  className="flex items-center justify-between gap-3 py-2 text-sm"
                 >
-                  {entry.symbol}
-                </Link>
-                <span className="bt-meta flex items-center gap-2">
-                  {entry.amount != null ? (
-                    <span className="bt-soft bt-num">
-                      {formatMoney(entry.amount, entry.currency ?? undefined)}
-                    </span>
-                  ) : null}
-                  <span>{t('portfolio.dividends.exOn', { date: formatDate(entry.exDate) })}</span>
-                </span>
-              </li>
-            ))}
+                  <Link
+                    className="bt-row-title"
+                    style={{ textDecoration: 'none' }}
+                    title={entry.name}
+                    to={`/assets/${entry.assetId}`}
+                  >
+                    {entry.symbol}
+                  </Link>
+                  <span className="bt-meta flex items-center gap-2">
+                    {entry.amount != null ? (
+                      <span className="bt-soft bt-num">
+                        {formatMoney(entry.amount, entry.currency ?? undefined)}
+                      </span>
+                    ) : null}
+                    {date !== null ? (
+                      <span>
+                        {t(isEx ? 'portfolio.dividends.exOn' : 'portfolio.dividends.payOn', {
+                          date: formatDate(date),
+                        })}
+                      </span>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
           {entries.length > 3 ? (
             <button

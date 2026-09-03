@@ -2097,6 +2097,7 @@
       "perYear": "projected / year",
       "calendarTitle": "Upcoming ex-dividend dates",
       "exOn": "ex {{date}}",
+      "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
       "showLess": "Show less"
     },
