@@ -38,7 +38,10 @@ import type { SessionService } from '../sessions/sessionService';
  * SET NULL, so the partner keeps the thread anonymized ("Deleted user"), closed
  * to new messages; conversations with both sides gone are purged. Rows that
  * merely *mention* the user (audit log, email log metadata) SET NULL their
- * actor column — after deletion no row keys to the user.
+ * actor column — after deletion no row keys to the user. Artifacts that live
+ * OUTSIDE the row graph get an explicit pre-delete reap: the data-export
+ * archives, whose rows would otherwise cascade away and leave a cleartext ZIP
+ * on the export volume (#1714).
  */
 export interface AccountDeletionServiceDeps {
   config: AppConfig;
@@ -59,6 +62,15 @@ export interface AccountDeletionServiceDeps {
    * other members' copies survive the deletion.
    */
   mirror: Pick<MirrorService, 'handleAccountDeletion'>;
+  /**
+   * Reap the account's data-export archives BEFORE the user row goes (#1714).
+   * `export_jobs.user_id` cascades, so deleting the row would otherwise drop the
+   * only pointer to a finished ZIP — a full cleartext copy of the account, from
+   * e-mail address to the whole portfolio ledger — and leave the file on the
+   * export volume with nothing able to reap it. The paranoid-enable transition
+   * already retires archives this way; deletion is the same requirement.
+   */
+  dataExport: { purgeUserArtifacts(userId: string): Promise<number> };
 }
 
 export interface AccountDeletionService {
@@ -90,6 +102,7 @@ export function createAccountDeletionService(
     passwordHasher,
     twoFactor,
     mirror,
+    dataExport,
   } = deps;
 
   // Per-account wrong-credential throttle (§10) on the same escalation ladder
@@ -184,6 +197,15 @@ export function createAccountDeletionService(
       // subsequent row delete only cascades this member's own copy away and
       // every other member's copy + the chain stay intact (V5-P7 M4).
       await mirror.handleAccountDeletion(userId);
+      // Unlink the export archives while the rows that point at them still
+      // exist. A filesystem failure here must not strand the deletion itself —
+      // the request is destructive and the user is entitled to it — so it is
+      // logged and the export directory sweep reaps whatever survived.
+      try {
+        await dataExport.purgeUserArtifacts(userId);
+      } catch (err) {
+        logger?.warn({ err, userId }, 'account deletion export artifact purge failed');
+      }
       await userRepo.remove(userId);
       // Repeat the compatibility scan after the durable delete. A request that
       // already observed the user as active can write between the first scan and
