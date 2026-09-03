@@ -29,3 +29,24 @@ export function driverError(error: unknown): unknown {
 export function isDriverErrorCode(error: unknown, code: string): boolean {
   return (driverError(error) as { code?: unknown } | null)?.code === code;
 }
+
+/**
+ * Ceiling on an error message copied into a durable sink — a `problems` row the
+ * admin page renders, a log line. Unwrapping the drizzle wrapper is what keeps
+ * the SQL and its bound parameters out of those sinks in the first place; this
+ * is the backstop for everything else, since neither the `text` column nor pino
+ * bounds what it is handed and a single failing write can carry a
+ * megabyte-sized value.
+ */
+export const MAX_ERROR_MESSAGE_CHARS = 2_000;
+
+/**
+ * Cap a message at {@link MAX_ERROR_MESSAGE_CHARS}, marking the cut so a
+ * truncated line is never mistaken for the whole error. Scrub BEFORE calling
+ * this: cutting first would leave the tail half of an email or token in place
+ * with nothing left to match it.
+ */
+export function truncateErrorMessage(message: string): string {
+  if (message.length <= MAX_ERROR_MESSAGE_CHARS) return message;
+  return `${message.slice(0, MAX_ERROR_MESSAGE_CHARS)}… [truncated]`;
+}

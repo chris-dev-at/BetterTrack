@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { driverError, truncateErrorMessage } from '../../data/driverError';
 import type { ProblemRepository } from '../../data/repositories/problemRepository';
 import type { ProblemRow } from '../../data/schema';
 import type { Logger } from '../../logger';
@@ -141,12 +142,23 @@ function fingerprintOf(kind: ProblemRow['kind'], title: string, message: string)
   return createHash('sha256').update(basis).digest('hex').slice(0, 40);
 }
 
-/** Pull a stable `{ name, message }` out of any thrown value. */
+/**
+ * Pull a stable `{ name, message }` out of any thrown value.
+ *
+ * Unwraps drizzle's `DrizzleQueryError` first: since 0.44 its message is the
+ * failing SQL plus every bound parameter, so describing it verbatim would fold
+ * the row's contents — note text, asset names, amounts, a password hash, a
+ * megabyte vault blob — into a `problems` row the admin page renders and the
+ * scrubber (emails and `bt*_` tokens only) cannot see. The wrapped driver error
+ * carries the message the page actually wants ("duplicate key value violates
+ * unique constraint …"), which is exactly what this captured pre-0.44.
+ */
 function describeError(err: unknown): { name: string; message: string } {
-  if (err instanceof Error) {
-    return { name: err.name || 'Error', message: err.message || '' };
+  const cause = driverError(err);
+  if (cause instanceof Error) {
+    return { name: cause.name || 'Error', message: cause.message || '' };
   }
-  if (typeof err === 'string') return { name: 'Error', message: err };
+  if (typeof cause === 'string') return { name: 'Error', message: cause };
   return { name: 'Error', message: '' };
 }
 
@@ -206,8 +218,12 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     rawMessage: string,
     context: ProblemCaptureContext | null,
   ): void => {
-    const title = redactString(rawTitle);
-    const message = redactString(rawMessage);
+    // Scrub, THEN cap: the scrubber must see the whole string (a token cut in
+    // half matches nothing), and `problems.title`/`.message` are unbounded
+    // `text` that the admin page renders, so nothing else keeps a pathological
+    // message from becoming the row.
+    const title = truncateErrorMessage(redactString(rawTitle));
+    const message = truncateErrorMessage(redactString(rawMessage));
     // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
     // token bodies) that the stored row does not, so fingerprinting them would
     // split one visible problem into a row per user.

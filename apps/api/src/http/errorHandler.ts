@@ -1,6 +1,7 @@
 import type { ErrorRequestHandler } from 'express';
 import { ZodError } from 'zod';
 
+import { driverError, truncateErrorMessage } from '../data/driverError';
 import { ApiError, EnvelopeApiError } from '../errors';
 import type { Logger } from '../logger';
 
@@ -17,8 +18,15 @@ export type ErrorReporter = (err: unknown) => void;
  */
 export function createErrorHandler(logger: Logger, report?: ErrorReporter): ErrorRequestHandler {
   const reportUnexpected = (err: unknown) => {
+    // Log the DRIVER failure, not drizzle's wrapper: since 0.44 a wrapped query
+    // error's message is the failing SQL plus every bound parameter, so logging
+    // it verbatim would write the row's contents into the log — which pino's
+    // key-based `redact` cannot help with, the value being one string. Capped
+    // for the same reason. `report` still gets the error as thrown: the problem
+    // service unwraps it itself and wants the cause chain intact.
+    const cause = driverError(err);
     logger.error(
-      { err: err instanceof Error ? err.message : 'unknown' },
+      { err: cause instanceof Error ? truncateErrorMessage(cause.message) : 'unknown' },
       'Unhandled request error',
     );
     report?.(err);
