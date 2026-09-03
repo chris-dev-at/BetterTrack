@@ -23,6 +23,22 @@ build, while HIGH findings remain in the nightly report for triage. The operator
 workflow and the narrow waiver path are documented in
 [`docs/supply-chain.md`](supply-chain.md).
 
+Two dependencies sit partly outside the automated lanes and are therefore
+**tracked by hand**:
+
+- `drizzle-orm` / `drizzle-kit` — Dependabot is fenced off their 0.x minors
+  (`.github/dependabot.yml`), because a 0.x minor spans the schema layer and
+  needs a dedicated PR that re-runs `db:generate` (#1217). Patches still flow
+  through the grouped lane, so **a drizzle advisory fixed only in the next
+  minor will not open a PR on its own** — check the drizzle releases when one
+  is reported and raise the upgrade issue manually.
+- `shell-quote` is pinned forward in the root `pnpm.overrides` block
+  (GHSA-395f-4hp3-45gv). Nothing here depends on it directly:
+  `drizzle-orm`'s optional `gel` peer drags it onto the **production** audit
+  path, so the pin is what keeps `pnpm audit --prod` clean without a waiver.
+  Drop the override only after confirming the package has left the production
+  tree (`pnpm why shell-quote`).
+
 Dependabot owns GitHub Actions and npm updates. Renovate owns the deployable
 Dockerfiles via [`renovate.json`](../renovate.json): its Dockerfile manager
 updates every `FROM` stage and groups base-image digest changes into one

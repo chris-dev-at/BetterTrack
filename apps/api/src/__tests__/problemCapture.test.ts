@@ -1,8 +1,10 @@
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createErrorHandler } from '../http/errorHandler';
+import { MAX_ERROR_MESSAGE_CHARS } from '../data/driverError';
 import { problems } from '../data/schema';
 import {
   createProblemService,
@@ -152,6 +154,58 @@ describe('problem capture (Sentry replacement)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.kind).toBe('error');
     expect(rows[0]!.message).not.toContain('secret@example.com');
+  });
+
+  it('captures the driver failure, not drizzle’s SQL-and-parameters wrapper', async () => {
+    // drizzle-orm ≥0.44 rethrows every driver failure as a `DrizzleQueryError`
+    // whose message is the statement plus its bound parameters. Captured
+    // verbatim that puts the row's contents — here a note body — into a
+    // `problems` row the admin page renders, past a scrubber that only knows
+    // emails and `bt*_` tokens.
+    const driverFailure = Object.assign(
+      new Error('duplicate key value violates unique constraint "vault_blobs_pkey"'),
+      { code: '23505', constraint: 'vault_blobs_pkey' },
+    );
+    harness.ctx.problems.captureError(
+      new DrizzleQueryError(
+        'insert into "portfolio_cash_movements" ("note") values ($1)',
+        ['rent for the Berlin flat'],
+        driverFailure,
+      ),
+    );
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.message).toBe(
+      'duplicate key value violates unique constraint "vault_blobs_pkey"',
+    );
+    expect(rows[0]!.message).not.toContain('rent for the Berlin flat');
+    expect(rows[0]!.message).not.toContain('insert into');
+    expect(JSON.stringify(rows[0])).not.toContain('rent for the Berlin flat');
+  });
+
+  it('caps a pathological message so one capture cannot become a megabyte row', async () => {
+    harness.ctx.problems.captureError(new Error(`blob rejected: ${'A'.repeat(50_000)}`));
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    expect(row!.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
+    expect(row!.message.startsWith('blob rejected: AAA')).toBe(true);
+    expect(row!.message).toContain('[truncated]');
+  });
+
+  it('still scrubs a message that is then truncated — the cut cannot expose PII', async () => {
+    // Scrub-then-cap ordering: an email sitting past the cap is redacted first,
+    // so no half of it survives at the boundary either.
+    const long = 'x'.repeat(MAX_ERROR_MESSAGE_CHARS - 20);
+    harness.ctx.problems.captureError(new Error(`${long} alice@example.com ${long}`));
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    expect(row!.message).toContain('[redacted-email]');
+    expect(row!.message).not.toContain('alice@');
+    expect(row!.message).not.toContain('example.com');
   });
 });
 

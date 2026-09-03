@@ -21,6 +21,7 @@ import type {
   CashRuleRepository,
 } from '../../data/repositories/cashRuleRepository';
 import type { CashTagRecord, CashTagRepository } from '../../data/repositories/cashTagRepository';
+import { isDriverErrorCode } from '../../data/driverError';
 import { badRequest, conflict, notFound } from '../../errors';
 import { isSupportedCashRuleRegex, tagsByRules } from './cashRuleEngine';
 
@@ -50,7 +51,7 @@ const RULE_REGEX_UNSUPPORTED = () =>
 
 /** Postgres unique-violation, raised by the case-insensitive name index. */
 function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err && err.code === '23505';
+  return isDriverErrorCode(err, '23505');
 }
 
 /** The default tint a tag gets when the client sends none. */
