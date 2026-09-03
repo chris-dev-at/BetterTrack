@@ -370,7 +370,7 @@ test.describe('V5-P14 required-scenario gate', () => {
       },
       {
         spec: 'e2e/vault-session-sharing.spec.ts',
-        title: 're-locks on reload, unlocks in one step, is shared across tabs, and dies on lock',
+        title: 'survives a reload, unlocks in one step, is shared across tabs, and dies on lock',
       },
       {
         spec: 'e2e/paranoid-e10.spec.ts',
