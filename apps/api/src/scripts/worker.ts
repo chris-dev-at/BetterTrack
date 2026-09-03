@@ -301,7 +301,8 @@ const notify = createNotificationCenter({
 });
 
 // Account data export (§13.4 V4-P6a, #494): the build + daily cleanup jobs close
-// over the export service. Only buildExport/cleanupExpired run here (the re-auth
+// over the export service. Only buildExport/cleanupExpired/sweepOrphanedArtifacts
+// run here (the re-auth
 // deps below back the HTTP request path and are inert on the worker); enqueue is
 // wired to the durable queue for completeness though the worker never requests.
 const exportUserRepo = createUserRepository(db);

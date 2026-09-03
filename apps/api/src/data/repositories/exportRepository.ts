@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNotNull, lte } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNotNull, lte } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { exportJobs, users, type ExportJobRow } from '../schema';
@@ -52,8 +52,16 @@ export interface ExportRepository {
   }): Promise<void>;
   /** Mark a job failed with a coarse reason (never a stack/secret). */
   markFailed(id: string, error: string): Promise<void>;
+  /** Every job the user owns, newest first — for the pre-deletion artifact reap. */
+  findAllForUser(userId: string): Promise<ExportJobRow[]>;
   /** Ready jobs whose download window has closed (for the cleanup sweep). */
   findExpired(now: Date): Promise<ExportJobRow[]>;
+  /**
+   * Of the given absolute paths, the subset some job row still points at. The
+   * directory sweep asks this to tell a live artifact from an orphan; the input
+   * is the sweep's own bounded candidate list, so the IN list stays small.
+   */
+  findReferencedFilePaths(paths: string[]): Promise<Set<string>>;
   /** Delete a job row by id. */
   deleteById(id: string): Promise<void>;
 }
@@ -136,11 +144,30 @@ export function createExportRepository(db: Database): ExportRepository {
       await db.update(exportJobs).set({ status: 'failed', error }).where(eq(exportJobs.id, id));
     },
 
+    async findAllForUser(userId) {
+      return db
+        .select()
+        .from(exportJobs)
+        .where(eq(exportJobs.userId, userId))
+        .orderBy(desc(exportJobs.createdAt));
+    },
+
     async findExpired(now) {
       return db
         .select()
         .from(exportJobs)
         .where(and(isNotNull(exportJobs.expiresAt), lte(exportJobs.expiresAt, now)));
+    },
+
+    async findReferencedFilePaths(paths) {
+      if (paths.length === 0) return new Set<string>();
+      const rows = await db
+        .select({ filePath: exportJobs.filePath })
+        .from(exportJobs)
+        .where(inArray(exportJobs.filePath, paths));
+      return new Set(
+        rows.map((row) => row.filePath).filter((path): path is string => path !== null),
+      );
     },
 
     async deleteById(id) {

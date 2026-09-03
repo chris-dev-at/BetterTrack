@@ -1,3 +1,8 @@
+import { existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
+
 import request from 'supertest';
 import type { Application } from 'express';
 import { eq, sql } from 'drizzle-orm';
@@ -31,6 +36,8 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+/** This suite's own export directory (the deletion reap asserts on real files). */
+const EXPORT_DIR = joinPath(tmpdir(), 'bettertrack-test-deletion-exports');
 
 let harness: TestHarness;
 
@@ -553,6 +560,45 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
       .set(...XRW)
       .send({ identifier: user.email, password: user.password });
     expect(relogin.status).toBe(401);
+  });
+
+  it('reaps the data-export archive left on disk (#1714)', async () => {
+    // "Export my data, then delete my account" is the canonical privacy-conscious
+    // sequence. `export_jobs.user_id` cascades, so the row that points at the zip
+    // disappears with the user — the archive (e-mail, feedback, chat the user
+    // authored, the whole ledger, in cleartext) must not be left behind with
+    // nothing able to reap it.
+    await rm(EXPORT_DIR, { recursive: true, force: true });
+    harness = await createTestApp({ env: { BT_EXPORT_DIR: EXPORT_DIR } });
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+    const [job] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.userId, user.id));
+    expect(job?.status).toBe('ready');
+    const archivePath = job!.filePath!;
+    expect(existsSync(archivePath)).toBe(true);
+
+    // Deleted well inside the 24 h download window.
+    const res = await deleteAccount(agent, {
+      confirmUsername: user.username,
+      password: user.password,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    expect(existsSync(archivePath)).toBe(false);
+    const remaining = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.userId, user.id));
+    expect(remaining).toHaveLength(0);
+    await rm(EXPORT_DIR, { recursive: true, force: true });
   });
 });
 

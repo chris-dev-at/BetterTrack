@@ -240,6 +240,10 @@ export interface CreateTestAppOptions {
   exportEnqueue?: (jobId: string) => Promise<void>;
   /** Pause an export after collection while its account transition lock is held. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
+  /** Shrink the export build ceilings (#1714) so the clean-refusal path is provable. */
+  exportLimits?: { maxRows?: number; maxContentBytes?: number };
+  /** Shrink the absolute export-download bound (#1714) to a test-sized window. */
+  exportDownloadMaxMs?: number;
   /**
    * Controlled clock for the notification service (#437) — makes the
    * auto-archive sweep threshold provable deterministically.
@@ -343,6 +347,8 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     notificationEnqueue: options.notificationEnqueue,
     exportEnqueue: options.exportEnqueue,
     exportAfterCollect: options.exportAfterCollect,
+    exportLimits: options.exportLimits,
+    exportDownloadMaxMs: options.exportDownloadMaxMs,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,
