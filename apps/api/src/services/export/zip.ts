@@ -2,6 +2,12 @@ import { strToU8, zipSync } from 'fflate';
 
 import type { VaultDocKind, VaultMediaList, VaultMediaSet } from '@bettertrack/contracts';
 
+import {
+  EXPORT_MAX_ARCHIVE_BYTES,
+  EXPORT_MAX_CONTENT_BYTES,
+  ExportTooLargeError,
+  stringifyBounded,
+} from './limits';
 import { EXPORT_TABLE_CLASSIFICATION } from './manifest';
 import type { CollectedExport } from './collector';
 
@@ -52,8 +58,11 @@ export function buildExportZip(input: {
   generatedAt: Date;
   paranoid?: ParanoidCiphertextExport;
   vaults?: VaultCiphertextExport[];
+  /** Override the packaged-bytes ceiling (tests); defaults to the real limit. */
+  maxContentBytes?: number;
 }): Buffer {
   const { userId, collected, generatedAt, paranoid } = input;
+  const maxContentBytes = input.maxContentBytes ?? EXPORT_MAX_CONTENT_BYTES;
   const vaults = (input.vaults ?? [])
     .map((vault) => ({
       ...vault,
@@ -109,28 +118,44 @@ export function buildExportZip(input: {
     skippedTables: skipped,
   };
 
-  const files: Record<string, Uint8Array> = {
-    'manifest.json': strToU8(JSON.stringify(manifest, null, 2)),
-    'README.txt': strToU8(paranoid ? PARANOID_README : README),
+  const files: Record<string, Uint8Array> = {};
+  // Packaging is fully buffered, so the bytes are accounted as they are added
+  // and the build is refused the moment it crosses the ceiling — before the
+  // remaining entities are serialized, and long before the worker runs out of
+  // memory (#1714).
+  let contentBytes = 0;
+  const addFile = (name: string, bytes: Uint8Array): void => {
+    contentBytes += bytes.byteLength;
+    if (contentBytes > maxContentBytes) {
+      throw new ExportTooLargeError('content_bytes', contentBytes, maxContentBytes);
+    }
+    files[name] = bytes;
   };
+
+  addFile('manifest.json', strToU8(stringifyBounded(manifest, 'content_bytes')));
+  addFile('README.txt', strToU8(paranoid ? PARANOID_README : README));
   if (paranoid?.vault) {
-    files['paranoid/current-vault.btvault'] = paranoid.vault.blob;
+    addFile('paranoid/current-vault.btvault', paranoid.vault.blob);
   }
   for (const vault of vaults) {
     for (const doc of vault.docs) {
-      files[`paranoid/vaults/${vault.vaultId}/docs/${doc.docId}.btvault`] = doc.blob;
+      addFile(`paranoid/vaults/${vault.vaultId}/docs/${doc.docId}.btvault`, doc.blob);
     }
   }
   if (!paranoid) {
-    files['csv/transactions.csv'] = strToU8(collected.csv.transactions);
-    files['csv/cash-movements.csv'] = strToU8(collected.csv.cashMovements);
-    files['csv/holdings.csv'] = strToU8(collected.csv.holdings);
+    addFile('csv/transactions.csv', strToU8(collected.csv.transactions));
+    addFile('csv/cash-movements.csv', strToU8(collected.csv.cashMovements));
+    addFile('csv/holdings.csv', strToU8(collected.csv.holdings));
   }
   for (const [entity, rows] of Object.entries(collected.entities)) {
-    files[`data/${entity}.json`] = strToU8(JSON.stringify(rows, null, 2));
+    addFile(`data/${entity}.json`, strToU8(stringifyBounded(rows, 'content_bytes')));
   }
 
-  return Buffer.from(zipSync(files));
+  const archive = Buffer.from(zipSync(files));
+  if (archive.byteLength > EXPORT_MAX_ARCHIVE_BYTES) {
+    throw new ExportTooLargeError('archive_bytes', archive.byteLength, EXPORT_MAX_ARCHIVE_BYTES);
+  }
+  return archive;
 }
 
 const README = `BetterTrack — account data export

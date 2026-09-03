@@ -1367,6 +1367,8 @@
       "download": "Download export",
       "downloadFailed": "Could not download your export. The one-time link may have expired or already been used.",
       "expired": "Your last export has expired. Request a new one to download your data.",
+      "failed": "Your last export could not be built. Please request a new one — your daily allowance was not used.",
+      "failedTooLarge": "Your account holds more data than a single export archive can carry, so nothing was built and your daily allowance was not used. Ask your administrator to raise the export limit.",
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",
       "rateLimited": "You can request a data export once per day. Please try again later.",
