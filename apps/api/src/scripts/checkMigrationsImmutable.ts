@@ -22,8 +22,9 @@ import { join } from 'node:path';
  * content) or a deletion. Deterministic, network-free, git-only.
  *
  * It ALSO checks the other end of the same `max(created_at)` mechanic: a NEWLY
- * appended entry whose `when` is not greater than the base journal's newest
- * `when`. That is the mirror-image failure and it is SILENT, not loud. A branch
+ * appended entry whose `when` is not greater than the RELEASED journal's newest
+ * `when` (main's tip in CI — see `releasedRef` below). That is the mirror-image
+ * failure and it is SILENT, not loud. A branch
  * cut before some other migration landed on main carries a `when` stamped
  * earlier than main's tail; after the merge, a deployed DB has already recorded
  * that later `created_at`, so the applier's `lastDbMigration.created_at <
@@ -137,9 +138,11 @@ for (const base of baseJournal.entries) {
 }
 
 // Newly appended entries must sort AFTER everything already released, or a
-// deployed DB silently skips them forever (see the header). The base tail is
-// the bar: `max(when)` over the base journal, matching what the applier reads
-// out of `drizzle.__drizzle_migrations` on a DB that is up to date with base.
+// deployed DB silently skips them forever (see the header). The RELEASED tail
+// is the bar: `max(when)` over the released journal (main's tip in CI),
+// matching what the applier reads out of `drizzle.__drizzle_migrations` on a
+// DB that is up to date with main — never the merge-base, which may predate
+// migrations a deployed DB has already recorded.
 // The released bar is the tip of the target branch (see the header): everything
 // a deployed DB may already have recorded. When no separate released ref was
 // given it is the base journal itself.
@@ -148,20 +151,40 @@ if (releasedRef !== baseRef) {
   try {
     releasedJournal = JSON.parse(show(releasedRef, JOURNAL)) as Journal;
   } catch {
-    console.log(`No journal at ${releasedRef} — using ${baseRef} as the released bar.`);
+    // The released ref was named explicitly; a journal missing there is an
+    // infrastructure fault, and silently lowering the bar to the base would be
+    // the fail-open direction.
+    console.error(`No journal at ${releasedRef} — cannot establish the released bar.`);
+    process.exit(1);
   }
 }
 const baseIdx = new Set(baseJournal.entries.map((e) => e.idx));
-const releasedIdx = new Set(releasedJournal.entries.map((e) => e.idx));
+const releasedByIdx = new Map(releasedJournal.entries.map((e) => [e.idx, e]));
 const releasedMaxWhen = releasedJournal.entries.reduce(
   (max, e) => (e.when > max ? e.when : max),
   -Infinity,
 );
 const releasedTail = releasedJournal.entries.find((e) => e.when === releasedMaxWhen);
-// NEW = this PR's own entries: absent from its base AND not already released.
-const newEntries = headJournal.entries.filter(
-  (e) => !baseIdx.has(e.idx) && !releasedIdx.has(e.idx),
-);
+// NEW = this PR's own entries: absent from its base and not already released.
+// "Released" is decided by IDENTITY (idx + tag + when), never by idx alone: a
+// PR that appended idx N while main gained a different idx N since the
+// merge-base is a collision, not a released entry — it is refused here even
+// though the journal merge would conflict anyway (defense in depth).
+const newEntries: JournalEntry[] = [];
+for (const entry of headJournal.entries) {
+  if (baseIdx.has(entry.idx)) continue;
+  const released = releasedByIdx.get(entry.idx);
+  if (released === undefined) {
+    newEntries.push(entry);
+    continue;
+  }
+  if (released.tag !== entry.tag || released.when !== entry.when) {
+    violations.push(
+      `${entry.tag}: idx ${entry.idx} COLLIDES with released ${released.tag} (when ${released.when}) ` +
+        `at ${releasedRef}. Renumber your entry to follow the released tail and re-stamp its \`when\`.`,
+    );
+  }
+}
 
 for (const entry of newEntries) {
   if (entry.when > releasedMaxWhen) continue;

@@ -127,8 +127,11 @@ jobs:
         # the bar a NEW entry's `when` must clear.
         run: |
           git fetch origin main --quiet
-          pnpm --filter @bettertrack/api check:migrations-immutable \
-            "$(git merge-base origin/main HEAD)" HEAD origin/main
+          # Assigned on its own line: under `bash -e` a failing substitution
+          # inside an argument list does NOT stop the step, and an empty base
+          # would make the script compare HEAD against the index — silently green.
+          base="$(git merge-base origin/main HEAD)"
+          pnpm --filter @bettertrack/api check:migrations-immutable "$base" HEAD origin/main
 
       - name: Build
         run: pnpm build
