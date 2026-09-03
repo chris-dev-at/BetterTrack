@@ -1,3 +1,6 @@
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+
 import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
@@ -17,9 +20,11 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret } from '../crypto/secretBox';
 import {
   WEBHOOK_RECEIVER_URL_POLICY,
-  assertSafeOutboundUrl,
+  createPinnedAgent,
   isOutboundPolicyRefusal,
+  resolveSafeOutboundUrl,
   type OutboundUrlResolver,
+  type ResolvedOutboundUrl,
 } from '../security/outboundUrlGuard';
 
 import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
@@ -34,7 +39,10 @@ import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
  * Egress policy: the target is user-supplied, so every attempt re-runs the
  * outbound guard under {@link WEBHOOK_RECEIVER_URL_POLICY} before anything is
  * signed or sent. A refused destination is terminal and logged without a
- * `responseStatus`; see the comment in `deliver`.
+ * `responseStatus`; see the comment in `deliver`. The vetted addresses travel
+ * with the request as {@link WebhookTransportRequest.target} and the transport
+ * pins them into the socket, so the connect cannot resolve the hostname a
+ * second time and land somewhere else (DNS rebinding).
  *
  * Retry model: one `deliver` call is ONE attempt. On a non-final failed attempt
  * it returns `retry` and the BullMQ job throws so the queue re-runs it with
@@ -58,6 +66,13 @@ export interface WebhookTransportRequest {
   url: string;
   headers: Record<string, string>;
   body: string;
+  /**
+   * The destination as the guard vetted it for THIS attempt: the parsed URL plus
+   * the addresses that passed the policy. A transport that opens a real socket
+   * must connect to one of these addresses (see
+   * {@link createPinnedWebhookTransport}) rather than resolving `url` again.
+   */
+  target: ResolvedOutboundUrl;
 }
 
 export interface WebhookTransport {
@@ -211,10 +226,12 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
       // user-supplied, so it is re-resolved and re-checked on EVERY attempt: a
       // hostname that was public when the subscription was created can point at
       // loopback by now (DNS rebinding). Nothing is signed or sent before this
-      // passes. Residual: the transport resolves once more when it connects —
-      // that window is why the guard runs per attempt rather than once.
+      // passes. The resolution happens exactly ONCE per attempt and its vetted
+      // addresses are handed to the transport, which pins them into the socket
+      // — a second lookup at connect time cannot substitute another address.
+      let target: ResolvedOutboundUrl;
       try {
-        await assertSafeOutboundUrl(sub.url, {
+        target = await resolveSafeOutboundUrl(sub.url, {
           ...WEBHOOK_RECEIVER_URL_POLICY,
           resolver: dnsResolver,
         });
@@ -296,7 +313,7 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
 
       let result: WebhookTransportResult;
       try {
-        result = await transport.send({ url: sub.url, headers, body });
+        result = await transport.send({ url: sub.url, headers, body, target });
       } catch (err) {
         result = { ok: false, status: null, error: err instanceof Error ? err.message : 'error' };
       }
@@ -330,31 +347,61 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
 }
 
 /**
- * The production transport: a single `fetch` POST bounded by a timeout. A non-2xx
+ * The production transport: a single POST bounded by a timeout. A non-2xx
  * response or any thrown error is a failure the caller counts toward retries.
+ *
+ * It deliberately does NOT use `fetch`: `fetch` resolves the hostname itself at
+ * connect time, which would discard the guard's vetted answer and re-open the
+ * DNS-rebinding window the per-attempt guard exists to close. Instead the
+ * request runs over a single-use agent pinned to exactly the addresses the guard
+ * approved for this attempt ({@link createPinnedAgent}) — for `https:` and, per
+ * {@link WEBHOOK_RECEIVER_URL_POLICY}, plain `http:` receivers alike. Redirects
+ * are never followed (a 3xx is just a non-2xx failure), so a receiver cannot
+ * bounce the signed POST to an unvetted destination either. The response body is
+ * drained and never read.
  */
-export function createFetchWebhookTransport(timeoutMs = 10_000): WebhookTransport {
+export function createPinnedWebhookTransport(timeoutMs = 10_000): WebhookTransport {
   return {
-    async send({ url, headers, body }) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+    async send({ headers, body, target }) {
+      const agent = createPinnedAgent(target);
+      const payload = Buffer.from(body, 'utf8');
+      const send = target.url.protocol === 'http:' ? httpRequest : httpsRequest;
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body,
-          signal: controller.signal,
-          redirect: 'manual',
+        return await new Promise<WebhookTransportResult>((resolve) => {
+          // One shared cell so the deadline can be cleared by whichever of the
+          // response, the error or the timeout itself settles the attempt first.
+          const attempt: { settled: boolean; timer?: ReturnType<typeof setTimeout> } = {
+            settled: false,
+          };
+          const finish = (result: WebhookTransportResult): void => {
+            if (attempt.settled) return;
+            attempt.settled = true;
+            if (attempt.timer !== undefined) clearTimeout(attempt.timer);
+            resolve(result);
+          };
+
+          const req = send(target.url, {
+            method: 'POST',
+            agent,
+            headers: { ...headers, 'content-length': String(payload.byteLength) },
+          });
+          attempt.timer = setTimeout(() => {
+            req.destroy(new Error('timeout'));
+            finish({ ok: false, status: null, error: 'timeout' });
+          }, timeoutMs);
+
+          req.on('response', (res) => {
+            const status = res.statusCode ?? null;
+            const ok = status !== null && status >= 200 && status < 300;
+            res.resume(); // never read the receiver's body
+            res.on('end', () => finish({ ok, status }));
+            res.on('error', () => finish({ ok, status }));
+          });
+          req.on('error', (err: Error) => finish({ ok: false, status: null, error: err.message }));
+          req.end(payload);
         });
-        return { ok: res.ok, status: res.status };
-      } catch (err) {
-        return {
-          ok: false,
-          status: null,
-          error: err instanceof Error ? err.message : 'network error',
-        };
       } finally {
-        clearTimeout(timer);
+        agent.destroy();
       }
     },
   };

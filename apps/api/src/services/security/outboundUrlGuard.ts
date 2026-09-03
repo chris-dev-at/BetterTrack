@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises';
+import { Agent as HttpAgent } from 'node:http';
 import { Agent as HttpsAgent } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import type { LookupFunction } from 'node:net';
@@ -247,28 +248,33 @@ async function inspectOutboundUrl(
 }
 
 /**
- * Resolve and validate an HTTPS destination immediately before egress.
+ * Resolve and validate a destination immediately before egress. HTTPS-only and
+ * public-only unless the caller's policy relaxes those axes (see
+ * {@link WEBHOOK_RECEIVER_URL_POLICY}); DNS always runs, so the result always
+ * carries the vetted address set for a literal or a hostname alike.
  *
- * Callers must pin `addresses` into the actual connection so a second DNS
- * lookup cannot replace the vetted result.
+ * Callers must pin `addresses` into the actual connection — with
+ * {@link createPinnedAgent} — so a second DNS lookup cannot replace the vetted
+ * result.
  */
 export function resolveSafeOutboundUrl(
   input: string,
-  options: Pick<OutboundUrlGuardOptions, 'resolver'> = {},
+  options: Pick<OutboundUrlGuardOptions, 'resolver' | 'allowHttp' | 'allowPrivateLan'> = {},
 ): Promise<ResolvedOutboundUrl> {
   return inspectOutboundUrl(input, options);
 }
 
 /**
- * Build a one-destination HTTPS agent whose socket lookup can return only the
- * already-vetted address set. The request keeps its original hostname, so Node
- * still verifies the certificate and sends SNI for that hostname.
+ * The socket lookup that can only ever answer with the already-vetted address
+ * set, and only for the hostname that was vetted. This is what closes the
+ * DNS-rebinding window between the guard's resolution and the connect: the
+ * system resolver is never consulted a second time.
  */
-export function createPinnedHttpsAgent(target: ResolvedOutboundUrl): HttpsAgent {
+function createPinnedLookup(target: ResolvedOutboundUrl): LookupFunction {
   const expectedHostname = normalizedHostname(target.url.hostname);
   const pinnedAddresses = [...target.addresses];
 
-  const pinnedLookup: LookupFunction = (hostname, options, callback) => {
+  return (hostname, options, callback) => {
     if (normalizedHostname(hostname) !== expectedHostname) {
       callback(new UnsafeOutboundUrlError('invalid_resolved_address'), '', 0);
       return;
@@ -291,8 +297,33 @@ export function createPinnedHttpsAgent(target: ResolvedOutboundUrl): HttpsAgent 
     }
     callback(null, candidates[0]!.address, candidates[0]!.family);
   };
+}
 
-  return new HttpsAgent({ keepAlive: false, lookup: pinnedLookup });
+/**
+ * Build a one-destination HTTPS agent whose socket lookup can return only the
+ * already-vetted address set. The request keeps its original hostname, so Node
+ * still verifies the certificate and sends SNI for that hostname.
+ */
+export function createPinnedHttpsAgent(target: ResolvedOutboundUrl): HttpsAgent {
+  return new HttpsAgent({ keepAlive: false, lookup: createPinnedLookup(target) });
+}
+
+/**
+ * Scheme-aware sibling of {@link createPinnedHttpsAgent}: the same pin, but for
+ * callers whose policy also permits plain `http:` (webhook receivers, see
+ * {@link WEBHOOK_RECEIVER_URL_POLICY}). The returned agent belongs to the
+ * target's own protocol, so it must be handed to a request of that protocol —
+ * Node refuses an `http.Agent` on an HTTPS request and vice versa.
+ *
+ * The caller owns the agent's lifetime and should `destroy()` it once the
+ * request settles; it is deliberately single-use (`keepAlive: false`) so a
+ * pooled socket can never outlive the resolution that vetted it.
+ */
+export function createPinnedAgent(target: ResolvedOutboundUrl): HttpAgent | HttpsAgent {
+  if (target.url.protocol === 'http:') {
+    return new HttpAgent({ keepAlive: false, lookup: createPinnedLookup(target) });
+  }
+  return createPinnedHttpsAgent(target);
 }
 
 /**
