@@ -32,14 +32,18 @@ export function AddWidgetDrawer({
     widgetsInGroup(group).filter(
       (definition) => definition.capability === undefined || capabilities[definition.capability],
     );
+  // Resolve each group's offering once, then drop the emptied ones.
+  const groups = WIDGET_GROUPS.map((group) => ({ group, items: offered(group) })).filter(
+    ({ items }) => items.length > 0,
+  );
 
   return (
     <Drawer onClose={onClose} open={open} title={t('home.builder.addTitle')}>
-      {WIDGET_GROUPS.filter((group) => offered(group).length > 0).map((group) => (
+      {groups.map(({ group, items }) => (
         <div className="bt-home-catalog__group" key={group}>
           <p className="bt-label">{t(`home.builder.group.${group}`)}</p>
           <div className="bt-home-catalog">
-            {offered(group).map((definition) => (
+            {items.map((definition) => (
               <button
                 className="bt-home-catalog__item"
                 key={definition.type}

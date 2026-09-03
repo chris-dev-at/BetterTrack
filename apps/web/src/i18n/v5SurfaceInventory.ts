@@ -409,7 +409,7 @@ export const V5_SURFACE_INVENTORY = [
       'home.widgets.dividends',
     ],
     copyReview:
-      'Dividend, earnings, split, per-asset news, digest and roll-up truncation wording reviewed, plus the two home widgets and the catalog rows that offer them.',
+      'Dividend, earnings, split, per-asset news, digest and roll-up truncation wording reviewed; the two home widgets and the catalog rows that offer them were reviewed for their own copy only — a capped six-row glance carries no truncation line by design.',
     states: {
       loading: unverified(
         'Digest renders skeletons; embedded blocks avoid layout churn; both home widgets render skeleton blocks.',

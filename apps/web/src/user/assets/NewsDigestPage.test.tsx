@@ -107,9 +107,25 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     renderPage();
     expect(
       await screen.findByText(
-        'Partial digest: you hold or watch more assets than we look up in one pass, so some are missing below.',
+        'Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here.',
       ),
     ).toBeInTheDocument();
+  });
+
+  test('says a capped digest is partial even when it produced no groups (regression)', async () => {
+    // The cap selects from the raw book, before the news-capability filter, so a
+    // capped selection can come back with nothing to show. The empty state is an
+    // affirmative claim about the WHOLE book ("News appears here once there are
+    // headlines for the assets you hold or watch") — it may not stand alone
+    // while most of the book was never looked up.
+    vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [], truncated: true });
+    renderPage();
+    expect(
+      await screen.findByText(
+        'Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No recent news')).toBeInTheDocument();
   });
 
   test('stays silent about truncation for a digest that covered the whole book', async () => {
@@ -123,6 +139,8 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [] });
     renderPage();
     expect(await screen.findByText('No recent news')).toBeInTheDocument();
+    // A genuinely quiet book covered in full stays free of the partial line.
+    expect(screen.queryByText(/Partial digest/)).not.toBeInTheDocument();
   });
 
   test('shows a graceful error state when the request fails', async () => {
