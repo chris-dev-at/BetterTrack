@@ -5,6 +5,7 @@ export {
   jobOutcomesTotal,
   metricsContentType,
   metricsRegistry,
+  problemCapturesDroppedTotal,
   providerCallsTotal,
   queueDepth,
   readCounter,

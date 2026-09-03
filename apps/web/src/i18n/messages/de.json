@@ -5007,7 +5007,12 @@
       "firstSeen": "Zuerst gesehen",
       "lastSeen": "Zuletzt gesehen",
       "fingerprint": "Fingerprint",
+      "route": "Route",
+      "httpStatus": "HTTP-Status",
+      "requestId": "Request-ID",
+      "stack": "Stacktrace",
       "context": "Kontext",
+      "dropped": "{{count}} Erfassungen wurden im aktuellen Zeitfenster vom Ratenlimit verworfen – diese Liste ist unvollständig.",
       "resolve": "Erledigen",
       "reopen": "Wieder öffnen"
     },

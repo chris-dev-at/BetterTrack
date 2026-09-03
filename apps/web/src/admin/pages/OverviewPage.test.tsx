@@ -105,6 +105,8 @@ beforeEach(() => {
   vi.mocked(api.listProblems).mockResolvedValue({
     problems: [],
     openCount: 0,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
     total: 0,
     hasMore: false,
   });
@@ -145,6 +147,8 @@ test('ranks the attention queue with the worst signal first and links each row t
   vi.mocked(api.listProblems).mockResolvedValue({
     problems: [],
     openCount: 4,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
     total: 4,
     hasMore: false,
   });

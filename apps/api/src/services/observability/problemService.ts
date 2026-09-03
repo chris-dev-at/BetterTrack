@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
 
 import { driverError, truncateErrorMessage } from '../../data/driverError';
-import type { ProblemRepository } from '../../data/repositories/problemRepository';
+import {
+  boundProblemContext,
+  boundProblemMessage,
+  boundProblemTitle,
+  type ProblemRepository,
+} from '../../data/repositories/problemRepository';
 import type { ProblemRow } from '../../data/schema';
 import type { Logger } from '../../logger';
+import { problemCapturesDroppedTotal } from '../../metrics';
 import { AuditAction, type AuditService } from '../audit/auditService';
 
 import { redactString, scrubEvent, type ScrubbableValue } from './scrubber';
@@ -17,8 +23,12 @@ import { redactString, scrubEvent, type ScrubbableValue } from './scrubber';
  * env): it plugs into the same error/observability seam the (env-dark) Sentry
  * SDK does. Every stored string is passed through the pure {@link scrubEvent} /
  * {@link redactString} scrubber first, so no email/token/cookie ever lands in a
- * row. Occurrences fold by fingerprint (kind + normalized title + message, both
- * taken AFTER scrubbing so the fold key matches what is stored and shown), and
+ * row, and every stored value is cut to a documented BYTE ceiling (the write
+ * budget counts rows per minute, never bytes). Occurrences fold by fingerprint
+ * (kind + normalized title + message, both taken AFTER scrubbing so the fold key
+ * matches what is stored and shown, plus the request's method/route/status when
+ * there was one — without it two unrelated endpoints throwing the same
+ * `TypeError` become a single row that identifies neither), and
  * writes are **rate-capped** so a storm of identical errors can never
  * unbounded-write to the DB. The cap is charged per KIND and only for a
  * fingerprint's first write in a window, so a flapping provider cannot starve a
@@ -54,6 +64,10 @@ export interface ListProblemsResult {
   total: number;
   /** Whether a further page exists past this one. */
   hasMore: boolean;
+  /** Captures the rate cap refused in the CURRENT window (0 when none). */
+  droppedCaptures: number;
+  /** Captures the rate cap refused since boot. */
+  droppedCapturesTotal: number;
 }
 
 export interface ProblemService {
@@ -79,6 +93,13 @@ export interface ProblemService {
    * apart from "nothing happened".
    */
   droppedCaptures(): number;
+  /**
+   * The same counter for the CURRENT cap window — what the admin list
+   * publishes, because "60 rows, 140 refused" and "60 rows" are different
+   * incidents and only this tells them apart. Rolls the window lazily, so a
+   * quiet period reports 0 rather than the last storm's tally forever.
+   */
+  droppedCapturesInWindow(): number;
   list(params: ListProblemsParams): Promise<ListProblemsResult>;
   get(id: string): Promise<ProblemRow | null>;
   /** Mark a problem resolved (audit-logged). Null when the id is unknown. */
@@ -145,9 +166,38 @@ function normalizeForFingerprint(value: string): string {
     .trim();
 }
 
-function fingerprintOf(kind: ProblemRow['kind'], title: string, message: string): string {
-  const basis = `${kind}\n${normalizeForFingerprint(title)}\n${normalizeForFingerprint(message)}`;
+/**
+ * Fold key. `discriminator` is an ALREADY low-cardinality, id-free string (the
+ * request's `METHOD /route/template STATUS`) and is fed in RAW: unlike a message
+ * it must not pass {@link normalizeForFingerprint}, which would collapse every
+ * status to `#`. Empty for the capture kinds that have no request behind them,
+ * so their fold keys are byte-for-byte the ones they had before.
+ */
+function fingerprintOf(
+  kind: ProblemRow['kind'],
+  title: string,
+  message: string,
+  discriminator: string,
+): string {
+  const basis = `${kind}\n${normalizeForFingerprint(title)}\n${normalizeForFingerprint(message)}${
+    discriminator === '' ? '' : `\n${discriminator}`
+  }`;
   return createHash('sha256').update(basis).digest('hex').slice(0, 40);
+}
+
+/** Stack frames kept — enough to name the failing call path, not a core dump. */
+const MAX_STACK_FRAMES = 20;
+
+/**
+ * Trim a stack to its first frames. The byte ceiling is applied later, with
+ * everything else in the context, by {@link boundProblemContext} — but a stack
+ * that is bounded only by bytes is cut mid-frame, and the frames worth having
+ * are the first ones.
+ */
+function boundStack(stack: string): string {
+  const lines = stack.split('\n');
+  if (lines.length <= MAX_STACK_FRAMES) return stack;
+  return `${lines.slice(0, MAX_STACK_FRAMES).join('\n')}\n…`;
 }
 
 /**
@@ -161,13 +211,19 @@ function fingerprintOf(kind: ProblemRow['kind'], title: string, message: string)
  * carries the message the page actually wants ("duplicate key value violates
  * unique constraint …"), which is exactly what this captured pre-0.44.
  */
-function describeError(err: unknown): { name: string; message: string } {
+function describeError(err: unknown): { name: string; message: string; stack: string | null } {
   const cause = driverError(err);
   if (cause instanceof Error) {
-    return { name: cause.name || 'Error', message: cause.message || '' };
+    return {
+      name: cause.name || 'Error',
+      message: cause.message || '',
+      // The stack of the DRIVER error for the same reason its message is used:
+      // drizzle's wrapper carries the SQL and its bound parameters.
+      stack: typeof cause.stack === 'string' && cause.stack !== '' ? cause.stack : null,
+    };
   }
-  if (typeof cause === 'string') return { name: 'Error', message: cause };
-  return { name: 'Error', message: '' };
+  if (typeof cause === 'string') return { name: 'Error', message: cause, stack: null };
+  return { name: 'Error', message: '', stack: null };
 }
 
 export function createProblemService(deps: ProblemServiceDeps): ProblemService {
@@ -212,6 +268,7 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   const drop = (kind: ProblemRow['kind'], reason: 'kind-budget' | 'tracking-capacity'): void => {
     droppedTotal += 1;
     droppedInWindow += 1;
+    problemCapturesDroppedTotal.inc({ kind, reason });
     // One line per window, not one per drop: a storm must stay visible without
     // becoming the next flood. The rest is carried by the window summary above
     // and by `droppedCaptures()`.
@@ -225,17 +282,20 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     rawTitle: string,
     rawMessage: string,
     context: ProblemCaptureContext | null,
+    discriminator = '',
   ): void => {
     // Scrub, THEN cap: the scrubber must see the whole string (a token cut in
     // half matches nothing), and `problems.title`/`.message` are unbounded
     // `text` that the admin page renders, so nothing else keeps a pathological
-    // message from becoming the row.
-    const title = truncateErrorMessage(redactString(rawTitle));
-    const message = truncateErrorMessage(redactString(rawMessage));
+    // message from becoming the row. The byte ceiling behind the char cap is
+    // what a multi-byte payload (an upstream HTML error page) is actually held
+    // to — the write budget counts rows per minute and never bytes.
+    const title = boundProblemTitle(truncateErrorMessage(redactString(rawTitle)));
+    const message = boundProblemMessage(truncateErrorMessage(redactString(rawMessage)));
     // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
     // token bodies) that the stored row does not, so fingerprinting them would
     // split one visible problem into a row per user.
-    const fingerprint = fingerprintOf(kind, title, message);
+    const fingerprint = fingerprintOf(kind, title, message, discriminator);
 
     rollWindow(now());
     const state = tracked.get(fingerprint);
@@ -263,7 +323,8 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       return;
     }
 
-    const scrubbedContext = context ? (scrubEvent(context) as unknown) : null;
+    // Scrub first (the whole tree, so no half-token survives), bound second.
+    const scrubbedContext = context ? boundProblemContext(scrubEvent(context) as unknown) : null;
 
     const write = repo
       .upsert({
@@ -304,8 +365,19 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
 
   return {
     captureError(err, context) {
-      const { name, message } = describeError(err);
-      capture('error', name, message, context ?? null);
+      const { name, message, stack } = describeError(err);
+      // The request facts, when the caller had any, are what tells two endpoints
+      // throwing the same `TypeError` apart — without them they fold into one
+      // row that names neither. Read back off the context so the fold key and
+      // the stored row can never disagree about which request this was.
+      const method = typeof context?.method === 'string' ? context.method : null;
+      const route = typeof context?.route === 'string' ? context.route : null;
+      const status = typeof context?.status === 'number' ? context.status : null;
+      const discriminator =
+        route === null ? '' : `${method ?? ''} ${redactString(route)} ${status ?? ''}`.trim();
+      const withStack: ProblemCaptureContext | null =
+        stack === null ? (context ?? null) : { ...context, stack: boundStack(stack) };
+      capture('error', name, message, withStack, discriminator);
     },
 
     captureJobFailure(err, meta) {
@@ -338,15 +410,28 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       return droppedTotal;
     },
 
+    droppedCapturesInWindow() {
+      rollWindow(now());
+      return droppedInWindow;
+    },
+
     async list(params) {
       const offset = params.offset ?? 0;
       const filter = { kind: params.kind, status: params.status };
+      rollWindow(now());
       const [problems, total, openCount] = await Promise.all([
         repo.list({ ...filter, limit: params.limit, offset }),
         repo.countMatching(filter),
         repo.countByStatus('open'),
       ]);
-      return { problems, openCount, total, hasMore: offset + problems.length < total };
+      return {
+        problems,
+        openCount,
+        total,
+        hasMore: offset + problems.length < total,
+        droppedCaptures: droppedInWindow,
+        droppedCapturesTotal: droppedTotal,
+      };
     },
 
     get(id) {

@@ -85,6 +85,18 @@ export const cacheEventsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Problem captures the rate cap refused, by kind and reason (§13.5 V5-P2 arc
+ * (d)). The admin Problems list publishes the same counter — this is the
+ * scrape-side view of it, so a drop storm is alertable and not only readable.
+ */
+export const problemCapturesDroppedTotal = new Counter({
+  name: 'bettertrack_problem_captures_dropped_total',
+  help: 'Problem captures refused by the capture rate cap, by kind and reason.',
+  labelNames: ['kind', 'reason'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Currently connected realtime websockets (sampled on scrape). */
 export const websocketConnections = new Gauge({
   name: 'bettertrack_websocket_connections',

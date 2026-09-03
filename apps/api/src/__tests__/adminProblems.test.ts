@@ -171,6 +171,30 @@ describe('admin problems', () => {
     expect(problemSchema.parse(resolved.body).status).toBe('resolved');
   });
 
+  it('publishes the capture budget’s drops so a truncated incident reads as one', async () => {
+    // A multi-fault minute produces more distinct fingerprints than the budget
+    // allows; the refused ones are only visible if the list says so.
+    const capped = createProblemService({
+      repo: createProblemRepository(harness.db),
+      maxWritesPerWindow: 2,
+    });
+    // Distinguished by WORDS, not digits: the fold key normalizes numbers away,
+    // so numbered messages would be one fingerprint and nothing would be dropped.
+    for (const fault of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
+      capped.captureError(new Error(`${fault} subsystem failed`));
+    }
+    await capped.flush();
+    harness.ctx.problems = capped;
+
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent.get('/api/v1/admin/problems');
+    const body = problemListResponseSchema.parse(res.body);
+    expect(body.problems).toHaveLength(2);
+    expect(body.droppedCaptures).toBe(3);
+    expect(body.droppedCapturesTotal).toBe(3);
+  });
+
   it('404s an unknown problem id', async () => {
     const admin = await harness.seedAdmin();
     const agent = await harness.loginAdmin(admin);
