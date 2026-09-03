@@ -3,6 +3,7 @@ import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import type { VaultConfig, VaultMediaList } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { driverError, isDriverErrorCode } from '../driverError';
 import { driveConnections, portfolios, users, vaultRetirements, vaults } from '../schema';
 
 export type VaultCreateResult =
@@ -70,11 +71,11 @@ function configOf(row: typeof vaults.$inferSelect): VaultConfig {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === '23505';
+  return isDriverErrorCode(error, '23505');
 }
 
 function isPortfolioVaultForeignKey(error: unknown): boolean {
-  const candidate = error as {
+  const candidate = driverError(error) as {
     code?: unknown;
     constraint?: unknown;
     constraint_name?: unknown;
@@ -93,7 +94,7 @@ function isPortfolioVaultForeignKey(error: unknown): boolean {
 }
 
 function isVaultDriveForeignKey(error: unknown): boolean {
-  const candidate = error as {
+  const candidate = driverError(error) as {
     code?: unknown;
     constraint?: unknown;
     constraint_name?: unknown;
