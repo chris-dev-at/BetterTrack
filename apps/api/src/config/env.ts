@@ -4,7 +4,8 @@ import { join as joinPath } from 'node:path';
 
 import { z } from 'zod';
 
-import { USAGE_ANALYTICS_WINDOW_DAYS } from '../services/analytics/usageAnalyticsService';
+import { USAGE_ANALYTICS_WINDOW_DAYS } from '@bettertrack/contracts';
+
 import {
   createSecretBoxKeyring,
   type SecretBoxKey,

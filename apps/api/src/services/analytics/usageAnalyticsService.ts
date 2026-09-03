@@ -1,4 +1,4 @@
-import type { UsageAnalyticsResponse } from '@bettertrack/contracts';
+import { USAGE_ANALYTICS_WINDOW_DAYS, type UsageAnalyticsResponse } from '@bettertrack/contracts';
 
 import type {
   UsageAnalyticsRepository,
@@ -33,13 +33,11 @@ const DAY_MS = 86_400_000;
 const DEFAULT_FLUSH_INTERVAL_MS = 15_000;
 /**
  * The reporting window every windowed metric reads (DAU/WAU/MAU, feature
- * counters, top assets, the activity series). EXPORTED because the env schema
- * refines `BT_USAGE_EVENT_RETENTION_DAYS` against it (#1680): DAU/WAU/MAU and
- * top assets read raw `usage_events`, so a retention window shorter than this
- * one would silently collapse them into each other. One constant, so the two
- * numbers can never drift apart again.
+ * counters, top assets, the activity series). Defined in `@bettertrack/contracts`
+ * rather than here because the env schema refines `BT_USAGE_EVENT_RETENTION_DAYS`
+ * against the SAME number (#1680), and `config/` must not import a service
+ * module to reach it.
  */
-export const USAGE_ANALYTICS_WINDOW_DAYS = 30;
 const DEFAULT_WINDOW_DAYS = USAGE_ANALYTICS_WINDOW_DAYS;
 const DEFAULT_TOP_ASSETS_LIMIT = 10;
 /** Trailing days the rollup cron re-materializes on each run (heals late data). */

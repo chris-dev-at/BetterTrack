@@ -258,6 +258,17 @@ export function createUsageAnalyticsRepository(
           // vault-sensitive quote — keeps the user out of here too, so §6.12's
           // "vaulted/paranoid data never counted" needs no second rule.
           //
+          // Precisely what "same lock" buys, and what it does not: the two
+          // INSERTs below are separate autocommit statements on `db`, not one
+          // transaction (an explicit transaction here would need a second
+          // connection while `lockDb` holds one, which is the deadlock shape
+          // the ctor warns about). The race that matters — paranoid enable
+          // landing between admission and write — is closed anyway, because the
+          // `FOR KEY SHARE` hold spans BOTH statements. What is not closed is
+          // durability: a crash between them leaves an admitted event with no
+          // marker. That self-heals on the user's next counted activity, and it
+          // can only ever under-count activation, never over-count it.
+          //
           // `onConflictDoNothing` on the user-id PK is what makes it idempotent:
           // the first counted activity writes the row and every later flush is a
           // no-op, so the marker never duplicates and never moves. `firstActiveAt`

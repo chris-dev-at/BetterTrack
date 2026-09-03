@@ -32,6 +32,21 @@ export const USAGE_FEATURES = [
 export const usageFeatureSchema = z.enum(USAGE_FEATURES);
 export type UsageFeature = z.infer<typeof usageFeatureSchema>;
 
+/**
+ * The reporting window (days) every windowed metric covers: DAU/WAU/MAU, the
+ * feature counters, top assets and the activity series. It is the value the
+ * service defaults to and the number it reports back as `windowDays` below.
+ *
+ * It lives HERE, in the leaf both sides already depend on, because two
+ * unrelated layers must agree on it and neither may own it: the service reads
+ * the window, and the API's env schema refines `BT_USAGE_EVENT_RETENTION_DAYS`
+ * against it (#1680) — DAU/WAU/MAU and top assets read raw `usage_events`, so a
+ * retention window shorter than this one would silently collapse them into each
+ * other. One constant, so the two numbers can never drift apart; in contracts,
+ * so `config/` does not have to import a service module to see it.
+ */
+export const USAGE_ANALYTICS_WINDOW_DAYS = 30;
+
 /** Distinct active users over the trailing 1 / 7 / 30-day windows. */
 export const usageActiveUsersSchema = z.object({
   daily: z.number().int().nonnegative(),
