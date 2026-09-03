@@ -10,7 +10,8 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  *   handler assembles the zip, marks the job ready, and emits the export-ready
  *   notification. Idempotent under BullMQ's at-least-once (a ready job no-ops).
  * - `data.exportCleanup` — a daily schedule that deletes every expired export's
- *   file + row, so ready zips never outlive their download window.
+ *   file + row, so ready zips never outlive their download window, and then
+ *   sweeps the export directory for artifacts no row points at any more.
  */
 export const EXPORT_CLEANUP_SCHEDULER_ID = 'data.exportCleanup';
 /** Daily at 04:00 Europe/Vienna — off-peak, after the 03:00 price refresh. */
@@ -36,6 +37,12 @@ export function createExportCleanupJob(deps: ExportJobDeps): JobDefinition<'data
     async handler(_job, ctx) {
       const pruned = await deps.exportService.cleanupExpired();
       if (pruned > 0) ctx.logger.info({ pruned }, 'expired data exports pruned');
+      // Row-driven pruning can only reach artifacts a row still points at. The
+      // directory sweep is the second half: it reaps the files that lost their
+      // pointer — a crash mid-build, a kill after the rename, a deleted account
+      // whose rows cascaded away (#1714).
+      const swept = await deps.exportService.sweepOrphanedArtifacts();
+      if (swept > 0) ctx.logger.warn({ swept }, 'orphaned data-export artifacts swept');
     },
     schedule: {
       id: EXPORT_CLEANUP_SCHEDULER_ID,
