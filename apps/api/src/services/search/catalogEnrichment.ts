@@ -23,7 +23,11 @@ import type { MarketDataService } from '../../providers';
  *
  * Per-provider request budgets are part of the §5.3 caching keystone (its own
  * P1 slice); this module consumes `marketData.search`, which is already
- * resilience-wrapped per provider, and adds no budgeting of its own.
+ * resilience-wrapped per provider. The two ceilings it does own are its own
+ * write amplification (#1709): {@link ENRICH_MAX_HITS} bounds how much ONE
+ * enrichment may write, and the per-user admission budget that decides HOW MANY
+ * enrichments a caller may start lives one layer up, with the interactive
+ * caller (`enrichmentBudget.ts` / `searchService.ts`).
  */
 export interface CatalogEnrichment {
   /**
@@ -48,6 +52,23 @@ export const ENRICH_GUARD_TTL_SECONDS = 60;
 
 /** Redis guard key per normalized query; lowercased so "BAYN" and "bayn" coalesce. */
 export const enrichGuardKey = (query: string): string => `search:enrich:${query.toLowerCase()}`;
+
+/**
+ * How many provider hits ONE enrichment may write into the catalog (#1709).
+ *
+ * `marketData.search` is a `flatMap` over every registered provider with no
+ * per-provider or total ceiling, and the upstream clients do not cap their own
+ * result counts — so a single query could hand this loop an arbitrarily long
+ * list, each entry costing a serialised upsert into the shared global `assets`
+ * table plus a `prices.backfill` enqueue for every new row.
+ *
+ * 20 = `SEARCH_RESULT_LIMIT`: the follow-up catalog read shows at most twenty
+ * rows, so hits past the twentieth cannot reach the user who caused the
+ * enrichment. They are not lost either — the ranked catalog read is what
+ * decides what is worth showing, and a narrower follow-up query re-runs the
+ * fallback for whatever it did not admit.
+ */
+export const ENRICH_MAX_HITS = 20;
 
 /** Guard value while the winning process is still running the provider search. */
 export const ENRICH_GUARD_RUNNING = 'running';
@@ -76,7 +97,14 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
   async function run(query: string): Promise<void> {
     try {
       const hits = await marketData.search(query);
-      for (const hit of hits) {
+      const admitted = hits.slice(0, ENRICH_MAX_HITS);
+      if (admitted.length < hits.length) {
+        logger.debug(
+          { query, hits: hits.length, admitted: admitted.length },
+          'catalog enrichment capped provider hits',
+        );
+      }
+      for (const hit of admitted) {
         // A brand-new catalog row (§6.2 first touch): enqueue its history
         // backfill right away, exactly once. Rows that already existed —
         // seeded (§6.2(c)) or created by an earlier search — are warmed on

@@ -945,14 +945,19 @@ export const assets = pgTable(
   },
   (t) => [
     uniqueIndex('assets_provider_owner_unique').on(t.providerId, t.providerRef, t.ownerId),
-    // §5.5 search indexes: GIN over the generated tsvector for word matches, and
-    // a trigram GIN over (symbol, name) so misspellings ("bayr") still resolve.
+    // §5.5 search index: GIN over the generated tsvector for word matches.
+    //
+    // There is deliberately NO trigram index (#1709 retired the composite
+    // `assets_symbol_name_trgm_gin` in 0110). `gin_trgm_ops` answers only the
+    // `%`, `<%` and `<->` operators, and the catalog's fuzzy tier is a plain
+    // `similarity(...) >= 0.3` call — index-unusable by construction, as are
+    // the `upper(symbol) LIKE …` / `%…%` ILIKE tiers beside it. The read
+    // scanned and filtered every visible row with the index present, exactly as
+    // it does without it, while the index still cost a GIN write on every
+    // catalog upsert. The misspelling behaviour §6.2
+    // promises comes from the pg_trgm EXTENSION (`similarity`), which stays;
+    // see `assetRepository.searchCatalog` for the plan and the growth bound.
     index('assets_search_text_gin').using('gin', t.searchText),
-    index('assets_symbol_name_trgm_gin').using(
-      'gin',
-      t.symbol.op('gin_trgm_ops'),
-      t.name.op('gin_trgm_ops'),
-    ),
     // §5.5 intends one global row per (provider, ref) for market assets, but a
     // plain UNIQUE over (provider_id, provider_ref, owner_id) does NOT enforce
     // it: Postgres treats NULLs as distinct, so NULL owner_id rows never collide.
@@ -965,6 +970,36 @@ export const assets = pgTable(
     index('assets_owner_id_idx').on(t.ownerId),
   ],
 );
+
+/**
+ * Deletion watermark for the local asset catalog (§6.2, #1709) — ONE row,
+ * holding the instant through which catalog deletions have been accounted for.
+ *
+ * `assetRepository.catalogWatermark` derives the search read's `Last-Modified`
+ * from the newest visible asset's UUIDv7 creation time. That value can move
+ * BACKWARDS: delete the newest visible row and the watermark drops to the one
+ * before it, so a follow-up `If-Modified-Since: <old watermark>` is satisfied
+ * and the caller is told `304 Not Modified` while still rendering the row that
+ * was deleted. The watermark is `greatest(newest visible, this stamp)` instead,
+ * which is monotonic by construction: the only thing that can lower the first
+ * term is a deletion, and a deletion always raises the second past it.
+ *
+ * The stamp is written by the `assets_catalog_deletion_mark` AFTER DELETE
+ * trigger (migration 0110), not by a repository, so no delete path — the
+ * owner-scoped custom-asset delete, the paranoid detach function, an account
+ * cascade — can bypass it. It holds no user id and no asset id: only a
+ * timestamp derived from the deleted row's own id, so it identifies nothing and
+ * survives a paranoid enable without leaving a residue (see
+ * `services/export/manifest.ts`). Its cost is one shared row updated per asset
+ * deletion, and over-invalidation across users — a 200 instead of a 304, always
+ * the safe direction (§6.13).
+ */
+export const assetCatalogDeletions = pgTable('asset_catalog_deletions', {
+  /** Singleton guard: the trigger only ever writes `true`. */
+  singleton: boolean('singleton').primaryKey().default(true),
+  /** Deletions are accounted for through this instant; only ever moves forward. */
+  deletedThrough: timestamp('deleted_through', { withTimezone: true }).notNull(),
+});
 
 export const priceHistory = pgTable(
   'price_history',
@@ -3018,6 +3053,7 @@ export type UsageActivationRow = typeof usageActivations.$inferSelect;
 export type NewUsageActivationRow = typeof usageActivations.$inferInsert;
 export type AssetIdentityRow = typeof assetIdentities.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
+export type AssetCatalogDeletionRow = typeof assetCatalogDeletions.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;

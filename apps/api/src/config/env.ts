@@ -109,6 +109,32 @@ const envSchema = z.object({
   // is byte-identical to a single-provider (Yahoo-only) setup; set to enable —
   // no keys or accounts required. Which-provider-served-what shows in admin health.
   MARKET_FAILOVER_ENABLED: z.string().optional(),
+  // Interactive catalog-enrichment budget (§6.2, #1709). `GET /search` answers
+  // from Postgres, but a thin result set ALSO starts a background provider
+  // search that upserts into the SHARED global `assets` table and enqueues a
+  // history backfill per new row. Coalescing is per normalised query, so
+  // *distinct* queries never coalesce and the only ceiling used to be the
+  // request limiter (`rateLimits.search`, 300/min): 300 distinct junk queries a
+  // minute meant 300 provider fan-outs and 300 rows of unbounded global-catalog
+  // growth from ONE account.
+  //
+  // The import path already made this exact decision — `IMPORT_ENRICHMENT_QUERY_BUDGET`
+  // = 16 admissions per import (`services/imports/importService.ts`) — so the
+  // interactive path's lack of a budget was an asymmetry, not a choice. These
+  // two knobs are the interactive half of that one decision: a per-user window
+  // admitting BT_SEARCH_ENRICHMENT_BUDGET *distinct* enrichment queries; a
+  // re-poll of an already-admitted query is free, so the client's
+  // "Searching providers…" refetch loop never spends the budget twice.
+  //
+  // 30 / 60 s models the client honestly: `useAssetSearch` fires one request per
+  // debounced PREFIX (min 1 char), so ONE slowly-typed word can produce ~5-6
+  // distinct misses. 30 covers ~5 such searches a minute — well past normal use
+  // — while cutting the worst-case fan-out 10× below the 300/min request
+  // ceiling. Over budget the response degrades to `enriching: false`: the
+  // catalog read still answers in full (local-first, §6.2), only the background
+  // provider work stops.
+  BT_SEARCH_ENRICHMENT_BUDGET: z.coerce.number().int().positive().default(30),
+  BT_SEARCH_ENRICHMENT_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   // Short-window burst dimension of the general limiter (§10, owner report #202):
   // the 15-min steady-state allowance is generous enough that a rapid page-reload
   // flood never reaches it, so a second, short window catches the flood without
@@ -731,6 +757,13 @@ export interface AppConfig {
       enabled: boolean;
     };
   };
+  /** Local-first catalog search (§6.2). */
+  search: {
+    /** Distinct interactive enrichment queries one user may start per window (#1709). */
+    enrichmentBudget: number;
+    /** Length of that window, in seconds. */
+    enrichmentWindowSec: number;
+  };
   /** Realtime gateway (§4.5, V3-P7a). */
   realtime: {
     /** When false the Socket.IO server is never attached — zero behavior change. */
@@ -1280,6 +1313,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       failover: {
         enabled: boolFrom(e.MARKET_FAILOVER_ENABLED, false),
       },
+    },
+    // Local-first search (§6.2). The budget bounds the INTERACTIVE provider
+    // fallback per user per window; see the knob comments above for why it is
+    // the same decision as `IMPORT_ENRICHMENT_QUERY_BUDGET`.
+    search: {
+      enrichmentBudget: e.BT_SEARCH_ENRICHMENT_BUDGET,
+      enrichmentWindowSec: e.BT_SEARCH_ENRICHMENT_WINDOW_SEC,
     },
     realtime: {
       enabled: boolFrom(e.REALTIME_ENABLED, true),

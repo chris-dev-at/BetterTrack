@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -320,6 +321,36 @@ describe('conditional reads — catalog search (GET /api/v1/search)', () => {
       .get('/api/v1/search?q=COND')
       .set('If-Modified-Since', first.headers['last-modified'] as string);
     expect(byDate.status).toBe(304);
+  });
+
+  it('never answers 304 from a watermark that a deletion moved backwards (#1709)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    // The caller's own custom asset, seeded last, is the NEWEST row in their
+    // visible catalog — so it is what the watermark is derived from.
+    const customId = await seedAsset(harness, 'CONDX', user.id);
+
+    const first = await agent.get('/api/v1/search?q=COND');
+    expect(first.status).toBe(200);
+    expect(first.body.results.map((r: { symbol: string }) => r.symbol)).toContain('CONDX');
+    const watermark = first.headers['last-modified'] as string;
+    expect(watermark).toBeTruthy();
+
+    // Every delete path issues this statement (the owner-scoped custom-asset
+    // delete, the paranoid detach, the account cascade); the AFTER DELETE
+    // trigger stamps the deletion watermark for all of them.
+    await harness.db.delete(schema.assets).where(eq(schema.assets.id, customId));
+
+    // Only the date validator, exactly as a bare API-key/CLI client — or an
+    // intermediary that strips ETags — would send it.
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    expect(after.body.results.map((r: { symbol: string }) => r.symbol)).not.toContain('CONDX');
+    // …and the fresh watermark is strictly later, so the client's next
+    // conditional request compares against the post-deletion state.
+    expect(Date.parse(after.headers['last-modified'] as string)).toBeGreaterThan(
+      Date.parse(watermark),
+    );
   });
 
   it('does not leak a catalog validator across the auth boundary', async () => {

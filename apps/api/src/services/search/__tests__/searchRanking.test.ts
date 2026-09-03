@@ -1,9 +1,11 @@
+import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import * as schema from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
+import { COMMON_SYMBOLS_SEED, seedAssetCatalog } from '../catalogSeed';
 import { SEARCH_RESULT_LIMIT } from '../searchService';
 
 /**
@@ -162,6 +164,30 @@ describe('assetRepository.searchCatalog ranking', () => {
 
     const matches = await repo.searchCatalog(user.id, 'V', SEARCH_RESULT_LIMIT);
     expect(matches.map((m) => m.symbol)).toEqual(['V', 'VOD.L']);
+  });
+
+  it('resolves a misspelling from the seeded catalog with no trigram index (§6.2, #1709)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser({ email: 'fuzzy@s.test', username: 'fuzzy' });
+    const repo = createAssetRepository(h.db);
+
+    const bayer = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === 'BAYN.DE');
+    expect(bayer).toBeDefined();
+    await seedAssetCatalog(repo, [bayer!]);
+
+    // The composite `assets_symbol_name_trgm_gin` was dead weight — `gin_trgm_ops`
+    // answers `%`/`<%`/`<->`, none of which this query uses — and 0110 dropped it.
+    const indexes = await h.db.execute(
+      sql`select indexname from pg_indexes where tablename = 'assets'`,
+    );
+    const named = ((indexes as { rows?: { indexname: string }[] }).rows ??
+      (indexes as unknown as { indexname: string }[])) as { indexname: string }[];
+    expect(named.map((r) => r.indexname)).not.toContain('assets_symbol_name_trgm_gin');
+
+    // What §6.2 actually promises still holds: the pg_trgm EXTENSION's
+    // `similarity()` resolves the owner's "bayr" where a provider would 404.
+    const matches = await repo.searchCatalog(user.id, 'bayr', SEARCH_RESULT_LIMIT);
+    expect(matches.map((m) => m.providerRef)).toEqual(['BAYN.DE']);
   });
 
   it('honors the row limit', async () => {
