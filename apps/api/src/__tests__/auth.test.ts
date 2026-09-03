@@ -458,14 +458,10 @@ describe('self-service password-reset concurrency', () => {
         Promise.all([timedRequest(user.email), timedRequest('nobody-here@test.dev')]),
       ),
     );
-    const known = pairs.map(([sample]) => sample);
-    const unknown = pairs.map(([, sample]) => sample);
-    const knownTimes = known.map(({ elapsedMs }) => elapsedMs).sort((a, b) => a - b);
-    const unknownTimes = unknown.map(({ elapsedMs }) => elapsedMs).sort((a, b) => a - b);
     const percentile = (samples: readonly number[], fraction: number) =>
       samples[Math.ceil(samples.length * fraction) - 1]!;
 
-    for (const sample of [...known, ...unknown]) {
+    for (const sample of pairs.flat()) {
       expect(sample.response.status).toBe(200);
       expect(sample.response.body).toEqual({ ok: true });
       expect(sample.elapsedMs).toBeGreaterThanOrEqual(PASSWORD_RESET_RESPONSE_FLOOR_MS - 25);
@@ -474,8 +470,34 @@ describe('self-service password-reset concurrency', () => {
     // or detached-email persistence may legitimately add calls on this shared
     // seam, so only assert the lower bound relevant to equalization.
     expect(transactionSpy.mock.calls.length).toBeGreaterThanOrEqual(pairCount * 2);
-    expect(Math.abs(percentile(knownTimes, 0.5) - percentile(unknownTimes, 0.5))).toBeLessThan(75);
-    expect(Math.abs(percentile(knownTimes, 0.9) - percentile(unknownTimes, 0.9))).toBeLessThan(100);
+
+    // Compare the branches PAIR BY PAIR rather than ranking each branch's
+    // samples independently and differencing equal ranks.
+    //
+    // Sixteen requests are in flight at once, so each branch's samples spread
+    // across a wide band by queue position (~250 ms to ~380 ms at depth 8 when
+    // measured here) as they contend for the lock, the pool and the event loop.
+    // BOTH branches spread, the band is far wider than the branch difference
+    // under test, and differencing rank k against rank k only cancels it while
+    // the two orderings stay in step. Let one drift a single position and a
+    // whole inter-rank gap is reported as branch divergence — which is how this
+    // assertion failed CI at 101 ms against its 100 ms bound on a commit that
+    // touched no code on this path.
+    //
+    // The two members of a pair are launched in the same tick, so differencing
+    // them cancels the shared band and any runner-wide stall. What survives is
+    // the thing under test: work the known branch does that the unknown branch
+    // does not, once it outgrows the response floor that is meant to hide it.
+    // The bounds below are the originals, unchanged — only the statistic they
+    // are applied to is corrected — and they still trip on an injected
+    // known-branch delay that pushes past PASSWORD_RESET_RESPONSE_FLOOR_MS.
+    const pairedDeltas = pairs
+      .map(([known, unknown]) => Math.abs(known.elapsedMs - unknown.elapsedMs))
+      .sort((a, b) => a - b);
+    const observed = `paired |known - unknown| (ms): ${pairedDeltas.map((delta) => delta.toFixed(1)).join(', ')}`;
+
+    expect(percentile(pairedDeltas, 0.5), observed).toBeLessThan(75);
+    expect(percentile(pairedDeltas, 0.9), observed).toBeLessThan(100);
     transactionSpy.mockRestore();
   });
 
