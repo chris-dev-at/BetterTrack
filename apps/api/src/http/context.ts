@@ -664,6 +664,10 @@ export interface BuildContextDeps {
   exportEnqueue?: (jobId: string) => Promise<void>;
   /** Test seam: pause an export build after collection under the transition lock. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
+  /** Test seam: shrink the export build ceilings so the refusal path is provable. */
+  exportLimits?: { maxRows?: number; maxContentBytes?: number };
+  /** Test seam: shrink the absolute export-download bound. */
+  exportDownloadMaxMs?: number;
   /**
    * Test seam (#437): the notification service's clock, so the auto-archive
    * sweep threshold is provable under a controlled clock. Defaults to the
@@ -1832,6 +1836,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Self-service account deletion (§13.4 V4-P2c, #362): re-auth + typed
   // confirmation, then a hard delete the FK graph fans out — with the chat
   // anonymize-and-purge exception handled through the chat repository.
+  // Late-bound so the deletion service can reach the export service composed
+  // below it (deletion reaps the account's export archives before the row goes,
+  // #1714) without a reassigned `let`.
+  const exportHolder: { service?: ExportService } = {};
   const accountDeletion = createAccountDeletionService({
     config,
     redis,
@@ -1844,6 +1852,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     passwordHasher,
     twoFactor,
     mirror,
+    dataExport: {
+      purgeUserArtifacts: (userId: string) => exportHolder.service!.purgeUserArtifacts(userId),
+    },
   });
 
   // Account data export (§13.4 V4-P6a, #494): the request handler enqueues the
@@ -1851,7 +1862,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // and the worker's build job runs it, while tests build synchronously through
   // the same service (BullMQ can't run on ioredis-mock). A holder late-binds the
   // synchronous path's enqueue to the service without a reassigned `let`.
-  const exportHolder: { service?: ExportService } = {};
   const exportEnqueue =
     deps.exportEnqueue ??
     (queues
@@ -1873,6 +1883,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     withAccountTransitionLock: (userId, run) =>
       withFreshLockedPrivacyModes(privacyLockDb, [userId], () => run()),
     afterCollect: deps.exportAfterCollect,
+    ...(deps.exportLimits ? { limits: deps.exportLimits } : {}),
+    ...(deps.exportDownloadMaxMs !== undefined ? { downloadMaxMs: deps.exportDownloadMaxMs } : {}),
     logger,
   });
   exportHolder.service = dataExport;
