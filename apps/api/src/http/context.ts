@@ -320,6 +320,7 @@ import {
   type LiveModeServiceOptions,
 } from '../services/liveMode';
 import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
+import { createSearchEnrichmentBudget } from '../services/search/enrichmentBudget';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import { createMirrorService, type MirrorService } from '../services/mirror';
@@ -1356,7 +1357,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
   const enrichment = createCatalogEnrichment({ marketData, assetRepo, backfill, redis, logger });
-  const search = createSearchService({ assetRepo, enrichment, paranoid: paranoidGuard });
+  const search = createSearchService({
+    assetRepo,
+    enrichment,
+    paranoid: paranoidGuard,
+    // Per-user ceiling on that fallback (#1709) — see `config/env.ts`.
+    enrichmentBudget: createSearchEnrichmentBudget({
+      redis,
+      logger,
+      budget: config.search.enrichmentBudget,
+      windowSeconds: config.search.enrichmentWindowSec,
+    }),
+  });
 
   // Portfolio + custom investments (§6.9). The custom-asset service records its
   // optional initial purchase through the portfolio service and shares its
