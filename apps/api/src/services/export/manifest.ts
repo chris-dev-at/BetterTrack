@@ -125,6 +125,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   usage_daily: skipped(
     'Materialized per-day usage-analytics rollup — an operator-facing aggregate derived from usage_events, not user-owned.',
   ),
+  usage_activations: skipped(
+    'Durable first-party activation marker (one row: account + first-counted-activity instant) — the registration funnel’s operator-facing counter, not user-owned content.',
+  ),
 
   // ── Secrets / transient credentials (nothing meaningful to export) ─────────
   password_reset_tokens: skipped('Single-use password-reset secrets (transient credentials).'),
@@ -466,6 +469,14 @@ export const PARANOID_PURGE_REASONS: Record<string, string> = {
     'Not `vault` — it is telemetry no client should hold and nobody wants ' +
     'restored, and enrolling it in the strict v1 document would be a ' +
     'cross-client blob-format change. Not `server` — that means kept.',
+  usage_activations:
+    'The distillate of `usage_events` (#1680): one row saying this account has ' +
+    'produced counted first-party activity, written at the same admitted write ' +
+    'boundary. It must not outlive the rows it summarises — keeping it would ' +
+    'leave a residue of the purged telemetry AND keep counting a paranoid ' +
+    'account in the activated funnel stage it no longer feeds, against §6.12 ' +
+    '"vaulted/paranoid data never counted". Not `vault` — an operator counter ' +
+    'nobody wants restored. Not `server` — that means kept.',
 };
 
 export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassification> = {
@@ -561,6 +572,13 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // (see the axis doc above). The user-level counters simply end at the moment
   // the account turns paranoid.
   usage_events: 'purge',
+  // PURGED for the same reason, one step downstream: the activation marker is
+  // written from the very rows above and says "this account was active". It
+  // survives retention on purpose (#1680), so unlike the raw events it would
+  // NOT age away on its own — a converting account would stay counted in the
+  // activated funnel stage forever. Destroyed at enable; a paranoid account
+  // then produces no admitted signal, so nothing re-creates it.
+  usage_activations: 'purge',
   // The (day, feature) rollup carries NO user id and NO asset id — a global
   // aggregate over all accounts, so it identifies nothing and stays server-side.
   //

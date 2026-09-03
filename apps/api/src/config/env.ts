@@ -4,6 +4,8 @@ import { join as joinPath } from 'node:path';
 
 import { z } from 'zod';
 
+import { USAGE_ANALYTICS_WINDOW_DAYS } from '@bettertrack/contracts';
+
 import {
   createSecretBoxKeyring,
   type SecretBoxKey,
@@ -227,10 +229,32 @@ const envSchema = z.object({
   // recurrence is the point at which a row is history, not an operational
   // signal — and the admin Problems page is only useful while it is bounded.
   BT_PROBLEM_RETENTION_DAYS: retentionDays(90),
-  // Raw usage events are a per-user viewing history. The analytics windows read
-  // at most the last 30 days, so half a year keeps every counter honest while
-  // the history stops being indefinite.
-  BT_USAGE_EVENT_RETENTION_DAYS: retentionDays(180),
+  // Raw usage events are a per-user viewing history. DAU/WAU/MAU and top assets
+  // are read from them over the last USAGE_ANALYTICS_WINDOW_DAYS days, so the
+  // retention window may never be SHORTER than that reporting window — a shorter
+  // one silently collapses MAU onto WAU onto DAU while the page still labels
+  // them 30-day figures. The refine below rejects that at boot (#1680). The
+  // remaining analytics reads are already retention-proof: the feature counters
+  // and activity series come from the `usage_daily` rollup and the funnel's
+  // activated stage from the durable `usage_activations` marker, neither of
+  // which the sweep touches.
+  BT_USAGE_EVENT_RETENTION_DAYS: retentionDays(180).superRefine((days, ctx) => {
+    // `0` is the documented "retain forever" value shared by every retention
+    // var (it disables that branch of the purge entirely), so it is the SAFEST
+    // possible setting for the analytics window, not a violation of it. Let it
+    // through explicitly rather than by accident.
+    if (days === 0) return;
+    if (days < USAGE_ANALYTICS_WINDOW_DAYS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `BT_USAGE_EVENT_RETENTION_DAYS=${days} is shorter than the ${USAGE_ANALYTICS_WINDOW_DAYS}-day ` +
+          `admin analytics window: DAU/WAU/MAU and top assets read raw usage events, so they would ` +
+          `report a traffic collapse that is only the retention setting. Use ${USAGE_ANALYTICS_WINDOW_DAYS} ` +
+          `or more, or 0 to retain forever.`,
+      });
+    }
+  }),
 
   // ── Telegram notification channel (§13.4 V4-P10) ───────────────────────────
   // Owner-provided bot token that lets the API deliver notifications through

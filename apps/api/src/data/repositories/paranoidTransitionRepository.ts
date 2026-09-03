@@ -56,6 +56,7 @@ import {
   standingOrderRuns,
   standingOrders,
   transactions,
+  usageActivations,
   usageEvents,
   userFollows,
   users,
@@ -293,6 +294,11 @@ const PURGE_HANDLERS: Record<string, PurgeHandler> = {
   // asset-identifying ones — the residual `hits` counter on a bare
   // `feature='assets'` row still tracks how many holdings were priced.
   usage_events: ({ userId, tx }) => tx.delete(usageEvents).where(eq(usageEvents.userId, userId)),
+  // The activation marker written from those same rows (#1680). It outlives the
+  // retention sweep by design, so unlike the raw events it would never age away
+  // on its own — it goes with them here.
+  usage_activations: ({ userId, tx }) =>
+    tx.delete(usageActivations).where(eq(usageActivations.userId, userId)),
 };
 
 /**
@@ -330,6 +336,7 @@ const PARANOID_PURGE_ORDER = [
   'user_tax_settings',
   // FK-independent (references `users` only), so ordering is free here.
   'usage_events',
+  'usage_activations',
 ] as const;
 
 /** One scope-aware zero-cleartext query per classified table. */
@@ -476,6 +483,13 @@ const PROBE_HANDLERS: Record<string, ProbeHandler> = {
   // recording a paranoid account again, the next enable aborts on it.
   usage_events: ({ userId, tx }) =>
     probe(tx.select({ value: count() }).from(usageEvents).where(eq(usageEvents.userId, userId))),
+  usage_activations: ({ userId, tx }) =>
+    probe(
+      tx
+        .select({ value: count() })
+        .from(usageActivations)
+        .where(eq(usageActivations.userId, userId)),
+    ),
 };
 
 /**

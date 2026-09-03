@@ -309,6 +309,27 @@ describe('operational data retention (§13.5 V5-P14, PL-01)', () => {
     expect(() => config({ BT_AUDIT_RETENTION_DAYS: '-1' })).toThrow();
     expect(() => config({ BT_EMAIL_LOG_RETENTION_DAYS: '30.5' })).toThrow();
   });
+
+  /**
+   * #1680: DAU/WAU/MAU and top assets read raw `usage_events`, so a retention
+   * window shorter than the 30-day analytics window collapses MAU onto WAU onto
+   * DAU while the admin page still labels them 30-day figures — a 4× traffic
+   * "collapse" that is only the owner's own privacy setting. Boot refuses it.
+   */
+  it('refuses a usage-event retention window shorter than the analytics window', () => {
+    expect(() => config({ BT_USAGE_EVENT_RETENTION_DAYS: '7' })).toThrow(
+      /BT_USAGE_EVENT_RETENTION_DAYS=7 .*30-day/s,
+    );
+    expect(() => config({ BT_USAGE_EVENT_RETENTION_DAYS: '29' })).toThrow();
+  });
+
+  it('boots at or above the analytics window, and on explicit zero (retain forever)', () => {
+    expect(config({ BT_USAGE_EVENT_RETENTION_DAYS: '30' }).retention.usageEventDays).toBe(30);
+    expect(config({ BT_USAGE_EVENT_RETENTION_DAYS: '365' }).retention.usageEventDays).toBe(365);
+    // `0` is the shared "retain forever" value: the safest possible setting for
+    // the analytics window, so the refine lets it through on purpose.
+    expect(config({ BT_USAGE_EVENT_RETENTION_DAYS: '0' }).retention.usageEventDays).toBe(0);
+  });
 });
 
 describe('observability grafana public URL (#632)', () => {
