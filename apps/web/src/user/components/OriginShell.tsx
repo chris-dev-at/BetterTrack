@@ -390,7 +390,7 @@ export function AccountMenu({
   }, [closeAndRestoreFocus, open]);
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <button
         ref={triggerRef}
         aria-expanded={open}
@@ -591,7 +591,7 @@ export function CreateMenu() {
   );
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <Button
         ref={triggerRef}
         aria-expanded={open}

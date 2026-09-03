@@ -92,7 +92,9 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   }
 
   return (
-    <div className="relative" ref={rootRef}>
+    // `bt-menu-anchor`: below the phone breakpoint the popover's inline
+    // `right: 0` re-points at the header instead of at this ~36px chip (#1663).
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -262,7 +264,9 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
   }, [open]);
 
   return (
-    <div className="relative" ref={rootRef}>
+    // `bt-menu-anchor`: below the phone breakpoint the popover's inline
+    // `right: 0` re-points at the header instead of at this ~36px chip (#1663).
+    <div className="bt-menu-anchor relative" ref={rootRef}>
       <button
         aria-expanded={open}
         aria-haspopup="dialog"
