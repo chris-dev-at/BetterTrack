@@ -162,6 +162,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   usage_activations: skipped(
     'Durable first-party activation marker (one row: account + first-counted-activity instant) — the registration funnel’s operator-facing counter, not user-owned content.',
   ),
+  asset_catalog_deletions: skipped(
+    'One instance-wide row holding a single timestamp — the monotonic deletion watermark behind the catalog search’s Last-Modified (#1709). No user id, no asset id, nothing to attribute to an account.',
+  ),
 
   // ── Secrets / transient credentials (nothing meaningful to export) ─────────
   password_reset_tokens: skipped('Single-use password-reset secrets (transient credentials).'),
@@ -623,6 +626,15 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // and it is preferable to the alternative — keeping the raw rows alive to
   // protect an aggregate.
   usage_daily: 'server',
+  // The catalog-search deletion watermark (#1709): ONE instance-wide row, one
+  // timestamp column, no user id and no asset id. It is stamped from the
+  // deleted row's own creation instant precisely so it carries no identifier —
+  // a paranoid enable, whose purge deletes the account's custom assets, moves
+  // the watermark forward and leaves nothing behind that points back at the
+  // account. `server` (kept): purging it would only make every caller's search
+  // conditional read go stale-safe for one window, and there is nothing here to
+  // purge in the first place.
+  asset_catalog_deletions: 'server',
   app_settings: 'server',
   idempotency_keys: 'server',
   export_jobs: 'server',
