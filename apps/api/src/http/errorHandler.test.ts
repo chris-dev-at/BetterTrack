@@ -10,7 +10,7 @@ import { ApiError } from '../errors';
 import { createLogger, type Logger } from '../logger';
 import { loadConfig } from '../config/env';
 
-import { createErrorHandler } from './errorHandler';
+import { createErrorHandler, requestRouteTemplate } from './errorHandler';
 
 const logger = createLogger(
   loadConfig({
@@ -30,7 +30,9 @@ function mockRes(headersSent = false): {
   const json = vi.fn();
   const status = vi.fn().mockReturnValue({ json });
   const removeHeader = vi.fn();
-  const res = { headersSent, status, json, removeHeader } as unknown as Response;
+  // `statusCode` is what an already-sent response really ended with — the
+  // capture records that rather than the 500 it can no longer write.
+  const res = { headersSent, statusCode: 200, status, json, removeHeader } as unknown as Response;
   return { res, status, json, removeHeader };
 }
 
@@ -45,6 +47,36 @@ function validatorErrorApp(error: Error) {
   app.use(createErrorHandler(logger));
   return app;
 }
+
+/**
+ * The route template that identifies a captured 500 (§13.5 V5-P2 arc (d)). It
+ * enters the problem's fold key, so a concrete id in it would split one broken
+ * endpoint into a row per id — and the mount prefix has to survive the router
+ * rewinding `req.baseUrl` on its way to this handler.
+ */
+describe('requestRouteTemplate', () => {
+  it('rebuilds the mounted pattern even though req.baseUrl was restored', () => {
+    const req = {
+      originalUrl: '/api/v1/portfolios/018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f?range=1m',
+      baseUrl: '',
+      route: { path: '/:id' },
+    } as unknown as Request;
+
+    expect(requestRouteTemplate(req)).toBe('/api/v1/portfolios/:id');
+  });
+
+  it('masks id-shaped segments when nothing matched (no route to read)', () => {
+    const req = {
+      originalUrl: '/api/v1/assets/018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f/history',
+    } as unknown as Request;
+
+    expect(requestRouteTemplate(req)).toBe('/api/v1/assets/:id/history');
+  });
+
+  it('falls back to "/" for a request that carries no url at all', () => {
+    expect(requestRouteTemplate({} as Request)).toBe('/');
+  });
+});
 
 describe('createErrorHandler validator stripping', () => {
   it('removes pre-set validators from an ApiError envelope', async () => {
@@ -77,11 +109,18 @@ describe('createErrorHandler PII-safe reporting', () => {
     const { res, status } = mockRes();
 
     const err = new Error('kaboom');
-    handler(err, {} as Request, res, vi.fn());
+    handler(err, { method: 'POST', originalUrl: '/api/v1/things?x=1' } as Request, res, vi.fn());
 
     expect(status).toHaveBeenCalledWith(500);
     expect(report).toHaveBeenCalledTimes(1);
-    expect(report).toHaveBeenCalledWith(err);
+    // The request facts ride along with the report: the DB capture stores them,
+    // and without them a 500 identifies nothing but its own message.
+    expect(report).toHaveBeenCalledWith(err, {
+      method: 'POST',
+      route: '/api/v1/things',
+      status: 500,
+      requestId: expect.any(String),
+    });
   });
 
   it('does NOT report an expected ApiError (normal control flow)', () => {
@@ -124,8 +163,11 @@ describe('createErrorHandler PII-safe reporting', () => {
 
     expect(() => handler(err, {} as Request, res, next)).not.toThrow();
 
-    expect(errorLogger.error).toHaveBeenCalledWith({ err: 'kaboom' }, 'Unhandled request error');
-    expect(report).toHaveBeenCalledWith(err);
+    expect(errorLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: 'kaboom', status: 200 }),
+      'Unhandled request error',
+    );
+    expect(report).toHaveBeenCalledWith(err, expect.objectContaining({ status: 200 }));
     expect(removeHeader).not.toHaveBeenCalled();
     expect(status).not.toHaveBeenCalled();
     expect(json).not.toHaveBeenCalled();
@@ -150,10 +192,12 @@ describe('createErrorHandler PII-safe reporting', () => {
     handler(wrapped, {} as Request, res, vi.fn());
 
     expect(errorLogger.error).toHaveBeenCalledWith(
-      { err: 'duplicate key value violates unique constraint "cash_movements_pkey"' },
+      expect.objectContaining({
+        err: 'duplicate key value violates unique constraint "cash_movements_pkey"',
+      }),
       'Unhandled request error',
     );
-    expect(report).toHaveBeenCalledWith(wrapped);
+    expect(report).toHaveBeenCalledWith(wrapped, expect.objectContaining({ status: 500 }));
   });
 
   it('caps a pathological error message before it reaches the log', () => {

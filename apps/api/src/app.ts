@@ -259,9 +259,12 @@ export function createApp(ctx: AppContext) {
   // the Sentry hook is a no-op when disabled, the DB capture always runs with
   // zero configuration. Expected ApiError/ZodError outcomes are never reported.
   app.use(
-    createErrorHandler(ctx.logger, (err) => {
+    createErrorHandler(ctx.logger, (err, requestContext) => {
       ctx.observability.captureException(err);
-      ctx.problems.captureError(err);
+      // The request facts travel with the capture: without them a 500 lands as
+      // a message with no route, no status and no request id, and folds
+      // together with an unrelated endpoint that happens to throw the same one.
+      ctx.problems.captureError(err, requestContext);
     }),
   );
   return app;

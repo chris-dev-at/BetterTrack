@@ -78,6 +78,8 @@ beforeEach(() => {
   vi.mocked(api.listProblems).mockResolvedValue({
     problems: [],
     openCount: 0,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
     total: 0,
     hasMore: false,
   });
@@ -148,6 +150,8 @@ test('debounces the user search so one word is one request', async () => {
 test('matches open problems client-side and points at the Problems page', async () => {
   vi.mocked(api.listProblems).mockResolvedValue({
     openCount: 1,
+    droppedCaptures: 0,
+    droppedCapturesTotal: 0,
     total: 1,
     hasMore: false,
     problems: [

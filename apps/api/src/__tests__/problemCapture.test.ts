@@ -5,6 +5,13 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  PROBLEM_CONTEXT_MAX_BYTES,
+  PROBLEM_CONTEXT_VALUE_MAX_BYTES,
+  PROBLEM_MESSAGE_MAX_BYTES,
+  PROBLEM_TITLE_MAX_BYTES,
+} from '@bettertrack/contracts';
+
 import { createErrorHandler } from '../http/errorHandler';
 import { MAX_ERROR_MESSAGE_CHARS } from '../data/driverError';
 import { problems } from '../data/schema';
@@ -12,7 +19,11 @@ import {
   createProblemService,
   type ProblemService,
 } from '../services/observability/problemService';
-import type { ProblemRepository, UpsertProblemInput } from '../data/repositories/problemRepository';
+import {
+  createProblemRepository,
+  type ProblemRepository,
+  type UpsertProblemInput,
+} from '../data/repositories/problemRepository';
 import { handleWorkerError } from '../jobs/worker';
 import { flushTelemetryBuffers } from '../shutdown';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -176,6 +187,154 @@ describe('problem capture (Sentry replacement)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.kind).toBe('error');
     expect(rows[0]!.message).not.toContain('secret@example.com');
+  });
+
+  it('captures the failed request’s method, route template, status and request id', async () => {
+    // The app.ts wiring verbatim, on a SUB-ROUTER: the router restores
+    // `req.baseUrl` before the app-level handler sees the error, so a template
+    // read off it alone would lose the mount prefix.
+    const app = express();
+    const router = express.Router();
+    router.get('/:id', () => {
+      throw new TypeError("Cannot read properties of undefined (reading 'id')");
+    });
+    app.use('/api/v1/portfolios', router);
+    app.use(
+      createErrorHandler(harness.ctx.logger, (err, requestContext) =>
+        harness.ctx.problems.captureError(err, requestContext),
+      ),
+    );
+
+    const res = await request(app).get('/api/v1/portfolios/018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f');
+    expect(res.status).toBe(500);
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    const context = row!.context as Record<string, unknown>;
+    expect(context.method).toBe('GET');
+    expect(context.route).toBe('/api/v1/portfolios/:id');
+    expect(context.status).toBe(500);
+    expect(typeof context.requestId).toBe('string');
+    // The concrete id never enters the stored context.
+    expect(JSON.stringify(row)).not.toContain('018f4b7e');
+  });
+
+  it('stores a bounded stack for a captured error', async () => {
+    harness.ctx.problems.captureError(new Error('deep failure'), {
+      method: 'GET',
+      route: '/api/v1/things',
+      status: 500,
+    });
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    const stack = (row!.context as Record<string, unknown>).stack as string;
+    expect(stack).toContain('Error: deep failure');
+    expect(stack.split('\n').length).toBeLessThanOrEqual(21);
+    expect(Buffer.byteLength(stack, 'utf8')).toBeLessThanOrEqual(PROBLEM_CONTEXT_VALUE_MAX_BYTES);
+  });
+
+  it('scrubs the stack and the request context like every other captured value', async () => {
+    harness.ctx.problems.captureError(new Error('lookup failed for alice@example.com'), {
+      method: 'GET',
+      route: '/api/v1/things',
+      status: 500,
+      cookie: 'bt_session=abc',
+      note: 'key btk_supersecretvalue',
+    });
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    const serialized = JSON.stringify(row);
+    expect(serialized).not.toContain('alice@example.com');
+    expect(serialized).not.toContain('btk_supersecretvalue');
+    const context = row!.context as Record<string, unknown>;
+    expect(context.cookie).toBe('[redacted]');
+    // The stack repeats the message, so it must be scrubbed too.
+    expect(context.stack as string).toContain('[redacted-email]');
+  });
+
+  it('keeps two endpoints throwing the identical error apart, and still folds one endpoint', async () => {
+    const identical = () => new TypeError("Cannot read properties of undefined (reading 'id')");
+    const at = (route: string) => ({ method: 'GET', route, status: 500 });
+
+    harness.ctx.problems.captureError(identical(), at('/api/v1/portfolios/:id'));
+    harness.ctx.problems.captureError(identical(), at('/api/v1/workboard/:id'));
+    // The SAME endpoint twice still folds — the #1547 behaviour is preserved.
+    harness.ctx.problems.captureError(identical(), at('/api/v1/portfolios/:id'));
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.fingerprint)).size).toBe(2);
+    const portfolios = rows.find(
+      (r) => (r.context as Record<string, unknown>).route === '/api/v1/portfolios/:id',
+    )!;
+    expect(portfolios.occurrenceCount).toBe(2);
+  });
+
+  it('folds two ids on the same endpoint into one row — the route never carries an id', async () => {
+    const app = express();
+    const router = express.Router();
+    router.get('/:id', () => {
+      throw new TypeError('same failure');
+    });
+    app.use('/api/v1/portfolios', router);
+    app.use(
+      createErrorHandler(harness.ctx.logger, (err, requestContext) =>
+        harness.ctx.problems.captureError(err, requestContext),
+      ),
+    );
+
+    await request(app).get('/api/v1/portfolios/018f4b7e-8d3a-7c19-9d0b-1a2b3c4d5e6f');
+    await request(app).get('/api/v1/portfolios/0190aa11-2b3c-7d4e-8f90-a1b2c3d4e5f6');
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.occurrenceCount).toBe(2);
+    expect((rows[0]!.context as Record<string, unknown>).route).toBe('/api/v1/portfolios/:id');
+  });
+
+  it('bounds a multi-hundred-KB provider error to the documented byte ceilings', async () => {
+    // An upstream 5xx HTML page inside a fetch error: one legal capture under a
+    // budget that counts ROWS, several hundred KB on disk.
+    const htmlBody = `<html><body>${'error page '.repeat(30_000)}</body></html>`;
+    harness.ctx.problems.captureProviderFailure(new Error(`502 from upstream: ${htmlBody}`), {
+      providerId: 'yahoo',
+    });
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    expect(Buffer.byteLength(row!.title, 'utf8')).toBeLessThanOrEqual(PROBLEM_TITLE_MAX_BYTES);
+    expect(Buffer.byteLength(row!.message, 'utf8')).toBeLessThanOrEqual(PROBLEM_MESSAGE_MAX_BYTES);
+    expect(row!.message).toContain('[truncated]');
+    expect(Buffer.byteLength(JSON.stringify(row!.context), 'utf8')).toBeLessThanOrEqual(
+      PROBLEM_CONTEXT_MAX_BYTES,
+    );
+  });
+
+  it('bounds an oversized context tree at the repository write boundary too', async () => {
+    // Straight at the repo, bypassing the service: the write boundary must hold
+    // the same ceiling on its own (no DB CHECK — that would drop the capture).
+    const repo = createProblemRepository(harness.db);
+    await repo.upsert({
+      fingerprint: 'f'.repeat(40),
+      kind: 'error',
+      title: 'T'.repeat(5_000),
+      message: 'M'.repeat(500_000),
+      context: { blob: 'B'.repeat(500_000), nested: { deeper: 'D'.repeat(200_000) } },
+      seenAt: new Date(),
+      occurrences: 1,
+    });
+
+    const [row] = await harness.db.select().from(problems);
+    expect(Buffer.byteLength(row!.title, 'utf8')).toBeLessThanOrEqual(PROBLEM_TITLE_MAX_BYTES);
+    expect(Buffer.byteLength(row!.message, 'utf8')).toBeLessThanOrEqual(PROBLEM_MESSAGE_MAX_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(row!.context), 'utf8')).toBeLessThanOrEqual(
+      PROBLEM_CONTEXT_MAX_BYTES,
+    );
+    expect((row!.context as Record<string, unknown>).truncated).toBe(true);
   });
 
   it('captures the driver failure, not drizzle’s SQL-and-parameters wrapper', async () => {
@@ -403,6 +562,36 @@ describe('problem capture rate cap', () => {
       expect.objectContaining({ dropped: 2 }),
       'problem captures dropped by the rate cap in the closed window',
     );
+  });
+
+  it('publishes the current window’s drops on the list result, and rolls them', async () => {
+    // The counted half of "never silent" needs a consumer: the log is not a
+    // channel the operator reads (§16 — admin is the only management surface).
+    const { repo } = fakeRepo();
+    let clock = 0;
+    const service = createProblemService({
+      repo,
+      now: () => clock,
+      maxWritesPerWindow: 1,
+      windowMs: 1000,
+    });
+
+    service.captureError(new Error('first distinct'));
+    service.captureError(new Error('second distinct'));
+    service.captureError(new Error('third distinct'));
+    await service.flush();
+
+    const during = await service.list({ limit: 25 });
+    expect(during.droppedCaptures).toBe(2);
+    expect(during.droppedCapturesTotal).toBe(2);
+
+    // A later, quiet window reports zero rather than the last storm forever —
+    // the window rolls on read, not only on the next capture.
+    clock = 5000;
+    const after = await service.list({ limit: 25 });
+    expect(after.droppedCaptures).toBe(0);
+    expect(after.droppedCapturesTotal).toBe(2);
+    expect(service.droppedCapturesInWindow()).toBe(0);
   });
 });
 
