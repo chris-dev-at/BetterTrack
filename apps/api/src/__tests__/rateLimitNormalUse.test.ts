@@ -156,6 +156,163 @@ describe('the shipped ceilings clear ordinary use (§10)', () => {
   }, 120_000);
 });
 
+describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE, #1643)', () => {
+  /**
+   * The four cost-metered endpoints, driven through the REAL middleware chain.
+   * A unit test of `limiters.cost(...)` proves the guard; it cannot prove that
+   * the guard is MOUNTED — and the rest of the API suite runs with
+   * `rateLimits.enabled === false`, so every other test passes identically
+   * whether or not the four `limiters.cost(...)` mounts exist.
+   *
+   * Each route puts the cost guard FIRST, ahead of multer / `validateBody` /
+   * `validateParams`, so a request's own outcome (200, 400, 404) is irrelevant
+   * here: what the assertions read is whether the guard let it through and what
+   * it charged the `expensive` counter for it.
+   */
+  const COST = { socialShared: 10, analyticsSeries: 10, backtestPreview: 25, importCreate: 100 };
+  /** `expensive`: 3000 units / minute (config/env.ts §10 COST TABLE). */
+  const EXPENSIVE_LIMIT = 3000;
+
+  it('charges each of the four endpoints its declared weight, and clears a normal minute', async () => {
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'cost@bt.test', username: 'coster' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    const created = await request(limited.app)
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ name: 'Costed' });
+    expect(created.status).toBe(201);
+    const pid = created.body.portfolio.id as string;
+
+    // A pessimistic ordinary minute at these four surfaces: the shared-with-me
+    // list refetching on focus, an analytics panel being re-filtered, a few
+    // debounced builder previews, one CSV upload.
+    const SHARED = 6;
+    const ANALYTICS = 6;
+    const PREVIEWS = 4;
+    const IMPORTS = 1;
+
+    for (let i = 0; i < SHARED; i += 1) {
+      const res = await request(limited.app).get('/api/v1/social/shared').set('Cookie', cookie);
+      expect(res.status).toBe(200);
+    }
+    for (let i = 0; i < ANALYTICS; i += 1) {
+      const res = await request(limited.app)
+        .get(`/api/v1/analytics/portfolios/${pid}/series`)
+        .set('Cookie', cookie);
+      expect(res.status).toBe(200);
+    }
+    for (let i = 0; i < PREVIEWS; i += 1) {
+      // Past the guard, then rejected by `validateBody` — the 400 is proof the
+      // request was NOT turned away by the limiter.
+      const res = await request(limited.app)
+        .post('/api/v1/backtest/preview')
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({});
+      expect(res.status).toBe(400);
+    }
+    for (let i = 0; i < IMPORTS; i += 1) {
+      const res = await request(limited.app)
+        .post('/api/v1/imports')
+        .set(...XRW)
+        .set('Cookie', cookie);
+      expect(res.status).toBe(400);
+    }
+
+    // Every one of the four mounts is present AND carries its own weight: drop
+    // any single `limiters.cost(...)` and this total falls by that endpoint's
+    // units. Nothing else in the app meters against `expensive`.
+    const spent =
+      SHARED * COST.socialShared +
+      ANALYTICS * COST.analyticsSeries +
+      PREVIEWS * COST.backtestPreview +
+      IMPORTS * COST.importCreate;
+    expect(spent).toBe(320);
+    const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
+    // …and that realistic minute sits at roughly a tenth of the budget, so the
+    // new dimension never fires during ordinary use.
+    expect(spent * 9).toBeLessThan(EXPENSIVE_LIMIT);
+    expect(await limited.ctx.redis.get(key.cooldown)).toBeNull();
+  }, 120_000);
+
+  it('turns a pathological caller away on COST before the request COUNT would have', async () => {
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({
+      email: 'pathological@bt.test',
+      username: 'pathological',
+    });
+    const bystander = await limited.seedUser({ email: 'bystander@bt.test', username: 'bystander' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    // `limiters.cost('importCreate')` runs BEFORE multer, so a bodyless POST
+    // spends its 100 units and is rejected for the missing file without the API
+    // reading an upload: 30 of them exactly exhaust the minute's 3000 units.
+    const drain = EXPENSIVE_LIMIT / COST.importCreate;
+    expect(drain).toBe(30);
+    for (let i = 0; i < drain; i += 1) {
+      const res = await request(limited.app)
+        .post('/api/v1/imports')
+        .set(...XRW)
+        .set('Cookie', cookie);
+      expect(res.status).toBe(400);
+    }
+
+    const over = await request(limited.app)
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Cookie', cookie);
+    expect(over.status).toBe(429);
+    expect(over.body.error.code).toBe('RATE_LIMITED');
+    expect(over.headers['retry-after']).toBe('20');
+    expect(over.body.error.details).toEqual({ retryAfter: 20 });
+
+    // The refusal came from the COST dimension: 31 requests is nowhere near
+    // `generalBurst`'s 600/30 s or `general`'s 9000/15 min, and neither of their
+    // ladders armed. That is the whole point of the dimension — the caller is
+    // bounded by the WORK it asked for, not by how many requests carried it.
+    expect(
+      await limited.ctx.redis.get(
+        progressiveKeys('expensive', limiterKeyForUser(user.id)).cooldown,
+      ),
+    ) //
+      .toBe('1');
+    for (const namespace of ['general', 'general_burst']) {
+      expect(
+        await limited.ctx.redis.get(
+          progressiveKeys(namespace, limiterKeyForUser(user.id)).cooldown,
+        ),
+      ).toBeNull();
+    }
+
+    // While that cooldown is live the OTHER three mounts refuse too — same key,
+    // same namespace — which is what proves each of them is wired to it.
+    const shared = await request(limited.app).get('/api/v1/social/shared').set('Cookie', cookie);
+    expect(shared.status).toBe(429);
+    const analytics = await request(limited.app)
+      .get('/api/v1/analytics/portfolios/00000000-0000-7000-8000-000000000000/series')
+      .set('Cookie', cookie);
+    expect(analytics.status).toBe(429);
+    const preview = await request(limited.app)
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({});
+    expect(preview.status).toBe(429);
+
+    // …and the budget is PER USER: a second account on the same address reads
+    // its shared list normally throughout.
+    const bystanderCookie = await sessionCookie(limited.app, bystander);
+    const unaffected = await request(limited.app)
+      .get('/api/v1/social/shared')
+      .set('Cookie', bystanderCookie);
+    expect(unaffected.status).toBe(200);
+  }, 120_000);
+});
+
 describe('the strict limiters stay strict (§10, §6.1)', () => {
   it('still turns away credential stuffing from one address, across accounts', async () => {
     const limited = await createTestApp({

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProgressiveSchedule } from '../../services/security/progressiveLimiter';
-import { loadConfig } from '../env';
+import { loadConfig, REQUEST_COST_KEYS } from '../env';
 
 /**
  * Pins the §10 LIMITER TABLE (see the block comment above `rateLimits` in
@@ -80,6 +80,14 @@ describe('§10 limiter table — capacity limiters', () => {
     expect(shape(rateLimits.vault)).toEqual({ windowSec: 60, limit: 60, ...GENERAL_LADDER });
     expect(shape(rateLimits.vaultRead)).toEqual({ windowSec: 60, limit: 600, ...GENERAL_LADDER });
     expect(shape(rateLimits.apiKey)).toEqual({ windowSec: 60, limit: 120, ...GENERAL_LADDER });
+
+    // The COST dimension (#1643): 3000 WORK UNITS / min, per user, on the same
+    // escalation ladder as `general` so the 429 envelope never differs.
+    expect(shape(rateLimits.expensive)).toEqual({
+      windowSec: 60,
+      limit: 3000,
+      ...GENERAL_LADDER,
+    });
   });
 
   it('lets the burst window absorb a spike without raising the sustained rate above it', () => {
@@ -106,6 +114,83 @@ describe('§10 limiter table — capacity limiters', () => {
     const generalPerMinute = (rateLimits.general.limit / rateLimits.general.windowSec) * 60;
     const vaultReadPerMinute = (rateLimits.vaultRead.limit / rateLimits.vaultRead.windowSec) * 60;
     expect(generalPerMinute).toBeGreaterThanOrEqual(vaultReadPerMinute);
+  });
+});
+
+describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
+  /**
+   * The MODELLED NORMAL-USE BAR for the unit budget: one active user
+   * pessimistically doing all four expensive things inside the SAME minute.
+   * Engineering estimates read off the client, exactly like the request-count
+   * bar below — restated here so a weight edit has to be argued, not just made.
+   */
+  const COST_BAR = {
+    /** Builder weight-tuning: one debounced preview every ~3 s. */
+    backtestPreviewPerMinute: 20,
+    /** Analytics range / filter / compare changes. */
+    analyticsSeriesPerMinute: 12,
+    /** Shared-with-me list on tab focus + reconnect refetch. */
+    socialSharedPerMinute: 6,
+    /** Two CSV uploads. */
+    importCreatePerMinute: 2,
+  };
+
+  it('pins every weight, so a future edit is visible in a diff', () => {
+    const { requestCosts } = config().rateLimits;
+    // Exactly the declared cost-metered endpoints — a new key here means a new
+    // route was given a weight, which is a decision to argue, not a detail.
+    expect(Object.keys(requestCosts).sort()).toEqual([...REQUEST_COST_KEYS].sort());
+    expect(requestCosts).toEqual({
+      // Unbounded `Promise.all` fan-out over friends × shared items.
+      socialShared: 10,
+      // A perturbed weight vector is a cache MISS by construction; a miss walks
+      // the positions' history sequentially through the provider layer.
+      backtestPreview: 25,
+      // Series + optional compare series + contribution table, over a window
+      // that ANALYTICS_MAX_RANGE_DAYS now bounds.
+      analyticsSeries: 10,
+      // The row classifier drives ≈450 pg_trgm scans per staged batch.
+      importCreate: 100,
+    });
+  });
+
+  it('clears the modelled normal minute with at least 3x headroom', () => {
+    const { expensive, requestCosts } = config().rateLimits;
+    const worstMinute =
+      COST_BAR.backtestPreviewPerMinute * requestCosts.backtestPreview +
+      COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
+      COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
+      COST_BAR.importCreatePerMinute * requestCosts.importCreate;
+    // Pins the model's arithmetic, not a measurement: editing a term above has
+    // to restate this number deliberately.
+    expect(worstMinute).toBe(880);
+    expect(expensive.windowSec).toBe(60);
+    expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
+  });
+
+  it('bounds a pathological caller by WORK before the request count would', () => {
+    const { expensive, general, requestCosts } = config().rateLimits;
+    const generalPerMinute = (general.limit / general.windowSec) * 60;
+    for (const [endpoint, units] of Object.entries(requestCosts)) {
+      // Requests per minute a caller doing nothing but this endpoint gets
+      // through before the unit budget refuses it. If this ever climbed above
+      // `general`'s allowance the cost dimension would be decorative: the count
+      // limiter would trip first and the weight would mean nothing.
+      const requestsBeforeCost = expensive.limit / units;
+      expect(requestsBeforeCost, endpoint).toBeLessThan(generalPerMinute);
+      // …and no weight may be so heavy that the modelled normal rate cannot be
+      // sustained: every endpoint keeps at least 3× its own bar on its own.
+      expect(requestsBeforeCost, endpoint).toBeGreaterThanOrEqual(
+        3 * COST_BAR[`${endpoint as keyof typeof requestCosts}PerMinute`],
+      );
+    }
+  });
+
+  it('reuses the general escalation ladder, so the 429 contract is identical', () => {
+    const { expensive, general } = config().rateLimits;
+    expect(expensive.cooldownsSec).toEqual(general.cooldownsSec);
+    expect(expensive.decaySec).toBe(general.decaySec);
+    expect(expensive.retainCountOnViolation).toBeUndefined();
   });
 });
 
