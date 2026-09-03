@@ -6,6 +6,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  commentCreatedEmail,
   earningsReminderEmail,
   deferredNotificationEmail,
   digestEmail,
@@ -149,6 +150,18 @@ export interface EmailService {
     to: string;
     userId: string;
     actorUsername: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /**
+   * Notification email: a comment landed on an item `userId` shares (V5-P8).
+   * Carries the commenter + the item name and a link to the owner's My items
+   * surface, never the comment text.
+   */
+  sendCommentCreated(params: {
+    to: string;
+    userId: string;
+    actorUsername: string;
+    itemName: string;
     locale?: string;
   }): Promise<EmailSendResult>;
   /** Notification email: friend activity on a shared item `userId` follows (#368). */
@@ -303,6 +316,7 @@ type EmailTemplateKind =
   | 'alert_triggered'
   | 'earnings_reminder'
   | 'chat_message'
+  | 'comment_created'
   | 'feedback_notification'
   | 'mirror_notification'
   | 'digest';
@@ -487,6 +501,19 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'conglomerate_shared',
         to,
         conglomerateSharedEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendCommentCreated: ({ to, userId, actorUsername, itemName, locale }) =>
+      deliver(
+        'comment_created',
+        to,
+        commentCreatedEmail({
+          actorUsername,
+          itemName,
+          threadUrl: `${config.appOrigin}/people/shared`,
+          locale,
+        }),
         { userId },
       ),
 

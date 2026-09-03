@@ -100,6 +100,7 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
     ),
     'mirror.chain_dissolved': t('settings.notifications.types.mirrorChainDissolved.label'),
     'mirror.sync_stalled': t('settings.notifications.types.mirrorSyncStalled.label'),
+    'comment.created': t('settings.notifications.types.commentCreated.label'),
   };
 }
 

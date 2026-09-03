@@ -41,6 +41,7 @@ import type {
   ItemFollowListRow,
 } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
+import type { AudienceReachSummary } from '../../data/repositories/shareAudienceRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type {
   FollowingUserRow,
@@ -1049,12 +1050,13 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           allIdeas.map((i) => i.id),
         ),
       ]);
+      // A subject with no audience row has no reach to report: `private`
+      // (or the legacy `friends` flag) with nobody named and no group.
       const summary = (
-        map: Map<string, { audience: ShareAudience; friendCount: number }>,
+        map: Map<string, AudienceReachSummary>,
         id: string,
         fallback: ShareAudience,
-      ): { audience: ShareAudience; friendCount: number } =>
-        map.get(id) ?? { audience: fallback, friendCount: 0 };
+      ): AudienceReachSummary => map.get(id) ?? { audience: fallback, friendCount: 0, group: null };
       return {
         portfolios: allPortfolios.map((p) => {
           // Fall back off the legacy `visibility` column only when no audience
@@ -1066,6 +1068,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             name: p.name,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
         conglomerates: allConglomerates.map((c) => {
@@ -1079,6 +1082,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             positionCount: c.positionCount,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
         watchlists: allWatchlists.map((w) => {
@@ -1089,6 +1093,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             itemCount: w.itemCount,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
         ideas: allIdeas.map((i) => {
@@ -1101,6 +1106,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             hasThesis: i.thesis !== null,
             audience: s.audience,
             friendCount: s.friendCount,
+            group: s.group,
           };
         }),
       };

@@ -632,6 +632,9 @@
         "budgetExceeded": {
           "label": "Budget alerts"
         },
+        "commentCreated": {
+          "label": "Comments on things you share"
+        },
         "standingOrderSkipped": {
           "label": "Standing order problems"
         },
@@ -1062,6 +1065,7 @@
           "chatMessage": "New chat message",
           "dividendEvent": "Upcoming dividend",
           "budgetExceeded": "Budget exceeded",
+          "commentCreated": "Comment on a shared item",
           "standingOrderSkipped": "Standing order period not booked",
           "mirrorInvite": "Group portfolio invite",
           "mirrorMemberJoined": "Group portfolio member joined",
@@ -3149,7 +3153,9 @@
       "specific_friends": "Specific friends",
       "all_friends": "All friends",
       "public_link": "Public link",
-      "group": "Friend group"
+      "group": "Friend group",
+      "groupEmpty": "{{name}} · reaches nobody",
+      "groupDeleted": "Friend group deleted · reaches nobody"
     },
     "friendsSearchPlaceholder": "Search friends",
     "friendsSelectedCount": "{{count}} selected",
@@ -3241,6 +3247,8 @@
       "error": "Could not load your items. Please refresh the page.",
       "portfolioMetadataLoading": "Checking group-portfolio privacy…",
       "portfolioMetadataError": "Could not verify this portfolio's group-sharing notice. Try again before sharing it.",
+      "comments": "Comments",
+      "commentsTitle": "Comments on {{name}}",
       "publicProfileLink": "Manage your public profile"
     },
     "alertSharing": {
@@ -4634,6 +4642,7 @@
         "followAlertFired": "follow.alert.fired",
         "dividendEvent": "dividend.event",
         "budgetExceeded": "budget.exceeded",
+        "commentCreated": "comment.created",
         "standingOrderSkipped": "standing_order.skipped",
         "mirrorInvite": "mirror.invite",
         "mirrorMemberJoined": "mirror.member_joined",
@@ -6312,6 +6321,10 @@
     "dividendEventWithAmount": {
       "title": "{{symbol}} ex-dividend {{date}}",
       "body": "{{symbol}} goes ex-dividend on {{date}} ({{amount}} {{currency}} per share)."
+    },
+    "commentCreated": {
+      "title": "New comment",
+      "body": "{{actor}} commented on “{{item}}”."
     },
     "budgetExceeded": {
       "title": "Budget exceeded: {{category}}",

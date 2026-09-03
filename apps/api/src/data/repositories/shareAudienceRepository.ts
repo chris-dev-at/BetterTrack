@@ -7,6 +7,7 @@ import type { Database } from '../db';
 import {
   conglomerates,
   friendGroupMembers,
+  friendGroups,
   friendships,
   ideas,
   itemComments,
@@ -86,6 +87,19 @@ export interface OwnedAudienceState {
   /** The referenced friend group (V5-P8) — set only for the `group` audience. */
   groupId: string | null;
   link: { active: boolean; createdAt: Date | null };
+}
+
+/**
+ * One subject's "who can see this" reach, for the owner's My items list
+ * (§13.5 V5-P8). `friendCount` is non-zero only for `specific_friends`; `group`
+ * names the circle a `group` share reaches, with its LIVE roster size, and is
+ * `null` both for every other audience and for a `group` share whose group was
+ * deleted — a state that resolves to nobody.
+ */
+export interface AudienceReachSummary {
+  audience: ShareAudience;
+  friendCount: number;
+  group: { id: string; name: string; memberCount: number } | null;
 }
 
 /** A token resolved to its subject (public-link mode, no friendship). */
@@ -882,34 +896,67 @@ export function createShareAudienceRepository(db: Database) {
     },
 
     /**
-     * Per-subject audience + named-friend count, for a same-kind batch (missing
-     * row = `private`, 0 friends) — feeds the "who can see this" summary in **My
-     * Shared Items** without an N+1. One grouped query over the audience rows and
-     * their membership set.
+     * Per-subject audience + reach summary, for a same-kind batch (missing row =
+     * `private`, 0 friends) — feeds the "who can see this" summary in **My Shared
+     * Items** without an N+1. One grouped query over the audience rows, their
+     * membership set and, for a `group` audience, the referenced circle.
+     *
+     * The group's roster size is counted LIVE from `friend_group_members` here,
+     * off the same rows {@link audienceGrants} authorizes against — so editing a
+     * circle changes the reported reach on the very next read and the owner
+     * surface can never claim a reach the enforcement layer doesn't grant.
+     *
+     * `group` is `null` for a non-`group` audience AND for a `group` share whose
+     * group was deleted (`group_id` nulls out; the share then resolves to
+     * nobody). With the audience beside it, the owner surface distinguishes
+     * "not a group share" from "group gone" from a populated / empty circle.
+     *
+     * Both counts are DISTINCT: the member and group-roster joins multiply each
+     * other's rows, and a plain `count()` would inflate on that product.
      */
     async audienceSummariesForSubjects(
       kind: ShareKind,
       subjectIds: readonly string[],
-    ): Promise<Map<string, { audience: ShareAudience; friendCount: number }>> {
-      const out = new Map<string, { audience: ShareAudience; friendCount: number }>();
+    ): Promise<Map<string, AudienceReachSummary>> {
+      const out = new Map<string, AudienceReachSummary>();
       if (subjectIds.length === 0) return out;
       const rows = await db
         .select({
           subjectId: shareAudiences.subjectId,
           audience: shareAudiences.audience,
+          groupId: friendGroups.id,
+          groupName: friendGroups.name,
           friendCount:
-            sql<number>`count(${shareAudienceMembers.friendId}) filter (where ${shareAudiences.audience} = 'specific_friends')`.mapWith(
+            sql<number>`count(distinct ${shareAudienceMembers.friendId}) filter (where ${shareAudiences.audience} = 'specific_friends')`.mapWith(
               Number,
             ),
+          groupMemberCount: sql<number>`count(distinct ${friendGroupMembers.memberId})`.mapWith(
+            Number,
+          ),
         })
         .from(shareAudiences)
         .leftJoin(shareAudienceMembers, eq(shareAudienceMembers.audienceId, shareAudiences.id))
+        .leftJoin(friendGroups, eq(friendGroups.id, shareAudiences.groupId))
+        .leftJoin(friendGroupMembers, eq(friendGroupMembers.groupId, friendGroups.id))
         .where(
           and(eq(shareAudiences.kind, kind), inArray(shareAudiences.subjectId, [...subjectIds])),
         )
-        .groupBy(shareAudiences.id, shareAudiences.subjectId, shareAudiences.audience);
+        .groupBy(
+          shareAudiences.id,
+          shareAudiences.subjectId,
+          shareAudiences.audience,
+          friendGroups.id,
+          friendGroups.name,
+        );
       for (const r of rows)
-        out.set(r.subjectId, { audience: r.audience, friendCount: r.friendCount });
+        out.set(r.subjectId, {
+          audience: r.audience,
+          friendCount: r.friendCount,
+          group:
+            r.audience === 'group' && r.groupId !== null && r.groupName !== null
+              ? { id: r.groupId, name: r.groupName, memberCount: r.groupMemberCount }
+              : null,
+        });
       return out;
     },
 

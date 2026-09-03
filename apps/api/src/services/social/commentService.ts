@@ -10,6 +10,9 @@ import {
 } from '@bettertrack/contracts';
 
 import { coerceProfileIcon } from '../../http/serializers';
+import type { CommentCreatedEvent, EventBus } from '../../events';
+import type { Logger } from '../../logger';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { ItemCommentRepository } from '../../data/repositories/itemCommentRepository';
 import type {
   ReactionAggregate,
@@ -51,6 +54,15 @@ export interface CommentServiceDeps {
   paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'runAllowedWithOptional'>;
   /** Holds the portfolio boundary across every thread read/write when the subject is a portfolio. */
   vaultedPortfolio?: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>;
+  /**
+   * The ONE notification entry point (§6.10, #368) — emits `comment.created` to
+   * the item OWNER so the thread they moderate is not write-only. Omit to
+   * disable the arrival signal entirely (in-app-only unit setups).
+   */
+  notify?: NotificationCenter;
+  /** Ephemeral bus publish for the realtime/webhook consumers. Best-effort. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Logger;
 }
 
 export interface CommentService {
@@ -74,7 +86,12 @@ export interface CommentService {
     kind: ShareKind,
     subjectId: string,
   ): Promise<CommentThreadSummaryResponse>;
-  /** Post one comment on an authorized item, or 404 when unauthorized. */
+  /**
+   * Post one comment on an authorized item, or 404 when unauthorized. Emits
+   * `comment.created` to the item OWNER (never to the author themselves, and
+   * never to the rest of the audience) so the thread they moderate announces
+   * itself — matrix-routed, quiet-hours- and digest-aware like every other type.
+   */
   addComment(
     viewerId: string,
     kind: ShareKind,
@@ -266,6 +283,56 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     });
   }
 
+  /**
+   * The owner-facing arrival signal (§13.5 V5-P8). Without it the thread is
+   * write-only from the owner's side: they hold the moderation right over every
+   * comment on their item and nothing would ever tell them one exists.
+   *
+   * Exactly ONE recipient — the item owner. A comment is deliberately NOT fanned
+   * out to the rest of the audience: that would turn every shared item into a
+   * mailing list. The author never notifies themselves, so an owner commenting
+   * on their own item emits nothing.
+   *
+   * Both hops are best-effort and run inside the caller's already-resolved
+   * access: the comment is committed, so a transport hiccup must cost the
+   * notice, never the write. The bus publish feeds the ephemeral realtime /
+   * webhook consumers, `notify.emit` the durable matrix-routed fan-out.
+   */
+  async function notifyOwner(
+    access: ThreadAccess,
+    kind: ShareKind,
+    subjectId: string,
+    authorId: string,
+    authorUsername: string,
+    created: { id: string; createdAt: Date },
+  ): Promise<void> {
+    if (access.isOwner || access.ownerId === authorId) return;
+    if (!deps.notify && !deps.events) return;
+    let itemName = '';
+    try {
+      itemName = (await audience.subjectIdentity(kind, subjectId))?.name ?? '';
+    } catch (err) {
+      deps.logger?.warn({ err, kind, subjectId }, 'comment.created subject lookup failed');
+    }
+    const event: CommentCreatedEvent = {
+      type: 'comment.created',
+      userId: access.ownerId,
+      actorId: authorId,
+      actorUsername: authorUsername,
+      itemKind: kind,
+      itemId: subjectId,
+      itemName,
+      commentId: created.id,
+      occurredAt: created.createdAt.toISOString(),
+    };
+    try {
+      await deps.events?.publish(event);
+    } catch (err) {
+      deps.logger?.warn({ err, commentId: created.id }, 'comment.created publish failed');
+    }
+    await deps.notify?.emit(event);
+  }
+
   async function buildThread(
     viewerId: string,
     kind: ShareKind,
@@ -338,9 +405,10 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
 
     async addComment(viewerId, kind, subjectId, body) {
       return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, () =>
-        withLockedAccess(viewerId, kind, subjectId, async () => {
+        withLockedAccess(viewerId, kind, subjectId, async (access) => {
           const created = await comments.create(kind, subjectId, viewerId, body);
           const author = await userRepo.findById(viewerId);
+          await notifyOwner(access, kind, subjectId, viewerId, author?.username ?? '', created);
           return {
             id: created.id,
             author: {

@@ -287,6 +287,10 @@ export const NOTIFICATION_COPY: Record<
       title: 'New feedback reply',
       body: 'There is a new reply to your feedback submission.',
     },
+    commentCreated: {
+      title: 'New comment',
+      body: '{{actor}} commented on “{{item}}”.',
+    },
   },
   de: {
     friendRequest: {
@@ -540,6 +544,10 @@ export const NOTIFICATION_COPY: Record<
     feedbackReplyCreated: {
       title: 'Neue Antwort auf dein Feedback',
       body: 'Es gibt eine neue Antwort auf dein Feedback.',
+    },
+    commentCreated: {
+      title: 'Neuer Kommentar',
+      body: '{{actor}} hat „{{item}}“ kommentiert.',
     },
   },
 };

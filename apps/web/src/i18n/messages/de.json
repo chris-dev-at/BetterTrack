@@ -632,6 +632,9 @@
         "budgetExceeded": {
           "label": "Budget-Warnungen"
         },
+        "commentCreated": {
+          "label": "Kommentare zu deinen geteilten Inhalten"
+        },
         "standingOrderSkipped": {
           "label": "Probleme mit Daueraufträgen"
         },
@@ -1062,6 +1065,7 @@
           "chatMessage": "Neue Chat-Nachricht",
           "dividendEvent": "Bevorstehende Dividende",
           "budgetExceeded": "Budget überschritten",
+          "commentCreated": "Kommentar zu einem geteilten Eintrag",
           "standingOrderSkipped": "Dauerauftrags-Ausführung nicht gebucht",
           "mirrorInvite": "Einladung zum Gruppen-Portfolio",
           "mirrorMemberJoined": "Mitglied im Gruppen-Portfolio beigetreten",
@@ -3149,7 +3153,9 @@
       "specific_friends": "Bestimmte Freunde",
       "all_friends": "Alle Freunde",
       "public_link": "Öffentlicher Link",
-      "group": "Freundesgruppe"
+      "group": "Freundesgruppe",
+      "groupEmpty": "{{name}} · erreicht niemanden",
+      "groupDeleted": "Freundesgruppe gelöscht · erreicht niemanden"
     },
     "friendsSearchPlaceholder": "Freunde suchen",
     "friendsSelectedCount": "{{count}} ausgewählt",
@@ -3241,6 +3247,8 @@
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "portfolioMetadataLoading": "Datenschutz des Gruppen-Portfolios wird geprüft…",
       "portfolioMetadataError": "Der Hinweis zur Gruppenfreigabe dieses Portfolios konnte nicht geprüft werden. Versuche es vor dem Teilen erneut.",
+      "comments": "Kommentare",
+      "commentsTitle": "Kommentare zu {{name}}",
       "publicProfileLink": "Öffentliches Profil verwalten"
     },
     "alertSharing": {
@@ -4634,6 +4642,7 @@
         "followAlertFired": "Ausgelöste Alarme von gefolgten Personen",
         "dividendEvent": "Dividendenerinnerungen",
         "budgetExceeded": "Budgetalarme",
+        "commentCreated": "Kommentar zu einem geteilten Eintrag",
         "standingOrderSkipped": "Probleme mit Daueraufträgen",
         "mirrorInvite": "Einladungen zu Gruppenportfolios",
         "mirrorMemberJoined": "Mitglied beigetreten",
@@ -6312,6 +6321,10 @@
     "dividendEventWithAmount": {
       "title": "{{symbol}}: Ex-Dividende am {{date}}",
       "body": "{{symbol}} wird am {{date}} ex Dividende gehandelt ({{amount}} {{currency}} je Aktie)."
+    },
+    "commentCreated": {
+      "title": "Neuer Kommentar",
+      "body": "{{actor}} hat „{{item}}“ kommentiert."
     },
     "budgetExceeded": {
       "title": "Budget überschritten: {{category}}",

@@ -392,6 +392,20 @@ function copyCases(userId: string): CopyCase[] {
       occurredAt: OCCURRED_AT,
     },
   });
+  cases.push({
+    key: 'commentCreated',
+    event: {
+      type: 'comment.created',
+      userId,
+      actorId: 'actor',
+      actorUsername: 'anna',
+      itemKind: 'portfolio',
+      itemId: 'portfolio-commented',
+      itemName: 'Retirement',
+      commentId: 'comment-1',
+      occurredAt: OCCURRED_AT,
+    },
+  });
 
   return cases;
 }
