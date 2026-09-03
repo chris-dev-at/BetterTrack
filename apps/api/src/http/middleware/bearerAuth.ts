@@ -142,6 +142,12 @@ export const VAULT_SESSION_ONLY_ROUTES = [
   { method: 'GET', path: '/vaults/{vaultId}/media/server-candidate/{candidateId}' },
   { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge/challenge' },
   { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge' },
+  // #1529: the lossless import-capture read lives in the per-portfolio vault
+  // namespace, so the control-plane fence below already closes it to every
+  // bearer key. Listed here so its session-only status is ASSERTED, not
+  // assumed: raw staging rows and memos must not reach third-party keys.
+  // Bearer admission is deferred (review F1, Chief ruling 2026-09-02).
+  { method: 'GET', path: '/portfolios/{portfolioId}/vault/import-batches' },
 ] as const satisfies readonly BearerRoute[];
 
 /**
