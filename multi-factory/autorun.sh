@@ -7,6 +7,7 @@
 #   ./multi-factory/autorun.sh --stop     # stop containers (resume later with autorun.sh)
 #   ./multi-factory/autorun.sh --down     # stop AND remove containers (state/ dir persists)
 #   ./multi-factory/autorun.sh --fresh    # wipe protocol state + clone volumes, start clean
+#   ./multi-factory/autorun.sh --self-test # run the offline guard suite only, then exit
 #
 # The single factory and the multi-factory must NEVER run at the same time against
 # the repo — both launchers refuse to start while the other project has containers.
@@ -78,7 +79,6 @@ if [ "$WORKERS" -gt 2 ]; then
       - ./auth/worker-$w/claude:/home/factory/.claude-auth:ro
       - ./auth/worker-$w/codex:/home/factory/.codex
       - ./auth/worker-$w/ccr:/home/factory/.claude-code-router
-      - ./auth/worker-$w/gemini:/home/factory/.gemini
       - ./auth/worker-$w/opencode:/home/factory/.opencode
 EXTRA
       w=$((w+1))
@@ -123,16 +123,6 @@ sync_file(){ # $1=src $2=dst
   [ -f "$1" ] || return 0
   if [ ! -f "$2" ] || [ "$1" -nt "$2" ]; then cp -f "$1" "$2" && chmod 600 "$2"; fi
 }
-# The Antigravity (agy) OAuth token: a plain file on Linux hosts, but the macOS
-# keychain ("Antigravity Safe Storage") on a Mac — where no copyable file exists.
-# So the container gemini credential comes from a ONE-TIME in-container login
-# (./autorun.sh --login-gemini) that writes the token into auth/<primary>/gemini,
-# which this function then fans out to every other container. GEMINI_PRIMARY is
-# the dir the login writes to.
-GEMINI_PRIMARY=master
-AGY_TOKEN_REL=antigravity-cli/antigravity-oauth-token
-gemini_container_authed(){ [ -s "auth/$GEMINI_PRIMARY/gemini/$AGY_TOKEN_REL" ]; }
-
 # opencode keeps its credential in a plain JSON keystore (auth.json). Unlike the
 # other providers this is an API KEY, not a refreshable subscription token, so
 # there is nothing for the container to write back — the host copy is always
@@ -156,11 +146,10 @@ sync_provider_auth(){
   for w in $(seq 1 "$WORKERS"); do services="$services worker-$w"; done
   for c in $services; do
     mkdir -p "auth/$c/claude" "auth/$c/codex" "auth/$c/ccr" \
-      "auth/$c/gemini/antigravity-cli" "auth/$c/gemini/config" \
       "auth/$c/opencode/share/opencode" "auth/$c/opencode/cache/opencode" \
       "auth/$c/opencode/config"
     chmod 700 "auth/$c/claude" "auth/$c/codex" "auth/$c/ccr" \
-      "auth/$c/gemini" "auth/$c/opencode" 2>/dev/null || true
+      "auth/$c/opencode" 2>/dev/null || true
     # codex (ChatGPT subscription): auth.json is the credential; config.toml is
     # GENERATED for the container (trust the factory clone), never copied.
     sync_file "$HOME/.codex/auth.json" "auth/$c/codex/auth.json"
@@ -169,16 +158,6 @@ sync_provider_auth(){
     chmod 600 "auth/$c/codex/config.toml"
     # ClaudeX has one private, writable CCR home per service. It imports from
     # that service's Codex copy at runtime; host CCR databases are never copied.
-    # antigravity/gemini (Google subscription): account/install ids + generated
-    # trust/settings; the actual OAuth TOKEN comes from --login-gemini (below).
-    sync_file "$HOME/.gemini/google_accounts.json" "auth/$c/gemini/google_accounts.json"
-    sync_file "$HOME/.gemini/installation_id"      "auth/$c/gemini/installation_id"
-    sync_file "$HOME/.gemini/antigravity-cli/installation_id" "auth/$c/gemini/antigravity-cli/installation_id"
-    # Linux hosts keep the token in a plain file — copy it straight through.
-    sync_file "$HOME/.gemini/$AGY_TOKEN_REL" "auth/$c/gemini/$AGY_TOKEN_REL"
-    printf '{\n  "security": { "auth": { "selectedType": "oauth-personal" } }\n}\n' > "auth/$c/gemini/settings.json"
-    printf '{\n  "/work/state/repo": "TRUST_FOLDER"\n}\n' > "auth/$c/gemini/trustedFolders.json"
-    printf '{\n  "enableTelemetry": false,\n  "trustedWorkspaces": ["/work/state/repo"]\n}\n' > "auth/$c/gemini/antigravity-cli/settings.json"
     # opencode (OpenRouter API key): one keystore per container, mode 600. The
     # container mounts auth/$c/opencode at $MF_OPENCODE_HOME and mflib.sh points
     # opencode's three XDG dirs inside it, so share/opencode/auth.json is exactly
@@ -186,20 +165,8 @@ sync_provider_auth(){
     sync_file "$OPENCODE_AUTH_SRC"   "auth/$c/opencode/share/opencode/auth.json"
     sync_file "$OPENCODE_MODELS_SRC" "auth/$c/opencode/cache/opencode/models.json"
   done
-  # Fan the in-container login token out from the primary to every other container.
-  if gemini_container_authed; then
-    for c in $services; do
-      [ "$c" = "$GEMINI_PRIMARY" ] && continue
-      sync_file "auth/$GEMINI_PRIMARY/gemini/$AGY_TOKEN_REL" "auth/$c/gemini/$AGY_TOKEN_REL"
-    done
-  fi
   chmod -R go-rwx auth 2>/dev/null || true
   [ -f "$HOME/.codex/auth.json" ] || echo "! codex auth not found (~/.codex/auth.json) — codex provider unavailable until 'codex login' on the host"
-  if [ ! -f "$HOME/.gemini/$AGY_TOKEN_REL" ] && ! gemini_container_authed; then
-    echo "! antigravity/gemini not authorized for the containers yet."
-    echo "  On macOS the agy token lives in the keychain and can't be copied — run ONE-TIME:"
-    echo "    ./multi-factory/autorun.sh --login-gemini"
-  fi
   if ! opencode_authed; then
     echo "! opencode auth not found ($OPENCODE_AUTH_SRC) — opencode provider unavailable."
     echo "  Create it once on the host (the key is never printed or committed):"
@@ -213,26 +180,6 @@ sync_provider_auth(){
 # master/worker assignments before Compose mounts those directories.
 sync_claude_profiles(){
   node control/claude-credential-sync.mjs "$WORKERS"
-}
-
-# One-time interactive Antigravity login INSIDE a container: agy writes its OAuth
-# token into the bind-mounted auth/master/gemini, which sync_provider_auth then
-# fans out to the workers. Owner runs this once; the token persists on the host.
-login_gemini(){
-  require_env
-  echo "→ building image (ensures agy is present)…"; dc build master >/dev/null
-  mkdir -p "auth/$GEMINI_PRIMARY/gemini/antigravity-cli"
-  printf '{\n  "enableTelemetry": false,\n  "trustedWorkspaces": ["/work/state/repo"]\n}\n' \
-    > "auth/$GEMINI_PRIMARY/gemini/antigravity-cli/settings.json"
-  echo "→ launching interactive 'agy' login (complete the Google sign-in, then /quit)…"
-  $DOCKER run --rm -it \
-    -v "$PWD/auth/$GEMINI_PRIMARY/gemini:/home/factory/.gemini" \
-    --entrypoint agy "$(dc config --images master | head -1)" || true
-  if gemini_container_authed; then
-    echo "✓ antigravity token captured — it will sync to all workers on the next start."
-  else
-    echo "✗ no token was written. Re-run and finish the sign-in, or check 'agy' login output."
-  fi
 }
 
 prepare_state(){
@@ -251,9 +198,36 @@ prepare_state(){
   printf 'run\n' > state/control/mode.tmp && mv -f state/control/mode.tmp state/control/mode
 }
 
+# The offline guard suite. No Docker, no network, no tokens: test.sh stubs `gh`,
+# drives the deterministic scheduler/composer/merger core out of a temp state dir
+# and chains protocol-test.sh, claudex-test.sh and the control-plane Node tests.
+# Runs on every start (skippable with MF_SKIP_SELF_TEST=1) so a guard regression
+# is caught before the fleet is armed, and leaves state/logs/test-<ts>.log behind
+# as the evidence that the suite actually ran on this deploy.
+self_test(){ # $1=fatal (1 = a failing suite stops the deploy)
+  local fatal=${1:-0} stamp log rc=0
+  mkdir -p state/logs
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  log=state/logs/test-$stamp.log
+  echo "→ running the offline guard suite (./multi-factory/test.sh) → $log"
+  # Nested guard: claudex-test.sh drives this very script with a stubbed docker,
+  # and an unguarded start path would recurse into the suite forever.
+  MF_SKIP_SELF_TEST=1 ./test.sh >"$log" 2>&1 || rc=$?
+  # One summary line per chained suite (scheduler, protocol, ClaudeX, control).
+  grep -hE '^(passed|protocol passed|ClaudeX passed):|^# (pass|fail) [0-9]+$' "$log" || true
+  if [ "$rc" -eq 0 ]; then
+    echo "✓ guard suite passed"
+  else
+    echo "✗ guard suite FAILED (rc=$rc) — see $log"
+    grep -h '✗' "$log" | head -20 || true
+    [ "$fatal" -eq 1 ] && return 1
+  fi
+  return 0
+}
+
 case "${1:-up}" in
+  --self-test) self_test 1 || exit 1; exit 0 ;;
   --logs)  dc logs -f; exit $? ;;
-  --login-gemini) login_gemini; exit 0 ;;
   --stop)  echo "→ stopping multi-factory"; dc stop; echo "✓ stopped. Resume with: ./multi-factory/autorun.sh"; exit 0 ;;
   --down)  echo "→ downing multi-factory"; dc down --remove-orphans; echo "✓ removed (state/ and clone volumes kept)"; exit 0 ;;
   --fresh) require_env; guard_single_factory
@@ -266,8 +240,12 @@ case "${1:-up}" in
            MF_DRY_RUN=1 dc up -d --force-recreate
            dc ps; exit 0 ;;
   up|"")   require_env; guard_single_factory; prepare_state ;;
-  *) echo "usage: autorun.sh [--dry|--logs|--stop|--down|--fresh|--login-gemini]"; exit 1 ;;
+  *) echo "usage: autorun.sh [--dry|--logs|--stop|--down|--fresh|--self-test]"; exit 1 ;;
 esac
+
+# Deploy-time evidence that the guards still hold. Non-fatal: a red suite must be
+# loud, but it must not be able to keep the fleet down.
+[ "${MF_SKIP_SELF_TEST:-0}" = 1 ] || self_test 0
 
 echo "→ building image…"
 dc build
