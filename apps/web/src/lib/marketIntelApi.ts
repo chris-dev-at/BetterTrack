@@ -42,11 +42,19 @@ export const PORTFOLIO_NEWS_DIGEST_QUERY_KEY = ['portfolio', 'news-digest'] as c
 export const EARNINGS_CALENDAR_QUERY_KEY = ['intel', 'earnings-calendar'] as const;
 /** Query key for the portfolio-level dividend calendar (arc a). */
 export const PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY = ['portfolio', 'dividend-calendar'] as const;
-/** Query key for the portfolio-level projected dividend income (arc a). */
+/** Query key for the USER-WIDE projected dividend income (arc a). */
 export const PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY = [
   'portfolio',
   'dividend-projection',
 ] as const;
+/**
+ * Query key for ONE portfolio's projected dividend income (V5-P6b Forecast).
+ * The id is part of the key — the user-wide figure and each portfolio's own are
+ * different answers, so they may never share a cache entry, and switching
+ * portfolios has to refetch rather than serve the previous one's number.
+ */
+export const PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY = (portfolioId: string) =>
+  ['portfolio', portfolioId, 'dividend-projection'] as const;
 
 /** `GET /assets/:id/intel/dividends` — history + upcoming ex/pay + forward yield (arc a). */
 export async function getAssetDividends(
@@ -112,10 +120,31 @@ export async function getPortfolioDividendCalendar(
   return dividendCalendarResponseSchema.parse(data);
 }
 
-/** `GET /assets/portfolio/dividend-projection` — projected income (monthly/yearly EUR, arc a). */
+/**
+ * `GET /assets/portfolio/dividend-projection` — projected income (monthly/yearly
+ * EUR, arc a) summed across EVERY active portfolio.
+ */
 export async function getPortfolioDividendProjection(
   signal?: AbortSignal,
 ): Promise<ProjectedDividendIncomeResponse> {
   const data = await apiRequest<unknown>('/assets/portfolio/dividend-projection', { signal });
+  return projectedDividendIncomeResponseSchema.parse(data);
+}
+
+/**
+ * The same read scoped to ONE portfolio (`?portfolioId=`). Separate function
+ * rather than an optional argument so each call site states which figure it
+ * wants: the Forecast projects a single portfolio's net worth and must not add
+ * the other portfolios' income to that curve, while the portfolio page's income
+ * line is deliberately cross-portfolio.
+ */
+export async function getPortfolioDividendProjectionFor(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<ProjectedDividendIncomeResponse> {
+  const data = await apiRequest<unknown>(
+    `/assets/portfolio/dividend-projection?portfolioId=${encodeURIComponent(portfolioId)}`,
+    { signal },
+  );
   return projectedDividendIncomeResponseSchema.parse(data);
 }

@@ -1,7 +1,11 @@
 import { Router } from 'express';
 
-import { assetIdParamSchema, fundamentalsQuerySchema } from '@bettertrack/contracts';
-import type { FundamentalsQuery } from '@bettertrack/contracts';
+import {
+  assetIdParamSchema,
+  fundamentalsQuerySchema,
+  projectedDividendIncomeQuerySchema,
+} from '@bettertrack/contracts';
+import type { FundamentalsQuery, ProjectedDividendIncomeQuery } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
 import { validateParams, validateQuery } from '../middleware/validate';
@@ -39,10 +43,18 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
     res.json(await ctx.portfolioMarketIntel.dividendCalendar(req.authUser!.id));
   });
 
-  // GET /assets/portfolio/dividend-projection — projected income (monthly/yearly EUR).
-  router.get('/portfolio/dividend-projection', async (req, res) => {
-    res.json(await ctx.portfolioMarketIntel.projectedIncome(req.authUser!.id));
-  });
+  // GET /assets/portfolio/dividend-projection[?portfolioId=…] — projected income
+  // (monthly/yearly EUR). Unscoped it spans every active portfolio; the optional
+  // id narrows it to one, which is what the Forecast's dividend factor needs
+  // (its curve is a single portfolio's net worth).
+  router.get(
+    '/portfolio/dividend-projection',
+    validateQuery(projectedDividendIncomeQuerySchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.query as ProjectedDividendIncomeQuery;
+      res.json(await ctx.portfolioMarketIntel.projectedIncome(req.authUser!.id, portfolioId));
+    },
+  );
 
   // GET /assets/portfolio/news-digest — recent headlines across held + watched,
   // grouped per asset, newest-first (arc c).

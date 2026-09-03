@@ -2488,7 +2488,9 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/assets/portfolio/dividend-projection',
     tag: 'Assets',
-    summary: 'Projected dividend income for the whole portfolio (monthly + yearly, EUR).',
+    summary:
+      'Projected dividend income (monthly + yearly, EUR) — every active portfolio, or one via portfolioId.',
+    query: contracts.projectedDividendIncomeQuerySchema,
     status: 200,
     response: R.ProjectedDividendIncomeResponse,
   },
