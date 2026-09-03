@@ -2097,6 +2097,7 @@
       "perYear": "prognostiziert / Jahr",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
       "exOn": "Ex {{date}}",
+      "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
       "showLess": "Weniger anzeigen"
     },

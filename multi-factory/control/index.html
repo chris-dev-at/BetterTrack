@@ -3137,8 +3137,7 @@
               following the slot table. A rejected issue escalates ONE difficulty higher on its
               triage retry (max stays max). Legacy tier labels still resolve: sonnet→easy,
               opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max) · Codex =
-              model-supported reasoning effort (low…max/ultra) · Antigravity bakes the level into
-              the model name, e.g. “Gemini 3.1 Pro (High)”. Hard rule enforced here and in the
+              model-supported reasoning effort (low…max/ultra). Hard rule enforced here and in the
               control API: Claude Opus 5 never runs above <b>xhigh</b>.
             </div>
           </details>
@@ -3531,7 +3530,7 @@
         },
         models: {
           title: 'Routing',
-          subtitle: 'Map each difficulty and role to Claude, native Codex, ClaudeX, or Gemini.',
+          subtitle: 'Map each difficulty and role to Claude, native Codex, ClaudeX, or opencode.',
         },
         usage: {
           title: 'Usage',
@@ -4193,23 +4192,6 @@
           experimental: true,
         },
         {
-          id: 'gemini',
-          label: 'Antigravity',
-          short: 'Google OAuth · Antigravity harness',
-          description:
-            'Gemini models through the Antigravity CLI with effort encoded in model names.',
-          models: [
-            'Gemini 3.1 Pro (High)',
-            'Gemini 3.1 Pro (Low)',
-            'Gemini 3.5 Flash (High)',
-            'Gemini 3.5 Flash (Medium)',
-            'Gemini 3.5 Flash (Low)',
-          ],
-          efforts: [],
-          defaultModel: 'Gemini 3.1 Pro (High)',
-          harness: 'Antigravity',
-        },
-        {
           id: 'opencode',
           label: 'opencode',
           short: 'OpenRouter API key \u00b7 opencode harness',
@@ -4323,7 +4305,7 @@
         );
         const seedIds = registryAdvertised
           ? new Set([...advertised, ...referenced])
-          : new Set(['claude', 'codex', 'gemini', ...referenced]);
+          : new Set(['claude', 'codex', ...referenced]);
         const merged = new Map(
           [...seedIds].map((id) => {
             const base = fallback.get(id) || {
@@ -4345,7 +4327,7 @@
                 efforts: [...(base.efforts || [])],
                 selectable: registryAdvertised
                   ? advertised.has(id)
-                  : ['claude', 'codex', 'gemini'].includes(id),
+                  : ['claude', 'codex'].includes(id),
               },
             ];
           }),
@@ -4389,8 +4371,6 @@
           const runtimeModels = listOfStrings(status[def.id]?.models);
           if (runtimeModels.length) def.models = runtimeModels;
         }
-        const agyModels = listOfStrings(status.agyModels);
-        if (agyModels.length && merged.has('gemini')) merged.get('gemini').models = agyModels;
         const next = [...merged.values()];
         const before = JSON.stringify(providerDefs);
         providerDefs = next;

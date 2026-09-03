@@ -64,6 +64,7 @@ import {
   createDividendEventsScanJob,
   createStandingOrdersJob,
   dividendNotifyGate,
+  earningsNotifyGate,
   heartbeatJob,
   jobConnectionFactory,
   registerSchedules,
@@ -591,12 +592,14 @@ const definitions = assembleRegisteredJobDefinitions({
   createUsageRollupJob: createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
-  // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
+  // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis; the
+  // per-user opt-in is read from the matrix before any side effect.
   createEarningsReminderJob: bindParanoidJob(
     createEarningsReminderJob({
       intelRepo: createMarketIntelRepository(db),
       marketData,
       notify,
+      isEnabled: earningsNotifyGate(notificationRepo),
       enabled: config.marketIntel.enabled,
       runIfAllowed: earningsParanoidFilter.runAllowed,
     }),

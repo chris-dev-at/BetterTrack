@@ -17,7 +17,7 @@
 #   completion — every later fixer AND every later reviewer until done
 #
 #   { "difficulties": { "<diff>": {
-#         "writer":     {"provider":"claude|claudex|codex|gemini","model":"...","effort":"..."},
+#         "writer":     {"provider":"claude|claudex|codex|opencode","model":"...","effort":"..."},
 #         "reviewer1":  { ... }, "completion": { ... },
 #         "provider":"...", "model":"...", "effort":"..."   # flat legacy form (v1)
 #     } },
@@ -53,11 +53,9 @@
 #   claudex→ claude CLI through third-party CCR + Codex OAuth
 #                         (independent ~/.codex + ~/.claude-code-router per container)
 #   codex  → codex CLI   (~/.codex/auth.json; effort is model-dependent)
-#   gemini → agy CLI     (Antigravity; ~/.gemini oauth; effort baked into model name,
-#                         e.g. "Gemini 3.1 Pro (High)")
 #   opencode→ opencode CLI (Bun binary; API-KEY auth, NOT a subscription — the key
 #                         lives in $MF_OPENCODE_HOME/share/opencode/auth.json, synced
-#                         per container by autorun.sh exactly like the codex/gemini
+#                         per container by autorun.sh exactly like the codex
 #                         copies. Model strings are opencode's "provider/model" form,
 #                         e.g. openrouter/stealth/ox-alpha; effort maps to --variant.)
 #
@@ -158,8 +156,7 @@ diff_cfg_from_json(){ # $1=file $2=difficulty — invalid provider is explicit
   jq -r --arg d "$2" '
     .difficulties[$d]? // empty
     | if ((.provider=="claude" or .provider=="claudex"
-           or .provider=="codex" or .provider=="gemini"
-           or .provider=="opencode")
+           or .provider=="codex" or .provider=="opencode")
           and ((.model // "") | type=="string" and length>0
                and (contains("|") | not) and (test("[\\r\\n]") | not))
           and ((.effort // "") | type=="string"
@@ -178,8 +175,7 @@ diff_slot_cfg_from_json(){ # $1=file $2=difficulty $3=slot — invalid provider 
     | .[$s]? // empty
     | if (type=="object"
           and (.provider=="claude" or .provider=="claudex"
-               or .provider=="codex" or .provider=="gemini"
-               or .provider=="opencode")
+               or .provider=="codex" or .provider=="opencode")
           and ((.model // "") | type=="string" and length>0
                and (contains("|") | not) and (test("[\\r\\n]") | not))
           and ((.effort // "") | type=="string"
@@ -262,8 +258,7 @@ role_pin_cfg_from_json(){ # $1=file $2=role
     .roles[$r]? // empty
     | if (type=="object"
           and (.provider=="claude" or .provider=="claudex"
-               or .provider=="codex" or .provider=="gemini"
-               or .provider=="opencode")
+               or .provider=="codex" or .provider=="opencode")
           and ((.model // "") | type=="string" and length>0
                and (contains("|") | not) and (test("[\\r\\n]") | not))
           and ((.effort // "") | type=="string"
@@ -308,7 +303,6 @@ mf_uses_claude(){ # 0 when ANY difficulty slot or role pin routes to the claude 
 CODEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient|(^|[^0-9])429([^0-9]|$)'
 CLAUDEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient (credit|balance|funds)|model .*overloaded|service (at )?capacity|(^|[^0-9])(429|529)([^0-9]|$)'
 CLAUDEX_ROUTER_RE='CCR (management|gateway|runtime|bootstrap|router)|x-target-provider|router authentication|authentication (is )?(unavailable|failed)|oauth (token )?(expired|invalid|refresh failed|error)|unauthori[sz]ed|forbidden|(^|[^0-9])(401|403)([^0-9]|$)'
-AGY_LIMIT_RE='quota|rate.?limit|too many requests|RESOURCE_EXHAUSTED|model is overloaded|capacity|(^|[^0-9])(429|529)([^0-9]|$)'
 OPENCODE_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient (credit|balance|funds)|(out of|no) credits|overloaded|(at )?capacity|(^|[^0-9])(429|529|503)([^0-9]|$)'
 # opencode reports "provider is not configured here" and "that model does not
 # exist" with the SAME "Model not found: <provider>/<model>." text. Both mean the
@@ -963,51 +957,6 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
   done
 }
 
-cc_gemini(){ # $1=model (agy model string, effort baked in) $2=prompt
-  local model=$1 prompt=$2
-  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0 limit_naps=0
-  local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
-  while true; do
-    local out rc start dur capture
-    start=$(date +%s)
-    capture=$(mktemp "${TMPDIR:-/tmp}/mf-agy.XXXXXX") || return 1
-    if ( cd "$REPO_DIR" && mf_capture_command "$capture" timeout "$MF_ROLE_TIMEOUT" \
-      agy -p "$prompt" --model "$model" --dangerously-skip-permissions \
-      --print-timeout "${MF_ROLE_TIMEOUT}s" </dev/null ); then rc=0; else rc=$?; fi
-    out=$(<"$capture"); rm -f "$capture"
-    dur=$(( $(date +%s) - start ))
-    if [ "$rc" = 0 ] && ! grep -qiE 'not logged into antigravity' <<<"$out"; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" ok
-      log "  ↳ ok (agy $model, ${dur}s)"
-      return 0
-    fi
-    if grep -qiE "$AGY_LIMIT_RE" <<<"$out"; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" retry
-      limit_naps=$((limit_naps+1))
-      if [ "$limit_naps" -gt "${MF_LIMIT_NAPS_MAX:-8}" ]; then
-        notify "antigravity usage limit persisted through ${MF_LIMIT_NAPS_MAX:-8} naps — failing this role run (provider likely quota-dead)"
-        return 1
-      fi
-      notify "antigravity usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume ($limit_naps/${MF_LIMIT_NAPS_MAX:-8})"
-      sleep "$LIMIT_SLEEP"; continue
-    fi
-    if [ "$rc" = 124 ]; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" fail
-      log "  ↳ agy run timed out after ${MF_ROLE_TIMEOUT}s"
-      return 1
-    fi
-    tries=$((tries+1))
-    if [ "$tries" -lt "$max_attempts" ]; then
-      ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" retry
-      log "  ↳ agy failed (rc=$rc) — retry $tries/$max_attempts"
-      sleep "${MF_PROVIDER_RETRY_SLEEP:-60}"; continue
-    fi
-    ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" fail
-    log "  ↳ genuine agy task failure (rc=$rc)"
-    return 1
-  done
-}
-
 cc_opencode(){ # $1=model ("provider/model", e.g. openrouter/stealth/ox-alpha)
                # $2=variant/effort (optional, → --variant) $3=prompt
   local model=$1 effort=$2 prompt=$3
@@ -1239,6 +1188,7 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config (pin or per-role s
   # to the role default; an unusable pin is logged and ignored.
   local role=$1 d=$2 prompt=$3 slot cfg provider model effort route
   local sol_composer=0 sol_timeout=1200 sol_max_turns=40
+  local composer_timeout=0 composer_max_turns=0
   slot=${CC_SLOT:-}
   mf_slot_valid "${slot:-x}" || slot=$(mf_role_slot "$role")
   cfg=$(role_pin_cfg "$role")
@@ -1270,15 +1220,37 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config (pin or per-role s
 
 $(mf_sol_composer_instructions)"
   fi
+  # The composer is the priciest role in the fleet, and until now only the Sol
+  # branch was capped: a Claude composer inherited MF_ROLE_TIMEOUT=7200 with no
+  # turn cap at all. MF_COMPOSER_TIMEOUT/MF_COMPOSER_MAX_TURNS bound every
+  # composer run the same way the Sol caps bound Sol; Sol keeps its own tighter
+  # numbers where both apply.
+  if [ "$role" = composer ]; then
+    composer_timeout=${MF_COMPOSER_TIMEOUT:-1800}
+    composer_max_turns=${MF_COMPOSER_MAX_TURNS:-60}
+    case "$composer_timeout" in ''|*[!0-9]*) composer_timeout=1800;; esac
+    case "$composer_max_turns" in ''|*[!0-9]*) composer_max_turns=60;; esac
+    [ "$composer_timeout" -ge 60 ] && [ "$composer_timeout" -le 7200 ] || composer_timeout=1800
+    [ "$composer_max_turns" -ge 1 ] && [ "$composer_max_turns" -le 400 ] || composer_max_turns=60
+  fi
   log "$role @ $route → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
     claude)
-      CC_ROLE="$role" CC_EFFORT="$effort" \
-        mf_with_claude_profile cc "$model" "$prompt"
+      if [ "$composer_timeout" -gt 0 ]; then
+        CC_ROLE="$role" CC_EFFORT="$effort" \
+          CC_TIMEOUT=$composer_timeout CC_MAX_TURNS=$composer_max_turns \
+          mf_with_claude_profile cc "$model" "$prompt"
+      else
+        CC_ROLE="$role" CC_EFFORT="$effort" \
+          mf_with_claude_profile cc "$model" "$prompt"
+      fi
       ;;
     claudex)
       if [ "$sol_composer" -eq 1 ]; then
         MF_ROLE_TIMEOUT=$sol_timeout CC_MAX_TURNS=$sol_max_turns \
+          CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
+      elif [ "$composer_timeout" -gt 0 ]; then
+        MF_ROLE_TIMEOUT=$composer_timeout CC_MAX_TURNS=$composer_max_turns \
           CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
       else
         CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
@@ -1291,7 +1263,6 @@ $(mf_sol_composer_instructions)"
         CC_ROLE=$role cc_codex "$model" "$effort" "$prompt"
       fi
       ;;
-    gemini)  CC_ROLE=$role cc_gemini "$model" "$prompt";;
     opencode) CC_ROLE=$role cc_opencode "$model" "$effort" "$prompt";;
     *)
       log "  ↳ unsupported provider '$provider' — refusing implicit Claude fallback"

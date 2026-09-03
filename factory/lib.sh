@@ -265,9 +265,14 @@ cc(){ local model=$1; shift; local prompt="$*"
   while true; do
     local out rc res err start dur
     start=$(date +%s)
-    # CC_EFFORT (optional, multi-factory difficulty routing): adds --effort; when
-    # unset the command line is byte-identical to the original single-factory call.
-    out=$(claude -p "$prompt" --model "$model" ${CC_EFFORT:+--effort "$CC_EFFORT"} \
+    # CC_EFFORT (optional, multi-factory difficulty routing): adds --effort.
+    # CC_MAX_TURNS / CC_TIMEOUT (optional, multi-factory role caps): bound a run
+    # that would otherwise churn turns or hang forever — the composer sets both.
+    # With all three unset the command line is byte-identical to the original
+    # single-factory call.
+    out=$(${CC_TIMEOUT:+timeout "$CC_TIMEOUT"} \
+          claude -p "$prompt" --model "$model" ${CC_EFFORT:+--effort "$CC_EFFORT"} \
+          ${CC_MAX_TURNS:+--max-turns "$CC_MAX_TURNS"} \
           --output-format stream-json --verbose \
           --dangerously-skip-permissions 2>&1 | tee -a "$LOG"); rc=${PIPESTATUS[0]}
     dur=$(( $(date +%s) - start ))
