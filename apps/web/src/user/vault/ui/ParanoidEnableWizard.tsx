@@ -14,7 +14,8 @@ import { useT } from '../../../i18n';
 import { ApiError, markRateLimitHandledLocally } from '../../../lib/apiClient';
 import { apiPortfolioStore } from '../../../lib/portfolioStore';
 import { enableParanoidMode } from '../../../lib/userApi';
-import { Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
+import { Button, TextField } from '../../components/ui';
+import { CheckRow, Choice, ChoiceGroup, Disclosure } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 import { deliverClientDownload } from '../export/deliver';
@@ -328,11 +329,11 @@ export function ParanoidEnableWizard({
 
       {step === 2 ? (
         <div className="flex flex-col gap-3">
-          <label className="bt-panel flex items-start gap-3 p-3">
-            <input
-              checked={!driveOnly}
+          <ChoiceGroup>
+            <Choice
+              description={t('vault.enable.media.server.body')}
               disabled={authorizingDrive}
-              onChange={() => {
+              onSelect={() => {
                 setDriveOnly(false);
                 // Backing out of Drive-only is ONE decision, so it clears the
                 // add-on the Drive-only radio switched on. Leaving it set kept
@@ -341,62 +342,48 @@ export function ParanoidEnableWizard({
                 setIncludeDrive(false);
                 setError(null);
               }}
-              type="radio"
+              selected={!driveOnly}
+              title={t('vault.enable.media.server.title')}
             />
-            <span>
-              <span className="bt-row-title">{t('vault.enable.media.server.title')}</span>
-              <span className="bt-row-sub block">{t('vault.enable.media.server.body')}</span>
-            </span>
-          </label>
+          </ChoiceGroup>
           {!driveOnly ? (
-            <label className="bt-soft flex items-start gap-2 text-sm">
-              <input
-                checked={includeDrive}
-                disabled={authorizingDrive}
-                onChange={(event) => {
-                  setIncludeDrive(event.target.checked);
-                  setError(null);
-                }}
-                style={CHECKBOX_STYLE}
-                type="checkbox"
-              />
-              <span>{t('vault.enable.media.driveCopy')}</span>
-            </label>
+            <CheckRow
+              checked={includeDrive}
+              disabled={authorizingDrive}
+              onChange={(next) => {
+                setIncludeDrive(next);
+                setError(null);
+              }}
+            >
+              {t('vault.enable.media.driveCopy')}
+            </CheckRow>
           ) : null}
           {/* The Drive-only radio lives inside this fold. Collapsing it while
               Drive-only is the selection would leave the step with NO visible
               checked radio (the server radio renders `checked={!driveOnly}`),
               so the fold stays open until another medium is chosen. */}
-          <details
-            onToggle={(event) =>
-              setAdvanced((event.currentTarget as HTMLDetailsElement).open || driveOnly)
-            }
+          <Disclosure
+            onToggle={(open) => setAdvanced(open || driveOnly)}
             open={advanced || driveOnly}
+            summary={t('vault.enable.media.advanced')}
           >
-            <summary className="bt-link cursor-pointer text-sm">
-              {t('vault.enable.media.advanced')}
-            </summary>
-            <label className="bt-panel mt-2 flex items-start gap-3 p-3">
-              <input
-                checked={driveOnly}
+            <ChoiceGroup>
+              <Choice
+                description={t('vault.enable.media.driveOnly.body', {
+                  minutes: VAULT_SERVER_CANDIDATE_TTL_MINUTES,
+                })}
                 disabled={authorizingDrive}
-                onChange={() => {
+                muted
+                onSelect={() => {
                   setDriveOnly(true);
                   setIncludeDrive(true);
                   setError(null);
                 }}
-                type="radio"
+                selected={driveOnly}
+                title={t('vault.enable.media.driveOnly.title')}
               />
-              <span>
-                <span className="bt-row-title">{t('vault.enable.media.driveOnly.title')}</span>
-                <span className="bt-row-sub block">
-                  {t('vault.enable.media.driveOnly.body', {
-                    minutes: VAULT_SERVER_CANDIDATE_TTL_MINUTES,
-                  })}
-                </span>
-              </span>
-            </label>
-          </details>
+            </ChoiceGroup>
+          </Disclosure>
           {driveSelected ? (
             <div aria-live="polite" className="bt-soft flex flex-col gap-2 p-3 text-sm">
               <p>
@@ -478,26 +465,21 @@ export function ParanoidEnableWizard({
               ? t('vault.enable.downloadAgain')
               : t('vault.enable.downloadRecoveryKit')}
           </Button>
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={kitStored}
-              disabled={!kitDownloaded || authorizingDrive}
-              onChange={(event) => setKitStored(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.enable.kitStored')}</span>
-          </label>
-          <label className="bt-panel flex items-start gap-2 p-3 text-sm">
-            <input
-              checked={lostKeyAcknowledged}
-              disabled={authorizingDrive}
-              onChange={(event) => setLostKeyAcknowledged(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
+          <CheckRow
+            checked={kitStored}
+            disabled={!kitDownloaded || authorizingDrive}
+            onChange={setKitStored}
+          >
+            {t('vault.enable.kitStored')}
+          </CheckRow>
+          <CheckRow
+            checked={lostKeyAcknowledged}
+            disabled={authorizingDrive}
+            onChange={setLostKeyAcknowledged}
+            tone="gold"
+          >
             <strong>{t('vault.enable.lostKeyAcknowledgment')}</strong>
-          </label>
+          </CheckRow>
         </div>
       ) : null}
 

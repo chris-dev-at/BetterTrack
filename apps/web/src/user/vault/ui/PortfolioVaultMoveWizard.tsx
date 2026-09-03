@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 
 import {
   VAULT_SERVER_CANDIDATE_TTL_MS,
@@ -8,8 +7,16 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { Button, Field, Input, Select } from '../../../ui/origin';
-import { CHECKBOX_STYLE } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  CheckRow,
+  Field,
+  Input,
+  LinkButton,
+  Panel,
+  Select,
+} from '../../../ui/origin';
 import { PortfolioMoveCaptureError } from '../portfolioMoveCapture';
 
 /** Stated in the copy, derived from the server's TTL so the two cannot drift. */
@@ -163,19 +170,26 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
         </Field>
       ) : null}
 
+      {/* The blockers, as a checklist. Every row here is by definition unmet —
+          the mount site only passes what still stands in the way — so each
+          carries the same "needed" mark, its sentence, and the ONE step that
+          clears it. A precondition with no fix keeps the mark and the sentence
+          and simply offers nothing: it is never a link that leads nowhere. */}
       {preconditions.length > 0 ? (
         <ul className="flex flex-col gap-2">
           {preconditions.map((precondition) => (
-            <li
-              className="bt-panel flex flex-wrap items-center justify-between gap-3 p-3"
-              key={precondition.id}
-            >
-              <span className="text-sm">{t(precondition.messageKey)}</span>
-              {precondition.fixHref && precondition.fixLabelKey ? (
-                <Link className="bt-link text-sm" to={precondition.fixHref}>
-                  {t(precondition.fixLabelKey)}
-                </Link>
-              ) : null}
+            <li key={precondition.id}>
+              <Panel className="flex flex-wrap items-center justify-between gap-3 p-3" pad={false}>
+                <span className="flex min-w-0 items-start gap-2.5">
+                  <Badge tone="neg">{t('vault.portfolioMove.preconditionBlocked')}</Badge>
+                  <span className="bt-soft min-w-0 text-sm">{t(precondition.messageKey)}</span>
+                </span>
+                {precondition.fixHref && precondition.fixLabelKey ? (
+                  <LinkButton size="sm" to={precondition.fixHref} variant="quiet">
+                    {t(precondition.fixLabelKey)}
+                  </LinkButton>
+                ) : null}
+              </Panel>
             </li>
           ))}
         </ul>
@@ -205,15 +219,13 @@ export function PortfolioVaultMoveWizard(props: MoveWizardProps) {
               })}
             </p>
           ) : null}
-          <label className="bt-soft flex items-start gap-2 text-sm">
-            <input
-              checked={serverReadableAcknowledged}
-              onChange={(event) => setServerReadableAcknowledged(event.target.checked)}
-              style={CHECKBOX_STYLE}
-              type="checkbox"
-            />
-            <span>{t('vault.portfolioMove.moveOut.confirm')}</span>
-          </label>
+          <CheckRow
+            checked={serverReadableAcknowledged}
+            onChange={setServerReadableAcknowledged}
+            tone="gold"
+          >
+            {t('vault.portfolioMove.moveOut.confirm')}
+          </CheckRow>
         </>
       )}
 

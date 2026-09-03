@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   VAULT_MEDIA,
@@ -10,7 +9,7 @@ import {
 import { useT } from '../../../i18n';
 import { pointerInSeparateOverlay } from '../../../ui/overlayStack';
 import { formatDateTime } from '../../../lib/format';
-import { Icon } from '../../../ui/origin';
+import { Badge, Button, Icon, LinkButton } from '../../../ui/origin';
 import { cx } from '../../components/ui';
 import {
   projectVaultMediaSyncStatus,
@@ -19,6 +18,7 @@ import {
 } from '../media/status';
 import { useDriveGisPreparation } from '../drive/useDriveGisPreparation';
 import { useVaultRuntime } from '../VaultRuntimeContext';
+import { vaultStateTone } from '../vaultStateAffordance';
 import { VaultStateAction } from './VaultStateAction';
 
 type VaultSyncChipProps =
@@ -152,7 +152,7 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
             ) : null}
 
             {media.mediaSet.includes('drive') && runtime.driveAuthorization !== 'connected' ? (
-              <div className="flex flex-col items-start gap-1">
+              <div className="flex flex-col items-start gap-2">
                 {drivePreparation.state === 'failed' ? (
                   <p className="bt-neg text-xs" role="alert">
                     {t('vault.sync.drivePreparationFailed')}
@@ -164,8 +164,7 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                     {t('vault.sync.driveNotConfigured')}
                   </p>
                 ) : null}
-                <button
-                  className="bt-link text-left text-sm"
+                <Button
                   disabled={
                     resumePending ||
                     drivePreparation.state === 'preparing' ||
@@ -176,6 +175,7 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                     if (drivePreparation.state === 'failed') drivePreparation.retry();
                     else void resumeDrive();
                   }}
+                  size="sm"
                   type="button"
                 >
                   {resumePending
@@ -185,16 +185,19 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
                       : drivePreparation.state === 'failed'
                         ? t('vault.sync.retryDrivePreparation')
                         : t('vault.sync.reauthorize')}
-                </button>
+                </Button>
               </div>
             ) : null}
-            <Link
-              className="bt-link text-sm"
-              onClick={() => setOpen(false)}
-              to="/control/privacy?restore=1"
-            >
-              {t('vault.sync.restore')}
-            </Link>
+            <div className="bt-t-rule pt-3">
+              <LinkButton
+                onClick={() => setOpen(false)}
+                size="sm"
+                to="/control/privacy?restore=1"
+                variant="quiet"
+              >
+                {t('vault.sync.restore')}
+              </LinkButton>
+            </div>
           </div>
         </div>
       ) : null}
@@ -289,70 +292,86 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
             </div>
             <ul className="flex max-h-80 flex-col gap-3 overflow-y-auto">
               {projection.rows.map((row) => (
-                <li className="bt-b-rule flex flex-col gap-1 pb-3" key={row.vault.id}>
-                  <div className="flex items-center justify-between gap-4">
+                <li className="bt-b-rule flex flex-col gap-2 pb-3" key={row.vault.id}>
+                  {/* Identity and verdict on one line — the row's state was a
+                      muted 11px word competing with five other muted 11px
+                      lines below it. */}
+                  <div className="flex items-center justify-between gap-3">
                     <span className="bt-row-title truncate">{row.vault.name}</span>
-                    <span className="bt-muted text-xs">
+                    <Badge tone={vaultStateTone(row.endpointState)}>
                       {t(`vault.sync.aggregate.rowState.${row.state}`)}
-                    </span>
+                    </Badge>
                   </div>
-                  <span className="bt-row-sub">
-                    {t(
-                      row.vault.media.length > 1
-                        ? 'vault.manager.media.both'
-                        : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
-                    )}
-                  </span>
-                  <dl className="flex flex-col gap-1">
-                    {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
-                      row.vault.media.includes(medium),
-                    ).map((medium) => (
-                      <div className="flex items-center justify-between gap-4" key={medium}>
-                        <dt className="bt-muted text-xs">{t(`vault.sync.medium.${medium}`)}</dt>
-                        <dd className="bt-muted text-xs">
-                          {t(`vault.sync.status.${row.perMedium[medium] ?? 'disconnected'}`)}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <span className="bt-muted text-xs">{t(row.messageKey)}</span>
-                  <span className="bt-muted text-xs">
-                    {t('vault.sync.lastWrite')}:{' '}
-                    {row.lastWriteAt == null
-                      ? t('vault.sync.never')
-                      : formatDateTime(row.lastWriteAt)}
-                  </span>
-                  {row.recoveryAction === 'drive-sign-in' ? (
-                    <Link
-                      className="bt-link text-sm"
-                      to={`/control/connections?vault=${encodeURIComponent(row.vault.id)}`}
-                    >
-                      {t('vault.sync.aggregate.signInGoogle')}
-                    </Link>
-                  ) : row.recoveryAction === 'restore' ? (
-                    <Link
-                      className="bt-link text-sm"
-                      to={`/control/privacy?vault=${encodeURIComponent(row.vault.id)}&action=restore`}
-                    >
-                      {t('vault.sync.aggregate.openRestore')}
-                    </Link>
-                  ) : null}
+                  <div className="flex flex-col gap-0.5">
+                    <span className="bt-row-sub">
+                      {t(
+                        row.vault.media.length > 1
+                          ? 'vault.manager.media.both'
+                          : `vault.manager.media.${row.vault.media[0] ?? 'server'}`,
+                      )}
+                    </span>
+                    <dl className="bt-kv">
+                      {VAULT_SERVER_ACCEPTED_MEDIA.filter((medium) =>
+                        row.vault.media.includes(medium),
+                      ).map((medium) => (
+                        <Fragment key={medium}>
+                          <dt className="bt-muted text-xs">{t(`vault.sync.medium.${medium}`)}</dt>
+                          <dd className="bt-soft text-xs">
+                            {t(`vault.sync.status.${row.perMedium[medium] ?? 'disconnected'}`)}
+                          </dd>
+                        </Fragment>
+                      ))}
+                      <dt className="bt-muted text-xs">{t('vault.sync.lastWrite')}</dt>
+                      <dd className="bt-soft text-xs">
+                        {row.lastWriteAt == null
+                          ? t('vault.sync.never')
+                          : formatDateTime(row.lastWriteAt)}
+                      </dd>
+                    </dl>
+                    <span className="bt-meta">{t(row.messageKey)}</span>
+                  </div>
                   {/* The storage recovery link answers the storage problem; the
                       endpoint affordance rides alongside it rather than instead
                       of it, so a row that is BOTH needs-sign-in and locked on
                       this device still shows its unlock / enter-words step. */}
-                  <VaultStateAction
-                    inPlace
-                    state={row.endpointState}
-                    vaultId={row.vault.id}
-                    vaultName={row.vault.name}
-                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    {row.recoveryAction === 'drive-sign-in' ? (
+                      <LinkButton
+                        size="sm"
+                        to={`/control/connections?vault=${encodeURIComponent(row.vault.id)}`}
+                        variant="quiet"
+                      >
+                        {t('vault.sync.aggregate.signInGoogle')}
+                      </LinkButton>
+                    ) : row.recoveryAction === 'restore' ? (
+                      <LinkButton
+                        size="sm"
+                        to={`/control/privacy?vault=${encodeURIComponent(row.vault.id)}&action=restore`}
+                        variant="quiet"
+                      >
+                        {t('vault.sync.aggregate.openRestore')}
+                      </LinkButton>
+                    ) : null}
+                    <VaultStateAction
+                      inPlace
+                      state={row.endpointState}
+                      vaultId={row.vault.id}
+                      vaultName={row.vault.name}
+                    />
+                  </div>
                 </li>
               ))}
             </ul>
-            <Link className="bt-link text-sm" onClick={() => setOpen(false)} to="/control/privacy">
-              {t('vault.sync.restore')}
-            </Link>
+            <div className="bt-t-rule pt-3">
+              <LinkButton
+                onClick={() => setOpen(false)}
+                size="sm"
+                to="/control/privacy"
+                variant="quiet"
+              >
+                {t('vault.sync.restore')}
+              </LinkButton>
+            </div>
           </div>
         </div>
       ) : null}
