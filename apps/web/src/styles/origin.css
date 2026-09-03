@@ -2485,6 +2485,37 @@
     min-height: 44px;
   }
 
+  /* Topbar menus anchor to the HEADER, not to their own trigger.
+
+     Each menu ships `right: 0; top: calc(100% + 6px)` as an inline style, which
+     resolves against the nearest positioned ancestor — normally the trigger's
+     own `.relative` wrapper. On a phone that wrapper is a ~44px button parked
+     mid-row, so a menu wider than the gap between it and the right gutter hangs
+     off the LEFT edge of the screen: the 320px notification popover sits 56px
+     in from the right, so it started at -16px on a 360px viewport (#1663).
+
+     Dropping the wrapper to `position: static` re-points those same inline
+     offsets at `.bt-topbar`, which is `position: sticky` and therefore already
+     a containing block. `right: 0` then means the header's right padding edge
+     (safe-area inset included) and `top: 100%` means below the whole wrapped
+     header rather than below one button — so the menu clears the portfolio
+     switcher's second row instead of covering it. Only the containing block
+     moves; the DOM, the stacking context and the desktop anchoring are
+     untouched. Measured by the overlay sweep in `e2e/mobile-overflow.spec.ts`. */
+  .bt-topbar__actions > .bt-menu-anchor {
+    position: static;
+  }
+
+  /* An absolute box resolves its offsets against the containing block's PADDING
+     box, so the re-anchored `right: 0` above lands on the header's outer edge —
+     flush to the screen, gutter and all. The inline offset cannot be overridden
+     without `!important`, so the gutter comes back as a margin instead: for a
+     definite width the used `left` absorbs it, moving the menu inboard by the
+     same 8px + safe-area inset `.bt-topbar` pads itself with. */
+  .bt-topbar__actions > .bt-menu-anchor > .bt-popover {
+    margin-right: calc(8px + env(safe-area-inset-right, 0px));
+  }
+
   /* The menus belong to the persistent header chrome too. Keep every link,
      button and field touchable after its popover opens; the element selector
      also gives this enough specificity to beat the switcher's later row rules. */
