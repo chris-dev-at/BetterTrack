@@ -175,6 +175,33 @@ export interface FollowPublishedEvent {
 }
 
 /**
+ * `comment.created` → somebody posted a comment on an item the recipient OWNS
+ * and shares (§13.5 V5-P8). `userId` is the item owner — the one person holding
+ * the moderation right over that thread, and the only recipient: a comment is
+ * not fanned out to the rest of the item's audience (that would turn every
+ * shared item into a mailing list). The commenter never receives their own
+ * notice, so the producer skips the emit when author === owner.
+ *
+ * `itemName` renders the bell row and the email without a second lookup, and
+ * `itemKind`/`itemId` deep-link straight to the thread on the owner's My items
+ * surface. Deduped per comment id, so a redelivered emit no-ops.
+ */
+export interface CommentCreatedEvent {
+  type: 'comment.created';
+  /** Recipient — the commented item's owner. */
+  userId: string;
+  /** Actor — the comment's author. */
+  actorId: string;
+  actorUsername: string;
+  itemKind: 'portfolio' | 'watchlist' | 'conglomerate' | 'idea';
+  itemId: string;
+  itemName: string;
+  /** The comment that was posted — the dedupe identity. */
+  commentId: string;
+  occurredAt: string;
+}
+
+/**
  * `follow.alert.created` → a user the recipient FOLLOWS created a new price
  * alert, and the recipient opted into created-alert news for that person
  * (`user_follows.notify_on_alert_create`, #455). Emitted once per opted-in
@@ -492,6 +519,7 @@ export type DomainEvent =
   | ConglomerateSharedEvent
   | FriendActivityEvent
   | FollowPublishedEvent
+  | CommentCreatedEvent
   | FollowAlertCreatedEvent
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
@@ -546,4 +574,5 @@ export const DOMAIN_EVENT_TYPES = [
   'standing_order.skipped',
   'feedback.status_changed',
   'feedback.reply_created',
+  'comment.created',
 ] as const satisfies readonly DomainEventType[];

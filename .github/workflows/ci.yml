@@ -236,13 +236,29 @@ jobs:
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run mobile happy path and overflow gate
-        # Keep PR CI to the two regression gates; the full two-project suite is
-        # still sharded nightly. The soft timeout preserves traces on a hang.
+      - name: Run the PR e2e slice
+        # KNOWN LIMITATION, stated where a reader will trip over it: this list is
+        # a HARDCODED ALLOWLIST. A brand-new spec file gets ZERO PR coverage — it
+        # is picked up automatically by the nightly (which passes no path args)
+        # and by nothing here until someone edits this line. That is deliberate:
+        # the full two-project suite costs ~an hour across four shards, and
+        # expanding PR CI to run it is an owner decision on the cost model, not a
+        # CI tweak (#1683 scope note). What earns a place here is a gate that is
+        # cheap AND guards a mechanism the rest of CI cannot see:
+        #
+        #   * mobile-happy-path / mobile-overflow — the V5-P13b phone gates.
+        #   * v5-gate — the V5-P14 required-scenario manifest guarding itself.
+        #     Fixture-free and browser-free (a few file reads plus synthetic
+        #     report grading), so it costs seconds on top of the server boot
+        #     these jobs already pay for. Without it, a manifest broken in a PR
+        #     would only surface in the next night's run — i.e. after the very
+        #     window in which the gate is supposed to protect the merge.
+        #
+        # The soft timeout preserves traces on a hang.
         run: >-
           timeout --signal=INT --kill-after=2m 20m
           pnpm exec playwright test
-          e2e/mobile-happy-path.spec.ts e2e/mobile-overflow.spec.ts
+          e2e/mobile-happy-path.spec.ts e2e/mobile-overflow.spec.ts e2e/v5-gate.spec.ts
           --project=mobile-chromium
 
       - name: Upload mobile Playwright diagnostics

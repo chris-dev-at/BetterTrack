@@ -12,6 +12,7 @@ import type {
   AlertTriggeredEvent,
   BudgetExceededEvent,
   ChatMessageEvent,
+  CommentCreatedEvent,
   ConglomerateSharedEvent,
   DividendEventNotice,
   EarningsReminderEvent,
@@ -94,6 +95,7 @@ export type DispatchableEvent =
   | ConglomerateSharedEvent
   | FriendActivityEvent
   | FollowPublishedEvent
+  | CommentCreatedEvent
   | FollowAlertCreatedEvent
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
@@ -137,6 +139,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'standing_order.skipped',
   'feedback.status_changed',
   'feedback.reply_created',
+  'comment.created',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -255,6 +258,11 @@ function eventKeyFor(event: DispatchableEvent): string {
       // Idempotency key: the durable message id. A redelivered insert event can
       // never create a second notification for the same staff reply.
       return `feedback.reply_created:${event.messageId}`;
+    case 'comment.created':
+      // One notice per comment, ever — the comment id alone keys it. A
+      // redelivered emit (or a retried dispatch job) therefore no-ops, and the
+      // recipient userId (repo-side) keeps it scoped to the item owner.
+      return `comment.created:${event.commentId}`;
   }
 }
 
@@ -701,6 +709,31 @@ export function createNotificationDispatcher(
           },
           data: { feedbackId: event.feedbackId, messageId: event.messageId },
         };
+      case 'comment.created': {
+        return {
+          eventKey,
+          message: notificationMessage('commentCreated', {
+            actor: event.actorUsername,
+            item: event.itemName,
+          }),
+          payload: {
+            eventKey,
+            commentId: event.commentId,
+            itemKind: event.itemKind,
+            itemId: event.itemId,
+            itemName: event.itemName,
+            actorUsername: event.actorUsername,
+          },
+          // Deep-links to the item's thread on the owner's My items surface —
+          // the ONE place the owner moderates from (§13.5 V5-P8). The comment id
+          // rides along so a native client can scroll straight to it.
+          data: {
+            itemKind: event.itemKind,
+            itemId: event.itemId,
+            commentId: event.commentId,
+          },
+        };
+      }
       case 'dividend.event': {
         return {
           eventKey,
@@ -883,6 +916,19 @@ export function createNotificationDispatcher(
         // No dispatcher email: the export-ready notice is in-app / push only
         // (the download is gated by a token the requester already holds, so an
         // email would carry no actionable link). Mirrors account.temp_password.
+        return;
+      case 'comment.created':
+        // Names the commenter + the item, never the comment body: the owner
+        // reads the text in the thread, and an email is a channel the audience
+        // never chose (§13.5 V5-P8). Email is OFF for this type by the
+        // lean-email default — this only sends when the owner opted in.
+        await email.sendCommentCreated({
+          to,
+          userId,
+          actorUsername: event.actorUsername,
+          itemName: event.itemName,
+          locale,
+        });
         return;
       case 'dividend.event':
         // The rendered body already names the asset + ex-date; the email reuses

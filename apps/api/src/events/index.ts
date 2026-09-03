@@ -18,6 +18,7 @@ export type {
   ConglomerateSharedEvent,
   FriendActivityEvent,
   FollowPublishedEvent,
+  CommentCreatedEvent,
   FollowAlertCreatedEvent,
   FollowAlertFiredEvent,
   AccountTempPasswordEvent,

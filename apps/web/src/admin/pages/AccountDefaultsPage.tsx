@@ -63,6 +63,7 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
     'mirror.ownership_transferred': t('admin.accountDefaults.types.mirrorOwnershipTransferred'),
     'mirror.chain_dissolved': t('admin.accountDefaults.types.mirrorChainDissolved'),
     'mirror.sync_stalled': t('admin.accountDefaults.types.mirrorSyncStalled'),
+    'comment.created': t('admin.accountDefaults.types.commentCreated'),
   };
 }
 

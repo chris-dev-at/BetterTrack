@@ -6,6 +6,7 @@ import {
   commentThreadResponseSchema,
   friendGroupSchema,
   friendGroupListResponseSchema,
+  mySharedResponseSchema,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -358,6 +359,90 @@ describe('group audience round-trips through the picker state', () => {
     expect((await aliceAgent.get(`/api/v1/social/audience/portfolio/${MISSING_ID}`)).status).toBe(
       404,
     );
+  });
+});
+
+/**
+ * The owner has to be able to READ their own reach (§13.5 V5-P8, #1677): a flat
+ * "Friend group" badge made a share seen by nobody indistinguishable from one
+ * seen by everybody, which directly undercuts the friction ladder's premise.
+ * My items therefore carries the circle's name and its LIVE roster size.
+ */
+describe('My items reports a group share by name and live size', () => {
+  async function myPortfolio(agent: Agent, portfolioId: string) {
+    const res = await agent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    const parsed = mySharedResponseSchema.parse(res.body);
+    return parsed.portfolios.find((p) => p.portfolioId === portfolioId);
+  }
+
+  it('names the group and counts its current members', async () => {
+    const { aliceAgent, bob, carol, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    await addMember(aliceAgent, groupId, carol.id);
+    await shareToGroup(aliceAgent, pid, groupId);
+
+    expect(await myPortfolio(aliceAgent, pid)).toMatchObject({
+      audience: 'group',
+      group: { id: groupId, name: 'Family', memberCount: 2 },
+    });
+  });
+
+  it('follows a membership edit on the very next read — no cached reach', async () => {
+    const { aliceAgent, bob, carol, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    await addMember(aliceAgent, groupId, carol.id);
+    await shareToGroup(aliceAgent, pid, groupId);
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(2);
+
+    await aliceAgent
+      .delete(`/api/v1/social/groups/${groupId}/members/${carol.id}`)
+      .set(...XRW)
+      .send();
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(1);
+  });
+
+  it('distinguishes a populated circle from an empty one and from a deleted one', async () => {
+    const { aliceAgent, bob, pid } = await scenario();
+    const family = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, family, bob.id);
+    await shareToGroup(aliceAgent, pid, family);
+    const populated = await myPortfolio(aliceAgent, pid);
+    expect(populated?.group).toEqual({ id: family, name: 'Family', memberCount: 1 });
+
+    // An emptied circle still names itself, but reports a reach of zero.
+    await aliceAgent
+      .delete(`/api/v1/social/groups/${family}/members/${bob.id}`)
+      .set(...XRW)
+      .send();
+    const emptied = await myPortfolio(aliceAgent, pid);
+    expect(emptied?.group).toEqual({ id: family, name: 'Family', memberCount: 0 });
+
+    // A DELETED circle nulls `group_id` and the share resolves to nobody — a
+    // distinct state from both of the above, never the same flat badge.
+    expect((await aliceAgent.delete(`/api/v1/social/groups/${family}`).set(...XRW)).status).toBe(
+      204,
+    );
+    const deleted = await myPortfolio(aliceAgent, pid);
+    expect(deleted?.audience).toBe('group');
+    expect(deleted?.group).toBeNull();
+    expect(deleted?.group).not.toEqual(populated?.group);
+    expect(deleted?.group).not.toEqual(emptied?.group);
+  });
+
+  it('reports no group for every non-group audience', async () => {
+    const { aliceAgent, bob, pid } = await scenario();
+    await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [bob.id], confirmWiden: true });
+    expect(await myPortfolio(aliceAgent, pid)).toMatchObject({
+      audience: 'specific_friends',
+      friendCount: 1,
+      group: null,
+    });
   });
 });
 

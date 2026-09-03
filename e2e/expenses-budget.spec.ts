@@ -35,6 +35,13 @@ import { provisionUser } from './support/users';
 // it is evaluated" case pins the same (budget, period) idempotency key this
 // spec was written to guard. Left in place (not deleted) because that
 // guarantee is real intended behaviour worth re-testing end to end.
+//
+// REGISTERED AS A WAIVER: this is one of V5-P14's ten required scenarios, so
+// leaving it skipped used to make the nightly report green over a flow that
+// never ran. It is now the `expense-import-budget-alert` entry in
+// `e2e/support/v5Gate.mjs` — waived against #1660, printed in the nightly job
+// summary as an explicit gap, and the gate turns RED the day this test starts
+// passing again, which is what forces the waiver to be retired with it.
 test.skip('expenses: bank import → categorize → dashboard → single budget alert, portfolio untouched', async ({
   browser,
 }) => {

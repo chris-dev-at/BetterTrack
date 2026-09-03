@@ -53,6 +53,8 @@ export const WEBHOOK_EVENT_TYPES = [
   'standing_order.skipped',
   'feedback.status_changed',
   'feedback.reply_created',
+  // V5-P8: a comment landed on an item the subscriber shares.
+  'comment.created',
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -177,6 +179,10 @@ export const PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS = {
   'feedback.reply_created': {
     disposition: 'allowed',
     reason: 'Feedback reply notices identify a helpdesk thread without exposing portfolio content.',
+  },
+  'comment.created': {
+    disposition: 'killed',
+    reason: 'Comment threads hang off shared items, and paranoid sharing is disabled.',
   },
 } as const satisfies Record<WebhookEventType, ParanoidWebhookEventTypeClassification>;
 

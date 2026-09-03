@@ -1114,8 +1114,12 @@ describe('subscribable catalog', () => {
     const killedByRegistry = WEBHOOK_EVENT_TYPES.filter((type) =>
       isParanoidKilledWebhookEvent({ type } as DomainEvent),
     );
-    expect(killedByRegistry).toHaveLength(18);
+    expect(killedByRegistry).toHaveLength(19);
     expect([...PARANOID_KILLED_WEBHOOK_EVENT_TYPES].sort()).toEqual([...killedByRegistry].sort());
+    // V5-P8 comments hang off shared items, and paranoid sharing is disabled.
+    expect(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS['comment.created'].disposition).toBe(
+      'killed',
+    );
     expect(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS['feedback.status_changed'].disposition).toBe(
       'allowed',
     );
