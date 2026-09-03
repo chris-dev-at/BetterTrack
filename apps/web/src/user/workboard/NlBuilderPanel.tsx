@@ -188,7 +188,15 @@ export function NlBuilderPanel({
             ) : null}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" variant="primary" onClick={applyPending}>
+              {/* A draft whose every intent went unresolved has nothing to apply
+                  — applying it would only wipe the basket, so the button that
+                  does that is not offered. Discard is the only way out. */}
+              <Button
+                type="button"
+                variant="primary"
+                onClick={applyPending}
+                disabled={pending.positions.length === 0}
+              >
                 {t('workboard.builder.ai.apply')}
               </Button>
               <Button type="button" variant="secondary" onClick={discardPending}>

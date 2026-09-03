@@ -37,6 +37,7 @@ vi.mock('../lib/aiApi', () => ({
 }));
 
 import * as api from '../lib/userApi';
+import { useAiCapability } from '../lib/aiApi';
 import { listNotifications } from '../lib/notificationsApi';
 import { getCashMovements, listCashSources, listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
@@ -133,6 +134,12 @@ beforeEach(() => {
     privacyMode: 'normal',
     mediaState: null,
   });
+  // `clearAllMocks` keeps implementations, so a case that flips the capability to
+  // the disabled shape would otherwise hide every AI surface for the rest of the
+  // file. Re-assert the configured-provider default before each mount.
+  vi.mocked(useAiCapability).mockReturnValue({
+    data: { available: true, model: 'llama3.1:8b', dailyCap: 20, used: 0, remaining: 20 },
+  } as never);
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listNotifications).mockResolvedValue({ items: [], nextCursor: null, unreadCount: 0 });
@@ -540,7 +547,6 @@ test('the rail Ask row opens and closes the floating AI panel over the page', as
 });
 
 test('with no AI provider configured the Ask row is a plain link and no panel exists', async () => {
-  const { useAiCapability } = await import('../lib/aiApi');
   vi.mocked(useAiCapability).mockReturnValue({
     data: { available: false, model: null, dailyCap: 20, used: 0, remaining: 20 },
   } as never);
