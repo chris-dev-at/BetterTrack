@@ -1,3 +1,4 @@
+import { QTY_EPSILON } from '@bettertrack/domain/holdings';
 import { eq, inArray, or } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
@@ -6,11 +7,20 @@ import {
   announcementDismissals,
   apiKeys,
   assets,
+  cashBudgets,
+  cashMovementTags,
+  cashRuleTags,
+  cashRules,
+  cashTags,
   chatConversations,
   chatMessages,
   conglomeratePositions,
   conglomerates,
   dividends,
+  expenseBudgets,
+  expenseCategories,
+  expenseRules,
+  expenseTransactions,
   externalIdentities,
   feedback,
   feedbackMessages,
@@ -168,6 +178,34 @@ function toCsv(headers: string[], rows: unknown[][]): string {
 }
 
 /**
+ * Invariant guard: the collector must assemble EXACTLY the entities the
+ * classification claims are exported — both directions.
+ *
+ *  - a declared entity the collector never builds would ship an empty file that
+ *    silently claims coverage;
+ *  - a STRAY entity the collector builds whose table is still classified `skip`
+ *    is the more dangerous direction, because the manifest's `skippedTables`
+ *    would tell the reader that data is absent while the ZIP contains it.
+ *
+ * The stray direction is why this runs on the FULL assembled set rather than on
+ * the already-narrowed one: filtering by the allowed set first (as this guard
+ * did until #1711) discards the stray before it can be reported, leaving only
+ * the missing direction detectable. `serverOnly` narrowing is a mechanical
+ * subset of the declared set, so checking the full set covers both modes.
+ */
+export function assertCollectorCoverage(built: readonly string[]): void {
+  const declared = new Set(EXPORTED_ENTITY_NAMES);
+  const stray = [...built].filter((entity) => !declared.has(entity)).sort();
+  const seen = new Set(built);
+  const missing = EXPORTED_ENTITY_NAMES.filter((entity) => !seen.has(entity));
+  if (stray.length > 0 || missing.length > 0) {
+    throw new Error(
+      `export collector/manifest drift: missing [${missing.join(', ')}], stray [${stray.join(', ')}]`,
+    );
+  }
+}
+
+/**
  * Collect every user-owned entity for `userId` into a {@link CollectedExport}.
  * Ownership is resolved up front for the indirected tables (a portfolio's
  * transactions/cash, a conglomerate's positions/links, an audience's members,
@@ -248,6 +286,13 @@ export async function collectUserExport(
     customAssetFull,
     customAssetPriceRows,
     portfolioFull,
+    expenseCategoryRows,
+    expenseTransactionRows,
+    expenseRuleRows,
+    expenseBudgetRows,
+    cashTagRows,
+    cashBudgetRows,
+    cashRuleRows,
   ] = await Promise.all([
     db.select().from(users).where(eq(users.id, userId)),
     db.select().from(apiKeys).where(eq(apiKeys.userId, userId)),
@@ -326,6 +371,36 @@ export async function collectUserExport(
       db.select().from(priceHistory).where(inArray(priceHistory.assetId, ids)),
     ),
     db.select().from(portfolios).where(eq(portfolios.userId, userId)),
+    // V5-P9 expense area + V5 cash fusion. The expense tables, the tags and the
+    // rules all carry `user_id` directly; the per-tag budgets are portfolio-
+    // scoped exactly like the cash movements they budget, so they ride the same
+    // cleartext-portfolio id set (a vault-backed portfolio has no cleartext
+    // descendants to export).
+    db.select().from(expenseCategories).where(eq(expenseCategories.userId, userId)),
+    db.select().from(expenseTransactions).where(eq(expenseTransactions.userId, userId)),
+    db.select().from(expenseRules).where(eq(expenseRules.userId, userId)),
+    db.select().from(expenseBudgets).where(eq(expenseBudgets.userId, userId)),
+    db.select().from(cashTags).where(eq(cashTags.userId, userId)),
+    inIds(cleartextPortfolioIds, (ids) =>
+      db.select().from(cashBudgets).where(inArray(cashBudgets.portfolioId, ids)),
+    ),
+    db.select().from(cashRules).where(eq(cashRules.userId, userId)),
+  ]);
+
+  // The two link tables key off rows resolved above rather than off the user, so
+  // they follow the same "own id set first, empty set short-circuits" shape: a
+  // movement link is scoped to the caller's own exported movements (never to the
+  // tag, which would carry links to movements this export deliberately omits),
+  // and a rule link to the caller's own rules.
+  const cashMovementIds = cashMovementRows.map((m) => m.id);
+  const cashRuleIds = cashRuleRows.map((r) => r.id);
+  const [cashMovementTagRows, cashRuleTagRows] = await Promise.all([
+    inIds(cashMovementIds, (ids) =>
+      db.select().from(cashMovementTags).where(inArray(cashMovementTags.movementId, ids)),
+    ),
+    inIds(cashRuleIds, (ids) =>
+      db.select().from(cashRuleTags).where(inArray(cashRuleTags.ruleId, ids)),
+    ),
   ]);
 
   const allEntities: Record<string, unknown[]> = {
@@ -368,25 +443,26 @@ export async function collectUserExport(
     announcementDismissals: sanitize(announcementDismissalRows),
     customAssets: sanitize(customAssetFull),
     customAssetPriceHistory: sanitize(customAssetPriceRows),
+    expenseCategories: sanitize(expenseCategoryRows),
+    expenseTransactions: sanitize(expenseTransactionRows),
+    expenseRules: sanitize(expenseRuleRows),
+    expenseBudgets: sanitize(expenseBudgetRows),
+    cashTags: sanitize(cashTagRows),
+    cashMovementTags: sanitize(cashMovementTagRows),
+    cashBudgets: sanitize(cashBudgetRows),
+    cashRules: sanitize(cashRuleRows),
+    cashRuleTags: sanitize(cashRuleTagRows),
   };
+  // Checked BEFORE the serverOnly narrowing, so a stray entity is caught rather
+  // than filtered away (see {@link assertCollectorCoverage}).
+  assertCollectorCoverage(Object.keys(allEntities));
+
   const allowedEntities = new Set(
     options.serverOnly ? PARANOID_SERVER_EXPORTED_ENTITY_NAMES : EXPORTED_ENTITY_NAMES,
   );
   const entities = Object.fromEntries(
     Object.entries(allEntities).filter(([entity]) => allowedEntities.has(entity)),
   );
-
-  // Invariant guard: the collector must produce exactly the entities the
-  // classification claims are exported — no missing key, no stray extra. The
-  // completeness test asserts this too; failing fast here makes a wiring slip
-  // obvious at build time.
-  const produced = Object.keys(entities).sort();
-  const expected = [...allowedEntities].sort();
-  if (produced.length !== expected.length || produced.some((k, i) => k !== expected[i])) {
-    throw new Error(
-      `export collector/manifest drift: produced [${produced.join(', ')}] vs expected [${expected.join(', ')}]`,
-    );
-  }
 
   // ── Derived CSVs (transactions / cash movements / holdings) ────────────────
   const csvTransactions = toCsv(
@@ -421,6 +497,14 @@ export async function collectUserExport(
   // Holdings: net position per (portfolio, asset) from the transaction ledger —
   // sum of buy quantities minus sell quantities. Derived, so it needs no market
   // data and stays self-contained in the export.
+  //
+  // Quantities are `numeric(20,8)` strings, so summing them in floats leaves
+  // dust: buy 0.1 + buy 0.2 − sell 0.3 nets 5.55e-17, which a strict `!== 0`
+  // filter keeps and the CSV then prints in scientific notation — a fully closed
+  // position appearing as a held one, disagreeing with the app's own holdings
+  // view. `QTY_EPSILON` is the domain's answer to exactly that (a held quantity
+  // within it of zero IS flat); the export uses the same rule rather than a
+  // second one.
   const holdingsMap = new Map<string, { portfolioId: string; assetId: string; net: number }>();
   for (const t of transactionRows) {
     const key = `${t.portfolioId}:${t.assetId}`;
@@ -432,7 +516,7 @@ export async function collectUserExport(
   const csvHoldings = toCsv(
     ['portfolioId', 'assetId', 'netQuantity'],
     [...holdingsMap.values()]
-      .filter((h) => h.net !== 0)
+      .filter((h) => Math.abs(h.net) > QTY_EPSILON)
       .map((h) => [h.portfolioId, h.assetId, h.net]),
   );
 

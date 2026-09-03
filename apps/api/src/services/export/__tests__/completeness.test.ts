@@ -16,8 +16,12 @@ import { getTableColumns, getTableName, is } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 
 import * as schema from '../../../data/schema';
+import { assertCollectorCoverage } from '../collector';
 import {
+  EXPORT_DEFERRAL_MARKER,
+  EXPORT_DEFERRED_TABLE_NAMES,
   EXPORT_TABLE_CLASSIFICATION,
+  EXPORT_VAULT_AXIS_DIVERGENCES,
   EXPORTED_ENTITY_NAMES,
   PARANOID_REHYDRATION_HANDLERS,
   PARANOID_REHYDRATION_POLICY,
@@ -80,6 +84,13 @@ describe('account-export completeness', () => {
     }
   });
 
+  /**
+   * NOTE ON WHAT THIS DOES *NOT* PROVE: `EXPORTED_ENTITY_NAMES` is derived from
+   * `EXPORT_TABLE_CLASSIFICATION`, so this assertion is a tautology on purpose —
+   * it pins the derivation, nothing more. That the collector actually BUILDS
+   * each named entity is proved by `assertCollectorCoverage` (below, and on
+   * every real export run) and by the DB-backed `exportFlow.test.ts`.
+   */
   it('the exported-entity name list is derived from the classification', () => {
     const fromMap = new Set(
       Object.values(EXPORT_TABLE_CLASSIFICATION)
@@ -87,6 +98,174 @@ describe('account-export completeness', () => {
         .map((c) => (c as { entity: string }).entity),
     );
     expect(new Set(EXPORTED_ENTITY_NAMES)).toEqual(fromMap);
+  });
+
+  it('exports the V5-P9 expense area and the cash-fusion tag/budget/rule layer', () => {
+    expect(
+      Object.fromEntries(
+        [
+          'expense_categories',
+          'expense_transactions',
+          'expense_rules',
+          'expense_budgets',
+          'cash_tags',
+          'cash_movement_tags',
+          'cash_budgets',
+          'cash_rules',
+          'cash_rule_tags',
+        ].map((table) => [table, EXPORT_TABLE_CLASSIFICATION[table]]),
+      ),
+    ).toEqual({
+      expense_categories: { kind: 'export', entity: 'expenseCategories' },
+      expense_transactions: { kind: 'export', entity: 'expenseTransactions' },
+      expense_rules: { kind: 'export', entity: 'expenseRules' },
+      expense_budgets: { kind: 'export', entity: 'expenseBudgets' },
+      cash_tags: { kind: 'export', entity: 'cashTags' },
+      cash_movement_tags: { kind: 'export', entity: 'cashMovementTags' },
+      cash_budgets: { kind: 'export', entity: 'cashBudgets' },
+      cash_rules: { kind: 'export', entity: 'cashRules' },
+      cash_rule_tags: { kind: 'export', entity: 'cashRuleTags' },
+    });
+    // The two per-period fired markers are exactly-once alert bookkeeping, and
+    // stay a plain skip — not a deferral, because they are not user content.
+    for (const table of ['expense_budget_fires', 'cash_budget_fires']) {
+      const classification = EXPORT_TABLE_CLASSIFICATION[table];
+      expect(classification?.kind, `${table} should stay skipped`).toBe('skip');
+      expect((classification as { reason: string }).reason).not.toContain(EXPORT_DEFERRAL_MARKER);
+    }
+  });
+});
+
+/**
+ * "This is the user's data and we have not built it yet" used to be a permanently
+ * CI-green state: `skipped(reason)` accepted any prose, and nine V5-P9 tables sat
+ * behind the phrase "export coverage lands with a later export sweep" while the
+ * encrypted vault already restored them as user content (#1711). These guards make
+ * that state visible and bounded instead of silent.
+ */
+describe('account-export deferrals', () => {
+  /**
+   * PINNED ROSTER — edit deliberately. Every entry is user-owned data the export
+   * does not carry yet; adding a tenth is a decision a reviewer makes here, not a
+   * side effect of a sentence in `manifest.ts`.
+   */
+  const EXPECTED_DEFERRALS = [
+    'drive_connections',
+    'friend_group_members',
+    'friend_groups',
+    'item_comments',
+    'item_reactions',
+    'mirror_chain_members',
+    'notification_cadences',
+    'standing_order_runs',
+    'standing_orders',
+    'webhook_subscriptions',
+    'widget_layouts',
+  ];
+
+  it('enumerates every deferral, and nothing else', () => {
+    expect([...EXPORT_DEFERRED_TABLE_NAMES]).toEqual(EXPECTED_DEFERRALS);
+  });
+
+  it('states a reason beyond the marker for each deferral', () => {
+    for (const table of EXPORT_DEFERRED_TABLE_NAMES) {
+      const classification = EXPORT_TABLE_CLASSIFICATION[table];
+      expect(classification?.kind).toBe('skip');
+      const reason = (classification as { reason: string }).reason;
+      expect(
+        reason.slice(EXPORT_DEFERRAL_MARKER.length).trim().length,
+        `${table} is deferred without saying why`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * The retired phrase. It read as bookkeeping while it was in fact the whole
+   * disclosure that a user's expenses were missing from their own archive, so it
+   * is now mechanically extinct: a deferral declares itself with
+   * {@link EXPORT_DEFERRAL_MARKER} and joins the pinned roster above.
+   */
+  it('no classification defers behind the retired "later export sweep" prose', () => {
+    const offenders = Object.entries(EXPORT_TABLE_CLASSIFICATION)
+      .filter(([, c]) => c.kind === 'skip' && /later export sweep/i.test(c.reason))
+      .map(([table]) => table);
+    expect(offenders, `retired deferral phrase still used by: ${offenders.join(', ')}`).toEqual([]);
+  });
+});
+
+/**
+ * THE EXPORT↔VAULT AXIS GUARD — the export-side mirror of the cash-fusion guard
+ * in `paranoidClassification.test.ts` ("the moment a repository exists,
+ * purge-only means a paranoid disable silently drops the user's tags"). Both
+ * axes answer one question — is this the user's own data? — so a table the vault
+ * restores but the export skips is one axis contradicting the other.
+ */
+describe('export ↔ vault axis agreement', () => {
+  /**
+   * PINNED — the only tables allowed to disagree today. #1711 carried the V5-P9
+   * expense/cash half and scoped the standing-order definitions out; a third
+   * table joining this list must be a deliberate edit here, with the same
+   * question answered: why does the vault call these rows the user's while the
+   * export does not hand them back?
+   */
+  const EXPECTED_DIVERGENCES = ['standing_order_runs', 'standing_orders'];
+
+  it('lets no table the vault restores be silently skipped by the export', () => {
+    expect(
+      [...EXPORT_VAULT_AXIS_DIVERGENCES],
+      'a vault-restorable table is skipped by the export — carry it, or pin it here on purpose',
+    ).toEqual(EXPECTED_DIVERGENCES);
+  });
+
+  it('requires every divergence to be a declared deferral, never a plain skip', () => {
+    for (const table of EXPORT_VAULT_AXIS_DIVERGENCES) {
+      expect(PARANOID_REHYDRATION_POLICY[table]?.kind).toBe('restore');
+      const classification = EXPORT_TABLE_CLASSIFICATION[table];
+      expect(
+        (classification as { reason: string }).reason.startsWith(EXPORT_DEFERRAL_MARKER),
+        `${table} is vault-restorable user data; its export skip must declare itself a deferral`,
+      ).toBe(true);
+    }
+  });
+
+  it('holds for the nine tables this guard was written for', () => {
+    for (const table of [
+      'expense_categories',
+      'expense_transactions',
+      'expense_rules',
+      'expense_budgets',
+      'cash_tags',
+      'cash_movement_tags',
+      'cash_budgets',
+      'cash_rules',
+      'cash_rule_tags',
+    ]) {
+      expect(PARANOID_REHYDRATION_POLICY[table]?.kind, `${table} vault policy`).toBe('restore');
+      expect(EXPORT_VAULT_AXIS_DIVERGENCES).not.toContain(table);
+    }
+  });
+});
+
+/**
+ * The collector↔manifest drift guard. Until #1711 it filtered the built set
+ * through the allowed set BEFORE comparing, so only the missing direction could
+ * ever fail: an entity the collector assembled whose table was still skipped was
+ * dropped silently, while `manifest.json` told the reader that data was absent.
+ */
+describe('collector coverage guard', () => {
+  it('accepts exactly the declared entity set', () => {
+    expect(() => assertCollectorCoverage([...EXPORTED_ENTITY_NAMES])).not.toThrow();
+  });
+
+  it('throws on a stray extra entity whose table is not classified as exported', () => {
+    expect(() =>
+      assertCollectorCoverage([...EXPORTED_ENTITY_NAMES, 'expenseBudgetFires']),
+    ).toThrowError(/stray \[expenseBudgetFires\]/);
+  });
+
+  it('throws on a declared entity the collector never builds', () => {
+    const [first, ...rest] = EXPORTED_ENTITY_NAMES;
+    expect(() => assertCollectorCoverage(rest)).toThrowError(new RegExp(`missing \\[${first}\\]`));
   });
 });
 
