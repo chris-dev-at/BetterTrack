@@ -1,7 +1,7 @@
-import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
-import type { ShareAudience, ShareKind } from '@bettertrack/contracts';
+import { SHARE_KINDS, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import {
@@ -106,6 +106,56 @@ export interface AudienceReachSummary {
 export interface PublicLinkTarget extends OwnerRef {
   kind: ShareKind;
   subjectId: string;
+}
+
+/**
+ * The owned-subject id set per shareable kind — the ONE place that knows which
+ * table and owner column back each `ShareKind`. A `Record<ShareKind, …>` on
+ * purpose: adding a shareable kind fails to compile until its owner lookup is
+ * declared here, so a new kind cannot silently escape a by-owner purge (§6.9).
+ *
+ * Vaulted portfolios are deliberately NOT excluded: this set feeds account
+ * teardown, where every row the owner holds is going away regardless of whether
+ * its subject is currently readable.
+ */
+const OWNED_SUBJECT_IDS: Record<ShareKind, (db: Database, ownerId: string) => SQLWrapper> = {
+  portfolio: (db, ownerId) =>
+    db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, ownerId)),
+  conglomerate: (db, ownerId) =>
+    db
+      .select({ id: conglomerates.id })
+      .from(conglomerates)
+      .where(eq(conglomerates.ownerId, ownerId)),
+  watchlist: (db, ownerId) =>
+    db.select({ id: watchlists.id }).from(watchlists).where(eq(watchlists.userId, ownerId)),
+  idea: (db, ownerId) => db.select({ id: ideas.id }).from(ideas).where(eq(ideas.ownerId, ownerId)),
+};
+
+/**
+ * A predicate matching every polymorphic `(kind, subject_id)` row that points at
+ * a subject `ownerId` owns, across ALL shareable kinds at once — the by-owner
+ * counterpart of the `(kind, subjectId)` equality used by `clearForSubject`.
+ *
+ * Each kind contributes an id **subquery**, never a materialized id list, so an
+ * account with a thousand portfolios still purges in the same single statement
+ * as an account with one (#1724). Callers pass their own table's polymorphic
+ * column pair, which is why this lives outside the repository factory:
+ * `item_follows` is purged from its own repository against the same set.
+ */
+export function ownedSubjectsPredicate(
+  db: Database,
+  ownerId: string,
+  cols: { kind: AnyPgColumn; subjectId: AnyPgColumn },
+): SQL {
+  // `or` over a non-empty literal tuple always yields a predicate; the fallback
+  // keeps the return type honest without a non-null assertion.
+  return (
+    or(
+      ...SHARE_KINDS.map((kind) =>
+        and(eq(cols.kind, kind), inArray(cols.subjectId, OWNED_SUBJECT_IDS[kind](db, ownerId))),
+      ),
+    ) ?? sql`false`
+  );
 }
 
 export function createShareAudienceRepository(db: Database) {
@@ -1160,6 +1210,55 @@ export function createShareAudienceRepository(db: Database) {
         await tx
           .delete(shareAudiences)
           .where(and(eq(shareAudiences.kind, kind), eq(shareAudiences.subjectId, subjectId)));
+      });
+    },
+
+    /**
+     * The account-teardown counterpart of `clearForSubject` (#1724): purge the
+     * social conversation on EVERY subject one owner holds, across all shareable
+     * kinds, in three statements — regardless of how many subjects that is.
+     *
+     * `item_comments` and `item_reactions` key to their subject polymorphically,
+     * so deleting the `users` row cascades away only the rows the departing user
+     * *authored*; a friend's comment body and a third user's reaction on the
+     * vanished portfolio would survive with no subject, no audience that ever
+     * authorised them, and — for the reaction — no removal path at all
+     * (`toggleItemReaction` 404s once the subject is gone). This is the sweep the
+     * deletion path runs while the subject rows still exist to resolve.
+     *
+     * `share_audiences.owner_id` is a real FK and cascades on its own, so the
+     * audience row is deliberately not re-deleted here.
+     *
+     * One transaction, same reasoning as `clearForSubject`: a failure between the
+     * statements must not leave half a purge behind, and the caller runs this
+     * BEFORE the user row goes so an abort leaves the account fully intact.
+     */
+    async clearForOwner(ownerId: string): Promise<void> {
+      await db.transaction(async (tx) => {
+        const ownedComments = ownedSubjectsPredicate(db, ownerId, {
+          kind: itemComments.kind,
+          subjectId: itemComments.subjectId,
+        });
+        // Comment reactions first, on the same independence-from-the-cascade
+        // grounds as `clearForSubject`.
+        await tx
+          .delete(itemReactions)
+          .where(
+            inArray(
+              itemReactions.commentId,
+              tx.select({ id: itemComments.id }).from(itemComments).where(ownedComments),
+            ),
+          );
+        await tx.delete(itemComments).where(ownedComments);
+        await tx.delete(itemReactions).where(
+          and(
+            eq(itemReactions.targetType, 'item'),
+            ownedSubjectsPredicate(db, ownerId, {
+              kind: itemReactions.kind,
+              subjectId: itemReactions.subjectId,
+            }),
+          ),
+        );
       });
     },
   };

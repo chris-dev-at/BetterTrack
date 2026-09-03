@@ -4,6 +4,7 @@ import type { ShareKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { itemFollows, portfolios } from '../schema';
+import { ownedSubjectsPredicate } from './shareAudienceRepository';
 
 /**
  * Item-follow SQL (#439) — bookmarks of other people's shareable items. All
@@ -88,6 +89,23 @@ export function createItemFollowsRepository(db: Database) {
       await db
         .delete(itemFollows)
         .where(and(eq(itemFollows.kind, kind), eq(itemFollows.subjectId, subjectId)));
+    },
+
+    /**
+     * Purge every follow of every subject one owner holds — account teardown's
+     * counterpart of `clearForSubject` (#1724). Like the comment/reaction rows,
+     * `item_follows` keys to its subject polymorphically, so only the departing
+     * user's OWN bookmarks cascade with the `users` row; the bookmarks other
+     * users hold on the vanished items would linger forever. One statement over
+     * an id subquery per kind, so subject count does not drive query count.
+     */
+    async clearForOwner(ownerId: string): Promise<void> {
+      await db.delete(itemFollows).where(
+        ownedSubjectsPredicate(db, ownerId, {
+          kind: itemFollows.kind,
+          subjectId: itemFollows.subjectId,
+        }),
+      );
     },
   };
 }
