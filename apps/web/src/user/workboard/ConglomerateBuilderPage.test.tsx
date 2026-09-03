@@ -18,6 +18,12 @@ vi.mock('../../lib/searchApi', () => ({
   searchAssets: vi.fn(),
 }));
 
+vi.mock('../../lib/aiApi', () => ({
+  AI_CAPABILITY_QUERY_KEY: ['ai', 'capability'],
+  useAiCapability: vi.fn(() => ({ data: undefined })),
+  draftConglomerate: vi.fn(),
+}));
+
 // Recharts measures the DOM (0×0 in jsdom); hand the donut a fixed size.
 vi.mock('recharts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('recharts')>();
@@ -41,6 +47,7 @@ import {
   replaceConglomeratePositions,
   updateConglomerate,
 } from '../../lib/conglomerateApi';
+import { draftConglomerate, useAiCapability } from '../../lib/aiApi';
 import { searchAssets } from '../../lib/searchApi';
 import { ConglomerateBuilderPage } from './ConglomerateBuilderPage';
 
@@ -142,6 +149,8 @@ async function renderEdit(positions: Array<{ id: string; symbol: string; weightP
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [] });
+  // AI off by default — every AI surface is hidden unless a test configures one.
+  vi.mocked(useAiCapability).mockReturnValue({ data: undefined } as never);
 });
 
 describe('ConglomerateBuilderPage', () => {
@@ -352,6 +361,61 @@ describe('ConglomerateBuilderPage', () => {
     await user.click(screen.getByRole('button', { name: /^activate$/i }));
     await waitFor(() => expect(activateConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID));
     await waitFor(() => expect(screen.getByText('Detail view')).toBeInTheDocument());
+  });
+
+  test('an AI draft writes NOTHING until the user confirms it (regression)', async () => {
+    vi.mocked(useAiCapability).mockReturnValue({
+      data: { available: true, model: 'llama3.1:8b', dailyCap: 5, used: 0, remaining: 5 },
+    } as never);
+    vi.mocked(draftConglomerate).mockResolvedValue({
+      model: 'llama3.1:8b',
+      lines: [
+        {
+          query: 'nasdaq',
+          weightPct: 100,
+          asset: { id: 'a-qqq', symbol: 'QQQ', name: 'Nasdaq 100', type: 'etf', currency: 'USD' },
+        },
+      ],
+    });
+    await renderEdit([
+      { id: 'a1', symbol: 'AAPL', weightPct: 60 },
+      { id: 'a2', symbol: 'MSFT', weightPct: 40 },
+    ]);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Describe it with AI'), '100% nasdaq');
+    await user.click(screen.getByRole('button', { name: 'Draft basket' }));
+    const review = await screen.findByRole('group', { name: 'Review the AI draft' });
+
+    // The confirmation names the blueprint and what applying costs…
+    expect(review).toHaveTextContent('Applying replaces all 2 positions in “My Basket”.');
+    // …and the saved basket is untouched: no create, no name update, and — well
+    // past the 600 ms autosave debounce — no position replacement.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(createConglomerate).not.toHaveBeenCalled();
+    expect(updateConglomerate).not.toHaveBeenCalled();
+    expect(replaceConglomeratePositions).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Weight for AAPL')).toBeInTheDocument();
+
+    // Dismissing is free too — still not a single write.
+    await user.click(screen.getByRole('button', { name: 'Discard draft' }));
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(replaceConglomeratePositions).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Weight for MSFT')).toBeInTheDocument();
+
+    // Only the explicit confirmation commits the drafted basket.
+    await user.type(screen.getByLabelText('Describe it with AI'), '100% nasdaq');
+    await user.click(screen.getByRole('button', { name: 'Draft basket' }));
+    await screen.findByRole('group', { name: 'Review the AI draft' });
+    await user.click(screen.getByRole('button', { name: 'Apply draft' }));
+
+    await waitFor(
+      () =>
+        expect(replaceConglomeratePositions).toHaveBeenCalledWith(CONGLOMERATE_ID, [
+          { assetId: 'a-qqq', weightPct: 100 },
+        ]),
+      { timeout: 3000 },
+    );
   });
 
   test('surfaces a server validation error on activate', async () => {

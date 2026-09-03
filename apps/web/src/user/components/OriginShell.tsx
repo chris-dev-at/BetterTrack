@@ -39,7 +39,7 @@ import {
   ASK_DOCK_ID,
   AskDock,
   toggleAskDock,
-  useAskDockEligible,
+  useAskDockAvailable,
   useAskDockState,
 } from './askdock';
 import { CmdKPalette } from './CmdKPalette';
@@ -168,8 +168,9 @@ function RailItem({
  * floating AI panel instead of navigating — same icon, same label, same
  * `bt-rail-item` styling as its neighbours, with `aria-expanded` carrying the
  * state and an open panel lighting the row the way an active route would.
- * Narrow viewports fall through to the plain link, because the panel doesn't
- * exist there and `/ask` must stay reachable from the rail either way.
+ * Narrow viewports — and a deployment with no local AI provider — fall through
+ * to the plain link, because the panel doesn't exist there and `/ask` must stay
+ * reachable from the rail either way.
  */
 function RailAskToggle({
   item,
@@ -183,9 +184,11 @@ function RailAskToggle({
   label: string;
 }) {
   const { open } = useAskDockState();
-  const eligible = useAskDockEligible();
+  // Viewport AND a configured local AI provider (§6.18): without either, the row
+  // is a plain link to `/ask`, which still works with every AI surface hidden.
+  const available = useAskDockAvailable();
 
-  if (!eligible) {
+  if (!available) {
     return <RailItem collapsed={collapsed} item={item} label={label} pathname={pathname} />;
   }
 
@@ -203,6 +206,16 @@ function RailAskToggle({
       <span className="bt-rail-item__label">{label}</span>
     </button>
   );
+}
+
+/**
+ * The floating panel's mount, gated on the same availability the rail row uses
+ * so the two can never disagree: no local AI provider ⇒ no AI surface at all.
+ */
+function AskDockMount() {
+  const available = useAskDockAvailable();
+  if (!available) return null;
+  return <AskDock />;
 }
 
 /**
@@ -1025,8 +1038,10 @@ export function OriginShell() {
       </nav>
 
       {/* Non-modal floating AI panel: mounted at the shell root so it overlays
-          the canvas without the page losing interactivity (see AskDock). */}
-      <AskDock />
+          the canvas without the page losing interactivity (see AskDock). It is
+          an AI surface, so with no local provider configured it is not mounted
+          at all (§6.18) — not even from a persisted "open" state. */}
+      <AskDockMount />
 
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>

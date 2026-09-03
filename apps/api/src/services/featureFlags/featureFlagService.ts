@@ -40,7 +40,9 @@ export const FEATURE_FLAG_REGISTRY: Record<FeatureFlagKey, { description: string
   chat: { description: 'Friend chat / direct messages.' },
   alerts: { description: 'Price alerts.' },
   imports: { description: 'Broker CSV imports.' },
-  ai: { description: 'AI insights & assistant (reserved).' },
+  ai: {
+    description: 'AI portfolio insights & the natural-language Blueprint builder (local provider).',
+  },
 };
 
 const settingKey = (key: FeatureFlagKey): string => `${FEATURE_FLAG_PREFIX}${key}`;

@@ -27,6 +27,14 @@ vi.mock('../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
   markNotificationsRead: vi.fn(),
 }));
+// A configured local AI provider — the gate the Ask row and its floating panel
+// key off (§6.18); individual tests flip it to the disabled shape.
+vi.mock('../lib/aiApi', () => ({
+  AI_CAPABILITY_QUERY_KEY: ['ai', 'capability'],
+  useAiCapability: vi.fn(() => ({
+    data: { available: true, model: 'llama3.1:8b', dailyCap: 20, used: 0, remaining: 20 },
+  })),
+}));
 
 import * as api from '../lib/userApi';
 import { listNotifications } from '../lib/notificationsApi';
@@ -529,6 +537,29 @@ test('the rail Ask row opens and closes the floating AI panel over the page', as
   await waitFor(() =>
     expect(screen.queryByRole('complementary', { name: 'Ask BetterTrack panel' })).toBeNull(),
   );
+});
+
+test('with no AI provider configured the Ask row is a plain link and no panel exists', async () => {
+  const { useAiCapability } = await import('../lib/aiApi');
+  vi.mocked(useAiCapability).mockReturnValue({
+    data: { available: false, model: null, dailyCap: 20, used: 0, remaining: 20 },
+  } as never);
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  const utilities = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Utilities' }),
+  );
+  // §6.18: every AI surface disappears — the row keeps working as a route.
+  expect(within(utilities).queryByRole('button', { name: 'Ask BetterTrack' })).toBeNull();
+  const ask = within(utilities).getByRole('link', { name: 'Ask BetterTrack' });
+  expect(ask).toHaveAttribute('href', '/ask');
+
+  await user.click(ask);
+  expect(screen.queryByRole('complementary', { name: 'Ask BetterTrack panel' })).toBeNull();
+  // …and the parked page it lands on advertises nothing that will not render.
+  expect(await screen.findByText(/lands here once it is built/)).toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: 'AI insights in Analysis' })).toBeNull();
 });
 
 test('no chat or AI icon sits in the topbar (owner: the rail row is the trigger)', async () => {

@@ -10,7 +10,11 @@ import { provisionUser } from './support/users';
  * The owner-mandated browser gate: a natural-language description drafts a
  * weighted basket through the LOCAL provider, and that draft is ALWAYS a
  * proposal the user reviews and explicitly confirms — it never auto-commits, and
- * the generation never reaches Ollama or any cloud service.
+ * the generation never reaches Ollama or any cloud service. "Never auto-commits"
+ * is asserted on the wire: every non-GET request to `/api/conglomerates*` is
+ * recorded, and the set between the draft returning and the user confirming must
+ * be EMPTY (a URL that stays `/new` would not prove it — the Builder autosaves
+ * onto an id it already holds without navigating).
  *
  * The panel only renders when a provider is configured, and a draft POSTs
  * `/api/chat` to it. The Playwright stack has no Ollama, so `support/e3.ts`
@@ -46,6 +50,16 @@ test('nl builder: a local-provider draft is reviewed and confirmed before it com
     const page = owner.page;
 
     try {
+      // Every write to the conglomerate endpoints, so "nothing was persisted" is
+      // asserted on the wire rather than inferred from the URL.
+      const writes: string[] = [];
+      page.on('request', (request) => {
+        const method = request.method();
+        if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return;
+        if (!/\/api\/conglomerates/.test(request.url())) return;
+        writes.push(`${method} ${new URL(request.url()).pathname}`);
+      });
+
       await page.goto('/workbench/blueprints/new');
       await page.getByLabel('Blueprint name').fill('AI Draft Basket');
 
@@ -54,25 +68,33 @@ test('nl builder: a local-provider draft is reviewed and confirmed before it com
       await expect(nlSummary).toBeVisible({ timeout: 15_000 });
       await nlSummary.click();
       await page.getByLabel('Describe it with AI').fill('60% Apple, 40% Microsoft');
+      const writesBeforeDraft = writes.length;
       await page.getByRole('button', { name: 'Draft basket' }).click();
 
-      // The draft is PREFILLED for review (with the hard review-and-save framing)
-      // — never silently applied.
-      await expect(page.getByText(/Prefilled 2 positions/)).toBeVisible({ timeout: 15_000 });
-      await expect(page.getByText(/AI drafts a starting point/)).toBeVisible();
+      // The draft comes back as a REVIEW step, framed hard as informational only
+      // — it has not touched the Builder's positions.
+      const review = page.getByRole('group', { name: 'Review the AI draft' });
+      await expect(review).toBeVisible({ timeout: 15_000 });
+      await expect(review.getByText(/Draft ready: 2 positions/)).toBeVisible();
+      await expect(page.getByText(/not financial advice/)).toBeVisible();
 
       // Exactly one completion, served by the LOCAL fake — never Ollama/cloud.
       expect(fake.chatCalls()).toBe(1);
 
-      // The resolved positions sit in the Builder for the user to review/edit.
+      // THE guarantee: past the autosave debounce, the model's basket has caused
+      // no write at all — no create, no name update, no position replacement.
+      await page.waitForTimeout(1_500);
+      expect(writes.slice(writesBeforeDraft)).toEqual([]);
+
+      // Only the explicit confirmation moves the draft into the Builder.
+      await page.getByRole('button', { name: 'Apply draft' }).click();
+      await expect(page.getByText(/Prefilled 2 positions/)).toBeVisible();
+
+      // The resolved positions now sit in the Builder for the user to review/edit.
       const positions = page.getByRole('list', { name: 'Blueprint positions' });
       await expect(positions.getByText('AAPL', { exact: true })).toBeVisible();
       await expect(positions.getByText('MSFT', { exact: true })).toBeVisible();
 
-      // NOT auto-committed: the draft is still an unsaved builder draft (URL never
-      // left `/new`, and the primary action is "Activate", not "Re-activate"), so
-      // confirmation is a distinct, explicit user action.
-      await expect(page).toHaveURL(/\/workbench\/blueprints\/new$/);
       const activate = page.getByRole('button', { name: 'Activate' });
       await expect(activate).toBeEnabled();
 
