@@ -15,10 +15,12 @@ import {
 
 import type { Database } from '../db';
 import {
+  usageActivations,
   usageDaily,
   usageEvents,
   portfolios,
   users,
+  type NewUsageActivationRow,
   type NewUsageDailyRow,
   type NewUsageEventRow,
 } from '../schema';
@@ -69,7 +71,10 @@ export interface UsageAnalyticsRepository {
   /**
    * Fold a batch of activity rows in, keyed by (user, feature, asset, day):
    * a new key inserts, a repeat bumps `hits` and refreshes `last_seen_at`. The
-   * append-side of usage capture — cheap and idempotent per key.
+   * append-side of usage capture — cheap and idempotent per key. Also marks
+   * every admitted user activated (see {@link activatedUsers}), from the SAME
+   * admitted set, so the marker inherits the paranoid/vault suppression instead
+   * of restating it.
    */
   upsertEvents(rows: UsageEventUpsert[]): Promise<void>;
   /**
@@ -80,7 +85,13 @@ export interface UsageAnalyticsRepository {
   rollupDay(day: string): Promise<void>;
   /** Distinct users with any activity since (inclusive) `sinceDay`. */
   distinctActiveUsers(sinceDay: string): Promise<number>;
-  /** Distinct users with ANY activity ever (the "activated" funnel stage). */
+  /**
+   * Accounts that have ever produced a counted usage signal (the "activated"
+   * funnel stage). Read from the durable `usage_activations` marker, NOT from
+   * `usage_events`: activation is a lifetime property of an account and the raw
+   * events are swept by `BT_USAGE_EVENT_RETENTION_DAYS`, so deriving it from
+   * them made the funnel decay as history aged out (#1680).
+   */
   activatedUsers(): Promise<number>;
   /** Total registered accounts (the top of the funnel). */
   totalUsers(): Promise<number>;
@@ -94,9 +105,15 @@ export interface UsageAnalyticsRepository {
    * Delete at most `limit` raw event rows whose `day` is before `cutoff` (the
    * retention sweep's bounded drain). Raw events are one row per user × feature
    * × asset × day — i.e. a per-user viewing history — and nothing but a per-user
-   * paranoid transition ever removed one. The {@link usageDaily} rollup is
-   * aggregate and is deliberately NOT swept with them, so the admin analytics
-   * series survives its own raw history.
+   * paranoid transition ever removed one.
+   *
+   * What survives the sweep, precisely: the aggregate {@link usageDaily} rollup
+   * (which backs the feature counters and the activity series) and the
+   * `usage_activations` marker (which backs the funnel's activated stage). What
+   * does NOT: {@link distinctActiveUsers} and {@link topAssets} read the raw
+   * rows, by design — both are windowed metrics, and the env refine on
+   * `BT_USAGE_EVENT_RETENTION_DAYS` is what keeps the retention window from
+   * cutting into the window they report on.
    */
   deleteEventsOlderThan(cutoff: Date, limit: number): Promise<number>;
 }
@@ -235,6 +252,27 @@ export function createUsageAnalyticsRepository(
             hits: r.hits,
             lastSeenAt: r.lastSeenAt,
           }));
+          // The durable activation marker (#1680), derived from the SAME
+          // admitted set inside the SAME held lock: whatever suppression kept a
+          // row out of `usage_events` — paranoid account, vaulted target,
+          // vault-sensitive quote — keeps the user out of here too, so §6.12's
+          // "vaulted/paranoid data never counted" needs no second rule.
+          //
+          // `onConflictDoNothing` on the user-id PK is what makes it idempotent:
+          // the first counted activity writes the row and every later flush is a
+          // no-op, so the marker never duplicates and never moves. `firstActiveAt`
+          // is the earliest instant in THIS batch for that user (the buffer folds
+          // per day, so it is the best timestamp available at the boundary).
+          const firstActiveByUser = new Map<string, Date>();
+          for (const row of folded.values()) {
+            const current = firstActiveByUser.get(row.userId);
+            if (!current || row.lastSeenAt < current)
+              firstActiveByUser.set(row.userId, row.lastSeenAt);
+          }
+          const activations: NewUsageActivationRow[] = [...firstActiveByUser].map(
+            ([userId, firstActiveAt]) => ({ userId, firstActiveAt }),
+          );
+
           await db
             .insert(usageEvents)
             .values(values)
@@ -250,6 +288,10 @@ export function createUsageAnalyticsRepository(
                 lastSeenAt: sql`excluded.last_seen_at`,
               },
             });
+          await db
+            .insert(usageActivations)
+            .values(activations)
+            .onConflictDoNothing({ target: usageActivations.userId });
         });
       }
     },
@@ -305,10 +347,12 @@ export function createUsageAnalyticsRepository(
     },
 
     async activatedUsers(): Promise<number> {
-      const [row] = await db
-        .select({ value: sql<number>`count(distinct ${usageEvents.userId})` })
-        .from(usageEvents);
-      return Number(row?.value ?? 0);
+      // One row per activated account, so a plain count — and unbounded on
+      // purpose: activation is lifetime, and this table has no retention window
+      // to erode it. Rows for deleted accounts cascade away, so the count stays
+      // comparable with `totalUsers()` above it in the funnel.
+      const [row] = await db.select({ value: count() }).from(usageActivations);
+      return row?.value ?? 0;
     },
 
     async totalUsers(): Promise<number> {

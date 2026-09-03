@@ -21,14 +21,26 @@ import type { Logger } from '../../logger';
  *    counters, top viewed assets and the registration funnel. The per-feature
  *    counters and daily activity series are served from the materialized
  *    {@link usageDaily} rollup; the read refreshes TODAY's rollup first so the
- *    current day is always fresh even between cron runs.
+ *    current day is always fresh even between cron runs. The funnel's
+ *    `activated` stage is a LIFETIME figure and comes from the durable
+ *    `usage_activations` marker, not from raw events — those are swept by
+ *    `BT_USAGE_EVENT_RETENTION_DAYS` and would make it decay (#1680).
  *
  * No third-party trackers feed any of this — only our own request/auth stream.
  */
 
 const DAY_MS = 86_400_000;
 const DEFAULT_FLUSH_INTERVAL_MS = 15_000;
-const DEFAULT_WINDOW_DAYS = 30;
+/**
+ * The reporting window every windowed metric reads (DAU/WAU/MAU, feature
+ * counters, top assets, the activity series). EXPORTED because the env schema
+ * refines `BT_USAGE_EVENT_RETENTION_DAYS` against it (#1680): DAU/WAU/MAU and
+ * top assets read raw `usage_events`, so a retention window shorter than this
+ * one would silently collapse them into each other. One constant, so the two
+ * numbers can never drift apart again.
+ */
+export const USAGE_ANALYTICS_WINDOW_DAYS = 30;
+const DEFAULT_WINDOW_DAYS = USAGE_ANALYTICS_WINDOW_DAYS;
 const DEFAULT_TOP_ASSETS_LIMIT = 10;
 /** Trailing days the rollup cron re-materializes on each run (heals late data). */
 const DEFAULT_ROLLUP_WINDOW_DAYS = 3;
