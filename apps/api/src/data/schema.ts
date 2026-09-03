@@ -194,7 +194,7 @@ export const users = pgTable(
     // reads the same audience model the enforcement layer authorizes against.
     profilePublic: boolean('profile_public').notNull().default(false),
     profileBio: varchar('profile_bio', { length: 280 }),
-    // Curated profile icon id (§13.5 V5-P0c). NULL = no choice — every render
+    // Curated profile icon id (§13.5 V5-P0 (c)). NULL = no choice — every render
     // surface falls back to a deterministic id-derived default, so existing rows
     // and never-picked accounts still render an avatar. The allowed id set is
     // finite (`PROFILE_ICON_IDS` in contracts) and validated at the service
