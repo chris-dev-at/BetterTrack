@@ -100,7 +100,12 @@ export function createImportsRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // Cost-metered (§10 COST TABLE, #1643) at 100 work units: staging one batch
   // drives the row classifier through ≈450 `pg_trgm` scans. The guard runs
   // BEFORE multer, so an over-budget caller is turned away without the API
-  // reading (or buffering) the upload at all.
+  // reading (or buffering) the upload at all. The price of that ordering is on
+  // the wire, not in the contract: the 429 is written while the multipart body
+  // is still in flight, so Node closes the connection rather than draining it
+  // and a client may observe a reset instead of the response. Accepted — not
+  // buffering an unbounded upload we have already decided to refuse is worth
+  // more than a graceful close on a request that is over budget anyway.
   router.post(
     '/',
     limiters.cost('importCreate'),

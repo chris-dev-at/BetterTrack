@@ -303,12 +303,20 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       if (query.from && query.to && query.from > query.to) {
         throw badRequest('`from` must be on or before `to`.', 'VALIDATION_ERROR');
       }
-      // Hard range bound (#1643). Without `from` the window starts at the first
-      // day the portfolio held value — bounded by the data, not by the caller —
-      // so only an explicit `from` can make the request arbitrarily long. Its
-      // end is `to` when given, else today. Rejected, not clamped, so the
-      // echoed window always answers the question that was asked; see
+      // Request-sanity bound on the asked-for window (#1643): a `from`/`to`
+      // spanning millennia is a fat-fingered custom range, so say so instead of
+      // quietly answering a different question. Rejected, not clamped, so the
+      // echoed window always describes the window that was requested; see
       // ANALYTICS_MAX_RANGE_DAYS for the reasoning behind the size.
+      //
+      // This is NOT a work bound, and nothing below should be sized against it:
+      // the reads underneath are bounded by the portfolio's own data (the value
+      // series takes no window; the compare resolvers fetch a full history and
+      // post-filter), so a wide window costs no more than a narrow one. Only an
+      // explicit `from` is checked, so `?to=9999-12-31` on its own is still
+      // accepted — harmless for the same reason, and the echoed window is then
+      // whatever the data spans (or `src.today`, for a portfolio with no value
+      // history at all) rather than the caller's absurd end.
       if (query.from) {
         const end = query.to ?? new Date().toISOString().slice(0, 10);
         const span = daysBetweenIso(query.from, end);

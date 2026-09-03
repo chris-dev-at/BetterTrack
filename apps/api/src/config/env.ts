@@ -1097,8 +1097,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // |-------------------------------------------|-----------------|-------|-----|
   // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
   // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
-  // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table (window now hard-bounded, see ANALYTICS_MAX_RANGE_DAYS) |
+  // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
+  //
+  // A note on `analyticsSeries`, so the next reader does not re-derive it from
+  // the wrong bound: its work is sized by the DATA, never by the requested
+  // window. `getAssetValueSeries` takes no window at all, and all three compare
+  // resolvers fetch a full history and then post-filter it into [from, to]. The
+  // `ANALYTICS_MAX_RANGE_DAYS` rejection added alongside this table is a
+  // request-sanity/UX guard on an absurd window — it is NOT what makes this
+  // weight sound, and shrinking it would not shrink the weight.
+  //
+  // KNOWN FOLLOW-UP — the enumeration above is the set #1643 scoped, not the
+  // exhaustive set. `POST /backtest/compare` runs 2–6 conglomerate previews per
+  // request, so it is strictly heavier than the 25-unit `/preview` beside it and
+  // is still metered at one request. It wants a weight of its own (≈ `/preview`
+  // × the overlay count) in a follow-up.
   //
   // MODELLED NORMAL-USE BAR for the unit budget — the same one active user,
   // pessimistically doing all four things inside the SAME minute (nobody

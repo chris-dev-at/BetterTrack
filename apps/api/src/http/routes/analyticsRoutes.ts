@@ -30,9 +30,11 @@ export function createAnalyticsRouter(ctx: AppContext, limiters: RateLimiters): 
   //
   // Cost-metered (§10 COST TABLE, #1643): assembling the primary series, an
   // optional compare series and the contribution table is worth 10 work units.
-  // The window itself is bounded separately — the service refuses a requested
-  // range longer than `ANALYTICS_MAX_RANGE_DAYS`, so the per-request work no
-  // longer scales with a caller-chosen `from`.
+  // That weight is sized against the DATA — `getAssetValueSeries` takes no
+  // window, and each compare resolver fetches its full history and post-filters
+  // — so `from`/`to` never drove the cost and the separate
+  // `ANALYTICS_MAX_RANGE_DAYS` bound in the service is a request-sanity guard,
+  // not the reason this number is what it is.
   router.get(
     '/portfolios/:portfolioId/series',
     limiters.cost('analyticsSeries'),

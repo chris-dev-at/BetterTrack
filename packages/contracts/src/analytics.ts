@@ -26,13 +26,16 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
  *
  * The endpoint used to accept any `from`/`to` the ISO pattern matched, so
  * `from=0001-01-01&to=9999-12-31` was a legal request for a ~3.6-million-day
- * window: one request's work was unbounded and entirely caller-chosen. The
- * window is REJECTED (400) rather than silently clamped, so the response's
- * echoed `from`/`to` always describe the window that was asked for, and a
- * fat-fingered custom range is reported instead of quietly answering a
- * different question. It is deliberately far above any real personal record —
- * the SPA's `max` preset sends no `from` at all (inception → today, bounded by
- * the data, not by the caller) and every other preset is a year or less.
+ * window. This is a request-sanity guard, NOT a work bound: the reads behind
+ * the endpoint are sized by the portfolio's own history and post-filter into
+ * the window, so an absurd range costs no more to answer than a real one. What
+ * it buys is an honest refusal — the window is REJECTED (400) rather than
+ * silently clamped, so the response's echoed `from`/`to` always describe the
+ * window that was asked for, and a fat-fingered custom range is reported
+ * instead of quietly answering a different question. It is deliberately far
+ * above any real personal record — the SPA's `max` preset sends no `from` at
+ * all (inception → today, bounded by the data, not by the caller) and every
+ * other preset is a year or less.
  *
  * The check is cross-field, so — like `compareId`+`compareKind` and
  * `inflationRate` — it lives in the service, keeping this a plain object schema
