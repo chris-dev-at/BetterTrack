@@ -38,11 +38,17 @@ export interface PortfolioMarketIntelService {
    */
   dividendCalendar(userId: string): Promise<DividendCalendarResponse>;
   /**
-   * Projected dividend income for the whole portfolio, monthly + yearly EUR
-   * (arc a). All-or-nothing (#1616), so a book over the fan-out cap returns the
-   * unavailable shape with `truncated: true` and issues no provider calls.
+   * Projected dividend income, monthly + yearly EUR (arc a). All-or-nothing
+   * (#1616), so a book over the fan-out cap returns the unavailable shape with
+   * `truncated: true` and issues no provider calls.
+   *
+   * Without `portfolioId` the read spans every active, non-vaulted portfolio —
+   * the cross-portfolio income line the portfolio page has always shown. With
+   * one it covers that portfolio alone: the V5-P6b Forecast projects a single
+   * portfolio's net worth, so adding the other portfolios' dividends to that
+   * curve overstates it.
    */
-  projectedIncome(userId: string): Promise<ProjectedDividendIncomeResponse>;
+  projectedIncome(userId: string, portfolioId?: string): Promise<ProjectedDividendIncomeResponse>;
 }
 
 export interface PortfolioMarketIntelDeps {
@@ -176,10 +182,10 @@ export function createPortfolioMarketIntelService(
       return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
     },
 
-    async projectedIncome(userId) {
+    async projectedIncome(userId, portfolioId) {
       if (!enabled) return UNAVAILABLE_PROJECTION;
 
-      const held = await repo.listHeldPositionsForUser(userId);
+      const held = await repo.listHeldPositionsForUser(userId, portfolioId);
 
       // The projection is all-or-nothing (#1616): a total that misses holdings
       // is never published. So a book over the fan-out cap can only ever produce

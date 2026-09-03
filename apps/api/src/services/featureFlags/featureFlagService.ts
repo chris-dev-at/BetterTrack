@@ -132,6 +132,12 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
   /**
    * Flip one flag (audit-logged) and invalidate the snapshot so the next request
    * — HTTP or socket — reads the new value. Returns the full refreshed registry.
+   *
+   * Deliberately push-free: work that is ALREADY established when the flip lands
+   * (a connected socket, a registered live watch) is shed by the realtime
+   * gateway's existing revalidation sweep, which re-reads these flags once per
+   * pass. That keeps one flip = one DEL here, with the shed bounded by
+   * `REALTIME_FEATURE_SHED_MAX_DELAY_MS` instead of a new eviction fan-out.
    */
   async function setFlag(
     key: FeatureFlagKey,

@@ -106,8 +106,14 @@ export interface MarketIntelRepository {
   listAllWatchAssets(): Promise<UserIntelAssetWithUser[]>;
   /** Active normal user ids; holding jobs lock each id before reading transactions. */
   listNormalUserIds(): Promise<string[]>;
-  /** Net-held positions (qty + currency) for one user's active portfolios (dividends). */
-  listHeldPositionsForUser(userId: string): Promise<HeldPositionRow[]>;
+  /**
+   * Net-held positions (qty + currency) for one user's active portfolios
+   * (dividends). `portfolioId` narrows the scan to ONE of them — the Forecast's
+   * dividend factor sits beside a single portfolio's net-worth curve, so it may
+   * only carry that portfolio's income. The user filter stays on either way, so
+   * a foreign id matches nothing rather than leaking a row.
+   */
+  listHeldPositionsForUser(userId: string, portfolioId?: string): Promise<HeldPositionRow[]>;
   /** Distinct watchlist assets for one user (dividend forward calendar). */
   listWatchlistAssetsForUser(userId: string): Promise<WatchedAssetRow[]>;
   /** Every (user, held-asset) pair across all users (dividend-event scan job). */
@@ -289,7 +295,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         .then((rows) => rows.map((row) => row.id));
     },
 
-    async listHeldPositionsForUser(userId) {
+    async listHeldPositionsForUser(userId, portfolioId) {
       const rows = await db
         .select({
           assetId: transactions.assetId,
@@ -308,6 +314,8 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
             eq(portfolios.userId, userId),
             isNull(portfolios.archivedAt),
             isNull(portfolios.vaultId),
+            // Additive: no id ⇒ every active portfolio, exactly as before.
+            ...(portfolioId === undefined ? [] : [eq(portfolios.id, portfolioId)]),
           ),
         )
         .groupBy(

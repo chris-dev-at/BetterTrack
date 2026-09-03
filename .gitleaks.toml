@@ -34,6 +34,12 @@ id = "generic-api-key"
     # characters so the production precondition passes. Same non-secret, same
     # reason, same rule-level allowlist.
     '''^apps/api/src/config/__tests__/rateLimitTable\.test\.ts$''',
+    # The V5-P2 activation-marker test seeds a vaulted portfolio to prove the
+    # marker inherits the vault suppression, so it reuses the SAME byte-identical
+    # 16-char `keyFingerprint` and canonical-prefix DER `retirementProofPublicKey`
+    # vectors as `accountDeletion.test.ts` above. Same non-secret, same reason,
+    # same rule-level allowlist.
+    '''^apps/api/src/services/analytics/__tests__/usageActivation\.test\.ts$''',
     '''^apps/api/src/services/imports/__tests__/importService\.test\.ts$''',
     '''^apps/web/src/user/vault/vectors\.fixture\.json$''',
     # E3 deterministic BIP39/HKDF/AES-GCM test vectors; public, never production key material.

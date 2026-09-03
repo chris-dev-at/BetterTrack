@@ -2793,7 +2793,8 @@
     "calculators": {
       "title": "Rechner",
       "description": "Eigenständige Werkzeuge, jeweils aus dem Portfolio vorbefüllbar.",
-      "prefillUnavailable": "Portfolio anlegen oder öffnen, um das Vorbefüllen zu aktivieren. Die Rechner laufen weiterhin mit den eingegebenen Werten."
+      "prefillUnavailable": "Portfolio anlegen oder öffnen, um das Vorbefüllen zu aktivieren. Die Rechner laufen weiterhin mit den eingegebenen Werten.",
+      "ratePctClamped": "Raten sind auf -100 % bis 100 % begrenzt. Für diese Berechnung wird der nächstgelegene Wert verwendet."
     },
     "compound": {
       "title": "Zinseszins",

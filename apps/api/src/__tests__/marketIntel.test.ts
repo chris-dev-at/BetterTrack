@@ -8,6 +8,7 @@ import {
   earningsResponseSchema,
   marketIntelStatusResponseSchema,
   newsResponseSchema,
+  projectedDividendIncomeResponseSchema,
   splitsResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -363,5 +364,104 @@ describe('GET /api/v1/assets/intel/earnings-calendar (Workboard panel, arc b)', 
     const res = await agent.get('/api/v1/assets/intel/earnings-calendar');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ available: false, entries: [] });
+  });
+});
+
+describe('GET /api/v1/assets/portfolio/dividend-projection — scope (V5-P6b, #1662)', () => {
+  /** €1/share trailing, so a holding's yearly income is simply its quantity. */
+  const oneEuroPerShare = () =>
+    createStubMarketData({
+      dividends: () =>
+        cachedIntel(
+          sampleDividendEvents({ currency: 'EUR', trailingAmount: 1, history: [], upcoming: [] }),
+        ),
+    });
+
+  /** A portfolio holding `quantity` shares of a freshly-seeded EUR payer. */
+  async function seedPortfolioWithHolding(h: TestHarness, userId: string, quantity: number) {
+    const [portfolio] = await h.db
+      .insert(schema.portfolios)
+      .values({ userId, name: `P${quantity}` })
+      .returning();
+    const asset = await seedGlobalAsset(h, {
+      providerRef: `PAYER${quantity}`,
+      symbol: `PAY${quantity}`,
+      name: `Payer ${quantity}`,
+      currency: 'EUR',
+    });
+    await h.db.insert(schema.transactions).values({
+      portfolioId: portfolio!.id,
+      assetId: asset.id,
+      side: 'buy',
+      quantity: String(quantity),
+      price: '10',
+      executedAt: new Date('2026-01-05T00:00:00.000Z'),
+    });
+    return { portfolioId: portfolio!.id, assetId: asset.id };
+  }
+
+  it('scopes the projection to one portfolio, and stays user-wide without an id', async () => {
+    const h = await createTestApp({ marketData: oneEuroPerShare() });
+    const user = await h.seedUser();
+    const first = await seedPortfolioWithHolding(h, user.id, 10);
+    const second = await seedPortfolioWithHolding(h, user.id, 90);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    // Unscoped: the cross-portfolio total the portfolio page's income line has
+    // always shown — 10 + 90 = 100 €/yr. Pinned so the Forecast's scoping cannot
+    // quietly change that surface.
+    const all = await agent.get('/api/v1/assets/portfolio/dividend-projection');
+    expect(all.status).toBe(200);
+    const allParsed = projectedDividendIncomeResponseSchema.safeParse(all.body);
+    expect(allParsed.success).toBe(true);
+    if (!allParsed.success) return;
+    expect(allParsed.data.available).toBe(true);
+    expect(allParsed.data.yearlyTotalEur).toBe(100);
+    expect(allParsed.data.holdings).toHaveLength(2);
+
+    // Scoped: the shown portfolio's income ALONE. This is the figure the
+    // Forecast adds to that portfolio's own net-worth curve.
+    const scoped = await agent
+      .get('/api/v1/assets/portfolio/dividend-projection')
+      .query({ portfolioId: first.portfolioId });
+    expect(scoped.status).toBe(200);
+    const scopedParsed = projectedDividendIncomeResponseSchema.safeParse(scoped.body);
+    expect(scopedParsed.success).toBe(true);
+    if (!scopedParsed.success) return;
+    expect(scopedParsed.data.yearlyTotalEur).toBe(10);
+    expect(scopedParsed.data.holdings.map((holding) => holding.assetId)).toEqual([first.assetId]);
+
+    const other = await agent
+      .get('/api/v1/assets/portfolio/dividend-projection')
+      .query({ portfolioId: second.portfolioId });
+    expect(other.body.yearlyTotalEur).toBe(90);
+    expect(other.body.monthlyTotalEur).toBe(7.5);
+  });
+
+  it("another user's portfolio id yields an empty projection, never their income", async () => {
+    const h = await createTestApp({ marketData: oneEuroPerShare() });
+    const owner = await h.seedUser({ email: 'dp-owner@a.test', username: 'dpowner' });
+    const other = await h.seedUser({ email: 'dp-other@a.test', username: 'dpother' });
+    const ownerPortfolio = await seedPortfolioWithHolding(h, owner.id, 10);
+    const otherAgent = await loginAgent(h.app, other.email, other.password);
+
+    const res = await otherAgent
+      .get('/api/v1/assets/portfolio/dividend-projection')
+      .query({ portfolioId: ownerPortfolio.portfolioId });
+    expect(res.status).toBe(200);
+    expect(res.body.yearlyTotalEur).toBe(0);
+    expect(res.body.holdings).toEqual([]);
+  });
+
+  it('rejects a malformed portfolioId (400)', async () => {
+    const h = await createTestApp({ marketData: oneEuroPerShare() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent
+      .get('/api/v1/assets/portfolio/dividend-projection')
+      .query({ portfolioId: 'not-a-uuid' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 });

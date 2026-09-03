@@ -833,6 +833,34 @@ export const usageDaily = pgTable(
   (t) => [primaryKey({ name: 'usage_daily_pk', columns: [t.day, t.feature] })],
 );
 
+/**
+ * The DURABLE activation marker (#1680) — one row per account that has ever
+ * produced a counted first-party usage signal, written at the same locked
+ * `upsertEvents` boundary that admits a {@link usageEvents} row.
+ *
+ * Activation is a LIFETIME property of an account, but {@link usageEvents} is
+ * swept by `BT_USAGE_EVENT_RETENTION_DAYS`, and the {@link usageDaily} rollup is
+ * keyed (day, feature) and carries no user id — so neither can answer "has this
+ * account ever used the app" once the retention window has passed. This table
+ * can: it holds one narrow row (user + first-seen instant) that the retention
+ * sweep never touches, so the registration funnel's registered→activated figure
+ * stops decaying as raw history ages out.
+ *
+ * Idempotent by construction: `user_id` is the primary key and the writer is an
+ * `ON CONFLICT DO NOTHING` insert, so re-activity never duplicates or moves the
+ * marker. Deleting the account cascades the row away, exactly like the raw
+ * events. Paranoid enable PURGES it with `usage_events` (see the paranoid axis
+ * in `services/export/manifest.ts`): it is that table's distillate, so it must
+ * not outlive it.
+ */
+export const usageActivations = pgTable('usage_activations', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  /** When the account's first COUNTED activity was recorded (never moves). */
+  firstActiveAt: timestamp('first_active_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // --- Market data: assets & price history ---------------------------------
 
 /**
@@ -2986,6 +3014,8 @@ export type UsageEventRow = typeof usageEvents.$inferSelect;
 export type NewUsageEventRow = typeof usageEvents.$inferInsert;
 export type UsageDailyRow = typeof usageDaily.$inferSelect;
 export type NewUsageDailyRow = typeof usageDaily.$inferInsert;
+export type UsageActivationRow = typeof usageActivations.$inferSelect;
+export type NewUsageActivationRow = typeof usageActivations.$inferInsert;
 export type AssetIdentityRow = typeof assetIdentities.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;

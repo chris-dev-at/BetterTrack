@@ -585,6 +585,12 @@ export const VAULTED_PORTFOLIO_CLEARTEXT_REGISTRY: Readonly<
     reason:
       'Usage telemetry is keyed by account and optional asset, not portfolio; quote-roster suppression is enforced by its dedicated account-any-vault policy.',
   },
+  usage_activations: {
+    kind: 'not-probed',
+    scope: 'account',
+    reason:
+      'The activation marker carries an account id and a first-seen instant and nothing else — no portfolio column exists to scope a probe to, and it is only ever written from an admitted usage_events batch, so it inherits that table’s suppression.',
+  },
 };
 
 export const VAULTED_PORTFOLIO_PROBE_TABLE_NAMES: readonly string[] = Object.entries(

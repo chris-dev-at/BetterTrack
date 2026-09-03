@@ -603,6 +603,18 @@ export function createPd9Harness(): Pd9Harness {
               .from(schema.transactions)
               .where(inArray(schema.transactions.portfolioId, values)),
           ),
+        // The durable activation marker (#1680) inherits its `purge`
+        // classification from the rows below that produce it: one row per
+        // account, written only for an admitted `usage_events` write, destroyed
+        // by the same enable sweep. §6.12 keeps a paranoid account out of the
+        // count entirely, so this probe must reach zero like the rest.
+        usage_activations: () =>
+          probe(
+            db
+              .select({ value: count() })
+              .from(schema.usageActivations)
+              .where(eq(schema.usageActivations.userId, scope.userId)),
+          ),
         // `purge`-classified rather than `vault` (PR #1344): telemetry that folds
         // one row per (user, feature, asset, day). A paranoid client prices every
         // holding itself, so these rows recorded the account's complete holdings
