@@ -1,6 +1,7 @@
 import type { MarketIntelRepository } from '../../data/repositories/marketIntelRepository';
+import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { MarketDataService } from '../../providers';
-import { runEarningsReminderScan } from '../../services/marketIntel';
+import { runEarningsReminderScan, type EarningsNotifyGate } from '../../services/marketIntel';
 import type { NotificationCenter } from '../../services/notifications/notificationCenter';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
@@ -12,9 +13,15 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * `(user_id, asset_id, report_date)`; a per-key Redis lock + the dispatcher's
  * eventKey mean a daily re-scan across the multi-day window never re-notifies.
  *
+ * The type is off by default, so the scan takes a per-user opt-in gate
+ * ({@link earningsNotifyGate}) and skips a recipient who never enabled it — both
+ * side effects (the lock and the dispatcher's hidden dedupe row) would otherwise
+ * mask a later enable for that same report. Same rule as the dividend scan.
+ *
  * Gated by `MARKET_INTEL_ENABLED`: off ⇒ the scan is a no-op (no reminders when
- * the arc is unconfigured). Built from `{ db-repo, marketData, notify, enabled }`
- * like the alert evaluator; the Redis idempotency store + logger come from the
+ * the arc is unconfigured). Built from
+ * `{ db-repo, marketData, notify, isEnabled, enabled }` like the alert
+ * evaluator; the Redis idempotency store + logger come from the
  * {@link JobContext} at run time.
  */
 
@@ -30,11 +37,34 @@ export interface EarningsReminderJobDeps {
   >;
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getEarningsEvents'>;
   notify: NotificationCenter;
+  /** Per-user opt-in gate (skip a recipient who never enabled the type). */
+  isEnabled: EarningsNotifyGate;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan no-ops. */
   enabled: boolean;
   runIfAllowed: (userId: string, action: () => Promise<void>) => Promise<boolean>;
   /** Injectable clock (tests). */
   now?: () => number;
+}
+
+/**
+ * Build a per-user opt-in gate from the notification repository: enabled iff the
+ * `earnings.reminder` type routes to at least one channel (mirrors
+ * `dividendNotifyGate`).
+ */
+export function earningsNotifyGate(
+  repo: Pick<NotificationRepository, 'routingFor'>,
+): EarningsNotifyGate {
+  return async (userId: string) => {
+    const routing = await repo.routingFor(userId, 'earnings.reminder');
+    return (
+      routing.inapp ||
+      routing.email ||
+      routing.push ||
+      routing.webpush ||
+      routing.telegram ||
+      routing.discord
+    );
+  };
 }
 
 export function createEarningsReminderJob(
@@ -58,6 +88,7 @@ export function createEarningsReminderJob(
         marketData: deps.marketData,
         redis: ctx.redis,
         notify: deps.notify,
+        isEnabled: deps.isEnabled,
         enabled: deps.enabled,
         runIfAllowed: deps.runIfAllowed,
         logger: ctx.logger,

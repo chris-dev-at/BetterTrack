@@ -149,6 +149,7 @@ export {
 
 export {
   createEarningsReminderJob,
+  earningsNotifyGate,
   EARNINGS_REMINDER_SCHEDULER_ID,
   EARNINGS_REMINDER_CRON,
   EARNINGS_REMINDER_TZ,

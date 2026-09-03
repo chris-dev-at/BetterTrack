@@ -2,11 +2,12 @@ import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { pino } from 'pino';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AssetRef } from '@bettertrack/contracts';
 
 import type { UserIntelAssetWithUser } from '../../data/repositories/marketIntelRepository';
+import type { TypeRouting } from '../../data/repositories/notificationRepository';
 import type { DomainEventType, EventBus, EventHandler, Unsubscribe } from '../../events';
 import type { Logger } from '../../logger';
 import type { NotificationCenter } from '../../services/notifications/notificationCenter';
@@ -17,7 +18,7 @@ import {
   sampleEarningsEvents,
 } from '../../testing/marketDataStubs';
 import { createDeadLetter } from '../deadLetter';
-import { createEarningsReminderJob } from '../definitions/earningsReminderJob';
+import { createEarningsReminderJob, earningsNotifyGate } from '../definitions/earningsReminderJob';
 import type { JobContext } from '../types';
 
 /**
@@ -105,11 +106,17 @@ function marketDataWithReport(date: string | null) {
   });
 }
 
-function jobFor(date: string | null, notify: NotificationCenter, now?: () => number) {
+function jobFor(
+  date: string | null,
+  notify: NotificationCenter,
+  now?: () => number,
+  isEnabled: (userId: string) => Promise<boolean> = async () => true,
+) {
   return createEarningsReminderJob({
     intelRepo,
     marketData: marketDataWithReport(date),
     notify,
+    isEnabled,
     enabled: true,
     runIfAllowed: async (_userId: string, action: () => Promise<void>) => {
       await action();
@@ -121,19 +128,19 @@ function jobFor(date: string | null, notify: NotificationCenter, now?: () => num
 
 describe('notifications.earningsRemind — run clock (#1543)', () => {
   it('scans against the execution instant, not the one-period-stale job.timestamp', async () => {
-    // 2026-09-03T20:00Z is 2 d 16 h after the real run (inside the 3-day lead),
-    // but 3 d 16 h after the stale `job.timestamp` — a `job.timestamp` clock
+    // 2026-09-04 is the 3rd calendar day after the real run (inside the lead),
+    // but the 4th after the stale `job.timestamp` — a `job.timestamp` clock
     // would skip it and only fire a day later, shrinking the documented 3-day
-    // lead to ~1 day.
+    // lead.
     const notify = recordingCenter();
-    await jobFor('2026-09-03T20:00:00.000Z', notify).handler(makeJob(), ctx);
+    await jobFor('2026-09-04T20:00:00.000Z', notify).handler(makeJob(), ctx);
 
     expect(notify.emitted).toEqual([
       expect.objectContaining({
         type: 'earnings.reminder',
         userId: 'u1',
         assetId: 'a-aapl',
-        earningsDate: '2026-09-03T20:00:00.000Z',
+        earningsDate: '2026-09-04T20:00:00.000Z',
         // The scan stamps `occurredAt` from its clock — this IS the assertion
         // that the effective `now` is the execution instant and not
         // `job.timestamp` (which would read 2026-08-31T04:00:00.000Z).
@@ -155,11 +162,11 @@ describe('notifications.earningsRemind — run clock (#1543)', () => {
     expect(notify.emitted).toEqual([]);
   });
 
-  it('excludes a report past the 3-day lead edge', async () => {
-    // 2026-09-04T20:00Z is 3 d 16 h out from the real run — beyond
+  it('excludes a report past the 3-calendar-day lead edge', async () => {
+    // 2026-09-05 is the 4th calendar day out from the real run — beyond
     // EARNINGS_REMINDER_LEAD_DAYS (3). It becomes due on a later daily run.
     const notify = recordingCenter();
-    await jobFor('2026-09-04T20:00:00.000Z', notify).handler(makeJob(), ctx);
+    await jobFor('2026-09-05T20:00:00.000Z', notify).handler(makeJob(), ctx);
 
     expect(notify.emitted).toEqual([]);
   });
@@ -168,8 +175,43 @@ describe('notifications.earningsRemind — run clock (#1543)', () => {
     // The seam wins over `processedOn`: pinning the clock a day earlier puts the
     // same report back outside the lead window.
     const notify = recordingCenter();
-    await jobFor('2026-09-03T20:00:00.000Z', notify, () => STALE_TIMESTAMP).handler(makeJob(), ctx);
+    await jobFor('2026-09-04T20:00:00.000Z', notify, () => STALE_TIMESTAMP).handler(makeJob(), ctx);
 
     expect(notify.emitted).toEqual([]);
+  });
+
+  it('passes the opt-in gate through: an un-enabled recipient gets nothing', async () => {
+    const notify = recordingCenter();
+    await jobFor('2026-09-04T20:00:00.000Z', notify, undefined, async () => false).handler(
+      makeJob(),
+      ctx,
+    );
+
+    expect(notify.emitted).toEqual([]);
+  });
+});
+
+describe('earningsNotifyGate', () => {
+  const routing = (over: Partial<TypeRouting> = {}): TypeRouting => ({
+    inapp: false,
+    email: false,
+    push: false,
+    webpush: false,
+    telegram: false,
+    discord: false,
+    ...over,
+  });
+
+  it('is false when the type routes to no channel at all', async () => {
+    const gate = earningsNotifyGate({ routingFor: async () => routing() });
+    await expect(gate('u1')).resolves.toBe(false);
+  });
+
+  it('is true as soon as one channel carries the type, and asks for that type', async () => {
+    const routingFor = vi.fn(async () => routing({ email: true }));
+    const gate = earningsNotifyGate({ routingFor });
+
+    await expect(gate('u1')).resolves.toBe(true);
+    expect(routingFor).toHaveBeenCalledWith('u1', 'earnings.reminder');
   });
 });
