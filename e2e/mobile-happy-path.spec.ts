@@ -2,7 +2,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
-import { ACCOUNT_PASSWORD } from './support/config';
+import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { recentBookingDates } from './support/dates';
 import { expectUserShellReady, recordSapTrade, watchAsset } from './support/flows';
 import { befriend, provisionUser, provisionUserInContext } from './support/users';
@@ -13,6 +13,9 @@ test.use({
   hasTouch: true,
   isMobile: true,
 });
+
+/** Exactly `PIN_LENGTH` digits (#288); e2e cannot resolve the contracts package. */
+const MOBILE_PIN = '4913';
 
 /**
  * The phone-width journey the two mobile usability sweeps were built around.
@@ -159,6 +162,38 @@ test('mobile happy path: money, portfolio wizard, market, chat and settings', as
     await expect(discreet).not.toBeChecked();
     await discreet.click();
     await expect(discreet).toBeChecked();
+  });
+
+  // The acceptance criteria for the phone run name "login incl. PIN" as a
+  // primary flow (§13.5 V5-P13b), and the PIN gate renders BEFORE the router —
+  // it owns no route, so the overflow gate's route inventory can never reach
+  // it. Close the journey the way a returning phone user re-opens the app.
+  await test.step('re-open behind the PIN gate and unlock at phone width', async () => {
+    const enabled = await owner.context.request.put(`${API_BASE_URL}/api/v1/auth/pin`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: { pin: MOBILE_PIN },
+    });
+    expect(enabled.ok(), `enabling the PIN: ${enabled.status()} ${await enabled.text()}`).toBe(
+      true,
+    );
+
+    // The lock is idle-driven and local (AuthContext `isPinLocked`): with the
+    // PIN on, a load with no recorded activity gates. Dropping the activity
+    // record and reloading is exactly a cold open on the phone.
+    await page.evaluate(() => localStorage.removeItem('bettertrack.pinActivity'));
+    await page.reload();
+
+    // Structural, not copy-bound: the gate is the only surface rendering the
+    // segmented PIN entry.
+    const digits = page.locator('[data-pin-input="true"] input');
+    await expect(digits.first()).toBeVisible({ timeout: 20_000 });
+    await expect(digits).toHaveCount(MOBILE_PIN.length);
+    await expect(page.getByTestId('global-create-trigger')).toBeHidden();
+
+    await digits.first().click();
+    // The gate auto-submits on the last digit (#288) — no button press.
+    await page.keyboard.type(MOBILE_PIN);
+    await expectUserShellReady(page);
   });
 
   await friend.context.close();

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
@@ -15,6 +15,14 @@ import ts from 'typescript';
 import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
+import {
+  overlayPrimitiveExports,
+  overlayPrimitiveRegistryProblems,
+  overlaySurfaceSources,
+  rendersOverlay,
+  repoOverlayDetection,
+  virtualOverlayDetection,
+} from './support/overlayInventory';
 import { provisionUser, provisionUserInContext } from './support/users';
 
 type GateLocale = 'en' | 'de';
@@ -30,6 +38,17 @@ const VIEWPORT_PROFILES = [
     label: 'DE phone 390px',
     locale: 'de',
     viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  },
+  {
+    // The narrow half of the acceptance pair (§13.5 V5-P13b names 390×844 AND
+    // 360×800). DE at 360 is the worst case of the two axes this matrix varies
+    // — the narrowest viewport carrying the longest strings — so the single
+    // extra profile the PR-CI budget affords is spent there rather than on an
+    // EN twin whose layout failures the DE run would also surface.
+    label: 'DE phone 360px',
+    locale: 'de',
+    viewport: { width: 360, height: 800 },
     deviceScaleFactor: 3,
   },
   {
@@ -53,11 +72,13 @@ const VIEWPORT_PROFILES = [
 }[];
 
 const LOCALE_STORAGE_KEY = 'bettertrack.locale';
+/** AuthContext's idle-activity record; clearing it re-raises the PIN gate. */
+const PIN_ACTIVITY_STORAGE_KEY = 'bettertrack.pinActivity';
+/** The PIN this gate sets on its own throwaway account to reach `PinGate`. */
+const GATE_PIN = '4913';
 const USER_APP_SOURCE = 'apps/web/src/user/UserApp.tsx';
-const USER_OVERLAY_SOURCE_ROOT = 'apps/web/src/user';
 const CONTROL_CENTER_SOURCE = 'apps/web/src/user/control/ControlCenterOverlay.tsx';
 const CONTROL_PANEL_MATCHER_SOURCE = 'apps/web/src/user/control/matchControlPanel.ts';
-const OVERLAY_PRIMITIVE_SOURCES = new Set(['apps/web/src/user/components/Dialog.tsx']);
 
 const LONG_TRANSACTION_NOTE =
   'Populated mobile overflow holding row with a deliberately long transaction annotation';
@@ -298,67 +319,6 @@ function parseTsx(relativePath: string): ts.SourceFile {
   );
 }
 
-function sourceFilesUnder(relativeDirectory: string): string[] {
-  return readdirSync(resolve(process.cwd(), relativeDirectory), { withFileTypes: true }).flatMap(
-    (entry) => {
-      const path = `${relativeDirectory}/${entry.name}`;
-      if (entry.isDirectory()) return sourceFilesUnder(path);
-      return entry.isFile() && path.endsWith('.tsx') && !path.endsWith('.test.tsx') ? [path] : [];
-    },
-  );
-}
-
-/**
- * Find user components that render an overlay primitive or a content-owned
- * popover. Shared `Dialog`/`ODialog` implementations are infrastructure; every
- * user component that invokes one is discovered separately. This turns the
- * explicit scenario/exclusion table below into a completeness gate instead of
- * a list that can silently become stale when a new overlay component lands.
- */
-function registeredOverlaySurfaceSources(): string[] {
-  return sourceFilesUnder(USER_OVERLAY_SOURCE_ROOT)
-    .filter((relativePath) => {
-      if (OVERLAY_PRIMITIVE_SOURCES.has(relativePath)) return false;
-      const sourceFile = parseTsx(relativePath);
-      let rendersOverlay = false;
-      const visit = (node: ts.Node) => {
-        if (rendersOverlay) return;
-        if (
-          ts.isCallExpression(node) &&
-          ts.isIdentifier(node.expression) &&
-          node.expression.text === 'createPortal'
-        ) {
-          rendersOverlay = true;
-          return;
-        }
-        const opening = ts.isJsxElement(node)
-          ? node.openingElement
-          : ts.isJsxSelfClosingElement(node)
-            ? node
-            : undefined;
-        if (opening) {
-          const tag = opening.tagName.getText(sourceFile);
-          if (tag === 'Dialog' || tag === 'ODialog' || tag === 'Drawer') {
-            rendersOverlay = true;
-            return;
-          }
-          const className = opening.attributes.properties.find(
-            (property): property is ts.JsxAttribute =>
-              ts.isJsxAttribute(property) && property.name.getText(sourceFile) === 'className',
-          );
-          if (className?.getText(sourceFile).includes('bt-popover')) {
-            rendersOverlay = true;
-            return;
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
-      return rendersOverlay;
-    })
-    .sort();
-}
-
 /** Find a top-level `const <name> = …` initializer in a parsed source file. */
 function findRegistry(sourceFile: ts.SourceFile, name: string): ts.Expression | undefined {
   let found: ts.Expression | undefined;
@@ -559,7 +519,17 @@ function assertCompleteRouteInventory(): void {
     'Every omitted overlay surface must name sources, covered routes and a one-line state-specific justification.',
   ).toEqual([]);
 
-  const registeredOverlaySources = registeredOverlaySurfaceSources();
+  // The overlay half of this inventory is only as good as its discovery step:
+  // an overlay the detector misses is absent from BOTH sides of the equality
+  // below, so a stale classification list would still read green. Assert the
+  // primitive registry the detector resolves against before trusting it.
+  const detection = repoOverlayDetection();
+  expect(
+    overlayPrimitiveRegistryProblems(detection),
+    'The overlay-primitive registry must name every file that owns a shared overlay primitive.',
+  ).toEqual([]);
+
+  const registeredOverlaySources = overlaySurfaceSources(detection);
   const classifiedOverlaySources = unique([
     ...OVERLAY_SCENARIOS.flatMap(({ sources }) => sources),
     ...OVERLAY_EXCLUSIONS.flatMap(({ sources }) => sources),
@@ -1627,6 +1597,182 @@ async function expectNoPageOverflow(
   }
 }
 
+/**
+ * Phone breakpoint where origin.css declares the 44px minimum
+ * (`@media (max-width: 480px)`, mirrored by the shell's PHONE_SHELL_MAX_WIDTH).
+ * The mid-band 600px profiles sit deliberately above it: no 44px rule applies
+ * there, so measuring them would assert a contract the design never made.
+ */
+const TAP_TARGET_MAX_VIEWPORT_WIDTH = 480;
+const MIN_TAP_TARGET_PX = 44;
+/** Sub-pixel tolerance: a 43.98px rendered box satisfies a 44px minimum. */
+const TAP_TARGET_EPSILON_PX = 0.5;
+
+/**
+ * The measured tap-target subset, stated out loud rather than sampled silently
+ * (#1663). `apps/web/src/styles/origin.test.ts` greps origin.css for these same
+ * rules; that text assertion proves the rule is DECLARED, and this one proves it
+ * SURVIVES layout — a control that carries the rule but is squeezed by a flex
+ * parent, or one whose selector stopped matching, is only visible here.
+ *
+ * Scope is deliberately the CSS-contracted controls plus the bottom bar's
+ * destinations, not every interactive element on the page: the wider sweep
+ * would assert a 44px promise the design has not made for inline links, table
+ * affordances and dense money rows, and would turn this gate into a redesign
+ * ticket rather than a regression gate. Every profile logs what it measured and
+ * what it did not — see {@link announceTapTargetScope}.
+ */
+const TAP_TARGET_SELECTORS = [
+  '.bt-btn--icon',
+  '.bt-iconbtn',
+  '.bt-tab',
+  '.bt-topbar .bt-rail__brand',
+  '.bt-topbar .bt-btn',
+  '.bt-topbar__actions button',
+  '.bt-topbar .bt-portfolio-trigger',
+  '.bt-topbar .bt-popover :is(a, button, input, select, textarea)',
+  '.bt-bottombar a',
+] as const;
+
+interface TapTargetAllowance {
+  selector: string;
+  justification: string;
+}
+
+/** Controls exempted from the measurement, one justification per entry. */
+const TAP_TARGET_ALLOWANCES: readonly TapTargetAllowance[] = [
+  {
+    selector: '.sr-only',
+    justification:
+      'Visually-hidden assistive markup (1×1px by definition) is never a rendered touch target.',
+  },
+];
+
+/**
+ * Measure every control in the contracted subset against 44×44 CSS px.
+ *
+ * A hidden control is skipped via `checkVisibility` (display/visibility/opacity/
+ * content-visibility), and a zero-box control is treated as not rendered — a
+ * collapsed layout is the overflow half of this gate's job, not this one's.
+ */
+async function expectTapTargets(
+  page: Page,
+  declaredRoute: string,
+  viewportWidth: number,
+): Promise<void> {
+  if (viewportWidth > TAP_TARGET_MAX_VIEWPORT_WIDTH) return;
+
+  const undersized = await page.evaluate(
+    ({ selectors, allowances, minimum, epsilon }) => {
+      const candidates = new Set<HTMLElement>();
+      for (const selector of selectors) {
+        for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+          candidates.add(element);
+        }
+      }
+      const describe = (element: HTMLElement) => {
+        const label = element.getAttribute('aria-label');
+        return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}${
+          element.classList.length > 0 ? `.${[...element.classList].slice(0, 3).join('.')}` : ''
+        }${label ? `[aria-label=${label.slice(0, 40)}]` : ''}`;
+      };
+      return [...candidates]
+        .filter((element) => {
+          if (allowances.some((selector) => element.closest(selector) !== null)) return false;
+          if (
+            !element.checkVisibility({
+              contentVisibilityAuto: true,
+              opacityProperty: true,
+              visibilityProperty: true,
+            })
+          ) {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) return false;
+          return rect.width < minimum - epsilon || rect.height < minimum - epsilon;
+        })
+        .slice(0, 8)
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            element: describe(element),
+            width: Math.round(rect.width * 10) / 10,
+            height: Math.round(rect.height * 10) / 10,
+            text: (element.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40),
+          };
+        });
+    },
+    {
+      selectors: [...TAP_TARGET_SELECTORS],
+      allowances: TAP_TARGET_ALLOWANCES.map(({ selector }) => selector),
+      minimum: MIN_TAP_TARGET_PX,
+      epsilon: TAP_TARGET_EPSILON_PX,
+    },
+  );
+
+  expect(
+    undersized,
+    `${declaredRoute} renders contracted controls below ${MIN_TAP_TARGET_PX}×${MIN_TAP_TARGET_PX} CSS px at ${viewportWidth}px`,
+  ).toEqual([]);
+}
+
+/**
+ * Log the measured tap-target subset once per profile, so a reader of a green
+ * run can see what this gate did NOT assert instead of inferring coverage.
+ */
+function announceTapTargetScope(viewportWidth: number): void {
+  const description =
+    viewportWidth <= TAP_TARGET_MAX_VIEWPORT_WIDTH
+      ? `measured in-browser at ${MIN_TAP_TARGET_PX}px on every swept surface: ${TAP_TARGET_SELECTORS.join(', ')}; NOT measured: every other interactive control, and any control inside ${TAP_TARGET_ALLOWANCES.map(({ selector }) => selector).join(', ')}`
+      : `not measured: ${viewportWidth}px is above the ${TAP_TARGET_MAX_VIEWPORT_WIDTH}px breakpoint where origin.css declares the ${MIN_TAP_TARGET_PX}px minimum`;
+  test.info().annotations.push({ type: 'tap-target-scope', description });
+  // Logged as well as annotated: the exclusion has to be readable in the CI log
+  // of a green run, not only in the HTML report nobody opens when it passes.
+  console.log(`[mobile gate] tap targets — ${description}`);
+}
+
+/**
+ * Raise and measure the PIN gate (§6.1) at phone width.
+ *
+ * `PinGate` renders from `UserApp.tsx` BEFORE the router, so it owns no
+ * `<Route>` and the route-derived inventory can never reach it — it is the one
+ * authenticated surface this gate has to name explicitly. The lock itself is
+ * idle-driven and local (AuthContext `isPinLocked`): with the PIN on, a load
+ * with no recorded activity gates, so dropping the activity record and
+ * reloading is exactly what a returning phone user's cold open does.
+ *
+ * Runs LAST in a profile: the account it locks is that profile's own throwaway
+ * fixture, and every other surface has already been measured against it.
+ */
+async function sweepPinGate(
+  api: APIRequestContext,
+  page: Page,
+  viewportWidth: number,
+  locale: GateLocale,
+): Promise<void> {
+  await responseJson<Record<string, unknown>>(
+    await api.put(`${API_BASE_URL}/api/v1/auth/pin`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: { pin: GATE_PIN },
+    }),
+    'enabling the PIN on the mobile gate account',
+  );
+  await page.evaluate((key) => localStorage.removeItem(key), PIN_ACTIVITY_STORAGE_KEY);
+  await page.reload();
+
+  // `.bt-gate__card` is worn by the delete-account and consent gates too; the
+  // segmented PIN input is what makes this *the PIN gate*, so assert on that.
+  const gate = page.locator('[data-pin-input="true"] input').first();
+  await expect(gate, 'a PIN-enabled account must open into the PIN gate').toBeVisible({
+    timeout: 20_000,
+  });
+  expect(await page.locator('html').getAttribute('lang')).toBe(locale);
+  await waitForSettledPaint(page);
+  await expectNoPageOverflow(page, 'PIN gate', viewportWidth, false);
+  await expectTapTargets(page, 'PIN gate', viewportWidth);
+}
+
 async function setStoredLocale(page: Page, locale: GateLocale): Promise<void> {
   if (!page.url().startsWith('http')) await page.goto('/login');
   await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
@@ -1695,6 +1841,7 @@ async function exerciseOverlayScenario(
   await waitForSettledOverlay(overlay);
   await waitForSettledPaint(page);
   await expectNoPageOverflow(page, `${scenario.route} — ${scenario.label}`, viewportWidth, true);
+  await expectTapTargets(page, `${scenario.route} — ${scenario.label}`, viewportWidth);
   await page.keyboard.press('Escape');
   await expect(overlay, `${scenario.label} did not close with Escape`).toBeHidden({
     timeout: 10_000,
@@ -1703,6 +1850,222 @@ async function exerciseOverlayScenario(
 
 test('mobile route inventory classifies every UserApp destination', () => {
   assertCompleteRouteInventory();
+});
+
+/**
+ * Fixture proof for #1663 blind spot (1): before this, discovery matched the
+ * literal tag names `Dialog`/`ODialog`/`Drawer`, so an overlay rendered through
+ * an aliased import or a newly named primitive was missing from BOTH sides of
+ * the set-equality assertion above — the gate stayed green and never measured
+ * it. These fixtures render no literally-named primitive at all; the resolver
+ * has to reach them through the barrel and the alias.
+ */
+test('overlay discovery survives aliased imports and renamed primitives', () => {
+  const primitiveSource = `
+    import { createPortal } from 'react-dom';
+    export function ODialog({ children }) {
+      return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+    }
+    export function BottomSheet({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    // Published under a name it is not declared with …
+    function InnerPopover({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    export { InnerPopover as RenamedExport };
+    // … and one reachable only as \`default\`.
+    export default function DeclaredButDefault({ children }) {
+      return createPortal(<div className="bt-sheet">{children}</div>, document.body);
+    }
+    export function Button(props) {
+      return <button {...props} />;
+    }
+  `;
+  const files = {
+    'apps/web/src/ui/origin/components.tsx': primitiveSource,
+    'apps/web/src/ui/origin/index.ts':
+      `export { BottomSheet, Button, ODialog, RenamedExport } from './components';\n` +
+      `export { default as DefaultSheet } from './components';`,
+    'apps/web/src/user/fixtures/AliasedSheet.tsx': `
+      import { ODialog as Sheet } from '../../ui/origin';
+      export function AliasedSheet() {
+        return <Sheet open>aliased</Sheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/RenamedPrimitive.tsx': `
+      import { BottomSheet } from '../../ui/origin';
+      export function RenamedPrimitive() {
+        return <BottomSheet open>renamed primitive</BottomSheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/NamespacedSheet.tsx': `
+      import * as origin from '../../ui/origin';
+      export function NamespacedSheet() {
+        return <origin.ODialog open>namespaced</origin.ODialog>;
+      }
+    `,
+    // The primitive is published under a name it is not declared with, through
+    // a barrel that renames it again on the way out.
+    'apps/web/src/user/fixtures/RenamedExportSheet.tsx': `
+      import { RenamedExport } from '../../ui/origin';
+      export function RenamedExportSheet() {
+        return <RenamedExport open>renamed export</RenamedExport>;
+      }
+    `,
+    // A default-exported primitive: named through the barrel's
+    // \`export { default as … }\`, and imported directly as a default elsewhere.
+    'apps/web/src/user/fixtures/DefaultSheet.tsx': `
+      import { DefaultSheet } from '../../ui/origin';
+      export function DefaultSheetSurface() {
+        return <DefaultSheet open>default via barrel</DefaultSheet>;
+      }
+    `,
+    'apps/web/src/user/fixtures/DirectDefaultSheet.tsx': `
+      import AnyLocalName from '../../ui/origin/components';
+      export function DirectDefaultSheet() {
+        return <AnyLocalName open>default imported directly</AnyLocalName>;
+      }
+    `,
+    'apps/web/src/user/fixtures/PlainPage.tsx': `
+      import { Button } from '../../ui/origin';
+      export function PlainPage() {
+        return <Button>no overlay here</Button>;
+      }
+    `,
+  };
+
+  // The fixtures deliberately contain none of the identifiers the pre-#1663
+  // detector matched, so a regression back to literal matching fails here.
+  for (const [path, source] of Object.entries(files)) {
+    if (!path.startsWith('apps/web/src/user/')) continue;
+    expect(source, `${path} must not name a primitive literally`).not.toMatch(
+      /<\/?(?:Dialog|ODialog|Drawer)[\s/>]/,
+    );
+  }
+
+  const detection = virtualOverlayDetection(files);
+  expect(overlaySurfaceSources(detection)).toEqual([
+    'apps/web/src/user/fixtures/AliasedSheet.tsx',
+    'apps/web/src/user/fixtures/DefaultSheet.tsx',
+    'apps/web/src/user/fixtures/DirectDefaultSheet.tsx',
+    'apps/web/src/user/fixtures/NamespacedSheet.tsx',
+    'apps/web/src/user/fixtures/RenamedExportSheet.tsx',
+    'apps/web/src/user/fixtures/RenamedPrimitive.tsx',
+  ]);
+  expect(rendersOverlay('apps/web/src/user/fixtures/PlainPage.tsx', detection)).toBe(false);
+
+  // Primitives are recorded under the names the module PUBLISHES, not the ones
+  // it declares: `InnerPopover` is only importable as `RenamedExport`, and
+  // `DeclaredButDefault` only as the default export. Recording the declared
+  // name instead would leave the two fixtures above unrecognised.
+  expect(overlayPrimitiveExports('apps/web/src/ui/origin/components.tsx', detection)).toEqual([
+    'BottomSheet',
+    'ODialog',
+    'RenamedExport',
+    'default',
+  ]);
+});
+
+/**
+ * Fixture proof for #1663 blind spot (2): the primitive source set is asserted,
+ * not assumed. `ODialog`/`Drawer` live outside the scanned user tree, so if they
+ * move the gate must say so by name instead of discovering nothing and passing.
+ */
+test('overlay primitive registry fails by name when a primitive moves or appears unregistered', () => {
+  const problems = overlayPrimitiveRegistryProblems(
+    virtualOverlayDetection({
+      'apps/web/src/user/components/Dialog.tsx': `
+        import { createPortal } from 'react-dom';
+        export function Dialog({ children }) {
+          return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+        }
+      `,
+      // ODialog/Drawer moved out of the registered file …
+      'apps/web/src/ui/origin/components.tsx': `
+        export function Button(props) {
+          return <button {...props} />;
+        }
+      `,
+      // … into an unregistered shared-UI module.
+      'apps/web/src/ui/origin/Sheet.tsx': `
+        import { createPortal } from 'react-dom';
+        export function ODialog({ children }) {
+          return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+        }
+        export function Drawer({ children }) {
+          return <aside aria-modal="true" className="bt-drawer" role="dialog">{children}</aside>;
+        }
+      `,
+    }),
+  );
+
+  const report = problems.join('\n');
+  expect(problems).toHaveLength(4);
+  expect(report).toContain('exports no overlay-building component');
+  expect(report).toContain('apps/web/src/ui/origin/components.tsx');
+  expect(report).toContain('<ODialog>');
+  expect(report).toContain('<Drawer>');
+  expect(report).toContain('apps/web/src/ui/origin/Sheet.tsx');
+  expect(report).toContain('OVERLAY_PRIMITIVE_SOURCES');
+});
+
+/**
+ * Planted-regression proof for #1663 blind spots (2) and (3): a gate nobody has
+ * seen fail is a gate nobody knows works. These run the REAL measurement
+ * functions against synthetic pages, so the proof lives in CI permanently
+ * instead of in a PR description.
+ */
+test('mobile gate self-check: planted regressions turn the measurements red', async ({ page }) => {
+  // The viewport meta is load-bearing, not decoration: under mobile emulation a
+  // document without it lays out at Chrome's 980px fallback width, and every
+  // planted overflow would then "fit". index.html carries the same directive.
+  const fixture = (body: string) =>
+    `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" />` +
+    `<style>body { margin: 0 }</style></head><body>${body}</body></html>`;
+
+  for (const width of [360, 390] as const) {
+    await page.setViewportSize({ width, height: 800 });
+
+    await page.setContent(
+      fixture(
+        '<main id="main-content"><div style="width:600px;height:40px">unwrapped</div></main>',
+      ),
+    );
+    await expect(
+      expectNoPageOverflow(page, `self-check ${width}px`, width),
+      `a 600px unwrapped element must fail the overflow measurement at ${width}px`,
+    ).rejects.toThrow(/scrolls horizontally/);
+
+    await page.setContent(
+      fixture('<main id="main-content"><div style="width:100%;height:40px">wrapped</div></main>'),
+    );
+    await expectNoPageOverflow(page, `self-check ${width}px`, width);
+
+    await page.setContent(
+      fixture('<button class="bt-btn--icon" style="width:44px;height:20px">x</button>'),
+    );
+    await expect(
+      expectTapTargets(page, `self-check ${width}px`, width),
+      `a 20px-tall icon button must fail the tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    await page.setContent(
+      fixture(
+        '<button class="bt-btn--icon" style="width:44px;height:44px">x</button>' +
+          '<button class="bt-btn--icon sr-only" style="width:1px;height:1px">hidden</button>',
+      ),
+    );
+    await expectTapTargets(page, `self-check ${width}px`, width);
+  }
+
+  // Above the phone breakpoint the 44px contract does not exist, so the same
+  // planted 20px control must NOT be reported there.
+  await page.setViewportSize({ width: 600, height: 900 });
+  await page.setContent(
+    fixture('<button class="bt-btn--icon" style="width:44px;height:20px">x</button>'),
+  );
+  await expectTapTargets(page, 'self-check 600px', 600);
 });
 
 for (const profile of VIEWPORT_PROFILES) {
@@ -1720,6 +2083,8 @@ for (const profile of VIEWPORT_PROFILES) {
     }) => {
       test.setTimeout(900_000);
 
+      announceTapTargetScope(profile.viewport.width);
+
       const anonymousPage = await context.newPage();
       expect(anonymousPage.viewportSize()).toEqual(profile.viewport);
       await setStoredLocale(anonymousPage, profile.locale);
@@ -1728,6 +2093,7 @@ for (const profile of VIEWPORT_PROFILES) {
           await settleRoute(anonymousPage, route, route);
           expect(await anonymousPage.locator('html').getAttribute('lang')).toBe(profile.locale);
           await expectNoPageOverflow(anonymousPage, route, profile.viewport.width);
+          await expectTapTargets(anonymousPage, route, profile.viewport.width);
         });
       }
       // Invite acceptance uses stable English accessible names. Restore EN for
@@ -1770,6 +2136,7 @@ for (const profile of VIEWPORT_PROFILES) {
           expect(await owner.page.locator('html').getAttribute('lang')).toBe(profile.locale);
           await expectPopulatedRouteState(owner.page, route, fixtures);
           await expectNoPageOverflow(owner.page, route, profile.viewport.width);
+          await expectTapTargets(owner.page, route, profile.viewport.width);
         });
       }
 
@@ -1780,6 +2147,16 @@ for (const profile of VIEWPORT_PROFILES) {
           await exerciseOverlayScenario(owner.page, scenario, fixtures, profile.viewport.width);
         });
       }
+
+      // Last: the PIN gate locks this profile's fixture account behind it.
+      await test.step('PIN gate', async () => {
+        await sweepPinGate(
+          owner.context.request,
+          owner.page,
+          profile.viewport.width,
+          profile.locale,
+        );
+      });
     });
   });
 }
