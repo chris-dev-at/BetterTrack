@@ -10,6 +10,7 @@ import { VAULT_DOC_SCHEMA_VERSION } from '@bettertrack/contracts';
 import { utf8, zeroBytes } from '../bytes';
 import { acknowledgePlainCustodyRisk } from '../keystore/acknowledgment';
 import { EndpointVaultKeystore } from '../keystore/core';
+import { NO_ENDPOINT_SESSION_PERSISTENCE } from '../keystore/sessionPersistence';
 import { createIndexedDbEndpointKeystoreStorage } from '../keystore/storage';
 import { encryptVaultDoc } from '../keys/documents';
 import { deriveAccountBinding, deriveVaultWrapKey, wrapContentKey } from '../keys/keyCore';
@@ -451,6 +452,7 @@ describe('VaultTransferQr sender', () => {
     const receiverKeystore = new EndpointVaultKeystore({
       storage: createIndexedDbEndpointKeystoreStorage({ databaseName }),
       randomBytes: deterministicRandom(),
+      sessionPersistence: NO_ENDPOINT_SESSION_PERSISTENCE,
     });
     const header = await createHeaderEnvelope(VAULT_TRANSFER_VECTOR_VAULT_ID, 0x52);
     const onOpened = vi.fn();
@@ -646,6 +648,7 @@ describe('VaultTransferQr sender', () => {
     const keystore = new EndpointVaultKeystore({
       storage: createIndexedDbEndpointKeystoreStorage({ databaseName }),
       randomBytes: deterministicRandom(),
+      sessionPersistence: NO_ENDPOINT_SESSION_PERSISTENCE,
     });
     const header = await createHeaderEnvelope(VAULT_TRANSFER_VECTOR_VAULT_ID, 0x31);
     await keystore.storePlainAfterVerifiedOpen({

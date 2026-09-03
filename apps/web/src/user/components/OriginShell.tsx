@@ -28,6 +28,7 @@ import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/us
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
 import { useEndpointVaultSession } from '../vault/ui/useEndpointVaultSession';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { useEndpointVaultLock, type EndpointVaultLock } from '../vault/ui/useEndpointVaultLock';
 import {
   readVaultEndpointState,
@@ -697,6 +698,29 @@ export function OriginShell() {
   // shield chip already read — no extra query, no extra request.
   const endpointStates = useMemo(() => vaultStates.map((state) => state.data), [vaultStates]);
   const endpointLock = useEndpointVaultLock(endpointStates);
+  // Portfolios per vault for the chip's popover — the same cached roster the
+  // switcher and the workspace read (same key, same store seam), asked for only
+  // while the account owns a vault at all.
+  const portfolioStore = usePortfolioStore();
+  const vaultedRoster = useQuery({
+    queryKey: ['portfolios'],
+    queryFn: ({ signal }) => portfolioStore.listPortfolios(signal),
+    staleTime: 60_000,
+    enabled: (vaultsQuery.data?.length ?? 0) > 0,
+  });
+  // While the roster is still loading, or failed to load, the popover simply
+  // omits the count — a decorative figure never earns a spinner or a banner in
+  // the header, and it never paints a stale or made-up number either.
+  const rosterSettled = !vaultedRoster.isPending && !vaultedRoster.isError;
+  const vaultPortfolioCounts = useMemo(() => {
+    if (!rosterSettled || vaultedRoster.data === undefined) return undefined;
+    const counts = new Map<string, number>();
+    for (const portfolio of vaultedRoster.data.portfolios) {
+      if (portfolio.vaultId == null) continue;
+      counts.set(portfolio.vaultId, (counts.get(portfolio.vaultId) ?? 0) + 1);
+    }
+    return counts;
+  }, [rosterSettled, vaultedRoster.data]);
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -906,7 +930,11 @@ export function OriginShell() {
             <div className="bt-topbar__actions">
               {vaultSyncRows.length > 0 && vaultSyncRows.length === vaultsQuery.data?.length ? (
                 <Suspense fallback={null}>
-                  <VaultSyncChip vaults={vaultSyncRows} />
+                  <VaultSyncChip
+                    lock={endpointLock}
+                    portfolioCounts={vaultPortfolioCounts}
+                    vaults={vaultSyncRows}
+                  />
                 </Suspense>
               ) : privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
                 <Suspense fallback={null}>

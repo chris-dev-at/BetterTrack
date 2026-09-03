@@ -3860,7 +3860,28 @@
       "badge": "Gesperrt",
       "body": "Entsperre nur seinen Tresor, um Salden, Aktivität und Werkzeuge zu sehen.",
       "countOne": "1 gesperrtes Portfolio",
-      "count": "{{count}} gesperrte Portfolios"
+      "count": "{{count}} gesperrte Portfolios",
+      "opening": "Tresor entsperrt — Portfolio wird geöffnet…",
+      "openFailedTitle": "Der Tresor ist entsperrt, aber dieses Portfolio konnte nicht geöffnet werden.",
+      "openFailedBody": "Es wurde nichts geändert. Versuch es noch einmal oder öffne die Tresorverwaltung, um den Speicher dieses Tresors zu prüfen.",
+      "openFailedDetail": "Technisches Detail",
+      "wordsNeededBody": "Dieses Gerät hat die Wiederherstellungswörter des Tresors noch nicht. Gib die 12 Wörter einmal ein — sie werden hier gespeichert, geschützt durch dein Gerätepasswort.",
+      "enterWords": "Wiederherstellungswörter eingeben",
+      "lockedOutBody": "Zu viele falsche Gerätepasswörter. Dieses Gerät nimmt das Passwort ab {{time}} wieder an.",
+      "manage": "Tresorverwaltung"
+    },
+    "providePhrase": {
+      "title": "Wiederherstellungswörter eingeben",
+      "titleNamed": "Wiederherstellungswörter für „{{name}}“ eingeben",
+      "body": "Gib die 12 Wörter dieses Tresors ein und wähle das Gerätepasswort, das sie hier schützt. Das Portfolio öffnet sich direkt danach — du bleibst auf dieser Seite.",
+      "words": "12 Wiederherstellungswörter",
+      "devicePassword": "Gerätepasswort",
+      "devicePasswordHint": "Wenn dieses Gerät schon ein Tresor-Passwort hat, gib genau dieses ein.",
+      "action": "Wörter speichern und öffnen",
+      "working": "Wird geprüft…",
+      "wrongWords": "Diese Wörter öffnen diesen Tresor nicht. Vergleich sie mit deiner Kopie.",
+      "wrongPassword": "Dieses Gerätepasswort stimmt nicht. Es wurde nichts geändert — versuch es noch einmal.",
+      "error": "Die Wörter konnten nicht gespeichert werden. Es wurde nichts geändert — versuch es noch einmal."
     },
     "unlockedPortfolio": {
       "badge": "Entsperrt",
@@ -4072,7 +4093,7 @@
       "titleNamed": "„{{name}}“ entsperren",
       "body": "Gib das Gerätepasswort für diesen Tresor ein. Er öffnet sich direkt hier — du bleibst auf dieser Seite.",
       "wrongPassword": "Dieses Gerätepasswort stimmt nicht. Es wurde nichts geändert — versuch es noch einmal.",
-      "moreOptions": "Weitere Tresoroptionen"
+      "forgot": "Gerätepasswort vergessen?"
     },
     "sync": {
       "synced": "Verschlüsselter Tresor synchronisiert",
@@ -4106,6 +4127,11 @@
       "retryDrivePreparation": "Google-Anmeldung erneut vorbereiten",
       "driveNotConfigured": "Google Drive ist in dieser BetterTrack-Installation nicht eingerichtet, daher erreicht die Synchronisierung deine Drive-Kopie nicht. Bitte die Person, die diese Installation betreibt, Drive einzurichten.",
       "restore": "Speicher- und Wiederherstellungsoptionen",
+      "manage": "Tresore verwalten",
+      "lockAll": "Tresore sperren",
+      "portfoliosOne": "1 Portfolio",
+      "portfolios": "{{count}} Portfolios",
+      "portfoliosNone": "Noch keine Portfolios",
       "drive": {
         "signIn": "Bei Google anmelden, um zu synchronisieren"
       },

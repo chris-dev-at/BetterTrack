@@ -16,6 +16,7 @@ import {
 import { EndpointVaultKeystore } from './core';
 import { deriveDeviceKey, verifyEndpointPassword, type DevicePasswordArgon2 } from './deviceCrypto';
 import { isEndpointDeviceLocked, rememberEndpointDeviceLocked } from './deviceLock';
+import { parseEndpointPasswordMetadata } from './records';
 import {
   endpointSessionChannelName,
   importShareableDeviceKey,
@@ -23,6 +24,11 @@ import {
   type EndpointSessionMessage,
   type EndpointSessionTransport,
 } from './sessionChannel';
+import {
+  createMemoryEndpointSessionPersistence,
+  NO_ENDPOINT_SESSION_PERSISTENCE,
+  type EndpointSessionPersistence,
+} from './sessionPersistence';
 import { createIndexedDbEndpointKeystoreStorage, type EndpointKeystoreStorage } from './storage';
 import type { EndpointPasswordMetadataV1, FetchVaultHeaderEnvelope } from './types';
 
@@ -171,8 +177,10 @@ describe('endpoint session sharing (§12: memory-only, endpoint-scoped)', () => 
 describe('the race discipline (reviewer finding B2, probes P1/P1b)', () => {
   /**
    * R1. A lock that lands while a grant is still in flight. The generation is
-   * minted BEFORE the exchange, so the lock this instance observed is visible to
-   * the guard that runs after it. Against the pre-fix ordering this is red.
+   * SNAPSHOTTED before the exchange (a resume mints nothing of its own since
+   * the #1707 review — minting cancelled a concurrent unlock), and the lock
+   * bumps it, so the lock this instance observed is visible to the guard that
+   * runs after it. Against the pre-fix ordering this is red.
    */
   it('R1: a lock during an in-flight grant must leave this tab locked', async () => {
     const granter = tab();
@@ -250,17 +258,19 @@ describe('the race discipline (reviewer finding B2, probes P1/P1b)', () => {
 
     bus.releaseGrants();
     await expect(resuming).resolves.toEqual({ unlockedVaultIds: [] });
-    // Proof the generation guard was NOT what refused: nothing bumped it after
-    // the resume's own `beginSessionChange`.
-    expect(sessionGeneration(joining)).toBe(generationBefore + 1);
+    // Proof the generation guard was NOT what refused: a resume only SNAPSHOTS
+    // the generation (review of #1707 — minting one cancelled a concurrent
+    // unlock, and announcing a session end cascaded), and nothing else bumped it.
+    expect(sessionGeneration(joining)).toBe(generationBefore);
     await expect(joining.readMnemonic(VAULT_1)).rejects.toThrow();
   });
 
   /**
    * R1d. The generation guard's OWN job, isolated: the marker cannot be written
    * at all (private mode, a wedged quota), so the only thing between the grant
-   * in flight and an installed session is the counter minted before the
-   * exchange. Moving `beginSessionChange()` back below the await turns this red.
+   * in flight and an installed session is the counter snapshotted before the
+   * exchange and bumped by the lock. Taking the snapshot after the await would
+   * turn this red.
    */
   it('R1d: a lock whose marker cannot be written still refuses the grant', async () => {
     const granter = tab();
@@ -705,6 +715,179 @@ describe('reset (reviewer finding B4)', () => {
 
 // ── harness ─────────────────────────────────────────────────────────────────
 
+describe('endpoint session persistence (§12 as amended by the owner, 2026-09-03)', () => {
+  /** A "reload": the old tab simply dies (no lock, no unbind) and a new one boots alone. */
+  function reload(persistence: EndpointSessionPersistence, now?: () => number) {
+    return tab({ persistence, transport: () => null, ...(now ? { now } : {}) });
+  }
+
+  it('P1: an unlocked session survives a reload with no sibling tab, without a password', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const first = tab({ persistence, transport: () => null });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+    await bus.settle();
+    expect(persistence.size()).toBe(1);
+
+    const reloaded = reload(persistence);
+    await expect(reloaded.resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [VAULT_1],
+    });
+    expect(await reloaded.stateFor(VAULT_1)).toMatchObject({ session: 'unlocked' });
+    await expect(reloaded.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+  });
+
+  it('P2: what is persisted is a NON-EXTRACTABLE key — never bytes, never the password', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const persisted: CryptoKey[] = [];
+    const spy: EndpointSessionPersistence = {
+      persist: async (accountId, key, expiresAt) => {
+        persisted.push(key);
+        await persistence.persist(accountId, key, expiresAt);
+      },
+      read: persistence.read,
+      clear: persistence.clear,
+    };
+    const first = tab({ persistence: spy, transport: () => null });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+    await bus.settle();
+    // The ceremony's first password and the explicit unlock each remember the
+    // session; what matters is the SHAPE of every record, not how many.
+    expect(persisted.length).toBeGreaterThanOrEqual(1);
+    for (const key of persisted) {
+      expect(key).toBeInstanceOf(CryptoKey);
+      expect(key.extractable).toBe(false);
+      expect(key.type).toBe('secret');
+    }
+  });
+
+  it('P3: a manual lock removes the record, and the §12 marker keeps a stale one inert', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const first = tab({ persistence, transport: () => null });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+    await bus.settle();
+
+    first.lockDevice();
+    await bus.settle();
+    expect(persistence.size()).toBe(0);
+    expect(isEndpointDeviceLocked(ACCOUNT_ID)).toBe(true);
+    await expect(reload(persistence).resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [],
+    });
+
+    // A delete that never landed (quota, a crashed tab): the record is still
+    // there, but the marker written BEFORE the delete refuses it all the same.
+    const stale = tab({ persistence, transport: () => null });
+    await stale.unlock(PASSWORD);
+    await bus.settle();
+    stale.lockDevice();
+    await bus.settle();
+    const key = await deriveDeviceKey(PASSWORD, (await readMetadata()).kdf, fastArgon2());
+    await persistence.persist(
+      ACCOUNT_ID,
+      await webcrypto.subtle.importKey('raw', key, { name: 'AES-GCM' }, false, [
+        'encrypt',
+        'decrypt',
+      ]),
+      Date.now() + 60_000,
+    );
+    expect(persistence.size()).toBe(1);
+    await expect(reload(persistence).resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [],
+    });
+
+    // Only the password clears the marker — and then the device remembers again.
+    const again = reload(persistence);
+    await again.unlock(PASSWORD);
+    await bus.settle();
+    expect(isEndpointDeviceLocked(ACCOUNT_ID)).toBe(false);
+    await expect(reload(persistence).resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [VAULT_1],
+    });
+  });
+
+  it('P4: the record expires — a reload past the TTL asks for the password again', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    let clock = 1_000_000;
+    const now = () => clock;
+    const first = tab({ persistence, transport: () => null, now, persistenceTtlMs: 10_000 });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+    await bus.settle();
+
+    clock += 9_999;
+    await expect(reload(persistence, now).resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [VAULT_1],
+    });
+    clock += 2;
+    await expect(reload(persistence, now).resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [],
+    });
+    expect(persistence.size()).toBe(0);
+  });
+
+  it('P5: switching accounts on the same profile forgets the previous account’s record', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const first = tab({ persistence, transport: () => null });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+    await bus.settle();
+    expect(persistence.size()).toBe(1);
+
+    first.bindAccount(ACCOUNT_B);
+    await bus.settle();
+    expect(persistence.size()).toBe(0);
+    await expect(reload(persistence).resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [],
+    });
+  });
+
+  it('P6: a session joined from a sibling tab is remembered for this device too', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const first = tab({ persistence: NO_ENDPOINT_SESSION_PERSISTENCE });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+
+    const second = tab({ persistence });
+    await expect(second.resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [VAULT_1],
+    });
+    await bus.settle();
+    expect(persistence.size()).toBe(1);
+
+    // A tab booting with NO sibling reachable (transport-less) still finds the
+    // device record the joined tab wrote, and opens without a password.
+    const reloaded = reload(persistence);
+    await expect(reloaded.resumeSessionFromOpenTabs()).resolves.toEqual({
+      unlockedVaultIds: [VAULT_1],
+    });
+    await expect(reloaded.readMnemonic(VAULT_1)).resolves.toBe(MNEMONIC);
+  });
+
+  it('P7: a remote lock arriving on the channel removes the record as well', async () => {
+    const persistence = createMemoryEndpointSessionPersistence();
+    const first = tab({ persistence });
+    await seedWrappedVault(first);
+    await first.unlock(PASSWORD);
+    await bus.settle();
+    expect(persistence.size()).toBe(1);
+
+    const other = tab({ persistence });
+    other.lockDevice();
+    await bus.settle();
+    expect(persistence.size()).toBe(0);
+    expect(await first.stateFor(VAULT_1)).toMatchObject({ session: 'locked' });
+  });
+});
+
+/** The current endpoint password metadata, for tests that derive K_dev themselves. */
+async function readMetadata(): Promise<EndpointPasswordMetadataV1> {
+  const snapshot = await storage.readEndpointSnapshot();
+  return parseEndpointPasswordMetadata(snapshot.metadata);
+}
+
 function tab(
   options: {
     accountId?: string;
@@ -712,6 +895,13 @@ function tab(
     now?: () => number;
     storage?: EndpointKeystoreStorage;
     transport?: CreateEndpointSessionTransport;
+    /**
+     * The device-side session record (§12 as amended 2026-09-03). The sharing
+     * and race suites above pin the CHANNEL in isolation, so they run without
+     * it; the persistence suite passes its own in-memory store.
+     */
+    persistence?: EndpointSessionPersistence;
+    persistenceTtlMs?: number;
   } = {},
 ): EndpointVaultKeystore {
   const keystore = new EndpointVaultKeystore({
@@ -720,6 +910,8 @@ function tab(
     randomBytes: deterministicRandom(),
     createSessionTransport: options.transport ?? bus.create,
     sessionGrantTimeoutMs: options.grantTimeoutMs ?? 25,
+    sessionPersistence: options.persistence ?? NO_ENDPOINT_SESSION_PERSISTENCE,
+    ...(options.persistenceTtlMs ? { sessionPersistenceTtlMs: options.persistenceTtlMs } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
   keystore.bindAccount(options.accountId ?? ACCOUNT_ID);

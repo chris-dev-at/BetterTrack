@@ -3860,7 +3860,28 @@
       "badge": "Locked",
       "body": "Unlock only its vault to view balances, activity, and tools.",
       "countOne": "1 locked portfolio",
-      "count": "{{count}} locked portfolios"
+      "count": "{{count}} locked portfolios",
+      "opening": "Vault unlocked — opening this portfolio…",
+      "openFailedTitle": "The vault is unlocked, but this portfolio could not be opened.",
+      "openFailedBody": "Nothing was changed. Retry, or open the vault manager to check this vault’s storage.",
+      "openFailedDetail": "Technical detail",
+      "wordsNeededBody": "This device does not hold the vault’s recovery words yet. Enter the 12 words once — they are stored here, protected by your device password.",
+      "enterWords": "Enter recovery words",
+      "lockedOutBody": "Too many wrong device passwords. This device accepts the password again at {{time}}.",
+      "manage": "Vault manager"
+    },
+    "providePhrase": {
+      "title": "Enter the recovery words",
+      "titleNamed": "Enter the recovery words for “{{name}}”",
+      "body": "Type the 12 words for this vault and choose the device password that protects them here. The portfolio opens right after — you stay on this page.",
+      "words": "12 recovery words",
+      "devicePassword": "Device password",
+      "devicePasswordHint": "If this device already has a vault password, type that one.",
+      "action": "Store words and open",
+      "working": "Verifying…",
+      "wrongWords": "Those words do not open this vault. Check them against your copy.",
+      "wrongPassword": "That device password is not right. Nothing was changed — try again.",
+      "error": "The words could not be stored. Nothing was changed — try again."
     },
     "unlockedPortfolio": {
       "badge": "Unlocked",
@@ -4072,7 +4093,7 @@
       "titleNamed": "Unlock “{{name}}”",
       "body": "Type the device password for this vault. It opens right here — you stay on this page.",
       "wrongPassword": "That device password is not right. Nothing was changed — try again.",
-      "moreOptions": "More vault options"
+      "forgot": "Forgot the device password?"
     },
     "sync": {
       "synced": "Encrypted vault synced",
@@ -4106,6 +4127,11 @@
       "retryDrivePreparation": "Retry Google sign-in",
       "driveNotConfigured": "Google Drive is not set up on this BetterTrack deployment, so synchronization cannot reach your Drive copy. Ask the person running this deployment to configure Drive.",
       "restore": "Storage and restore options",
+      "manage": "Manage vaults",
+      "lockAll": "Lock vaults",
+      "portfoliosOne": "1 portfolio",
+      "portfolios": "{{count}} portfolios",
+      "portfoliosNone": "No portfolios yet",
       "drive": {
         "signIn": "Sign in to Google to sync"
       },

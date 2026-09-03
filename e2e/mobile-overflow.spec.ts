@@ -1130,6 +1130,13 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'Opening it requires a locally stored live seed-phrase session and deliberately reveals the master secret; the E10 mocked-camera transfer flow owns that secret lifecycle.',
   },
   {
+    surface: 'VaultProvidePhraseDialog recovery-words prompt',
+    sources: ['apps/web/src/user/vault/ui/VaultProvidePhraseDialog.tsx'],
+    routes: ['/portfolio'],
+    justification:
+      'It renders only for a vaulted portfolio whose vault is not stored on this endpoint, which needs a second device (or a wiped keystore) after the six-step creation ceremony; the E10 transfer arc owns that state and drives the same verified-before-write seam through the manager. The dialog is an ODialog with two fields and the shared footer, the shape the unlock prompt above already measures.',
+  },
+  {
     surface: 'VaultUnlockDialog device-password prompt',
     sources: ['apps/web/src/user/vault/ui/VaultUnlockDialog.tsx'],
     routes: ['/portfolio', '/control/privacy'],

@@ -108,7 +108,7 @@ beforeEach(() => {
     status: 'not-on-this-endpoint',
     requiredAction: { kind: 'provide-phrase', methods: ['enter-words', 'scan-qr'] },
   });
-  mocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map() });
+  mocks.useVaultedPortfolioStores.mockReturnValue({ unlocked: new Map(), failures: new Map() });
   mocks.listVaults.mockResolvedValue([VAULT]);
 });
 
@@ -121,7 +121,10 @@ describe('PortfolioWorkspace vault boundary', () => {
     expect(screen.queryByText('portfolio contents')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Import' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument();
-    expect(await screen.findByRole('link', { name: 'Enter words' })).toBeInTheDocument();
+    // The words are entered where the user stands (owner, 2026-09-03): a
+    // button opening the in-place dialog, never a link into the Control Center.
+    expect(await screen.findByRole('button', { name: 'Enter recovery words' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Enter words' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Scan QR' })).toBeInTheDocument();
   });
 
@@ -141,6 +144,7 @@ describe('PortfolioWorkspace vault boundary', () => {
   it('renders the real portfolio in place once the resolver opens its vault', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[LOCKED.id, unlockedAccess()]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -152,6 +156,7 @@ describe('PortfolioWorkspace vault boundary', () => {
   it('falls straight back to the stub when the resolved session is no longer current', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[LOCKED.id, unlockedAccess({ isCurrent: () => false })]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -174,6 +179,7 @@ describe('PortfolioWorkspace vault boundary', () => {
           }),
         ],
       ]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -185,6 +191,7 @@ describe('PortfolioWorkspace vault boundary', () => {
   it('never opens a vaulted portfolio the resolver did not resolve', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([['some-other-portfolio', unlockedAccess()]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -195,6 +202,7 @@ describe('PortfolioWorkspace vault boundary', () => {
   it('says it is looking into a vault and keeps leaving it reachable', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[LOCKED.id, unlockedAccess()]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -209,6 +217,7 @@ describe('PortfolioWorkspace vault boundary', () => {
   it('keeps the tab strip collapsed for an unlocked vault, exactly as for a locked one', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[LOCKED.id, unlockedAccess()]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -234,6 +243,7 @@ describe('PortfolioWorkspace vault boundary', () => {
     });
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[LOCKED.id, unlockedAccess()]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id);
@@ -250,6 +260,7 @@ describe('PortfolioWorkspace vault boundary', () => {
   it('lands a deep link to another tab on the strip, never on a page that can only refuse', async () => {
     mocks.useVaultedPortfolioStores.mockReturnValue({
       unlocked: new Map([[LOCKED.id, unlockedAccess()]]),
+      failures: new Map(),
     });
 
     renderWorkspace([PLAIN, LOCKED], LOCKED.id, '/portfolio/cash');

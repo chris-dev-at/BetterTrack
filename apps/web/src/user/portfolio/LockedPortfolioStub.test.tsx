@@ -12,6 +12,19 @@ const mocks = vi.hoisted(() => ({
   listVaults: vi.fn(),
   movePortfolioOutOfVault: vi.fn(),
   requestPortfolioMoveOutChallenge: vi.fn(),
+  rerunVaultedPortfolioStores: vi.fn(),
+  storeAfterVerifiedOpen: vi.fn(),
+}));
+
+vi.mock('../vault/useVaultedPortfolioStores', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../vault/useVaultedPortfolioStores')>()),
+  rerunVaultedPortfolioStores: mocks.rerunVaultedPortfolioStores,
+}));
+
+vi.mock('../vault/keystore/runtime', () => ({
+  endpointVaultKeystore: { storeAfterVerifiedOpen: mocks.storeAfterVerifiedOpen },
+  resumeEndpointSessionOnce: async () => ({ unlockedVaultIds: [] }),
+  bindEndpointKeystoreAccount: () => undefined,
 }));
 
 vi.mock('../../lib/vaultApi', async (importOriginal) => ({
@@ -89,6 +102,78 @@ describe('LockedPortfolioStub', () => {
     expect(screen.queryByRole('link', { name: 'Unlock' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Unlock' }));
     expect(await screen.findByLabelText('Device password')).toBeInTheDocument();
+  });
+
+  it('names a failed open on an UNLOCKED vault instead of pretending it is locked', async () => {
+    const user = userEvent.setup();
+    renderStub({
+      state: {
+        status: 'stored+wrapped',
+        session: 'unlocked',
+        requiredAction: { kind: 'open-silently' },
+      },
+      failure: {
+        vaultId: VAULT_ID,
+        code: 'VAULT_DOCUMENT_INVALID',
+        message: 'The vault header roster disagrees with the server membership.',
+      },
+    });
+
+    // The old shape after a swallowed resolver error: a "Locked" badge and an
+    // "Open" link into the Control Center. Neither may appear.
+    expect(screen.queryByText('Locked')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText('The vault is unlocked, but this portfolio could not be opened.'),
+    ).toBeInTheDocument();
+    // The technical detail is there for a report, folded away.
+    await user.click(screen.getByText('Technical detail'));
+    expect(screen.getByTestId('locked-portfolio-failure')).toHaveTextContent(
+      'VAULT_DOCUMENT_INVALID',
+    );
+    // Retry re-asks the loader where the user stands.
+    await user.click(screen.getByRole('button', { name: /retry|try again/i }));
+    expect(mocks.rerunVaultedPortfolioStores).toHaveBeenCalledOnce();
+  });
+
+  it('says it is opening while an unlocked vault resolves — no action to hunt for', () => {
+    renderStub({
+      state: { status: 'stored+plain', requiredAction: { kind: 'open-silently' } },
+    });
+    expect(screen.getByRole('status')).toHaveTextContent('Vault unlocked — opening');
+    expect(screen.queryByRole('link', { name: 'Open' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unlock' })).not.toBeInTheDocument();
+  });
+
+  it('collects the recovery words in place when they are not on this device', async () => {
+    const user = userEvent.setup();
+    mocks.storeAfterVerifiedOpen.mockResolvedValue({});
+    renderStub({
+      state: {
+        status: 'not-on-this-endpoint',
+        requiredAction: { kind: 'provide-phrase', methods: ['enter-words', 'scan-qr'] },
+      },
+    });
+
+    expect(screen.queryByRole('link', { name: 'Enter words' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Enter recovery words' }));
+    const dialog = await screen.findByRole('dialog', { name: /recovery words/i });
+    await user.type(
+      screen.getByLabelText('12 recovery words'),
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    );
+    await user.type(screen.getByLabelText('Device password'), 'device-secret');
+    await user.click(screen.getByRole('button', { name: 'Store words and open' }));
+
+    await waitFor(() => expect(mocks.storeAfterVerifiedOpen).toHaveBeenCalledOnce());
+    expect(mocks.storeAfterVerifiedOpen.mock.calls[0]?.[0]).toMatchObject({
+      vaultId: VAULT_ID,
+      mnemonic:
+        'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+      devicePassword: 'device-secret',
+      expectedFingerprint: VAULT.keyFingerprint,
+    });
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 
   it('offers the §10 move-out wizard and states the server-readable price', async () => {
