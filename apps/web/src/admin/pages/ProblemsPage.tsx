@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
@@ -6,6 +6,7 @@ import {
   PROBLEM_STATUSES,
   type Problem,
   type ProblemKind,
+  type ProblemListResponse,
   type ProblemStatus,
 } from '@bettertrack/contracts';
 
@@ -40,6 +41,13 @@ type KindFilter = ProblemKind | 'all';
 type StatusFilter = ProblemStatus | 'all';
 
 const DEFAULT_STATUS: StatusFilter = 'open';
+
+/**
+ * Rows per request. The list is paged rather than "the newest 50, forever":
+ * nothing but a resolve ever took a row out of the default view, so before
+ * paging every row past the first page was unreachable AND unresolvable.
+ */
+const PAGE_SIZE = 25;
 
 function readKind(raw: string | null): KindFilter {
   return raw !== null && (PROBLEM_KINDS as readonly string[]).includes(raw)
@@ -89,26 +97,56 @@ export function ProblemsPage() {
     [setParams],
   );
 
+  // `offset` is the page currently being fetched; `rows` is everything loaded
+  // so far. A filter change resets both — a page of `error` rows must never be
+  // appended under a `job` filter.
+  const [offset, setOffset] = useState(0);
+  const [rows, setRows] = useState<Problem[]>([]);
+  useEffect(() => {
+    setOffset(0);
+    setRows([]);
+  }, [kind, status]);
+
   const resource = useResource(
     (signal) =>
       api.listProblems(
         {
           ...(kind === 'all' ? {} : { kind }),
           ...(status === 'all' ? {} : { status }),
+          limit: PAGE_SIZE,
+          offset,
         },
         signal,
       ),
-    [kind, status],
+    [kind, status, offset],
   );
   const { data, loading, error, reload } = resource;
 
+  // Apply each response ONCE: `offset` changes a render before its response
+  // arrives, and re-running on the previous page's data would append it twice.
+  const applied = useRef<ProblemListResponse | null>(null);
+  useEffect(() => {
+    if (data === null || applied.current === data) return;
+    applied.current = data;
+    setRows((current) =>
+      offset === 0 ? data.problems : [...current.slice(0, offset), ...data.problems],
+    );
+  }, [data, offset]);
+
   const live = useLiveRefresh(reload);
 
-  const resolve = useAdminMutation((id: string) => api.resolveProblem(id), {
+  // The mutation patches its own row from the response, so a resolve deep in
+  // the list is reflected without collapsing the loaded pages back to the
+  // first; the reload behind it refreshes the counts and the current page.
+  const patchRow = useCallback((updated: Problem) => {
+    setRows((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+  }, []);
+
+  const resolve = useAdminMutation(async (id: string) => patchRow(await api.resolveProblem(id)), {
     errorKey: 'admin.problems.actionError',
     onSuccess: reload,
   });
-  const reopen = useAdminMutation((id: string) => api.reopenProblem(id), {
+  const reopen = useAdminMutation(async (id: string) => patchRow(await api.reopenProblem(id)), {
     errorKey: 'admin.problems.actionError',
     onSuccess: reload,
   });
@@ -173,6 +211,11 @@ export function ProblemsPage() {
               {t('admin.problems.openCount', { count: data.openCount })}
             </span>
           ) : null}
+          {data && data.total > rows.length ? (
+            <span className={cx(TEXT_MICRO, 'pb-2')}>
+              {t('admin.problems.shownCount', { shown: rows.length, total: data.total })}
+            </span>
+          ) : null}
         </div>
       </Panel>
 
@@ -195,13 +238,11 @@ export function ProblemsPage() {
           </Alert>
         ) : null}
 
-        {data && data.problems.length === 0 ? (
-          <EmptyState>{t('admin.problems.empty')}</EmptyState>
-        ) : null}
+        {data && rows.length === 0 ? <EmptyState>{t('admin.problems.empty')}</EmptyState> : null}
 
-        {data && data.problems.length > 0 ? (
+        {rows.length > 0 ? (
           <ul className="flex flex-col gap-3">
-            {data.problems.map((problem) => (
+            {rows.map((problem) => (
               <ProblemRow
                 busy={resolve.isPending(problem.id) || reopen.isPending(problem.id)}
                 key={problem.id}
@@ -210,6 +251,19 @@ export function ProblemsPage() {
               />
             ))}
           </ul>
+        ) : null}
+
+        {data?.hasMore ? (
+          <div className="mt-3 flex justify-center">
+            <Button
+              disabled={loading}
+              onClick={() => setOffset(rows.length)}
+              size="sm"
+              variant="secondary"
+            >
+              {t('admin.problems.loadMore')}
+            </Button>
+          </div>
         ) : null}
       </section>
     </div>
@@ -240,6 +294,12 @@ function ProblemRow({
                 <Badge tone={problem.status === 'open' ? 'amber' : 'green'}>
                   {t(`admin.problems.status.${problem.status}`)}
                 </Badge>
+                {/* A problem an admin cleared that then happened again: the
+                    capture reopened it, and it must READ as a regression rather
+                    than as one more open row. */}
+                {problem.regressed ? (
+                  <Badge tone="red">{t('admin.problems.regressed')}</Badge>
+                ) : null}
                 <span className="text-[13px] font-medium text-neutral-100">{problem.title}</span>
               </div>
               {problem.message ? (

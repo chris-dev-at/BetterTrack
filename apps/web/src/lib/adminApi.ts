@@ -450,11 +450,22 @@ export async function listAudit(
 // --- Admin: Problems (§13.5 V5-P2 arc (d)) ---------------------------------
 
 export async function listProblems(
-  params: { kind?: ProblemKind; status?: ProblemStatus; limit?: number } = {},
+  params: {
+    kind?: ProblemKind;
+    status?: ProblemStatus;
+    limit?: number;
+    /** Rows to skip — the "load more" cursor. */
+    offset?: number;
+  } = {},
   signal?: AbortSignal,
 ): Promise<ProblemListResponse> {
   const data = await apiRequest<unknown>('/admin/problems', {
-    query: { kind: params.kind, status: params.status, limit: params.limit },
+    query: {
+      kind: params.kind,
+      status: params.status,
+      limit: params.limit,
+      offset: params.offset,
+    },
     signal,
   });
   return problemListResponseSchema.parse(data);

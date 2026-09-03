@@ -55,8 +55,67 @@ case "$AGY_CASE" in
   nonzero) echo "agy failed"; exit 9;;
 esac
 STUB
-chmod +x "$T/bin/timeout" "$T/bin/codex" "$T/bin/agy"
+# opencode stub. The defining trait being pinned here: `opencode run` exits 0
+# even when the run failed, so every non-timeout case below returns 0 and the
+# outcome has to be read out of the event stream.
+cat >"$T/bin/opencode" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$OPENCODE_ARGS_FILE"
+step_finish(){ # $1=reason $2=input $3=output $4=reasoning $5=cache-write $6=cache-read $7=cost
+  printf '{"type":"step_finish","part":{"type":"step-finish","reason":"%s","tokens":{"total":%s,"input":%s,"output":%s,"reasoning":%s,"cache":{"write":%s,"read":%s}},"cost":%s}}\n' \
+    "$1" "$(( $2 + $3 + $6 ))" "$2" "$3" "$4" "$5" "$6" "$7"
+}
+case "$OPENCODE_CASE" in
+  ok)
+    printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+    printf '%s\n' '{"type":"text","part":{"type":"text","text":"OPENCODE_OK"}}'
+    step_finish stop 9986 18 0 0 128 0
+    exit 0;;
+  multistep)
+    printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+    printf '%s\n' '{"type":"tool_use","part":{"type":"tool","tool":"read"}}'
+    step_finish tool-calls 9996 85 0 0 128 0
+    printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+    step_finish stop 190 42 7 3 10112 0
+    exit 0;;
+  paidsteps)
+    step_finish stop 100 50 0 0 0 0.0125
+    exit 0;;
+  nocost)
+    printf '%s\n' '{"type":"step_finish","part":{"type":"step-finish","reason":"stop","tokens":{"total":150,"input":100,"output":50,"reasoning":0,"cache":{"write":0,"read":0}}}}'
+    exit 0;;
+  nousage)
+    printf '%s\n' '{"type":"text","part":{"type":"text","text":"truncated"}}'
+    exit 0;;
+  errorjson)
+    printf '%s\n' '{"type":"error","error":{"name":"UnknownError","data":{"message":"provider rejected request"}}}'
+    step_finish stop 10 5 0 0 0 0
+    exit 0;;
+  modelnotfound)
+    printf '%s\n' '{"type":"error","error":{"name":"UnknownError","data":{"message":"Model not found: openrouter/stealth/ox-alpha."}}}'
+    exit 0;;
+  limitonce)
+    if [ -s "$OPENCODE_LIMIT_FLAG" ]; then
+      printf '%s\n' '{"type":"step_start","part":{"type":"step-start"}}'
+      step_finish stop 10 5 0 0 0 0
+      exit 0
+    fi
+    printf 'x' >"$OPENCODE_LIMIT_FLAG"
+    printf '%s\n' '{"type":"error","error":{"name":"APIError","data":{"message":"429 too many requests"}}}'
+    exit 0;;
+  timeout)
+    exit 124;;
+esac
+STUB
+chmod +x "$T/bin/timeout" "$T/bin/codex" "$T/bin/agy" "$T/bin/opencode"
 export PATH=$T/bin:$PATH CODEX_ARGS_FILE=$T/codex.args
+export OPENCODE_ARGS_FILE=$T/opencode.args OPENCODE_LIMIT_FLAG=$T/opencode.limit
+# cc_opencode fails closed without a credential, so give the stub run one.
+export MF_OPENCODE_HOME=$T/opencode-home MF_OPENCODE_CONFIG=$T/opencode-config.json
+mkdir -p "$MF_OPENCODE_HOME/share/opencode"
+printf '%s\n' '{"openrouter":{"type":"api","key":"test-key-not-a-real-credential"}}' \
+  >"$MF_OPENCODE_HOME/share/opencode/auth.json"
+printf '%s\n' '{}' >"$MF_OPENCODE_CONFIG"
 
 log(){ :; }; notify(){ :; }
 ledger_record(){ LAST_LEDGER_RES=$4; LAST_LEDGER_OUTCOME=$6; }
@@ -183,6 +242,154 @@ AGY_CASE=ok; export AGY_CASE
 cc_gemini gemini-test prompt; check "Gemini rc=0 succeeds" 0 "$?"
 AGY_CASE=nonzero; export AGY_CASE
 cc_gemini gemini-test prompt; check "Gemini nonzero rc is preserved" 1 "$?"
+
+echo "— opencode transport, event-stream outcome and free-preview ledger"
+OPENCODE_CASE=ok; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "opencode step_finish reason=stop succeeds" 0 "$?"
+check "opencode success ledger outcome" ok "$LAST_LEDGER_OUTCOME"
+grep -q -- "--dir $REPO_DIR" "$OPENCODE_ARGS_FILE" \
+  && ok "opencode runs against REPO_DIR (no --cd equivalent needed)" \
+  || bad "opencode should pass --dir \$REPO_DIR"
+grep -q -- '--format json' "$OPENCODE_ARGS_FILE" \
+  && ok "opencode requests the parseable event stream" \
+  || bad "opencode should run with --format json"
+grep -q -- '--variant' "$OPENCODE_ARGS_FILE" \
+  && bad "empty effort must not add --variant" \
+  || ok "empty effort leaves the provider default variant"
+check "opencode telemetry tags provider" opencode \
+  "$(jq -r .provider <<<"$LAST_LEDGER_RES")"
+check "opencode telemetry tags OpenRouter family" openrouter \
+  "$(jq -r .provider_family <<<"$LAST_LEDGER_RES")"
+check "opencode telemetry tags its own harness" opencode-cli \
+  "$(jq -r .harness <<<"$LAST_LEDGER_RES")"
+check "opencode billing is free-preview, never subscription" free-preview \
+  "$(jq -r .billing <<<"$LAST_LEDGER_RES")"
+check "opencode preview run costs nothing" 0 \
+  "$(jq -r .total_cost_usd <<<"$LAST_LEDGER_RES")"
+check "opencode zero cost is attributed to the provider, not assumed" provider-reported \
+  "$(jq -r .opencode_cost_source <<<"$LAST_LEDGER_RES")"
+check "opencode input excludes cached reads" 9986 \
+  "$(jq -r .usage.input_tokens <<<"$LAST_LEDGER_RES")"
+check "opencode retains cached input" 128 \
+  "$(jq -r .usage.cache_read_input_tokens <<<"$LAST_LEDGER_RES")"
+check "opencode output tokens are recorded" 18 \
+  "$(jq -r .usage.output_tokens <<<"$LAST_LEDGER_RES")"
+check "opencode never invents an API-equivalent estimate" null \
+  "$(jq -r .api_equivalent_usd <<<"$LAST_LEDGER_RES")"
+check "opencode output semantics are declared unverified, not guessed" unverified \
+  "$(jq -r .output_tokens_semantics <<<"$LAST_LEDGER_RES")"
+
+cc_opencode openrouter/stealth/ox-alpha xhigh prompt >/dev/null
+grep -q -- '--variant xhigh' "$OPENCODE_ARGS_FILE" \
+  && ok "effort is passed through as opencode's --variant" \
+  || bad "effort should map to --variant"
+
+OPENCODE_CASE=multistep; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "multi-step run succeeds on the LAST step_finish reason" 0 "$?"
+check "multi-step input tokens sum across steps" 10186 \
+  "$(jq -r .usage.input_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step output tokens sum across steps" 127 \
+  "$(jq -r .usage.output_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step cached reads sum across steps" 10240 \
+  "$(jq -r .usage.cache_read_input_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step cache writes sum across steps" 3 \
+  "$(jq -r .usage.cache_creation_input_tokens <<<"$LAST_LEDGER_RES")"
+check "multi-step reasoning subset is kept separately" 7 \
+  "$(jq -r .usage.reasoning_output_tokens <<<"$LAST_LEDGER_RES")"
+
+# If the preview ever starts billing, the ledger must follow the provider's own
+# number rather than keeping a hardcoded zero.
+OPENCODE_CASE=paidsteps; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a non-zero provider cost is recorded, not flattened to free" 0.0125 \
+  "$(jq -r .total_cost_usd <<<"$LAST_LEDGER_RES")"
+
+OPENCODE_CASE=nocost; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a zero we assumed is labelled as assumed" assumed-free-preview \
+  "$(jq -r .opencode_cost_source <<<"$LAST_LEDGER_RES")"
+check "an assumed-free run still records its measured tokens" 100 \
+  "$(jq -r .usage.input_tokens <<<"$LAST_LEDGER_RES")"
+
+# The headline behaviour: opencode exits 0 on hard failures, so rc must never be
+# the success signal on its own.
+OPENCODE_CASE=errorjson; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "opencode error event overrides rc=0 + reason=stop" 1 "$?"
+check "opencode error event ledger outcome" fail "$LAST_LEDGER_OUTCOME"
+
+OPENCODE_CASE=modelnotfound; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "unknown model / rejected credential fails" 1 "$?"
+check "unknown model is a hard failure, never a retry" fail "$LAST_LEDGER_OUTCOME"
+
+OPENCODE_CASE=nousage; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a run with no step_finish is incomplete, not success" 1 "$?"
+check "absent telemetry is declared, not faked as zeros" false \
+  "$(jq -r .opencode_usage_reported <<<"$LAST_LEDGER_RES")"
+check "absent telemetry emits no usage object at all" null \
+  "$(jq -r '.usage // "null"' <<<"$LAST_LEDGER_RES" | sed 's/^null$/null/')"
+
+OPENCODE_CASE=timeout; export OPENCODE_CASE
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "opencode rc=124 is a timeout failure" 1 "$?"
+
+OPENCODE_CASE=limitonce; export OPENCODE_CASE
+: >"$OPENCODE_LIMIT_FLAG"; rm -f "$OPENCODE_LIMIT_FLAG"
+cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a 429 sleeps and resumes instead of failing the role" 0 "$?"
+
+OPENCODE_CASE=ok; export OPENCODE_CASE
+cc_opencode 'openrouter/ox|injected' "" prompt
+check "a pipe in the model selector is refused" 1 "$?"
+cc_opencode openrouter/stealth/ox-alpha "" prompt >/dev/null
+OPENCODE_LEDGER_RES=$LAST_LEDGER_RES
+MF_OPENCODE_HOME=$T/no-such-opencode-home \
+  cc_opencode openrouter/stealth/ox-alpha "" prompt
+check "a missing credential fails closed before invoking the CLI" 1 "$?"
+
+rm -f "$T/opencode-ledger.jsonl"
+OPENCODE_LEDGER_RES=$OPENCODE_LEDGER_RES LEDGER=$T/opencode-ledger.jsonl FACTORY_NAME=multi WORKER_ID=9 \
+  bash -c '. ../factory/lib.sh; ledger_record 12 writer openrouter/stealth/ox-alpha "$OPENCODE_LEDGER_RES" 4 ok'
+OPENCODE_ROW=$(<"$T/opencode-ledger.jsonl")
+check "opencode ledger row keeps preview spend at zero" 0 "$(jq -r .cost_usd <<<"$OPENCODE_ROW")"
+check "opencode ledger row records the provider" opencode "$(jq -r .provider <<<"$OPENCODE_ROW")"
+check "opencode ledger row records the OpenRouter family" openrouter \
+  "$(jq -r .provider_family <<<"$OPENCODE_ROW")"
+check "opencode ledger row records its harness" opencode-cli \
+  "$(jq -r .harness <<<"$OPENCODE_ROW")"
+check "opencode ledger row records free-preview billing" free-preview \
+  "$(jq -r .billing <<<"$OPENCODE_ROW")"
+check "opencode ledger row records the cost provenance" provider-reported \
+  "$(jq -r .opencode_cost_source <<<"$OPENCODE_ROW")"
+check "opencode ledger row exposes cached input alias" 128 \
+  "$(jq -r .cached_input_tokens <<<"$OPENCODE_ROW")"
+check "opencode ledger row never fabricates an API-equivalent price" null \
+  "$(jq -r .api_equivalent_usd <<<"$OPENCODE_ROW")"
+check "opencode ledger row never claims OpenAI pricing" null \
+  "$(jq -r .api_equivalent_pricing <<<"$OPENCODE_ROW")"
+OPENCODE_ANALYTICS=$(
+  OPENCODE_ROW_FILE=$T/opencode-ledger.jsonl node --input-type=module -e '
+    import { readFileSync } from "node:fs";
+    import { ledgerProvider, ledgerProviderFamily, ledgerHarness }
+      from "./control/usage-analytics.mjs";
+    const row = JSON.parse(readFileSync(process.env.OPENCODE_ROW_FILE, "utf8"));
+    process.stdout.write(JSON.stringify({
+      p: ledgerProvider(row),
+      f: ledgerProviderFamily(row),
+      h: ledgerHarness(row),
+      legacy: ledgerProvider({ model: "openrouter/stealth/ox-alpha" }),
+    }));
+  '
+)
+check "analytics resolves the opencode provider" opencode "$(jq -r .p <<<"$OPENCODE_ANALYTICS")"
+check "analytics resolves the OpenRouter family" openrouter "$(jq -r .f <<<"$OPENCODE_ANALYTICS")"
+check "analytics resolves the opencode harness" opencode-cli "$(jq -r .h <<<"$OPENCODE_ANALYTICS")"
+check "analytics infers opencode from a legacy model-only row" opencode \
+  "$(jq -r .legacy <<<"$OPENCODE_ANALYTICS")"
 
 echo "— composer issue contracts"
 RUN=run-1

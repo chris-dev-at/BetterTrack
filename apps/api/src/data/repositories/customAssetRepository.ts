@@ -104,6 +104,59 @@ export function createCustomAssetRepository(db: Database) {
       return map;
     },
 
+    /**
+     * #1529: the exact current state of the caller's OWN manual assets among
+     * `ids` — the full `assets` row plus every `price_history` point as the
+     * exact stored decimal string — and the ids that are not the caller's
+     * manual assets (unknown, catalog, another account's: all just absent,
+     * no oracle). Ids are de-duplicated and answered in sorted order.
+     */
+    async vaultSnapshotsForOwner(
+      userId: string,
+      ids: readonly string[],
+    ): Promise<{
+      present: Array<{ asset: AssetRow; values: Array<{ date: string; close: string }> }>;
+      absentIds: string[];
+    }> {
+      const unique = [...new Set(ids)].sort();
+      if (unique.length === 0) return { present: [], absentIds: [] };
+      const rows = await db
+        .select()
+        .from(assets)
+        .where(
+          and(
+            inArray(assets.id, unique),
+            eq(assets.ownerId, userId),
+            eq(assets.providerId, MANUAL_PROVIDER_ID),
+          ),
+        )
+        .orderBy(asc(assets.id));
+      const presentIds = rows.map(({ id }) => id);
+      const points =
+        presentIds.length === 0
+          ? []
+          : await db
+              .select({
+                assetId: priceHistory.assetId,
+                date: priceHistory.date,
+                close: priceHistory.close,
+              })
+              .from(priceHistory)
+              .where(inArray(priceHistory.assetId, presentIds))
+              .orderBy(asc(priceHistory.assetId), asc(priceHistory.date));
+      const valuesByAsset = new Map<string, Array<{ date: string; close: string }>>();
+      for (const point of points) {
+        const list = valuesByAsset.get(point.assetId) ?? [];
+        list.push({ date: point.date, close: point.close });
+        valuesByAsset.set(point.assetId, list);
+      }
+      const presentSet = new Set(presentIds);
+      return {
+        present: rows.map((asset) => ({ asset, values: valuesByAsset.get(asset.id) ?? [] })),
+        absentIds: unique.filter((id) => !presentSet.has(id)),
+      };
+    },
+
     /** The caller's own custom asset for `id`, or null (owner-scoped, §10). */
     async findForUser(userId: string, id: string): Promise<AssetRow | null> {
       const rows = await db

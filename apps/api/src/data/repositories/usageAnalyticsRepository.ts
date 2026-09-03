@@ -1,4 +1,17 @@
-import { and, count, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  sql,
+} from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -77,6 +90,15 @@ export interface UsageAnalyticsRepository {
   dailySeries(sinceDay: string): Promise<UsageDailyPoint[]>;
   /** Most-viewed assets since `sinceDay` (from raw events, excludes no-asset rows). */
   topAssets(sinceDay: string, limit: number): Promise<UsageTopAssetCount[]>;
+  /**
+   * Delete at most `limit` raw event rows whose `day` is before `cutoff` (the
+   * retention sweep's bounded drain). Raw events are one row per user × feature
+   * × asset × day — i.e. a per-user viewing history — and nothing but a per-user
+   * paranoid transition ever removed one. The {@link usageDaily} rollup is
+   * aggregate and is deliberately NOT swept with them, so the admin analytics
+   * series survives its own raw history.
+   */
+  deleteEventsOlderThan(cutoff: Date, limit: number): Promise<number>;
 }
 
 export function createUsageAnalyticsRepository(
@@ -336,6 +358,23 @@ export function createUsageAnalyticsRepository(
         .orderBy(desc(sql`sum(${usageEvents.hits})`))
         .limit(limit);
       return rows.map((r) => ({ assetId: r.assetId, views: Number(r.views) }));
+    },
+
+    async deleteEventsOlderThan(cutoff: Date, limit: number): Promise<number> {
+      // `day` is a DATE column, so the cutoff instant is compared as its
+      // calendar day: a row is eligible once its whole day is past the window.
+      const cutoffDay = cutoff.toISOString().slice(0, 10);
+      const candidates = db
+        .select({ id: usageEvents.id })
+        .from(usageEvents)
+        .where(lt(usageEvents.day, cutoffDay))
+        .orderBy(asc(usageEvents.day), asc(usageEvents.id))
+        .limit(limit);
+      const deleted = await db
+        .delete(usageEvents)
+        .where(inArray(usageEvents.id, candidates))
+        .returning({ id: usageEvents.id });
+      return deleted.length;
     },
   };
 }

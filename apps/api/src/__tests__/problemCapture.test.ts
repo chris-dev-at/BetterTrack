@@ -98,6 +98,21 @@ describe('problem capture (Sentry replacement)', () => {
     expect((row!.context as Record<string, unknown>).authorization).toBe('[redacted]');
   });
 
+  it('stores a provider failure URL with its api key and encoded email redacted', async () => {
+    harness.ctx.problems.captureProviderFailure(
+      new Error(
+        'Request failed: https://api.provider.com/v8/finance?apikey=AB12CD34EF&user=alice%40example.com',
+      ),
+      { providerId: 'yahoo' },
+    );
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    expect(row!.message).not.toContain('AB12CD34EF');
+    expect(row!.message).not.toContain('alice%40example.com');
+    expect(row!.message).toContain('apikey=[redacted-token]');
+  });
+
   it('captures failed jobs and provider failures as their own kinds', async () => {
     harness.ctx.problems.captureJobFailure(new Error('handler threw'), {
       queue: 'market.refresh',
@@ -141,7 +156,12 @@ describe('problem capture (Sentry replacement)', () => {
 });
 
 /** In-memory {@link ProblemRepository} that counts writes, for the rate-cap unit test. */
-function fakeRepo(): { repo: ProblemRepository; writes: () => number } {
+function fakeRepo(): {
+  repo: ProblemRepository;
+  writes: () => number;
+  occurrences: (fingerprint?: string) => number;
+  fingerprints: () => number;
+} {
   let writes = 0;
   const rows = new Map<string, { occurrences: number }>();
   const repo: ProblemRepository = {
@@ -154,6 +174,12 @@ function fakeRepo(): { repo: ProblemRepository; writes: () => number } {
     async list() {
       return [];
     },
+    async countMatching() {
+      return 0;
+    },
+    async deleteOlderThan() {
+      return 0;
+    },
     async get() {
       return null;
     },
@@ -164,12 +190,26 @@ function fakeRepo(): { repo: ProblemRepository; writes: () => number } {
       return 0;
     },
   };
-  return { repo, writes: () => writes };
+  return {
+    repo,
+    writes: () => writes,
+    occurrences: (fingerprint) =>
+      fingerprint === undefined
+        ? [...rows.values()].reduce((sum, row) => sum + row.occurrences, 0)
+        : (rows.get(fingerprint)?.occurrences ?? 0),
+    fingerprints: () => rows.size,
+  };
 }
 
+/**
+ * The storm guard. The cap exists so N identical errors cost a bounded number of
+ * DB writes — but it must not turn into a global mute: charging it before the
+ * fingerprint was even computed meant one flapping source spent the whole budget
+ * and a genuinely new error vanished with no trace at all.
+ */
 describe('problem capture rate cap', () => {
   it('caps DB writes per window so an identical-error storm cannot unbounded-write', async () => {
-    const { repo, writes } = fakeRepo();
+    const { repo, writes, occurrences } = fakeRepo();
     let clock = 0;
     const service: ProblemService = createProblemService({
       repo,
@@ -178,15 +218,90 @@ describe('problem capture rate cap', () => {
       windowMs: 1000,
     });
 
-    // 200 identical errors in the same window → at most 5 writes reach the DB.
+    // 200 identical errors in one window → the insert plus one folded bump.
     for (let i = 0; i < 200; i += 1) service.captureError(new Error('flood'));
     await service.flush();
-    expect(writes()).toBe(5);
+    expect(writes()).toBe(2);
 
-    // Rolling past the window frees the budget again.
+    // Throttled repeats are DEFERRED, not lost: the next window's first write
+    // for that fingerprint carries every occurrence observed in between.
     clock = 1000;
     service.captureError(new Error('flood'));
     await service.flush();
-    expect(writes()).toBe(6);
+    expect(writes()).toBe(3);
+    expect(occurrences()).toBe(201);
+  });
+
+  it('lets a distinct new problem through while one fingerprint floods the window', async () => {
+    const { repo, fingerprints } = fakeRepo();
+    const service = createProblemService({
+      repo,
+      now: () => 0,
+      maxWritesPerWindow: 5,
+      windowMs: 60_000,
+    });
+
+    // Far more repeats than the whole window budget, then something new.
+    for (let i = 0; i < 500; i += 1) service.captureProviderFailure(new Error('breaker open'), {});
+    service.captureError(new Error('a genuinely new 500'));
+    await service.flush();
+
+    expect(fingerprints()).toBe(2);
+    expect(service.droppedCaptures()).toBe(0);
+  });
+
+  it('keeps one noisy kind from spending another kind budget', async () => {
+    const { repo, fingerprints } = fakeRepo();
+    const service = createProblemService({
+      repo,
+      now: () => 0,
+      maxWritesPerWindow: 2,
+      windowMs: 60_000,
+    });
+
+    // Three DISTINCT provider failures against a per-kind budget of two: the
+    // third is dropped, and the error kind still has its own full budget.
+    for (const id of ['yahoo', 'stooq', 'ecb']) {
+      service.captureProviderFailure(new Error(`${id} unreachable`), { providerId: id });
+    }
+    service.captureError(new Error('unrelated request failure'));
+    await service.flush();
+
+    expect(fingerprints()).toBe(3);
+    expect(service.droppedCaptures()).toBe(1);
+  });
+
+  it('never drops silently — a refused capture is logged and counted', async () => {
+    const { repo } = fakeRepo();
+    const warn = vi.fn();
+    const logger = { warn, error: vi.fn(), info: vi.fn(), debug: vi.fn() };
+    let clock = 0;
+    const service = createProblemService({
+      repo,
+      logger: logger as never,
+      now: () => clock,
+      maxWritesPerWindow: 1,
+      windowMs: 1000,
+    });
+
+    service.captureError(new Error('first distinct'));
+    service.captureError(new Error('second distinct'));
+    service.captureError(new Error('third distinct'));
+    await service.flush();
+
+    expect(service.droppedCaptures()).toBe(2);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'error', reason: 'kind-budget' }),
+      'problem capture dropped by the rate cap',
+    );
+
+    // The closed window reports its full tally, so a storm stays legible.
+    clock = 1000;
+    service.captureError(new Error('after the roll'));
+    await service.flush();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ dropped: 2 }),
+      'problem captures dropped by the rate cap in the closed window',
+    );
   });
 });

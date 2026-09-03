@@ -4,7 +4,11 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-vi.mock('../../lib/portfolioApi', () => ({
+// Partial mock: the reads this page drives are stubbed by name, and the rest of
+// the module stays real so a new read on the E6 move-capture engine reached
+// through PortfolioVaultSection cannot break collection here again (#1529).
+vi.mock('../../lib/portfolioApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/portfolioApi')>()),
   listPortfolios: vi.fn(),
   updatePortfolio: vi.fn(),
   archivePortfolio: vi.fn(),

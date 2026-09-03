@@ -21,6 +21,13 @@ const ALLOW_HEADERS = [
 const EXPOSE_HEADERS = [
   'Content-Disposition',
   'ETag',
+  // §10 rate limiting: the 429 carries the wait as `Retry-After`. The SPA lives
+  // on a DIFFERENT origin from the API in both deployment modes (§4.6), so
+  // without this the header is invisible to `fetch` and the client's backoff
+  // silently degrades to a fixed floor — which is how a single cooldown turned
+  // into a 1 req/s poll against `/auth/me`. The body's `details.retryAfter` is
+  // the belt to this suspenders; both are read (apiClient.ts).
+  'Retry-After',
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_SIZE_BYTES_HEADER,

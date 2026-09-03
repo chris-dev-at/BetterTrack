@@ -110,11 +110,19 @@ const envSchema = z.object({
   // Short-window burst dimension of the general limiter (§10, owner report #202):
   // the 15-min steady-state allowance is generous enough that a rapid page-reload
   // flood never reaches it, so a second, short window catches the flood without
-  // touching the steady-state bar. Sized well above a multi-tab TanStack refetch
-  // burst so legitimate use never trips; over-limit feeds the SAME escalation
-  // ladder as the steady-state limiter.
-  RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(10),
-  RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(60),
+  // touching the steady-state bar. Over-limit feeds the SAME escalation ladder as
+  // the steady-state limiter.
+  //
+  // 30 s / 600 (owner directive 2026-09-02). The window WIDENED and the allowance
+  // grew 10×: at 10 s / 60 the app's own cold load (10 + 2N requests, ~50 for a
+  // widget board) spent most of the budget in two seconds, so a second tab, a
+  // reconnect refetch or an asset search on top of it tripped a 429 during
+  // ordinary use — the "every other day" the owner reported. Widening the window
+  // at a higher rate raises SPIKE tolerance without raising the sustained rate as
+  // far, which is the shape of the real traffic: bursty on navigation, ~4 req/min
+  // idle. It still trips a genuine flood — 12 reloads inside 30 s.
+  RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(600),
   /**
    * Per-IP login attempts per minute. The DEFAULT IS THE PRODUCTION CONTROL and
    * is not to be raised there — 25/min per IP is what blunts single-IP
@@ -215,6 +223,14 @@ const envSchema = z.object({
   // that table forever and disables its branch of the scheduled purge.
   BT_AUDIT_RETENTION_DAYS: retentionDays(400),
   BT_EMAIL_LOG_RETENTION_DAYS: retentionDays(180),
+  // Captured problems age out on `last_seen_at`: a quarter without a single
+  // recurrence is the point at which a row is history, not an operational
+  // signal — and the admin Problems page is only useful while it is bounded.
+  BT_PROBLEM_RETENTION_DAYS: retentionDays(90),
+  // Raw usage events are a per-user viewing history. The analytics windows read
+  // at most the last 30 days, so half a year keeps every counter honest while
+  // the history stops being indefinite.
+  BT_USAGE_EVENT_RETENTION_DAYS: retentionDays(180),
 
   // ── Telegram notification channel (§13.4 V4-P10) ───────────────────────────
   // Owner-provided bot token that lets the API deliver notifications through
@@ -839,6 +855,10 @@ export interface AppConfig {
   retention: {
     auditDays: number;
     emailLogDays: number;
+    /** Age since the LAST occurrence at which a captured problem is pruned. */
+    problemDays: number;
+    /** Age at which raw usage events are pruned (the rollup is kept). */
+    usageEventDays: number;
   };
   /**
    * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the
@@ -985,12 +1005,74 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
+  // ── §10 LIMITER TABLE — the single source of truth ────────────────────────
+  //
+  // Every progressive schedule in the app is defined in the `rateLimits` block
+  // below and NOWHERE else; the middleware and the auth services read them from
+  // here. `apps/api/src/config/__tests__/rateLimitTable.test.ts` pins the whole
+  // table, so any future edit to a number shows up as a failing assertion
+  // rather than as a silent loosening.
+  //
+  // | limiter          | key                | window | limit | strict? |
+  // |------------------|--------------------|--------|-------|---------|
+  // | general          | user id, else IP   | 15 min | 9000  | no      |
+  // | generalBurst     | user id, else IP   | 30 s   |  600  | no      |
+  // | admin            | user id, else IP   | 15 min | 9000  | no      | (reuses `general`)
+  // | search           | user id, else IP   |  1 min |  300  | no      |
+  // | vault (writes)   | user id, else IP   |  1 min |   60  | no      |
+  // | vaultRead        | user id, else IP   |  1 min |  600  | no      |
+  // | apiKey           | api key / grant id |  1 min |  120  | no      |
+  // | social           | user id, else IP   |  1 h   |   30  | STRICT  |
+  // | feedback         | user id, else IP   |  1 h   |    5  | STRICT  |
+  // | feedbackThread   | user id, else IP   |  1 h   |   60  | STRICT  |
+  // | loginIp          | IP                 |  1 min |   25  | STRICT  |
+  // | loginAccount     | account id         | 15 min |   10  | STRICT  |
+  //
+  // SIZING RULE (owner directive 2026-09-02, §16): a limiter that normal use can
+  // reach must clear the MODELLED NORMAL-USE BAR by at least 3×. The bar is one
+  // active user with two tabs open. Its terms are ENGINEERING ESTIMATES derived
+  // by reading the client — the widget fan-out, the TanStack polling intervals,
+  // the search debounce and its enrichment poll — not a captured browser trace;
+  // treat them as a written-down model to argue against and correct, not as
+  // measurements:
+  //
+  //   * cold dashboard load  = 10 + 2N requests (N = portfolios); a 10-widget
+  //     board at N=5 is ~50, and two tabs reloading together ~100 in ~2 s
+  //   * reconnect refetch (`refetchOnReconnect` defaults to true) ≈ a cold load,
+  //     repeatable on every wifi blip
+  //   * one deliberate asset search = up to 4 debounced prefixes × ~6 enrichment
+  //     polls ≈ 24 requests to /search inside 15 s
+  //   * an unkeyed `invalidateQueries()` replays a whole cold load in one tick
+  //   * idle is flat and cheap: 4 req/min (8 for a paranoid account)
+  //
+  //   ⇒ worst realistic 30 s  ≈  188 requests → generalBurst 600  (3.2×)
+  //   ⇒ worst realistic 15 min ≈ 1576 requests (a scrolled-back chat thread
+  //     polls ~43/min on its own) → general 9000  (5.7×)
+  //   ⇒ worst realistic 1 min on /search ≈ 96  → search 300  (3.1×)
+  //
+  // The exact arithmetic behind those three numbers is pinned, term by term, in
+  // `config/__tests__/rateLimitTable.test.ts`.
+  //
+  // The STRICT rows are abuse controls, not capacity controls, and are NOT
+  // sized by this rule: credential stuffing (loginIp/loginAccount, which also
+  // backs every re-auth ladder — export, deletion, 2FA disable, PIN, passkey,
+  // paranoid discard), username probing (social) and owner-queue spam
+  // (feedback). They keep the numbers they had before this pass. If normal use
+  // ever trips one of them, the client's behaviour gets fixed, not the ceiling.
+
   // General steady-state schedule, defined up front so the burst dimension can
   // reuse its escalation ladder and decay verbatim (§10 — the burst window feeds
   // the SAME progressive escalation as the steady-state limiter).
+  //
+  // 9000 / 15 min = 600 req/min = 10 req/s sustained per user. §10's original
+  // "≈ 4500/15 min" was written before the widget dashboard, the chat polls and
+  // the per-portfolio `useQueries` fan-out existed; at 4500 a heavy two-tab
+  // session sat at 2.9× the modelled bar — under the 3× rule, and close enough
+  // that raising only the burst window would have moved the trip point onto
+  // this one instead of removing it.
   const general: ProgressiveSchedule = {
     windowSec: 15 * 60,
-    limit: 4500,
+    limit: 9000,
     cooldownsSec: [20, 60, 180, 600],
     decaySec: 15 * 60,
   };
@@ -1174,6 +1256,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     retention: {
       auditDays: e.BT_AUDIT_RETENTION_DAYS,
       emailLogDays: e.BT_EMAIL_LOG_RETENTION_DAYS,
+      problemDays: e.BT_PROBLEM_RETENTION_DAYS,
+      usageEventDays: e.BT_USAGE_EVENT_RETENTION_DAYS,
     },
     // V5-P0 kill-switch: the SAME flag controls Telegram AND Discord — either
     // both channels are offered by this build or neither. Default OFF so an
@@ -1194,37 +1278,51 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // middleware and auth service read them from here; never inline the numbers.
     rateLimits: {
       enabled: !isTest,
-      // ~300 req/min sustained per user so rapid multi-tab TanStack refetch
-      // bursts never trip; over-limit → 20 s, then 1 m → 3 m → 10 m (cap).
+      // 600 req/min sustained per user (5.7× the modelled two-tab bar) so an
+      // ordinary heavy session never trips; over-limit → 20 s, then 1 m → 3 m →
+      // 10 m (cap). See the §10 LIMITER TABLE above for the sizing rule.
       general,
       // Short-window burst guard on the SAME key + SAME ladder as `general`. The
-      // 15-min/4500 steady-state bar is too high for a page-reload flood to reach
-      // (owner report #202), so a ~60-req / 10-s window trips the flood after a
-      // handful of reloads while staying far above any multi-tab refetch burst.
+      // 15-min steady-state bar is too high for a page-reload flood to reach
+      // (owner report #202), so a 600-req / 30-s window trips the flood after a
+      // dozen reloads while clearing a two-tab cold load with 3× headroom.
       generalBurst: {
         windowSec: e.RATE_LIMIT_BURST_WINDOW_SEC,
         limit: e.RATE_LIMIT_BURST_LIMIT,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
-      // Provider search is tighter (§6.2): 60/min/user (client debounces every
-      // keystroke at 300 ms, so legitimate typing stays well under this).
+      // Provider search, per user (§6.2). 300/min — its own generous budget
+      // rather than a share of `general`, because the read is cheap and bounded:
+      // it answers from Postgres only (local-first catalog; provider enrichment
+      // is a background job), so the cost of a spare allowance is a few indexed
+      // queries.
+      //
+      // Raised from 60/min on 2026-09-02: the old ceiling was written for "one
+      // debounced request per pause" and the client no longer behaves that way.
+      // `useAssetSearch` fires one request per debounced PREFIX (min 1 char) and
+      // then polls every 1.5 s for up to 10 s while the server reports
+      // `enriching: true` — so ONE deliberate search costs up to ~24 requests in
+      // 15 s, and three searches in a minute exceeded 60. Normal typing was
+      // reaching a security-shaped ceiling. 300 = 3× that modelled minute.
       search: {
         windowSec: 60,
-        limit: 60,
+        limit: 300,
         cooldownsSec: [20, 60, 180, 600],
         decaySec: 15 * 60,
       },
-      // Friend-request creation, per user (§6.9): sending a request creates an
-      // outbox row revealing the target's username, so bulk email→username
-      // probing must be expensive. 30/hour is far above any legitimate use;
-      // over-limit → 1 m, then 5 m → 15 m → 1 h (cap).
+      // STRICT (2026-09-02: deliberately NOT raised). Friend-request creation,
+      // per user (§6.9): sending a request creates an outbox row revealing the
+      // target's username, so bulk email→username probing must be expensive.
+      // 30/hour is far above any legitimate use; over-limit → 1 m, then 5 m →
+      // 15 m → 1 h (cap).
       social: {
         windowSec: 60 * 60,
         limit: 30,
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
       },
+      // STRICT (2026-09-02: deliberately NOT raised).
       // Feedback capture (#1315): enough for a short reporting session while
       // keeping the owner queue resistant to one authenticated account's spam.
       // The route keys this by user id for both cookie and bearer callers, and
@@ -1237,6 +1335,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         decaySec: 15 * 60,
         retainCountOnViolation: true,
       },
+      // STRICT (2026-09-02: deliberately NOT raised).
       // Support-thread replies (#1339), per author — deliberately NOT the
       // capture budget above. Replying is the workflow the thread exists for:
       // the owner answering a queue of submissions in one sitting, and a
@@ -1271,6 +1370,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // Reads use their own larger allowance and Redis namespace. Reusing the
       // vault window keeps the operator surface small while preventing sync
       // polling from consuming the write family's budget or cooldown ladder.
+      // Note (2026-09-02): this 600/min budget was previously UNREACHABLE — the
+      // app-wide `general` limiter capped every caller at 300/min first, so the
+      // read allowance could never be spent. With `general` at 600/min the two
+      // now line up and the dedicated read budget means what it says.
       vaultRead: {
         windowSec: e.BT_VAULT_RATE_WINDOW_SEC,
         limit: e.BT_VAULT_READ_RATE_LIMIT,
@@ -1287,16 +1390,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
-      // Login is stricter and per-IP: blunts single-IP credential stuffing while
-      // tolerating shared-NAT bursts. Over-limit → 30 s → 5 m → 10 m → 15 m.
+      // STRICT (2026-09-02: deliberately NOT raised). Login is stricter and
+      // per-IP: blunts single-IP credential stuffing while tolerating shared-NAT
+      // bursts. Over-limit → 30 s → 5 m → 10 m → 15 m.
       loginIp: {
         windowSec: e.RATE_LIMIT_LOGIN_IP_WINDOW_SEC,
         limit: e.RATE_LIMIT_LOGIN_IP_LIMIT,
         cooldownsSec: [30, 300, 600, 900],
         decaySec: 15 * 60,
       },
-      // Per-account failed-login tracking, independent of the per-IP counter:
-      // ~10 failures → 30 s, next batch → 5 m, escalating to 10–15 min (§6.1).
+      // STRICT (2026-09-02: deliberately NOT raised). Per-account failed-login
+      // tracking, independent of the per-IP counter: ~10 failures → 30 s, next
+      // batch → 5 m, escalating to 10–15 min (§6.1). This schedule also backs
+      // EVERY re-auth ladder — data export, account deletion, 2FA disable, PIN
+      // token, passkey re-auth, Google mobile link, paranoid discard/vault
+      // delete/portfolio move-in/move-out — so raising it would loosen all of
+      // them at once.
       loginAccount: {
         windowSec: 15 * 60,
         limit: 10,

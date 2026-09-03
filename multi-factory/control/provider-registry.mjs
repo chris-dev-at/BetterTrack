@@ -61,7 +61,15 @@ const MODEL_CATALOGS = Object.freeze({
     'Gemini 3.5 Flash (Medium)',
     'Gemini 3.5 Flash (Low)',
   ]),
+  // opencode addresses models as "<opencode-provider>/<model>", and the model
+  // half may itself contain a slash (stealth/ox-alpha).
+  opencode: Object.freeze(['openrouter/stealth/ox-alpha']),
 });
+
+// Mirrors the selector guard in mflib.sh's cc_opencode. Slashes are legal here
+// (they are the provider separator) but nothing that could break out of a shell
+// argument or the ledger's pipe-delimited route string is.
+const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 
 const registry = {
   claude: {
@@ -149,6 +157,35 @@ const registry = {
       dynamicModelCatalog: true,
     },
   },
+  // The only API-KEY route in the factory: OpenRouter bills per token, and the
+  // intended model is free only for the duration of its preview. `billing` says
+  // free-preview rather than subscription so neither this registry nor the ledger
+  // implies the $0 is structural the way it is for the other four.
+  opencode: {
+    id: 'opencode',
+    label: 'opencode (OpenRouter)',
+    providerFamily: 'openrouter',
+    harness: 'opencode-cli',
+    billing: 'free-preview',
+    experimental: true,
+    modelSuggestions: MODEL_CATALOGS.opencode,
+    // opencode calls reasoning effort a "variant" and its legal values are
+    // provider- and model-specific. None are verified for Ox Alpha, so advertise
+    // none: an unverified effort would be silently ignored by the CLI while
+    // looking authoritative in the dashboard.
+    efforts: Object.freeze([]),
+    defaultModel: 'openrouter/stealth/ox-alpha',
+    defaultEffort: null,
+    capabilities: {
+      freeTextModel: true,
+      effort: false,
+      containerTest: false,
+      apiEquivalentEstimate: false,
+      dynamicModelCatalog: false,
+      // Prompts and completions are RETAINED by the anonymous preview provider.
+      retainsPrompts: true,
+    },
+  },
 };
 
 for (const provider of Object.values(registry)) {
@@ -195,6 +232,8 @@ export function validateRouteEntry(entry) {
   });
   if (!model || model.length > 120 || hasControlCharacter) return false;
   if (entry.provider === 'claudex' && !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(model)) return false;
+  // Keep the dashboard from saving a route mflib.sh's cc_opencode would reject.
+  if (entry.provider === 'opencode' && !OPENCODE_MODEL.test(model)) return false;
   if (entry.effort == null || entry.effort === '') return true;
   return providerEfforts(entry.provider, model).includes(entry.effort);
 }

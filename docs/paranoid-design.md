@@ -620,6 +620,45 @@ Move-in = capture → encrypt → verify → destructive commit
 | Home board widgets scoped to it                                         | Render through the `PortfolioStore` seam: live when unlocked, a locked-state tile with the unlock affordance otherwise     |
 | Imports in flight                                                       | Precondition-blocked; a portfolio with historical import batches is refused at capture (#1529)                             |
 
+### 9a. Legacy `country_specific` rows with no frozen country (#1635)
+
+Rows settled before `drizzle/0021_tax_engine.sql` can carry
+`tax_mode = 'country_specific'` with `tax_country = NULL` — the migration added
+the column and never backfilled it. **Server-side this is not ambiguous:**
+`frozenTaxCountryEngine(null)` settles it as **AT** (the `rowEngineCountry`
+legacy rule), and the #1512 shared row-engine classifier and its committed
+vectors pin that reading. Nothing in this section changes it.
+
+The vault side cannot inherit that fallback. A vault document is the only
+remaining copy of the row, so `assertProvenTaxFacts` (capture), the strict
+restore contract, the server's rehydration validator and the client snapshot
+gate (`engine/session.ts validateFrozenTaxShape`) all require a country
+whenever the mode is `country_specific`: a mode without its country cannot be
+re-settled the same way twice by construction. A portfolio holding such a row
+therefore **cannot move in**, and the refusal is typed —
+`VAULT_MOVE_LEGACY_TAX_FACTS_UNSUPPORTED`, naming the offending rows, raised
+before a single ciphertext write — not the untyped row-schema `Error` it used
+to be.
+
+**Migration path (recommended, not yet shipped):** a one-off backfill
+migration
+
+```sql
+UPDATE transactions SET tax_country = 'AT'
+  WHERE tax_mode = 'country_specific' AND tax_country IS NULL;
+UPDATE dividends    SET tax_country = 'AT'
+  WHERE tax_mode = 'country_specific' AND tax_country IS NULL;
+```
+
+writing down exactly what the engine already reads. One source of truth, no
+settlement change, and the refusal above then has nothing left to reject. The
+rejected alternative was the capture rewriting the frozen fact to `AT` on the
+way in: capture must carry what the server holds byte for byte, or move-out
+cannot restore it, and a second place that decides what a frozen fact means is
+precisely the drift this section exists to prevent. Rows in any other mode
+(`none`, `manual_per_trade`, `custom`) legitimately carry a null country and
+are untouched by either the refusal or the backfill.
+
 ## 10. Portfolio move-out (the designed exit)
 
 "Deleting them as a public portfolio" makes move-in reversible **only via a

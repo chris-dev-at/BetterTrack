@@ -111,7 +111,25 @@ test('the app query client protects implicit reads without overriding explicit q
   });
   expect(implicit.staleTime).toBe(30_000);
   expect(implicit.refetchOnWindowFocus).toBe(false);
-  expect(implicit.retry).toBe(1);
+
+  // `retry` is a PREDICATE, not a count (§10, 2026-09-02): one retry for a
+  // transient failure, and none at all for a 429. A flat `retry: 1` doubled the
+  // requests against a limiter that had already announced it was refusing —
+  // on a page mounting dozens of queries, that doubling is what climbed the
+  // server's escalation ladder from a 20 s pause to a 10 min one.
+  const retry = implicit.retry as (failureCount: number, error: unknown) => boolean;
+  expect(typeof retry).toBe('function');
+  expect(retry(0, new ApiError(503, 'UNAVAILABLE', 'Down.'))).toBe(true);
+  expect(retry(1, new ApiError(503, 'UNAVAILABLE', 'Down.'))).toBe(false);
+  expect(retry(0, new ApiError(429, 'RATE_LIMITED', 'Too many requests.'))).toBe(false);
+
+  // …and the wait between retries is jittered rather than a fixed timer, so a
+  // page's worth of simultaneously-failed queries does not return in lockstep.
+  const retryDelay = implicit.retryDelay as (failureCount: number, error: unknown) => number;
+  const waits = new Set(
+    Array.from({ length: 50 }, () => retryDelay(0, new ApiError(503, 'UNAVAILABLE', 'Down.'))),
+  );
+  expect(waits.size).toBeGreaterThan(10);
 
   const explicit = queryClient.defaultQueryOptions({
     queryKey: ['test', 'explicit-stale-time'],

@@ -112,6 +112,9 @@ export function ledgerProvider(row) {
   if (model.startsWith('gpt-')) return 'codex';
   if (model.startsWith('claude-')) return 'claude';
   if (model.includes('gemini')) return 'gemini';
+  // opencode is the only provider whose model strings are "<provider>/<model>";
+  // claudex's codex-api/ prefix is normalized away before it reaches the ledger.
+  if (model.startsWith('openrouter/')) return 'opencode';
   return null;
 }
 
@@ -124,6 +127,7 @@ export function ledgerProviderFamily(row) {
   if (provider === 'codex' || provider === 'claudex') return 'openai';
   if (provider === 'claude') return 'anthropic';
   if (provider === 'gemini') return 'google';
+  if (provider === 'opencode') return 'openrouter';
   return null;
 }
 
@@ -133,6 +137,7 @@ export function ledgerHarness(row) {
   if (provider === 'claudex' || provider === 'claude') return 'claude-code';
   if (provider === 'codex') return 'codex-cli';
   if (provider === 'gemini') return 'antigravity';
+  if (provider === 'opencode') return 'opencode-cli';
   return null;
 }
 

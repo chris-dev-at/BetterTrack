@@ -16,6 +16,7 @@ import {
 import { newAdminRequestContext } from './support/adminApi';
 import { withoutMatcherAriaSnapshot } from './support/artifactHygiene';
 import { ACCOUNT_PASSWORD } from './support/config';
+import { CSRF_HEADERS } from './support/e2';
 import { passwordSignIn } from './support/auth';
 import { expectUserShellReady } from './support/flows';
 import { assertNoPd9Secrets, type Pd9SensitiveCanary } from './support/pd9Drive';
@@ -211,8 +212,9 @@ test.describe('PARANOID E10 per-vault gate', () => {
   // pattern; this test genuinely needs no fixture, hence the empty one.
   // eslint-disable-next-line no-empty-pattern
   test('[E10-A0] the E10 arc inventory stays complete', async ({}, testInfo) => {
-    // The spec line names seven sub-arcs; a dropped one is the whole point.
-    expect(E10_TRACEABILITY).toHaveLength(7);
+    // The spec line names seven sub-arcs, plus the #1529 imported+manual
+    // variant of the A10 arc; a dropped one is the whole point.
+    expect(E10_TRACEABILITY).toHaveLength(8);
 
     const source = await readFile(testInfo.file, 'utf8');
     const titles = [...source.matchAll(/^\s*test(?:\.fixme)?\(\s*'([^']+)'/gmu)].map(
@@ -1294,6 +1296,217 @@ test.describe('PARANOID E10 per-vault gate', () => {
       // `error-context.md`: it prints input VALUES, this arc types a real
       // device password and account password, and the artifact is uploaded by
       // the nightly. See `e2e/support/artifactHygiene.ts`.
+      throw withoutMatcherAriaSnapshot(error);
+    } finally {
+      try {
+        await admin.dispose();
+      } finally {
+        await assertNoE10Secrets(testInfo, diagnostics, sensitive, bodyFailure);
+      }
+    }
+  });
+
+  /**
+   * #1529 — the A10 arc over the two portfolio classes the #1528 ruling
+   * refused fail-closed: a portfolio with HISTORICAL IMPORT BATCHES and one
+   * holding an OWNER-MANUAL asset. Both now move in and back out through the
+   * lossless read seams; the acceptance bar is that every staging row and
+   * every manual value point re-reads identically after the round trip.
+   */
+  test('[E10-A10b] imported + manual portfolio moves in and back out losslessly', async ({
+    context,
+  }, testInfo) => {
+    skipOnPhone(testInfo);
+    test.setTimeout(480_000);
+
+    const diagnostics: string[] = [];
+    const sensitive: Pd9SensitiveCanary[] = [
+      { name: 'e10-device-password', value: DEVICE_PASSWORD },
+    ];
+    const admin = await newAdminRequestContext(newRequestContext);
+    let owner: E2EUser | null = null;
+    let bodyFailure: unknown;
+
+    try {
+      owner = await provisionUserInContext(context, admin, 'e10a10b');
+      const { page } = owner;
+      collectSanitizedDiagnostics(page, diagnostics);
+      const api = owner.context.request;
+
+      const portfolios = await api.get(apiV1('/portfolios'));
+      expect(portfolios.ok(), await portfolios.text()).toBeTruthy();
+      const portfolioId = ((await portfolios.json()) as { portfolios: Array<{ id: string }> })
+        .portfolios[0]!.id;
+
+      // 1. A plain catalog buy (the A10 baseline) …
+      const assetId = await assetIdFor(owner, 'SAP', 'SAP.DE');
+      const transactionId = await recordBuy(owner, portfolioId, {
+        assetId,
+        quantity: 2,
+        price: 100,
+      });
+
+      // 2. … an OWNER-MANUAL asset with value points and a buy of it …
+      const created = await api.post(apiV1('/custom-assets'), {
+        headers: CSRF_HEADERS,
+        data: { name: 'E10 Manual Flat', category: 'property', currency: 'EUR' },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      const manualAssetId = ((await created.json()) as { asset: { id: string } }).asset.id;
+      const points = await api.put(apiV1(`/custom-assets/${manualAssetId}/value-points`), {
+        headers: CSRF_HEADERS,
+        data: {
+          points: [
+            { date: '2026-07-01', value: 250000.5 },
+            { date: '2026-07-15', value: 251234.75 },
+          ],
+        },
+      });
+      expect(points.ok(), await points.text()).toBeTruthy();
+      const manualBuy = await api.post(apiV1(`/portfolios/${portfolioId}/transactions`), {
+        headers: CSRF_HEADERS,
+        data: {
+          assetId: manualAssetId,
+          side: 'buy',
+          quantity: 1,
+          price: 250000.5,
+          fee: 0,
+          executedAt: '2026-07-01T12:00:00.000Z',
+        },
+      });
+      expect(manualBuy.ok(), await manualBuy.text()).toBeTruthy();
+      const manualTransactionId = (
+        (await manualBuy.json()) as {
+          transactions: Array<{ id: string }>;
+        }
+      ).transactions[0]!.id;
+
+      // 3. … and a HISTORICAL import batch: staged through the real generic
+      // pipeline, then applied. One row resolves to nothing on purpose so the
+      // batch carries an unmapped row with its "did you mean" candidates —
+      // exactly the staging columns the capture must carry losslessly.
+      const csv = [
+        'Datum;Buchungstext;Typ;Stück;Kurs;Betrag;Währung;ISIN',
+        '05.01.2026;GEHALT ARBEITGEBER AG;Gutschrift;;;2.100,00;EUR;',
+        '12.01.2026;Unbekannte Muster AG;Kauf;10;100,00;-1.000,00;EUR;DE000MUSTER1',
+      ].join('\n');
+      const staged = await api.post(apiV1('/imports'), {
+        headers: CSRF_HEADERS,
+        multipart: {
+          portfolioId,
+          brokerId: 'generic',
+          file: { name: 'e10-a10b.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8') },
+        },
+      });
+      expect(staged.status(), await staged.text()).toBe(201);
+      const batchId = ((await staged.json()) as { batch: { id: string } }).batch.id;
+      const applied = await api.post(apiV1(`/imports/${batchId}/apply`), {
+        headers: CSRF_HEADERS,
+        data: {},
+      });
+      expect(applied.ok(), await applied.text()).toBeTruthy();
+
+      const readBatch = async () => {
+        const res = await api.get(apiV1(`/imports/${batchId}`));
+        expect(res.ok(), await res.text()).toBeTruthy();
+        return (await res.json()) as { batch: { status: string }; rows: unknown[] };
+      };
+      const readPoints = async () => {
+        const res = await api.get(apiV1(`/custom-assets/${manualAssetId}/value-points`));
+        expect(res.ok(), await res.text()).toBeTruthy();
+        return (await res.json()) as { points: unknown[] };
+      };
+      const batchBefore = await readBatch();
+      expect(batchBefore.batch.status).toBe('applied');
+      expect(batchBefore.rows).toHaveLength(2);
+      const pointsBefore = await readPoints();
+      expect(pointsBefore.points).toHaveLength(2);
+
+      // The revision fact the capture binds to must now COUNT the batch —
+      // and the client capture must move it instead of refusing.
+      const revision = await api.get(apiV1(`/portfolios/${portfolioId}/vault/revision`));
+      expect(revision.ok(), await revision.text()).toBeTruthy();
+      expect(((await revision.json()) as { importBatchCount: number }).importBatchCount).toBe(1);
+
+      await openPrivacyPanel(page);
+      const name = `E10 A10b ${randomUUID().slice(0, 8)}`;
+      const vault = await createVaultThroughCeremony(owner, {
+        name,
+        devicePassword: DEVICE_PASSWORD,
+      });
+      sensitive.push({ name: 'e10-mnemonic', value: vault.mnemonic });
+
+      const vaultedState = async (): Promise<string | null> => {
+        const after = await api.get(apiV1('/portfolios'));
+        const body = (await after.json()) as {
+          portfolios: Array<{ id: string; vaultId: string | null }>;
+        };
+        return body.portfolios.find((portfolio) => portfolio.id === portfolioId)?.vaultId ?? null;
+      };
+
+      await test.step('MOVE-IN carries the import batch and the manual asset', async () => {
+        const access = await attemptUnlock(page, vault.vaultId, DEVICE_PASSWORD);
+        await expect(access).toBeHidden({ timeout: 60_000 });
+        await expectVaultState(page, name, 'Ready on this device');
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await page.getByRole('link', { name: 'Portfolio', exact: true }).first().click();
+        await page.getByRole('button', { name: 'Switch portfolio' }).click();
+        await page.getByRole('link', { name: 'Portfolio settings', exact: true }).click();
+        await page.getByRole('button', { name: 'Move into vault', exact: true }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio into a vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await wizard.getByLabel('Target vault').selectOption(vault.vaultId);
+        await wizard.locator('#vault-move-credential-in').fill(ACCOUNT_PASSWORD);
+        await wizard.getByRole('button', { name: 'Move into vault', exact: true }).click();
+        await expect
+          .poll(vaultedState, { timeout: 180_000, intervals: [1_000] })
+          .toBe(vault.vaultId);
+
+        // The staging rows are gone server-side with the rest of the content.
+        const purged = await api.get(apiV1(`/imports/${batchId}`));
+        expect(purged.ok()).toBe(false);
+      });
+
+      await test.step('LOCK, UNLOCK, MOVE-OUT restores every row and point identically', async () => {
+        await page.goto(`/portfolio?portfolio=${encodeURIComponent(portfolioId)}`);
+        const stub = page.getByTestId('locked-portfolio-stub');
+        await expect(stub).toBeVisible({ timeout: 30_000 });
+        await stub.getByRole('link', { name: 'Unlock', exact: true }).click();
+        const access = page.getByRole('region', { name: /access$/ });
+        await expect(access).toBeVisible({ timeout: 30_000 });
+        await access.locator(`#vault-access-secret-${vault.vaultId}`).fill(DEVICE_PASSWORD);
+        await access.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(access).toBeHidden({ timeout: 60_000 });
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+        await expect(stub).toBeHidden({ timeout: 60_000 });
+        const opened = page.getByTestId('unlocked-vault-portfolio');
+        await expect(opened).toBeVisible({ timeout: 60_000 });
+
+        await opened.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+        const wizard = page.getByRole('region', { name: 'Move portfolio out of the vault' });
+        await expect(wizard).toBeVisible({ timeout: 30_000 });
+        await wizard
+          .getByRole('checkbox', { name: /portfolio becomes server-readable again/i })
+          .check();
+        await wizard.locator('#vault-move-credential-out').fill(ACCOUNT_PASSWORD);
+        await wizard.getByRole('button', { name: 'Restore as a normal portfolio' }).click();
+        await expect.poll(vaultedState, { timeout: 180_000, intervals: [1_000] }).toBeNull();
+
+        // The round-trip bar: staging rows and value points re-read IDENTICALLY.
+        expect(await readBatch()).toEqual(batchBefore);
+        expect(await readPoints()).toEqual(pointsBefore);
+        const restored = await listTransactions(owner!, portfolioId);
+        const ids = restored.map(({ id }) => id);
+        expect(ids).toContain(transactionId);
+        expect(ids).toContain(manualTransactionId);
+        expect(restored.find(({ id }) => id === manualTransactionId)).toMatchObject({
+          side: 'buy',
+          quantity: 1,
+          price: 250000.5,
+        });
+      });
+    } catch (error) {
+      bodyFailure = error;
       throw withoutMatcherAriaSnapshot(error);
     } finally {
       try {

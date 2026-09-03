@@ -1160,11 +1160,25 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'Opening it requires a locally stored live seed-phrase session and deliberately reveals the master secret; the E10 mocked-camera transfer flow owns that secret lifecycle.',
   },
   {
+    surface: 'VaultUnlockDialog device-password prompt',
+    sources: ['apps/web/src/user/vault/ui/VaultUnlockDialog.tsx'],
+    routes: ['/portfolio', '/control/privacy'],
+    justification:
+      'It renders only for a vault that is stored+wrapped and locked on this endpoint, which needs the six-step creation ceremony first; the vault session-sharing and E10 gate arcs own that state and open this dialog for real.',
+  },
+  {
     surface: 'VaultSyncChip status dialog',
     sources: ['apps/web/src/user/vault/ui/VaultSyncChip.tsx'],
     routes: ['/'],
     justification:
       'The chip exists only after entering and unlocking paranoid mode with a configured data home; paranoid Drive round-trip e2e owns that state.',
+  },
+  {
+    surface: 'in-place vault unlock prompt',
+    sources: ['apps/web/src/user/vault/ui/VaultUnlockDialog.tsx'],
+    routes: ['/', '/portfolio'],
+    justification:
+      'It mounts only on a paranoid vault that is locked yet unlockable — wrapped custody already on this device and K_dev absent — and its failure ladder writes §12 lockout state; the paranoid unlock e2e owns that keystore lifecycle.',
   },
   {
     surface: 'portfolio-switcher selection popover',

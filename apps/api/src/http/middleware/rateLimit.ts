@@ -8,8 +8,34 @@ import {
 } from '../../services/security/progressiveLimiter';
 import type { AppContext } from '../context';
 
-const keyByIp = (req: Request): string => req.ip ?? 'unknown';
-const keyByUserOrIp = (req: Request): string => req.authUser?.id ?? req.ip ?? 'unknown';
+/**
+ * The two limiter key spaces, derived in ONE place so nothing reconstructs them
+ * by hand. Anything that needs to read or clear a limiter's Redis state for a
+ * principal composes `progressiveKeys(namespace, limiterKeyForUser(id))` rather
+ * than pasting the prefix.
+ */
+export const limiterKeyForUser = (userId: string): string => `u:${userId}`;
+export const limiterKeyForIp = (ip: string): string => `ip:${ip}`;
+
+const keyByIp = (req: Request): string => limiterKeyForIp(req.ip ?? 'unknown');
+
+/**
+ * Authenticated traffic is metered PER USER; only an anonymous caller falls back
+ * to its address (§10). Both cookie sessions and bearer principals resolve
+ * `req.authUser` before the limiters mount (see `app.ts` — bearer → session →
+ * general), so every signed-in request lands in its own bucket:
+ *
+ *   * two accounts behind one address (a household, an office, CGNAT) never
+ *     share a counter or a cooldown — one of them cannot lock the other out;
+ *   * one account across two addresses (phone on cellular + laptop on wifi)
+ *     DOES share its counter, which is the point: the budget belongs to the
+ *     user, not to the network path.
+ *
+ * The `u:` / `ip:` prefixes keep the two key spaces disjoint by construction, so
+ * no user id can ever be confused with an address inside a Redis namespace.
+ */
+const keyByUserOrIp = (req: Request): string =>
+  req.authUser ? limiterKeyForUser(req.authUser.id) : keyByIp(req);
 
 export interface RateLimiters {
   login: RequestHandler;

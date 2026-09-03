@@ -685,9 +685,13 @@ const definitions = assembleRegisteredJobDefinitions({
     emailLog: createEmailLogRepository(db),
     vaultStaging: createParanoidVaultRepository(db),
     vaultCandidates: createVaultBlobRepository(db),
+    problems: createProblemRepository(db),
+    usageEvents: createUsageAnalyticsRepository(db, lockDb),
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,
+    problemRetentionDays: config.retention.problemDays,
+    usageEventRetentionDays: config.retention.usageEventDays,
   }),
 });
 

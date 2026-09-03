@@ -38,9 +38,24 @@ const problem: Problem = {
   lastSeenAt: '2026-07-17T02:00:00.000Z',
   resolvedAt: null,
   resolvedBy: null,
+  regressed: false,
 };
 
-const list: ProblemListResponse = { problems: [problem], openCount: 1 };
+const list: ProblemListResponse = {
+  problems: [problem],
+  openCount: 1,
+  total: 1,
+  hasMore: false,
+};
+
+/** One more row for the paging cases, distinguishable by title. */
+function pageRow(index: number): Problem {
+  return {
+    ...problem,
+    id: `00000000-0000-7000-8000-00000000000${index}`,
+    title: `PagedError${index}`,
+  };
+}
 
 function renderPage() {
   return render(
@@ -87,6 +102,47 @@ test('resolving a problem calls the API and reloads', async () => {
   await user.click(screen.getByRole('button', { name: 'Resolve' }));
 
   await waitFor(() => expect(api.resolveProblem).toHaveBeenCalledWith(problem.id));
+});
+
+test('loads the next page and keeps the rows already shown', async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.listProblems).mockImplementation(async (params = {}) =>
+    (params.offset ?? 0) === 0
+      ? { problems: [pageRow(1)], openCount: 2, total: 2, hasMore: true }
+      : { problems: [pageRow(2)], openCount: 2, total: 2, hasMore: false },
+  );
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('PagedError1')).toBeInTheDocument());
+  expect(screen.queryByText('PagedError2')).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Load more' }));
+
+  // Both pages are on screen, and the second page's row can be acted on.
+  await waitFor(() => expect(screen.getByText('PagedError2')).toBeInTheDocument());
+  expect(screen.getByText('PagedError1')).toBeInTheDocument();
+  expect(vi.mocked(api.listProblems).mock.calls.at(-1)?.[0]).toMatchObject({ offset: 1 });
+  expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+});
+
+test('marks a resolved problem that came back as a regression', async () => {
+  vi.mocked(api.listProblems).mockResolvedValue({
+    problems: [
+      {
+        ...problem,
+        status: 'open',
+        regressed: true,
+        resolvedAt: '2026-07-16T12:00:00.000Z',
+        resolvedBy: admin.id,
+      },
+    ],
+    openCount: 1,
+    total: 1,
+    hasMore: false,
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Came back')).toBeInTheDocument());
 });
 
 test('shows an error state when the list fetch fails', async () => {
