@@ -393,24 +393,39 @@ export const V5_SURFACE_INVENTORY = [
       'user/assets/AssetsSection.tsx',
       'user/assets/NewsDigestPage.tsx',
       'user/assets/newsFeed.tsx',
+      // The two home-board widgets call `marketIntelApi` directly and the widget
+      // picker decides whether they are reachable at all, so P5's capability
+      // gate lives in all three — clause 1 of the predicate above.
+      'user/home/AddWidgetDrawer.tsx',
+      'user/home/widgets/DividendsWidget.tsx',
+      'user/home/widgets/NewsWidget.tsx',
     ],
     copyRoots: [
       'assets.news',
       'assets.detail.dividends',
       'assets.detail.earnings',
       'assets.detail.splits',
+      'home.widgets.news',
+      'home.widgets.dividends',
     ],
-    copyReview: 'Dividend, earnings, split, per-asset news, and digest wording reviewed.',
+    copyReview:
+      'Dividend, earnings, split, per-asset news, digest and roll-up truncation wording reviewed; the two home widgets and the catalog rows that offer them were reviewed for their own copy only — a capped six-row glance carries no truncation line by design.',
     states: {
-      loading: unverified('Digest renders skeletons; embedded blocks avoid layout churn.'),
+      loading: unverified(
+        'Digest renders skeletons; embedded blocks avoid layout churn; both home widgets render skeleton blocks.',
+      ),
       empty: unverified(
-        'Digest has a shared empty state; configured feeds can render no headlines.',
+        'Digest has a shared empty state; configured feeds can render no headlines; both home widgets render a terse Empty.',
       ),
       error: hidden(
-        'Optional per-asset provider blocks are invisible when unconfigured by binding P5 spec; digest failure remains retryable.',
+        'Optional per-asset provider blocks are invisible when unconfigured by binding P5 spec; digest failure remains retryable; the catalog does not offer a widget this deployment has no capability for, and a widget already placed states its own unavailability.',
       ),
     },
-    tests: ['user/assets/NewsDigestPage.test.tsx', 'user/assets/AssetDetailPage.test.tsx'],
+    tests: [
+      'user/assets/NewsDigestPage.test.tsx',
+      'user/assets/AssetDetailPage.test.tsx',
+      'user/home/marketIntelWidgets.test.tsx',
+    ],
   },
   {
     id: 'p6-workboard-endgame',
@@ -1238,11 +1253,6 @@ export const NON_V5_SURFACES = [
     note: 'V4 first-run step (email verification).',
   },
   {
-    path: 'user/home/AddWidgetDrawer.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 widget picker.',
-  },
-  {
     path: 'user/home/widgets/aggregateSafety.tsx',
     reason: 'no-v5-deliverable',
     note: 'PARANOID-E6 (#1416) home-board completeness guard; renders the shared unavailable outcome from the catalog.',
@@ -1288,11 +1298,6 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign R2 home-board widget (concentration).',
   },
   {
-    path: 'user/home/widgets/DividendsWidget.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 home-board widget (dividends).',
-  },
-  {
     path: 'user/home/widgets/LiquidityWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (liquidity).',
@@ -1306,11 +1311,6 @@ export const NON_V5_SURFACES = [
     path: 'user/home/widgets/NetWorthWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (net worth).',
-  },
-  {
-    path: 'user/home/widgets/NewsWidget.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 home-board widget (news).',
   },
   {
     path: 'user/home/widgets/PerformanceChartWidget.tsx',
@@ -1823,6 +1823,20 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'The deploy-time capability bootstrap defaults to "offered", so an unresolved or failed read leaves the dividend factor gated on the projection read alone (#1681) — there is no state of its own to draw, and the server stays the real boundary.',
   },
+  {
+    component: 'user/control/panels/NotificationsPanel.tsx',
+    read: 'useRoutableTypes.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered" (#1699), so an unresolved or failed read leaves every notification row exactly where it was — a skeleton or an error card over the delivery matrix would report a bootstrap failure as a settings failure, and the server refuses an unconfigured type either way.',
+  },
+  {
+    component: 'user/home/AddWidgetDrawer.tsx',
+    read: 'AddWidgetDrawer.capabilities',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered" (#1699), so an unresolved or failed read leaves the catalog exactly as it was — a skeleton or an error card inside the widget picker would replace a working catalog with a state about a bootstrap the user never asked for, and the widget itself still states its own unavailability if a deployment loses the capability later.',
+  },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
 /**
@@ -2037,13 +2051,24 @@ export type V5AsyncStateDebtLedger = Readonly<
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
  *
- * 215 → 216 with the V5-P8 chat chip group rung (#1726): `ChipShareShortcut`
+ * 215 → 219 with the V5-P5 roll-up honesty pass (#1699): the two market-intel
+ * home widgets join the inventory with one digest/calendar read each (both
+ * already draw skeletons, a terse unavailable state and an empty state), the
+ * widget catalog gains the deploy-capability read that decides whether it offers
+ * them at all, and the notifications panel gains the same capability read for
+ * its two opt-in market rows. The two capability reads deliberately draw no
+ * loading or error state of their own — the bootstrap defaults to "offered", so
+ * an unresolved or failed fetch leaves both surfaces exactly as they were — and
+ * are recorded as exemptions above rather than as debt, so the ceiling stays at
+ * zero.
+ *
+ * 219 → 220 with the V5-P8 chat chip group rung (#1726): `ChipShareShortcut`
  * resolves the shared group's live roster so a recipient the server already
  * admits through the `group` rung is not falsely prompted. Like the audience
  * read beside it the shortcut is simply absent while that roster is unresolved
  * or failing, recorded as an exemption above, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 216;
+export const V5_ASYNC_READ_SITE_BASELINE = 220;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -2111,7 +2136,9 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // is unchanged: neither adds a state gap. (The cockpit's own two new reads
 // — queues and the deploy version — land on HealthPage, which is inside the
 // reviewed V5 inventory, not this ledger.)
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 81;
+// 81 → 79 with #1699: the news and dividends home widgets leave this deferred
+// ledger for the reviewed V5-P5 inventory, taking their one read each with them.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 79;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

@@ -21,6 +21,7 @@ import {
 import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
 import { cx } from '../../../lib/cx';
+import { useDeployCapability } from '../../../lib/featureFlags';
 import {
   confirmTelegramLink,
   getDiscordSettings,
@@ -57,6 +58,27 @@ import { PanelFold, PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './p
  * (muting keeps your choices, why a matrix cell is locked, cadence/quiet hours
  * govern outbound channels only).
  */
+
+/**
+ * The opt-in types the V5-P5 market-intelligence arc produces. On a deployment
+ * without that capability their jobs are hard no-ops, so offering the rows would
+ * let a user switch on notifications that can never arrive — the arc's blocks
+ * are meant to simply disappear when it is unconfigured (§6.3). Listed by TYPE
+ * rather than by category key so a later non-intel member of `markets` keeps its
+ * row.
+ */
+const MARKET_INTEL_NOTIFICATION_TYPES: readonly NotificationType[] = [
+  'earnings.reminder',
+  'dividend.event',
+];
+
+/** The routable types this deployment can actually deliver on. */
+function useRoutableTypes(): readonly NotificationType[] {
+  const marketIntel = useDeployCapability('marketIntel');
+  return marketIntel
+    ? NOTIFICATION_TYPES
+    : NOTIFICATION_TYPES.filter((type) => !MARKET_INTEL_NOTIFICATION_TYPES.includes(type));
+}
 
 const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
 const TELEGRAM_KEY = ['settings', 'telegram'] as const;
@@ -291,6 +313,13 @@ function NotificationMatrixGrid({
   const catLabels = categoryLabels(t);
   // Only columns this deployment can actually deliver (#350/#351 gating).
   const channels = NOTIFICATION_SETTING_CHANNELS.filter((c) => settings.channels[c]);
+  // …and only rows it can actually deliver ON: a category left with no routable
+  // type disappears whole rather than rendering a heading over nothing.
+  const routable = useRoutableTypes();
+  const categories = NOTIFICATION_CATEGORIES.flatMap((category) => {
+    const types = category.types.filter((type) => routable.includes(type));
+    return types.length === 0 ? [] : [{ key: category.key, types }];
+  });
   const gridDisabled = busy || settings.muted;
 
   const rowRouting = (type: NotificationType): NotificationTypeRouting => settings.matrix[type];
@@ -332,7 +361,7 @@ function NotificationMatrixGrid({
   if (phone) {
     return (
       <div className="bt-notification-matrix" style={{ opacity: settings.muted ? 0.6 : undefined }}>
-        {NOTIFICATION_CATEGORIES.map((category) => {
+        {categories.map((category) => {
           const isMirrorchain = category.key === 'mirrorchain';
           return (
             <section className="bt-notification-matrix__category" key={category.key}>
@@ -450,7 +479,7 @@ function NotificationMatrixGrid({
             ))}
           </tr>
         </thead>
-        {NOTIFICATION_CATEGORIES.map((category) => {
+        {categories.map((category) => {
           // MIRRORCHAIN group portfolios (V5-P7 M5, design §11): the eight
           // chain notices join the matrix as ONE compact group row
           // (anti-bloat) — the visible row governs every mirror.* type as
@@ -555,8 +584,10 @@ function CadenceFold({
 }) {
   const t = useT();
   const typeLabels = notificationTypeLabels(t);
-  // account.invite has no per-user routing, so its cadence is meaningless.
-  const types = NOTIFICATION_TYPES.filter((type) => type !== 'account.invite');
+  // account.invite has no per-user routing, so its cadence is meaningless — and
+  // a type this deployment cannot deliver has no cadence to choose either.
+  const routable = useRoutableTypes();
+  const types = routable.filter((type) => type !== 'account.invite');
 
   return (
     <PanelFold summary={t('settings.notifications.digest.title')}>

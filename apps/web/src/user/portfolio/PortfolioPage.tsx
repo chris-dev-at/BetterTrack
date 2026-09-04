@@ -1423,6 +1423,14 @@ function DividendIntelSection() {
   // A definite "could not compute" — distinct from a read still in flight or
   // failed, which says nothing about this portfolio and draws nothing.
   const projectionUnresolved = proj?.available === false;
+  // …and distinct again from "the book is past the per-request fan-out budget"
+  // (§5.3): the projection refuses BEFORE spending provider budget, so it is
+  // unavailable for a reason that has nothing to do with an unresolvable
+  // holding and must not borrow that copy.
+  const projectionTruncated = proj?.truncated === true;
+  // The calendar, unlike the projection, still publishes what it covered — so it
+  // says on one line that it covered only part of the book.
+  const calendarTruncated = calendar.data?.available === true && calendar.data.truncated === true;
   // Nothing at all to surface → stay hidden (anti-bloat). An unresolved
   // projection is only worth explaining beside a calendar that did resolve.
   if (!hasProjection && entries.length === 0) return null;
@@ -1463,6 +1471,8 @@ function DividendIntelSection() {
               : t('portfolio.dividends.perYear')}
           </span>
         </p>
+      ) : projectionTruncated ? (
+        <p className="bt-meta">{t('portfolio.dividends.projectionTruncated')}</p>
       ) : projectionUnresolved ? (
         <p className="bt-meta">{t('portfolio.dividends.projectionUnresolved')}</p>
       ) : null}
@@ -1470,6 +1480,9 @@ function DividendIntelSection() {
       {entries.length > 0 ? (
         <div className="flex flex-col gap-1.5" style={{ marginTop: 12 }}>
           <h3 className="bt-label">{t('portfolio.dividends.calendarTitle')}</h3>
+          {calendarTruncated ? (
+            <p className="bt-meta">{t('portfolio.dividends.calendarTruncated')}</p>
+          ) : null}
           <ul className="bt-band flex flex-col">
             {visibleEntries.map((entry) => {
               // An entry may carry only a pay date (an event already gone ex, or
