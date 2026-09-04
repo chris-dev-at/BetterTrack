@@ -63,7 +63,9 @@ import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import {
   dividendPlan,
+  savingsPlanYears,
   withdrawalHorizon,
+  withdrawalRate,
   FORECAST_CALC_MAX_YEARS,
   FORECAST_CALC_MIN_YEARS,
   FORECAST_RETURN_MAX_PCT,
@@ -519,4 +521,203 @@ test('every calculator rate field states the clamp range', async () => {
     // from the label, so two open cards would collide on it.
     await user.click(toggle);
   }
+});
+
+// ─── §6.14's two inverted solve targets (savings years, sustainable rate) ─────
+
+/** The savings card's body region, once the card is expanded. */
+function savingsRegion() {
+  return within(document.getElementById('forecast-savings-region')!);
+}
+
+/** The withdrawal card's body region, once the card is expanded. */
+function withdrawalRegion() {
+  return within(document.getElementById('forecast-withdrawal-region')!);
+}
+
+test('the savings card solves for the years needed, not only the contribution', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  await user.click(await screen.findByRole('button', { name: /Savings plan/i }));
+  // Default target: the contribution, exactly as before.
+  expect(savingsRegion().getByLabelText('Years')).toBeInTheDocument();
+  expect(savingsRegion().getByText('Required monthly contribution')).toBeInTheDocument();
+  expect(savingsRegion().queryByText('Years needed')).not.toBeInTheDocument();
+
+  await user.click(savingsRegion().getByRole('button', { name: 'Years' }));
+
+  // The horizon becomes the ANSWER, so its field gives way to the contribution
+  // the solver needs instead.
+  expect(savingsRegion().queryByLabelText('Years')).not.toBeInTheDocument();
+  expect(savingsRegion().getByLabelText('Monthly contribution (€)')).toHaveValue(500);
+
+  const expected = savingsPlanYears({
+    target: 100000,
+    principal: 10000,
+    monthlyContribution: 500,
+    ratePctPerYear: 5,
+    compoundingPerYear: 12,
+  });
+  expect(expected.years).not.toBeNull();
+  const stat = savingsRegion().getByText('Years needed').parentElement!;
+  expect(stat).toHaveTextContent(`≈ ${Math.round(expected.years! * 10) / 10} years`);
+  // A real figure, never the "we could not compute this" fallbacks.
+  expect(stat).not.toHaveTextContent(EM_DASH);
+  expect(stat).not.toHaveTextContent('NaN');
+  expect(savingsRegion().getByText('Reachable').parentElement).toHaveTextContent('Yes');
+});
+
+test('an unreachable savings target says so rather than blanking the stat', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  await user.click(await screen.findByRole('button', { name: /Savings plan/i }));
+  await user.click(savingsRegion().getByRole('button', { name: 'Years' }));
+
+  // No return and no contribution: the target above the principal is never met,
+  // which `savingsPlanYears` reports as `{ years: null, feasible: false }`.
+  const rate = savingsRegion().getByLabelText('Annual return (%)');
+  await user.clear(rate);
+  await user.type(rate, '0');
+  const contribution = savingsRegion().getByLabelText('Monthly contribution (€)');
+  await user.clear(contribution);
+  await user.type(contribution, '0');
+
+  const stat = savingsRegion().getByText('Years needed').parentElement!;
+  expect(stat).toHaveTextContent('Not reachable with these inputs.');
+  expect(stat).not.toHaveTextContent(EM_DASH);
+  expect(savingsRegion().getByText('Reachable').parentElement).toHaveTextContent('No');
+});
+
+test('the withdrawal card solves for the sustainable rate, not only the horizon', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  await user.click(await screen.findByRole('button', { name: /Withdrawal plan/i }));
+  expect(withdrawalRegion().getByText('Depletion horizon')).toBeInTheDocument();
+
+  await user.click(withdrawalRegion().getByRole('button', { name: 'Safe withdrawal' }));
+
+  // The monthly draw becomes the ANSWER; the horizon it has to last takes its
+  // place, bounded by the same years range the rest of the suite uses.
+  expect(withdrawalRegion().queryByLabelText('Monthly withdrawal (€)')).not.toBeInTheDocument();
+  const horizon = withdrawalRegion().getByLabelText('Payout horizon (years)');
+  expect(horizon).toHaveValue(20);
+  expect(horizon).toHaveAttribute('min', String(FORECAST_CALC_MIN_YEARS));
+  expect(horizon).toHaveAttribute('max', String(FORECAST_CALC_MAX_YEARS));
+
+  const expected = withdrawalRate({ balance: 100000, months: 240, annualReturnPct: 5 });
+  const stat = withdrawalRegion().getByText('Sustainable monthly withdrawal').parentElement!;
+  expect(stat).toHaveTextContent(formatMoney(expected.monthlyWithdrawal));
+  expect(stat).not.toHaveTextContent(EM_DASH);
+  expect(stat).not.toHaveTextContent('NaN');
+
+  // The horizon is bounded before it reaches the annuity factor, so even an
+  // absurd payout period stays a figure rather than Infinity/Infinity = NaN.
+  await user.clear(horizon);
+  await user.type(horizon, '1000000000');
+  const bounded = withdrawalRate({
+    balance: 100000,
+    months: FORECAST_CALC_MAX_YEARS * 12,
+    annualReturnPct: 5,
+  });
+  const boundedStat = withdrawalRegion().getByText('Sustainable monthly withdrawal').parentElement!;
+  expect(boundedStat).toHaveTextContent(formatMoney(bounded.monthlyWithdrawal));
+  expect(boundedStat).not.toHaveTextContent('NaN');
+});
+
+test('both new solve targets prefill from the real portfolio', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  await waitFor(() => {
+    expect(getPortfolio).toHaveBeenCalledWith(PORTFOLIO_ID, expect.anything());
+    expect(getAnalyticsSeries).toHaveBeenCalledWith(
+      PORTFOLIO_ID,
+      { mode: 'perf' },
+      expect.anything(),
+    );
+  });
+
+  const savingsToggle = screen.getByRole('button', { name: /Savings plan/i });
+  await user.click(savingsToggle);
+  await user.click(savingsRegion().getByRole('button', { name: 'Years' }));
+  await user.click(savingsRegion().getByRole('button', { name: 'Prefill from my portfolio' }));
+  expect(savingsRegion().getByLabelText('Starting principal (€)')).toHaveValue(50000);
+  expect(savingsRegion().getByLabelText('Annual return (%)')).toHaveValue(9.5);
+  // Fold it again: both cards label a rate field "Annual return (%)" and
+  // `TextField` derives the input id from the label.
+  await user.click(savingsToggle);
+
+  await user.click(screen.getByRole('button', { name: /Withdrawal plan/i }));
+  await user.click(withdrawalRegion().getByRole('button', { name: 'Safe withdrawal' }));
+  await user.click(withdrawalRegion().getByRole('button', { name: 'Prefill from my portfolio' }));
+  expect(withdrawalRegion().getByLabelText('Starting balance (€)')).toHaveValue(50000);
+  expect(withdrawalRegion().getByLabelText('Expected annual return (%)')).toHaveValue(9.5);
+
+  const prefilled = withdrawalRate({ balance: 50000, months: 240, annualReturnPct: 9.5 });
+  expect(
+    withdrawalRegion().getByText('Sustainable monthly withdrawal').parentElement,
+  ).toHaveTextContent(formatMoney(prefilled.monthlyWithdrawal));
+});
+
+test('both new solve targets still compute with no portfolio at all', async () => {
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(getPortfolio).mockRejectedValue(new Error('no portfolio'));
+  vi.mocked(getPortfolioHistory).mockRejectedValue(new Error('no history'));
+  vi.mocked(getAnalyticsSeries).mockRejectedValue(new Error('no analytics'));
+
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(await screen.findByText(/Add or open a portfolio to enable prefill/i)).toBeInTheDocument();
+
+  const savingsToggle = screen.getByRole('button', { name: /Savings plan/i });
+  await user.click(savingsToggle);
+  await user.click(savingsRegion().getByRole('button', { name: 'Years' }));
+  expect(savingsRegion().getByRole('button', { name: 'Prefill from my portfolio' })).toBeDisabled();
+  const standaloneYears = savingsPlanYears({
+    target: 100000,
+    principal: 10000,
+    monthlyContribution: 500,
+    ratePctPerYear: 5,
+    compoundingPerYear: 12,
+  });
+  expect(savingsRegion().getByText('Years needed').parentElement).toHaveTextContent(
+    `≈ ${Math.round(standaloneYears.years! * 10) / 10} years`,
+  );
+  await user.click(savingsToggle);
+
+  await user.click(screen.getByRole('button', { name: /Withdrawal plan/i }));
+  await user.click(withdrawalRegion().getByRole('button', { name: 'Safe withdrawal' }));
+  expect(
+    withdrawalRegion().getByRole('button', { name: 'Prefill from my portfolio' }),
+  ).toBeDisabled();
+  const standaloneRate = withdrawalRate({ balance: 100000, months: 240, annualReturnPct: 5 });
+  expect(
+    withdrawalRegion().getByText('Sustainable monthly withdrawal').parentElement,
+  ).toHaveTextContent(formatMoney(standaloneRate.monthlyWithdrawal));
+});
+
+test('the five calculator modes still fold into four top-level cards (anti-bloat)', async () => {
+  const user = userEvent.setup();
+  renderForecast();
+
+  const calculators = await screen.findByRole('region', { name: 'Calculators' });
+  const cardCount = () => calculators.querySelectorAll(':scope > section').length;
+  // Every top-level card is a section with one expand toggle; the solve switch
+  // inside a card is a pressable button, never another expandable card.
+  expect(cardCount()).toBe(4);
+  expect(calculators.querySelectorAll('[aria-expanded]')).toHaveLength(4);
+
+  const savingsToggle = screen.getByRole('button', { name: /Savings plan/i });
+  await user.click(savingsToggle);
+  await user.click(savingsRegion().getByRole('button', { name: 'Years' }));
+  await user.click(savingsToggle);
+  await user.click(screen.getByRole('button', { name: /Withdrawal plan/i }));
+  await user.click(withdrawalRegion().getByRole('button', { name: 'Safe withdrawal' }));
+
+  expect(cardCount()).toBe(4);
+  expect(calculators.querySelectorAll('[aria-expanded]')).toHaveLength(4);
 });

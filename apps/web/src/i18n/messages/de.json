@@ -2839,14 +2839,19 @@
     },
     "savings": {
       "title": "Sparplan",
-      "summary": "Welcher Monatsbetrag erreicht dein Ziel?",
+      "summary": "Welcher Monatsbetrag erreicht dein Ziel – oder wie lange es dauert?",
+      "solve": { "label": "Berechnen", "contribution": "Sparbetrag", "years": "Jahre" },
       "target": "Ziel (€)",
       "principal": "Startkapital (€)",
       "ratePct": "Jährliche Rendite (%)",
       "years": "Jahre",
+      "monthlyContributionInput": "Monatlicher Sparbetrag (€)",
       "compoundingPerYear": "Verzinsungsschritte pro Jahr",
       "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich.",
       "monthlyContribution": "Benötigter Monatsbetrag",
+      "yearsNeeded": "Benötigte Jahre",
+      "yearsValue": "≈ {{years}} Jahre",
+      "notReachable": "Mit diesen Werten nicht erreichbar.",
       "feasible": "Erreichbar"
     },
     "dividend": {
@@ -2862,9 +2867,11 @@
     },
     "withdrawal": {
       "title": "Entnahmeplan",
-      "summary": "Wie lange reicht ein Kapitalstock bei fester Monatsentnahme.",
+      "summary": "Wie lange ein Kapitalstock reicht – oder was du monatlich sicher entnehmen kannst.",
+      "solve": { "label": "Berechnen", "horizon": "Reichweite", "rate": "Sichere Entnahme" },
       "balance": "Startkapital (€)",
       "monthlyWithdrawal": "Monatliche Entnahme (€)",
+      "horizonYears": "Entnahmedauer (Jahre)",
       "annualReturnPct": "Erwartete Jahresrendite (%)",
       "horizonLabel": "Reichweite bis zur Erschöpfung",
       "statusLabel": "Status",
@@ -2872,7 +2879,8 @@
       "statusDepletes": "Wird aufgebraucht",
       "sustainable": "Wird bei dieser Rate nie aufgebraucht.",
       "notComputable": "Mit diesen Werten nicht berechenbar.",
-      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)"
+      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)",
+      "rateLabel": "Tragfähige Monatsentnahme"
     },
     "standingOrders": {
       "title": "Daueraufträge",
