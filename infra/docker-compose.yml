@@ -402,11 +402,38 @@ services:
       # Anonymous read-only access: OFF by default (the localhost/LAN + auth-gated
       # subdomain paths use Grafana's own login). The admin-proxy path sets this
       # ON — the proxy already enforces admin auth, so an anonymous Viewer behind
-      # it renders dashboards without a second login. Safe because Grafana's port
-      # is localhost/LAN-only; external reach is admin-gated by the proxy.
+      # it renders dashboards without a second login.
+      # NOT safe on its own: this is a SERVER-WIDE setting, not a per-path one.
+      # Turned on while ${BT_OBS_BIND_HOST} is a LAN IP it makes every dashboard
+      # readable by every device on that LAN with no credential — so the
+      # entrypoint below refuses that combination (see BT_GRAFANA_ANON_LAN_ACK).
       GF_AUTH_ANONYMOUS_ENABLED: '${BT_GRAFANA_ANON_ENABLED:-false}'
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
-    # Admin-credential bootstrap, then the image's own entrypoint. Seeds the
+      # ── First-party only: no phoning home (§13.5 V5-P2 arc (a)) ────────────
+      # Stock Grafana OSS calls out on its own: anonymous usage statistics to
+      # stats.grafana.org, version + plugin update checks and feedback links
+      # against grafana.com, the grafana.com news feed on the home dashboard,
+      # and a server-side avatar proxy to secure.gravatar.com for every
+      # signed-in user. The arc's contract is zero owner setup and FIRST-PARTY
+      # ONLY — the same rule that rejects a Sentry DSN — so they are pinned off
+      # here rather than left to an owner-settable variable;
+      # `checkProductionCompose` fails on any other value so the default cannot
+      # silently regress. Note the gravatar switch is inverted: `true` = off.
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: 'false'
+      GF_NEWS_NEWS_FEED_ENABLED: 'false'
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
+      # Read by the bootstrap only (Grafana itself never sees these two names).
+      # The entrypoint compares the anonymous-access flag against the bind host
+      # and refuses the unauthenticated-LAN combination; BT_GRAFANA_ANON_LAN_ACK
+      # is the explicit, named override (unset by default = safe).
+      BT_OBS_BIND_HOST: '${BT_OBS_BIND_HOST:-127.0.0.1}'
+      BT_GRAFANA_ANON_LAN_ACK: '${BT_GRAFANA_ANON_LAN_ACK:-}'
+    # Anonymous-access guard, admin-credential bootstrap, then the image's own
+    # entrypoint. The guard runs first and refuses to start at all when
+    # anonymous access meets a non-loopback bind. The bootstrap seeds the
     # credential file inside the persistent grafanadata volume — so its
     # lifecycle matches grafana.db's — and hands it to the server through the
     # image's own `__FILE` convention. It deliberately does NOT put the password
@@ -419,6 +446,43 @@ services:
       - -c
       - |
         set -eu
+        # ── Anonymous access × bind host guard (§13.5 V5-P2 arc (a)) ──────────
+        # GF_AUTH_ANONYMOUS_ENABLED is server-wide. Combined with a non-loopback
+        # BT_OBS_BIND_HOST it publishes every dashboard to the LAN with no
+        # credential — the two documented conveniences must not silently compose.
+        # `printenv X || echo <default>` rather than a `$${X:-default}` default:
+        # the production-environment contract test reads every `$${…}` here as an
+        # owner-supplied Compose input that .env.production.example must document,
+        # and GF_AUTH_ANONYMOUS_ENABLED is derived, not owner-supplied.
+        anon="$$(printenv GF_AUTH_ANONYMOUS_ENABLED || echo false)"
+        bind="$$(printenv BT_OBS_BIND_HOST || echo 127.0.0.1)"
+        ack="$$(printenv BT_GRAFANA_ANON_LAN_ACK || echo '')"
+        anon="$$(printf '%s' "$$anon" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        bind="$$(printf '%s' "$$bind" | tr -d '[:space:]' | sed 's/[][]//g' | tr '[:upper:]' '[:lower:]')"
+        ack="$$(printf '%s' "$$ack" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        # `t` and `y` are in the set because go-ini's parseBool — what Grafana
+        # itself uses for auth.anonymous.enabled — accepts them; a guard that
+        # disagrees with the thing it guards must disagree the safe way.
+        case "$$anon" in true | t | 1 | yes | y | on) anon=yes ;; *) anon=no ;; esac
+        # 127.*.*.* is a glob, not an IP test, so require digits-and-dots only —
+        # the checker's /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/ classifies the same.
+        case "$$bind" in
+          localhost | ::1) loopback=yes ;;
+          127.*.*.*)
+            case "$$(printf '%s' "$$bind" | tr -d '0-9.')" in
+              '') loopback=yes ;;
+              *) loopback=no ;;
+            esac
+            ;;
+          *) loopback=no ;;
+        esac
+        case "$$ack" in true | t | 1 | yes | y | on) ack=yes ;; *) ack=no ;; esac
+        if [ "$$anon" = yes ] && [ "$$loopback" = no ] && [ "$$ack" = no ]; then
+          echo "bettertrack: refusing to start Grafana with anonymous access on the non-loopback bind $$bind." >&2
+          echo "bettertrack: BT_GRAFANA_ANON_ENABLED=true is server-wide, so every device that can reach $$bind would read every dashboard with no credential." >&2
+          echo "bettertrack: fix with ONE of — keep BT_OBS_BIND_HOST=127.0.0.1 (the admin-proxy path in docs/monitoring.md needs nothing else); set BT_GRAFANA_ANON_ENABLED=false and use Grafana's own login on the LAN; or accept an unauthenticated LAN dashboard server deliberately with BT_GRAFANA_ANON_LAN_ACK=true." >&2
+          exit 1
+        fi
         cred=/var/lib/grafana/.bettertrack-admin-password
         stamp=/var/lib/grafana/.bettertrack-admin-password.applied
         db=/var/lib/grafana/grafana.db
