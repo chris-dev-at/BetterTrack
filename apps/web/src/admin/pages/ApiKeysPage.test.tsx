@@ -150,6 +150,15 @@ test('every key-governance table scrolls horizontally instead of widening the pa
   }
 });
 
+test('the per-key tier picker opts into the console tap-target floor', async () => {
+  renderPage();
+
+  // The only page-local control on a swept route that a finger has to hit. The
+  // marker is both the 44px floor (`styles/origin.css`) and the phone gate's
+  // selector, so a control that drops it also drops out of the measurement.
+  expect(await screen.findByLabelText('Tier for CI bot')).toHaveClass('admin-tap-target');
+});
+
 test('renders the extracted key-governance copy in German', async () => {
   renderPage('de');
 

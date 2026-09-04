@@ -20,6 +20,14 @@ const OPAQUE_SURFACES = [
 
 const INFORMATIONAL_TEXT_TOKENS = ['--bt-muted', '--bt-faint'] as const;
 
+/**
+ * The pixel below the admin drawer's `md` handoff (#1756). Spelled here rather
+ * than imported: `AdminLayout` is a React module and this is a text assertion
+ * over a stylesheet, so the test asserts the 768px source of truth separately
+ * instead of pulling the console shell into a CSS test.
+ */
+const ADMIN_DRAWER_MAX_WIDTH = '767.98';
+
 type SurfaceToken = (typeof OPAQUE_SURFACES)[number];
 type TextToken = (typeof INFORMATIONAL_TEXT_TOKENS)[number];
 
@@ -89,6 +97,19 @@ describe('Origin phone chrome', () => {
     if (start === -1) throw new Error('Missing the phone media block');
     const end = originCss.indexOf('/* One-pixel rule helpers', start);
     if (end === -1) throw new Error('Unterminated phone media block');
+    return originCss.slice(start, end);
+  }
+
+  /**
+   * The admin console's own floor block. It is keyed to the console drawer's
+   * `md` handoff (767.98px), not the 480px phone width above, so it is sliced
+   * separately — see the test that asserts it.
+   */
+  function adminTapTargetBlock(): string {
+    const start = originCss.indexOf(`@media (max-width: ${ADMIN_DRAWER_MAX_WIDTH}px)`);
+    if (start === -1) throw new Error('Missing the admin tap-target media block');
+    const end = originCss.indexOf('}\n}', start);
+    if (end === -1) throw new Error('Unterminated admin tap-target media block');
     return originCss.slice(start, end);
   }
 
@@ -167,18 +188,31 @@ describe('Origin phone chrome', () => {
    * below 44px on a phone. Its floor is keyed on the single marker class
    * `admin/components/tokens.ts` composes.
    *
+   * Its breakpoint is NOT this file's 480px phone width but 767.98px, the pixel
+   * below Tailwind's `md`: the console's sidebar is `md:block` and its drawer
+   * `md:hidden`, so the burger and the drawer rows are the only navigation the
+   * console has all the way up to 768px. Asserting the query text as well as
+   * the declaration is what keeps that from silently sliding back to 480px and
+   * leaving 481–767px with a 36px burger.
+   *
    * Both directions are asserted: the rule is declared, and the class stays
    * console-only — a rule in this stylesheet that started matching Origin
    * elements would be exactly the leak the console's token module refuses. The
    * measuring half is the admin matrix in `e2e/mobile-overflow.spec.ts`.
    */
   it('gives the admin console a 44px floor of its own, reaching nothing in Origin', () => {
-    expect(phoneBlock()).toMatch(
+    expect(adminTapTargetBlock()).toMatch(
       /\.admin-tap-target \{[^}]*min-width: 44px;[^}]*min-height: 44px;/,
     );
+    // The console's own drawer breakpoint, not the user app's phone width.
+    expect(phoneBlock()).not.toContain('.admin-tap-target');
     expect(
       readFileSync(resolve(process.cwd(), 'src/admin/components/tokens.ts'), 'utf8'),
     ).toContain("export const TAP_TARGET = 'admin-tap-target'");
+    expect(
+      readFileSync(resolve(process.cwd(), 'src/admin/components/AdminLayout.tsx'), 'utf8'),
+      'The drawer the floor exists for must still retire at the same 768px handoff.',
+    ).toContain('ADMIN_DESKTOP_MIN_WIDTH_PX = 768');
 
     const webRoot = process.cwd();
     const leaks = ['src/user', 'src/ui', 'src/components']

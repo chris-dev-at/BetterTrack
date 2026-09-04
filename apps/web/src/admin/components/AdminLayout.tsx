@@ -28,8 +28,9 @@ const ADMIN_DESKTOP_MIN_WIDTH_PX = 768;
  */
 const NAV_LINK_BASE = cx(
   'flex min-h-[34px] items-center rounded-none border-l-2 px-3 py-1 text-[13px] transition-colors',
-  // Below 480px the desktop sidebar is hidden and these rows only render inside
-  // the drawer, which is the ONLY way to navigate the console on a phone.
+  // Below 768px (`md`) the desktop sidebar is hidden and these rows only render
+  // inside the drawer, which is the ONLY way to navigate the console there —
+  // hence the 44px floor, declared for the same width in `styles/origin.css`.
   TAP_TARGET,
   FOCUS,
 );

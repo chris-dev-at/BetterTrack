@@ -9,7 +9,17 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
-import { Alert, Badge, Button, EmptyState, PageHeader, Spinner, TextField } from '../components/ui';
+import {
+  Alert,
+  Badge,
+  Button,
+  EmptyState,
+  PageHeader,
+  Spinner,
+  TextField,
+  cx,
+} from '../components/ui';
+import { TAP_TARGET } from '../components/tokens';
 
 function errorMessage(err: unknown, t: TranslateFn): string {
   void err;
@@ -290,7 +300,15 @@ function KeysPanel({
                   <td className="py-2 font-mono text-xs">{key.userId}</td>
                   <td className="py-2">
                     <select
-                      className="rounded border border-slate-300 bg-transparent px-2 py-1 text-sm"
+                      // The one page-local control on a swept route that a
+                      // finger has to hit (#1756): the marker both gives it the
+                      // 44px floor below the drawer breakpoint and puts it in
+                      // the phone gate's measured set, which otherwise only
+                      // sees the shell and the control kit.
+                      className={cx(
+                        TAP_TARGET,
+                        'rounded border border-slate-300 bg-transparent px-2 py-1 text-sm',
+                      )}
                       value={key.tierId ?? ''}
                       onChange={(e) => void assign(key, e.target.value)}
                       disabled={Boolean(key.revokedAt)}

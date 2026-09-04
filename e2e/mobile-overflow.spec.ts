@@ -1539,8 +1539,11 @@ async function settleAdminRoute(page: Page, route: string, target: string): Prom
     ).toBeVisible({ timeout: 20_000 });
     // The console's own spinner (`admin/components/ui.tsx`), not the user app's
     // skeleton: measuring a page mid-load measures a layout no operator sees.
-    // Scoped to the page body so `LiveRefreshControl`'s permanent polite
-    // `role="status"` cadence line is not mistaken for a pending read.
+    // `:has(.animate-spin)` is what keeps `LiveRefreshControl`'s permanent
+    // polite `role="status"` cadence line from reading as a pending load — that
+    // control renders INSIDE `#main-content` and has no spinner in it. The
+    // `#main-content` scope is the second half: it keeps the wait off any
+    // status region the shell paints around the page.
     await expect(page.locator('#main-content [role="status"]:has(.animate-spin)')).toHaveCount(0, {
       timeout: 30_000,
     });

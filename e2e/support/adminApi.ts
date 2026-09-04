@@ -383,7 +383,10 @@ export async function newAdminBrowserContext(
   apiRequest: APIRequestContext,
   // Extra `newContext` options — e.g. the phone viewport the responsive gate
   // (§13.5 V5-P13b) sweeps the console at. `baseURL` stays owned by this helper.
-  options: Omit<Parameters<Browser['newContext']>[0], 'baseURL' | 'storageState'> = {},
+  // `NonNullable` is load-bearing: `newContext`'s parameter is optional, so
+  // `Parameters<…>[0]` is `BrowserContextOptions | undefined` and `keyof` that
+  // union is `never` — the `Omit` would collapse to `{}` and exclude nothing.
+  options: Omit<NonNullable<Parameters<Browser['newContext']>[0]>, 'baseURL' | 'storageState'> = {},
 ): Promise<BrowserContext> {
   const state = await apiRequest.storageState();
   const sessionCookies = state.cookies.filter((c) => c.name === 'bt_sid');
