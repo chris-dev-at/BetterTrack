@@ -177,6 +177,14 @@ export const backtestBenchmarkResultSchema = z
     label: z.string(),
     series: z.array(backtestSeriesPointSchema),
     stats: backtestStatsSchema,
+    /**
+     * The share of this benchmark that resolved to NO asset, in percent — a
+     * nested conglomerate benchmark whose child basket is empty (V5-P6). The
+     * remaining weights are normalized over what did resolve, so a non-zero
+     * value means the curve is the *rest* of the basket, not all of it. Always
+     * `0` for an asset or preset benchmark.
+     */
+    unresolvedPct: z.number(),
   })
   .strict();
 export type BacktestBenchmarkResult = z.infer<typeof backtestBenchmarkResultSchema>;
@@ -248,11 +256,23 @@ export type BacktestResponse = z.infer<typeof backtestResponseSchema>;
  * shared basket's real top-level constituents, so the sandbox can only re-weight
  * what the share already exposes — never inject a foreign id (the §6.9 privacy
  * boundary).
+ *
+ * The weight lives in the SAME `0 < w ≤ 100` band as an owner's stored weight
+ * ({@link weightPctSchema}). The upper bound is a privacy bound, not a
+ * cosmetic one (#1755): weights are relative, so an unbounded one (`1_000_000`
+ * against a sibling's `0.001`) drove a nested constituent's normalized share to
+ * ~100 % and made the aggregate-only response the opaque child's OWN base-100
+ * curve. The server additionally caps how far a nested row may be pushed within
+ * this band; see `SANDBOX_MAX_NESTED_SHARE_PCT` in the backtest service.
  */
 export const sharedSandboxPositionSchema = z
   .object({
     id: z.string().uuid(),
-    weight: z.number().finite().gt(0, 'Weight must be greater than 0.'),
+    weight: z
+      .number()
+      .finite()
+      .gt(0, 'Weight must be greater than 0.')
+      .lte(100, 'Weight must be at most 100.'),
   })
   .strict();
 export type SharedSandboxPosition = z.infer<typeof sharedSandboxPositionSchema>;
@@ -407,6 +427,15 @@ export const comparisonSeriesSchema = z
     series: z.array(backtestSeriesPointSchema),
     stats: backtestStatsSchema,
     deltas: comparisonMetricsSchema,
+    /**
+     * The share of this basket that resolved to NO asset, in percent (V5-P6):
+     * a nested constituent that is empty, directly or through its own empty
+     * children. The curve and stats are computed over the *resolved* remainder
+     * normalized to 100, so a non-zero value means the series is only that part
+     * of the basket — the same slice the Invest Calculator withholds from a
+     * budget. `0` for every fully-resolving basket.
+     */
+    unresolvedPct: z.number(),
   })
   .strict();
 export type ComparisonSeries = z.infer<typeof comparisonSeriesSchema>;

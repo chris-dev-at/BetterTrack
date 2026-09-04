@@ -186,6 +186,15 @@ export const conglomerateResolvedResponseSchema = z
     conglomerateId: z.string().uuid(),
     nested: z.boolean(),
     positions: z.array(resolvedConglomeratePositionSchema),
+    /**
+     * The share of the basket, in percent, that resolved to NO asset — a nested
+     * constituent that is empty, directly or through its own empty children
+     * (#1755). `positions` is normalized to 100 over what *did* resolve, so
+     * without this field the view would silently redistribute that slice onto
+     * the survivors while the Invest Calculator on the same screen correctly
+     * withholds it. `0` for every fully-resolving basket.
+     */
+    unresolvedPct: z.number(),
   })
   .strict();
 export type ConglomerateResolvedResponse = z.infer<typeof conglomerateResolvedResponseSchema>;

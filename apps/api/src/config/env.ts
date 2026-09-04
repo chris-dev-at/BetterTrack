@@ -675,6 +675,8 @@ export function deriveOrigins(e: {
 export const REQUEST_COST_KEYS = [
   'socialShared',
   'backtestPreview',
+  'backtestCompare',
+  'backtestSharedSandbox',
   'analyticsSeries',
   'importCreate',
   'importRowResolve',
@@ -1156,10 +1158,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // `general` is a REQUEST-COUNT limiter: it cannot tell a 2 ms `GET /auth/me`
   // apart from a request that fans out N database round trips or blocks on a
   // provider. Raising its ceiling to 600 req/min (above) therefore raised the
-  // ceiling on those too. The four endpoints below were the ones for which
-  // `general` is the ONLY guard and whose per-request work is unbounded or
-  // scales with user-controlled input; they now also spend from a second
-  // dimension measured in WORK UNITS (`expensive`, 3000 units / min per user).
+  // ceiling on those too. The endpoints below are the ones for which `general`
+  // is the ONLY guard and whose per-request work is unbounded or scales with
+  // user-controlled input; they also spend from a second dimension measured in
+  // WORK UNITS (`expensive`, 3500 units / min per user).
   //
   // ONE UNIT ≈ one ordinary cheap read (a couple of indexed queries). The
   // weights are cost ESTIMATES read off the code, in the same spirit as the
@@ -1170,9 +1172,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // |-------------------------------------------|-----------------|-------|-----|
   // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
   // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
+  // | POST /backtest/compare                    | backtestCompare |   20  | **per series** — the route multiplies by the body's id count (2–6 ⇒ 40–120): the same history walk as a preview, once per basket, over baskets that each flatten to up to 250 assets |
+  // | POST /backtest/shared/:id/preview         | backtestSharedSandbox | 25 | a preview's engine run over a friend's basket, deliberately with NO Redis memo — every request computes |
   // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
   // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    6  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
+  //
+  // `backtestCompare` is the table's only PER-UNIT-OF-WORK weight. A flat price
+  // would either overcharge a two-basket comparison or undercharge a six-basket
+  // one by 3×, and the endpoint's whole problem was that its cost is chosen by
+  // the caller. The multiplier is read off the raw body by the route and clamped
+  // to the contract's own 2–6 bound, so a caller cannot name its own price.
   //
   // A note on `analyticsSeries`, so the next reader does not re-derive it from
   // the wrong bound: its work is sized by the DATA, never by the requested
@@ -1182,14 +1192,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // request-sanity/UX guard on an absurd window — it is NOT what makes this
   // weight sound, and shrinking it would not shrink the weight.
   //
-  // KNOWN FOLLOW-UP — the enumeration above is the set #1643 scoped, not the
-  // exhaustive set. `POST /backtest/compare` runs 2–6 conglomerate previews per
-  // request, so it is strictly heavier than the 25-unit `/preview` beside it and
-  // is still metered at one request. It wants a weight of its own (≈ `/preview`
-  // × the overlay count) in a follow-up.
+  // The follow-up this table asked for landed in #1755: `POST /backtest/compare`
+  // and `POST /backtest/shared/:id/preview` — the two remaining reads for which
+  // `general` was the only guard, and the comparison in particular the single
+  // most expensive read in the app — now have weights of their own above.
   //
   // MODELLED NORMAL-USE BAR for the unit budget — the same one active user,
-  // pessimistically doing all five things inside the SAME minute (nobody
+  // pessimistically doing all seven things inside the SAME minute (nobody
   // actually does):
   //
   //   * builder weight-tuning, one debounced preview every ~3 s  = 20 × 25 = 500
@@ -1197,8 +1206,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //   * shared-with-me list on focus + reconnect refetch, ~6      =  6 × 10 =  60
   //   * two CSV uploads                                          =  2 × 100 = 200
   //   * a bulk kind sweep over a statement's undecided rows, ~20  = 20 ×  6 = 120
+  //   * two three-basket comparisons (an explicit action, memoised
+  //     across every permutation of one set)                      =  5 × 20 = 100
+  //   * a couple of what-if tweaks on a friend's shared basket    =  2 × 25 =  50
   //
-  //   ⇒ worst realistic 1 min ≈ 1000 units → expensive 3000  (3.0×)
+  //   ⇒ worst realistic 1 min ≈ 1150 units → expensive 3500  (3.0×)
+  //
+  // The ceiling cannot simply keep climbing with the table: `importRowResolve`
+  // at 6 units would, past ~3600, let 600+ requests/min through on cost alone —
+  // which is where `general` already sits, and where the cost dimension would
+  // stop being the binding one. A further weight added here has to fit under
+  // that, or move a weight.
   //
   // The sweep is a BURST, not a rate: 20 is the bar for a normal statement's
   // undecided rows, and the budget leaves room for ~500 confirmations inside one
@@ -1209,15 +1227,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //
   // …and, on the other side, every weight is large enough that the COST budget
   // bites BEFORE the request COUNT one would: a caller doing nothing but these
-  // is stopped after 120 previews, 30 uploads or 300 shared/analytics reads per
-  // minute — all under `general`'s 600 req/min. That is the point of the
+  // is stopped after 140 previews or sandboxes, 35 uploads, ~29 six-basket
+  // comparisons or 350 shared/analytics reads per minute — all under `general`'s
+  // 600 req/min. That is the point of the
   // dimension: a pathological caller is bounded by the WORK it asks for, not by
   // how many requests that work happens to arrive in. Both numbers are pinned
   // in `config/__tests__/rateLimitTable.test.ts`.
   //
-  // The REQUEST-COUNT bar above is unchanged by this table: these four are a
-  // handful of requests inside the modelled 30 s / 15 min windows (they are
-  // expensive, not chatty), and no ceiling set by the 2026-09-02 pass moved.
+  // The REQUEST-COUNT bar above is unchanged by this table: these are a handful
+  // of requests inside the modelled 30 s / 15 min windows (they are expensive,
+  // not chatty), and no ceiling set by the 2026-09-02 pass moved.
   //
   // The STRICT rows are abuse controls, not capacity controls, and are NOT
   // sized by this rule: credential stuffing (loginIp/loginAccount, which also
@@ -1465,15 +1484,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
-      // COST dimension (#1643): 3000 WORK UNITS per minute per user, on the
+      // COST dimension (#1643): 3500 WORK UNITS per minute per user, on the
       // same key and the SAME escalation ladder as `general`, so a caller that
       // overspends work gets the identical short-then-climbing 429 it would get
       // for overspending requests — nothing about the envelope or the client's
       // backoff changes. Only the routes in the §10 COST TABLE above meter
       // against it; every other request leaves this counter untouched.
+      //
+      // Raised from 3000 with #1755, which brought the two remaining unmetered
+      // expensive reads (the N-way comparison and the shared what-if sandbox)
+      // into the table: the modelled pessimistic minute grew with them, and the
+      // budget still clears it by 3×. The ceiling is not free to raise further —
+      // `importRowResolve` at 6 units would otherwise let 600+ requests/min
+      // through on cost alone, which is where the request COUNT limiter already
+      // sits and the cost dimension would stop binding.
       expensive: {
         windowSec: 60,
-        limit: 3000,
+        limit: 3500,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
@@ -1482,6 +1509,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       requestCosts: {
         socialShared: 10,
         backtestPreview: 25,
+        // PER SERIES, not per request (#1755): the route multiplies this by the
+        // number of conglomerates the body asks to overlay, because that is what
+        // the request costs — one flatten, one asset fan-out and one engine run
+        // each. Slightly under a preview per series: the series share one
+        // de-duplicated asset load, and the memo now answers every permutation
+        // of one set.
+        backtestCompare: 20,
+        // A preview-equivalent engine run over a friend's basket, deliberately
+        // WITHOUT a Redis memo (the sandbox never persists a thing), so every
+        // request computes where a preview may be answered from cache.
+        backtestSharedSandbox: 25,
         analyticsSeries: 10,
         importCreate: 100,
         importRowResolve: 6,

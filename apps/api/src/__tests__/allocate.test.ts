@@ -445,6 +445,17 @@ describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
     expect(body.totalCostEur + body.leftoverEur).toBeCloseTo(10000, 6);
     // …and said out loud rather than left as an unexplained remainder.
     expect(body.warnings.some((w) => w.includes('4000.00'))).toBe(true);
+
+    // The RESOLVED view of the same basket, which the detail page's weights
+    // table, allocation donut and backtest panel all read, now agrees about
+    // what this basket is (#1755): its positions are still normalized to 100
+    // over the surviving leg, but it reports the same 40 % this calculator
+    // withheld instead of presenting a fully-invested basket beside a budget
+    // that is deliberately not fully spent.
+    const resolved = await agent.get(`/api/v1/conglomerates/${coreId}/resolved`);
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.unresolvedPct).toBeCloseTo(40, 9);
+    expect(resolved.body.unresolvedPct).toBeCloseTo((body.leftoverEur / 10000) * 100, 9);
   });
 
   it('leaves a fully-resolved nested basket spending the whole budget (no withholding)', async () => {

@@ -307,6 +307,19 @@ export function ConglomerateDetailPage() {
         {data.description ? <p className="text-sm bt-muted">{data.description}</p> : null}
       </div>
 
+      {/* The share an empty nested blueprint left behind (#1755). The resolved
+          weights, the donut and the backtest below all cover only what actually
+          resolved — normalized to 100 among themselves — while the Invest
+          Calculator on this same screen withholds this slice from a budget.
+          Saying so is what makes the two agree. */}
+      {resolved && resolved.unresolvedPct > 0 ? (
+        <Alert tone="info">
+          {t('workboard.detail.unresolvedShare', {
+            pct: formatWeight(resolved.unresolvedPct),
+          })}
+        </Alert>
+      ) : null}
+
       {/* Positions + allocation */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section aria-labelledby="positions-heading" className="flex flex-col gap-3">
