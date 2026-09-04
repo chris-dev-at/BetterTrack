@@ -91,7 +91,13 @@ function recordingBus(): EventBus & { published: DomainEvent[] } {
 
 function makeCtx(events: EventBus): JobContext {
   const redis = new RedisMock() as unknown as Redis;
-  return { events, deadLetter: createDeadLetter(redis), redis, logger };
+  return {
+    events,
+    deadLetter: createDeadLetter(redis),
+    redis,
+    logger,
+    isFeatureEnabled: async () => true,
+  };
 }
 
 /** The run's real execution instant — every event this suite asserts is stamped with it. */

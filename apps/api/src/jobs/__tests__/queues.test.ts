@@ -10,7 +10,13 @@ import {
 } from '../definitions/registration';
 import { BACKOFF_BASE_MS, DEFAULT_JOB_OPTIONS, QUEUE_JOB_OPTIONS } from '../options';
 import { createQueueRegistry, type QueueRegistry } from '../queues';
-import { ALL_QUEUE_NAMES, QUEUE_NAMES, type JobDefinition, type QueueName } from '../types';
+import {
+  ALL_QUEUE_NAMES,
+  QUEUE_FEATURE_FLAGS,
+  QUEUE_NAMES,
+  type JobDefinition,
+  type QueueName,
+} from '../types';
 
 /**
  * The queue registry is what turns a declared per-queue option into the options
@@ -91,17 +97,24 @@ describe('queue registry job options (§13.5 V5-P10)', () => {
 });
 
 describe('definition-declared job options stay the ones the queue applies', () => {
-  /** The exhaustive worker input, stubbed down to name + handler. */
+  /**
+   * The exhaustive worker input, stubbed down to name + handler — plus each
+   * queue's declared kill switch, which the assembly checks the same way.
+   */
   function stubDefinitions(override: Partial<JobDefinition>): RegisteredJobDefinitions {
     return Object.fromEntries(
-      JOB_REGISTRATION_DESCRIPTORS.map((descriptor) => [
-        descriptor.key,
-        {
-          name: descriptor.name,
-          handler: async () => undefined,
-          ...(descriptor.name === QUEUE_NAMES.webhooksDeliver ? override : {}),
-        },
-      ]),
+      JOB_REGISTRATION_DESCRIPTORS.map((descriptor) => {
+        const featureFlag = QUEUE_FEATURE_FLAGS[descriptor.name];
+        return [
+          descriptor.key,
+          {
+            name: descriptor.name,
+            handler: async () => undefined,
+            ...(featureFlag ? { featureFlag } : {}),
+            ...(descriptor.name === QUEUE_NAMES.webhooksDeliver ? override : {}),
+          },
+        ];
+      }),
     ) as unknown as RegisteredJobDefinitions;
   }
 

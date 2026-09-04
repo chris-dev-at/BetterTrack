@@ -242,6 +242,7 @@ function makeJobCtx(): JobContext {
     deadLetter: createDeadLetter(redis),
     redis,
     logger: pino({ level: 'silent' }) as unknown as Logger,
+    isFeatureEnabled: async () => true,
   };
 }
 

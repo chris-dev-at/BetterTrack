@@ -158,22 +158,32 @@ describe('the shipped ceilings clear ordinary use (§10)', () => {
 
 describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE, #1643)', () => {
   /**
-   * The four cost-metered endpoints, driven through the REAL middleware chain.
-   * A unit test of `limiters.cost(...)` proves the guard; it cannot prove that
-   * the guard is MOUNTED — and the rest of the API suite runs with
+   * Every cost-metered endpoint, driven through the REAL middleware chain. A
+   * unit test of `limiters.cost(...)` proves the guard; it cannot prove that the
+   * guard is MOUNTED — and the rest of the API suite runs with
    * `rateLimits.enabled === false`, so every other test passes identically
-   * whether or not the four `limiters.cost(...)` mounts exist.
+   * whether or not those `limiters.cost(...)` mounts exist.
    *
    * Each route puts the cost guard FIRST, ahead of multer / `validateBody` /
    * `validateParams`, so a request's own outcome (200, 400, 404) is irrelevant
    * here: what the assertions read is whether the guard let it through and what
    * it charged the `expensive` counter for it.
    */
-  const COST = { socialShared: 10, analyticsSeries: 10, backtestPreview: 25, importCreate: 100 };
-  /** `expensive`: 3000 units / minute (config/env.ts §10 COST TABLE). */
-  const EXPENSIVE_LIMIT = 3000;
+  const COST = {
+    socialShared: 10,
+    analyticsSeries: 10,
+    backtestPreview: 25,
+    /** Per SERIES — the comparison route multiplies by the body's id count (#1755). */
+    backtestCompare: 20,
+    backtestSharedSandbox: 25,
+    importCreate: 100,
+  };
+  /** `expensive`: 3500 units / minute (config/env.ts §10 COST TABLE). */
+  const EXPENSIVE_LIMIT = 3500;
+  /** A syntactically valid conglomerate id — the sandbox route validates params. */
+  const SOME_ID = '018f0000-0000-7000-8000-000000000001';
 
-  it('charges each of the four endpoints its declared weight, and clears a normal minute', async () => {
+  it('charges each metered endpoint its declared weight, and clears a normal minute', async () => {
     const limited = await createTestApp({ rateLimitsEnabled: true });
     const user = await limited.seedUser({ email: 'cost@bt.test', username: 'coster' });
     const cookie = await sessionCookie(limited.app, user);
@@ -186,13 +196,16 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     expect(created.status).toBe(201);
     const pid = created.body.portfolio.id as string;
 
-    // A pessimistic ordinary minute at these four surfaces: the shared-with-me
-    // list refetching on focus, an analytics panel being re-filtered, a few
-    // debounced builder previews, one CSV upload.
+    // A pessimistic ordinary minute at these surfaces: the shared-with-me list
+    // refetching on focus, an analytics panel being re-filtered, a few debounced
+    // builder previews, one CSV upload, one three-basket comparison and a couple
+    // of what-if tweaks on a friend's shared basket.
     const SHARED = 6;
     const ANALYTICS = 6;
     const PREVIEWS = 4;
     const IMPORTS = 1;
+    const COMPARE_SERIES = 3;
+    const SANDBOXES = 2;
 
     for (let i = 0; i < SHARED; i += 1) {
       const res = await request(limited.app).get('/api/v1/social/shared').set('Cookie', cookie);
@@ -221,21 +234,52 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
         .set('Cookie', cookie);
       expect(res.status).toBe(400);
     }
+    {
+      // One comparison over three baskets. The guard runs before `validateBody`,
+      // so the ids alone are enough to price it and the body is then a 400.
+      const res = await request(limited.app)
+        .post('/api/v1/backtest/compare')
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({ conglomerateIds: [SOME_ID, SOME_ID, SOME_ID] });
+      expect(res.status).toBe(400);
+    }
+    for (let i = 0; i < SANDBOXES; i += 1) {
+      const res = await request(limited.app)
+        .post(`/api/v1/backtest/shared/${SOME_ID}/preview`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({});
+      expect(res.status).toBe(400);
+    }
 
-    // Every one of the four mounts is present AND carries its own weight: drop
-    // any single `limiters.cost(...)` and this total falls by that endpoint's
-    // units. Nothing else in the app meters against `expensive`.
+    // Every mount is present AND carries its own weight: drop any single
+    // `limiters.cost(...)` and this total falls by that endpoint's units.
     const spent =
       SHARED * COST.socialShared +
       ANALYTICS * COST.analyticsSeries +
       PREVIEWS * COST.backtestPreview +
-      IMPORTS * COST.importCreate;
-    expect(spent).toBe(320);
+      IMPORTS * COST.importCreate +
+      COMPARE_SERIES * COST.backtestCompare +
+      SANDBOXES * COST.backtestSharedSandbox;
+    expect(spent).toBe(430);
     const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
     expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
-    // …and that realistic minute sits at roughly a tenth of the budget, so the
-    // new dimension never fires during ordinary use.
-    expect(spent * 9).toBeLessThan(EXPENSIVE_LIMIT);
+
+    // …and NOTHING ELSE in the app meters against `expensive`. Until #1755 that
+    // sentence was a comment sitting next to a total that omitted the two most
+    // expensive reads in the app — the omission was pinned, not caught. It is an
+    // assertion now: an ordinary read from a route with no cost mount leaves the
+    // work counter exactly where the metered calls left it.
+    for (const path of ['/api/v1/conglomerates', '/api/v1/portfolios', '/api/v1/auth/me']) {
+      expect((await request(limited.app).get(path).set('Cookie', cookie)).status).toBe(200);
+    }
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
+    // …and that realistic minute still sits at roughly an EIGHTH of the budget,
+    // so the dimension never fires during ordinary use. It was a tenth before
+    // #1755 added two more surfaces to the same pessimistic minute; the ratio
+    // moved because the minute got bigger, not because the ceiling got looser.
+    expect(spent * 8).toBeLessThan(EXPENSIVE_LIMIT);
     expect(await limited.ctx.redis.get(key.cooldown)).toBeNull();
   }, 120_000);
 
@@ -250,9 +294,9 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
 
     // `limiters.cost('importCreate')` runs BEFORE multer, so a bodyless POST
     // spends its 100 units and is rejected for the missing file without the API
-    // reading an upload: 30 of them exactly exhaust the minute's 3000 units.
+    // reading an upload: 35 of them exactly exhaust the minute's 3500 units.
     const drain = EXPENSIVE_LIMIT / COST.importCreate;
-    expect(drain).toBe(30);
+    expect(drain).toBe(35);
     for (let i = 0; i < drain; i += 1) {
       const res = await request(limited.app)
         .post('/api/v1/imports')
@@ -288,8 +332,8 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
       ).toBeNull();
     }
 
-    // While that cooldown is live the OTHER three mounts refuse too — same key,
-    // same namespace — which is what proves each of them is wired to it.
+    // While that cooldown is live the OTHER mounts refuse too — same key, same
+    // namespace — which is what proves each of them is wired to it.
     const shared = await request(limited.app).get('/api/v1/social/shared').set('Cookie', cookie);
     expect(shared.status).toBe(429);
     const analytics = await request(limited.app)
@@ -302,6 +346,18 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
       .set('Cookie', cookie)
       .send({});
     expect(preview.status).toBe(429);
+    const compare = await request(limited.app)
+      .post('/api/v1/backtest/compare')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({});
+    expect(compare.status).toBe(429);
+    const sandbox = await request(limited.app)
+      .post('/api/v1/backtest/shared/018f0000-0000-7000-8000-000000000001/preview')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({});
+    expect(sandbox.status).toBe(429);
 
     // …and the budget is PER USER: a second account on the same address reads
     // its shared list normally throughout.
@@ -310,6 +366,53 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
       .get('/api/v1/social/shared')
       .set('Cookie', bystanderCookie);
     expect(unaffected.status).toBe(200);
+  }, 120_000);
+
+  it('prices a comparison by its SERIES COUNT and refuses a burst the request count waves through', async () => {
+    // The N-way comparison is the most expensive read in the app — up to six
+    // baskets, each flattening to 250 assets, each its own engine run — and it
+    // shipped metered by nothing but the app-wide request counter at 600/min
+    // (#1755). Its price therefore has to scale with what the body asks for.
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'comparer@bt.test', username: 'comparer' });
+    const cookie = await sessionCookie(limited.app, user);
+    const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
+
+    const compare = (series: number) =>
+      request(limited.app)
+        .post('/api/v1/backtest/compare')
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({ conglomerateIds: Array.from({ length: series }, () => SOME_ID) });
+
+    // The guard runs ahead of `validateBody` (these bodies are 400s), so what is
+    // read here is purely what the meter charged: two baskets, then six.
+    expect((await compare(2)).status).toBe(400);
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(2 * COST.backtestCompare));
+    expect((await compare(6)).status).toBe(400);
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(8 * COST.backtestCompare));
+
+    // A six-way comparison spends 120 units, so ~29 of them exhaust the minute.
+    const six = 6 * COST.backtestCompare;
+    const remaining = Math.floor((EXPENSIVE_LIMIT - 8 * COST.backtestCompare) / six);
+    for (let i = 0; i < remaining; i += 1) {
+      expect((await compare(6)).status).toBe(400);
+    }
+    const over = await compare(6);
+    expect(over.status).toBe(429);
+    expect(over.body.error.code).toBe('RATE_LIMITED');
+
+    // That burst is 30 requests. `general` allows 600/min and `generalBurst`
+    // 600/30 s, so the COUNT dimension would have waved every one of them
+    // through — neither ladder armed. Only the WORK budget noticed.
+    expect(remaining + 3).toBeLessThan(60);
+    for (const namespace of ['general', 'general_burst']) {
+      expect(
+        await limited.ctx.redis.get(
+          progressiveKeys(namespace, limiterKeyForUser(user.id)).cooldown,
+        ),
+      ).toBeNull();
+    }
   }, 120_000);
 });
 

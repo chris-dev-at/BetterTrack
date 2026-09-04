@@ -5,6 +5,9 @@
 export {
   QUEUE_NAMES,
   ALL_QUEUE_NAMES,
+  QUEUE_FEATURE_FLAGS,
+  featureFlagForQueue,
+  flagOwningQueues,
   type QueueName,
   type JobPayloads,
   type JobPayload,
@@ -47,7 +50,12 @@ export {
   toRepeatOptions,
   type SchedulableQueue,
 } from './scheduler';
-export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
+export {
+  createJobWorkers,
+  runJobDefinition,
+  type RunningWorkers,
+  type CreateJobWorkersDeps,
+} from './worker';
 export {
   assertParanoidJobBindings,
   bindParanoidJob,

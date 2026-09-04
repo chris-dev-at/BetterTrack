@@ -1,10 +1,12 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 
 import {
   backtestComparisonRequestSchema,
   backtestPreviewRequestSchema,
   conglomerateIdParamSchema,
   sharedSandboxPreviewRequestSchema,
+  COMPARISON_MAX_SERIES,
+  COMPARISON_MIN_SERIES,
   type BacktestComparisonRequest,
   type BacktestPreviewRequest,
   type SharedSandboxPreviewRequest,
@@ -23,6 +25,21 @@ import type { AppContext } from '../context';
  * variant (`GET /conglomerates/:id/backtest`) reuses this service in a later
  * P4 issue.
  */
+/**
+ * How many series a comparison asks to overlay — the multiplier on the PER-SERIES
+ * `backtestCompare` weight (§10 COST TABLE, #1755). Read off the RAW body,
+ * because the meter runs before `validateBody` exactly as `/preview`'s does: a
+ * malformed body must not be a free pass to the most expensive read in the app.
+ * The count is clamped to the contract's own bounds, so a caller cannot price
+ * its own request — an absent or garbage list pays the minimum a valid one
+ * would, and an oversized one pays the cap it is about to be refused at.
+ */
+function comparisonSeriesCount(req: Request): number {
+  const ids = (req.body as { conglomerateIds?: unknown } | undefined)?.conglomerateIds;
+  const asked = Array.isArray(ids) ? ids.length : 0;
+  return Math.min(Math.max(asked, COMPARISON_MIN_SERIES), COMPARISON_MAX_SERIES);
+}
+
 export function createBacktestRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
@@ -61,21 +78,33 @@ export function createBacktestRouter(ctx: AppContext, limiters: RateLimiters): R
   // one shared window (§13.5 V5-P6): {conglomerateIds, range, mode?, rebalance?,
   // baselineId?} → per-series base-100 curve + full stats + per-metric deltas
   // vs the baseline. N=7 is rejected by the contract before this runs.
-  router.post('/compare', validateBody(backtestComparisonRequestSchema), async (req, res) => {
-    const body = req.valid?.body as BacktestComparisonRequest;
-    const result = await ctx.backtest.runComparison(
-      req.authUser!.id,
-      {
-        conglomerateIds: body.conglomerateIds,
-        range: body.range,
-        mode: body.mode,
-        rebalance: body.rebalance,
-        baselineId: body.baselineId,
-      },
-      { baseCurrency: req.authUser!.baseCurrency },
-    );
-    res.json(result);
-  });
+  //
+  // Cost-metered (§10 COST TABLE, #1755) at the per-series `backtestCompare`
+  // weight × the number of series asked for: this is `/preview`'s cache-missing
+  // history walk done N times over baskets that each flatten to up to 250
+  // assets, so pricing it as one flat request — or, as it shipped, not at all —
+  // left the single most expensive read in the app bounded only by the app-wide
+  // request COUNT at 600/min.
+  router.post(
+    '/compare',
+    limiters.cost('backtestCompare', comparisonSeriesCount),
+    validateBody(backtestComparisonRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as BacktestComparisonRequest;
+      const result = await ctx.backtest.runComparison(
+        req.authUser!.id,
+        {
+          conglomerateIds: body.conglomerateIds,
+          range: body.range,
+          mode: body.mode,
+          rebalance: body.rebalance,
+          baselineId: body.baselineId,
+        },
+        { baseCurrency: req.authUser!.baseCurrency },
+      );
+      res.json(result);
+    },
+  );
 
   // POST /backtest/shared/:conglomerateId/preview — the V5-P6 arc-c what-if
   // sandbox: backtest a FRIEND-SHARED conglomerate with the viewer's local weight
@@ -85,8 +114,13 @@ export function createBacktestRouter(ctx: AppContext, limiters: RateLimiters): R
   // original full response, while nested baskets use an aggregate response that
   // never exposes recursively-resolved descendant identities. A pure read — no
   // writes.
+  //
+  // Cost-metered (§10 COST TABLE, #1755) at a preview's weight: it is the same
+  // engine run over a comparable basket, and deliberately has NO Redis memo, so
+  // every request computes where a preview may be answered from cache.
   router.post(
     '/shared/:conglomerateId/preview',
+    limiters.cost('backtestSharedSandbox'),
     validateParams(conglomerateIdParamSchema),
     validateBody(sharedSandboxPreviewRequestSchema),
     async (req, res) => {

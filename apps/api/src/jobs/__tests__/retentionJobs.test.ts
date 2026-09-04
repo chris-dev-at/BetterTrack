@@ -51,6 +51,7 @@ function ctx(jobLogger: Logger = logger): JobContext {
     deadLetter: {} as JobContext['deadLetter'],
     redis: harness.ctx.redis,
     logger: jobLogger,
+    isFeatureEnabled: async () => true,
   };
 }
 
