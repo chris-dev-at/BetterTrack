@@ -694,7 +694,7 @@ export function createPd9Harness(): Pd9Harness {
       );
       const [importRow] = await imports.listRows(importBatch.id);
       if (!importRow) throw new Error('PD9 import-row fixture insert returned no row.');
-      await imports.setRowResults([{ id: importRow.id, result: 'applied', resultMessage: null }]);
+      await imports.setRowResult({ id: importRow.id, result: 'applied', resultMessage: null });
       if (!(await imports.claimPendingBatch(importBatch.id, null))) {
         throw new Error('PD9 import-batch fixture could not be marked applied.');
       }

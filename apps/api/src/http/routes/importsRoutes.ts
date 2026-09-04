@@ -159,12 +159,16 @@ export function createImportsRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // refreshed preview, so the client never recomputes counts locally and never
   // drifts from what staging now holds.
   //
-  // Rate-limited on the portfolio-write lane: a confirmation is cheap for a
-  // client to repeat (the wizard's bulk sweep is one call per row) and each one
-  // re-reads the portfolio's content hashes, so the endpoint gets the same
-  // ceiling every other authenticated write surface has (§10).
+  // Cost-metered (§10 COST TABLE) at 6 work units: a confirmation is cheap for
+  // a client to repeat — the wizard's bulk sweep is one call per row — and each
+  // one re-derives the row's instrument, hash and duplicate verdict against the
+  // portfolio's recorded entities. The service memoizes those per batch, so the
+  // sweep's SECOND call onwards is a few indexed reads; the weight prices the
+  // first one and keeps a caller who reopens batches in a loop bounded by the
+  // work it asks for rather than by how many requests it arrives in.
   router.patch(
     '/:batchId/rows/:rowId',
+    limiters.cost('importRowResolve'),
     validateParams(importRowIdParamSchema),
     validateBody(resolveImportRowRequestSchema),
     async (req, res) => {

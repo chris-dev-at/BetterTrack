@@ -121,9 +121,17 @@ jobs:
         # Freeze released migrations (#606): a deployed DB re-runs any journal
         # entry whose `when` moves above its high-water mark, so an existing
         # entry's when/tag/.sql must never change — only appends are allowed.
+        # Base = the merge-base (what this PR's journal descends from), released
+        # bar = main's tip. Comparing the structure against the tip failed every
+        # open PR whenever a migration landed on main (#1655); the tip is still
+        # the bar a NEW entry's `when` must clear.
         run: |
           git fetch origin main --quiet
-          pnpm --filter @bettertrack/api check:migrations-immutable
+          # Assigned on its own line: under `bash -e` a failing substitution
+          # inside an argument list does NOT stop the step, and an empty base
+          # would make the script compare HEAD against the index — silently green.
+          base="$(git merge-base origin/main HEAD)"
+          pnpm --filter @bettertrack/api check:migrations-immutable "$base" HEAD origin/main
 
       - name: Build
         run: pnpm build
