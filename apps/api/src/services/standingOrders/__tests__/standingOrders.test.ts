@@ -8,10 +8,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   notificationListResponseSchema,
   SOURCE_TAG_STANDING_ORDER,
+  STANDING_ORDER_QUOTE_REFUSAL_VECTORS,
+  STANDING_ORDER_QUOTE_VECTOR_CURRENCY,
   standingOrderListResponseSchema,
   standingOrderRunListResponseSchema,
 } from '@bettertrack/contracts';
 
+import { newId } from '../../../data/ids';
 import * as schema from '../../../data/schema';
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
@@ -43,19 +46,25 @@ let harness: TestHarness;
 let marketData: ReturnType<typeof createStubMarketData>;
 // `asOf` is the provider's market timestamp: buys accept it only within the
 // four-day booking ceiling, so tests scanning far from the default reset it.
-const quote = { mode: 'ok' as 'ok' | 'fail', price: 100, asOf: '2026-04-01T00:00:00.000Z' };
+const quote = {
+  mode: 'ok' as 'ok' | 'fail',
+  price: 100,
+  currency: 'EUR',
+  asOf: '2026-04-01T00:00:00.000Z',
+};
 let portfolioNow: number | undefined;
 
 beforeEach(async () => {
   quote.mode = 'ok';
   quote.price = 100;
+  quote.currency = 'EUR';
   quote.asOf = '2026-04-01T00:00:00.000Z';
   portfolioNow = undefined;
   marketData = createStubMarketData({
     quote: () => {
       if (quote.mode === 'fail') throw new Error('provider down');
       return {
-        value: { price: quote.price, currency: 'EUR', asOf: quote.asOf },
+        value: { price: quote.price, currency: quote.currency, asOf: quote.asOf },
         stale: false,
         asOf: 0,
       };
@@ -1114,6 +1123,181 @@ describe('standing orders — provider failure on a buy', () => {
     const order = await agent.get(`/api/v1/standing-orders/${createdOrder.body.id as string}`);
     expect(order.body.lastRunAt).toBe(scanAt);
     redis.disconnect();
+  });
+});
+
+describe('standing orders — unbookable quotes (#1712)', () => {
+  /**
+   * The refusal table is the SHARED contract vector list, so this suite and the
+   * vault twin's (`apps/web/src/user/vault/standingOrders/materialize.test.ts`)
+   * assert the same bad quotes are refused on both sides.
+   */
+  it.each([...STANDING_ORDER_QUOTE_REFUSAL_VECTORS])(
+    'refuses $name and leaves the period unclaimed',
+    async (vector) => {
+      const { agent, pid } = await setup();
+      const assetId = await seedAsset('REFUSE');
+      const created = await createOrder(agent, {
+        portfolioId: pid,
+        kind: 'buy-asset',
+        assetId,
+        amount: 3,
+        cadence: 'monthly',
+        anchorDay: 1,
+        startDate: '2026-04-01',
+      });
+      expect(created.status).toBe(201);
+      expect(created.body.currency).toBe(STANDING_ORDER_QUOTE_VECTOR_CURRENCY);
+
+      quote.price = vector.price;
+      quote.currency = vector.currency;
+      expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+        booked: 0,
+        deferred: 1,
+        bookingFailed: 0,
+        failed: 0,
+      });
+      // No money row, and — the point — no claim: the period is retryable, not
+      // tombstoned behind a booking that never happened.
+      expect(await txnRows(pid)).toEqual([]);
+      expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+
+      // A sound quote on the very next scan books that same period.
+      quote.price = 100;
+      quote.currency = STANDING_ORDER_QUOTE_VECTOR_CURRENCY;
+      expect(await run('2026-04-01T13:00:00Z')).toMatchObject({ booked: 1, deferred: 0 });
+      const [transaction] = await txnRows(pid);
+      expect(Number(transaction?.price)).toBe(100);
+      expect((await runPeriodKeys(created.body.id as string)).map((row) => row.key)).toEqual([
+        '2026-04-01',
+      ]);
+    },
+  );
+
+  it('refuses a quote the ASSET row does not agree with, and notifies past the anchor', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('DUALLIST');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 3,
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    // The failover chain answers from a secondary listing in another currency.
+    // The order's stored currency alone cannot catch this — the stored price is
+    // a bare number later converted at `assets.currency`, so the joined asset
+    // currency is what the guard has to consult.
+    await harness.db
+      .update(schema.assets)
+      .set({ currency: 'USD' })
+      .where(eq(schema.assets.id, assetId));
+    quote.currency = 'USD';
+    quote.price = 128.4;
+
+    expect(await run('2026-04-01T12:00:00Z')).toMatchObject({ booked: 0, deferred: 1, failed: 0 });
+    expect(await txnRows(pid)).toEqual([]);
+    expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+    expect(await standingOrderNotifications(agent)).toEqual([]);
+
+    // Past the anchor the standard SO3 deferred notice lands, exactly like a
+    // provider outage: the period is still owed, never silently booked wrong.
+    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual([
+      expect.objectContaining({
+        type: 'standing_order.skipped',
+        payload: expect.objectContaining({
+          standingOrderId: created.body.id,
+          periodKey: '2026-04-01',
+          outcome: 'deferred',
+        }),
+      }),
+    ]);
+    expect(await txnRows(pid)).toEqual([]);
+  });
+});
+
+describe('standing orders — vault move-in during a scan (#1712)', () => {
+  it('provisions no cash source for a portfolio that moved into a vault mid-scan', async () => {
+    const { user, agent } = await setup();
+    const portfolio = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Move-in race' });
+    expect(portfolio.status).toBe(201);
+    const pid = portfolio.body.portfolio.id as string;
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      label: 'salary',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    const [vault] = await harness.db
+      .insert(schema.vaults)
+      .values({
+        userId: user.id,
+        name: 'Race vault',
+        headerDocId: newId(),
+        commonDocId: newId(),
+        media: ['server'],
+        retirementProofPublicKey: 'race-retirement-key',
+        keyFingerprint: 'race-key-fingerprint',
+      })
+      .returning();
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = createStandingOrderService({
+      // The move-in commits in the gap between the scan's optimistic candidate
+      // list and the booking: it purges the portfolio's cleartext cash sources
+      // and binds the portfolio to the vault, exactly as the transition does.
+      repo: {
+        ...repo,
+        async listActive() {
+          const orders = await repo.listActive();
+          await harness.db
+            .delete(schema.portfolioCashSources)
+            .where(eq(schema.portfolioCashSources.portfolioId, pid));
+          await harness.db
+            .update(schema.portfolios)
+            .set({ vaultId: vault!.id })
+            .where(eq(schema.portfolios.id, pid));
+          return orders;
+        },
+      },
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit() {
+          return true;
+        },
+      },
+    });
+
+    expect(
+      await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') }),
+    ).toMatchObject({ scanned: 1, booked: 0, skippedArchived: 1, failed: 0 });
+    expect(await cashRows(pid)).toEqual([]);
+    expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+    // The pre-check used to run `getOrCreateMain` outside the lock, leaving a
+    // fresh cleartext row inside a portfolio that is now vault-owned.
+    const sources = await harness.db
+      .select()
+      .from(schema.portfolioCashSources)
+      .where(eq(schema.portfolioCashSources.portfolioId, pid));
+    expect(sources).toEqual([]);
   });
 });
 
