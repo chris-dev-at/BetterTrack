@@ -190,6 +190,34 @@ describe('createErrorHandler body-parser failures', () => {
     expect(next).toHaveBeenCalledWith(parseFailure);
   });
 
+  it('answers an unlisted exposable body-parser type with a code matching its status', () => {
+    // A future body-parser type ships its real status; the code follows that
+    // status rather than labelling every fallback BAD_REQUEST.
+    for (const [status, code] of [
+      [413, 'PAYLOAD_TOO_LARGE'],
+      [415, 'UNSUPPORTED_MEDIA_TYPE'],
+      [400, 'BAD_REQUEST'],
+      [422, 'BAD_REQUEST'],
+    ] as const) {
+      const report = vi.fn();
+      const handler = createErrorHandler(logger, report);
+      const { res, status: statusFn, json } = mockRes();
+      const err = Object.assign(new Error('body said "hunter2"'), {
+        type: 'entity.future.unknown',
+        status,
+        expose: true,
+      });
+
+      handler(err, {} as Request, res, vi.fn());
+
+      expect(statusFn).toHaveBeenCalledWith(status);
+      expect(json).toHaveBeenCalledWith({
+        error: { code, message: 'The request body could not be read.' },
+      });
+      expect(report).not.toHaveBeenCalled();
+    }
+  });
+
   it('still treats a 5xx-shaped error carrying a type as unexpected', () => {
     const report = vi.fn();
     const handler = createErrorHandler(logger, report);

@@ -25,6 +25,7 @@ import {
   loadSession,
   requireAdmin,
   requireAdminTwoFactor,
+  requirePasswordChangeCompleted,
 } from './http/middleware/session';
 import { createGrafanaProxyMiddleware } from './http/grafanaProxy';
 import { createOpenApiRouter } from './http/openapi';
@@ -125,6 +126,14 @@ export function createApp(ctx: AppContext) {
   );
   app.use(cookieParser(ctx.config.sessionSecrets));
 
+  // NOTE for everything mounted in this public-meta zone (docs, version,
+  // health): it terminates BEFORE `raiseDeferredBodyParserFailure` below, so a
+  // request whose body did not parse arrives here with the empty body the
+  // deferral substituted instead of being refused. Every route in the zone is
+  // GET-only and reads no body, so nothing is reachable today — but a non-GET
+  // route added here would silently accept `{}` for an unparseable body. Such a
+  // route must raise the deferred failure itself (as the Grafana mount does).
+
   // Public API docs (§5 Meta, §6.13): mounted at the origin root, BEFORE the
   // /api/v1 session/CSRF/password-change chain, so `GET /openapi.json` and
   // `GET /docs` are reachable with no session. The API itself stays guarded.
@@ -177,8 +186,12 @@ export function createApp(ctx: AppContext) {
     // `enforcePasswordChange` below, so the guard has to be repeated here — an
     // admin forced into a password change is 403'd on every other `/api/v1`
     // route and must not keep serving the whole proxied Grafana, its own admin
-    // UI and datasource management included (§6.12).
-    enforcePasswordChange,
+    // UI and datasource management included (§6.12). It is the EXEMPTION-FREE
+    // variant: `enforcePasswordChange` matches its `/auth/…` allowlist against a
+    // mount-relative path, which under this five-segment mount would exempt
+    // Grafana's own `/auth/…` sub-paths (and `…/auth/invite/../../d/abc`, which
+    // the proxy's `new URL()` collapses back onto a dashboard).
+    requirePasswordChangeCompleted,
     // Grafana's datasource POSTs are re-serialised from `req.body`, so a body
     // that never parsed must be refused here rather than forwarded empty.
     raiseDeferredBodyParserFailure,

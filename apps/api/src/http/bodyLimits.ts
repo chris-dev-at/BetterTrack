@@ -73,6 +73,16 @@ const BODY_PARSER_FAILURES: Readonly<
 };
 
 /**
+ * The error code an unlisted-but-exposable body-parser status answers with, so
+ * the fallback stays consistent with the mapped types above. Anything else in
+ * the 4xx band is a plain bad request.
+ */
+const FALLBACK_CODE_BY_STATUS: Readonly<Record<number, string>> = {
+  413: 'PAYLOAD_TOO_LARGE',
+  415: 'UNSUPPORTED_MEDIA_TYPE',
+};
+
+/**
  * Normalise a body-parser failure into the `{ error: { code, message } }`
  * envelope it deserves, or `null` when the error is not one.
  *
@@ -107,7 +117,13 @@ export function bodyParserApiError(err: unknown): ApiError | null {
         ? failure.statusCode
         : null;
   if (failure.expose !== true || status === null || status < 400 || status >= 500) return null;
-  return new ApiError(status, 'BAD_REQUEST', 'The request body could not be read.');
+  // The code follows the status, so an unlisted 413/415 keeps the same vocabulary
+  // the mapped types above use rather than shipping a 413 labelled BAD_REQUEST.
+  return new ApiError(
+    status,
+    FALLBACK_CODE_BY_STATUS[status] ?? 'BAD_REQUEST',
+    'The request body could not be read.',
+  );
 }
 
 /** Body-parser failures parked by {@link deferBodyParserFailure}, per request. */
