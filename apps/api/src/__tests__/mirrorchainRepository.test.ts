@@ -1,7 +1,10 @@
-import type { MirrorOpPayload } from '@bettertrack/contracts';
+import { MIRROR_OP_KINDS, type MirrorOpPayload } from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import {
+  TERMINAL_OP_KINDS,
+  createMirrorchainRepository,
+} from '../data/repositories/mirrorchainRepository';
 import { portfolios } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -282,5 +285,66 @@ describe('mirrorchainRepository (M1)', () => {
     const NEW_LOCAL = '018f0000-0000-7000-8000-0000000000d3';
     await repo.repointMirrorRow('transaction', MIRROR, pid, NEW_LOCAL);
     expect((await repo.findMirrorRow('transaction', MIRROR, pid))?.localId).toBe(NEW_LOCAL);
+  });
+
+  /**
+   * The two §3 terminality guards (the service's door check and this
+   * repository's in-transaction check) read ONE derived list, so they cannot
+   * drift. This pins the derivation itself: a `*.delete` op kind that is not
+   * terminal is exactly the `cash.delete` bug — an edit racing a delete
+   * acknowledged with 200 and then dropped on replay. A future delete-ish kind
+   * NOT named `*.delete` must be added to the derivation by hand.
+   */
+  it('the in-transaction guard refuses an op after a cash.delete (§3 terminality backstop)', async () => {
+    const { chain, owner, pid } = await seedChainWithOwner();
+    const MIRROR = '018f0000-0000-7000-8000-0000000000e1';
+    const [deletion] = await repo.appendOps(chain.id, [
+      {
+        kind: 'cash.delete',
+        mirrorId: MIRROR,
+        actorUserId: owner.id,
+        actorUsername: owner.username,
+        originPortfolioId: pid,
+        payload: { opVersion: 1, kind: 'cash.delete', mirrorId: MIRROR, baseSeq: 0 },
+      },
+    ]);
+
+    // Editing against the delete's own seq satisfies the stale-edit guard — only
+    // terminality refuses it, and money rows are no exception to the rule.
+    const refused = await repo.appendOpsChecked(chain.id, owner.id, [
+      {
+        kind: 'cash.update',
+        mirrorId: MIRROR,
+        actorUserId: owner.id,
+        actorUsername: owner.username,
+        originPortfolioId: pid,
+        baseSeq: deletion!.seq,
+        payload: {
+          opVersion: 1,
+          kind: 'cash.update',
+          mirrorId: MIRROR,
+          baseSeq: deletion!.seq,
+          sourceMirrorId: null,
+          amountEur: 999,
+          executedAt: '2026-07-22T10:00:00.000Z',
+          note: null,
+          originSource: 'manual',
+          cashKind: 'deposit',
+        },
+      },
+    ]);
+
+    expect(refused).toEqual({ refused: 'ROW_DELETED', mirrorId: MIRROR });
+    // The refusal rolls the whole append back: no seq consumed, no op row.
+    expect((await repo.getChain(chain.id))!.lastSeq).toBe(deletion!.seq);
+    expect(await repo.latestOpForEntity(chain.id, MIRROR)).toMatchObject({ kind: 'cash.delete' });
+  });
+
+  it('every *.delete op kind is terminal (the two guards share one derived list)', () => {
+    const deleteKinds = MIRROR_OP_KINDS.filter((kind) => kind.endsWith('.delete'));
+    expect([...TERMINAL_OP_KINDS].sort()).toEqual([...deleteKinds].sort());
+    expect(TERMINAL_OP_KINDS).toContain('cash.delete');
+    expect(TERMINAL_OP_KINDS).toContain('tx.delete');
+    expect(TERMINAL_OP_KINDS).toContain('dividend.delete');
   });
 });
