@@ -1578,6 +1578,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // 120/min sustained (2 req/s) so scripted polling stays clear — with the
       // general escalation ladder for a runaway client. Bearer requests key this
       // by key id, independent of the per-user general counter.
+      // Note (#1730): that independence is now real. Bearer traffic used to pass
+      // the app-wide `general` guard first, so an admin-defined tier above the
+      // general budget (600/min) was undeliverable and a runaway integration
+      // could spend — and cool down — the owner's interactive browser
+      // allowance. `general` now skips bearer requests entirely, so this
+      // schedule and the admin tiers above it are the whole budget a key has.
       apiKey: {
         windowSec: 60,
         limit: 120,
