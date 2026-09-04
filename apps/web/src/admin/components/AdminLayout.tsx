@@ -11,7 +11,7 @@ import { useAuth } from '../AuthContext';
 import { ADMIN_WORKSPACES, adminWorkspaceOwnsPath, isWideAdminPath } from '../adminWorkspaces';
 import { AdminCommandPalette } from './AdminCommandPalette';
 import { Button, Spinner, cx } from './ui';
-import { EDGE_BOTTOM, FOCUS, SURFACE_WELL, TEXT_MICRO } from './tokens';
+import { EDGE_BOTTOM, FOCUS, SURFACE_WELL, TAP_TARGET, TEXT_MICRO } from './tokens';
 
 // Tailwind's default `md` breakpoint. The drawer is `md:hidden`, so its state
 // must retire at the exact same handoff or it can keep the desktop shell inert
@@ -28,6 +28,9 @@ const ADMIN_DESKTOP_MIN_WIDTH_PX = 768;
  */
 const NAV_LINK_BASE = cx(
   'flex min-h-[34px] items-center rounded-none border-l-2 px-3 py-1 text-[13px] transition-colors',
+  // Below 480px the desktop sidebar is hidden and these rows only render inside
+  // the drawer, which is the ONLY way to navigate the console on a phone.
+  TAP_TARGET,
   FOCUS,
 );
 
@@ -181,6 +184,7 @@ export function AdminLayout() {
             className={cx(
               'inline-flex h-8 w-8 items-center justify-center rounded-none border border-transparent text-neutral-300',
               'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+              TAP_TARGET,
               FOCUS,
             )}
           >
@@ -207,6 +211,7 @@ export function AdminLayout() {
           'flex min-h-[32px] shrink-0 items-center justify-between gap-2 rounded-none border border-neutral-700 px-2.5 py-1',
           'text-[12px] text-neutral-500 transition-colors hover:border-neutral-600 hover:text-neutral-200',
           SURFACE_WELL,
+          TAP_TARGET,
           FOCUS,
         )}
       >
@@ -275,6 +280,9 @@ export function AdminLayout() {
           className={cx(
             'h-8 rounded-none border border-neutral-700 px-2 text-[12px] text-neutral-200',
             SURFACE_WELL,
+            // `min-height` wins over the `h-8`, so the drawer's language switch
+            // is a real target on a phone without moving the desktop sidebar.
+            TAP_TARGET,
             FOCUS,
           )}
           onChange={(event) => setLocale(event.target.value)}
@@ -306,6 +314,10 @@ export function AdminLayout() {
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
           is persistent. */}
       <header
+        // Named, because a page's own `PageHeader` is a `<header>` too: the
+        // phone gate measures this bar's controls by id, so "the only way into
+        // the console's navigation" cannot be confused with a page title block.
+        id="admin-topbar"
         className={cx(
           'sticky top-0 z-30 flex items-center gap-3 bg-neutral-900 px-3 py-2 md:hidden',
           EDGE_BOTTOM,
@@ -321,6 +333,7 @@ export function AdminLayout() {
           className={cx(
             'inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
             'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+            TAP_TARGET,
             FOCUS,
           )}
         >
@@ -347,6 +360,7 @@ export function AdminLayout() {
           className={cx(
             'ml-auto inline-flex h-9 w-9 items-center justify-center rounded-none border border-transparent text-neutral-300',
             'hover:border-neutral-700 hover:bg-neutral-800 hover:text-white',
+            TAP_TARGET,
             FOCUS,
           )}
         >

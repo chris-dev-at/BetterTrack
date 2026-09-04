@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -161,6 +161,37 @@ describe('Origin phone chrome', () => {
   });
 
   /**
+   * The admin console's half of the same contract (#1756). The console is
+   * Tailwind-utility-only, so the `.bt-*` rule above cannot reach it and its
+   * controls carry density utilities (`min-h-[30px]`, `h-9 w-9`) that are all
+   * below 44px on a phone. Its floor is keyed on the single marker class
+   * `admin/components/tokens.ts` composes.
+   *
+   * Both directions are asserted: the rule is declared, and the class stays
+   * console-only — a rule in this stylesheet that started matching Origin
+   * elements would be exactly the leak the console's token module refuses. The
+   * measuring half is the admin matrix in `e2e/mobile-overflow.spec.ts`.
+   */
+  it('gives the admin console a 44px floor of its own, reaching nothing in Origin', () => {
+    expect(phoneBlock()).toMatch(
+      /\.admin-tap-target \{[^}]*min-width: 44px;[^}]*min-height: 44px;/,
+    );
+    expect(
+      readFileSync(resolve(process.cwd(), 'src/admin/components/tokens.ts'), 'utf8'),
+    ).toContain("export const TAP_TARGET = 'admin-tap-target'");
+
+    const webRoot = process.cwd();
+    const leaks = ['src/user', 'src/ui', 'src/components']
+      .flatMap((directory) => sourceFilesBelow(resolve(webRoot, directory)))
+      .filter((file) => readFileSync(file, 'utf8').includes('admin-tap-target'))
+      .map((file) => relative(webRoot, file));
+    expect(
+      leaks,
+      'admin-tap-target scopes the rule to the console; nothing in Origin may wear it.',
+    ).toEqual([]);
+  });
+
+  /**
    * The topbar menus position themselves with inline `right: 0`, which is only
    * safe while the containing block is the header itself — anchored to their
    * own trigger instead, a menu wider than the gap to the right gutter runs off
@@ -304,3 +335,12 @@ describe('Installable PWA', () => {
     );
   });
 });
+
+/** Every `.ts`/`.tsx` source below a directory, for the scope assertions above. */
+function sourceFilesBelow(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilesBelow(path);
+    return /\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}

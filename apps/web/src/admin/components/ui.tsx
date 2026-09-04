@@ -22,6 +22,7 @@ import {
   SURFACE_HEADER,
   SURFACE_PANEL,
   SURFACE_WELL,
+  TAP_TARGET,
   TEXT_MICRO,
   TEXT_MUTED,
   TEXT_NUM,
@@ -83,6 +84,9 @@ export function Button({
         size === 'sm'
           ? 'min-h-[30px] px-2.5 py-1 text-[12px]'
           : 'min-h-[36px] px-3 py-1.5 text-[13px]',
+        // Both sizes keep their desktop density and gain the 44px floor below
+        // 480px, where a 30px-tall button is not a touch target.
+        TAP_TARGET,
         'disabled:cursor-not-allowed',
         FOCUS,
         BUTTON_VARIANTS[variant],
@@ -476,9 +480,15 @@ export interface TabDefinition {
   disabledReason?: string;
 }
 
-/** Shared geometry, so a route strip and an in-page strip read as one control. */
-const TAB_BASE =
-  'flex min-h-[38px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 border-b-2 text-[13px] font-medium transition-colors';
+/**
+ * Shared geometry, so a route strip and an in-page strip read as one control.
+ * Both strips already scroll horizontally, so the phone floor grows the cells
+ * rather than the row.
+ */
+const TAB_BASE = cx(
+  'flex min-h-[38px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 border-b-2 text-[13px] font-medium transition-colors',
+  TAP_TARGET,
+);
 
 function tabSkin(active: boolean): string {
   return active

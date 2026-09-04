@@ -381,6 +381,9 @@ export async function newAdminRequestContext(
 export async function newAdminBrowserContext(
   browser: Browser,
   apiRequest: APIRequestContext,
+  // Extra `newContext` options — e.g. the phone viewport the responsive gate
+  // (§13.5 V5-P13b) sweeps the console at. `baseURL` stays owned by this helper.
+  options: Omit<Parameters<Browser['newContext']>[0], 'baseURL' | 'storageState'> = {},
 ): Promise<BrowserContext> {
   const state = await apiRequest.storageState();
   const sessionCookies = state.cookies.filter((c) => c.name === 'bt_sid');
@@ -396,7 +399,7 @@ export async function newAdminBrowserContext(
   // falls through to the sign-in page. Cookies ignore the port, so the session
   // minted against the API carries over unchanged. (This e2e stack boots a real
   // admin origin, so no config.js stubbing is needed here.)
-  const context = await browser.newContext({ baseURL: ADMIN_BASE_URL });
+  const context = await browser.newContext({ ...options, baseURL: ADMIN_BASE_URL });
   await context.addCookies(sessionCookies);
   return context;
 }
