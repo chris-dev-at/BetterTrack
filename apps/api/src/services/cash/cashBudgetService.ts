@@ -43,13 +43,40 @@ import type { NotificationCenter } from '../notifications/notificationCenter';
  *  - **Release on a non-durable emit.** A `false` from the notification centre
  *    means no durable transport accepted the event, so the claim is given back
  *    and the next run may try again — otherwise an outage would silently consume
- *    the month's single alert.
+ *    the month's single alert. A THROW out of `emit` is the same thing (#1754):
+ *    nothing was delivered, so the claim is given back before the error is
+ *    logged or re-raised, rather than being consumed by a transport fault.
  *  - **Never throws.** Evaluation runs off the back of a money write; a failure
  *    here must not fail the write that triggered it.
  *
  * What is NEW, because the fused model allows it: a month-specific budget row
  * overrides the recurring one for that month, and a movement's OUTFLOW is what
  * counts (an inflow carrying `Food` is a refund and must not create headroom).
+ *
+ * ── THE WRITE-PATH SEAM (#1754) ──
+ *
+ * {@link CashBudgetService.onCashWrite} is the ONE named hook every money write
+ * that can move a budget's spend calls: `deposit` / `withdraw` / `fee`,
+ * `transfer`, `PATCH` and `DELETE` of a movement, `set-balance` (all wired into
+ * `portfolioService` as `onCashWrite`), and `PUT /cash/movements/:id/tags`
+ * (wired into `cashTagService`, because retagging changes what a movement counts
+ * against). It is `evaluate`, so it is the non-throwing form: the user came to
+ * move money, and a budget alert must never cost them the write.
+ *
+ * ── THE RE-ARM RULE: RE-ARM ON FALLING UNDER (#1754) ──
+ *
+ * The claim marks a period as ALERTED, not as SPENT. So an evaluation that finds
+ * a budget no longer exceeded RELEASES that period's claim, and the next
+ * overrun in the same month alerts again. Both ways back under the line re-arm,
+ * because both are the same question ("is it over right now?"): the spend
+ * dropping (a mis-tagged row untagged, a movement deleted or corrected) and the
+ * target rising (`PATCH` to a bigger amount). Without it, one stale overrun
+ * consumed the month: untagging a €150 row and then genuinely spending €600
+ * emitted nothing.
+ *
+ * It stays EXACTLY ONCE while the condition holds — the release only ever fires
+ * for a budget that is currently under its target, so repeated writes over an
+ * already-alerted budget still emit one notification for the month.
  */
 
 const BUDGET_NOT_FOUND = () => notFound('Budget not found.', 'CASH_BUDGET_NOT_FOUND');
@@ -93,6 +120,13 @@ export function isOverBudget(spentEur: number, amountEur: number): boolean {
   return Math.round(spentEur * 100) > Math.round(amountEur * 100);
 }
 
+/**
+ * THE CASH-WRITE SEAM (#1754). One named hook, taken by every service that
+ * moves money or changes what a movement is labelled as, so a new cash write
+ * cannot silently skip budget evaluation.
+ */
+export type CashWriteHook = (userId: string, portfolioId: string) => Promise<void>;
+
 function toBudgetDto(record: CashBudgetRecord): CashBudget {
   return {
     id: record.id,
@@ -135,6 +169,13 @@ export interface CashBudgetService {
   trends(userId: string, portfolioId: string, months?: number): Promise<CashTrendResponse>;
   /** Evaluate one portfolio's budgets for the current month and alert once each. */
   evaluate(userId: string, portfolioId: string): Promise<void>;
+  /**
+   * THE WRITE-PATH SEAM (#1754) — what every cash write calls, named for what it
+   * hangs off rather than for what it does. Same non-throwing evaluation as
+   * {@link CashBudgetService.evaluate}; see the module header for the full list
+   * of write paths wired to it.
+   */
+  onCashWrite: CashWriteHook;
   /** Transition finalizers need a failure to remain durable instead of being logged and swallowed. */
   evaluateRequired(userId: string, portfolioId: string): Promise<void>;
 }
@@ -185,61 +226,124 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
     };
   }
 
+  /**
+   * Give a period's claim back, reporting rather than raising: it is called from
+   * paths that must not fail (a money write, and the error branch of an emit
+   * that already failed). The caller decides what a `false` means — under
+   * `required` it becomes the failure a transition finalizer needs.
+   */
+  async function releaseClaim(budgetId: string, period: string): Promise<boolean> {
+    try {
+      await budgets.releaseFire(budgetId, period);
+      return true;
+    } catch (err) {
+      deps.logger?.warn({ err, budgetId }, 'cash budget fire-release failed');
+      return false;
+    }
+  }
+
   async function evaluateBudgets(
     userId: string,
     portfolioId: string,
     required: boolean,
   ): Promise<void> {
     const period = periodKeyFor(now());
-    const [targets, outflow] = await Promise.all([
+    const [targets, outflow, claimedPeriods] = await Promise.all([
       budgets.effectiveTargets(portfolioId, period),
       budgets.outflowByTag(portfolioId, period),
+      // The claims this portfolio already holds for the month — the re-arm rule
+      // needs to know which of them no longer describe an overrun.
+      budgets.firedPeriods(portfolioId, period),
     ]);
+    // Which budgets are over RIGHT NOW. Everything else that holds a claim for
+    // the month gets it back once the loop is done (the re-arm rule).
+    const exceeded = new Set<string>();
     for (const target of targets) {
       const row = progressRow(target, outflow.get(target.tagId) ?? 0, period);
       if (!row.exceeded) continue;
+      exceeded.add(target.id);
 
       // IDEMPOTENCY KEY: (budget_id, period_key). The claim lands BEFORE the
       // emit, so a concurrent evaluator loses the race and emits nothing.
-      let claimed = false;
+      let fireId: string | null = null;
       try {
-        claimed = await budgets.claimFire(target.id, period);
+        fireId = await budgets.claimFire(target.id, period);
       } catch (err) {
         deps.logger?.warn({ err, budgetId: target.id }, 'cash budget fire-claim failed');
         if (required) throw err;
         continue;
       }
-      if (!claimed) continue;
+      if (fireId === null) continue;
 
-      const durable = await notify.emit({
-        type: 'budget.exceeded',
-        userId,
-        budgetId: target.id,
-        // The fused model's tag stands where the category did — the user-facing
-        // question ("a budget was blown") is unchanged, so the notification
-        // type is too. `portfolioId` is new: budgets are per portfolio now, so
-        // a deep link needs to know which ledger.
-        categoryId: target.tagId,
-        categoryName: target.tagName,
-        portfolioId,
-        period,
-        amount: row.amount,
-        spent: row.spent,
-        currency: target.currency,
-        occurredAt: now().toISOString(),
-      });
+      let durable: boolean;
+      try {
+        durable = await notify.emit({
+          type: 'budget.exceeded',
+          userId,
+          budgetId: target.id,
+          // The fused model's tag stands where the category did — the user-facing
+          // question ("a budget was blown") is unchanged, so the notification
+          // type is too. `portfolioId` is new: budgets are per portfolio now, so
+          // a deep link needs to know which ledger.
+          categoryId: target.tagId,
+          categoryName: target.tagName,
+          portfolioId,
+          period,
+          // The claim's identity is the alert's identity: the dispatcher dedupes
+          // on it, so a period re-armed after falling back under its target can
+          // alert again on the next genuine overrun (#1754).
+          fireId,
+          // One currency by contract (`cashBudgetCurrencySchema` admits EUR
+          // only): `spent` comes off `amount_eur`, so the two figures this
+          // alert prints beside each other are the same denomination.
+          amount: row.amount,
+          spent: row.spent,
+          currency: target.currency,
+          occurredAt: now().toISOString(),
+        });
+      } catch (err) {
+        // A THROW delivered nothing, exactly like a `false` — give the claim
+        // back so the month is not consumed by a transport fault, then let the
+        // original error decide the outcome.
+        deps.logger?.warn({ err, budgetId: target.id }, 'cash budget notification threw');
+        await releaseClaim(target.id, period);
+        if (required) throw err;
+        continue;
+      }
       if (durable) continue;
 
       // Nothing accepted it, so the month has not really been alerted.
-      try {
-        await budgets.releaseFire(target.id, period);
-      } catch (err) {
-        deps.logger?.warn({ err, budgetId: target.id }, 'cash budget fire-release failed');
-        if (required) throw err;
+      const released = await releaseClaim(target.id, period);
+      if (!released && required) {
+        throw new Error('cash budget fire-release failed');
       }
       if (required) throw new Error('cash budget notification was not durably accepted');
     }
+
+    // RE-ARM ON FALLING UNDER (see the module header). A claim says the period
+    // was ALERTED; these ones no longer describe anything, so the next genuine
+    // overrun in the same month may alert again. Driven off the claims actually
+    // held, so the common path — nothing claimed — issues no write at all, and
+    // a claim whose budget stopped being the month's effective target (a
+    // one-month override took over) is re-armed too rather than being stranded.
+    for (const budgetId of claimedPeriods) {
+      if (exceeded.has(budgetId)) continue;
+      const released = await releaseClaim(budgetId, period);
+      if (!released && required) {
+        throw new Error('cash budget fire-claim could not be re-armed');
+      }
+    }
   }
+
+  /** {@link CashBudgetService.evaluate} — the non-throwing form. */
+  const evaluateSafely: CashWriteHook = async (userId, portfolioId) => {
+    try {
+      await evaluateBudgets(userId, portfolioId, false);
+    } catch (err) {
+      // Evaluation hangs off a money write; it must never fail that write.
+      deps.logger?.warn({ err, userId, portfolioId }, 'cash budget evaluation failed');
+    }
+  };
 
   return {
     async listBudgets(userId, portfolioId, month): Promise<CashBudgetListResponse> {
@@ -272,7 +376,7 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
         });
         // A new target can already be blown, so evaluate immediately rather than
         // waiting for the next money write.
-        await this.evaluate(userId, input.portfolioId);
+        await evaluateSafely(userId, input.portfolioId);
         return { budget: toBudgetDto(created) };
       } catch (err) {
         if (isUniqueViolation(err)) throw BUDGET_EXISTS();
@@ -286,7 +390,7 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
         ...(patch.currency !== undefined ? { currency: patch.currency } : {}),
       });
       if (updated === null) throw BUDGET_NOT_FOUND();
-      await this.evaluate(userId, updated.portfolioId);
+      await evaluateSafely(userId, updated.portfolioId);
       return { budget: toBudgetDto(updated) };
     },
 
@@ -377,14 +481,12 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
       };
     },
 
-    async evaluate(userId, portfolioId): Promise<void> {
-      try {
-        await evaluateBudgets(userId, portfolioId, false);
-      } catch (err) {
-        // Evaluation hangs off a money write; it must never fail that write.
-        deps.logger?.warn({ err, userId, portfolioId }, 'cash budget evaluation failed');
-      }
-    },
+    evaluate: evaluateSafely,
+
+    // The seam is `evaluate` under the name of the thing it hangs off, and is
+    // deliberately the SAME function object rather than a `this`-bound method:
+    // it is handed to other services as a bare reference.
+    onCashWrite: evaluateSafely,
 
     evaluateRequired(userId, portfolioId) {
       return evaluateBudgets(userId, portfolioId, true);
