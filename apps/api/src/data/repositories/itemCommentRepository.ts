@@ -160,7 +160,9 @@ export function createItemCommentRepository(db: Database) {
      * (a page that filled, or an older page — see `buildThread`); an ordinary
      * thread's poll never reaches here. When it is reached, the partial
      * `item_comments_thread_idx` proves `deleted_at IS NULL` from the index, so
-     * the unfiltered form is an index-only scan over the thread's live entries.
+     * the unfiltered form is an index-only scan over the thread's live entries;
+     * the `authorIds` form filters on a column the index does not carry, so it
+     * still checks the heap per candidate row.
      */
     async countForItem(
       kind: ShareKind,

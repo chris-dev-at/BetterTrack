@@ -154,20 +154,28 @@ export function createChatRepository(db: Database) {
       if (rows.length === 0) return [];
 
       // Newest message per conversation for the preview — one query, no N+1,
-      // and (since #1725) at most ONE ROW PER CONVERSATION out of the database.
+      // and (since #1725) ONE BOUNDED INDEX DESCENT PER CONVERSATION.
       //
       // This used to select every message of every listed conversation — bodies
       // included, up to CHAT_MESSAGE_MAX each — and pick the newest per
       // conversation in JS. `listConversations` polls every 20 s and the thread
       // read every 10 s, so a long-lived thread re-materialised its entire
-      // history on each poll to produce one preview line. `DISTINCT ON` moves
-      // that pick into SQL, where `chat_messages_conversation_idx`
-      // (conversation_id, id) already supplies the exact ordering the dedup
-      // needs. The chip's vault join sits OUTSIDE the distinct so it runs over
-      // the previews, not over the history.
+      // history on each poll to produce one preview line.
+      //
+      // The LATERAL is what bounds the WORK, not merely the response: each probe
+      // is `where conversation_id = <one id> order by id desc limit 1`, which
+      // `chat_messages_conversation_idx (conversation_id, id)` serves by
+      // descending into that conversation's slice and walking it backwards for a
+      // single row — O(log n) per conversation, independent of history length.
+      // A `distinct on (conversation_id) … order by conversation_id, id desc`
+      // would return the same rows while still READING all of them: that order
+      // is mixed-direction, so no single btree walk supplies it, and `Unique`
+      // has no loose-index-scan fast path in Postgres 17. `inner join lateral`
+      // drops a conversation with no messages, exactly as the old JS map did.
+      // The chip's vault join sits OUTSIDE the lateral so it runs over the
+      // previews, not over the history.
       const newestPerConversation = db
-        .selectDistinctOn([chatMessages.conversationId], {
-          conversationId: chatMessages.conversationId,
+        .select({
           senderId: chatMessages.senderId,
           body: chatMessages.body,
           chipKind: chatMessages.chipKind,
@@ -175,21 +183,16 @@ export function createChatRepository(db: Database) {
           createdAt: chatMessages.createdAt,
         })
         .from(chatMessages)
-        .where(
-          inArray(
-            chatMessages.conversationId,
-            rows.map((r) => r.id),
-          ),
-        )
-        // `DISTINCT ON (conversation_id)` keeps the FIRST row of each group in
-        // this order — id desc, i.e. the newest message, matching what the
-        // previous JS pick did.
-        .orderBy(chatMessages.conversationId, desc(chatMessages.id))
+        .where(eq(chatMessages.conversationId, chatConversations.id))
+        // Ids are UUIDv7, so `id desc` is "newest" — the same pick the previous
+        // JS pass made, and the direction the conversation index walks.
+        .orderBy(desc(chatMessages.id))
+        .limit(1)
         .as('newest_chat_message');
 
       const previews = await db
         .select({
-          conversationId: newestPerConversation.conversationId,
+          conversationId: chatConversations.id,
           senderId: newestPerConversation.senderId,
           body: newestPerConversation.body,
           // A locked portfolio reference is absent even from the compact
@@ -202,12 +205,19 @@ export function createChatRepository(db: Database) {
           end`,
           createdAt: newestPerConversation.createdAt,
         })
-        .from(newestPerConversation)
+        .from(chatConversations)
+        .innerJoinLateral(newestPerConversation, sql`true`)
         .leftJoin(
           portfolios,
           and(
             eq(newestPerConversation.chipKind, 'portfolio'),
             eq(newestPerConversation.chipSubjectId, portfolios.id),
+          ),
+        )
+        .where(
+          inArray(
+            chatConversations.id,
+            rows.map((r) => r.id),
           ),
         );
 

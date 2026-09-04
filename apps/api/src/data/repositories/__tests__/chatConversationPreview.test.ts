@@ -117,9 +117,16 @@ describe('chat conversation previews are bounded by the conversations, not the h
 
       // The preview statement exists, and it returned ONE row per conversation —
       // not the 45 messages those two conversations hold.
-      const previewReads = trace.filter((entry) => /distinct on/i.test(entry.sql));
+      const previewReads = trace.filter((entry) => /join lateral/i.test(entry.sql));
       expect(previewReads).toHaveLength(1);
       expect(previewReads[0]!.rows).toBe(2);
+      // The rows READ are bounded too, not just the rows returned: the lateral
+      // probe carries its own `limit 1` per conversation, so the planner can
+      // stop at one index entry instead of scanning (and sorting) the history.
+      // A `distinct on` would satisfy the row-count assertions above while still
+      // streaming every message row into a `Unique`.
+      expect(previewReads[0]!.sql).toMatch(/order by\s+"chat_messages"\."id"\s+desc\s+limit/i);
+      expect(previewReads[0]!.sql).not.toMatch(/distinct on/i);
       // Nothing this read issues may return more rows than there are
       // conversations: that is the whole invariant, stated once.
       expect(Math.max(...trace.map((entry) => entry.rows))).toBe(2);

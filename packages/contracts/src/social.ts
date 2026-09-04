@@ -939,8 +939,11 @@ export type CommentThreadResponse = z.infer<typeof commentThreadResponseSchema>;
  * SPA reads THIS while the section is collapsed, so a 20 000-comment thread
  * costs one count and one aggregate instead of the whole conversation — and
  * since #1725 that is true of the *work* as well as the response: the count is
- * an index-only scan of `item_comments_thread_idx`, which is partial on the
- * tombstone, and it loads no row body at all.
+ * served by `item_comments_thread_idx`, which is partial on the tombstone, and
+ * it loads no row body at all. (An audience-narrowed thread additionally
+ * filters by author, a column that index does not carry, so that variant still
+ * checks the heap per candidate row — bounded to the thread's live entries
+ * either way.)
  */
 export const commentThreadSummaryResponseSchema = z
   .object({

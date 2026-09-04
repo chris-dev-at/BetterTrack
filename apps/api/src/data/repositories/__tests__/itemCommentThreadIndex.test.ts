@@ -7,6 +7,14 @@ import { createItemCommentRepository } from '../itemCommentRepository';
 
 const SUBJECT = '11111111-1111-4111-8111-111111111111';
 
+/** Rows of a raw `db.execute`, whichever shape the driver returns them in. */
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows: unknown = (result as { rows?: unknown } | null)?.rows;
+  if (Array.isArray(rows)) return rows as T[];
+  throw new Error('Unsupported database driver result shape for the pg_indexes read');
+}
+
 describe('the comment thread read has an index that can serve it (#1725)', () => {
   it('ships a partial index carrying the thread filter AND its ordering', async () => {
     const harness = await createTestApp();
@@ -15,9 +23,12 @@ describe('the comment thread read has an index that can serve it (#1725)', () =>
         sql`select indexdef from pg_indexes
             where tablename = 'item_comments' and indexname = 'item_comments_thread_idx'`,
       );
-      // drizzle's execute() shape differs per driver; both carry `rows`.
+      // drizzle's execute() shape is driver-specific: postgres-js hands back its
+      // RowList as a bare array, PGlite wraps it in `rows` (see `resultRows` in
+      // assetRepository.ts). Both are narrowed here so this file keeps testing
+      // the index rather than the driver if it ever joins the integration slice.
       const definition = String(
-        (rows as unknown as { rows: { indexdef: string }[] }).rows[0]?.indexdef ?? '',
+        resultRows<{ indexdef: string }>(rows)[0]?.indexdef ?? '',
       ).toLowerCase();
 
       // Filter columns lead, ordering columns follow in the read's own

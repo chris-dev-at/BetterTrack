@@ -23,4 +23,4 @@
 --
 -- `item_comments_subject_idx` STAYS: subject teardown and moderation read a
 -- thread INCLUDING its tombstones, and a partial index cannot serve those.
-CREATE INDEX "item_comments_thread_idx" ON "item_comments" ("kind","subject_id","created_at" DESC,"id" DESC) WHERE "deleted_at" is null;
+CREATE INDEX IF NOT EXISTS "item_comments_thread_idx" ON "item_comments" USING btree ("kind","subject_id","created_at" DESC,"id" DESC) WHERE "deleted_at" is null;
