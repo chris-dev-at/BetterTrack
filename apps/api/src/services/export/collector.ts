@@ -1,3 +1,4 @@
+import { QTY_EPSILON } from '@bettertrack/domain/holdings';
 import { count, eq, inArray, or } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
@@ -6,11 +7,20 @@ import {
   announcementDismissals,
   apiKeys,
   assets,
+  cashBudgets,
+  cashMovementTags,
+  cashRuleTags,
+  cashRules,
+  cashTags,
   chatConversations,
   chatMessages,
   conglomeratePositions,
   conglomerates,
   dividends,
+  expenseBudgets,
+  expenseCategories,
+  expenseRules,
+  expenseTransactions,
   externalIdentities,
   feedback,
   feedbackMessages,
@@ -60,6 +70,13 @@ export interface CollectedExport {
     holdings: string;
   };
 }
+
+/**
+ * Decimal places of the `numeric(20,8)` quantity columns the holdings CSV sums.
+ * A net position is only meaningful to this scale, so anything past it is float
+ * artefact from the summation, not data.
+ */
+const QUANTITY_SCALE = 8;
 
 /**
  * Columns never written to an export, matched by their (camelCase) property name
@@ -169,6 +186,34 @@ function toCsv(headers: string[], rows: unknown[][]): string {
 }
 
 /**
+ * Invariant guard: the collector must assemble EXACTLY the entities the
+ * classification claims are exported — both directions.
+ *
+ *  - a declared entity the collector never builds would ship an empty file that
+ *    silently claims coverage;
+ *  - a STRAY entity the collector builds whose table is still classified `skip`
+ *    is the more dangerous direction, because the manifest's `skippedTables`
+ *    would tell the reader that data is absent while the ZIP contains it.
+ *
+ * The stray direction is why this runs on the FULL assembled set rather than on
+ * the already-narrowed one: filtering by the allowed set first (as this guard
+ * did until #1711) discards the stray before it can be reported, leaving only
+ * the missing direction detectable. `serverOnly` narrowing is a mechanical
+ * subset of the declared set, so checking the full set covers both modes.
+ */
+export function assertCollectorCoverage(built: readonly string[]): void {
+  const declared = new Set(EXPORTED_ENTITY_NAMES);
+  const stray = [...built].filter((entity) => !declared.has(entity)).sort();
+  const seen = new Set(built);
+  const missing = EXPORTED_ENTITY_NAMES.filter((entity) => !seen.has(entity));
+  if (stray.length > 0 || missing.length > 0) {
+    throw new Error(
+      `export collector/manifest drift: missing [${missing.join(', ')}], stray [${stray.join(', ')}]`,
+    );
+  }
+}
+
+/**
  * Collect every user-owned entity for `userId` into a {@link CollectedExport}.
  * Ownership is resolved up front for the indirected tables (a portfolio's
  * transactions/cash, a conglomerate's positions/links, an audience's members,
@@ -252,6 +297,19 @@ export async function collectUserExport(
     countRows(
       db.select({ value: count() }).from(chatMessages).where(eq(chatMessages.senderId, userId)),
     ),
+    // The expense ledger is the expense area's analogue of `transactions`: an
+    // append-only, user-scoped table this export now materializes in full
+    // (V5-P9). The remaining expense/cash-fusion tables are per-user config
+    // (categories, rules, budgets, tags) or link rows whose count is the
+    // counted movements times the hand-created tags applied to each, so they
+    // stay out of the pre-flight for the same reason the other config tables
+    // do: the multiplier is a user action per row, not growth.
+    countRows(
+      db
+        .select({ value: count() })
+        .from(expenseTransactions)
+        .where(eq(expenseTransactions.userId, userId)),
+    ),
   ]);
   const totalGrowthRows = growthRows.reduce((sum, value) => sum + value, 0);
   if (totalGrowthRows > maxRows) {
@@ -295,6 +353,13 @@ export async function collectUserExport(
     customAssetFull,
     customAssetPriceRows,
     portfolioFull,
+    expenseCategoryRows,
+    expenseTransactionRows,
+    expenseRuleRows,
+    expenseBudgetRows,
+    cashTagRows,
+    cashBudgetRows,
+    cashRuleRows,
   ] = await Promise.all([
     db.select().from(users).where(eq(users.id, userId)),
     db.select().from(apiKeys).where(eq(apiKeys.userId, userId)),
@@ -373,6 +438,56 @@ export async function collectUserExport(
       db.select().from(priceHistory).where(inArray(priceHistory.assetId, ids)),
     ),
     db.select().from(portfolios).where(eq(portfolios.userId, userId)),
+    // V5-P9 expense area + V5 cash fusion. The expense tables, the tags and the
+    // rules all carry `user_id` directly; the per-tag budgets are portfolio-
+    // scoped exactly like the cash movements they budget, so they ride the same
+    // cleartext-portfolio id set (a vault-backed portfolio has no cleartext
+    // descendants to export).
+    db.select().from(expenseCategories).where(eq(expenseCategories.userId, userId)),
+    db.select().from(expenseTransactions).where(eq(expenseTransactions.userId, userId)),
+    db.select().from(expenseRules).where(eq(expenseRules.userId, userId)),
+    db.select().from(expenseBudgets).where(eq(expenseBudgets.userId, userId)),
+    db.select().from(cashTags).where(eq(cashTags.userId, userId)),
+    inIds(cleartextPortfolioIds, (ids) =>
+      db.select().from(cashBudgets).where(inArray(cashBudgets.portfolioId, ids)),
+    ),
+    db.select().from(cashRules).where(eq(cashRules.userId, userId)),
+  ]);
+
+  // The two link tables key off rows resolved above rather than off the user, so
+  // they follow the same "own id set first, empty set short-circuits" shape: a
+  // movement link is scoped to the caller's own exported movements (never to the
+  // tag, which would carry links to movements this export deliberately omits),
+  // and a rule link to the caller's own rules.
+  //
+  // The movement link binds the *portfolio* ids rather than the movement ids it
+  // is logically scoped by: the two sets select exactly the same links (the
+  // exported movements ARE the movements of `cleartextPortfolioIds`), but the
+  // movement set grows with the ledger, and the pre-flight ceiling admits up to
+  // `EXPORT_MAX_ROWS` movements while the postgres extended protocol refuses a
+  // statement above 65_534 bind parameters. Binding movement ids would therefore
+  // fail a large-but-supported account with an opaque driver error instead of
+  // the typed `ExportTooLargeError` the ceilings exist to guarantee. Every other
+  // id set bound here is hand-created config, so it stays at human scale.
+  const cashRuleIds = cashRuleRows.map((r) => r.id);
+  const [cashMovementTagRows, cashRuleTagRows] = await Promise.all([
+    inIds(cleartextPortfolioIds, (ids) =>
+      db
+        .select()
+        .from(cashMovementTags)
+        .where(
+          inArray(
+            cashMovementTags.movementId,
+            db
+              .select({ id: portfolioCashMovements.id })
+              .from(portfolioCashMovements)
+              .where(inArray(portfolioCashMovements.portfolioId, ids)),
+          ),
+        ),
+    ),
+    inIds(cashRuleIds, (ids) =>
+      db.select().from(cashRuleTags).where(inArray(cashRuleTags.ruleId, ids)),
+    ),
   ]);
 
   const allEntities: Record<string, unknown[]> = {
@@ -415,25 +530,26 @@ export async function collectUserExport(
     announcementDismissals: sanitize(announcementDismissalRows),
     customAssets: sanitize(customAssetFull),
     customAssetPriceHistory: sanitize(customAssetPriceRows),
+    expenseCategories: sanitize(expenseCategoryRows),
+    expenseTransactions: sanitize(expenseTransactionRows),
+    expenseRules: sanitize(expenseRuleRows),
+    expenseBudgets: sanitize(expenseBudgetRows),
+    cashTags: sanitize(cashTagRows),
+    cashMovementTags: sanitize(cashMovementTagRows),
+    cashBudgets: sanitize(cashBudgetRows),
+    cashRules: sanitize(cashRuleRows),
+    cashRuleTags: sanitize(cashRuleTagRows),
   };
+  // Checked BEFORE the serverOnly narrowing, so a stray entity is caught rather
+  // than filtered away (see {@link assertCollectorCoverage}).
+  assertCollectorCoverage(Object.keys(allEntities));
+
   const allowedEntities = new Set(
     options.serverOnly ? PARANOID_SERVER_EXPORTED_ENTITY_NAMES : EXPORTED_ENTITY_NAMES,
   );
   const entities = Object.fromEntries(
     Object.entries(allEntities).filter(([entity]) => allowedEntities.has(entity)),
   );
-
-  // Invariant guard: the collector must produce exactly the entities the
-  // classification claims are exported — no missing key, no stray extra. The
-  // completeness test asserts this too; failing fast here makes a wiring slip
-  // obvious at build time.
-  const produced = Object.keys(entities).sort();
-  const expected = [...allowedEntities].sort();
-  if (produced.length !== expected.length || produced.some((k, i) => k !== expected[i])) {
-    throw new Error(
-      `export collector/manifest drift: produced [${produced.join(', ')}] vs expected [${expected.join(', ')}]`,
-    );
-  }
 
   // ── Derived CSVs (transactions / cash movements / holdings) ────────────────
   const csvTransactions = toCsv(
@@ -468,6 +584,21 @@ export async function collectUserExport(
   // Holdings: net position per (portfolio, asset) from the transaction ledger —
   // sum of buy quantities minus sell quantities. Derived, so it needs no market
   // data and stays self-contained in the export.
+  //
+  // Quantities are `numeric(20,8)` strings, so summing them in floats leaves
+  // dust: buy 0.1 + buy 0.2 − sell 0.3 nets 5.55e-17, which a strict `!== 0`
+  // filter keeps and the CSV then prints in scientific notation — a fully closed
+  // position appearing as a held one, disagreeing with the app's own holdings
+  // view. `QTY_EPSILON` is the domain's answer to exactly that (a held quantity
+  // within it of zero IS flat); the export uses the same rule rather than a
+  // second one.
+  //
+  // The same float sum leaves the same dust on a position that is genuinely
+  // held — buy 0.1 + buy 0.2 nets `0.30000000000000004` — so the net is first
+  // snapped back to the column's own scale (`numeric(20,8)`), which is exactly
+  // the precision the stored quantities carry. Beyond that scale there is no
+  // information to preserve, only artefact, and the CSV then agrees with the
+  // app's holdings view for the held case too, not only the closed one.
   const holdingsMap = new Map<string, { portfolioId: string; assetId: string; net: number }>();
   for (const t of transactionRows) {
     const key = `${t.portfolioId}:${t.assetId}`;
@@ -479,7 +610,8 @@ export async function collectUserExport(
   const csvHoldings = toCsv(
     ['portfolioId', 'assetId', 'netQuantity'],
     [...holdingsMap.values()]
-      .filter((h) => h.net !== 0)
+      .map((h) => ({ ...h, net: Number(h.net.toFixed(QUANTITY_SCALE)) }))
+      .filter((h) => Math.abs(h.net) > QTY_EPSILON)
       .map((h) => [h.portfolioId, h.assetId, h.net]),
   );
 

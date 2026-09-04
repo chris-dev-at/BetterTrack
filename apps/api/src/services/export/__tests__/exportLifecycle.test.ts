@@ -250,6 +250,34 @@ describe('export artifact lifecycle', () => {
     expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip.building`))).toBe(false);
   });
 
+  it('counts the expense ledger in the pre-flight, not only the portfolio tables', async () => {
+    // The expense area became exported content in V5-P9, after this ceiling was
+    // written. An append-only table the collector materializes but the
+    // pre-flight does not count is exactly the OOM the ceiling exists to stop,
+    // so an account whose ONLY bulk rows are expenses must still be refused.
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportLimits: { maxRows: 0 },
+    });
+    const user = await harness.seedUser();
+    const [category] = await harness.db
+      .insert(schema.expenseCategories)
+      .values({ userId: user.id, name: 'Groceries' })
+      .returning({ id: schema.expenseCategories.id });
+    await harness.db.insert(schema.expenseTransactions).values({
+      userId: user.id,
+      categoryId: category!.id,
+      amount: '12.34',
+      bookedOn: '2026-03-02',
+      description: 'One append-only expense row.',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const { jobId } = await requestExport(agent, user.password);
+
+    expect(await jobRow(jobId)).toMatchObject({ status: 'failed', error: 'EXPORT_TOO_LARGE' });
+    expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip.building`))).toBe(false);
+  });
+
   it('releases the privacy lock at the absolute bound even when the reader never stops', async () => {
     harness = await createTestApp({
       env: { BT_EXPORT_DIR: EXPORT_DIR },
