@@ -24,6 +24,7 @@ interface ProductionTopology {
 
 interface RenderedPort {
   target?: number | string;
+  host_ip?: string;
 }
 
 interface RenderedLogging {
@@ -309,9 +310,130 @@ export function assertGrafanaAdminCredential(config: RenderedCompose, topology: 
   );
 }
 
+/**
+ * Grafana OSS phones home out of the box: anonymous usage statistics to
+ * `stats.grafana.org`, version + plugin update checks against `grafana.com`,
+ * and the grafana.com news feed. The V5-P2 observability arc is first-party
+ * only with zero owner setup (the same rule that rejects a Sentry DSN), so the
+ * compose service pins every one of them off. They are deliberately compose
+ * literals rather than `${BT_…}` inputs — this gate is what keeps them from
+ * being re-enabled, or dropped and silently defaulting back to `true`.
+ */
+export const GRAFANA_TELEMETRY_SETTINGS: readonly string[] = [
+  'GF_ANALYTICS_REPORTING_ENABLED',
+  'GF_ANALYTICS_CHECK_FOR_UPDATES',
+  'GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES',
+  'GF_ANALYTICS_FEEDBACK_LINKS_ENABLED',
+  'GF_NEWS_NEWS_FEED_ENABLED',
+];
+
+export function assertGrafanaTelemetryDisabled(config: RenderedCompose, topology: string): void {
+  const environment = renderedService(config, topology, 'grafana').environment ?? {};
+
+  for (const key of GRAFANA_TELEMETRY_SETTINGS) {
+    const value = environment[key];
+    assert(
+      value !== undefined,
+      `${topology}: grafana must set ${key} — Grafana OSS defaults it to true and calls ` +
+        `grafana.com / stats.grafana.org, which the first-party-only observability arc forbids`,
+    );
+    assert.equal(
+      String(value).trim().toLowerCase(),
+      'false',
+      `${topology}: grafana must keep ${key} disabled — it renders "${String(value)}"`,
+    );
+  }
+}
+
+const GRAFANA_ANONYMOUS_KEY = 'GF_AUTH_ANONYMOUS_ENABLED';
+const GRAFANA_ANONYMOUS_ROLE_KEY = 'GF_AUTH_ANONYMOUS_ORG_ROLE';
+const GRAFANA_BIND_HOST_KEY = 'BT_OBS_BIND_HOST';
+const GRAFANA_ANONYMOUS_ACK_KEY = 'BT_GRAFANA_ANON_LAN_ACK';
+
+function isEnabledFlag(value: unknown): boolean {
+  return ['true', '1', 'yes', 'on'].includes(
+    String(value ?? '')
+      .trim()
+      .toLowerCase(),
+  );
+}
+
+function isLoopbackBind(hostIp: unknown): boolean {
+  const host = String(hostIp ?? '')
+    .trim()
+    .replace(/[[\]]/g, '')
+    .toLowerCase();
+  if (host === 'localhost' || host === '::1') return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/**
+ * Anonymous Grafana access is a SERVER-WIDE setting, not a per-path one. The
+ * admin-proxy recipe turns it on (the proxy is the auth) and the LAN recipe
+ * moves `BT_OBS_BIND_HOST` off loopback; each is documented as safe alone, and
+ * together they publish every dashboard to the LAN with no credential. The
+ * grafana entrypoint refuses that combination at boot unless
+ * `BT_GRAFANA_ANON_LAN_ACK` names it explicitly; this gate refuses it in the
+ * rendered contract and keeps the runtime guard from being quietly deleted.
+ */
+export function assertGrafanaAnonymousAccessBind(config: RenderedCompose, topology: string): void {
+  const grafana = renderedService(config, topology, 'grafana');
+  const environment = grafana.environment ?? {};
+  const anonymous = isEnabledFlag(environment[GRAFANA_ANONYMOUS_KEY]);
+
+  if (anonymous) {
+    assert.equal(
+      String(environment[GRAFANA_ANONYMOUS_ROLE_KEY] ?? '').trim(),
+      'Viewer',
+      `${topology}: anonymous Grafana access must stay read-only — ${GRAFANA_ANONYMOUS_ROLE_KEY} ` +
+        `renders "${String(environment[GRAFANA_ANONYMOUS_ROLE_KEY] ?? 'unset')}"`,
+    );
+  }
+
+  const ports = grafana.ports ?? [];
+  assert(ports.length > 0, `${topology}: rendered grafana service publishes no host port`);
+  const exposedBinds = ports
+    .map((port) => String(port.host_ip ?? ''))
+    .filter((host) => !isLoopbackBind(host));
+  const acknowledged = isEnabledFlag(environment[GRAFANA_ANONYMOUS_ACK_KEY]);
+
+  assert(
+    !(anonymous && exposedBinds.length > 0 && !acknowledged),
+    `${topology}: grafana renders anonymous access on the non-loopback bind ` +
+      `${exposedBinds.join(', ') || '(all interfaces)'} — that is an unauthenticated dashboard ` +
+      `server for everything that can reach it. Keep ${GRAFANA_BIND_HOST_KEY} on loopback (the ` +
+      `admin-proxy path needs nothing else), turn ${GRAFANA_ANONYMOUS_KEY} off, or name the ` +
+      `exposure with ${GRAFANA_ANONYMOUS_ACK_KEY}`,
+  );
+
+  // The rendered contract only sees the shipped defaults; the owner's own `.env`
+  // is what actually boots. The entrypoint guard is what covers that case, so it
+  // must keep receiving both inputs and keep comparing them.
+  for (const key of [GRAFANA_BIND_HOST_KEY, GRAFANA_ANONYMOUS_ACK_KEY]) {
+    assert(
+      key in environment,
+      `${topology}: grafana must receive ${key} — the entrypoint guard cannot compare inputs it never sees`,
+    );
+  }
+
+  const entrypoint = grafana.entrypoint;
+  const bootstrap = Array.isArray(entrypoint)
+    ? entrypoint.map((part) => String(part)).join('\n')
+    : '';
+  for (const key of [GRAFANA_ANONYMOUS_KEY, GRAFANA_BIND_HOST_KEY, GRAFANA_ANONYMOUS_ACK_KEY]) {
+    assert(
+      bootstrap.includes(key),
+      `${topology}: the grafana entrypoint must keep the anonymous-access guard — it no longer ` +
+        `reads ${key}, so an owner .env could still combine anonymous access with a LAN bind`,
+    );
+  }
+}
+
 function validateTopology(config: RenderedCompose, topology: ProductionTopology): void {
   assertServiceLoggingLimits(config, topology.label);
   assertGrafanaAdminCredential(config, topology.label);
+  assertGrafanaTelemetryDisabled(config, topology.label);
+  assertGrafanaAnonymousAccessBind(config, topology.label);
 
   const apiEnvironment = renderedEnvironment(config, topology.label, 'api');
   const workerEnvironment = renderedEnvironment(config, topology.label, 'worker');

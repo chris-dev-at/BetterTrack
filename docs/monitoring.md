@@ -75,7 +75,66 @@ by the `web`/nginx front proxy.
 - **Over SSH** — `ssh -N -L 3001:127.0.0.1:3001 you@host`, then
   `http://localhost:3001`.
 - **On your LAN** — set `BT_OBS_BIND_HOST` to the host's LAN IP; **never**
-  `0.0.0.0` on a public host.
+  `0.0.0.0` on a public host. On a LAN bind Grafana's **own login is the only
+  thing between the dashboards and every device on that network**, so keep
+  `BT_GRAFANA_ANON_ENABLED=false` here — see
+  [the one unsafe combination](#the-one-unsafe-combination-lan-bind-and-anonymous-access).
+  This is the one place where two individually-safe settings on this page
+  combine into an unsafe one.
+
+### The one unsafe combination: LAN bind and anonymous access
+
+`BT_OBS_BIND_HOST=<LAN IP>` (above) and `BT_GRAFANA_ANON_ENABLED=true` (the
+admin-proxy recipe below) are each documented as safe — and each **is** safe on
+its own. They must not be set together. `GF_AUTH_ANONYMOUS_ENABLED` is a
+**server-wide** Grafana setting, not a per-path one: with both set, Grafana
+answers `http://<LAN IP>:3001` with an anonymous Viewer session, so every device
+on that network — guest Wi-Fi, IoT, a housemate — reads every dashboard (request
+rates, error counts, queue depth, Postgres and Redis internals) with no
+credential.
+
+The `grafana` service therefore **refuses to start** on that combination: its
+entrypoint compares `GF_AUTH_ANONYMOUS_ENABLED` against `BT_OBS_BIND_HOST` and
+exits with the three ways out rather than putting an unauthenticated dashboard
+server on the LAN. Nothing new is required for either supported setup — the
+default (`127.0.0.1` + anonymous off) and the admin-proxy path (`127.0.0.1` +
+anonymous on) both start unchanged.
+
+- Want dashboards **on the LAN**? Keep `BT_GRAFANA_ANON_ENABLED=false` and log
+  in with the Grafana admin credential below.
+- Want the **admin-proxy path**? Leave `BT_OBS_BIND_HOST=127.0.0.1`; the proxy
+  reaches Grafana over the internal docker network, so it needs no LAN bind.
+- Really want an unauthenticated LAN Grafana (an isolated lab network, say)?
+  Name it: `BT_GRAFANA_ANON_LAN_ACK=true`. Unset by default; nothing else reads
+  it.
+
+`checkProductionCompose` covers the same pairing in the rendered compose
+contract, including that the entrypoint guard is still wired up.
+
+### No phoning home
+
+Grafana OSS is first-party-only here, matching the rest of the arc (and the
+reason a Sentry DSN is rejected outright). The compose service pins off every
+outbound call the stock image makes — these are compose literals, not
+owner-settable variables, and `checkProductionCompose` fails if one is dropped
+or flipped:
+
+| Setting                                 | Stock default | Stops                                        |
+| --------------------------------------- | ------------- | -------------------------------------------- |
+| `GF_ANALYTICS_REPORTING_ENABLED`        | `true`        | usage statistics to `stats.grafana.org`      |
+| `GF_ANALYTICS_CHECK_FOR_UPDATES`        | `true`        | Grafana version checks against `grafana.com` |
+| `GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES` | `true`        | plugin update checks against `grafana.com`   |
+| `GF_ANALYTICS_FEEDBACK_LINKS_ENABLED`   | `true`        | grafana.com feedback links in the UI         |
+| `GF_NEWS_NEWS_FEED_ENABLED`             | `true`        | the grafana.com news feed on the home page   |
+
+**Why not an `internal:` docker network instead?** It was considered and
+rejected: `internal: true` blocks a network's outbound NAT, but the
+observability services share the stack's default network with `api` (Prometheus
+scrapes it by service name) and `api` legitimately needs egress for market data,
+so an internal network would have to be a second network joined by half the
+stack — and published host ports on an internal network are exactly what the
+localhost/LAN bind depends on. Pinning the settings above removes the actual
+egress these images perform, with no topology change to get wrong.
 
 ### The admin login (no default credential, still zero setup)
 
@@ -160,7 +219,16 @@ BT_OBS_EXTERNAL_ACCESS=true
 BT_GRAFANA_SERVE_FROM_SUB_PATH=true
 BT_GRAFANA_ROOT_URL=https://api.<your-domain>/api/v1/admin/monitoring/grafana/
 BT_GRAFANA_ANON_ENABLED=true   # the proxy IS the auth; an anon Viewer avoids a 2nd login
+                               # ONLY with BT_OBS_BIND_HOST on loopback — see below
 ```
+
+`BT_GRAFANA_ANON_ENABLED` is safe **on this path only because Grafana's own port
+stays on `127.0.0.1`**; the flag itself is server-wide. Setting it while
+`BT_OBS_BIND_HOST` is a LAN IP makes an unauthenticated LAN dashboard server and
+the grafana service refuses to start —
+[the one unsafe combination](#the-one-unsafe-combination-lan-bind-and-anonymous-access).
+The proxy talks to Grafana over the internal docker network, so it never needs a
+LAN bind.
 
 `BT_GRAFANA_ROOT_URL` + `serve_from_sub_path` make Grafana emit correct URLs
 under the proxy path; `BT_GRAFANA_ALLOW_EMBEDDING` (default `true`) lets the
@@ -175,6 +243,10 @@ Notes / limitations of the proxy path:
 - The proxy sits **before** CSRF + the general rate limiter (Grafana's own POSTs
   carry no `X-Requested-With`, and an embed bursts many requests), but **behind**
   `requireAdmin` + mandatory 2FA + the exposure gate.
+- Its `BT_GRAFANA_ANON_ENABLED=true` is **not** scoped to the proxy path: it
+  removes Grafana's login on every interface Grafana binds to. That is safe
+  while the bind is loopback and unsafe the moment it is a LAN IP, which is why
+  the two cannot be combined without `BT_GRAFANA_ANON_LAN_ACK`.
 
 ### Alternative — auth-gated subdomain
 
@@ -212,8 +284,19 @@ and degrading gracefully when the stack is down:
 
 ## Security model (summary)
 
-- Default is safe: absent explicit external-access config, everything stays
-  localhost/LAN-only exactly as before.
+- Default is safe: absent explicit external-access config, everything stays on
+  the `BT_OBS_BIND_HOST` bind (loopback by default) behind Grafana's own login —
+  with one caveat, below: a LAN bind and anonymous access are safe apart and
+  unsafe together, so the service refuses that pair.
+- **Anonymous access is server-wide, never per-path** — `BT_GRAFANA_ANON_ENABLED`
+  belongs to the admin-proxy recipe, which keeps `BT_OBS_BIND_HOST` on loopback.
+  With a LAN bind the grafana service refuses to start unless
+  `BT_GRAFANA_ANON_LAN_ACK=true` names the exposure; `checkProductionCompose`
+  covers the same pairing and the presence of the runtime guard.
+- **Nothing phones home** — usage reporting, version and plugin update checks and
+  the news feed are pinned off in the compose service, so the stack never calls
+  `grafana.com` / `stats.grafana.org`, and `checkProductionCompose` keeps it
+  that way.
 - **No default credential on any bound interface** — the compose service carries
   no inline `GF_SECURITY_ADMIN_PASSWORD`; an unset/placeholder/`admin` value is
   replaced by a random password generated into the `grafanadata` volume, so the
