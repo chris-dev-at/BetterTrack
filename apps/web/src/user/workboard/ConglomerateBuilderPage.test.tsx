@@ -39,6 +39,8 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
+import { I18nProvider, localizedMessage, useI18n } from '../../i18n';
+import { draftConglomerate, useAiCapability } from '../../lib/aiApi';
 import {
   activateConglomerate,
   createConglomerate,
@@ -47,8 +49,6 @@ import {
   replaceConglomeratePositions,
   updateConglomerate,
 } from '../../lib/conglomerateApi';
-import { localizedMessage } from '../../i18n';
-import { draftConglomerate, useAiCapability } from '../../lib/aiApi';
 import { searchAssets } from '../../lib/searchApi';
 import { ConglomerateBuilderPage } from './ConglomerateBuilderPage';
 
@@ -134,6 +134,44 @@ function renderBuilder(initialPath: string) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+/** A language toggle rendered beside the Builder, sharing its provider. */
+function LocaleSwitch() {
+  const { setLocale } = useI18n();
+  return (
+    <button type="button" onClick={() => setLocale('de')}>
+      Deutsch
+    </button>
+  );
+}
+
+/**
+ * Like {@link renderEdit}, but under a real {@link I18nProvider} seeded to EN
+ * with a switch to DE — `setLocale` rebuilds `t` without remounting the tree,
+ * so this is what catches a callback that captured a stale translator.
+ */
+async function renderEditWithLocaleSwitch(
+  positions: Array<{ id: string; symbol: string; weightPct: number }>,
+) {
+  vi.mocked(getConglomerate).mockResolvedValue(detail(positions));
+  vi.mocked(updateConglomerate).mockResolvedValue(detail(positions));
+  vi.mocked(replaceConglomeratePositions).mockResolvedValue(detail(positions));
+  render(
+    <I18nProvider initialLocale="en">
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={[`/workbench/blueprints/${CONGLOMERATE_ID}/edit`]}>
+          <Routes>
+            <Route path="/workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+      <LocaleSwitch />
+    </I18nProvider>,
+  );
+  for (const p of positions) {
+    await screen.findByLabelText(`Weight for ${p.symbol}`);
+  }
 }
 
 /** Load the Builder in edit mode with the given positions and wait for the rows. */
@@ -335,6 +373,29 @@ describe('ConglomerateBuilderPage', () => {
         localizedMessage('en', 'workboard.builder.errors.normalizeLockedFull'),
       ),
     ).toBeInTheDocument();
+  });
+
+  test('the normalize notice follows an in-session language switch', async () => {
+    await renderEditWithLocaleSwitch([
+      { id: 'a1', symbol: 'AAPL', weightPct: 100 },
+      { id: 'a2', symbol: 'MSFT', weightPct: 10 },
+    ]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /lock aapl/i }));
+    // Grab the button while its label is still English; the DOM node survives
+    // the re-render that the language switch triggers.
+    const normalize = screen.getByRole('button', { name: /normalize/i });
+
+    await user.click(screen.getByRole('button', { name: 'Deutsch' }));
+    await user.click(normalize);
+
+    const de = localizedMessage('de', 'workboard.builder.errors.normalizeLockedFull');
+    expect(await screen.findByText(de)).toBeInTheDocument();
+    expect(
+      screen.queryByText(localizedMessage('en', 'workboard.builder.errors.normalizeLockedFull')),
+    ).not.toBeInTheDocument();
+    // The provider persists the choice; keep it out of the other tests.
+    localStorage.removeItem('bettertrack.locale');
   });
 
   test('activate is blocked until Σ = 100 ± 0.01, then flips to active', async () => {

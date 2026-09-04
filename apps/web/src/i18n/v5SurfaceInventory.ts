@@ -2348,6 +2348,12 @@ export const USER_FACING_SINK_PROPERTIES = [
  *   `ProblemsPage`) — the value is a palette token (`red`, `neg`), which the
  *   property name alone cannot distinguish from a sentence. Recorded rather
  *   than special-cased, so the gate keeps no silent exceptions.
+ *
+ * Those last two groups (the 7 fixture labels and the 3 tone tokens) are
+ * **terminal, not reducible**: they are not copy, so nothing will ever localize
+ * them away. The ratchet therefore has a permanent floor of 10 — it is a
+ * "must not grow" guard for them, and a real burn-down only for the
+ * `user/vault/**` rows above.
  */
 export const LEGACY_SINK_COPY: Readonly<Record<string, number>> = {
   'admin/components/ui.tsx': 1,
