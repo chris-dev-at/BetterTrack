@@ -3513,7 +3513,11 @@
       "mutateError": "Could not update the group. Please try again.",
       "delete": "Delete group",
       "deleteTitle": "Delete “{{name}}”",
-      "deleteWarning": "Anything shared with this group will no longer be visible to its members. This cannot be undone.",
+      "deleteWarning": {
+        "none": "Nothing is shared with this group right now, so deleting it changes nothing for your friends. This cannot be undone.",
+        "one": "1 shared item points at this group and will no longer be visible to its members. This cannot be undone.",
+        "other": "{{count}} shared items point at this group and will no longer be visible to its members. This cannot be undone."
+      },
       "deleting": "Deleting…",
       "deleteError": "Could not delete the group. Please try again."
     }

@@ -3513,7 +3513,11 @@
       "mutateError": "Gruppe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "delete": "Gruppe löschen",
       "deleteTitle": "„{{name}}“ löschen",
-      "deleteWarning": "Alles, was mit dieser Gruppe geteilt wird, ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+      "deleteWarning": {
+        "none": "Mit dieser Gruppe ist derzeit nichts geteilt – das Löschen ändert für deine Freunde nichts. Dies kann nicht rückgängig gemacht werden.",
+        "one": "1 geteiltes Element verweist auf diese Gruppe und ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+        "other": "{{count}} geteilte Elemente verweisen auf diese Gruppe und sind für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden."
+      },
       "deleting": "Wird gelöscht…",
       "deleteError": "Gruppe konnte nicht gelöscht werden. Bitte versuche es erneut."
     }

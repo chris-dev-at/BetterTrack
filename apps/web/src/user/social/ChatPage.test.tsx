@@ -406,7 +406,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
     // The circle exists but admits nobody, so it carries nobody into the write
     // and the replacement warning is the literal truth: only Bob is left.
     vi.mocked(listGroups).mockResolvedValue({
-      groups: [{ id: 'g1', name: 'Investors', memberCount: 0, members: [] }],
+      groups: [{ id: 'g1', name: 'Investors', memberCount: 0, members: [], shareCount: 1 }],
     });
     vi.mocked(setAudience).mockResolvedValue({
       state: {
@@ -468,6 +468,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
             { id: 'u2', username: 'bob', profileIcon: null },
             { id: 'u9', username: 'carol', profileIcon: null },
           ],
+          shareCount: 1,
         },
       ],
     });
@@ -503,6 +504,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
           name: 'Investors',
           memberCount: 1,
           members: [{ id: 'u9', username: 'carol', profileIcon: null }],
+          shareCount: 1,
         },
       ],
     });

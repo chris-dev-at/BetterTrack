@@ -49,7 +49,7 @@ import type {
   FollowUserRow,
   UserFollowsRepository,
 } from '../../data/repositories/userFollowsRepository';
-import { badRequest, notFound } from '../../errors';
+import { ApiError, badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
@@ -215,6 +215,18 @@ const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOU
 const GROUP_NOT_FOUND = () => notFound('Group not found.', 'FRIEND_GROUP_NOT_FOUND');
 const NOT_A_FRIEND = () =>
   badRequest('Only your accepted friends can be added to a group.', 'GROUP_MEMBER_NOT_FRIEND');
+/**
+ * The unfriend transaction rolled back, so NOTHING changed — the friendship and
+ * every group roster / grant it owns are exactly as they were. Typed and 503 so
+ * the caller can say "try again" instead of showing an opaque 500 next to a
+ * friend row whose state is now unknown (#1710).
+ */
+const UNFRIEND_FAILED = () =>
+  new ApiError(
+    503,
+    'FRIENDSHIP_REMOVE_FAILED',
+    'Removing this friend did not complete. Nothing was changed — please try again.',
+  );
 const FOLLOW_TARGET_NOT_FOUND = () => notFound('User not found.', 'USER_NOT_FOUND');
 const NOT_FOLLOWING = () => notFound('You are not following this user.', 'FOLLOW_NOT_FOUND');
 const CANNOT_FOLLOW_SELF = () => badRequest('You cannot follow yourself.', 'CANNOT_FOLLOW_SELF');
@@ -267,11 +279,13 @@ function toFriendGroup(row: {
   id: string;
   name: string;
   members: { id: string; username: string; profileIcon: string | null }[];
+  shareCount: number;
 }): FriendGroup {
   return {
     id: row.id,
     name: row.name,
     memberCount: row.members.length,
+    shareCount: row.shareCount,
     members: row.members.map((m) => ({
       id: m.id,
       username: m.username,
@@ -343,10 +357,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     if (!(await follows.isFollowing(userId, targetId))) throw NOT_FOLLOWING();
   }
 
-  /** Re-read one owned group after a mutation, or 404 if it vanished mid-flight. */
+  /**
+   * Re-read ONE owned group after a mutation, or 404 if it vanished mid-flight.
+   * Reads exactly that group: hydrating every group of the caller plus every
+   * member of those groups (O(groups × members) rows) to `.find()` one was the
+   * N+1 on every rename/add/remove (#1710).
+   */
   async function groupOrThrow(userId: string, groupId: string): Promise<FriendGroup> {
-    const all = await groups.listGroups(userId);
-    const found = all.find((g) => g.id === groupId);
+    const found = await groups.getGroup(userId, groupId);
     if (!found) throw GROUP_NOT_FOUND();
     return toFriendGroup(found);
   }
@@ -677,12 +695,28 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async removeFriend(userId, otherUserId) {
-      const removed = await repo.deleteFriendship(userId, otherUserId);
+      // ONE transaction: the friendship row, the pair's `specific_friends` grants
+      // on each other's items and — here — their group rosters. Unfriending drops
+      // the pair from each other's groups (V5-P8), keeping the invariant that a
+      // group's members are the owner's current friends, so a `group` share can
+      // never reach a now-non-friend (§6.9). Running the roster cleanup as a
+      // second, independent statement made that invariant best-effort: a failure
+      // after the friendship committed left the ex-friend on the roster, and a
+      // later re-friend (a plain accept — no re-share, no widen confirmation)
+      // silently restored their read on every item shared to that circle (#1710).
+      let removed: boolean;
+      try {
+        removed = await repo.deleteFriendship(userId, otherUserId, (tx) =>
+          groups.removeMutualMemberships(userId, otherUserId, tx),
+        );
+      } catch (err) {
+        // The transaction rolled back — nothing changed, so answer a typed,
+        // retryable refusal instead of an opaque 500 that would leave the caller
+        // unsure whether the unfriend half-applied.
+        deps.logger?.error({ err, userId }, 'unfriend transaction rolled back');
+        throw UNFRIEND_FAILED();
+      }
       if (!removed) throw FRIEND_NOT_FOUND();
-      // Unfriending drops the pair from each other's groups too (V5-P8), keeping
-      // the invariant that a group's members are the owner's current friends — so
-      // a `group` share can never reach a now-non-friend (§6.9).
-      await groups.removeMutualMemberships(userId, otherUserId);
     },
 
     // ── Friend groups (V5-P8) ──────────────────────────────────────────────
@@ -694,7 +728,8 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
 
     async createGroup(userId, name) {
       const groupId = await groups.createGroup(userId, name);
-      return { id: groupId, name, memberCount: 0, members: [] };
+      // A fresh circle has no members and nothing shared to it yet.
+      return { id: groupId, name, memberCount: 0, members: [], shareCount: 0 };
     },
 
     async renameGroup(userId, groupId, name) {

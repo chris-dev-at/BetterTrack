@@ -155,11 +155,16 @@ export function createShareAudienceRepository(db: Database) {
     )`;
   }
 
-  /** Friendship-exists predicate between the viewer and a subject-owner column. */
-  function friendshipWith(viewerId: string, ownerCol: AnyPgColumn) {
+  /**
+   * Friendship-exists predicate between one bound user id and a column holding
+   * the other side. The pair is stored once and read order-independently, so it
+   * serves both the authorization queries (viewer id × subject-owner column) and
+   * the owner-facing membership read (owner id × member column).
+   */
+  function friendshipWith(userId: string, otherCol: AnyPgColumn) {
     return or(
-      and(eq(friendships.userA, viewerId), eq(friendships.userB, ownerCol)),
-      and(eq(friendships.userB, viewerId), eq(friendships.userA, ownerCol)),
+      and(eq(friendships.userA, userId), eq(friendships.userB, otherCol)),
+      and(eq(friendships.userB, userId), eq(friendships.userA, otherCol)),
     );
   }
 
@@ -906,13 +911,25 @@ export function createShareAudienceRepository(db: Database) {
      * circle changes the reported reach on the very next read and the owner
      * surface can never claim a reach the enforcement layer doesn't grant.
      *
+     * Both counts carry the SAME extra joins enforcement applies, because a
+     * count without them is exactly the disagreement this summary exists to
+     * prevent (#1710): a named friend is counted only while the friendship still
+     * exists (a membership row outliving an unfriend grants nothing, since every
+     * read `AND`s an inner join on `friendships`), and a circle member only
+     * while their account is active (a disabled account cannot sign in, and
+     * every read joins `users.status = 'active'`). `friend_group_members` is
+     * joined the same way `friendGroupRepository` joins it, so `GET
+     * /social/groups` and this summary can never report different sizes for one
+     * circle.
+     *
      * `group` is `null` for a non-`group` audience AND for a `group` share whose
      * group was deleted (`group_id` nulls out; the share then resolves to
      * nobody). With the audience beside it, the owner surface distinguishes
      * "not a group share" from "group gone" from a populated / empty circle.
      *
-     * Both counts are DISTINCT: the member and group-roster joins multiply each
-     * other's rows, and a plain `count()` would inflate on that product.
+     * Both counts are correlated subqueries rather than joins + `count(distinct
+     * …)`: one row per audience row, so neither count can inflate on the other's
+     * product and neither needs a GROUP BY.
      */
     async audienceSummariesForSubjects(
       kind: ShareKind,
@@ -926,27 +943,30 @@ export function createShareAudienceRepository(db: Database) {
           audience: shareAudiences.audience,
           groupId: friendGroups.id,
           groupName: friendGroups.name,
-          friendCount:
-            sql<number>`count(distinct ${shareAudienceMembers.friendId}) filter (where ${shareAudiences.audience} = 'specific_friends')`.mapWith(
-              Number,
-            ),
-          groupMemberCount: sql<number>`count(distinct ${friendGroupMembers.memberId})`.mapWith(
-            Number,
-          ),
+          friendCount: sql<number>`(
+            select count(*)
+            from ${shareAudienceMembers}
+            join ${friendships} on (
+              (${friendships.userA} = ${shareAudiences.ownerId}
+                and ${friendships.userB} = ${shareAudienceMembers.friendId})
+              or (${friendships.userB} = ${shareAudiences.ownerId}
+                and ${friendships.userA} = ${shareAudienceMembers.friendId})
+            )
+            where ${shareAudienceMembers.audienceId} = ${shareAudiences.id}
+              and ${shareAudiences.audience} = 'specific_friends'
+          )`.mapWith(Number),
+          groupMemberCount: sql<number>`(
+            select count(*)
+            from ${friendGroupMembers}
+            join ${users} on ${users.id} = ${friendGroupMembers.memberId}
+              and ${users.status} = 'active'
+            where ${friendGroupMembers.groupId} = ${friendGroups.id}
+          )`.mapWith(Number),
         })
         .from(shareAudiences)
-        .leftJoin(shareAudienceMembers, eq(shareAudienceMembers.audienceId, shareAudiences.id))
         .leftJoin(friendGroups, eq(friendGroups.id, shareAudiences.groupId))
-        .leftJoin(friendGroupMembers, eq(friendGroupMembers.groupId, friendGroups.id))
         .where(
           and(eq(shareAudiences.kind, kind), inArray(shareAudiences.subjectId, [...subjectIds])),
-        )
-        .groupBy(
-          shareAudiences.id,
-          shareAudiences.subjectId,
-          shareAudiences.audience,
-          friendGroups.id,
-          friendGroups.name,
         );
       for (const r of rows)
         out.set(r.subjectId, {
@@ -960,11 +980,21 @@ export function createShareAudienceRepository(db: Database) {
       return out;
     },
 
-    /** The current owner-facing audience state for one subject (missing row = private). */
+    /**
+     * The current owner-facing audience state for one subject (missing row =
+     * private).
+     *
+     * The membership read joins `friendships` exactly like the enforcement layer
+     * does (#1710): a `specific_friends` row whose friendship has since
+     * dissolved grants nothing, so naming it here would tell the owner — and the
+     * picker, which cannot resolve the id against the friends list and silently
+     * drops the checkbox — that someone can see the item when they cannot.
+     */
     async getOwnedState(kind: ShareKind, subjectId: string): Promise<OwnedAudienceState> {
       const [row] = await db
         .select({
           id: shareAudiences.id,
+          ownerId: shareAudiences.ownerId,
           audience: shareAudiences.audience,
           groupId: shareAudiences.groupId,
         })
@@ -982,6 +1012,7 @@ export function createShareAudienceRepository(db: Database) {
       const members = await db
         .select({ friendId: shareAudienceMembers.friendId })
         .from(shareAudienceMembers)
+        .innerJoin(friendships, friendshipWith(row.ownerId, shareAudienceMembers.friendId))
         .where(eq(shareAudienceMembers.audienceId, row.id));
 
       const [link] = await db
