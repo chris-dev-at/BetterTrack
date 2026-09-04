@@ -10,6 +10,7 @@ import {
 import {
   centsToNumericText,
   parseCents,
+  planInvalidationDay,
   planIsEmpty,
   planOwnerCatchUp,
   spendingPortfolioId,
@@ -29,6 +30,10 @@ import {
  *
  * All decisions live in `cashFusionCatchUpCore.ts` (pure, database-free); all SQL
  * in `data/repositories/cashFusionCatchUpRepository.ts`. This file is the CLI.
+ *
+ * The movements it writes are BACKDATED external cash flows, so each owner's
+ * daily snapshots are invalidated from the earliest day written — inside the
+ * same transaction, and reported per owner as `invalidatedFrom`.
  *
  * SAFE TO RE-RUN. Every inserted row's primary key is borrowed from its source
  * row or derived deterministically from the owner, so a second run plans nothing.
@@ -67,6 +72,13 @@ export interface OwnerReport {
   /** Fused movements whose tag set disagrees with the old category — left alone. */
   divergedTagLinks: number;
   applied: boolean;
+  /**
+   * ISO day this owner's daily snapshots were invalidated from — the earliest
+   * written movement's `executed_at`, since every one of them is a backdated
+   * external flow. Under `--dry-run` it is the day an apply WOULD invalidate;
+   * `null` when no movement is written.
+   */
+  invalidatedFrom: string | null;
   /** Set when the owner could not be planned or the apply rolled back. */
   error: string | null;
 }
@@ -123,8 +135,14 @@ function planNetCents(plan: OwnerPlan): number {
   return plan.movements.reduce((net, movement) => net + parseCents(movement.amountEur), 0);
 }
 
-function reportFor(plan: OwnerPlan, applied: boolean, error: string | null): OwnerReport {
+function reportFor(
+  plan: OwnerPlan,
+  applied: boolean,
+  error: string | null,
+  invalidatedFrom: string | null,
+): OwnerReport {
   return {
+    invalidatedFrom,
     userId: plan.userId,
     portfolioId: plan.portfolioId,
     createdPortfolio: plan.createPortfolio !== null,
@@ -181,18 +199,20 @@ export async function catchUpCashFusion(options: CatchUpCashFusionOptions): Prom
 
       if (plan.blocked !== null) {
         blocked += 1;
-        entry = reportFor(plan, false, plan.blocked);
+        entry = reportFor(plan, false, plan.blocked, null);
       } else if (planIsEmpty(plan)) {
         // Nothing to write, but the orphan/divergence counts still matter.
-        entry = reportFor(plan, false, null);
+        entry = reportFor(plan, false, null, null);
       } else {
         ownersWithWork += 1;
         if (dryRun) {
-          entry = reportFor(plan, false, null);
+          // What an apply WOULD invalidate — predicted from the plan, since a
+          // dry run opens no write transaction.
+          entry = reportFor(plan, false, null, planInvalidationDay(plan));
         } else {
-          await repository.applyOwnerPlan(plan, fusionAppliedAt);
+          const outcome = await repository.applyOwnerPlan(plan, fusionAppliedAt);
           applied += 1;
-          entry = reportFor(plan, true, null);
+          entry = reportFor(plan, true, null, outcome.invalidatedFrom);
         }
       }
     } catch (err) {
@@ -214,6 +234,7 @@ export async function catchUpCashFusion(options: CatchUpCashFusionOptions): Prom
         orphanedPreFusion: 0,
         divergedTagLinks: 0,
         applied: false,
+        invalidatedFrom: null,
         error: err instanceof Error ? err.message : 'unknown error',
       };
     }

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { CachedResult, PricePoint, Quote } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { AssetNotFoundError } from '../providers';
 import { createStubMarketData, type StubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -670,5 +671,118 @@ describe('daily snapshots — §16 invalidation rules (#553)', () => {
     expect(del.status).toBe(204);
     expect(await snapshotRows(h, doomedId)).toEqual([]);
     expect(await snapshotState(h, doomedId)).toBeNull();
+  });
+});
+
+describe('daily snapshots — a degraded run is never persisted as clean (#1729)', () => {
+  /** The whole series window, FX included — days −45 … today. */
+  const WINDOW = Array.from({ length: 46 }, (_, i) => -45 + i);
+
+  /**
+   * One EUR asset, one USD asset and a cash deposit, all dated 40 days back —
+   * OUTSIDE the nightly roll's 35-day heal window, so anything persisted wrong
+   * here is wrong forever. `fx` decides how the `EURUSD=X` history behaves, which
+   * is the only difference between the two degrade cases below.
+   */
+  async function usdFixture(fx: () => CachedResult<PricePoint[]>) {
+    const marketData = createStubMarketData({
+      history: (ref) => {
+        if (ref.providerRef === 'EURUSD=X') return fx();
+        return cannedHistory({
+          'BAYN.DE': WINDOW.map((d) => ({ date: dayOffset(d), close: 100 })),
+          AAPL: WINDOW.map((d) => ({ date: dayOffset(d), close: 200 })),
+        })(ref);
+      },
+      quote: cannedQuotes({ 'BAYN.DE': 100, AAPL: 200 }),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const eurAsset = await seedAsset(h);
+    const usdAsset = await seedAsset(h, {
+      providerRef: 'AAPL',
+      symbol: 'AAPL',
+      currency: 'USD',
+      exchange: 'NASDAQ',
+    });
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-40) });
+    await buy(agent, pid, eurAsset.id, 2, 100, tsOffset(-40));
+    await buy(agent, pid, usdAsset.id, 3, 200, tsOffset(-40));
+    return { h, agent, pid, eurAsset, usdAsset };
+  }
+
+  it('leaves the state dirty and writes nothing while FX is unavailable, then fills the whole range once it recovers', async () => {
+    // A provider outage with no cached copy: `marketDataFxSource` turns this
+    // into FxRateUnavailableError — "not today", not "never".
+    let fxDown = true;
+    const { h, pid, usdAsset } = await usdFixture(() => {
+      if (fxDown) throw new Error('EURUSD=X: provider unreachable');
+      return cannedHistory({
+        'EURUSD=X': WINDOW.map((d) => ({ date: dayOffset(d), close: 1.25 })),
+      })({ providerRef: 'EURUSD=X' });
+    });
+
+    // The backdated buys already marked the state dirty from their day.
+    const dirtyBefore = await snapshotState(h, pid);
+    expect(dirtyBefore?.dirtyFrom).toBe(dayOffset(-40));
+
+    await h.ctx.snapshots.recompute(pid);
+    // Nothing persisted, marker intact: the USD asset is missing from these
+    // artifacts for a reason that will not be true tomorrow.
+    expect(await snapshotRows(h, pid)).toEqual([]);
+    const afterOutage = await snapshotState(h, pid);
+    expect(afterOutage?.dirtyFrom).toBe(dayOffset(-40));
+
+    // The read still SERVES the degraded curve (best available right now) and
+    // still refuses to freeze it.
+    const degraded = await h.ctx.snapshots.getSeries(pid);
+    expect(degraded.fromSnapshots).toBe(false);
+    expect(degraded.assets.map((a) => a.assetId)).not.toContain(usdAsset.id);
+    expect(await snapshotRows(h, pid)).toEqual([]);
+
+    // FX recovers: the next run rewrites the WHOLE affected range, including the
+    // days the nightly roll's 35-day heal window would never have reached.
+    fxDown = false;
+    await h.ctx.snapshots.recompute(pid);
+    const healed = await snapshotState(h, pid);
+    expect(healed?.dirtyFrom ?? null).toBeNull();
+    expect(healed?.computedThrough).toBe(dayOffset(-1));
+    const rows = await snapshotRows(h, pid);
+    expect(rows[0]?.date).toBe(dayOffset(-40));
+    expect(rows[rows.length - 1]?.date).toBe(dayOffset(-1));
+    // The oldest row — 40 days back — carries the USD holding at its own FX:
+    // 1000 cash (the trades are external, not cash-settled) + 2 × 100 EUR
+    // + 3 × 200 / 1.25 USD.
+    const oldest = rows[0]!;
+    expect((oldest.assetValues as Record<string, number>)[usdAsset.id]).toBeCloseTo(480, 9);
+    expect(Number(oldest.valueEur)).toBeCloseTo(1000 + 200 + 480, 9);
+  });
+
+  it('still drops a genuinely unconvertible currency and persists that run', async () => {
+    // The provider positively answers "no such symbol" for the pair: the
+    // currency has no market, today and every day. Dropping the asset is the
+    // final answer, so the run it produces is faithful and IS persisted.
+    const { h, pid, eurAsset, usdAsset } = await usdFixture(() => {
+      throw new AssetNotFoundError('EURUSD=X: no data found, symbol may be delisted');
+    });
+
+    await h.ctx.snapshots.recompute(pid);
+    const state = await snapshotState(h, pid);
+    expect(state?.dirtyFrom ?? null).toBeNull();
+    expect(state?.computedThrough).toBe(dayOffset(-1));
+
+    const rows = await snapshotRows(h, pid);
+    expect(rows[0]?.date).toBe(dayOffset(-40));
+    const oldest = rows[0]!;
+    const assetValues = oldest.assetValues as Record<string, number>;
+    expect(assetValues[eurAsset.id]).toBeCloseTo(200, 9);
+    expect(assetValues[usdAsset.id]).toBeUndefined();
+    // 1000 cash + the 200 EUR position; the USD position is unpriceable and
+    // leaves the curve exactly as it always has.
+    expect(Number(oldest.valueEur)).toBeCloseTo(1200, 9);
   });
 });

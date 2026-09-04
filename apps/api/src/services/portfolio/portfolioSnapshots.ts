@@ -37,8 +37,8 @@ import {
   type ValuePoint,
 } from '../../domain/holdings';
 import type { Logger } from '../../logger';
-import { rangeStartMs, type MarketDataService } from '../../providers';
-import type { CurrencyService } from '../currency/currencyService';
+import { isNotFoundError, rangeStartMs, type MarketDataService } from '../../providers';
+import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import { daysBefore } from './portfolioService';
 
 /**
@@ -247,9 +247,42 @@ function toDomainMovement(r: CashMovementRecord): SourcedCashMovement {
 /** One asset row as the portfolio repository returns it. */
 type AssetRecord = Awaited<ReturnType<PortfolioRepository['assetsByIds']>>[number];
 
+/** How deep {@link fxProbeFailure} walks an error's `cause` chain. */
+const FX_CAUSE_DEPTH = 4;
+
+/**
+ * Why a currency failed the §5.4 convertibility probe.
+ *
+ *  - `unconvertible` — a property of the CURRENCY: the provider positively
+ *    answers "no such symbol" for its `EUR{ccy}=X` pair, or the code itself is
+ *    not convertible money. Dropping the asset is the permanent, correct answer
+ *    and the run it produces is a faithful computation.
+ *  - `unavailable` — a property of the MOMENT: {@link FxRateUnavailableError}
+ *    from an outage past the stale window, a spot quote older than the bound, or
+ *    no close near the date. The same probe will succeed once FX recovers, so
+ *    the artifacts it yields are degraded and must never be frozen into the
+ *    snapshot table as a clean computation.
+ */
+function fxProbeFailure(err: unknown): 'unavailable' | 'unconvertible' {
+  if (!(err instanceof FxRateUnavailableError)) return 'unconvertible';
+  let cause: unknown = err.cause;
+  for (let depth = 0; depth < FX_CAUSE_DEPTH && cause != null; depth += 1) {
+    if (isNotFoundError(cause)) return 'unconvertible';
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
+  return 'unavailable';
+}
+
 /** Everything one engine run produces — the writer persists, the fallback serves. */
 interface EngineArtifacts {
   today: string;
+  /**
+   * At least one currency dropped out of the run because FX was UNAVAILABLE
+   * rather than unconvertible ({@link fxProbeFailure}). The artifacts are still
+   * served — the reader sees what is priceable right now — but they are not a
+   * faithful computation and {@link persist} refuses to write them.
+   */
+  fxUnavailable: boolean;
   /** The ledgers the run read, handed to the caller (see {@link PortfolioSeries}). */
   txns: TransactionRecord[];
   cashRecords: CashMovementRecord[];
@@ -302,6 +335,10 @@ export function createPortfolioSnapshotService(
    * the full engine and the fresh "today" leg so both agree on the universe —
    * persisted rows can never define it, because an asset first transacted
    * today appears in no row yet.
+   *
+   * A failed probe also reports WHY (`fxUnavailable`): the same drop means
+   * "this currency has no market" on one day and "the FX provider is down" on
+   * the next, and only the first may be persisted (see {@link fxProbeFailure}).
    */
   async function resolveUsableAssets(
     txns: readonly TransactionRecord[],
@@ -310,19 +347,25 @@ export function createPortfolioSnapshotService(
     assetsById: Map<string, AssetRecord>;
     usableAssetIds: string[];
     usableIdSet: Set<string>;
+    fxUnavailable: boolean;
   }> {
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
     const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
 
     const convertible = new Map<string, boolean>();
+    let fxUnavailable = false;
     for (const asset of assetsById.values()) {
       const ccy = asset.currency;
       if (ccy === baseCurrency || convertible.has(ccy)) continue;
       try {
         await currencyService.toBase(1, ccy, { date: today });
         convertible.set(ccy, true);
-      } catch {
+      } catch (err) {
         convertible.set(ccy, false);
+        if (fxProbeFailure(err) === 'unavailable') {
+          fxUnavailable = true;
+          logger?.warn({ err, currency: ccy }, 'FX unavailable for snapshot convertibility probe');
+        }
       }
     }
     const isConvertible = (ccy: string): boolean =>
@@ -332,7 +375,7 @@ export function createPortfolioSnapshotService(
       const asset = assetsById.get(id);
       return asset !== undefined && isConvertible(asset.currency);
     });
-    return { assetsById, usableAssetIds, usableIdSet: new Set(usableAssetIds) };
+    return { assetsById, usableAssetIds, usableIdSet: new Set(usableAssetIds), fxUnavailable };
   }
 
   /**
@@ -353,14 +396,25 @@ export function createPortfolioSnapshotService(
     usableAssetIds: string[];
     usableIdSet: Set<string>;
     firstTxnDay: string;
+    fxUnavailable: boolean;
   }> {
-    const { assetsById, usableAssetIds, usableIdSet } = await resolveUsableAssets(txns, today);
+    const { assetsById, usableAssetIds, usableIdSet, fxUnavailable } = await resolveUsableAssets(
+      txns,
+      today,
+    );
     const firstTxnDay = txns
       .map((t) => t.executedAt.toISOString().slice(0, 10))
       .reduce((a, b) => (a < b ? a : b));
 
     if (usableAssetIds.length === 0) {
-      return { assetsById, valueAssets: [], usableAssetIds, usableIdSet, firstTxnDay };
+      return {
+        assetsById,
+        valueAssets: [],
+        usableAssetIds,
+        usableIdSet,
+        firstTxnDay,
+        fxUnavailable,
+      };
     }
 
     const priceRows = await portfolioRepo.pricesForAssets(usableAssetIds);
@@ -404,7 +458,7 @@ export function createPortfolioSnapshotService(
       };
     });
 
-    return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay };
+    return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay, fxUnavailable };
   }
 
   /**
@@ -472,9 +526,15 @@ export function createPortfolioSnapshotService(
     let flows: FlowPoint[] = [];
     let perAsset: PortfolioSeriesAsset[] = [];
     let costBasis: Awaited<ReturnType<typeof costBasisOverTime>> = [];
+    let fxUnavailable = false;
 
     if (txns.length > 0) {
-      const { valueAssets, usableIdSet } = await buildValueAssets(txns, today);
+      const {
+        valueAssets,
+        usableIdSet,
+        fxUnavailable: fxDown,
+      } = await buildValueAssets(txns, today);
+      fxUnavailable = fxDown;
       if (valueAssets.length > 0) {
         const usableRecords = txns.filter((t) => usableIdSet.has(t.assetId));
         const usableTxns = usableRecords.map(recordToDomain);
@@ -544,6 +604,7 @@ export function createPortfolioSnapshotService(
 
     return {
       today,
+      fxUnavailable,
       txns,
       cashRecords,
       points,
@@ -591,21 +652,40 @@ export function createPortfolioSnapshotService(
       });
   }
 
-  /** Persist an engine run; `applied: false` means an invalidation raced it. */
+  /**
+   * Persist an engine run.
+   *
+   * `raced` means an invalidation landed mid-compute; `degraded` means FX was
+   * unavailable for at least one currency, so the artifacts are missing whole
+   * assets from the WHOLE history (value, cost basis and external flows alike).
+   * Writing those rows would freeze a provider outage into the table and clear
+   * `dirty_from` on top of it — and since the nightly roll only overwrites the
+   * trailing heal window, every older day would stay wrong forever. The read
+   * path still serves the degraded artifacts (best available right now) and the
+   * state stays dirty, so the next run after FX recovers rewrites the range.
+   */
   async function persist(
     portfolioId: string,
     artifacts: EngineArtifacts,
-    seen: { updatedAt: Date | null; dirtyFrom: string | null },
+    seen: { version: string | null; dirtyFrom: string | null },
     healFrom: string | null,
-  ): Promise<{ applied: boolean }> {
-    return snapshotRepo.saveComputation({
+  ): Promise<{ applied: boolean; reason?: 'raced' | 'degraded' }> {
+    if (artifacts.fxUnavailable) {
+      logger?.warn(
+        { portfolioId },
+        'snapshot persist skipped: FX unavailable, engine run degraded',
+      );
+      return { applied: false, reason: 'degraded' };
+    }
+    const result = await snapshotRepo.saveComputation({
       portfolioId,
       rows: buildRows(artifacts),
       computedThrough: daysBefore(artifacts.today, 1),
-      seenUpdatedAt: seen.updatedAt,
+      seenVersion: seen.version,
       seenDirtyFrom: seen.dirtyFrom,
       healFrom,
     });
+    return result.applied ? { applied: true } : { applied: false, reason: 'raced' };
   }
 
   /**
@@ -820,11 +900,16 @@ export function createPortfolioSnapshotService(
       const result = await persist(
         portfolioId,
         artifacts,
-        { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
+        { version: state?.version ?? null, dirtyFrom: state?.dirtyFrom ?? null },
         opts.healFrom ?? null,
       );
       if (!result.applied) {
-        logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
+        logger?.info(
+          { portfolioId, reason: result.reason },
+          result.reason === 'degraded'
+            ? 'snapshot recompute degraded by unavailable FX; left dirty for a later run'
+            : 'snapshot recompute raced an invalidation; skipped persist',
+        );
       }
     };
     if (deps.runIfAllowedPortfolio) {
@@ -867,11 +952,7 @@ export function createPortfolioSnapshotService(
           // nothing moved; otherwise fall through to the engine (whose persist
           // CAS fails against the bumped state — correct either way).
           const recheck = await snapshotRepo.getState(portfolioId);
-          if (
-            recheck !== null &&
-            recheck.dirtyFrom === null &&
-            recheck.updatedAt.getTime() === state.updatedAt.getTime()
-          ) {
+          if (recheck !== null && recheck.dirtyFrom === null && recheck.version === state.version) {
             return reconstruct(txns, cashRecords, rows, today);
           }
         }
@@ -886,7 +967,7 @@ export function createPortfolioSnapshotService(
         await persist(
           portfolioId,
           artifacts,
-          { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
+          { version: state?.version ?? null, dirtyFrom: state?.dirtyFrom ?? null },
           null,
         );
       } catch (err) {
