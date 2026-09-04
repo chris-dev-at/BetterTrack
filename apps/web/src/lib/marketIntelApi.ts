@@ -121,8 +121,11 @@ export async function getPortfolioDividendCalendar(
 }
 
 /**
- * `GET /assets/portfolio/dividend-projection` — projected income (monthly/yearly
- * EUR, arc a) summed across EVERY active portfolio.
+ * `GET /assets/portfolio/dividend-projection` — projected income (monthly/yearly,
+ * arc a) summed across EVERY active portfolio. The amounts are denominated in
+ * the caller's base currency, which the response names in `currency` (§5.4); a
+ * consumer that adds them to another figure must check that denomination rather
+ * than assume one.
  */
 export async function getPortfolioDividendProjection(
   signal?: AbortSignal,

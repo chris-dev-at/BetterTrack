@@ -9,7 +9,8 @@ import type {
   WatchedAssetRow,
 } from '../../../data/repositories/marketIntelRepository';
 import { createStubMarketData, cachedIntel } from '../../../testing/marketDataStubs';
-import { FxRateUnavailableError } from '../../currency/currencyService';
+import { createCurrencyService, FxRateUnavailableError } from '../../currency/currencyService';
+import type { CurrencyService } from '../../currency/currencyService';
 import { createPortfolioMarketIntelService } from '../portfolioMarketIntelService';
 import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../rollupBudget';
 
@@ -19,11 +20,31 @@ const NOW = Date.parse('2026-07-18T00:00:00.000Z');
 /** A clock sitting BETWEEN the shared fixture's ex-date and its pay date. */
 const GONE_EX_NOW = Date.parse('2026-08-12T00:00:00.000Z');
 
+/**
+ * A currency view stub honouring the §5.4 base parameter: `toBase` delegates to
+ * `convert`, and `withBase` hands back the same conversion pinned to another
+ * base, exactly as {@link CurrencyService.withBase} does.
+ */
+function stubCurrency(
+  convert: (amount: number, from: string, to: string) => Promise<number>,
+  base = 'EUR',
+): Pick<CurrencyService, 'baseCurrency' | 'toBase' | 'withBase'> {
+  const view = (baseCurrency: string): CurrencyService => ({
+    baseCurrency,
+    getRate: async () => {
+      throw new Error('getRate is not part of the projection path');
+    },
+    convert,
+    toBase: (amount, from) => convert(amount, from, baseCurrency),
+    withBase: (next) => view(next),
+  });
+  return view(base);
+}
+
 /** A currency stub: USD→EUR at 0.9, everything else 1:1 (EUR path). */
-const currency = {
-  convert: async (amount: number, from: string, _to: string) =>
-    from === 'USD' ? amount * 0.9 : amount,
-};
+const currency = stubCurrency(async (amount: number, from: string) =>
+  from === 'USD' ? amount * 0.9 : amount,
+);
 
 /** A repository stub returning fixed held + watched rows (the two reads the service uses). */
 function stubRepo(opts: {
@@ -109,8 +130,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
 
     expect(result.available).toBe(true);
     expect(result.currency).toBe('EUR');
-    expect(result.yearlyTotalEur).toBe(38);
-    expect(result.monthlyTotalEur).toBe(3.17); // round2(38 / 12)
+    expect(result.yearlyTotalBase).toBe(38);
+    expect(result.monthlyTotalBase).toBe(3.17); // round2(38 / 12)
     // Sorted by EUR income descending: B (20) before A (18).
     expect(result.holdings.map((h) => h.symbol)).toEqual(['BBB', 'AAA']);
     const a = result.holdings.find((h) => h.symbol === 'AAA')!;
@@ -118,10 +139,10 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       quantity: 10,
       annualPerShare: 2.0,
       currency: 'USD',
-      annualIncomeEur: 18,
+      annualIncomeBase: 18,
     });
     const b = result.holdings.find((h) => h.symbol === 'BBB')!;
-    expect(b).toMatchObject({ annualIncomeEur: 20 });
+    expect(b).toMatchObject({ annualIncomeBase: 20 });
   });
 
   it('is unavailable when one holding’s payload arrived half-filled', async () => {
@@ -173,8 +194,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -209,8 +230,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -248,7 +269,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     const result = await service.projectedIncome('user-1');
 
     expect(result.available).toBe(true);
-    expect(result.yearlyTotalEur).toBe(18);
+    expect(result.yearlyTotalBase).toBe(18);
     expect(result.holdings.map((h) => h.symbol)).toEqual(['AAA']);
   });
 
@@ -268,7 +289,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
 
     const result = await service.projectedIncome('user-1');
     expect(result.holdings).toHaveLength(0);
-    expect(result.yearlyTotalEur).toBe(0);
+    expect(result.yearlyTotalBase).toBe(0);
   });
 
   it('is unavailable + empty when the gate is off (invisible when unconfigured)', async () => {
@@ -287,8 +308,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     expect(result).toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -302,11 +323,9 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     const service = createPortfolioMarketIntelService({
       marketData,
       repo: stubRepo({ held: [held({ providerRef: 'AAA', quantity: 10 })] }),
-      currency: {
-        convert: async () => {
-          throw new FxRateUnavailableError('USD', 'EUR', null, 'EURUSD=X is unavailable');
-        },
-      },
+      currency: stubCurrency(async () => {
+        throw new FxRateUnavailableError('USD', 'EUR', null, 'EURUSD=X is unavailable');
+      }),
       enabled: true,
       now: () => NOW,
     });
@@ -314,8 +333,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -343,15 +362,13 @@ describe('portfolio projected dividend income (V5-P5)', () => {
           }),
         ],
       }),
-      currency: {
-        convert: async (amount: number, from: string) => {
-          if (from === 'USD') {
-            throw new FxRateUnavailableError('USD', 'EUR', null, 'EURUSD=X is unavailable');
-          }
-          successfulConversions.push(amount);
-          return amount;
-        },
-      },
+      currency: stubCurrency(async (amount: number, from: string) => {
+        if (from === 'USD') {
+          throw new FxRateUnavailableError('USD', 'EUR', null, 'EURUSD=X is unavailable');
+        }
+        successfulConversions.push(amount);
+        return amount;
+      }),
       enabled: true,
       now: () => NOW,
     });
@@ -362,8 +379,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     expect(result).toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -377,11 +394,9 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     const service = createPortfolioMarketIntelService({
       marketData,
       repo: stubRepo({ held: [held({ providerRef: 'AAA', quantity: 10 })] }),
-      currency: {
-        convert: async () => {
-          throw new Error('Invalid currency code: "NOT-ISO"');
-        },
-      },
+      currency: stubCurrency(async () => {
+        throw new Error('Invalid currency code: "NOT-ISO"');
+      }),
       enabled: true,
       now: () => NOW,
     });
@@ -389,8 +404,8 @@ describe('portfolio projected dividend income (V5-P5)', () => {
     await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -689,8 +704,8 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
     await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
       truncated: true,
     });
@@ -713,7 +728,7 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
     expect(result.available).toBe(true);
     expect(result.truncated).toBeUndefined();
     expect(result.holdings).toHaveLength(MARKET_INTEL_ROLLUP_MAX_ASSETS);
-    expect(result.yearlyTotalEur).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(result.yearlyTotalBase).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
   });
 
   it('an UNRESOLVED holding inside the cap still hides the projection, and is not "truncated"', async () => {
@@ -735,8 +750,8 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
     await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
-      monthlyTotalEur: 0,
-      yearlyTotalEur: 0,
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
       holdings: [],
     });
   });
@@ -744,12 +759,214 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
 
 /** A minimal {@link DividendEvents} payload, overridable per field. */
 function makeDividends(overrides: Partial<DividendEvents>): DividendEvents {
-  return {
+  const merged = {
     currency: 'USD',
     history: [],
     upcoming: [],
     forwardYield: null,
     trailingAmount: null,
+    trailingAmountBasis: null,
     ...overrides,
+  } satisfies DividendEvents;
+  // Contract invariant: the basis is null exactly when the amount is. Derived
+  // here so a fixture that names only an amount stays a VALID payload — but an
+  // EXPLICIT basis (including an invariant-breaking null) always wins, so a test
+  // can still hand the service a malformed payload on purpose.
+  return {
+    ...merged,
+    trailingAmountBasis:
+      'trailingAmountBasis' in overrides
+        ? (overrides.trailingAmountBasis ?? null)
+        : merged.trailingAmount == null
+          ? null
+          : 'trailing-12m',
   };
 }
+
+describe('projected dividend income — denomination (§5.4, #1741)', () => {
+  /**
+   * A real {@link createCurrencyService} over a counting rate source. Using the
+   * genuine keystone (rather than a hand-stub) is what makes "converted exactly
+   * once, through services/currency" assertable: `asked` records every pair the
+   * projection ever needed, so a double conversion (`USD→EUR→CHF`) or a missed
+   * one (an empty list beside a cross-currency holding) both fail the test.
+   */
+  function countingFx(rates: Record<string, number>) {
+    const asked: string[] = [];
+    const service = createCurrencyService({
+      source: {
+        getSpotRate: async (from: string, to: string) => {
+          asked.push(`${from}>${to}`);
+          const rate = rates[`${from}>${to}`];
+          if (rate === undefined) {
+            throw new FxRateUnavailableError(from, to, null, `no stub rate for ${from}>${to}`);
+          }
+          return rate;
+        },
+        getHistoricalRate: async () => {
+          throw new Error('the projection converts at spot only');
+        },
+      },
+    });
+    return { asked, service };
+  }
+
+  /** One USD payer: 10 shares × 2.00 USD/share = 20.00 USD before conversion. */
+  function usdPayerService(fx: ReturnType<typeof countingFx>['service']) {
+    return createPortfolioMarketIntelService({
+      marketData: createStubMarketData({
+        dividends: dividendsByRef({
+          AAA: makeDividends({ currency: 'USD', trailingAmount: 2.0 }),
+        }),
+      }),
+      repo: stubRepo({ held: [held({ providerRef: 'AAA', currency: 'USD', quantity: 10 })] }),
+      currency: fx,
+      enabled: true,
+      now: () => NOW,
+    });
+  }
+
+  it('answers a USD-base caller in USD, at the stubbed rate', async () => {
+    const { asked, service: fx } = countingFx({ 'USD>USD': 1, 'USD>EUR': 0.9 });
+    const result = await usdPayerService(fx).projectedIncome('user-1', { baseCurrency: 'USD' });
+
+    expect(result.currency).toBe('USD');
+    // The dividend currency IS the base: an identity conversion, no rate asked.
+    expect(result.yearlyTotalBase).toBe(20);
+    expect(result.monthlyTotalBase).toBe(1.67); // round2(20 / 12)
+    expect(result.holdings[0]).toMatchObject({ currency: 'USD', annualIncomeBase: 20 });
+    expect(asked).toEqual([]);
+  });
+
+  it('answers a CHF-base caller in CHF, converting each holding exactly once', async () => {
+    const { asked, service: fx } = countingFx({ 'USD>CHF': 0.9 });
+    const result = await usdPayerService(fx).projectedIncome('user-1', { baseCurrency: 'CHF' });
+
+    expect(result.currency).toBe('CHF');
+    // 20.00 USD × 0.9 = 18.00 CHF — exact, not merely "not the EUR number".
+    expect(result.yearlyTotalBase).toBe(18);
+    expect(result.monthlyTotalBase).toBe(1.5);
+    expect(result.holdings[0]).toMatchObject({
+      currency: 'USD',
+      annualPerShare: 2,
+      annualIncomeBase: 18,
+    });
+    // Exactly one pair, straight from native to base: a relay through EUR would
+    // read ['USD>EUR', 'EUR>CHF'], and a missed conversion would read [].
+    expect(asked).toEqual(['USD>CHF']);
+  });
+
+  it('is a passthrough for a EUR-base caller — byte-identical to the un-based read', async () => {
+    const { asked, service: fx } = countingFx({ 'USD>EUR': 0.9 });
+    const service = createPortfolioMarketIntelService({
+      marketData: createStubMarketData({
+        dividends: dividendsByRef({
+          AAA: makeDividends({ currency: 'USD', trailingAmount: 2.0 }),
+          BBB: makeDividends({ currency: 'EUR', trailingAmount: 4.0 }),
+        }),
+      }),
+      repo: stubRepo({
+        held: [
+          held({ providerRef: 'AAA', currency: 'USD', quantity: 10 }),
+          held({
+            assetId: 'asset-b',
+            providerRef: 'BBB',
+            symbol: 'BBB',
+            name: 'Asset B',
+            currency: 'EUR',
+            quantity: 5,
+          }),
+        ],
+      }),
+      currency: fx,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const explicit = await service.projectedIncome('user-1', { baseCurrency: 'EUR' });
+    const implicit = await service.projectedIncome('user-1');
+
+    // The pre-#1741 numbers, unchanged: 18.00 + 20.00 = 38.00 €/yr.
+    expect(explicit.currency).toBe('EUR');
+    expect(explicit.yearlyTotalBase).toBe(38);
+    expect(explicit.monthlyTotalBase).toBe(3.17);
+    // Same bytes on the wire either way — the base is a passthrough, never a
+    // re-rating of the default.
+    expect(JSON.stringify(explicit)).toBe(JSON.stringify(implicit));
+    // Only the USD holding ever needed a rate, once per read.
+    expect(asked).toEqual(['USD>EUR', 'USD>EUR']);
+  });
+
+  it('names the caller’s base on the unavailable shape too (gate off)', async () => {
+    const { service: fx } = countingFx({});
+    const service = createPortfolioMarketIntelService({
+      marketData: createStubMarketData({
+        dividends: dividendsByRef({ AAA: makeDividends({ trailingAmount: 2 }) }),
+      }),
+      repo: stubRepo({ held: [held({ providerRef: 'AAA' })] }),
+      currency: fx,
+      enabled: false,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1', { baseCurrency: 'USD' })).resolves.toEqual({
+      available: false,
+      currency: 'USD',
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
+      holdings: [],
+    });
+  });
+
+  it('carries the per-share basis onto each holding', async () => {
+    const { service: fx } = countingFx({});
+    const service = createPortfolioMarketIntelService({
+      marketData: createStubMarketData({
+        dividends: dividendsByRef({
+          AAA: makeDividends({
+            currency: 'EUR',
+            trailingAmount: 2,
+            trailingAmountBasis: 'forward-annualized',
+          }),
+        }),
+      }),
+      repo: stubRepo({ held: [held({ providerRef: 'AAA', currency: 'EUR', quantity: 10 })] }),
+      currency: fx,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const result = await service.projectedIncome('user-1');
+    expect(result.holdings[0]).toMatchObject({ annualPerShareBasis: 'forward-annualized' });
+  });
+
+  it('treats a per-share amount with no basis as a gap, not a trusted number', async () => {
+    const { service: fx } = countingFx({});
+    const service = createPortfolioMarketIntelService({
+      marketData: createStubMarketData({
+        dividends: dividendsByRef({
+          // A payload that breaks the contract invariant: an amount nobody can
+          // describe. The two bases differ by a large factor after a special
+          // dividend, so it must not silently become twelve months of income.
+          AAA: makeDividends({
+            currency: 'EUR',
+            trailingAmount: 2,
+            trailingAmountBasis: null,
+          }),
+        }),
+      }),
+      repo: stubRepo({ held: [held({ providerRef: 'AAA', currency: 'EUR', quantity: 10 })] }),
+      currency: fx,
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalBase: 0,
+      yearlyTotalBase: 0,
+      holdings: [],
+    });
+  });
+});
