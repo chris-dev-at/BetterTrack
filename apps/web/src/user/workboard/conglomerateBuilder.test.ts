@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
+import { localizedMessage } from '../../i18n';
 import {
   autoBalance,
   canActivate,
@@ -172,12 +173,35 @@ describe('conglomerateBuilder helpers', () => {
   test('normalize errors when locked positions alone total ≥ 100', () => {
     const result = normalize([pos('a', 60, true), pos('b', 45, true), pos('c', 10)]);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/100%/);
+    if (!result.ok) expect(result.reason.key).toBe('workboard.builder.errors.normalizeLockedFull');
   });
 
   test('normalize errors when there are no unlocked positions', () => {
     const result = normalize([pos('a', 40, true), pos('b', 40, true)]);
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason.key).toBe('workboard.builder.errors.normalizeNoUnlocked');
+  });
+
+  test('every normalize rejection renders from the catalog in EN and DE (#1745)', () => {
+    // The rejections used to be English literals returned from this non-JSX
+    // module — exactly the blind spot V5-P14 closed. Assert the localized
+    // output, not the key, so a key that resolves to nothing fails here.
+    const rejections = [
+      normalize([pos('a', 60, true), pos('b', 45, true), pos('c', 10)]),
+      normalize([pos('a', 40, true), pos('b', 40, true)]),
+    ];
+    for (const result of rejections) {
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      const en = localizedMessage('en', result.reason.key);
+      const de = localizedMessage('de', result.reason.key);
+      expect(en).not.toBe(result.reason.key);
+      expect(de).not.toBe(result.reason.key);
+      expect(de).not.toBe(en);
+    }
+    expect(localizedMessage('de', 'workboard.builder.errors.normalizeNoUnlocked')).toBe(
+      'Es gibt keine entsperrten Positionen zum Normalisieren.',
+    );
   });
 
   test('canActivate requires Σ = 100 ± 0.01 and every persisted weight > 0', () => {

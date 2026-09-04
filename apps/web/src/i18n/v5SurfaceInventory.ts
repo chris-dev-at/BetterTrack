@@ -2304,3 +2304,72 @@ export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
   'admin/pages/InvitesPage.tsx': 0,
   'admin/pages/UserDetailPage.tsx': 0,
 };
+
+/**
+ * Object-literal property names whose string value reaches the user as copy.
+ *
+ * The JSX scanner above only sees what a `.tsx` module renders as JSX, so a
+ * sentence assembled as `{ error: 'price must be greater than 0.' }` — or one
+ * living in a plain `.ts` helper — passed every gate (V5-P14, #1745; the blind
+ * spot `docs/i18n.md` describes as (a) and (b)). These are the sinks the
+ * non-JSX scanner reads: a literal parked on one of them is copy until proven
+ * otherwise, and the proof is a catalog key, not a comment.
+ */
+export const USER_FACING_SINK_PROPERTIES = [
+  'description',
+  'error',
+  'hint',
+  'label',
+  'message',
+  'notice',
+  'placeholder',
+  'reason',
+  'subtitle',
+  'title',
+] as const;
+
+/**
+ * Frozen non-JSX sink debt, by file — the ratchet for
+ * {@link USER_FACING_SINK_PROPERTIES}, seeded at the count that survived
+ * #1745's fixes. Read it exactly like {@link LEGACY_LITERAL_COPY}: a file may
+ * only ever go DOWN, no file may join the map, and a literal on a sink in any
+ * other module fails the suite.
+ *
+ * What is recorded here, and why it is not simply localized:
+ *
+ * - `user/vault/**` — English `message:` fields on internal error objects.
+ *   They are diagnostic codes, not rendered sentences: the UI dispatches the
+ *   accompanying `code` through `vaultStoreErrorKey` / `errorCopy.ts`, which
+ *   `registry.test.ts` proves carries EN + DE copy for every member. #1745
+ *   leaves them alone by scope.
+ * - `ui/charts/fixtures.ts` — sample-series `label`s (ticker symbols and
+ *   "Cash") in demo fixtures; they name instruments, not UI copy.
+ * - the three `error:`-keyed tone maps (`ImportPreviewTable`, admin `ui.tsx`,
+ *   `ProblemsPage`) — the value is a palette token (`red`, `neg`), which the
+ *   property name alone cannot distinguish from a sentence. Recorded rather
+ *   than special-cased, so the gate keeps no silent exceptions.
+ *
+ * Those last two groups (the 7 fixture labels and the 3 tone tokens) are
+ * **terminal, not reducible**: they are not copy, so nothing will ever localize
+ * them away. The ratchet therefore has a permanent floor of 10 — it is a
+ * "must not grow" guard for them, and a real burn-down only for the
+ * `user/vault/**` rows above.
+ */
+export const LEGACY_SINK_COPY: Readonly<Record<string, number>> = {
+  'admin/components/ui.tsx': 1,
+  'admin/pages/ProblemsPage.tsx': 1,
+  'ui/charts/fixtures.ts': 7,
+  'user/portfolio/import/ImportPreviewTable.tsx': 1,
+  'user/vault/drive/driveDataHome.ts': 17,
+  'user/vault/drive/gisTokenClient.ts': 4,
+  'user/vault/engine/errors.ts': 2,
+  'user/vault/engine/paranoidPortfolioStore.ts': 2,
+  'user/vault/media/driveConnection.ts': 1,
+  'user/vault/media/driveMigration.ts': 5,
+  'user/vault/media/mediaSwitcher.ts': 6,
+  'user/vault/media/replicatedDataHome.ts': 2,
+  'user/vault/portfolioStoreResolver.ts': 3,
+  'user/vault/restore.ts': 7,
+  'user/vault/serverBlobDataHome.ts': 1,
+  'user/vault/standingOrders/materialize.ts': 6,
+};

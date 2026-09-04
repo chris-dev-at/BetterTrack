@@ -131,6 +131,34 @@ function renderPage(client = makeQueryClient()) {
   return { ...view, client };
 }
 
+/**
+ * Holds every quote read open until the returned opener is called.
+ *
+ * A test that wants to observe the in-flight window cannot capture one call's
+ * `resolve` and fire it: the batch for a freshly minted id set is started from
+ * a passive effect, so it can be issued after the row it belongs to is already
+ * in the DOM — i.e. after the capture. Calling a resolver captured too early
+ * (or none at all) then leaves the read the assertions depend on pending
+ * forever. Gating on one shared promise resolves every call whenever it
+ * arrives, so only the opening is ordered, not the issuing.
+ */
+function gateQuoteReads() {
+  let open: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  vi.mocked(getAssetQuotes).mockImplementation(async (ids) => {
+    await gate;
+    return { quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] };
+  });
+  return async () => {
+    await act(async () => {
+      open?.();
+      await gate;
+    });
+  };
+}
+
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -344,22 +372,13 @@ describe('WorkboardPage — item rendering', () => {
     // new cache key. `keepPreviousData` must keep AAPL's row rendered instead
     // of dropping every survivor back to a skeleton.
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
-    let resolveQuotes: (() => void) | undefined;
-    vi.mocked(getAssetQuotes).mockImplementation(
-      (ids) =>
-        new Promise((resolve) => {
-          resolveQuotes = () =>
-            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] });
-        }),
-    );
+    const openQuotes = gateQuoteReads();
     await userEvent.click(screen.getByRole('button', { name: 'Remove MSFT from watchlist' }));
 
     await waitFor(() => expect(screen.queryByText('MSFT')).not.toBeInTheDocument());
     expect(screen.getByRole('img', { name: '1-month trend for AAPL' })).toBeInTheDocument();
     expect(screen.getByText(/150/)).toBeInTheDocument();
-    await act(async () => {
-      resolveQuotes?.();
-    });
+    await openQuotes();
   });
 
   test('reports rows the provider could not price, with one retry for the zone', async () => {
@@ -439,24 +458,24 @@ describe('WorkboardPage — item rendering', () => {
     expect(await screen.findByText('AAPL')).toBeInTheDocument();
 
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
-    let resolveQuotes: (() => void) | undefined;
-    vi.mocked(getAssetQuotes).mockImplementation(
-      (ids) =>
-        new Promise((resolve) => {
-          resolveQuotes = () =>
-            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] });
-        }),
-    );
+    const openQuotes = gateQuoteReads();
     await act(async () => {
       await client.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
     });
 
     await waitFor(() => expect(screen.getByText('MSFT')).toBeInTheDocument());
+    // The placeholder window only opens once the batch for the new id set is
+    // actually in flight — asserting before that would pass for the wrong
+    // reason, on a row whose read has not been issued yet.
+    await waitFor(() =>
+      expect(getAssetQuotes).toHaveBeenCalledWith(
+        [ITEM_A.assetId, ITEM_B.assetId],
+        expect.anything(),
+      ),
+    );
     expect(screen.queryByText(/couldn't be loaded/)).not.toBeInTheDocument();
 
-    await act(async () => {
-      resolveQuotes?.();
-    });
+    await openQuotes();
     await waitFor(() => expect(screen.getAllByText(/150/).length).toBeGreaterThan(1));
     expect(screen.queryByText(/couldn't be loaded/)).not.toBeInTheDocument();
   });

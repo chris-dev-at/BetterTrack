@@ -343,12 +343,15 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const handleNormalize = useCallback(() => {
     const result = normalize(positionsRef.current);
     if (!result.ok) {
-      setNotice(result.error);
+      setNotice(t(result.reason.key, result.reason.params));
       return;
     }
     setNotice(null);
     setPositions(result.positions);
-  }, []);
+    // `t` is rebuilt per locale (I18nProvider) and `setLocale` does not remount
+    // the tree — without it here the notice would stay in the locale that was
+    // active when the page mounted.
+  }, [t]);
 
   // ── Activate ──
 

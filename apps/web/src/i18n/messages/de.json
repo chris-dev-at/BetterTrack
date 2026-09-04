@@ -1474,6 +1474,14 @@
       "uncoveredNudge": "Erfasse für eine korrekte Historie besser den ursprünglichen Kauf.",
       "uncoveredBlocked": "Bestätige den Verkauf über deinen Bestand hinaus, um fortzufahren.",
       "uncoveredEntryPriceInvalid": "Gib einen gültigen Kaufpreis ein oder zähle die Stücke als 0 %.",
+      "rowErrors": {
+        "withSymbol": "{{symbol}}: {{message}}",
+        "priceRequired": "Der Preis muss größer als 0 sein.",
+        "amountRequired": "Der Betrag muss größer als 0 sein.",
+        "quantityRequired": "Die Anzahl muss größer als 0 sein.",
+        "priceNegative": "Der Preis muss 0 oder mehr sein.",
+        "derivedQuantity": "Aus diesem Preis und Betrag ließ sich keine gültige Anzahl ableiten."
+      },
       "tax": {
         "title": "Steuer auf diesen Verkauf (optional)",
         "description": "Der manuelle Steuermodus ist aktiv. Gib die Steuer für diesen Verkauf ein oder lass das Feld leer, um keine zu erfassen.",
@@ -2690,7 +2698,9 @@
         "duplicateConglomerate": "Dieser Blueprint ist bereits ein Bestandteil.",
         "selfNest": "Ein Blueprint kann sich nicht selbst enthalten.",
         "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Blueprint kann sich nicht selbst enthalten, auch nicht über einen anderen Blueprint.",
-        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden."
+        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden.",
+        "normalizeLockedFull": "Gesperrte Gewichte ergeben bereits 100 % oder mehr — entsperre eine Position, um zu normalisieren.",
+        "normalizeNoUnlocked": "Es gibt keine entsperrten Positionen zum Normalisieren."
       }
     },
     "ideas": {

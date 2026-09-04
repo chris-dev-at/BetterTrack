@@ -26,10 +26,12 @@ import {
   DEFERRED_NON_V5_ASYNC_STATE_DEBT,
   DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING,
   LEGACY_LITERAL_COPY,
+  LEGACY_SINK_COPY,
   NON_SURFACE_ROUTE_ELEMENTS,
   NON_V5_ROUTES,
   NON_V5_SURFACES,
   SURFACE_UNIVERSE_ROOTS,
+  USER_FACING_SINK_PROPERTIES,
   V5_ASYNC_READ_EXEMPTIONS,
   V5_ASYNC_READ_SITE_BASELINE,
   V5_ASYNC_STATE_DEBT,
@@ -356,15 +358,26 @@ function flattenStrings(
   return output;
 }
 
-/** Every non-test TSX module under the universe roots, as `src`-relative paths. */
-function universeModules(): string[] {
+/**
+ * Every non-test module under the universe roots, as `src`-relative paths.
+ *
+ * The default is TSX-only, which is what the surface classification and the
+ * JSX literal gate mean by "the universe". The non-JSX sink gate passes
+ * `['.ts', '.tsx']`: copy assembled in a plain helper module is exactly the
+ * blind spot #1745 closed, and a `.ts` file was previously invisible to every
+ * i18n check.
+ */
+function universeModules(extensions: readonly string[] = ['.tsx']): string[] {
   const found: string[] = [];
+  const isScanned = (name: string) =>
+    extensions.some((ext) => name.endsWith(ext) && !name.endsWith(`.test${ext}`)) &&
+    !name.endsWith('.d.ts');
   const walk = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = join(directory, entry.name);
       if (entry.isDirectory()) {
         walk(absolute);
-      } else if (entry.name.endsWith('.tsx') && !entry.name.endsWith('.test.tsx')) {
+      } else if (isScanned(entry.name)) {
         found.push(relative(SRC_ROOT, absolute).split(sep).join('/'));
       }
     }
@@ -380,7 +393,9 @@ function parseTsx(relativePath: string, sourceText?: string): ts.SourceFile {
     sourceText ?? readFileSync(absolutePath, 'utf8'),
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TSX,
+    // A `.ts` file parsed as TSX misreads `<T>value` assertions; pick the kind
+    // from the extension now that the sink gate also walks plain modules.
+    relativePath.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.TSX,
   );
 }
 
@@ -1677,12 +1692,17 @@ const ALLOWED_TECHNICAL_VALUES = new Set([
   'web … · api …',
 ]);
 
-/** Literal user-facing strings rendered by a TSX module, as `path:line "text"`. */
-function literalCopy(relativePath: string, sourceText?: string): string[] {
-  const sourceFile = parseTsx(relativePath, sourceText);
-  const findings: string[] = [];
-
-  const record = (node: ts.Node, value: string) => {
+/**
+ * A `record(node, text)` that appends `path:line "text"` for anything that
+ * looks like prose, skipping entities and the known technical values. Shared by
+ * the JSX scanner and the non-JSX sink scanner so both judge copy identically.
+ */
+function copyRecorder(
+  sourceFile: ts.SourceFile,
+  relativePath: string,
+  findings: string[],
+): (node: ts.Node, value: string) => void {
+  return (node, value) => {
     const normalized = value.replace(/\s+/g, ' ').trim();
     if (
       !/[A-Za-zÄÖÜäöüß]{2}/.test(normalized) ||
@@ -1694,6 +1714,51 @@ function literalCopy(relativePath: string, sourceText?: string): string[] {
     const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
     findings.push(`${relativePath}:${line} ${JSON.stringify(normalized)}`);
   };
+}
+
+/** The literal text of a string / template node, or `undefined` for anything else. */
+function literalText(node: ts.Node): string | undefined {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isTemplateExpression(node)) {
+    return `${node.head.text}${node.templateSpans.map((span) => `…${span.literal.text}`).join('')}`;
+  }
+  return undefined;
+}
+
+/**
+ * Literal copy parked on a user-facing object-literal property
+ * ({@link USER_FACING_SINK_PROPERTIES}) — the non-JSX sink, in `.ts` as well as
+ * `.tsx`. This is the gate for blind spot (a)/(b) of `docs/i18n.md`: `{ error:
+ * 'price must be greater than 0.' }` renders through an `<Alert>` just like JSX
+ * text does, and used to pass every check (#1745).
+ */
+function sinkCopy(relativePath: string, sourceText?: string): string[] {
+  const sourceFile = parseTsx(relativePath, sourceText);
+  const findings: string[] = [];
+  const record = copyRecorder(sourceFile, relativePath, findings);
+  const sinks = new Set<string>(USER_FACING_SINK_PROPERTIES);
+
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node)) {
+      const name =
+        ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : undefined;
+      if (name !== undefined && sinks.has(name)) {
+        const text = literalText(node.initializer);
+        if (text !== undefined) record(node.initializer, text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return findings;
+}
+
+/** Literal user-facing strings rendered by a TSX module, as `path:line "text"`. */
+function literalCopy(relativePath: string, sourceText?: string): string[] {
+  const sourceFile = parseTsx(relativePath, sourceText);
+  const findings: string[] = [];
+
+  const record = copyRecorder(sourceFile, relativePath, findings);
 
   const recordExpression = (node: ts.Node): void => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -2574,6 +2639,77 @@ describe('V5-P14 surface traceability inventory', () => {
       staleDebt,
       `Legacy debt recorded for a module that no longer exists:\n${staleDebt.join('\n')}`,
     ).toEqual([]);
+  });
+
+  test('the non-JSX sink gate reports a literal on a user-facing property, in .ts as well as .tsx', () => {
+    // A gate that cannot go red is not a gate: re-introduce #1745's offenders
+    // in both shapes and assert the checker names them.
+    const helper = sinkCopy(
+      'synthetic-sink-probe.ts',
+      [
+        'export function validate(row) {',
+        '  if (!row.price) return { error: `${row.symbol}: price must be greater than 0.` };',
+        "  if (!row.name) return { error: 'There are no unlocked positions to normalize.' };",
+        "  return { ok: true, code: 'PRICE_MISSING', error: t('portfolio.transaction.rowErrors.priceRequired') };",
+        '}',
+      ].join('\n'),
+    );
+    expect(helper.some((finding) => finding.includes('price must be greater than 0'))).toBe(true);
+    expect(helper.some((finding) => finding.includes('no unlocked positions'))).toBe(true);
+    // A catalog key resolved through `t()` is not copy, and a non-sink property
+    // (`code`) is not a sink — neither may be reported.
+    expect(helper.some((finding) => finding.includes('rowErrors'))).toBe(false);
+    expect(helper.some((finding) => finding.includes('PRICE_MISSING'))).toBe(false);
+
+    const component = sinkCopy(
+      'synthetic-sink-probe.tsx',
+      "const COPY = { title: 'Recorded trades', hint: 'Nothing yet' };\nexport const Probe = () => <p>{COPY.title}</p>;",
+    );
+    expect(component).toHaveLength(2);
+    expect(component.every((finding) => finding.startsWith('synthetic-sink-probe.tsx:'))).toBe(
+      true,
+    );
+  });
+
+  test('carries no literal copy on a non-JSX sink outside the frozen legacy debt', () => {
+    // Widened to `.ts`: the modules that hold copy in a plain data structure or
+    // a helper function were invisible to every other i18n gate (#1745).
+    const universe = universeModules(['.ts', '.tsx']);
+    expect(universe.filter((path) => path.endsWith('.ts')).length).toBeGreaterThan(100);
+
+    const introduced: string[] = [];
+    const overBudget: string[] = [];
+    for (const relativePath of universe) {
+      const findings = sinkCopy(relativePath);
+      const budget = LEGACY_SINK_COPY[relativePath] ?? 0;
+      if (findings.length <= budget) continue;
+      const report = `${relativePath}: ${findings.length} literal(s), budget ${budget}\n${findings.join('\n')}`;
+      if (relativePath in LEGACY_SINK_COPY) overBudget.push(report);
+      else introduced.push(report);
+    }
+
+    expect(
+      introduced,
+      `User-facing copy on a non-JSX sink. Pass \`t\` into the helper and ship EN + DE keys — see docs/i18n.md.\n${introduced.join('\n')}`,
+    ).toEqual([]);
+    expect(
+      overBudget,
+      `Non-JSX sink debt grew; LEGACY_SINK_COPY is downward-only.\n${overBudget.join('\n')}`,
+    ).toEqual([]);
+
+    const onDisk = new Set(universe);
+    const staleDebt = Object.keys(LEGACY_SINK_COPY)
+      .filter((path) => !onDisk.has(path))
+      .sort();
+    expect(
+      staleDebt,
+      `Sink debt recorded for a module that no longer exists:\n${staleDebt.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  test('the two surfaces #1745 localized stay free of their old literals', () => {
+    expect(sinkCopy('user/components/TransactionDialog.tsx')).toEqual([]);
+    expect(sinkCopy('user/workboard/conglomerateBuilder.ts')).toEqual([]);
   });
 });
 
