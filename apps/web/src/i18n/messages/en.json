@@ -3358,8 +3358,10 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "actionAdd": "Share it with them too",
           "confirmWiden": "I understand this widens access to {{username}}.",
           "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
+          "confirmGroupDetach": "I understand this keeps the current members of {{group}} and adds {{username}}, but the item stops following that group — later changes to {{group}} no longer change who can see it.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }

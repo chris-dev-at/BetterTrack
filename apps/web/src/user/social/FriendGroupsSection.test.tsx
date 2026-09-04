@@ -109,6 +109,33 @@ describe('FriendGroupsSection (V5-P8)', () => {
     await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(GROUP, BOB));
   });
 
+  test('gives each expanded card its own name field id', async () => {
+    const OTHER = '00000000-0000-0000-0000-0000000000f2';
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [
+        { id: GROUP, name: 'Family', memberCount: 0, members: [], shareCount: 0 },
+        { id: OTHER, name: 'Investors', memberCount: 0, members: [], shareCount: 0 },
+      ],
+    });
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(screen.getByRole('button', { name: /investors/i }));
+
+    const fields = screen.getAllByLabelText('Group name');
+    expect(fields).toHaveLength(2);
+    // Two cards open at once must not share a DOM id, or the second card's label
+    // focuses the first card's input.
+    expect(new Set(fields.map((f) => f.id)).size).toBe(2);
+
+    // Each label focuses its own card's input.
+    const [, secondLabel] = screen.getAllByText('Group name');
+    await user.click(secondLabel as HTMLElement);
+    expect(document.activeElement).toBe(fields[1]);
+    expect((fields[1] as HTMLInputElement).value).toBe('Investors');
+  });
+
   test('warns before deleting a group, naming how many shares go dark', async () => {
     vi.mocked(listGroups).mockResolvedValue({
       groups: [{ id: GROUP, name: 'Family', memberCount: 2, members: [], shareCount: 6 }],
