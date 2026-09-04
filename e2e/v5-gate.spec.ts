@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { expect, test } from '@playwright/test';
 
 import {
+  V5_GRADED_SCENARIOS,
+  V5_PHASE_SCENARIOS,
   V5_REQUIRED_SCENARIOS,
   V5_STEP_PROOFS,
   evaluateRequiredScenarios,
@@ -183,10 +185,10 @@ function syntheticReport(planned: PlannedResult[], fileTitles = true): ReportRec
   return records;
 }
 
-/** Every required scenario passing once, in the desktop project. */
+/** Every graded scenario passing once, in the desktop project. */
 function plannedForFullyCoveredRun(): PlannedResult[] {
   const planned: PlannedResult[] = [];
-  for (const scenario of V5_REQUIRED_SCENARIOS) {
+  for (const scenario of V5_GRADED_SCENARIOS) {
     if (scenario.coverage.kind === 'playwright') {
       for (const mapped of scenario.coverage.tests) {
         planned.push({
@@ -252,7 +254,15 @@ test.describe('V5-P14 required-scenario gate', () => {
     expect(V5_REQUIRED_SCENARIOS).toHaveLength(10);
     expect(new Set(V5_REQUIRED_SCENARIOS.map((scenario) => scenario.id)).size).toBe(10);
 
-    for (const scenario of V5_REQUIRED_SCENARIOS) {
+    // Scenarios later issues registered live in their own array, so the ten
+    // above stay a literal transcription of the phase line. They are graded
+    // identically — and listed here so one cannot appear unremarked.
+    expect(V5_PHASE_SCENARIOS.map((scenario) => scenario.id)).toEqual(['pwa-install-flow']);
+    expect(new Set(V5_GRADED_SCENARIOS.map((scenario) => scenario.id)).size).toBe(
+      V5_GRADED_SCENARIOS.length,
+    );
+
+    for (const scenario of V5_GRADED_SCENARIOS) {
       const { coverage } = scenario;
       if (coverage.kind !== 'waived') continue;
       expect(coverage.deadTests.length, `${scenario.id} waives nothing`).toBeGreaterThan(0);
@@ -266,7 +276,7 @@ test.describe('V5-P14 required-scenario gate', () => {
     // Exactly the two the issue registered; a third appearing silently would
     // mean the phase quietly gave up on another flow.
     expect(
-      V5_REQUIRED_SCENARIOS.filter((scenario) => scenario.coverage.kind === 'waived').map(
+      V5_GRADED_SCENARIOS.filter((scenario) => scenario.coverage.kind === 'waived').map(
         (scenario) => scenario.id,
       ),
     ).toEqual(['expense-import-budget-alert', 'paranoid-drive-only-round-trip']);
@@ -276,7 +286,7 @@ test.describe('V5-P14 required-scenario gate', () => {
     const sourceOf = sourceReader(repoRoot(testInfo.file));
     const root = repoRoot(testInfo.file);
 
-    for (const scenario of V5_REQUIRED_SCENARIOS) {
+    for (const scenario of V5_GRADED_SCENARIOS) {
       const { coverage } = scenario;
       if (coverage.kind === 'playwright') {
         for (const mapped of coverage.tests) {
@@ -409,11 +419,11 @@ test.describe('V5-P14 required-scenario gate', () => {
     });
   });
 
-  test('v5 gate: a run that covers everything is green and counts eight covered, two waived', async ({}) => {
+  test('v5 gate: a run that covers everything is green and counts nine covered, two waived', async ({}) => {
     const report = grade(syntheticReport(plannedForFullyCoveredRun()));
     expect(report.ok).toBe(true);
     expect({ covered: report.covered, waived: report.waived, failed: report.failed }).toEqual({
-      covered: 8,
+      covered: 9,
       waived: 2,
       failed: 0,
     });
@@ -424,7 +434,7 @@ test.describe('V5-P14 required-scenario gate', () => {
     expect(warnings.join('\n')).toContain(
       'step proof "[PD9-A2] complete DB cleartext probe" is WAIVED',
     );
-    expect(report.summary.join('\n')).toContain('**8 covered · 2 waived · 0 failed**');
+    expect(report.summary.join('\n')).toContain('**9 covered · 2 waived · 0 failed**');
   });
 
   test('v5 gate: grading is per spec, so two files may share a title', async ({}) => {
@@ -446,7 +456,7 @@ test.describe('V5-P14 required-scenario gate', () => {
     // degrades to title-only matching rather than failing a green run.
     const untitled = grade(syntheticReport(plannedForFullyCoveredRun(), false));
     expect(untitled.ok).toBe(true);
-    expect(untitled.covered).toBe(8);
+    expect(untitled.covered).toBe(9);
   });
 
   test('v5 gate: removing, skipping or failing a mapped test turns the gate red', async ({}) => {
@@ -482,7 +492,7 @@ test.describe('V5-P14 required-scenario gate', () => {
       ),
     );
     expect(failed.ok).toBe(false);
-    expect(failed.covered).toBe(7);
+    expect(failed.covered).toBe(8);
 
     // (d) collected, but the shard died before producing a result.
     const noResult = grade(

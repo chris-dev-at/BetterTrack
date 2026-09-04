@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 
-import { ASK_DOCK_ID, AskDock } from './AskDock';
+import { ASK_DOCK_ATTRIBUTE, ASK_DOCK_ID, AskDock } from './AskDock';
 import { resetAskDockCache, toggleAskDock, useAskDockState } from './askDockStore';
 import { ASK_DOCK_MIN_WIDTH, useAskDockEligible } from './useAskDockEligible';
 
@@ -125,6 +125,38 @@ describe('AskDock — the rail row toggles the floating panel', () => {
     expect(container.querySelector('.bt-scrim')).toBeNull();
     expect(document.querySelector('[aria-modal="true"]')).toBeNull();
     expect(document.body.style.overflow).not.toBe('hidden');
+  });
+
+  /**
+   * The install card (§7.1) is `position: fixed` in the same corner on the same
+   * layer, and the dock paints over it. The attribute is what lets the
+   * stylesheet move that card out of the way — and it must be published only
+   * while the panel is really on screen, since the card also renders on the
+   * sign-in screen, where no dock exists at all.
+   */
+  test('publishes its presence for the corner it shares, and withdraws it', async () => {
+    const user = userEvent.setup();
+    renderShell();
+    expect(document.documentElement.hasAttribute(ASK_DOCK_ATTRIBUTE)).toBe(false);
+
+    await user.click(trigger());
+    await waitFor(() =>
+      expect(document.documentElement.getAttribute(ASK_DOCK_ATTRIBUTE)).toBe('open'),
+    );
+
+    await user.click(trigger());
+    await waitFor(() =>
+      expect(document.documentElement.hasAttribute(ASK_DOCK_ATTRIBUTE)).toBe(false),
+    );
+  });
+
+  test('stays silent about the corner at a width where no panel renders', async () => {
+    setViewportWidth(ASK_DOCK_MIN_WIDTH - 1);
+    renderShell();
+    toggleAskDock();
+
+    await waitFor(() => expect(panel()).toBeNull());
+    expect(document.documentElement.hasAttribute(ASK_DOCK_ATTRIBUTE)).toBe(false);
   });
 
   test('the open state persists and is restored on mount', async () => {

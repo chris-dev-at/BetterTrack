@@ -6,6 +6,7 @@ import {
   formatDate,
   formatDateTime,
   formatDateTimeSeconds,
+  formatCompactMoney,
   formatMoney,
   formatPercent,
   formatQuantity,
@@ -394,5 +395,55 @@ describe('discreet mode (§13.5 V5-P13 arc (a))', () => {
     expect(formatMoney(1234.56)).toBe('1.234,56 €');
     expect(formatUnitPrice(0.000012)).toBe('0,000012 €');
     expect(formatSignedDelta(1.25)).toBe('+1,25');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatCompactMoney (#1741)
+//
+// The Forecast's axis used to hardcode `€` and an English `M`/`k` pair, so it
+// labelled the curve with a currency it never checked. These pin both halves:
+// the symbol comes from the ACTIVE base currency, the magnitude wording from the
+// ACTIVE locale (CLDR's own short-compact forms), and discreet mode still masks.
+
+describe('formatCompactMoney (#1741)', () => {
+  afterEach(() => {
+    setFormatLocale('de-AT');
+    setMoneyCurrency('EUR');
+    setDiscreetMode(false);
+  });
+
+  test('abbreviates with the German short-compact forms, symbol-last', () => {
+    expect(formatCompactMoney(1_200_000)).toBe('1,2 Mio. €');
+    expect(formatCompactMoney(-2_500_000)).toBe('-2,5 Mio. €');
+    // CLDR German short-compact does NOT abbreviate thousands; the locale's own
+    // answer wins over an invented "Tsd." so the axis never disagrees with the
+    // rest of the app's number formatting.
+    expect(formatCompactMoney(12_345)).toBe('12.345 €');
+    expect(formatCompactMoney(999)).toBe('999 €');
+    expect(formatCompactMoney(0)).toBe('0 €');
+  });
+
+  test('switches to the English forms with the locale', () => {
+    setFormatLocale('en-GB');
+    expect(formatCompactMoney(1_200_000)).toBe('1.2m €');
+    expect(formatCompactMoney(12_345)).toBe('12.3k €');
+  });
+
+  test('renders the active BASE currency’s symbol, not a hardcoded euro', () => {
+    setMoneyCurrency('USD');
+    expect(formatCompactMoney(1_200_000)).toBe('1,2 Mio. $');
+    setMoneyCurrency('CHF');
+    expect(formatCompactMoney(1_200_000)).toBe('1,2 Mio. CHF');
+    // An explicit currency still wins, like formatMoney's second argument.
+    expect(formatCompactMoney(1_200_000, 'GBP')).toBe('1,2 Mio. £');
+  });
+
+  test('masks in discreet mode and em-dashes a missing value', () => {
+    setDiscreetMode(true);
+    expect(formatCompactMoney(1_200_000)).toBe(DISCREET_MASK);
+    expect(formatCompactMoney(0)).toBe(DISCREET_MASK);
+    expect(formatCompactMoney(null)).toBe(EM_DASH);
+    expect(formatCompactMoney(Number.NaN)).toBe(EM_DASH);
   });
 });
