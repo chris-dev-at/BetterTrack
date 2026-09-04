@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { evaluateDependencyAudit } from './audit-production-dependencies.mjs';
+import {
+  AUDIT_ATTEMPTS,
+  AUDIT_RETRY_DELAYS_MS,
+  auditLooksComplete,
+  evaluateDependencyAudit,
+} from './audit-production-dependencies.mjs';
 
 const NOW = new Date('2026-07-30T12:00:00.000Z');
 const TEST_MODULE = 'test-package';
@@ -87,4 +92,21 @@ test('rejects a waiver when the advisory reaches a different package', () => {
     ],
     waived: [],
   });
+});
+
+test('an audit document without an advisory map is a transient to retry, not a pass', () => {
+  // The registry's audit endpoint answered these shapes on 2026-09-03/04 while
+  // the same lockfile audited clean minutes later.
+  assert.equal(auditLooksComplete(undefined), false);
+  assert.equal(auditLooksComplete(null), false);
+  assert.equal(auditLooksComplete({}), false);
+  assert.equal(auditLooksComplete({ error: { code: 'E503' } }), false);
+  assert.equal(auditLooksComplete({ advisories: null }), false);
+  assert.equal(auditLooksComplete({ advisories: 'nope' }), false);
+  // A clean audit still carries an (empty) map — that is a pass, not a retry.
+  assert.equal(auditLooksComplete({ advisories: {} }), true);
+  assert.equal(auditLooksComplete(auditFor(advisory('GHSA-ab12-cd34-ef56'))), true);
+  // Bounded and spaced: never an unbounded loop, never a hot one.
+  assert.ok(AUDIT_ATTEMPTS >= 2 && AUDIT_ATTEMPTS <= 5);
+  assert.ok(AUDIT_RETRY_DELAYS_MS.every((delay) => delay >= 5_000 && delay <= 60_000));
 });

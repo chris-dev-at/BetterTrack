@@ -109,7 +109,31 @@ export function evaluateDependencyAudit(audit, waivers, now = new Date()) {
   };
 }
 
-function runProductionAudit() {
+/**
+ * A usable audit result carries an advisory map. The registry's audit endpoint
+ * occasionally answers with an error body or an empty/partial document (six
+ * PR runs failed on "did not return an advisory map" in one night,
+ * 2026-09-03/04, with the same lockfile auditing clean minutes later); that is
+ * a transient to retry, never a reason to pass.
+ */
+export function auditLooksComplete(audit) {
+  return (
+    typeof audit === 'object' &&
+    audit !== null &&
+    typeof audit.advisories === 'object' &&
+    audit.advisories !== null
+  );
+}
+
+/** Attempts are bounded and spaced; the last failure is reported as-is. */
+export const AUDIT_ATTEMPTS = 3;
+export const AUDIT_RETRY_DELAYS_MS = [10_000, 30_000];
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function runProductionAuditOnce() {
   const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
   const result = spawnSync(pnpm, ['audit', '--prod', '--json'], {
     encoding: 'utf8',
@@ -123,11 +147,36 @@ function runProductionAudit() {
     throw new Error(`pnpm audit produced no JSON output. ${result.stderr.trim()}`.trim());
   }
 
+  let audit;
   try {
-    return JSON.parse(result.stdout);
+    audit = JSON.parse(result.stdout);
   } catch (error) {
     throw new Error(`pnpm audit produced invalid JSON: ${error.message}`);
   }
+  if (!auditLooksComplete(audit)) {
+    throw new Error(`pnpm audit did not return an advisory map. ${result.stderr.trim()}`.trim());
+  }
+  return audit;
+}
+
+function runProductionAudit({ attempts = AUDIT_ATTEMPTS, delays = AUDIT_RETRY_DELAYS_MS } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return runProductionAuditOnce();
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) break;
+      const delay = delays[Math.min(attempt - 1, delays.length - 1)] ?? 0;
+      console.error(
+        `pnpm audit attempt ${attempt}/${attempts} failed (${error.message}); retrying in ${Math.round(delay / 1000)}s.`,
+      );
+      sleepSync(delay);
+    }
+  }
+  // Fail closed, exactly as before: an audit that never produced a usable
+  // document is reported as the transient it was, not as a pass.
+  throw lastError;
 }
 
 export function main() {
