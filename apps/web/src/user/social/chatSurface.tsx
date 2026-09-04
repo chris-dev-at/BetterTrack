@@ -252,8 +252,9 @@ const isShareKind = (kind: ChatChip['kind']): kind is ShareKind =>
  * to the existing set). The shared audience lattice makes that widening explicit
  * before submit. A current group audience is resolved against its live roster
  * first: members are carried into the new set so nobody loses access, and the
- * "the group will be lost" warning stays for a group that admits nobody. Assets
- * carry no audience, so the shortcut never shows for them.
+ * confirmation always says that the item stops following the circle — with the
+ * members carried, or (for a circle that admits nobody) replaced outright.
+ * Assets carry no audience, so the shortcut never shows for them.
  */
 function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: ChipRecipient }) {
   const t = useT();
@@ -276,18 +277,31 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
     queryKey: ['social', 'groups'],
     queryFn: ({ signal }) => listGroups(signal),
     enabled: groupAudienceId !== null,
+    // The roster decides both who is admitted and who is carried into the write,
+    // so it must not be judged from a cached copy: the app-wide 30s staleTime
+    // would let a member added on another device fall out of the carried set.
+    staleTime: 0,
   });
-  const groupMemberIds = useMemo(() => {
-    if (groupAudienceId === null) return [];
-    const group = groupsQuery.data?.groups.find((g) => g.id === groupAudienceId);
+  const sharedGroup = useMemo(() => {
+    if (groupAudienceId === null) return null;
     // A group that no longer resolves admits nobody (§6.9), so it carries nobody.
-    return group ? group.members.map((m) => m.id) : [];
+    return groupsQuery.data?.groups.find((g) => g.id === groupAudienceId) ?? null;
   }, [groupAudienceId, groupsQuery.data]);
+  const groupMemberIds = useMemo(() => sharedGroup?.members.map((m) => m.id) ?? [], [sharedGroup]);
 
   // Whoever the current audience already admits by name stays admitted: the
   // named set for `specific_friends`, the live roster for `group`. Widening off
-  // a group therefore never costs the circle its access.
-  const existing = state?.audience === 'specific_friends' ? state.friendIds : groupMemberIds;
+  // a group therefore never costs the circle its access. Note the write NAMES
+  // the carried members, so server-side they become `named` rather than
+  // `derived` recipients (audienceService `withNormalRecipients`): a paranoid
+  // member is no longer silently filtered out, the whole write fails closed —
+  // loudly, and the AudiencePicker stays the path that can express the group.
+  const existing =
+    state?.audience === 'specific_friends'
+      ? state.friendIds
+      : state?.audience === 'group'
+        ? groupMemberIds
+        : [];
   const friendIds = existing.includes(recipient.id) ? existing : [...existing, recipient.id];
   const nextSelection = { audience: 'specific_friends' as const, friendIds };
   const requiresWidenConfirmation = state
@@ -339,6 +353,29 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
     (state.audience === 'group' && groupMemberIds.includes(recipient.id));
   if (admitted) return null;
 
+  // Confirmation copy, by what the write actually does. Off a group audience the
+  // item stops following the circle either way — that replacement is the thing
+  // the sharer has to be told, so it is disclosed in both group branches: with
+  // members carried ("…but the item stops following the group") and with an
+  // empty/unresolvable circle ("…replaces it with only them"). Anything else is
+  // a plain widening of a named set.
+  const confirmCopy =
+    state.audience === 'group'
+      ? groupMemberIds.length === 0
+        ? t('social.chat.chip.shortcut.confirmGroupReplace', { username: recipient.username })
+        : t('social.chat.chip.shortcut.confirmGroupDetach', {
+            group: sharedGroup?.name ?? '',
+            username: recipient.username,
+          })
+      : t('social.chat.chip.shortcut.confirmWiden', { username: recipient.username });
+
+  // "Share it with just them" is only true when nobody else is carried; when the
+  // write keeps an existing set or a group's roster it ADDS the recipient to it.
+  const actionCopy =
+    existing.length === 0
+      ? t('social.chat.chip.shortcut.action')
+      : t('social.chat.chip.shortcut.actionAdd');
+
   return (
     <div className="flex flex-col items-start gap-1.5" style={CHIP_SURFACE}>
       <p className="bt-meta">
@@ -352,17 +389,7 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
             checked={widenConfirmed}
             onChange={(event) => setWidenConfirmed(event.target.checked)}
           />
-          <span>
-            {/* The group-replacement warning belongs to the case it describes:
-                a circle that admits nobody today is replaced by a share with
-                only this friend. When the circle has members they are carried
-                over, so the honest statement is the plain widening one. */}
-            {state.audience === 'group' && groupMemberIds.length === 0
-              ? t('social.chat.chip.shortcut.confirmGroupReplace', {
-                  username: recipient.username,
-                })
-              : t('social.chat.chip.shortcut.confirmWiden', { username: recipient.username })}
-          </span>
+          <span>{confirmCopy}</span>
         </label>
       ) : null}
       <Button
@@ -370,9 +397,7 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
         onClick={() => mutation.mutate()}
         size="sm"
       >
-        {mutation.isPending
-          ? t('social.chat.chip.shortcut.sharing')
-          : t('social.chat.chip.shortcut.action')}
+        {mutation.isPending ? t('social.chat.chip.shortcut.sharing') : actionCopy}
       </Button>
     </div>
   );
