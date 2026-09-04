@@ -109,6 +109,7 @@ const RESOLVED = {
     { assetId: 'a1', weightPct: 60, asset: AAPL },
     { assetId: 'a2', weightPct: 40, asset: MSFT },
   ],
+  unresolvedPct: 0,
 };
 
 /** A nested basket (V5-P6): 50% child "Tech Mix" + 50% AAPL, resolved to 20/30/50. */
@@ -143,6 +144,7 @@ const NESTED_RESOLVED = {
       },
     },
   ],
+  unresolvedPct: 0,
 };
 
 function makeQueryClient() {
@@ -303,6 +305,36 @@ describe('ConglomerateDetailPage', () => {
     expect(within(resolvedTable).getByText('20,00 %')).toBeInTheDocument();
     expect(within(resolvedTable).getByText('30,00 %')).toBeInTheDocument();
     expect(within(resolvedTable).queryByText('Tech Mix')).not.toBeInTheDocument();
+  });
+
+  test('says how much of a nested basket resolved to nothing, so the donut and the calculator agree (#1755)', async () => {
+    // "Core" = 60 % AAPL + 40 % an empty nested blueprint. The flatten drops the
+    // child and normalizes AAPL to 100, so the table, the donut and the backtest
+    // below all show a fully-invested basket — while the Invest Calculator on
+    // this same screen withholds 40 % of any budget and says so.
+    vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
+    vi.mocked(getResolvedConglomerate).mockResolvedValue({
+      conglomerateId: CONGLOMERATE_ID,
+      nested: true,
+      positions: [{ assetId: 'a1', weightPct: 100, asset: AAPL }],
+      unresolvedPct: 40,
+    });
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        /40,00 % of this blueprint is a nested blueprint that holds no assets/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('a fully-resolved basket says nothing about an unresolved share', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
+    vi.mocked(getResolvedConglomerate).mockResolvedValue(NESTED_RESOLVED);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+    expect(screen.queryByText(/holds no assets/)).not.toBeInTheDocument();
   });
 
   test('the backtest panel consumes the RESOLVED weights of a nested basket', async () => {

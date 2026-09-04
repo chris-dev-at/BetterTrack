@@ -212,6 +212,112 @@ describe('backtest — common-start clipping', () => {
     expect(z?.contributionPct).toBe(0);
   });
 
+  it('reports an END short of the window the same way a short start is reported (#1755)', async () => {
+    // ALIVE trades the whole window; DEAD stops on 06-13 (a delisting). The
+    // start was never the problem here — both list before the window — so the
+    // clip notice is silent, and until #1755 nothing else spoke either: the
+    // basket was charted to the window's end on a carried-forward price and its
+    // stats were annualised over a span it did not survive.
+    const res = await backtest({
+      positions: [
+        { assetId: 'ALIVE', weight: 50 },
+        { assetId: 'DEAD', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'ALIVE',
+          symbol: 'ALIVE',
+          currency: 'EUR',
+          prices: dailyCloses('2024-06-10', [10, 11, 12, 13, 14, 15]),
+        },
+        {
+          assetId: 'DEAD',
+          symbol: 'DEAD',
+          currency: 'EUR',
+          prices: dailyCloses('2024-06-10', [20, 18, 16, 14]),
+        },
+      ],
+      range: { start: '2024-06-10', end: '2024-06-15' },
+      converter: stubConverter(),
+    });
+    expect(res.notice).toBeNull();
+    expect(res.endCoverage).toEqual({ date: '2024-06-13', symbol: 'DEAD' });
+    // Reporting only: the engine's own output is unchanged — the axis, and so
+    // the charted series, still runs to the window's end.
+    expect(res.endDate).toBe('2024-06-15');
+  });
+
+  it('names the EARLIEST-stopping position when several stop short, and stays silent when none do', async () => {
+    const assets: BacktestAsset[] = [
+      {
+        assetId: 'LONG',
+        symbol: 'LONG',
+        currency: 'EUR',
+        prices: dailyCloses('2026-01-01', [10, 11, 12, 13]),
+      },
+      {
+        assetId: 'MID',
+        symbol: 'MID',
+        currency: 'EUR',
+        prices: dailyCloses('2026-01-01', [20, 21, 22]),
+      },
+      {
+        assetId: 'SHORT',
+        symbol: 'SHORT',
+        currency: 'EUR',
+        prices: dailyCloses('2026-01-01', [30, 31]),
+      },
+    ];
+    const positions = assets.map((a) => ({ assetId: a.assetId, weight: 1 }));
+
+    const short = await backtest({
+      positions,
+      assets,
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+    });
+    // `min` over the positions' last covered day, mirroring the start's `max`
+    // over their first — deterministic, and the whole basket is only covered as
+    // far as its earliest-stopping member.
+    expect(short.endCoverage).toEqual({ date: '2026-01-02', symbol: 'SHORT' });
+
+    // Ask for a window that ends where every position still has data: covered.
+    const covered = await backtest({
+      positions,
+      assets,
+      range: { start: '2026-01-01', end: '2026-01-02' },
+      converter: stubConverter(),
+    });
+    expect(covered.endCoverage).toBeNull();
+  });
+
+  it('a §14 constituent listed after the window never entered it, so it cannot limit its end', async () => {
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'FUTURE', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110, 120]),
+        },
+        {
+          assetId: 'FUTURE',
+          symbol: 'FUTURE',
+          currency: 'EUR',
+          prices: dailyCloses('2026-02-01', [50, 55]),
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-03' },
+      converter: stubConverter(),
+      mode: 'cash',
+    });
+    expect(res.endCoverage).toBeNull();
+  });
+
   it('produces no notice when the requested start is already within every asset’s history', async () => {
     const res = await backtest(singleAssetInput([100, 101, 102], '2026-03-02'));
     expect(res.notice).toBeNull();

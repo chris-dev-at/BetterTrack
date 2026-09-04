@@ -317,6 +317,22 @@ export interface BacktestResult {
   contributions: PositionContribution[];
   /** Clipping notice when the start was limited, else `null`. */
   notice: string | null;
+  /**
+   * The END-of-window mirror of {@link notice}: the last day on which EVERY
+   * position still had data at or before `range.end`, plus the position that
+   * limited it — reported only when that day is BEFORE `range.end`, else
+   * `null`.
+   *
+   * A start short of the requested window is clipped and announced; the end was
+   * neither. A basket whose data stops inside the window is still charted to
+   * `endDate` (its own axis end, or a stale carry-forward when a sibling keeps
+   * trading) and its stats are annualised over the span it actually covered —
+   * so a 1.8-year collapse could be reported inside a 5-year comparison as if
+   * the two were commensurable (#1755). This is the raw fact; what to do with
+   * it is the caller's policy, exactly as the caller decides whether `notice`
+   * is informational (a preview) or a refusal (a comparison series).
+   */
+  endCoverage: { date: string; symbol: string } | null;
   /** The benchmark overlay, or `null` when none was requested. */
   benchmark: BenchmarkResult | null;
   /** The late-listing mode this result was computed under (§14). */
@@ -1079,6 +1095,35 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
     );
   }
 
+  // END-of-window coverage (#1755): the last day the WHOLE basket still had
+  // data for at or before the requested end. The mirror of the common-start
+  // scan above — `min` over the positions' last available day instead of `max`
+  // over their first, with a strict `<` so the earliest-stopping position wins
+  // ties (deterministic, exactly like the start's limiting notice). A position
+  // with no data at all at or before `range.end` (a §14 constituent that lists
+  // after the window) never entered it and therefore cannot limit its end.
+  let coverageEnd = '';
+  let coverageLimiting: Prepared | undefined;
+  for (const p of prepared) {
+    let last = '';
+    for (let i = p.prices.length - 1; i >= 0; i -= 1) {
+      const point = p.prices[i];
+      if (point !== undefined && point.date <= range.end) {
+        last = point.date;
+        break;
+      }
+    }
+    if (last === '') continue;
+    if (coverageEnd === '' || last < coverageEnd) {
+      coverageEnd = last;
+      coverageLimiting = p;
+    }
+  }
+  const endCoverage =
+    coverageEnd !== '' && coverageEnd < range.end && coverageLimiting !== undefined
+      ? { date: coverageEnd, symbol: coverageLimiting.symbol }
+      : null;
+
   // Shared FX resolver: each distinct (currency, day) rate fetched exactly once.
   const rateCache = new Map<string, Promise<number>>();
   const getRate: RateResolver = async (currency, date) => {
@@ -1195,6 +1240,7 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
     stats,
     contributions,
     notice,
+    endCoverage,
     benchmark,
     mode,
     rebalance,
