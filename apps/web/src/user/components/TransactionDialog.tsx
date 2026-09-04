@@ -235,7 +235,9 @@ function numToInput(value: number | undefined): string {
   return value === undefined ? '' : String(value);
 }
 
-function makeRow(
+/** A blank row seeded with `seed`. Exported alongside {@link validateRow} so the
+ * unit test can build the rows the DOM cannot produce. */
+export function makeRow(
   key: string,
   asset: TransactionDialogAsset,
   today: string,
@@ -318,8 +320,28 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
   return [];
 }
 
-/** Parse a row into a wire `TransactionInput`, or collect a human error. */
-function validateRow(row: Row): { input?: TransactionInput; error?: string } {
+/**
+ * Parse a row into a wire `TransactionInput`, or collect a human error.
+ *
+ * The translator is passed in rather than read from a hook: this is a plain
+ * helper, not a component, and its messages are rendered copy — the same idiom
+ * `assetTypeLabels(t)` / `changeErrorMessage(t)` use (V5-P14, #1745). Two of the
+ * messages re-use a sibling dialog's catalogued copy verbatim (the fee and date
+ * rules are the same sentence), so nothing is duplicated in the catalog.
+ *
+ * Exported for the unit test: the `min="0"` inputs make the negative-price,
+ * negative-fee and malformed-date branches unreachable through the DOM, and an
+ * unreachable branch is exactly where an English literal survives.
+ */
+export function validateRow(
+  row: Row,
+  t: TranslateFn,
+): { input?: TransactionInput; error?: string } {
+  const rowError = (messageKey: string) =>
+    t('portfolio.transaction.rowErrors.withSymbol', {
+      symbol: row.asset.symbol,
+      message: t(messageKey),
+    });
   const price = Number(row.price);
   const fee = row.fee.trim() === '' ? 0 : Number(row.fee);
 
@@ -330,33 +352,31 @@ function validateRow(row: Row): { input?: TransactionInput; error?: string } {
     // (unlike quantity mode, where a 0 price — e.g. an airdrop — is allowed).
     const amount = Number(row.amount);
     if (!row.price.trim() || !Number.isFinite(price) || price <= 0) {
-      return { error: `${row.asset.symbol}: price must be greater than 0.` };
+      return { error: rowError('portfolio.transaction.rowErrors.priceRequired') };
     }
     if (!row.amount.trim() || !Number.isFinite(amount) || amount <= 0) {
-      return { error: `${row.asset.symbol}: amount must be greater than 0.` };
+      return { error: rowError('portfolio.transaction.rowErrors.amountRequired') };
     }
     const derived = deriveQuantityFromAmount(price, amount);
     if (!derived) {
-      return {
-        error: `${row.asset.symbol}: could not derive a valid quantity from that price and amount.`,
-      };
+      return { error: rowError('portfolio.transaction.rowErrors.derivedQuantity') };
     }
     quantity = derived.quantity;
   } else {
     quantity = Number(row.quantity);
     if (!row.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-      return { error: `${row.asset.symbol}: quantity must be greater than 0.` };
+      return { error: rowError('portfolio.transaction.rowErrors.quantityRequired') };
     }
     if (!row.price.trim() || !Number.isFinite(price) || price < 0) {
-      return { error: `${row.asset.symbol}: price must be 0 or more.` };
+      return { error: rowError('portfolio.transaction.rowErrors.priceNegative') };
     }
   }
 
   if (!Number.isFinite(fee) || fee < 0) {
-    return { error: `${row.asset.symbol}: fee must be 0 or more.` };
+    return { error: rowError('portfolio.customInvestment.feeInvalid') };
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
-    return { error: `${row.asset.symbol}: pick a valid date.` };
+    return { error: rowError('portfolio.cash.invalidDate') };
   }
 
   return {
@@ -839,7 +859,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
 
     const inputs: TransactionInput[] = [];
     for (const row of rows) {
-      const { input, error: rowError } = validateRow(row);
+      const { input, error: rowError } = validateRow(row, t);
       if (rowError) {
         setError(rowError);
         return;

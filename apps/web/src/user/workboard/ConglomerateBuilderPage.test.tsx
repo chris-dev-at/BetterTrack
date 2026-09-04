@@ -47,6 +47,7 @@ import {
   replaceConglomeratePositions,
   updateConglomerate,
 } from '../../lib/conglomerateApi';
+import { localizedMessage } from '../../i18n';
 import { draftConglomerate, useAiCapability } from '../../lib/aiApi';
 import { searchAssets } from '../../lib/searchApi';
 import { ConglomerateBuilderPage } from './ConglomerateBuilderPage';
@@ -327,7 +328,13 @@ describe('ConglomerateBuilderPage', () => {
     await user.click(screen.getByRole('button', { name: /lock aapl/i }));
     await user.click(screen.getByRole('button', { name: /normalize/i }));
 
-    expect(await screen.findByText(/Locked weights already total 100%/i)).toBeInTheDocument();
+    // The notice comes from the catalog now (#1745), not from an English
+    // literal returned by `normalize()`.
+    expect(
+      await screen.findByText(
+        localizedMessage('en', 'workboard.builder.errors.normalizeLockedFull'),
+      ),
+    ).toBeInTheDocument();
   });
 
   test('activate is blocked until Σ = 100 ± 0.01, then flips to active', async () => {

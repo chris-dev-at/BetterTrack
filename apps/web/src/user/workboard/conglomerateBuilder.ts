@@ -87,10 +87,13 @@ export function canActivate(positions: readonly BuilderPosition[]): boolean {
 }
 
 /** A rejection reason as an i18n key + params — the page translates it (EN+DE). */
-export interface AddPositionRejection {
+export interface BuilderRejection {
   key: string;
   params?: Record<string, string | number>;
 }
+
+/** Historical name for {@link BuilderRejection}, kept for the add-position path. */
+export type AddPositionRejection = BuilderRejection;
 
 /**
  * Would adding this constituent be rejected? (the 1–50 cap, a duplicate
@@ -230,7 +233,8 @@ export function autoBalance(positions: readonly BuilderPosition[]): BuilderPosit
 
 export type NormalizeResult =
   | { ok: true; positions: BuilderPosition[] }
-  | { ok: false; error: string };
+  /** Rejections carry an i18n key, never copy — the page translates it (EN+DE). */
+  | { ok: false; reason: BuilderRejection };
 
 /**
  * **Normalize** (§6.5): scale the unlocked positions proportionally so Σ hits
@@ -244,14 +248,11 @@ export function normalize(positions: readonly BuilderPosition[]): NormalizeResul
     positions.filter((p) => p.locked).reduce((acc, p) => acc + p.weightPct, 0),
   );
   if (lockedSum >= ACTIVE_SUM) {
-    return {
-      ok: false,
-      error: 'Locked weights already total 100% or more — unlock a position to normalize.',
-    };
+    return { ok: false, reason: { key: 'workboard.builder.errors.normalizeLockedFull' } };
   }
   const unlocked = positions.filter((p) => !p.locked);
   if (unlocked.length === 0) {
-    return { ok: false, error: 'There are no unlocked positions to normalize.' };
+    return { ok: false, reason: { key: 'workboard.builder.errors.normalizeNoUnlocked' } };
   }
   const target = roundWeight(ACTIVE_SUM - lockedSum);
   const unlockedSum = unlocked.reduce((acc, p) => acc + p.weightPct, 0);

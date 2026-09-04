@@ -343,7 +343,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const handleNormalize = useCallback(() => {
     const result = normalize(positionsRef.current);
     if (!result.ok) {
-      setNotice(result.error);
+      setNotice(t(result.reason.key, result.reason.params));
       return;
     }
     setNotice(null);
