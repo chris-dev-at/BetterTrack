@@ -174,9 +174,10 @@ export function AskDock() {
     closeAndRestoreFocus();
   }
 
-  // Below the breakpoint the panel does not exist at all (the rail row stays a
-  // link to `/ask`). The persisted state is left ALONE, so widening the window
-  // brings the panel back exactly as the user left it.
+  // Below the breakpoint — or with no local AI provider configured, which makes
+  // every AI surface disappear (§6.18) — the panel does not exist at all (the
+  // rail row stays a link to `/ask`). The persisted state is left ALONE, so
+  // widening the window brings the panel back exactly as the user left it.
   if (!open || !eligible) return null;
 
   return (
