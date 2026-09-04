@@ -615,10 +615,17 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         appName: client.name,
         firstParty: client.isFirstParty,
         current: grant.id === currentGrantId,
-        // Show the EFFECTIVE scopes (consented ∩ the app's current ceiling) so the
-        // "authorized apps" list reflects what the token can actually do after an
-        // admin narrows the app — never a scope the app no longer allows.
-        scopes: clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes),
+        // Show the EFFECTIVE scopes so the "authorized apps" list reflects what
+        // the token can actually do. Two steps, in this order:
+        //   1. clamp to the app's CURRENT ceiling — never a scope an admin has
+        //      since removed from the app;
+        //   2. expand every implied read (#371/#1730) — `scopeSatisfies` lets a
+        //      held `:write` satisfy its `:read` at request time, so a grant
+        //      stored as `['portfolio:write']` really can call the read-only
+        //      routes. The consent screen already shows the expansion; this
+        //      credential-review surface must not understate it.
+        // Display-time only: the stored grant is never rewritten.
+        scopes: withImpliedReadScopes(clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes)),
         createdAt: grant.createdAt.toISOString(),
         lastUsedAt: grant.lastUsedAt ? grant.lastUsedAt.toISOString() : null,
       }));
