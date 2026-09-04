@@ -81,11 +81,12 @@ describe('§10 limiter table — capacity limiters', () => {
     expect(shape(rateLimits.vaultRead)).toEqual({ windowSec: 60, limit: 600, ...GENERAL_LADDER });
     expect(shape(rateLimits.apiKey)).toEqual({ windowSec: 60, limit: 120, ...GENERAL_LADDER });
 
-    // The COST dimension (#1643): 3000 WORK UNITS / min, per user, on the same
-    // escalation ladder as `general` so the 429 envelope never differs.
+    // The COST dimension (#1643): 3500 WORK UNITS / min, per user, on the same
+    // escalation ladder as `general` so the 429 envelope never differs. Raised
+    // from 3000 in #1755 with the two V5-P6 reads that joined the table.
     expect(shape(rateLimits.expensive)).toEqual({
       windowSec: 60,
-      limit: 3000,
+      limit: 3500,
       ...GENERAL_LADDER,
     });
   });
@@ -127,6 +128,21 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
   const COST_BAR = {
     /** Builder weight-tuning: one debounced preview every ~3 s. */
     backtestPreviewPerMinute: 20,
+    /**
+     * N-way comparison, in SERIES per minute — `backtestCompare` is priced per
+     * series and the route multiplies by the series count (#1755). Two
+     * deliberate three-basket comparisons: the page runs on an explicit
+     * selection or range change, not on a slider, and its core is memoised
+     * across every permutation of one set.
+     */
+    backtestComparePerMinute: 5,
+    /**
+     * Shared what-if sandbox. Deliberately a BROWSING minute, not a tuning one:
+     * nobody drags a friend's sliders while also driving the Builder at 20
+     * previews/min, and a viewer who does drag is bounded by this endpoint's own
+     * allowance (140 req/min below), not by this term.
+     */
+    backtestSharedSandboxPerMinute: 2,
     /** Analytics range / filter / compare changes. */
     analyticsSeriesPerMinute: 12,
     /** Shared-with-me list on tab focus + reconnect refetch. */
@@ -148,6 +164,12 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       // A perturbed weight vector is a cache MISS by construction; a miss walks
       // the positions' history sequentially through the provider layer.
       backtestPreview: 25,
+      // PER SERIES (#1755) — the route multiplies by the number of baskets the
+      // body overlays, so a 6-way comparison spends 120. Just under a preview
+      // each: the series share one de-duplicated asset fan-out.
+      backtestCompare: 20,
+      // A preview's engine run with no memo behind it, so every request pays.
+      backtestSharedSandbox: 25,
       // Series + optional compare series + contribution table, over a window
       // that ANALYTICS_MAX_RANGE_DAYS now bounds.
       analyticsSeries: 10,
@@ -163,15 +185,34 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     const { expensive, requestCosts } = config().rateLimits;
     const worstMinute =
       COST_BAR.backtestPreviewPerMinute * requestCosts.backtestPreview +
+      COST_BAR.backtestComparePerMinute * requestCosts.backtestCompare +
+      COST_BAR.backtestSharedSandboxPerMinute * requestCosts.backtestSharedSandbox +
       COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
       COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
       COST_BAR.importCreatePerMinute * requestCosts.importCreate +
       COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(1000);
+    expect(worstMinute).toBe(1150);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
+  });
+
+  it('leaves no expensive endpoint outside the budget it is supposed to bound', () => {
+    const { requestCosts } = config().rateLimits;
+    // The two V5-P6 reads joined the table in #1755. Before that the most
+    // expensive read in the app — an N-way comparison, up to six baskets each
+    // flattening to 250 assets — spent nothing here, and `rateLimitNormalUse`
+    // pinned the omission as "nothing else meters against expensive".
+    expect(requestCosts.backtestCompare).toBeGreaterThan(0);
+    expect(requestCosts.backtestSharedSandbox).toBeGreaterThan(0);
+    // A comparison is priced per SERIES, so the cheapest one (2 baskets) already
+    // costs more than the strictly cheaper single-basket preview, and the
+    // dearest (6) costs proportionally more than that.
+    const cheapest = requestCosts.backtestCompare * 2;
+    const dearest = requestCosts.backtestCompare * 6;
+    expect(cheapest).toBeGreaterThan(requestCosts.backtestPreview);
+    expect(dearest).toBe(cheapest * 3);
   });
 
   it('bounds a pathological caller by WORK before the request count would', () => {

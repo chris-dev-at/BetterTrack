@@ -2622,6 +2622,7 @@
       "viewStored": "Wie gebaut",
       "viewResolved": "Aufgelöst",
       "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Blueprints.",
+      "unresolvedShare": "{{pct}} dieses Blueprints sind ein verschachtelter Blueprint ohne Assets. Die Gewichte, das Aufteilungsdiagramm und der Backtest unten zeigen nur den Rest — und der Rechner lässt diesen Anteil eines Budgets unverteilt.",
       "resolvedLoadError": "Die aufgelöste Ansicht konnte nicht geladen werden.",
       "deleteInUseError": "Dieser Blueprint ist Bestandteil von {{parents}} — entferne ihn zuerst dort."
     },
@@ -2762,6 +2763,7 @@
       "chartAriaLabel": "Vergleichschart der Blueprints",
       "baselineLabel": "Basis",
       "setBaseline": "{{name}} als Basis verwenden",
+      "unresolvedShare": "{{pct}} ohne Assets",
       "grid": {
         "ariaLabel": "Vergleichsstatistiken der Blueprints",
         "metric": "Kennzahl"

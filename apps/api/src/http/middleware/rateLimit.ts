@@ -63,8 +63,15 @@ export interface RateLimiters {
    * Cost-metered guard for one expensive endpoint (§10 COST TABLE, #1643).
    * Mounted per route with the endpoint's declared weight KEY — the units
    * themselves live in `config/env.ts` and are never inlined at a call site.
+   *
+   * `multiplier` prices a route whose work scales with its own input (#1755):
+   * the declared weight is then the price of ONE unit of that work and this
+   * reads how many the request asks for, off the raw body — the meter still runs
+   * before `validateBody`, so a malformed body cannot buy a free pass. A
+   * multiplier must be bounded by the route's own contract (a caller may not
+   * name its own price) and must not throw.
    */
-  cost: (endpoint: RequestCostKey) => RequestHandler;
+  cost: (endpoint: RequestCostKey, multiplier?: (req: Request) => number) => RequestHandler;
   /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
   apiKey: RequestHandler;
   admin: RequestHandler;
@@ -116,12 +123,13 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
    *
    * `cost` is the number of allowance UNITS one request spends (§10 COST
    * TABLE); it defaults to 1, which is the plain request-count behaviour every
-   * limiter but `expensive` uses.
+   * limiter but `expensive` uses. A function is evaluated per request, for a
+   * route whose work scales with its input (#1755).
    */
   const guard = (
     limiters: readonly ProgressiveLimiter[],
     keyGenerator: (req: Request) => string,
-    cost = 1,
+    cost: number | ((req: Request) => number) = 1,
   ): RequestHandler => {
     return (req, res, next) => {
       if (!enabled) {
@@ -129,9 +137,10 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
         return;
       }
       const key = keyGenerator(req);
+      const units = typeof cost === 'function' ? cost(req) : cost;
       void (async () => {
         for (const limiter of limiters) {
-          const decision = await limiter.consume(key, cost);
+          const decision = await limiter.consume(key, units);
           if (!decision.allowed) {
             // The SPA's fetch chokepoint reads Retry-After to drive its toast.
             res.setHeader('Retry-After', String(decision.retryAfterSec));
@@ -239,7 +248,14 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     // account's expensive traffic can never close another's. A route mounts
     // this IN ADDITION to the app-wide `general` guard; whichever dimension
     // runs out first produces the same 429 envelope.
-    cost: (endpoint) => guard([expensiveLimiter], keyByUserOrIp, requestCosts[endpoint]),
+    cost: (endpoint, multiplier) =>
+      guard(
+        [expensiveLimiter],
+        keyByUserOrIp,
+        multiplier === undefined
+          ? requestCosts[endpoint]
+          : (req) => requestCosts[endpoint] * multiplier(req),
+      ),
     apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.

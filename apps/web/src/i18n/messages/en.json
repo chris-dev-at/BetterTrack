@@ -2622,6 +2622,7 @@
       "viewStored": "As built",
       "viewResolved": "Resolved",
       "resolvedHint": "Effective asset weights after resolving nested blueprints.",
+      "unresolvedShare": "{{pct}} of this blueprint is a nested blueprint that holds no assets. The weights, the allocation chart and the backtest below cover only the rest of it — and the calculator leaves that share of a budget unallocated.",
       "resolvedLoadError": "The resolved view could not be loaded.",
       "deleteInUseError": "This blueprint is a constituent of {{parents}} — remove it there first."
     },
@@ -2762,6 +2763,7 @@
       "chartAriaLabel": "Blueprint comparison chart",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
+      "unresolvedShare": "{{pct}} without assets",
       "grid": {
         "ariaLabel": "Blueprint comparison statistics",
         "metric": "Metric"
