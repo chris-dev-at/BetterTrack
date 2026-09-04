@@ -814,6 +814,101 @@ describe('nested conglomerates', () => {
     expect(byId.get(a2.id)).toBeCloseTo(25, 9);
   });
 
+  it('GET /:id/resolved reports the share an empty nested child left behind (#1755)', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness, { symbol: 'VWCE' });
+    const empty = await createId(agent, 'Bonds');
+    const parent = await createId(agent, 'Core');
+    await putPositions(agent, parent, [
+      { assetId: a1.id, weightPct: 60 },
+      { childId: empty, weightPct: 40 },
+    ]);
+
+    const res = await agent.get(`/api/v1/conglomerates/${parent}/resolved`);
+    expect(res.status).toBe(200);
+    const parsed = conglomerateResolvedResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // The surviving leg is still normalized to 100 — that is what a backtest of
+    // this basket runs — but the view no longer presents it as the whole thing.
+    expect(parsed.data.positions).toHaveLength(1);
+    expect(parsed.data.positions[0]!.weightPct).toBeCloseTo(100, 9);
+    expect(parsed.data.unresolvedPct).toBeCloseTo(40, 9);
+
+    // The Invest Calculator's matching half — that the same 40 % is the share it
+    // withholds from a budget — is asserted where the quote stub lives, in
+    // `allocate.test.ts`.
+
+    // A fully-resolving basket reports zero, not null — no new absent state.
+    const flat = await createId(agent, 'Flat');
+    await putPositions(agent, flat, [{ assetId: a1.id, weightPct: 100 }]);
+    const flatRes = await agent.get(`/api/v1/conglomerates/${flat}/resolved`);
+    expect(flatRes.body.unresolvedPct).toBe(0);
+  });
+
+  it('emptying a nested child demotes the ACTIVE parents it was activated for (#1755)', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    const child = await createId(agent, 'Bonds');
+    const parent = await createId(agent, 'Core');
+    const grandparent = await createId(agent, 'All Weather');
+    await putPositions(agent, child, [{ assetId: a1.id, weightPct: 100 }]);
+    await putPositions(agent, parent, [
+      { assetId: a1.id, weightPct: 60 },
+      { childId: child, weightPct: 40 },
+    ]);
+    await putPositions(agent, grandparent, [{ childId: parent, weightPct: 100 }]);
+    for (const id of [parent, grandparent]) {
+      expect((await agent.post(`/api/v1/conglomerates/${id}/activate`).set(...XRW)).status).toBe(
+        200,
+      );
+    }
+
+    // Emptying the child is allowed (a draft may hold anything), but it silently
+    // invalidated the gate BOTH ancestors passed: the parent's 40 % slice now
+    // buys nothing and the flatten hands it to the 60 % leg. The status is
+    // re-derived rather than left claiming something it no longer earns.
+    expect((await putPositions(agent, child, [])).status).toBe(200);
+    expect((await agent.get(`/api/v1/conglomerates/${parent}`)).body.status).toBe('draft');
+    expect((await agent.get(`/api/v1/conglomerates/${grandparent}`)).body.status).toBe('draft');
+    // The parent's own weights were never touched, so re-activating is refused
+    // for the child, not for a sum — and filling the child again is enough.
+    const refused = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe('ACTIVATION_INVALID');
+    await putPositions(agent, child, [{ assetId: a1.id, weightPct: 100 }]);
+    expect((await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW)).status).toBe(
+      200,
+    );
+  });
+
+  it('leaves an unaffected active parent alone when a child edit still resolves', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    const a2 = await seedAsset(harness);
+    const child = await createId(agent, 'Equities');
+    const parent = await createId(agent, 'Steady');
+    await putPositions(agent, child, [{ assetId: a1.id, weightPct: 100 }]);
+    await putPositions(agent, parent, [
+      { assetId: a1.id, weightPct: 60 },
+      { childId: child, weightPct: 40 },
+    ]);
+    expect((await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW)).status).toBe(
+      200,
+    );
+
+    // A normal re-weight of the child: it still resolves, so nothing is demoted.
+    expect(
+      (
+        await putPositions(agent, child, [
+          { assetId: a1.id, weightPct: 30 },
+          { assetId: a2.id, weightPct: 70 },
+        ])
+      ).status,
+    ).toBe(200);
+    expect((await agent.get(`/api/v1/conglomerates/${parent}`)).body.status).toBe('active');
+  });
+
   it('refuses to activate a basket whose nested constituent resolves to NO asset', async () => {
     const { agent } = await login();
     const a1 = await seedAsset(harness);

@@ -139,10 +139,13 @@ export interface BacktestPreviewInput {
 /**
  * N-way conglomerate comparison input (§13.5 V5-P6): a set of the caller's own
  * conglomerate ids (2–6, contract-capped) plus the same window/late-listing/
- * rebalance knobs a single backtest takes. The FIRST id is the primary — its
- * effective window is the shared axis every other series runs over (exactly as
- * a V4-P7 benchmark runs over the primary basket's window). `baselineId`
- * (default: the first id) chooses the delta reference only.
+ * rebalance knobs a single backtest takes. The ids are a SET, not a list: the
+ * primary — whose effective window is the shared axis every other series runs
+ * over, exactly as a V4-P7 benchmark runs over the primary basket's window — is
+ * the canonically FIRST id (sorted), so re-ordering the picker cannot change the
+ * chart, the stats or the memo entry (#1755). The response's series order still
+ * follows the request. `baselineId` (default: the first requested id) chooses
+ * the delta reference only.
  */
 export interface BacktestComparisonInput {
   conglomerateIds: string[];
@@ -197,6 +200,8 @@ interface ResolvedBenchmark {
   label: string;
   positions: Array<{ assetId: string; weight: number }>;
   assets: BacktestAsset[];
+  /** The benchmark's unresolved share (a conglomerate with an empty child); 0 for an asset. */
+  unresolvedPct: number;
 }
 
 /**
@@ -209,6 +214,13 @@ export interface ConglomerateComposition {
   id: string;
   name: string;
   positions: Array<{ assetId: string; weight: number }>;
+  /**
+   * The share of the basket that resolved to NO asset, in percent — an empty
+   * nested child whose slice the flatten's normalization would otherwise hand
+   * to the survivors. `positions` covers only the resolved remainder, so this
+   * travels with it to every read path instead of being dropped (#1755).
+   */
+  unresolvedPct: number;
 }
 
 /** One of the caller's conglomerates resolved to a runnable basket (V4-P7 / V5-P6). */
@@ -241,11 +253,13 @@ export interface BacktestService {
 
   /**
    * Compare 2–6 of the caller's own conglomerates on one shared window (§13.5
-   * V5-P6): each is run through the same engine as the primary (the first id),
-   * so every series' stats are apples-to-apples, and the response carries each
-   * series' base-100 curve, full stats and per-metric deltas vs `baselineId`.
-   * A conglomerate whose history does not cover the primary's window is a 422,
-   * the same outcome the V4-P7 overlay produced for a short benchmark.
+   * V5-P6): each is run through the same engine as the primary (the canonically
+   * first id), so every series' stats are apples-to-apples, and the response
+   * carries each series' base-100 curve, full stats, unresolved share and
+   * per-metric deltas vs `baselineId`, in request order. A conglomerate whose
+   * history does not cover the primary's window — starting late OR stopping
+   * early — is a 422, the same outcome the V4-P7 overlay produced for a short
+   * benchmark.
    */
   runComparison(
     userId: string,
@@ -307,21 +321,30 @@ export function backtestPreviewCacheKey(
 
 /**
  * Redis memo key for a comparison's **baseline-independent core** (the per-series
- * backtests) — hash(orderedIds+resolved compositions+range+mode+rebalance+base),
+ * backtests) — hash(id SET+resolved compositions+range+mode+rebalance+base),
  * namespaced by user id (§10). `baselineId` is deliberately NOT part of the key:
  * it only selects the delta reference, so re-picking it hits the same cached
- * backtests and just re-runs the cheap delta math. The id order IS part of the
- * key — the first id defines the shared window, so `[A,B]` and `[B,A]` are
- * different comparisons.
+ * backtests and just re-runs the cheap delta math.
+ *
+ * The id order is **not** part of the key either (#1755). A comparison is a SET
+ * of baskets on one axis, so `[A,B,C]` and `[C,B,A]` are the same comparison and
+ * must share one memo entry — keying by the ordered list gave one six-basket set
+ * 720 distinct keys × 4 ranges × 3 modes × 4 frequencies, a memo that could
+ * essentially never be hit twice. Everything the core computes is therefore
+ * derived from the CANONICAL (id-sorted) series list too, so the cached value is
+ * genuinely order-free: the shared window comes from the canonical first series
+ * rather than from whichever id the picker happened to list first, and the
+ * response re-projects the cached series into the caller's request order.
  *
  * The key is **content-addressed** like the preview key (V5-P6): a conglomerate
  * id is a mutable handle, so keying by id alone served a 1 h-stale chart and
  * stats grid after any Builder edit — and, worse, after an edit to a NESTED
  * CHILD, whose id never appears in the request at all. `compositions` therefore
- * carries each series' name and its fully *resolved* asset/weight vector (the
- * flatten already walked the children), so any edit that changes what a series
- * IS lands on a different key and recomputes; an edit that changes nothing
- * observable still hits the memo.
+ * carries each series' name, its fully *resolved* asset/weight vector (the
+ * flatten already walked the children) and its unresolved share (an empty child
+ * changes what a basket IS without changing the resolved vector), so any edit
+ * that changes what a series is lands on a different key and recomputes; an
+ * edit that changes nothing observable still hits the memo.
  */
 export function backtestComparisonCacheKey(
   userId: string,
@@ -330,13 +353,16 @@ export function backtestComparisonCacheKey(
   scope?: { globalOnly?: boolean; compositions?: readonly ConglomerateComposition[] },
 ): string {
   const canonical = JSON.stringify({
-    conglomerateIds: input.conglomerateIds,
+    conglomerateIds: [...input.conglomerateIds].sort(),
     compositions:
-      scope?.compositions?.map((c) => ({
-        id: c.id,
-        name: c.name,
-        positions: c.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
-      })) ?? null,
+      scope?.compositions === undefined
+        ? null
+        : canonicalCompositionOrder(scope.compositions).map((c) => ({
+            id: c.id,
+            name: c.name,
+            positions: c.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
+            unresolvedPct: c.unresolvedPct,
+          })),
     range: input.range,
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
@@ -346,6 +372,32 @@ export function backtestComparisonCacheKey(
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:compare:${userId}:${hash}`;
 }
+
+/**
+ * The order a comparison is COMPUTED in: by conglomerate id, so re-ordering the
+ * picker is the same request (#1755). The first entry is the primary whose
+ * effective window every other series runs over — a set-derived choice rather
+ * than a list-position one, which is what lets one memo entry answer every
+ * permutation.
+ */
+function canonicalCompositionOrder(
+  compositions: readonly ConglomerateComposition[],
+): ConglomerateComposition[] {
+  return [...compositions].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * Grace, in calendar days, between a comparison series' last covered day and the
+ * shared window's end before the series is refused as not covering it (#1755).
+ *
+ * The window's end is the primary basket's last TRADING day, and two baskets on
+ * different exchanges do not close on the same holidays — a US basket compared
+ * against a DAX basket over a window ending on a day only one of them traded is
+ * short by a day through no fault of the data. A week absorbs every such
+ * calendar mismatch (the longest ordinary market closure is a long weekend)
+ * while a delisting, the case this guards, is short by months or years.
+ */
+export const COMPARISON_COVERAGE_GRACE_DAYS = 7;
 
 export function createBacktestService(deps: BacktestServiceDeps): BacktestService {
   const { assetRepo, conglomerateRepo, marketData, currencyService, redis } = deps;
@@ -511,16 +563,26 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       id: detail.id,
       name: detail.name,
       positions: flat.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+      unresolvedPct: flat.unresolvedPct,
     };
   }
 
   /**
    * The provider half of a comparison: one asset row + history window per
-   * resolved position across ALL series, through a small pool rather than one
-   * sequential round trip each. Each basket's flatten is bounded by
+   * DISTINCT resolved position across ALL series, through a small pool rather
+   * than one sequential round trip each. Each basket's flatten is bounded by
    * `MAX_FLATTENED_POSITIONS` and the series count by `COMPARISON_MAX_SERIES`,
    * so this is a bounded fan-out, not an open one. Results are re-split in
    * request order, one entry per input composition.
+   *
+   * The load is de-duplicated across series (#1755): baskets under comparison
+   * overlap heavily by construction — the whole point is comparing variations of
+   * one portfolio — and loading per series charged the provider layer (and the
+   * asset repository) once per OCCURRENCE, so six baskets sharing 250 assets
+   * spent 1500 row reads and 1500 history windows for 250 assets' worth of data.
+   * One asset is now loaded exactly once and the resulting {@link BacktestAsset}
+   * (immutable, and consumed read-only by the engine) is shared by every series
+   * holding it.
    */
   async function loadCompositionAssets(
     userId: string,
@@ -531,15 +593,20 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     // One pool across the WHOLE request rather than a pool per basket: the two
     // authorization/history phases then straddle every series at once, so a
     // refused asset in the last basket still precedes the first history call.
-    const flatIds = compositions.flatMap((c) => c.positions.map((p) => p.assetId));
-    const assets = await loadBasketAssets(userId, flatIds, providerRange, {
+    // First-occurrence order is preserved, so the LOWEST-INDEX failure is the
+    // same asset it was before the de-duplication — the refusal a caller sees
+    // does not depend on how often an id repeats.
+    const distinctIds = [
+      ...new Set(compositions.flatMap((c) => c.positions.map((p) => p.assetId))),
+    ];
+    const assets = await loadBasketAssets(userId, distinctIds, providerRange, {
       globalOnly,
       hidePrivateAsset: globalOnly,
     });
-    let at = 0;
+    const byAssetId = new Map(distinctIds.map((assetId, index) => [assetId, assets[index]!]));
     return compositions.map((composition) => ({
       ...composition,
-      assets: assets.slice(at, (at += composition.positions.length)),
+      assets: composition.positions.map((p) => byAssetId.get(p.assetId)!),
     }));
   }
 
@@ -583,6 +650,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         label: basket.name,
         positions: basket.positions,
         assets: basket.assets,
+        unresolvedPct: basket.unresolvedPct,
       };
     }
 
@@ -597,6 +665,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         label: asset.symbol,
         positions: [{ assetId: asset.assetId, weight: 1 }],
         assets: [asset],
+        unresolvedPct: 0,
       };
     }
 
@@ -621,6 +690,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       label: identity.symbol,
       positions: [{ assetId: identity.assetId, weight: 1 }],
       assets: [{ ...identity, prices }],
+      unresolvedPct: 0,
     };
   }
 
@@ -752,6 +822,10 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           label: resolvedBenchmark.label,
           series: benchResult.series.map((p) => ({ date: p.date, value: p.value })),
           stats: toStats(benchResult.stats),
+          // A conglomerate benchmark with an empty nested child is only its
+          // resolved remainder, normalized to 100 — say so rather than let the
+          // overlay claim to be the whole basket (#1755).
+          unresolvedPct: resolvedBenchmark.unresolvedPct,
         };
       }
 
@@ -781,9 +855,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         resolveConglomerateComposition(userId, id, globalOnly),
       );
 
-      // The per-series backtests are baseline-independent, so they memoise under
-      // a key WITHOUT the baseline: re-picking the baseline hits this core and
-      // only the cheap delta math re-runs.
+      // The per-series backtests are baseline-independent AND order-independent,
+      // so they memoise under a key without the baseline and over the id SET:
+      // re-picking the baseline, or re-ordering the picker, hits this core and
+      // only the cheap delta math re-runs. The core is computed over the
+      // canonical order for exactly that reason and re-projected below.
+      const canonical = canonicalCompositionOrder(compositions);
       const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency, {
         globalOnly,
         compositions,
@@ -800,7 +877,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       if (core === null) {
         core = await computeComparisonCore(
           userId,
-          compositions,
+          canonical,
           providerRange,
           input.range,
           fx,
@@ -811,11 +888,18 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         await redis.set(key, JSON.stringify(core), 'EX', PREVIEW_TTL_SECONDS);
       }
 
+      // The core is stored in canonical order; the RESPONSE is in the caller's
+      // request order (the chart legend and the grid's columns follow the
+      // picker). Every requested id is present — the core was computed from the
+      // same set — so the projection is total.
+      const byId = new Map(core.series.map((s) => [s.conglomerateId, s]));
+      const ordered = input.conglomerateIds.map((id) => byId.get(id)!);
+
       // Deltas vs the chosen baseline — pure domain math over the shared-window
       // stats (compareSeriesStats preserves input order, so index i lines up
-      // with core.series[i]).
+      // with ordered[i]).
       const comparison = compareSeriesStats(
-        core.series.map((s) => ({ id: s.conglomerateId, metrics: metricsFor(s.stats) })),
+        ordered.map((s) => ({ id: s.conglomerateId, metrics: metricsFor(s.stats) })),
         baselineId,
       );
 
@@ -825,13 +909,14 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         baselineId,
         mode: core.mode,
         rebalance: core.rebalance,
-        series: core.series.map((s, i) => {
+        series: ordered.map((s, i) => {
           const d = comparison.series[i]!.deltas;
           return {
             conglomerateId: s.conglomerateId,
             name: s.name,
             series: s.series,
             stats: s.stats,
+            unresolvedPct: s.unresolvedPct,
             deltas: {
               totalReturnPct: d.totalReturnPct,
               cagrPct: d.cagrPct,
@@ -885,6 +970,15 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
             'SANDBOX_POSITIONS_MISMATCH',
           );
         }
+
+        // A nested row is opaque by design, and the aggregate response is a
+        // WEIGHTED MIX of it and the root's public assets. Push that row's share
+        // to ~100 % and the mix stops being a mix: the returned `series` and
+        // `stats` become the hidden child's own base-100 curve, its own max
+        // drawdown, its own best/worst days and — through `startDate` — its
+        // youngest constituent's listing date. That is an extraction, not a
+        // what-if, so it is refused BEFORE any basket is resolved (#1755).
+        if (hasNestedConstituents) assertNestedShareBounded(constituents, tweak);
 
         const fx =
           opts?.baseCurrency === undefined
@@ -1015,12 +1109,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
 
   /**
    * Run the baseline-independent core of a comparison over the already-resolved
-   * compositions (in request order): load each series' price history, run the
-   * FIRST as the primary to fix the shared window, then run every other over
+   * compositions (in CANONICAL id order): load each series' price history, run
+   * the first as the primary to fix the shared window, then run every other over
    * that exact window with identical settings. A non-primary that can't cover
-   * the window is a 422 (the V4-P7 short-benchmark outcome). The primary's own
-   * clip notice is expected and never an error — it just means the window is
-   * shorter than requested.
+   * the window — at either end — is a 422 (the V4-P7 short-benchmark outcome).
+   * The primary's own clip notice is expected and never an error — it just means
+   * the window is shorter than requested.
    */
   async function computeComparisonCore(
     userId: string,
@@ -1065,6 +1159,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         name: primary.name,
         series: primaryResult.series.map((p) => ({ date: p.date, value: p.value })),
         stats: toStats(primaryResult.stats),
+        unresolvedPct: primary.unresolvedPct,
       },
     ];
 
@@ -1090,15 +1185,39 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           'BACKTEST_UNAVAILABLE',
         );
       }
+      // …and the same refusal when the data stops INSIDE the window (#1755).
+      // Only the start used to be checked, so a basket whose constituent was
+      // delisted mid-window was charted as a line that simply stopped, with its
+      // stats annualised over the fraction it survived and then printed in a
+      // grid — and differenced — against series that ran the whole window. A
+      // series that does not cover the window is not comparable over it, at
+      // either end.
+      const shortfallDays = coverageShortfallDays(result.endCoverage, window.end);
+      if (shortfallDays > COMPARISON_COVERAGE_GRACE_DAYS) {
+        throw unprocessable(
+          `Conglomerate ${basket.name} does not cover the comparison window — its data ends ${result.endCoverage!.date}, before ${window.end}.`,
+          'BACKTEST_UNAVAILABLE',
+        );
+      }
       series.push({
         conglomerateId: basket.id,
         name: basket.name,
         series: result.series.map((p) => ({ date: p.date, value: p.value })),
         stats: toStats(result.stats),
+        unresolvedPct: basket.unresolvedPct,
       });
     }
 
-    return { startDate: window.start, endDate: window.end, mode, rebalance, series };
+    // The reported window end is the last day EVERY charted series reaches, not
+    // the primary's own (#1755): the grace above tolerates a series whose
+    // exchange was shut on the primary's final day, and a response must never
+    // claim an end date one of its own curves stops short of.
+    const endDate = series.reduce((earliest, s) => {
+      const last = s.series[s.series.length - 1]?.date ?? earliest;
+      return last < earliest ? last : earliest;
+    }, window.end);
+
+    return { startDate: window.start, endDate, mode, rebalance, series };
   }
 }
 
@@ -1118,7 +1237,24 @@ interface ComparisonCore {
     name: string;
     series: Array<{ date: string; value: number }>;
     stats: BacktestStatsDto;
+    unresolvedPct: number;
   }>;
+}
+
+/**
+ * Calendar days between the last day a basket covered and the window end it was
+ * asked to cover — `0` when it covered the end (the engine reports no coverage
+ * gap at all). Calendar days, not trading days: the gap this measures is exactly
+ * the one a trading calendar cannot explain.
+ */
+function coverageShortfallDays(
+  coverage: { date: string; symbol: string } | null,
+  windowEnd: string,
+): number {
+  if (coverage === null) return 0;
+  const days =
+    (Date.parse(`${windowEnd}T00:00:00Z`) - Date.parse(`${coverage.date}T00:00:00Z`)) / 86_400_000;
+  return Number.isFinite(days) && days > 0 ? days : 0;
 }
 
 /**
@@ -1149,6 +1285,59 @@ function mapEngineError(err: unknown): unknown {
     );
   }
   return err;
+}
+
+/**
+ * The largest share of a shared what-if basket a single NESTED (opaque)
+ * constituent may be pushed to, in percent (#1755).
+ *
+ * The aggregate-only response for a nested share hides descendant identities but
+ * not their numbers: the curve is a weighted mix, and a mix in which one term
+ * carries ~all the weight IS that term. Contract-bounding the weight to ≤ 100 is
+ * not enough on its own — `[public 0.001, child 100]` still leaves the child at
+ * 99.999 % — so a nested row additionally may not be re-weighted past this
+ * share. Re-weighting inside it stays fully available: a viewer may still take
+ * a 50 % child to 90 %, which is well past any honest what-if.
+ *
+ * A basket that ALREADY gives a nested row this much (a share whose root is one
+ * 100 % child) is not the viewer's doing and is not restricted — the shared view
+ * itself is that basket, and refusing it would break "reset to shared". The
+ * bound is therefore `max(cap, the row's stored share)`.
+ */
+export const SANDBOX_MAX_NESTED_SHARE_PCT = 90;
+
+/** Float-noise floor for comparing a re-weighted share against its stored one. */
+const SANDBOX_SHARE_EPSILON = 1e-9;
+
+/**
+ * Refuse a sandbox whose weights collapse the basket onto one opaque nested
+ * constituent — see {@link SANDBOX_MAX_NESTED_SHARE_PCT}. Identity-free: the
+ * refusal names nothing the share does not already expose, and it is the same
+ * 422 family every other sandbox data-state refusal uses.
+ */
+function assertNestedShareBounded(
+  constituents: readonly ConglomerateConstituentRow[],
+  tweak: ReadonlyMap<string, number>,
+): void {
+  let tweakSum = 0;
+  let storedSum = 0;
+  for (const position of constituents) {
+    tweakSum += tweak.get(position.kind === 'asset' ? position.assetId : position.childId) ?? 0;
+    storedSum += position.weightPct;
+  }
+  if (!(tweakSum > 0) || !(storedSum > 0)) return;
+  for (const position of constituents) {
+    if (position.kind !== 'conglomerate') continue;
+    const share = ((tweak.get(position.childId) ?? 0) / tweakSum) * 100;
+    const storedShare = (position.weightPct / storedSum) * 100;
+    const bound = Math.max(SANDBOX_MAX_NESTED_SHARE_PCT, storedShare);
+    if (share > bound + SANDBOX_SHARE_EPSILON) {
+      throw unprocessable(
+        `A nested part of this shared basket can’t be weighted above ${bound.toFixed(0)} % of it in a sandbox.`,
+        'SANDBOX_NESTED_SHARE_CAP',
+      );
+    }
+  }
 }
 
 /** One identity-free data-state outcome for errors involving opaque descendants. */

@@ -496,6 +496,7 @@ function sweepCtx(): JobContext {
     deadLetter: {} as JobContext['deadLetter'],
     redis: {} as JobContext['redis'],
     logger: silentLogger,
+    isFeatureEnabled: async () => true,
   };
 }
 

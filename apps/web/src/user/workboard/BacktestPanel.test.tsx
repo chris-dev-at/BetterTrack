@@ -112,6 +112,7 @@ const BENCHMARK_RESULT: BacktestBenchmarkResult = {
     bestDay: { date: '2020-04-06', returnPct: 2.9 },
     worstDay: { date: '2020-03-12', returnPct: -3.4 },
   },
+  unresolvedPct: 0,
 };
 
 const CONGLOMERATES: ConglomerateListResponse = {

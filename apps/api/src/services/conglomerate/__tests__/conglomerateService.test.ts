@@ -57,6 +57,9 @@ function createStubService(staleEdges: NestingEdgeRow[], committedEdges: Nesting
       new Set(ownerId === OWNER ? ids : []),
     visibleAssetIds: async (_ownerId: string, ids: readonly string[]) => new Set(ids),
     nestingEdges: async () => staleEdges,
+    // The post-write ancestor revalidation (#1755) asks who embeds the edited
+    // basket; in this fixture nothing does, so the walk stops immediately.
+    parentsOf: async () => [],
     replacePositions: async (
       _ownerId: string,
       _id: string,

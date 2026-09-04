@@ -347,6 +347,93 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     return seenChildren;
   }
 
+  /**
+   * The NESTED half of the activation gate (§6.5 + V5-P6): the reason this
+   * position set may not carry an `active` status, or `null` when every nested
+   * slice still resolves to assets.
+   *
+   * A nested constituent counts toward the 100 %, so a child that resolves to NO
+   * asset would let a basket activate whose weights add up on paper while its
+   * slice buys nothing: at flatten time the empty child is dropped and its weight
+   * is silently redistributed onto the survivors (a 60/40 basket buys 100 % of
+   * the 60 % leg). Extracted from {@link activateScoped} so the exact same rule
+   * can be re-run later — the gate is point-in-time, but the condition it checks
+   * belongs to a child the parent does not control (see
+   * {@link revalidateAncestorActivation}).
+   */
+  async function nestedActivationFailure(
+    ownerId: string,
+    positions: readonly ConglomerateDetailRow['positions'][number][],
+    includeCustomAssets: boolean,
+  ): Promise<string | null> {
+    for (const position of positions) {
+      if (position.kind !== 'conglomerate') continue;
+      const child = await flattenConglomerate(
+        (cid) =>
+          repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }),
+        position.childId,
+      );
+      if (!child || child.positions.length === 0) {
+        return `Nested conglomerate ${position.child.name} resolves to no assets — give it positions or remove it before activating.`;
+      }
+      if (child.unresolvedPct > 0) {
+        return `Nested conglomerate ${position.child.name} contains a conglomerate that resolves to no assets — give it positions or remove it before activating.`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Re-run the nested activation gate over every ANCESTOR of a basket whose
+   * positions just changed, demoting to `draft` any that no longer passes it
+   * (#1755).
+   *
+   * The gate is enforced when a basket is activated, but what it checks — that
+   * each nested slice resolves to at least one asset — is a property of baskets
+   * the parent does not own the edits to. Emptying a child left every parent
+   * `active` while its resolved view, its backtest and every comparison silently
+   * renormalized the child's slice onto the survivors, disagreeing with the
+   * Invest Calculator on the same screen, which correctly withholds it. The
+   * parent is therefore relabelled instead of left claiming a status it no
+   * longer earns; re-activating it after fixing (or removing) the child is the
+   * normal `POST /:id/activate` and re-runs the same gate.
+   *
+   * Ancestors only, and only the nested rule: the sum-to-100 half of the gate
+   * belongs to the edited basket's own weights and is deliberately left alone.
+   * The walk is bounded by {@link MAX_NESTING_DEPTH} (the longest chain the
+   * write-time rules admit) and by a visited set, so a structure that slipped a
+   * cycle past those rules still terminates.
+   */
+  async function revalidateAncestorActivation(
+    ownerId: string,
+    childId: string,
+    includeCustomAssets: boolean,
+  ): Promise<void> {
+    const visited = new Set<string>([childId]);
+    let frontier: string[] = [childId];
+    for (let level = 0; level < MAX_NESTING_DEPTH && frontier.length > 0; level += 1) {
+      const parents: string[] = [];
+      for (const id of frontier) {
+        for (const parent of await repo.parentsOf(ownerId, id)) {
+          if (visited.has(parent.id)) continue;
+          visited.add(parent.id);
+          parents.push(parent.id);
+        }
+      }
+      for (const id of parents) {
+        const row = await repo.findByIdForOwner(ownerId, id, {
+          globalAssetMetadataOnly: !includeCustomAssets,
+        });
+        if (!row || row.status !== 'active') continue;
+        if ((await nestedActivationFailure(ownerId, row.positions, includeCustomAssets)) === null) {
+          continue;
+        }
+        await repo.setStatus(ownerId, id, 'draft');
+      }
+      frontier = parents;
+    }
+  }
+
   async function activateScoped(
     ownerId: string,
     id: string,
@@ -372,32 +459,12 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       );
     }
 
-    // A nested constituent counts toward that 100 %, so a child that resolves to
-    // NO asset would let a basket activate whose weights add up on paper while
-    // its slice buys nothing: at flatten time the empty child is dropped and its
-    // weight is silently redistributed onto the survivors (a 60/40 basket buys
-    // 100 % of the 60 % leg). Every nested slice must therefore resolve to at
-    // least one asset before the basket can go active.
-    for (const position of row.positions) {
-      if (position.kind !== 'conglomerate') continue;
-      const child = await flattenConglomerate(
-        (cid) =>
-          repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }),
-        position.childId,
-      );
-      if (!child || child.positions.length === 0) {
-        throw badRequest(
-          `Nested conglomerate ${position.child.name} resolves to no assets — give it positions or remove it before activating.`,
-          'ACTIVATION_INVALID',
-        );
-      }
-      if (child.unresolvedPct > 0) {
-        throw badRequest(
-          `Nested conglomerate ${position.child.name} contains a conglomerate that resolves to no assets — give it positions or remove it before activating.`,
-          'ACTIVATION_INVALID',
-        );
-      }
-    }
+    const nestedFailure = await nestedActivationFailure(
+      ownerId,
+      row.positions,
+      includeCustomAssets,
+    );
+    if (nestedFailure !== null) throw badRequest(nestedFailure, 'ACTIVATION_INVALID');
 
     const ok = await repo.setStatus(ownerId, id, 'active');
     if (!ok) throw NOT_FOUND();
@@ -681,6 +748,9 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
             : undefined,
         );
         if (!ok) throw NOT_FOUND();
+        // What this basket resolves to just changed, and an ANCESTOR's `active`
+        // status was granted against the old answer (#1755).
+        await revalidateAncestorActivation(ownerId, id, includeCustomAssets);
         return detailOrThrow(ownerId, id, includeCustomAssets);
       });
     },
@@ -733,6 +803,11 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
             weightPct: p.weightPct,
             asset: p.asset,
           })),
+          // The share an empty nested child left behind. Withheld by the money
+          // path since V5-P6 and dropped by every read path until #1755 — so the
+          // donut on the detail page showed a fully-invested basket while the
+          // calculator on the same screen refused to spend part of the budget.
+          unresolvedPct: flat.unresolvedPct,
         };
       });
     },

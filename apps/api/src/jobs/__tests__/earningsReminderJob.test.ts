@@ -51,7 +51,13 @@ beforeEach(async () => {
   // ioredis-mock shares its keyspace across instances — flush so each test's
   // idempotency locks start clean.
   await redis.flushall();
-  ctx = { events: inertBus, deadLetter: createDeadLetter(redis), redis, logger };
+  ctx = {
+    events: inertBus,
+    deadLetter: createDeadLetter(redis),
+    redis,
+    logger,
+    isFeatureEnabled: async () => true,
+  };
 });
 
 function makeJob(): Job<Record<string, never>> {

@@ -235,6 +235,16 @@ function ComparisonGrid({
                     />
                     <span className="bt-soft">{s.name}</span>
                   </span>
+                  {/* The slice of this basket that resolved to no asset (#1755):
+                      the curve and every stat below cover only the rest of it,
+                      normalized to 100, so the column is not the whole blueprint. */}
+                  {s.unresolvedPct > 0 ? (
+                    <span className="bt-meta block">
+                      {t('workboard.comparison.unresolvedShare', {
+                        pct: formatPercent(s.unresolvedPct),
+                      })}
+                    </span>
+                  ) : null}
                   <label className="bt-meta mt-1 flex items-center justify-end gap-1">
                     <input
                       aria-label={t('workboard.comparison.setBaseline', { name: s.name })}
