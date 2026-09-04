@@ -15,14 +15,27 @@ import * as schema from '../../data/schema';
  * "Export zip covers every user-owned table incl. cash-source movements and tax
  * rows (completeness sweep vs schema)").
  *
- * Every table in the Drizzle schema is classified EXACTLY once here as either
- * {@link ExportedTable} (its rows are collected into a named export entity) or
- * {@link SkippedTable} (deliberately out of the export, with a stated reason).
- * The completeness test enumerates the schema's tables and fails if any is
- * absent from this map — so a future user-owned table breaks the build until it
- * is either exported or explicitly allow-listed with a reason. It also asserts
- * every `entity` here is actually produced by the collector, so a classification
- * can never claim coverage the collector doesn't deliver.
+ * Every table in the Drizzle schema is classified EXACTLY once here as either an
+ * export (its rows are collected into a named export entity) or a skip
+ * (deliberately out of the export, with a stated reason). The completeness test
+ * enumerates the schema's tables and fails if any is absent from this map — so a
+ * future user-owned table breaks the build until it is either exported or
+ * explicitly allow-listed with a reason.
+ *
+ * What that test does NOT assert is that the collector actually produces each
+ * `entity` named here: `EXPORTED_ENTITY_NAMES` is itself derived from this map,
+ * so comparing the two can never fail. Two other mechanisms carry that weight —
+ * `assertCollectorCoverage` in `collector.ts` throws on every export run in BOTH
+ * directions (a declared entity the collector never assembles, and a stray
+ * entity it assembles whose table is still skipped), and the DB-backed
+ * `exportFlow.test.ts` runs a real export and reads the produced keys back.
+ *
+ * {@link skipped} means "these rows are not the account's content to carry out".
+ * It may NOT be used to say "this is the user's data and we have not built the
+ * export yet" — {@link deferred} exists for exactly that claim and marks the
+ * reason, so every deferral is enumerable ({@link EXPORT_DEFERRED_TABLE_NAMES}),
+ * named as such in the archive's `manifest.json`, and pinned by the completeness
+ * test's roster instead of hiding inside prose.
  */
 export type TableClassification =
   | { readonly kind: 'export'; readonly entity: string }
@@ -30,6 +43,26 @@ export type TableClassification =
 
 const exported = (entity: string): TableClassification => ({ kind: 'export', entity });
 const skipped = (reason: string): TableClassification => ({ kind: 'skip', reason });
+
+/**
+ * The prefix that turns a skip into a declared DEFERRAL (see {@link deferred}).
+ * Part of the reason string on purpose: it travels into the ZIP's
+ * `manifest.json` `skippedTables` list, so the archive itself distinguishes
+ * "deliberately not your data" from "your data, not carried yet".
+ */
+export const EXPORT_DEFERRAL_MARKER = 'DEFERRED (user-owned, not yet carried):';
+
+/**
+ * A deferral — user-owned rows the export does not carry YET. Distinct from
+ * {@link skipped} because the two claims are not interchangeable: a skip is a
+ * decision, a deferral is a debt. The completeness test pins the exact roster of
+ * deferred tables, so a new one cannot join silently, and the export↔vault
+ * axis guard additionally pins every deferral of a table the encrypted vault
+ * hands back on disable (`PARANOID_REHYDRATION_POLICY` `restore`) — the export
+ * mirror of the cash-fusion guard in `paranoidClassification.test.ts`.
+ */
+const deferred = (reason: string): TableClassification =>
+  skipped(`${EXPORT_DEFERRAL_MARKER} ${reason}`);
 
 /**
  * Table (SQL name) → classification. Grouped by why a table is skipped so the
@@ -88,11 +121,12 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   ),
 
   // Per-account widget compositions (mobile board #68 item 3) — user-owned UI
-  // config, one opaque document per client namespace. Export coverage lands with
-  // the same later export sweep as standing_orders / cash_* (the composition is
-  // a view OF the exported portfolios, not a second copy of them).
-  widget_layouts: skipped(
-    'Per-namespace dashboard widget compositions (board #68) — user-owned UI config referencing already-exported portfolios; export coverage lands with a later export sweep.',
+  // config, one opaque document per client namespace. A declared deferral: the
+  // composition is a view OF the exported portfolios (which card sits where),
+  // so nothing about the account's money is lost by its absence — but the
+  // arrangement is still the user's, so this is a debt, not an exclusion.
+  widget_layouts: deferred(
+    'Per-namespace dashboard widget compositions (board #68) — UI config referencing already-exported portfolios; carries no money row of its own.',
   ),
 
   // ── Global / not user-owned ───────────────────────────────────────────────
@@ -143,8 +177,8 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   notification_digest_queue: skipped(
     'Transient outbound digest delivery queue (V5-P3) — rows are claimed and dropped on delivery, not user data.',
   ),
-  notification_cadences: skipped(
-    'Per-type outbound digest-cadence preference (V5-P3); absence reconstructs to the `instant` default. Export coverage lands with the V5-P4 export work.',
+  notification_cadences: deferred(
+    'Per-type outbound digest-cadence preference (V5-P3) — a user-set preference; absence reconstructs to the `instant` default, so no content is lost, only the choice.',
   ),
   oauth_auth_codes: skipped('Single-use OAuth authorization codes (transient secrets).'),
   oauth_access_tokens: skipped('Short-lived OAuth access-token hashes (transient secrets).'),
@@ -181,34 +215,36 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   ),
   // V5-P6b standing orders (#593): the rows an order books (transactions / cash
   // movements) are exported above; the recurring-action definitions and their
-  // authoritative per-period exactly-once ledger are user-owned state whose
-  // general account-export coverage lands with a later export sweep.
-  standing_orders: skipped(
-    'Standing-order definitions (user-owned recurring-action config); the rows they book are exported as transactions/cash movements, and definition export lands with a later export sweep.',
+  // authoritative per-period exactly-once ledger are user-owned state the export
+  // does not carry yet. These two are the ONLY tables the encrypted vault
+  // restores while the export still defers them — a divergence the axis guard in
+  // `completeness.test.ts` pins by name (issue #1711 carried the V5-P9 half and
+  // scoped these out), so no third table can join them unnoticed.
+  standing_orders: deferred(
+    'Standing-order definitions (recurring-action config); the rows they book ARE exported as transactions/cash movements, so the money is present and only the schedule is missing.',
   ),
-  standing_order_runs: skipped(
-    'Standing-order authoritative exactly-once ledger; general account-export coverage lands with the standing-order definition export sweep.',
+  standing_order_runs: deferred(
+    'Standing-order per-period exactly-once ledger; carried with the definitions above, whose schedule it records having executed.',
   ),
-  // V5-P8 comments + reactions: social interaction content ON OTHER users' shared
-  // items, visible only through that item's audience — not the caller's own
-  // portfolio data. Definition export lands with a later export sweep (mirrors
-  // notification_cadences / standing_orders).
-  item_comments: skipped(
-    'Comments authored on shared items (social interaction content); export coverage lands with a later export sweep.',
+  // V5-P8 comments + reactions: social interaction content ON shared items,
+  // visible only through that item's audience — user-authored, so a declared
+  // deferral rather than an exclusion. Neither is vault-restorable (both are
+  // `server`-classified), so no axis divergence.
+  item_comments: deferred(
+    'Comments authored on shared items — user-authored social interaction content on items whose audience governs their visibility.',
   ),
-  item_reactions: skipped(
-    'Emoji reactions on shared items and comments (social interaction content); export coverage lands with a later export sweep.',
+  item_reactions: deferred(
+    'Emoji reactions on shared items and comments — user-authored social interaction content.',
   ),
   // V5-P8 friend groups: user-owned named circles + their rosters, used only as a
   // sharing audience. Whom a share reaches is already exported via share_audiences
-  // (the group_id reference); the circle DEFINITIONS are owner-owned config whose
-  // own export coverage lands with a later export sweep (mirrors item_comments /
-  // standing_orders).
-  friend_groups: skipped(
-    'Friend-group definitions (user-owned circle config used as a sharing audience); export coverage lands with a later export sweep.',
+  // (the group_id reference); the circle DEFINITIONS are owner-owned config the
+  // export does not carry yet.
+  friend_groups: deferred(
+    'Friend-group definitions (owner-named circles used as a sharing audience); the audiences that reference them ARE exported, so a share’s reach is visible by group id.',
   ),
-  friend_group_members: skipped(
-    'Friend-group rosters (membership of a user-owned circle); export coverage lands with a later export sweep.',
+  friend_group_members: deferred(
+    'Friend-group rosters (who is in a user-owned circle); the friendships themselves are exported.',
   ),
   // V5-P7 MIRRORCHAIN (docs/mirrorchain-design.md §1): the five additive chain
   // link tables. A member's actual data is their real portfolio COPY — already
@@ -218,8 +254,8 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   mirror_chains: skipped(
     'Chain metadata shared across members (name, op counter) — not owned by any one user; the member copy is exported as portfolios/transactions.',
   ),
-  mirror_chain_members: skipped(
-    'Chain membership + per-copy watermark bookkeeping; the copy itself is exported as portfolios/transactions. Definition export lands with a later export sweep.',
+  mirror_chain_members: deferred(
+    'Chain membership + per-copy watermark bookkeeping; the member copy itself IS exported as portfolios/transactions, so only the link row is missing.',
   ),
   mirror_chain_invites: skipped(
     'Transient chain-invite state (friends-only, expiring), not user data to carry out.',
@@ -231,57 +267,41 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
     'Logical↔local identity map + per-row attribution for a copy — derivable bookkeeping that dies with the copy (portfolio_id cascade), not separate user data.',
   ),
   // V5-P9 expense tracking: a NEW top-level area, strictly separate from
-  // portfolio money. The categories/transactions/rules/budgets are user-owned
-  // config + data whose own export coverage lands with a later export sweep
-  // (mirrors standing_orders / item_comments / friend_groups); the per-period
-  // fired-marker is internal exactly-once alert bookkeeping, not user data.
-  expense_categories: skipped(
-    'Expense categories (V5-P9, a new area separate from portfolio money); user-owned config, export coverage lands with a later export sweep.',
-  ),
-  expense_transactions: skipped(
-    'Expense transactions (V5-P9); user-owned spend/income data separate from portfolio, export coverage lands with a later export sweep.',
-  ),
-  expense_rules: skipped(
-    'Expense auto-categorization rules (V5-P9); user-owned config, export coverage lands with a later export sweep.',
-  ),
-  expense_budgets: skipped(
-    'Expense per-category budgets (V5-P9); user-owned config, export coverage lands with a later export sweep.',
-  ),
+  // portfolio money — and hand-entered by the user, so an export that omitted it
+  // would hand a spend tracker's owner back an archive with none of their
+  // spending in it. Carried as first-class entities (the encrypted vault already
+  // restores all four, and the two axes must agree on whose data this is); the
+  // per-period fired-marker stays out as internal exactly-once alert bookkeeping.
+  expense_categories: exported('expenseCategories'),
+  expense_transactions: exported('expenseTransactions'),
+  expense_rules: exported('expenseRules'),
+  expense_budgets: exported('expenseBudgets'),
   expense_budget_fires: skipped(
     'Expense budget per-period fired-marker (V5-P9) — internal exactly-once alert bookkeeping, not user data.',
   ),
   // V5 cash fusion (migration 0075): the classification layer ON the exported
   // cash movements — flat tags, the movement↔tag links, portfolio-scoped budgets
   // and tag-assigning rules. The money itself is already exported as
-  // `cashMovements`; these are user-owned labels/config whose own export coverage
-  // lands with the same later export sweep as expense_*/standing_orders (the
-  // phase that also re-points the routes), and the fired-marker is internal
+  // `cashMovements`, but a tag name IS spending information and the labels,
+  // budgets and rules are the user's own work; they are carried for the same
+  // reason the vault restores them. The fired-marker stays internal
   // exactly-once alert bookkeeping.
-  cash_tags: skipped(
-    'Cash-flow tags (V5 cash fusion) — user-owned labels on the exported cash movements; export coverage lands with a later export sweep.',
-  ),
-  cash_movement_tags: skipped(
-    'Cash-flow movement↔tag links (V5 cash fusion) — labelling of rows already exported as cashMovements; export coverage lands with a later export sweep.',
-  ),
-  cash_budgets: skipped(
-    'Cash-flow per-tag budgets (V5 cash fusion); user-owned config, export coverage lands with a later export sweep.',
-  ),
+  cash_tags: exported('cashTags'),
+  cash_movement_tags: exported('cashMovementTags'),
+  cash_budgets: exported('cashBudgets'),
   cash_budget_fires: skipped(
     'Cash-flow budget per-period fired-marker (V5 cash fusion) — internal exactly-once alert bookkeeping, not user data.',
   ),
-  cash_rules: skipped(
-    'Cash-flow auto-tagging rules (V5 cash fusion); user-owned config, export coverage lands with a later export sweep.',
-  ),
-  cash_rule_tags: skipped(
-    'Cash-flow rule↔tag links (V5 cash fusion); part of the rule config, export coverage lands with a later export sweep.',
-  ),
+  cash_rules: exported('cashRules'),
+  cash_rule_tags: exported('cashRuleTags'),
   // V5-P10 outbound webhooks (#648): the subscription config is user-owned but
   // carries a stored signing secret (encrypted at rest, shown once) that must
-  // never leave the server — like discord_webhooks; its non-secret config export
-  // lands with a later export sweep (mirrors standing_orders). The delivery log
-  // is a bounded, retention-pruned operational record, not user data.
-  webhook_subscriptions: skipped(
-    'Outbound-webhook subscriptions (V5-P10) — user-owned config carrying a stored signing secret that must not leave the server; non-secret config export lands with a later export sweep.',
+  // never leave the server — like discord_webhooks; carrying its non-secret
+  // config needs a column projection like the feedback one, so it is a declared
+  // deferral rather than a plain select. The delivery log is a bounded,
+  // retention-pruned operational record, not user data.
+  webhook_subscriptions: deferred(
+    'Outbound-webhook subscriptions (V5-P10) — user-owned config whose row carries a stored signing secret that must never leave the server, so carrying it needs a projection like the feedback one, not a plain select.',
   ),
   webhook_deliveries: skipped(
     'Outbound-webhook delivery log (V5-P10) — a bounded, retention-pruned operational record, not user data.',
@@ -355,13 +375,27 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   vault_retired: skipped(
     'Per-portfolio vault recoverable retired ciphertext (V5-P13 arc b) — opaque copies retained only until a client-proved purge.',
   ),
-  drive_connections: skipped(
-    'Separately authenticated Google Drive connection registry (V5-P13 arc b §8) — identity config only (sub/email/display name), never tokens or file ids; config export lands with a later export sweep.',
+  drive_connections: deferred(
+    'Separately authenticated Google Drive connection registry (V5-P13 arc b §8) — identity config only (sub/email/display name), never tokens or file ids.',
   ),
   portfolio_vault_transition_states: skipped(
     'Per-portfolio vault capture state and idempotency receipts (E4) — content-free internal transition metadata, never portfolio data.',
   ),
 };
+
+/**
+ * Tables whose skip is a declared {@link deferred} debt rather than a decision
+ * that the rows are not the account's data. Derived, never hand-listed twice —
+ * the completeness test pins this roster, so a new deferral is a deliberate,
+ * reviewed edit and "we have not built it yet" can no longer be a silent
+ * CI-green state.
+ */
+export const EXPORT_DEFERRED_TABLE_NAMES: readonly string[] = Object.entries(
+  EXPORT_TABLE_CLASSIFICATION,
+)
+  .filter(([, c]) => c.kind === 'skip' && c.reason.startsWith(EXPORT_DEFERRAL_MARKER))
+  .map(([table]) => table)
+  .sort();
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
 export const EXPORTED_ENTITY_NAMES: readonly string[] = [
@@ -825,6 +859,29 @@ export const PARANOID_RESTORABLE_TABLE_NAMES: readonly string[] = Object.entries
 )
   .filter(
     ([table, policy]) => policy.kind === 'restore' && PARANOID_VAULT_TABLE_NAMES.includes(table),
+  )
+  .map(([table]) => table)
+  .sort();
+
+/**
+ * THE EXPORT↔VAULT AXIS DISAGREEMENT: tables the encrypted vault classifies
+ * `restore` — user-owned content it must capture and hand back on disable —
+ * while the account export still skips them. The two axes answer the same
+ * question ("is this the user's own data?"), so any entry here is one axis
+ * contradicting the other, and the completeness test pins the list by name:
+ * a future table cannot join it without a reviewer editing that roster on
+ * purpose. This is the export-side mirror of the cash-fusion guard in
+ * `paranoidClassification.test.ts` ("the moment a repository exists, purge-only
+ * means a paranoid disable silently drops the user's tags"), whose absence on
+ * this axis is exactly why the V5-P9 expense/cash rows stayed unexported while
+ * the vault already restored them.
+ */
+export const EXPORT_VAULT_AXIS_DIVERGENCES: readonly string[] = Object.entries(
+  PARANOID_REHYDRATION_POLICY,
+)
+  .filter(
+    ([table, policy]) =>
+      policy.kind === 'restore' && EXPORT_TABLE_CLASSIFICATION[table]?.kind === 'skip',
   )
   .map(([table]) => table)
   .sort();
