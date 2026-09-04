@@ -16,12 +16,13 @@ import {
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
-import type {
-  MirrorMemberRole,
-  MirrorMemberStatus,
-  MirrorOpKind,
-  MirrorOpPayload,
-  MirrorRowKind,
+import {
+  MIRROR_LEDGER_OP_KINDS,
+  type MirrorMemberRole,
+  type MirrorMemberStatus,
+  type MirrorOpKind,
+  type MirrorOpPayload,
+  type MirrorRowKind,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
@@ -107,8 +108,21 @@ export type AppendRefusal =
 
 export type CheckedAppendResult = { ops: MirrorChainOpRow[] } | AppendRefusal;
 
-/** Ops whose presence as an entity's latest op make it terminally deleted (§3). */
-const TERMINAL_OP_KINDS: readonly MirrorOpKind[] = ['tx.delete', 'dividend.delete'];
+/**
+ * Ops whose presence as an entity's latest op make it terminally deleted (§3) —
+ * every later op targeting that `mirror_id` is refused `409 MIRROR_ROW_DELETED`.
+ *
+ * DERIVED from the op-kind list rather than written out: the hand-written table
+ * this replaces listed `tx.delete` and `dividend.delete` only, so `cash.delete`
+ * (added with the V5 cash edit/delete replication, §16 2026-07-31) was never
+ * terminal and an edit racing a delete was acknowledged and then dropped on
+ * replay. Deriving it means a `*.delete` kind is terminal the moment it exists.
+ * `mirrorService`'s pre-check imports THIS constant, so the door guard and the
+ * in-transaction guard cannot drift apart.
+ */
+export const TERMINAL_OP_KINDS: readonly MirrorOpKind[] = MIRROR_LEDGER_OP_KINDS.filter((kind) =>
+  kind.endsWith('.delete'),
+);
 
 /** Internal control-flow error: rolls the append transaction back on refusal. */
 class AppendRefusedError extends Error {
@@ -177,7 +191,67 @@ export type MirrorChainDisplayRow = Pick<
   'id' | 'name' | 'status' | 'lastSeq' | 'createdAt'
 >;
 
+/**
+ * Keyset position in the (a) residual scan: the `mirror_rows` primary key,
+ * ordered `(mirror_id, portfolio_id, kind)`. A sweep run resumes past the last
+ * row it reported so no residual stays invisible behind a fixed first page.
+ */
+export interface MirrorRowCursor {
+  mirrorId: string;
+  portfolioId: string;
+  kind: MirrorRowKind;
+}
+
 export function createMirrorchainRepository(db: Database) {
+  /** The (a) residual predicate, shared by the paged list and its total count. */
+  const danglingOriginRowFilter = () =>
+    and(
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(portfolios)
+          .where(and(eq(portfolios.id, mirrorRows.portfolioId), isNull(portfolios.vaultId))),
+      ),
+      notExists(
+        db
+          .select({ one: sql`1` })
+          .from(mirrorChainOps)
+          .where(
+            and(
+              eq(mirrorChainOps.chainId, mirrorRows.chainId),
+              eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
+            ),
+          ),
+      ),
+    );
+
+  /**
+   * Keyset resume for (a) on the primary key's columns, as a row-value
+   * comparison so the tuple order and the `ORDER BY` are the same order.
+   */
+  const afterMirrorRow = (after: MirrorRowCursor | null) =>
+    after
+      ? sql`(${mirrorRows.mirrorId}, ${mirrorRows.portfolioId}, ${mirrorRows.kind}::text) > (${after.mirrorId}::uuid, ${after.portfolioId}::uuid, ${after.kind})`
+      : undefined;
+
+  /** The (b) residual predicate, shared by the paged list and its total count. */
+  const orphanedSyncedTransactionFilter = () =>
+    and(
+      isNull(portfolios.vaultId),
+      notExists(
+        db
+          .select({ one: sql`1` })
+          .from(mirrorRows)
+          .where(
+            and(
+              eq(mirrorRows.kind, 'transaction'),
+              eq(mirrorRows.portfolioId, transactions.portfolioId),
+              eq(mirrorRows.localId, transactions.id),
+            ),
+          ),
+      ),
+    );
+
   return {
     // --- Chains -------------------------------------------------------------
 
@@ -1028,35 +1102,43 @@ export function createMirrorchainRepository(db: Database) {
      * (a) Origin-only mirror-linked rows whose `mirror_id` has **no op** (design
      * §2): the submit path's origin-commit-then-append crash window. Such a row
      * exists only on the origin copy and silently diverges (later full-state
-     * updates no-op on copies that lack it) until surfaced. Bounded by `limit`.
-     * Vaulted portfolio rows are never surfaced to the server-side sweep.
+     * updates no-op on copies that lack it) until surfaced. Vaulted portfolio
+     * rows are never surfaced to the server-side sweep.
+     *
+     * Bounded by `limit` and PAGED: findings are surfaced, never repaired, so an
+     * unordered `LIMIT n` would hand every run the same arbitrary page and leave
+     * everything past it permanently invisible — and a single chain with more
+     * residuals than the limit would starve all the others. The total order is
+     * the primary key's columns, and `after` resumes past the last row a
+     * previous run reported.
      */
-    async listDanglingOriginRows(limit: number): Promise<MirrorRowRow[]> {
-      return db
-        .select()
+    async listDanglingOriginRows(
+      limit: number,
+      after: MirrorRowCursor | null = null,
+    ): Promise<MirrorRowRow[]> {
+      return (
+        db
+          .select()
+          .from(mirrorRows)
+          .where(and(danglingOriginRowFilter(), afterMirrorRow(after)))
+          // `kind` is compared as text in the cursor tuple, so it must SORT as
+          // text too — an enum orders by declaration order, which is not the same.
+          .orderBy(
+            asc(mirrorRows.mirrorId),
+            asc(mirrorRows.portfolioId),
+            asc(sql`${mirrorRows.kind}::text`),
+          )
+          .limit(limit)
+      );
+    },
+
+    /** How many rows (a) matches in total — what a paged run reports as deferred. */
+    async countDanglingOriginRows(): Promise<number> {
+      const [row] = await db
+        .select({ n: sql<number>`count(*)::int` })
         .from(mirrorRows)
-        .where(
-          and(
-            exists(
-              db
-                .select({ one: sql`1` })
-                .from(portfolios)
-                .where(and(eq(portfolios.id, mirrorRows.portfolioId), isNull(portfolios.vaultId))),
-            ),
-            notExists(
-              db
-                .select({ one: sql`1` })
-                .from(mirrorChainOps)
-                .where(
-                  and(
-                    eq(mirrorChainOps.chainId, mirrorRows.chainId),
-                    eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
-                  ),
-                ),
-            ),
-          ),
-        )
-        .limit(limit);
+        .where(danglingOriginRowFilter());
+      return row?.n ?? 0;
     },
 
     /**
@@ -1064,10 +1146,12 @@ export function createMirrorchainRepository(db: Database) {
      * `mirror_rows` link pointing at them (design §2): the tax-immutable
      * correction path's re-create-then-re-point crash residual — a safe-to-delete
      * local-only duplicate. Forks are excluded (only `status='active'` copies).
-     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`.
+     * Vaulted portfolio rows are excluded before selection. Bounded by `limit`
+     * and paged on the transaction id for the same reason as (a) above.
      */
     async listOrphanedSyncedTransactions(
       limit: number,
+      after: string | null = null,
     ): Promise<{ id: string; portfolioId: string }[]> {
       return db
         .selectDistinct({ id: transactions.id, portfolioId: transactions.portfolioId })
@@ -1081,23 +1165,27 @@ export function createMirrorchainRepository(db: Database) {
         )
         .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
         .where(
+          and(orphanedSyncedTransactionFilter(), after ? gt(transactions.id, after) : undefined),
+        )
+        .orderBy(asc(transactions.id))
+        .limit(limit);
+    },
+
+    /** How many rows (b) matches in total — what a paged run reports as deferred. */
+    async countOrphanedSyncedTransactions(): Promise<number> {
+      const [row] = await db
+        .select({ n: sql<number>`count(distinct ${transactions.id})::int` })
+        .from(transactions)
+        .innerJoin(
+          mirrorChainMembers,
           and(
-            isNull(portfolios.vaultId),
-            notExists(
-              db
-                .select({ one: sql`1` })
-                .from(mirrorRows)
-                .where(
-                  and(
-                    eq(mirrorRows.kind, 'transaction'),
-                    eq(mirrorRows.portfolioId, transactions.portfolioId),
-                    eq(mirrorRows.localId, transactions.id),
-                  ),
-                ),
-            ),
+            eq(mirrorChainMembers.portfolioId, transactions.portfolioId),
+            eq(mirrorChainMembers.status, 'active'),
           ),
         )
-        .limit(limit);
+        .innerJoin(portfolios, eq(portfolios.id, transactions.portfolioId))
+        .where(orphanedSyncedTransactionFilter());
+      return row?.n ?? 0;
     },
   };
 }

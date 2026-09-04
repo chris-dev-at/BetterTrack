@@ -7,7 +7,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import * as schema from '../data/schema';
-import { createMirrorConsistencySweepJob } from '../jobs/definitions';
+import {
+  MIRROR_SWEEP_ITEMISED_EXAMPLES,
+  createMirrorConsistencySweepJob,
+} from '../jobs/definitions';
+import { MIRROR_SWEEP_ROW_LIMIT } from '../services/mirror/mirrorService';
 import type { JobContext } from '../jobs/types';
 import type { Logger } from '../logger';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
@@ -476,6 +480,7 @@ describe('mirrorchain M4 — repair-sweep queries', () => {
       ownerlessRepaired: [],
       danglingOriginRows: [],
       orphanedLocalRows: [],
+      deferred: { danglingOriginRows: 0, orphanedLocalRows: 0 },
     });
     expect((await repo.getChain(chainId))?.status).toBe('active');
     expect((await repo.findActiveMembership(chainId, manager.user.id))?.role).toBe('manager');
@@ -498,6 +503,30 @@ function sweepCtx(): JobContext {
     logger: silentLogger,
     isFeatureEnabled: async () => true,
   };
+}
+
+/**
+ * `count` (a)-residual rows — an origin mirror link whose mirror id has no op —
+ * on one chain's owner copy. The ids are deterministic and sort by `group`, so a
+ * test can say which chain an unpaged first page would have monopolised.
+ */
+function danglingRowValues(
+  chain: { chainId: string; ownerPortfolioId: string },
+  group: 'a' | 'b' | 'c',
+  count: number,
+): schema.NewMirrorRowRow[] {
+  return Array.from({ length: count }, (_, i) => {
+    const id = `019c86${group}0-0000-7000-8000-${String(i).padStart(12, '0')}`;
+    return {
+      chainId: chain.chainId,
+      kind: 'transaction' as const,
+      mirrorId: id,
+      portfolioId: chain.ownerPortfolioId,
+      localId: id,
+      createdBy: null,
+      createdByUsername: 'ghost',
+    };
+  });
 }
 
 async function runSweep(h: TestHarness): Promise<void> {
@@ -601,5 +630,76 @@ describe('mirrorchain M4 — repair sweep', () => {
 
     const { problems } = await h.ctx.problems.list({ limit: 100 });
     expect(problems).toHaveLength(0);
+  });
+
+  /**
+   * The residual scans are DETECTION surfaces — nothing is repaired — so an
+   * unpaged `LIMIT n` would hand every run the same arbitrary first page and
+   * leave the rest permanently invisible, with one big chain starving all the
+   * others. Two chains, more residuals than one run may report: everything must
+   * surface across successive runs, and the run must say how many it deferred.
+   */
+  it('pages the residual scan across runs so no chain starves and nothing stays invisible', async () => {
+    const first = await ownerChain(h);
+    const second = await ownerChain(h);
+    // Chain A's residuals sort BEFORE chain B's, so an unpaged first page would
+    // be all-A and B's would never be seen at all.
+    const rows = [
+      ...danglingRowValues(first, 'a', MIRROR_SWEEP_ROW_LIMIT),
+      ...danglingRowValues(second, 'b', 120),
+    ];
+    await h.db.insert(schema.mirrorRows).values(rows);
+
+    const run1 = await h.ctx.mirror.runConsistencySweep();
+    expect(run1.danglingOriginRows).toHaveLength(MIRROR_SWEEP_ROW_LIMIT);
+    expect(run1.deferred.danglingOriginRows).toBe(120);
+    // The bound really did cut chain B off — that is the starvation this pages.
+    expect(run1.danglingOriginRows.every((r) => r.chainId === first.chainId)).toBe(true);
+
+    const run2 = await h.ctx.mirror.runConsistencySweep();
+    expect(run2.danglingOriginRows.some((r) => r.chainId === second.chainId)).toBe(true);
+
+    const surfaced = new Set(
+      [...run1.danglingOriginRows, ...run2.danglingOriginRows].map((r) => r.mirrorId),
+    );
+    expect(surfaced.size).toBe(rows.length);
+  });
+
+  /**
+   * A residual storm must cost ONE Problems row with an occurrence count, not
+   * one row per residual — the per-kind window budget is 60 distinct writes, so
+   * a row-per-residual storm would both hide most of itself and take every
+   * unrelated error captured in that minute down with it.
+   */
+  it('folds a residual storm into one Problems row and leaves the error budget for others', async () => {
+    const chain = await ownerChain(h);
+    const stormSize = 70;
+    await h.db.insert(schema.mirrorRows).values(danglingRowValues(chain, 'c', stormSize));
+
+    await runSweep(h);
+    h.ctx.problems.captureError(new Error('unrelated failure in the same window'));
+    await h.ctx.problems.flush();
+
+    const { problems } = await h.ctx.problems.list({ limit: 100 });
+    const residual = problems.filter((p) => p.title.includes('origin row without op'));
+    expect(residual).toHaveLength(1);
+    expect(residual[0]!.occurrenceCount).toBe(stormSize);
+    // The message carries no row id — that is what makes the fold key one key.
+    expect(residual[0]!.message).not.toMatch(/[0-9a-f]{8}-/);
+    const context = residual[0]!.context as {
+      found: number;
+      itemised: number;
+      notItemised: number;
+      deferredToLaterRuns: number;
+      examples: unknown[];
+    };
+    expect(context.found).toBe(stormSize);
+    expect(context.itemised).toBe(MIRROR_SWEEP_ITEMISED_EXAMPLES);
+    expect(context.notItemised).toBe(stormSize - MIRROR_SWEEP_ITEMISED_EXAMPLES);
+    expect(context.deferredToLaterRuns).toBe(0);
+    expect(context.examples).toHaveLength(MIRROR_SWEEP_ITEMISED_EXAMPLES);
+    // The unrelated error still landed: the storm spent one write, not sixty.
+    expect(problems.some((p) => p.message.includes('unrelated failure'))).toBe(true);
+    expect(h.ctx.problems.droppedCaptures()).toBe(0);
   });
 });
