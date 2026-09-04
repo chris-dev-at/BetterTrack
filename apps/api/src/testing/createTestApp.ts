@@ -63,6 +63,16 @@ const migrationsFolder = path.join(path.dirname(fileURLToPath(import.meta.url)),
 const realDbUrl = process.env.TEST_DATABASE_URL;
 const realRedisUrl = process.env.TEST_REDIS_URL;
 
+/**
+ * Connection ceiling of the integration-mode pool (see `acquireRealDb`). Tests
+ * that fan requests out concurrently must size the burst against this: a
+ * transaction blocked on a lock holds its pooled connection for the whole wait,
+ * so anything launched past the ceiling measures connection hand-off order
+ * rather than whatever it meant to measure (auth.test.ts's reset-timing
+ * distribution learned this the expensive way).
+ */
+export const INTEGRATION_DB_POOL_MAX = 3;
+
 // ---- real-service singletons (module scope, shared across tests in one worker) ----
 let pgClient: ReturnType<typeof postgres> | undefined;
 let pgDb: Database | undefined;
@@ -76,7 +86,7 @@ async function acquireRealDb(): Promise<Database> {
     // while mirrorReplication.test.ts pauses one writer and queues another.
     // The spare keeps an incidental pooled read from turning either lock
     // regression into connection-pool starvation.
-    pgClient = postgres(realDbUrl!, { max: 3 });
+    pgClient = postgres(realDbUrl!, { max: INTEGRATION_DB_POOL_MAX });
     pgDb = drizzlePostgres(pgClient, { schema });
   }
   if (!pgMigrated) {
