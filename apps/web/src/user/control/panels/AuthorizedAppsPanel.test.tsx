@@ -149,6 +149,27 @@ describe('AuthorizedAppsPanel', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('renders every effective scope the server reports, implied reads included', async () => {
+    // #1730: a grant stored as `portfolio:write` really can call the read-only
+    // routes, so the API now returns the expanded set — the panel must render
+    // one line per scope it is given rather than collapsing the pair.
+    vi.mocked(listOAuthGrants).mockResolvedValue({
+      grants: [{ ...ONE_GRANT.grants[0]!, scopes: ['portfolio:read', 'portfolio:write'] }],
+    });
+    renderPanel();
+
+    const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
+    expect(within(grantRow).getAllByRole('listitem')).toHaveLength(2);
+    expect(
+      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+    ).toBeInTheDocument();
+    expect(
+      within(grantRow).getByText(
+        /Create and edit portfolios, transactions, custom assets and cash/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
   test('marks a scope Paranoid mode refuses instead of hiding it from the grant', async () => {
     vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
