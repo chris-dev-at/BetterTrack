@@ -49,6 +49,7 @@ function dividends(upcoming: DividendEvents['upcoming']): DividendEvents {
     upcoming,
     forwardYield: null,
     trailingAmount: null,
+    trailingAmountBasis: null,
   };
 }
 

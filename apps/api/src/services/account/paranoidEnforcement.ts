@@ -1674,6 +1674,14 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
         handler: '<anonymous>',
         occurrence: 4,
       }),
+      // The deferred body-parser failure raise (§13.5 V5-P2): it re-raises the
+      // 4xx the global parser already decided, after the rate limiters have
+      // metered the request. It grants no capability and reads no account data.
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'raiseDeferredBodyParserFailure',
+      }),
     ],
   ),
   ...keptRoutes(

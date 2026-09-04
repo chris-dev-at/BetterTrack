@@ -44,15 +44,23 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
   });
 
   // GET /assets/portfolio/dividend-projection[?portfolioId=…] — projected income
-  // (monthly/yearly EUR). Unscoped it spans every active portfolio; the optional
-  // id narrows it to one, which is what the Forecast's dividend factor needs
-  // (its curve is a single portfolio's net worth).
+  // (monthly/yearly, in the caller's base currency). Unscoped it spans every
+  // active portfolio; the optional id narrows it to one, which is what the
+  // Forecast's dividend factor needs (its curve is a single portfolio's net
+  // worth). The base travels as a parameter per §5.4 — the Forecast adds this
+  // figure to a base-denominated net worth, so a EUR-pinned total would mix two
+  // denominations under one symbol.
   router.get(
     '/portfolio/dividend-projection',
     validateQuery(projectedDividendIncomeQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.query as ProjectedDividendIncomeQuery;
-      res.json(await ctx.portfolioMarketIntel.projectedIncome(req.authUser!.id, portfolioId));
+      res.json(
+        await ctx.portfolioMarketIntel.projectedIncome(req.authUser!.id, {
+          portfolioId,
+          baseCurrency: req.authUser!.baseCurrency,
+        }),
+      );
     },
   );
 

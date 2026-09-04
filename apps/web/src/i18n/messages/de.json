@@ -424,7 +424,8 @@
     "expandRail": "Navigation ausklappen",
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
-    "collapseSection": "{{section}} einklappen"
+    "collapseSection": "{{section}} einklappen",
+    "back": "Zur\u00fcck"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -3358,8 +3359,10 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "actionAdd": "Zusätzlich mit dieser Person teilen",
           "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
           "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
+          "confirmGroupDetach": "Mir ist bewusst, dass die aktuellen Mitglieder von {{group}} erhalten bleiben und {{username}} hinzukommt, das Element der Gruppe {{group}} danach aber nicht mehr folgt — spätere Änderungen an der Gruppe ändern dann nicht mehr, wer es sehen kann.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -6568,6 +6571,15 @@
     "discreet": {
       "title": "Diskreter Modus",
       "body": "Maskiert jeden absoluten Betrag in der App — zeig BetterTrack anderen, ohne Zahlen offenzulegen."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "BetterTrack installieren",
+      "body": "Füge es zu diesem Gerät hinzu — dann öffnet es sich in einem eigenen Fenster.",
+      "iosBody": "Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.",
+      "action": "Installieren",
+      "dismiss": "Nicht installieren"
     }
   },
   "parked": {

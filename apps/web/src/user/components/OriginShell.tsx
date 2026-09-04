@@ -10,7 +10,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery } from '@tanstack/react-query';
 
@@ -23,6 +23,7 @@ import { listVaults, VAULTS_QUERY_KEY } from '../../lib/vaultApi';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
+import { canNavigateBack, useStandaloneDisplay } from '../../lib/pwaDisplayMode';
 import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
@@ -641,6 +642,38 @@ function sectionKey(pathname: string): string {
   return pathname.split('/')[1] || 'home';
 }
 
+/**
+ * The back affordance an installed window has to bring its own (§7.1, V5-P13b):
+ * standalone means no address bar and, on iOS, no back button at all.
+ *
+ * Renders NOTHING at history index 0. A dead control on the very first screen of
+ * a chromeless window is worse than no control, and where that window was opened
+ * from another page `navigate(-1)` would walk the user out of the app entirely.
+ * Exported for its test; the topbar is the only caller.
+ */
+export function StandaloneBack() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const standalone = useStandaloneDisplay();
+  // Re-read per location: the router writes the new index into
+  // `window.history.state` before it renders the location that produced it.
+  const canGoBack = useMemo(() => canNavigateBack(), [location.key]);
+  if (!standalone || !canGoBack) return null;
+  return (
+    <Button
+      aria-label={t('nav.back')}
+      className="bt-topbar__back"
+      data-testid="standalone-back"
+      icon="arrow-left"
+      iconOnly
+      onClick={() => navigate(-1)}
+      size="sm"
+      variant="quiet"
+    />
+  );
+}
+
 export function OriginShell() {
   const { t, locale } = useI18n();
   const { user } = useAuth();
@@ -721,8 +754,7 @@ export function OriginShell() {
     }
     return counts;
   }, [rosterSettled, vaultedRoster.data]);
-  const location = useLocation();
-  const { pathname } = location;
+  const { pathname } = useLocation();
   const [paletteOpen, setPaletteOpen] = useState(false);
   // The rail is display:none at this width, so anything that lives only inside
   // it has to be rendered elsewhere (see the topbar's AccountMenu).
@@ -899,6 +931,7 @@ export function OriginShell() {
 
         <div className="bt-main">
           <header className="bt-topbar">
+            <StandaloneBack />
             <span className="bt-topbar__brand-slot bt-hide-above-md">
               <RailBrand />
             </span>

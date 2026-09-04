@@ -424,7 +424,8 @@
     "expandRail": "Expand navigation",
     "collapseRail": "Collapse navigation",
     "expandSection": "Expand {{section}}",
-    "collapseSection": "Collapse {{section}}"
+    "collapseSection": "Collapse {{section}}",
+    "back": "Back"
   },
   "askdock": {
     "pin": "Keep open",
@@ -3358,8 +3359,10 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "actionAdd": "Share it with them too",
           "confirmWiden": "I understand this widens access to {{username}}.",
           "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
+          "confirmGroupDetach": "I understand this keeps the current members of {{group}} and adds {{username}}, but the item stops following that group — later changes to {{group}} no longer change who can see it.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }
@@ -6568,6 +6571,15 @@
     "discreet": {
       "title": "Discreet mode",
       "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "Install BetterTrack",
+      "body": "Add it to this device to open it in its own window.",
+      "iosBody": "Tap Share, then “Add to Home Screen”.",
+      "action": "Install",
+      "dismiss": "Dismiss"
     }
   },
   "parked": {

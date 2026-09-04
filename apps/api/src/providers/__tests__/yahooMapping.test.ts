@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { DIVIDEND_FORWARD_YIELD_MAX } from '@bettertrack/contracts';
+
+import type { YahooChartEventsResult, YahooQuoteSummaryResult } from '../yahooClient';
 import {
   currencyForSearchResult,
   mapAssetType,
+  mapDividendEvents,
   mapMarketState,
   normalizeCurrency,
 } from '../yahooMapping';
@@ -114,5 +118,72 @@ describe('currencyForSearchResult (§6.2)', () => {
     expect(currencyForSearchResult('BRK-B', 'NYQ')).toBe('USD'); // dash is a class, not a pair
     expect(currencyForSearchResult('WEIRD', 'UNKNOWN-EXCHANGE')).toBe('USD');
     expect(currencyForSearchResult('NOEXCH', null)).toBe('USD');
+  });
+});
+
+describe('mapDividendEvents — annual-amount basis + yield convention (#1741)', () => {
+  const CHART: YahooChartEventsResult = { meta: { currency: 'USD' }, dividends: [], splits: [] };
+
+  /** Just the summary half; the chart half carries no amount fields. */
+  function map(detail: YahooQuoteSummaryResult['summaryDetail']) {
+    return mapDividendEvents(CHART, { summaryDetail: detail });
+  }
+
+  it('labels a realized trailing-12-month rate as `trailing-12m`', () => {
+    const result = map({ currency: 'USD', trailingAnnualDividendRate: 3.2 });
+    expect(result.trailingAmount).toBeCloseTo(3.2, 6);
+    expect(result.trailingAmountBasis).toBe('trailing-12m');
+  });
+
+  it('labels a forward-annualized regular rate as `forward-annualized`', () => {
+    // Yahoo populated only `dividendRate` — the last REGULAR payout annualized,
+    // which excludes special dividends. Before #1741 this arrived under the very
+    // same field name as the trailing sum, so the caller could not tell.
+    const result = map({ currency: 'USD', dividendRate: 2.4 });
+    expect(result.trailingAmount).toBeCloseTo(2.4, 6);
+    expect(result.trailingAmountBasis).toBe('forward-annualized');
+  });
+
+  it('prefers the realized trailing sum when Yahoo supplies both, and says so', () => {
+    // A special dividend makes the two diverge by a large factor; the payload
+    // now names which of them the number is.
+    const result = map({
+      currency: 'USD',
+      trailingAnnualDividendRate: 9.6,
+      dividendRate: 2.4,
+    });
+    expect(result.trailingAmount).toBeCloseTo(9.6, 6);
+    expect(result.trailingAmountBasis).toBe('trailing-12m');
+  });
+
+  it('leaves both null when Yahoo supplies neither (basis null exactly when amount is)', () => {
+    const result = map({ currency: 'USD' });
+    expect(result.trailingAmount).toBeNull();
+    expect(result.trailingAmountBasis).toBeNull();
+  });
+
+  it('scales a pence-quoted amount without losing its basis', () => {
+    const result = mapDividendEvents(
+      { meta: { currency: 'GBp' }, dividends: [], splits: [] },
+      { summaryDetail: { currency: 'GBp', dividendRate: 98 } },
+    );
+    expect(result.trailingAmount).toBeCloseTo(0.98, 6);
+    expect(result.trailingAmountBasis).toBe('forward-annualized');
+  });
+
+  it('passes an in-range forward yield through as the documented fraction', () => {
+    expect(map({ currency: 'USD', dividendYield: 0.0044 }).forwardYield).toBe(0.0044);
+    expect(map({ currency: 'USD', dividendYield: 0 }).forwardYield).toBe(0);
+    expect(map({ currency: 'USD', dividendYield: DIVIDEND_FORWARD_YIELD_MAX }).forwardYield).toBe(
+      DIVIDEND_FORWARD_YIELD_MAX,
+    );
+  });
+
+  it('drops a yield outside the fraction convention instead of rendering it 100× wrong', () => {
+    // `1.55` is Yahoo's percent convention leaking through: forwarded as a
+    // fraction the asset page would read "155 %".
+    expect(map({ currency: 'USD', dividendYield: 1.55 }).forwardYield).toBeNull();
+    expect(map({ currency: 'USD', dividendYield: -0.01 }).forwardYield).toBeNull();
+    expect(map({ currency: 'USD', dividendYield: Number.NaN }).forwardYield).toBeNull();
   });
 });

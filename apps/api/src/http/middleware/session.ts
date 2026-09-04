@@ -117,6 +117,28 @@ export const enforcePasswordChange: RequestHandler = (req, _res, next) => {
 };
 
 /**
+ * The same forced-password-change refusal with NO path exemptions, for mounts
+ * whose `req.path` is not `/api/v1`-relative.
+ *
+ * {@link enforcePasswordChange} reads a mount-relative `req.path` against an
+ * `/api/v1`-relative allowlist, so reusing it on a deeper mount silently
+ * re-points those exemptions at that mount's own sub-paths: under
+ * `/api/v1/admin/monitoring/grafana` Express strips all five segments, and
+ * `…/grafana/auth/login` — or `…/grafana/auth/invite/../../d/abc`, which
+ * `new URL()` later collapses back to a real dashboard — matched the allowlist
+ * and skipped the guard. None of the exempt endpoints (login, logout,
+ * change-password, invite) exist under such a mount, so the correct guard there
+ * is unconditional.
+ */
+export const requirePasswordChangeCompleted: RequestHandler = (req, _res, next) => {
+  if (req.authUser?.mustChangePassword) {
+    next(forbidden('Password change required.', AUTH_ERROR_CODES.passwordChangeRequired));
+    return;
+  }
+  next();
+};
+
+/**
  * The only admin-router operations that admit a first-enrollment session while
  * the account has no confirmed second factor. Every other `/admin` operation
  * is behind `requireAdminTwoFactor` and can return
