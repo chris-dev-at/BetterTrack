@@ -1662,42 +1662,25 @@ export function sniffTable(
 // --- Locale-aware value parsing (consumers of the sniff results) -------------
 
 /**
- * Unmistakably ENGLISH grouping with a decimal point: `1,234.56`. Both
- * separators are present in the one order German notation can never produce,
- * so a cell in this shape is not German — whatever the file's locale says.
- */
-const ENGLISH_GROUPED_DECIMAL = /^[+-]?\d{1,3}(,\d{3})+\.\d+$/;
-
-/**
  * Parse a decimal in the table's detected notation. `de` delegates to the
  * framework's `parseDecimal` (German + plain, refuses ambiguous `1.000`);
  * `en` uses the strict English parser, which refuses the mirror-ambiguous
  * grouping forms for the same reason: guessing wrong books ~1000× off.
  *
  * Under `de`, a value in unmistakably English grouping is REFUSED rather than
- * reinterpreted. `parseDecimal('1,234.56')` reads the comma as the decimal
- * separator and returns 1.23456 — silently a thousandth of the real amount,
- * the worst possible outcome for a mis-sniffed file.
- *
- * The guard runs on the DECORATION-STRIPPED value, not the raw cell. Testing
- * the raw cell was the whole defect: `parseDecimal` strips currency symbols and
- * letters BEFORE parsing, so a fully anchored pattern only ever saw bare
- * numbers and every decorated amount walked straight past it —
- * `'1,234.56 EUR'`, `'$1,234.56'` and `'1,234.56 €'` all returned 1.23456 while
- * the bare `'1,234.56'` (the only form the original tests covered) was refused.
- * Decorated amounts are first-class here: `'-751,00 EUR'` is a supported German
- * cell, so its English mirror `'-751.00 EUR'` must parse too rather than
- * silently returning null.
+ * reinterpreted: `parseDecimal('1,234.56')` would otherwise read the comma as
+ * the decimal separator and return 1.23456 — silently a thousandth of the real
+ * amount, the worst possible outcome for a mis-sniffed file. That guard now
+ * lives INSIDE `parseDecimal` (one copy, `csv.ts`), because holding it here
+ * protected only this path while the three German broker mappers called the raw
+ * parser and booked the thousandth. Decoration is handled there too: the check
+ * runs on the stripped value, so `'1,234.56 EUR'` and `'$1,234.56'` are refused
+ * exactly like the bare form, while a decorated German cell (`'-751,00 EUR'`)
+ * and its English mirror both still parse.
  */
 export function parseLocalizedDecimal(input: string, locale: NumberLocale): number | null {
   if (input.length > MAX_CELL_CHARS) return null;
-  const bare = stripDecimalDecoration(input);
-  if (bare === null) return null;
-  if (locale === 'de') {
-    if (ENGLISH_GROUPED_DECIMAL.test(bare)) return null;
-    return parseDecimal(input);
-  }
-  return parseEnglishDecimal(input);
+  return locale === 'de' ? parseDecimal(input) : parseEnglishDecimal(input);
 }
 
 /**
