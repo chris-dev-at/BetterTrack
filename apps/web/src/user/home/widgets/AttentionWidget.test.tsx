@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 vi.mock('../../../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
@@ -10,6 +10,7 @@ vi.mock('../../../lib/notificationsApi', () => ({
 import type { Notification } from '@bettertrack/contracts';
 
 import { I18nProvider } from '../../../i18n';
+import { setDiscreetMode } from '../../../lib/format';
 import { listNotifications } from '../../../lib/notificationsApi';
 
 import { AttentionWidget } from './AttentionWidget';
@@ -63,6 +64,8 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+afterEach(() => setDiscreetMode(false));
+
 test('renders keyed rows in the active locale and historical rows verbatim', async () => {
   vi.mocked(listNotifications).mockResolvedValue({
     items: [
@@ -111,6 +114,35 @@ test('keeps the same row on its English copy for an EN account', async () => {
 
   expect(await screen.findByText('New friend request')).toBeInTheDocument();
   expect(screen.getByText('anna sent you a friend request.')).toBeInTheDocument();
+});
+
+test('masks the amounts inside inbox copy under discreet mode (§6.16)', async () => {
+  // Home is a board a bystander sees over the user's shoulder; the attention
+  // tile ships in the default layout. Its rows must obey the same "no absolute
+  // amount" rule as every MoneyText on the page (#1757).
+  vi.mocked(listNotifications).mockResolvedValue({
+    items: [
+      notification({
+        id: '00000000-0000-0000-0000-000000000006',
+        type: 'alert.triggered',
+        payload: {
+          eventKey: 'alert.triggered:a1',
+          message: {
+            key: 'alertTriggeredPriceAbove',
+            params: { symbol: 'AAPL', threshold: 150, currency: 'USD' },
+            money: { threshold: 'currency' },
+          },
+        },
+      }),
+    ],
+    nextCursor: null,
+    unreadCount: 1,
+  });
+  setDiscreetMode(true);
+  renderWidget('en');
+
+  expect(await screen.findByText('AAPL rose above ••• USD.')).toBeInTheDocument();
+  expect(screen.queryByText(/150/)).not.toBeInTheDocument();
 });
 
 test('skips read and archived rows', async () => {

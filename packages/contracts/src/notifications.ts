@@ -156,14 +156,66 @@ export const notificationMessageKeySchema = z.enum(NOTIFICATION_MESSAGE_KEYS);
 export const notificationMessageParamsSchema = z.record(z.union([z.string(), z.number()]));
 export type NotificationMessageParams = z.infer<typeof notificationMessageParamsSchema>;
 
+/**
+ * Money markers for the interpolation map (§6.16 discreet mode): the name of a
+ * param whose value is an ABSOLUTE money amount → the name of the param that
+ * carries its ISO currency code.
+ *
+ * Discreet mode hides every absolute amount on every surface, so an in-app
+ * renderer needs to know which of `{{threshold}}`, `{{amount}}`, `{{spent}}`…
+ * is money and which is a percentage, a count or a date — without
+ * pattern-matching on catalog keys or on the rendered sentence. Only the amount
+ * is masked; the currency code it points at stays visible, because a
+ * denomination is not an amount and blanking it would mangle the sentence in
+ * every locale ("… rose above ••• USD." reveals nothing).
+ *
+ * The marker is descriptive metadata, never a display instruction: the API's
+ * own renderer (email, push, Telegram/Discord, digest) ignores it entirely —
+ * those channels are the user's own inbox and predate the toggle.
+ */
+export const notificationMessageMoneySchema = z.record(z.string());
+export type NotificationMessageMoney = z.infer<typeof notificationMessageMoneySchema>;
+
 /** The localizable message descriptor stored under `notification.payload.message`. */
 export const notificationMessageSchema = z
   .object({
     key: notificationMessageKeySchema,
     params: notificationMessageParamsSchema,
+    // Optional and additive: rows persisted before this field existed carry no
+    // marker, so readers fall back to NOTIFICATION_MESSAGE_MONEY_PARAMS below.
+    money: notificationMessageMoneySchema.optional(),
   })
   .strict();
 export type NotificationMessage = z.infer<typeof notificationMessageSchema>;
+
+/**
+ * Which params of a given message key hold an absolute money amount, keyed the
+ * same way for every consumer (§6.16).
+ *
+ * Two jobs, one table:
+ *   1. the API attaches the marker to every descriptor it builds
+ *      (`notificationMessage()`), so the wire descriptor is self-describing;
+ *   2. an SPA reading a row persisted BEFORE the wire field existed falls back
+ *      to this table, so discreet mode masks history too.
+ *
+ * Percentage thresholds are deliberately absent — `alertTriggeredPercentDayUp`
+ * & friends interpolate a percent into `{{threshold}}`, and §6.16 keeps
+ * relative values live. A key whose template renders `{{currency}}` and is NOT
+ * listed here is a leak; `notificationLocalization.test.ts` (API) and the
+ * discreet-mode gate (web) both fail on one.
+ */
+export const NOTIFICATION_MESSAGE_MONEY_PARAMS: Partial<
+  Record<NotificationMessageKey, Readonly<NotificationMessageMoney>>
+> = {
+  alertTriggeredPriceAbove: { threshold: 'currency' },
+  alertTriggeredPriceBelow: { threshold: 'currency' },
+  followAlertCreatedPriceAbove: { threshold: 'currency' },
+  followAlertCreatedPriceBelow: { threshold: 'currency' },
+  followAlertFiredPriceAbove: { threshold: 'currency' },
+  followAlertFiredPriceBelow: { threshold: 'currency' },
+  dividendEventWithAmount: { amount: 'currency' },
+  budgetExceeded: { spent: 'currency', target: 'currency' },
+};
 
 /**
  * Stable keys for the chat-channel SETUP texts (#1723).
