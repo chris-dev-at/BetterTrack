@@ -12,6 +12,7 @@ import {
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_DELIVERY_REFUSED_ERROR,
   WEBHOOK_EVENT_HEADER,
+  WEBHOOK_EVENT_PAYLOAD_SCHEMAS,
   WEBHOOK_EVENT_TYPES,
   WEBHOOK_SECRET_PREFIX,
   WEBHOOK_SIGNATURE_HEADER,
@@ -21,7 +22,9 @@ import {
   createWebhookSubscriptionResponseSchema,
   isParanoidKilledWebhookEventType,
   webhookDeliveryListResponseSchema,
+  webhookEventPayloadSchema,
   webhookSubscriptionListResponseSchema,
+  type WebhookEventType,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -45,6 +48,8 @@ import {
   QUEUE_NAMES,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
   WEBHOOK_DELIVER_ATTEMPTS,
+  WEBHOOK_DELIVER_CONCURRENCY,
+  WEBHOOK_DELIVER_LIMITER,
   WebhookDeliveryRetryError,
   bindParanoidJob,
   createWebhookDeliverJob,
@@ -135,6 +140,7 @@ async function loginAgent(app: Application, identifier: string, password: string
 /** Log in a fresh user + create a subscription; returns agent, id, and the one-time secret. */
 async function createSubscription(
   eventTypes: string[],
+  url = 'https://receiver.test/hook',
 ): Promise<{ agent: Agent; userId: string; id: string; secret: string }> {
   const user = await harness.seedUser({
     email: `wh-${Math.round(Math.random() * 1e9)}@bettertrack.test`,
@@ -144,7 +150,7 @@ async function createSubscription(
   const res = await agent
     .post('/api/v1/settings/webhooks')
     .set(...XRW)
-    .send({ url: 'https://receiver.test/hook', eventTypes });
+    .send({ url, eventTypes });
   expect(res.status).toBe(201);
   const parsed = createWebhookSubscriptionResponseSchema.parse(res.body);
   return { agent, userId: user.id, id: parsed.subscription.id, secret: parsed.secret };
@@ -1137,6 +1143,458 @@ describe('subscribable catalog', () => {
     expect(isParanoidKilledWebhookEventType('constructor')).toBe(false);
     expect(isParanoidKilledWebhookEventType('toString')).toBe(false);
     expect(isParanoidKilledWebhookEventType('__proto__')).toBe(false);
+  });
+});
+
+/**
+ * Payload disclosure (§13.5 V5-P10). A delivery body is a per-type ALLOWLIST
+ * projection of the domain event, never the event itself: the runtime event
+ * carries private message text and other accounts' internal ids, and a receiver
+ * URL may legitimately be plain `http:`. The contract
+ * ({@link WEBHOOK_EVENT_PAYLOAD_SCHEMAS}) declares each type's disclosure, and
+ * every schema is strict — so a field nobody decided to publish cannot ride
+ * along.
+ *
+ * These deliveries run through the dispatcher directly (a real subscription, a
+ * real secret, the real signing path). The bridge's separate vaulted-portfolio
+ * attribution would otherwise require chain/portfolio/holding rows for a third
+ * of the catalog, and it is not what composes the body.
+ */
+describe('delivered payload: the per-type disclosure allowlist', () => {
+  /** Every field the allowlist drops carries this marker in the sample events. */
+  const LEAK = 'disclosure-leak';
+  const OTHER_ACCOUNT = '00000000-0000-7000-8000-00000000feed';
+  const OTHER_OWNER = '00000000-0000-7000-8000-00000000fee1';
+  const OTHER_SUBJECT = '00000000-0000-7000-8000-00000000fee2';
+
+  function directDispatcher(transport: WebhookTransport) {
+    return createWebhookDispatcher({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      deliveries: createWebhookDeliveryRepository(harness.db),
+      transport,
+      encryptionKey: harness.ctx.config.twoFactor.encryptionKey,
+      audit: noopAudit,
+      logger: harness.ctx.logger,
+      dnsResolver: publicTestResolver,
+    });
+  }
+
+  /** A representative event for `type`, with a marker in every droppable field. */
+  function sampleEvent(type: WebhookEventType, userId: string): DomainEvent {
+    const occurredAt = '2026-08-01T00:00:00.000Z';
+    const base = { userId, occurredAt } as const;
+    const actor = { actorId: OTHER_ACCOUNT, actorUsername: 'other_account' } as const;
+    if (type.startsWith('mirror.')) {
+      return {
+        ...base,
+        type: type as MirrorNotificationEvent['type'],
+        chainId: '00000000-0000-7000-8000-000000000301',
+        chainName: 'Household chain',
+        actorId: OTHER_ACCOUNT,
+        ownerId: OTHER_OWNER,
+        subjectUserIds: [OTHER_SUBJECT],
+        actorUsername: 'other_account',
+        refId: '00000000-0000-7000-8000-000000000302',
+      };
+    }
+    switch (type) {
+      case 'alert.triggered':
+        return { ...base, type, alertId: 'alert-1', assetId: 'asset-1' };
+      case 'friend.request':
+      case 'friend.accepted':
+        return { ...base, type, ...actor, requestId: 'request-1' };
+      case 'portfolio.shared':
+        return { ...base, type, ...actor, portfolioId: 'portfolio-1' };
+      case 'watchlist.shared':
+        return { ...base, type, ...actor, watchlistId: 'watchlist-1' };
+      case 'conglomerate.shared':
+        return { ...base, type, ...actor, conglomerateId: 'conglomerate-1' };
+      case 'friend.activity':
+        return {
+          ...base,
+          type,
+          ...actor,
+          itemKind: 'watchlist',
+          itemId: 'watchlist-1',
+          activity: 'buy',
+          assetSymbol: 'AAPL',
+          refId: `${LEAK}-transaction`,
+        };
+      case 'follow.published':
+        return {
+          ...base,
+          type,
+          ...actor,
+          itemKind: 'portfolio',
+          itemId: 'portfolio-1',
+          itemName: 'Retirement',
+        };
+      case 'follow.alert.created':
+      case 'follow.alert.fired':
+        return { ...base, type, ...actor, alertId: 'alert-1', assetId: 'asset-1' };
+      case 'account.temp_password':
+      case 'account.data_export':
+        return { ...base, type };
+      case 'earnings.reminder':
+        return {
+          ...base,
+          type,
+          assetId: 'asset-1',
+          symbol: 'AAPL',
+          name: `${LEAK}-company-name`,
+          earningsDate: '2026-08-15',
+          estimated: false,
+        };
+      case 'chat.message':
+        return {
+          ...base,
+          type,
+          senderId: OTHER_ACCOUNT,
+          senderUsername: 'other_account',
+          conversationId: 'conversation-1',
+          messageId: 'message-1',
+          bodyPreview: `${LEAK}-private message text`,
+          hasChip: false,
+        };
+      case 'dividend.event':
+        return {
+          ...base,
+          type,
+          assetId: 'asset-1',
+          symbol: 'AAPL',
+          exDate: '2026-08-10',
+          payDate: '2026-08-20',
+          amount: 0.24,
+          currency: 'USD',
+        };
+      case 'budget.exceeded':
+        return {
+          ...base,
+          type,
+          budgetId: 'budget-1',
+          categoryId: 'tag-1',
+          categoryName: `${LEAK}-category`,
+          portfolioId: 'portfolio-1',
+          period: '2026-08',
+          amount: 100,
+          spent: 140,
+          currency: 'EUR',
+        };
+      case 'standing_order.skipped':
+        return {
+          ...base,
+          type,
+          standingOrderId: 'standing-order-1',
+          periodKey: '2026-08-01',
+          outcome: 'dropped',
+          // Exercised so the sweep below sees every declared field, optional
+          // ones included.
+          droppedCount: 3,
+          orderLabel: `${LEAK}-order-label`,
+        };
+      case 'feedback.status_changed':
+        return {
+          ...base,
+          type,
+          feedbackId: 'feedback-1',
+          status: 'triaged',
+          lastStatusChangeAt: occurredAt,
+        };
+      case 'feedback.reply_created':
+        return { ...base, type, feedbackId: 'feedback-1', messageId: 'message-1' };
+      case 'comment.created':
+        return {
+          ...base,
+          type,
+          ...actor,
+          itemKind: 'idea',
+          itemId: 'idea-1',
+          itemName: 'My idea',
+          commentId: 'comment-1',
+        };
+      default:
+        throw new Error(`no sample event for ${type}`);
+    }
+  }
+
+  it('delivers all 28 catalog types, each validating against its declared schema', async () => {
+    const { userId, id, secret } = await createSubscription([...WEBHOOK_EVENT_TYPES]);
+    const dispatcher = directDispatcher(recorder.transport);
+
+    for (const [index, type] of WEBHOOK_EVENT_TYPES.entries()) {
+      const result = await dispatcher.deliver(
+        {
+          subscriptionId: id,
+          deliveryId: `00000000-0000-7000-8000-0000000002${index.toString(16).padStart(2, '0')}`,
+          event: sampleEvent(type, userId),
+        },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      expect(result.outcome, type).toBe('delivered');
+    }
+
+    // Every type still delivers — this narrows payloads, it does not drop events.
+    expect(recorder.requests).toHaveLength(WEBHOOK_EVENT_TYPES.length);
+
+    for (const [index, type] of WEBHOOK_EVENT_TYPES.entries()) {
+      const req = recorder.requests[index]!;
+      expect(req.headers[WEBHOOK_EVENT_HEADER], type).toBe(type);
+
+      // The signature still covers the exact bytes sent, inside the published
+      // replay window (#1702) and nowhere outside it.
+      const timestamp = req.headers[WEBHOOK_TIMESTAMP_HEADER]!;
+      const signature = req.headers[WEBHOOK_SIGNATURE_HEADER]!;
+      const signedAtMs = Number(timestamp) * 1000;
+      expect(verifyWebhookSignature(secret, timestamp, req.body, signature), type).toBe(true);
+      expect(
+        verifyWebhookSignature(secret, timestamp, req.body, signature, {
+          now: signedAtMs + (WEBHOOK_SIGNATURE_TOLERANCE_SECONDS + 1) * 1000,
+        }),
+        type,
+      ).toBe(false);
+
+      // Strict per-type parse: the body carries every declared field and NO
+      // field outside the type's allowlist.
+      const parsed = webhookEventPayloadSchema.parse(JSON.parse(req.body));
+      expect(parsed.type, type).toBe(type);
+      expect(Object.keys(parsed.data).sort(), type).toEqual(
+        Object.keys(WEBHOOK_EVENT_PAYLOAD_SCHEMAS[type].shape).sort(),
+      );
+      // Nothing the allowlist drops rode along.
+      expect(req.body, type).not.toContain(LEAK);
+    }
+  });
+
+  it('never puts the chat message text on the wire', async () => {
+    const { userId, id } = await createSubscription(['chat.message']);
+    const messageText = 'IBAN AT61 1904 3002 3457 3201 — do not publish this';
+
+    // Through the bridge: subscribe, emit, inspect what the receiver got.
+    await harness.ctx.webhookBridge.handleEvent({
+      type: 'chat.message',
+      userId,
+      senderId: OTHER_ACCOUNT,
+      senderUsername: 'other_account',
+      conversationId: '00000000-0000-7000-8000-000000000401',
+      messageId: '00000000-0000-7000-8000-000000000402',
+      bodyPreview: messageText,
+      hasChip: false,
+      occurredAt: '2026-08-01T00:00:00.000Z',
+    });
+
+    expect(recorder.requests).toHaveLength(1);
+    const body = recorder.requests[0]!.body;
+    expect(body).not.toContain(messageText);
+    expect(body).not.toContain('IBAN');
+    expect(body).not.toContain('bodyPreview');
+    const parsed = webhookEventPayloadSchema.parse(JSON.parse(body));
+    expect(parsed).toEqual({
+      id: expect.any(String),
+      type: 'chat.message',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      data: {
+        userId,
+        conversationId: '00000000-0000-7000-8000-000000000401',
+        messageId: '00000000-0000-7000-8000-000000000402',
+        senderId: OTHER_ACCOUNT,
+        senderUsername: 'other_account',
+      },
+    });
+    expect((await deliveriesForSubscription(id)).length).toBe(1);
+  });
+
+  it('never puts another account’s uuid on the wire for a mirror notice', async () => {
+    const { userId, id } = await createSubscription([...MIRROR_WEBHOOK_TYPES]);
+    const manager = await harness.seedUser({
+      email: 'webhook-mirror-manager@bettertrack.test',
+      username: 'webhook_mirror_manager',
+    });
+    const dispatcher = directDispatcher(recorder.transport);
+
+    for (const [index, type] of MIRROR_WEBHOOK_TYPES.entries()) {
+      const event: MirrorNotificationEvent = {
+        type,
+        userId,
+        chainId: '00000000-0000-7000-8000-000000000501',
+        chainName: 'Household chain',
+        actorId: manager.id,
+        ownerId: manager.id,
+        subjectUserIds: [manager.id],
+        actorUsername: manager.username,
+        refId: '00000000-0000-7000-8000-000000000502',
+        occurredAt: '2026-08-01T00:00:00.000Z',
+      };
+      await dispatcher.deliver(
+        {
+          subscriptionId: id,
+          deliveryId: `00000000-0000-7000-8000-0000000005${index.toString(16).padStart(2, '0')}`,
+          event,
+        },
+        { attempt: 1, maxAttempts: 1 },
+      );
+    }
+
+    expect(recorder.requests).toHaveLength(MIRROR_WEBHOOK_TYPES.length);
+    for (const req of recorder.requests) {
+      expect(req.body).not.toContain(manager.id);
+      expect(req.body).not.toContain('actorId');
+      expect(req.body).not.toContain('ownerId');
+      expect(req.body).not.toContain('subjectUserIds');
+    }
+  });
+
+  it('names a comment’s author by username only, never by account id', async () => {
+    const { userId, id } = await createSubscription(['comment.created']);
+    const author = await harness.seedUser({
+      email: 'webhook-comment-author@bettertrack.test',
+      username: 'webhook_comment_author',
+    });
+
+    await directDispatcher(recorder.transport).deliver(
+      {
+        subscriptionId: id,
+        deliveryId: '00000000-0000-7000-8000-000000000601',
+        event: {
+          type: 'comment.created',
+          userId,
+          actorId: author.id,
+          actorUsername: author.username,
+          itemKind: 'conglomerate',
+          itemId: '00000000-0000-7000-8000-000000000602',
+          itemName: 'Dividend basket',
+          commentId: '00000000-0000-7000-8000-000000000603',
+          occurredAt: '2026-08-01T00:00:00.000Z',
+        },
+      },
+      { attempt: 1, maxAttempts: 1 },
+    );
+
+    const body = recorder.requests[0]!.body;
+    expect(body).not.toContain('actorId');
+    expect(body).not.toContain(author.id);
+    expect(webhookEventPayloadSchema.parse(JSON.parse(body)).data).toEqual({
+      userId,
+      commentId: '00000000-0000-7000-8000-000000000603',
+      itemKind: 'conglomerate',
+      itemId: '00000000-0000-7000-8000-000000000602',
+      itemName: 'Dividend basket',
+      actorUsername: author.username,
+    });
+  });
+
+  /** Delivery-log rows for a subscription, read straight from the service. */
+  async function deliveriesForSubscription(id: string) {
+    const owner = await harness.db
+      .select({ userId: schema.webhookSubscriptions.userId })
+      .from(schema.webhookSubscriptions)
+      .where(eq(schema.webhookSubscriptions.id, id));
+    return harness.ctx.webhooks.listDeliveries(owner[0]!.userId, id);
+  }
+});
+
+/**
+ * Queue fairness (§13.5 V5-P10). One global FIFO carries every user's
+ * deliveries, and a black-holed receiver holds its slot for the full transport
+ * timeout on each attempt. The delivery job therefore declares its own worker
+ * concurrency and rate limiter instead of inheriting BullMQ's default of 1.
+ */
+describe('delivery-queue fairness', () => {
+  const stalledJob = (subscriptionId: string, userId: string): WebhookDeliveryJob => ({
+    subscriptionId,
+    deliveryId: '00000000-0000-7000-8000-000000000701',
+    event: alertEvent(userId),
+  });
+
+  it('declares an explicit concurrency and rate limiter on the delivery worker', () => {
+    const definition = createWebhookDeliverJob({
+      dispatcher: { deliver: async () => ({ outcome: 'skipped', status: null }) },
+    });
+
+    // Not BullMQ's implicit global FIFO of 1 — a future refactor that drops
+    // these back to the default fails here.
+    expect(WEBHOOK_DELIVER_CONCURRENCY).toBeGreaterThan(1);
+    expect(definition.workerOptions?.concurrency).toBe(WEBHOOK_DELIVER_CONCURRENCY);
+    expect(definition.workerOptions?.limiter).toEqual(WEBHOOK_DELIVER_LIMITER);
+  });
+
+  it('processes another user’s delivery while a black-holed receiver stalls', async () => {
+    const stalling = await createSubscription(['alert.triggered'], 'https://black-hole.test/hook');
+    const healthy = await createSubscription(['alert.triggered'], 'https://healthy.test/hook');
+
+    let release = (): void => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const delivered: string[] = [];
+    const transport: WebhookTransport = {
+      async send(req) {
+        // The black hole accepts the connection and never answers, exactly like
+        // a receiver that burns the full transport timeout.
+        if (req.url.includes('black-hole')) await blocked;
+        delivered.push(req.url);
+        return { ok: true, status: 200 };
+      },
+    };
+    const dispatcher = createWebhookDispatcher({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      deliveries: createWebhookDeliveryRepository(harness.db),
+      transport,
+      encryptionKey: harness.ctx.config.twoFactor.encryptionKey,
+      audit: noopAudit,
+      logger: harness.ctx.logger,
+      dnsResolver: publicTestResolver,
+    });
+
+    // The worker loop BullMQ runs: one shared FIFO drained by `concurrency`
+    // slots (`jobs/worker.ts` passes `workerOptions` straight through).
+    const runQueue = (jobs: WebhookDeliveryJob[], concurrency: number): Promise<unknown> => {
+      const pending = [...jobs];
+      return Promise.all(
+        Array.from({ length: concurrency }, async () => {
+          for (let job = pending.shift(); job; job = pending.shift()) {
+            await dispatcher.deliver(job, { attempt: 1, maxAttempts: 1 });
+          }
+        }),
+      );
+    };
+
+    const jobs = [
+      stalledJob(stalling.id, stalling.userId),
+      {
+        subscriptionId: healthy.id,
+        deliveryId: '00000000-0000-7000-8000-000000000702',
+        event: alertEvent(healthy.userId),
+      },
+    ];
+
+    const declared = runQueue(jobs, WEBHOOK_DELIVER_CONCURRENCY);
+    // The healthy receiver is served while the black hole is still hanging.
+    await vi.waitFor(() => expect(delivered).toContain('https://healthy.test/hook'));
+
+    // …which is exactly what the previous single-slot default could not do.
+    const single = runQueue(
+      [
+        {
+          subscriptionId: stalling.id,
+          deliveryId: '00000000-0000-7000-8000-000000000703',
+          event: { ...alertEvent(stalling.userId), alertId: 'alert-2' },
+        },
+        {
+          subscriptionId: healthy.id,
+          deliveryId: '00000000-0000-7000-8000-000000000704',
+          event: { ...alertEvent(healthy.userId), alertId: 'alert-2' },
+        },
+      ],
+      1,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(delivered.filter((url) => url === 'https://healthy.test/hook')).toHaveLength(1);
+
+    release();
+    await declared;
+    await single;
+    expect(delivered.filter((url) => url === 'https://black-hole.test/hook')).toHaveLength(2);
+    expect(delivered.filter((url) => url === 'https://healthy.test/hook')).toHaveLength(2);
   });
 });
 
