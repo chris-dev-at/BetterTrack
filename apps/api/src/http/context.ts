@@ -1437,12 +1437,31 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     capacity: Math.ceil(LIVE_RING_RETENTION_MS / LIVE_POLL_INTERVAL_MS),
     retentionMs: LIVE_RING_RETENTION_MS,
   });
+  // V5 cash fusion: the classification layer ON the portfolio cash ledger, which
+  // supersedes the expense island above. Budgets are per (portfolio, tag,
+  // month). Composed BEFORE the portfolio service because that service takes
+  // `onCashWrite` — the one seam every cash write evaluates budgets through
+  // (#1754), the way the retired expense island took `onTransactionWrite`.
+  const cashBudgetRepo = createCashBudgetRepository(db);
+  const cashSummaryRepo = createCashSummaryRepository(db);
+  const cashBudgets = createCashBudgetService({
+    budgets: cashBudgetRepo,
+    summaries: cashSummaryRepo,
+    tags: cashTagRepo,
+    portfolios: portfolioRepo,
+    notify,
+    now: deps.budgetNow,
+    logger,
+  });
   const portfolio = createPortfolioService({
     portfolioRepo,
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
     cashTagRepo,
+    // The cash-write seam (#1754): deposit/withdraw/fee, transfer, movement
+    // update + delete and set-balance all re-evaluate this portfolio's budgets.
+    onCashWrite: cashBudgets.onCashWrite,
     marketData,
     currencyService: currency,
     referenceBackfill,
@@ -1655,22 +1674,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     paranoid: paranoidGuard,
   });
 
-  // V5 cash fusion: the classification layer ON the portfolio cash ledger, which
-  // supersedes the expense island above. Tags are per user, budgets per
-  // (portfolio, tag, month), rules per user. `cashAutoTag` is what stamps a
-  // freshly-booked movement with its app-owned system tag — see `cashAutoTag.ts`
-  // for the kind → tag table and what an edited trade does to a manual tag.
-  const cashBudgetRepo = createCashBudgetRepository(db);
-  const cashSummaryRepo = createCashSummaryRepository(db);
-  const cashTags = createCashTagService({ tags: cashTagRepo, rules: cashRuleRepo });
-  const cashBudgets = createCashBudgetService({
-    budgets: cashBudgetRepo,
-    summaries: cashSummaryRepo,
+  // V5 cash fusion, part 2: tags + auto-tagging rules, per user. The budgets
+  // half is composed above the portfolio service, which takes its write seam.
+  // `cashAutoTag` is what stamps a freshly-booked movement with its app-owned
+  // system tag — see `cashAutoTag.ts` for the kind → tag table and what an
+  // edited trade does to a manual tag.
+  const cashTags = createCashTagService({
     tags: cashTagRepo,
-    portfolios: portfolioRepo,
-    notify,
-    now: deps.budgetNow,
-    logger,
+    rules: cashRuleRepo,
+    // A retag decides what a movement counts against, so it evaluates budgets
+    // exactly like the money write that booked it (#1754).
+    onCashWrite: cashBudgets.onCashWrite,
   });
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,

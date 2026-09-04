@@ -61,6 +61,13 @@ export interface UpdateCashTagPatch {
 export interface ReplaceMovementTagsResult {
   /** False when the movement is not in a portfolio this owner owns. */
   movementFound: boolean;
+  /**
+   * The ledger the movement lives in, resolved by the SAME owner-scoped lookup
+   * that decides `movementFound` — `null` when it did not resolve. Reported so
+   * the caller can run the cash-write seam (#1754: a retag changes what the
+   * movement counts against) without a second, unscoped lookup.
+   */
+  portfolioId: string | null;
   /** Ids the caller sent that are not this owner's tags. */
   unknownTagIds: string[];
   /** The tag set now on the movement (empty when nothing was written). */
@@ -292,7 +299,10 @@ export function createCashTagRepository(db: Database) {
       tagIds: readonly string[],
     ): Promise<ReplaceMovementTagsResult> {
       const owned = await db
-        .select({ id: portfolioCashMovements.id })
+        .select({
+          id: portfolioCashMovements.id,
+          portfolioId: portfolioCashMovements.portfolioId,
+        })
         .from(portfolioCashMovements)
         .innerJoin(portfolios, eq(portfolios.id, portfolioCashMovements.portfolioId))
         .where(
@@ -303,7 +313,10 @@ export function createCashTagRepository(db: Database) {
           ),
         )
         .limit(1);
-      if (owned.length === 0) return { movementFound: false, unknownTagIds: [], tags: [] };
+      const portfolioId = owned[0]?.portfolioId ?? null;
+      if (portfolioId === null) {
+        return { movementFound: false, portfolioId: null, unknownTagIds: [], tags: [] };
+      }
 
       // A client may legally repeat an id (the unique key makes it a no-op), so
       // de-duplicate before comparing counts — otherwise a duplicate would read
@@ -314,6 +327,7 @@ export function createCashTagRepository(db: Database) {
         const found = new Set(ownedTags.map((tag) => tag.id));
         return {
           movementFound: true,
+          portfolioId,
           unknownTagIds: requested.filter((id) => !found.has(id)),
           tags: [],
         };
@@ -337,7 +351,7 @@ export function createCashTagRepository(db: Database) {
         (left, right) =>
           Number(left.system) - Number(right.system) || left.name.localeCompare(right.name),
       );
-      return { movementFound: true, unknownTagIds: [], tags: ordered };
+      return { movementFound: true, portfolioId, unknownTagIds: [], tags: ordered };
     },
 
     /**

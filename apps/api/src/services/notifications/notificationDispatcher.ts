@@ -226,11 +226,17 @@ function eventKeyFor(event: DispatchableEvent): string {
       // recipient userId (repo-side) keeps holders distinct.
       return `dividend.event:${event.assetId}:${event.exDate.slice(0, 10)}`;
     case 'budget.exceeded':
-      // Deduped per (budget, period): the producer already claims the
-      // `expense_budget_fires` marker before emitting, and this key backs it up
-      // at the dispatch layer so a redelivered/duplicated emit no-ops — exactly
-      // one alert per budget per month.
-      return `budget.exceeded:${event.budgetId}:${event.period}`;
+      // Deduped per FIRE CLAIM, which the producer takes before emitting; this
+      // key backs it up at the dispatch layer so a redelivered/duplicated emit
+      // no-ops. The cash producer sends the claim's id (#1754) because it
+      // RELEASES the claim once the budget falls back under its target, so the
+      // same month may legitimately alert again — keying on (budget, period)
+      // alone would have swallowed that second, genuine overrun forever. The
+      // retired expense island sends no `fireId` and keeps the old key, whose
+      // marker is never released and so still means one alert per month.
+      return event.fireId
+        ? `budget.exceeded:${event.budgetId}:${event.period}:${event.fireId}`
+        : `budget.exceeded:${event.budgetId}:${event.period}`;
     case 'standing_order.skipped':
       // A retriable defer may be observed by every daily retry, while the same
       // period can later be permanently dropped. Fold the outcome into the key
