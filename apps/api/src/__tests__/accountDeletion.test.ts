@@ -12,8 +12,10 @@ import {
   chatConversationListResponseSchema,
   chatThreadResponseSchema,
   createApiKeyResponseSchema,
+  SHARE_KINDS,
   twoFactorChallengeResponseSchema,
   twoFactorEnrollResponseSchema,
+  type ShareKind,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -718,5 +720,177 @@ describe('DELETE /account — bearer path (mobile, account:security)', () => {
       .set(...XRW)
       .send({ identifier: user.email, password: user.password });
     expect(relogin.status).toBe(401);
+  });
+});
+
+describe('DELETE /account — social residue on other users (V5-P8, #1724)', () => {
+  /**
+   * `item_comments`, `item_reactions` and `item_follows` key to their subject
+   * POLYMORPHICALLY — no FK, so the users-row cascade removes only the rows the
+   * departing user authored. Without the pre-delete sweep, a friend's comment
+   * body and a third user's reaction outlive the portfolio they were written on:
+   * unreadable (the audience that authorised them is gone), un-moderatable (so is
+   * the owner), and for the reaction unremovable — `toggleItemReaction` 404s once
+   * the subject cannot be resolved.
+   */
+  it("purges other users' comments, reactions and follows on the deleted account's item", async () => {
+    const alice = await seedPerson('residue_owner');
+    const bob = await seedPerson('residue_commenter');
+    const carol = await seedPerson('residue_reactor');
+    await befriend(bob, alice);
+    await befriend(carol, alice);
+
+    const portfolios = await alice.agent.get('/api/v1/portfolios');
+    const portfolioId = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault)
+      .id as string;
+    const shared = await alice.agent
+      .put(`/api/v1/social/audience/portfolio/${portfolioId}`)
+      .set(...XRW)
+      .send({ audience: 'all_friends', confirmWiden: true });
+    expect(shared.status).toBe(200);
+
+    // Bob comments, Carol reacts to the item AND to Bob's comment, Bob bookmarks
+    // the item — four rows, none of them keyed to Alice.
+    const comment = await bob.agent
+      .post(`/api/v1/social/items/portfolio/${portfolioId}/comments`)
+      .set(...XRW)
+      .send({ body: 'nice allocation' });
+    expect(comment.status).toBe(201);
+    const commentId = comment.body.id as string;
+    const itemReaction = await carol.agent
+      .post(`/api/v1/social/items/portfolio/${portfolioId}/reactions`)
+      .set(...XRW)
+      .send({ emoji: '🔥' });
+    expect(itemReaction.status).toBe(200);
+    const commentReaction = await carol.agent
+      .post(`/api/v1/social/comments/${commentId}/reactions`)
+      .set(...XRW)
+      .send({ emoji: '👍' });
+    expect(commentReaction.status).toBe(200);
+    const followed = await bob.agent
+      .post('/api/v1/social/item-follows')
+      .set(...XRW)
+      .send({ kind: 'portfolio', subjectId: portfolioId });
+    expect(followed.status).toBe(202);
+
+    expect(await harness.db.select().from(schema.itemComments)).toHaveLength(1);
+    expect(await harness.db.select().from(schema.itemReactions)).toHaveLength(2);
+    expect(await harness.db.select().from(schema.itemFollows)).toHaveLength(1);
+
+    const res = await deleteAccount(alice.agent, {
+      confirmUsername: alice.username,
+      password: alice.password,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // The subject is gone — and so is every row other users held on it.
+    expect(
+      await harness.db
+        .select()
+        .from(schema.portfolios)
+        .where(eq(schema.portfolios.id, portfolioId)),
+    ).toEqual([]);
+    expect(await harness.db.select().from(schema.itemComments)).toEqual([]);
+    expect(await harness.db.select().from(schema.itemReactions)).toEqual([]);
+    expect(await harness.db.select().from(schema.itemFollows)).toEqual([]);
+
+    // Bob and Carol are untouched: only the residue on the vanished item went.
+    expect((await bob.agent.get('/api/v1/auth/me')).status).toBe(200);
+    expect((await carol.agent.get('/api/v1/auth/me')).status).toBe(200);
+  });
+
+  /**
+   * The sweep is driven from the shareable-kind list, not from a hand-written
+   * portfolio branch: a comment/reaction/follow on ANY kind the audience model
+   * supports must go with the account. Rows are seeded directly so the assertion
+   * is over the kind enumeration itself rather than four surface flows.
+   */
+  it('covers every shareable kind, and leaves another owner’s identical rows alone', async () => {
+    const alice = await seedPerson('residue_kinds_owner');
+    const bob = await seedPerson('residue_kinds_friend');
+    const dave = await seedPerson('residue_kinds_bystander');
+
+    async function subjectsOf(owner: Person): Promise<Record<ShareKind, string>> {
+      const [portfolio] = await harness.db
+        .insert(schema.portfolios)
+        .values({ userId: owner.id, name: `${owner.username} p` })
+        .returning({ id: schema.portfolios.id });
+      const [conglomerate] = await harness.db
+        .insert(schema.conglomerates)
+        .values({ ownerId: owner.id, name: `${owner.username} c`, status: 'draft' })
+        .returning({ id: schema.conglomerates.id });
+      const [watchlist] = await harness.db
+        .insert(schema.watchlists)
+        .values({ userId: owner.id, name: `${owner.username} w` })
+        .returning({ id: schema.watchlists.id });
+      const [idea] = await harness.db
+        .insert(schema.ideas)
+        .values({ ownerId: owner.id, name: `${owner.username} i`, state: {} })
+        .returning({ id: schema.ideas.id });
+      return {
+        portfolio: portfolio!.id,
+        conglomerate: conglomerate!.id,
+        watchlist: watchlist!.id,
+        idea: idea!.id,
+      };
+    }
+
+    /** Bob comments on, reacts to and bookmarks every one of `owner`'s subjects. */
+    async function seedResidue(subjects: Record<ShareKind, string>): Promise<void> {
+      for (const kind of SHARE_KINDS) {
+        const subjectId = subjects[kind];
+        await harness.db
+          .insert(schema.itemComments)
+          .values({ kind, subjectId, authorId: bob.id, body: `on ${kind}` });
+        await harness.db
+          .insert(schema.itemReactions)
+          .values({ userId: bob.id, targetType: 'item', kind, subjectId, emoji: '🎉' });
+        await harness.db.insert(schema.itemFollows).values({ userId: bob.id, kind, subjectId });
+      }
+    }
+
+    const aliceSubjects = await subjectsOf(alice);
+    const daveSubjects = await subjectsOf(dave);
+    await seedResidue(aliceSubjects);
+    await seedResidue(daveSubjects);
+
+    const res = await deleteAccount(alice.agent, {
+      confirmUsername: alice.username,
+      password: alice.password,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const comments = await harness.db.select().from(schema.itemComments);
+    const reactions = await harness.db.select().from(schema.itemReactions);
+    const follows = await harness.db.select().from(schema.itemFollows);
+    for (const kind of SHARE_KINDS) {
+      const gone = aliceSubjects[kind];
+      expect(
+        comments.filter((c) => c.subjectId === gone),
+        `${kind} comment`,
+      ).toEqual([]);
+      expect(
+        reactions.filter((r) => r.subjectId === gone),
+        `${kind} reaction`,
+      ).toEqual([]);
+      expect(
+        follows.filter((f) => f.subjectId === gone),
+        `${kind} follow`,
+      ).toEqual([]);
+      // Dave still owns his identical rows — the sweep is owner-scoped.
+      const kept = daveSubjects[kind];
+      expect(
+        comments.filter((c) => c.subjectId === kept),
+        `${kind} comment kept`,
+      ).toHaveLength(1);
+      expect(
+        reactions.filter((r) => r.subjectId === kept),
+        `${kind} reaction kept`,
+      ).toHaveLength(1);
+      expect(
+        follows.filter((f) => f.subjectId === kept),
+        `${kind} follow kept`,
+      ).toHaveLength(1);
+    }
   });
 });
