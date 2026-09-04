@@ -58,7 +58,7 @@ describe('FriendGroupsSection (V5-P8)', () => {
 
   test('renders a friend-roster read failure inside an expanded group', async () => {
     vi.mocked(listGroups).mockResolvedValue({
-      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [] }],
+      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [], shareCount: 0 }],
     });
     vi.mocked(listFriends).mockRejectedValue(new Error('friends unavailable'));
     const user = userEvent.setup();
@@ -74,6 +74,7 @@ describe('FriendGroupsSection (V5-P8)', () => {
       name: 'Family',
       memberCount: 0,
       members: [],
+      shareCount: 0,
     });
     const user = userEvent.setup();
     renderSection();
@@ -87,7 +88,7 @@ describe('FriendGroupsSection (V5-P8)', () => {
 
   test('lists a group with its members and can add an accepted friend', async () => {
     vi.mocked(listGroups).mockResolvedValue({
-      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [] }],
+      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [], shareCount: 0 }],
     });
     vi.mocked(listFriends).mockResolvedValue({
       friends: [{ user: { id: BOB, username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
@@ -97,6 +98,7 @@ describe('FriendGroupsSection (V5-P8)', () => {
       name: 'Family',
       memberCount: 1,
       members: [{ id: BOB, username: 'bob', profileIcon: null }],
+      shareCount: 0,
     });
     const user = userEvent.setup();
     renderSection();
@@ -107,9 +109,9 @@ describe('FriendGroupsSection (V5-P8)', () => {
     await waitFor(() => expect(addGroupMember).toHaveBeenCalledWith(GROUP, BOB));
   });
 
-  test('warns before deleting a group', async () => {
+  test('warns before deleting a group, naming how many shares go dark', async () => {
     vi.mocked(listGroups).mockResolvedValue({
-      groups: [{ id: GROUP, name: 'Family', memberCount: 2, members: [] }],
+      groups: [{ id: GROUP, name: 'Family', memberCount: 2, members: [], shareCount: 6 }],
     });
     vi.mocked(deleteGroup).mockResolvedValue(undefined);
     const user = userEvent.setup();
@@ -118,11 +120,27 @@ describe('FriendGroupsSection (V5-P8)', () => {
     await user.click(await screen.findByRole('button', { name: /family/i }));
     await user.click(screen.getByRole('button', { name: /delete group/i }));
 
-    // The confirm dialog warns the shares go dark before the destructive action.
-    expect(screen.getByText(/no longer be visible to its members/i)).toBeInTheDocument();
+    // The confirm dialog warns the shares go dark before the destructive action,
+    // and says HOW MANY — a static warning made deleting a circle six items point
+    // at look exactly like deleting an unused one (#1710).
+    expect(screen.getByText(/6 shared items point at this group/i)).toBeInTheDocument();
     expect(deleteGroup).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: /^delete$/i }));
     await waitFor(() => expect(deleteGroup).toHaveBeenCalledWith(GROUP));
+  });
+
+  test('an unused group is warned about differently from one shares point at', async () => {
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [{ id: GROUP, name: 'Family', memberCount: 2, members: [], shareCount: 0 }],
+    });
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(screen.getByRole('button', { name: /delete group/i }));
+
+    expect(screen.getByText(/nothing is shared with this group right now/i)).toBeInTheDocument();
+    expect(screen.queryByText(/point at this group/i)).not.toBeInTheDocument();
   });
 });
