@@ -14,6 +14,7 @@ import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { FreshStartNotice } from './components/FreshStartNotice';
+import { InstallPrompt } from './components/InstallPrompt';
 import { AuthCard, Button, Spinner, Splash } from './components/ui';
 import { apiPortfolioStore } from '../lib/portfolioStore';
 import { PortfolioStoreProvider } from './portfolio/PortfolioStoreProvider';
@@ -26,6 +27,11 @@ import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyM
 import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
 import { useThemeWatcher } from '../lib/useTheme';
 import { useUiScaleWatcher } from './useUiScale';
+import {
+  applyDisplayModeAttribute,
+  useStandaloneDisplay,
+  useStandaloneExternalLinks,
+} from '../lib/pwaDisplayMode';
 
 /**
  * The app-wide query cache. Exported so tests that mount {@link UserApp} more
@@ -804,6 +810,22 @@ function UiScaleWatcher() {
   return null;
 }
 
+/**
+ * Standalone-mode handling (§7.1, V5-P13b). Publishes the display mode to CSS
+ * as a root attribute — `@media (display-mode: standalone)` is unavailable to
+ * the iOS versions that only expose `navigator.standalone` — and, while the
+ * browser chrome is absent, sends cross-origin links out to the real browser so
+ * a chromeless window cannot become a dead end. Renders nothing.
+ */
+function StandaloneDisplayRoot() {
+  const standalone = useStandaloneDisplay();
+  useEffect(() => {
+    applyDisplayModeAttribute(standalone);
+  }, [standalone]);
+  useStandaloneExternalLinks(standalone);
+  return null;
+}
+
 /** Keeps a `system` theme following the OS as it flips (board #68). */
 function ThemeWatcher() {
   useThemeWatcher();
@@ -832,8 +854,13 @@ export function UserApp() {
           <AuthProvider>
             <UiScaleWatcher />
             <ThemeWatcher />
+            <StandaloneDisplayRoot />
             <LocaleSync />
             <RateLimitToastBridge />
+            {/* Outside the session gate on purpose: installing is a browser
+                decision, not an account one, and the sign-in screen is where a
+                first-time visitor on a phone actually meets the app. */}
+            <InstallPrompt />
             <Suspense fallback={<Splash />}>
               <AccountModeRoot>
                 <RealtimeRoot>

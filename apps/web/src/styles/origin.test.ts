@@ -253,3 +253,36 @@ describe('Origin accessibility safety nets', () => {
     expect(originCss).toContain('.bt-skeleton::after');
   });
 });
+
+/**
+ * The installable-PWA rules (§7.1, V5-P13b). Both halves are stylesheet-only
+ * behaviour that no component test can observe: jsdom applies no CSS, so the
+ * fixed positioning and the standalone block are asserted against the source.
+ */
+describe('Installable PWA', () => {
+  it('floats the install affordance out of the document flow (anti-bloat)', () => {
+    // Binding owner rule: no shipped feature may make the app feel more
+    // bloated. `position: fixed` is what keeps this card from taking a single
+    // pixel of any page's layout.
+    expect(originCss).toMatch(/\.bt-install-prompt \{[^}]*position: fixed;[^}]*\}/);
+    expect(originCss).toMatch(/\.bt-install-prompt \{[^}]*env\(safe-area-inset-bottom, 0px\)/);
+    // Clear of the bottom bar, which owns the foot of a phone screen.
+    expect(originCss).toMatch(
+      /\.bt-install-prompt \{\s*right: calc\(12px[^}]*bottom: calc\(72px[^}]*\}/,
+    );
+  });
+
+  it('compensates the translucent status bar in a standalone window, both ways', () => {
+    // The media query is the standard; the attribute is what pwaDisplayMode.ts
+    // stamps from `navigator.standalone`, the only signal iOS below 16.4 gives.
+    expect(originCss).toMatch(
+      /@media \(display-mode: standalone\) \{[\s\S]*?\.bt-topbar \{[^}]*padding-top: calc\(10px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+    expect(originCss).toMatch(
+      /:root\[data-bt-display-mode='standalone'\] \.bt-topbar \{[^}]*padding-top: calc\(10px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+    expect(originCss).toMatch(
+      /:root\[data-bt-display-mode='standalone'\] body \{[^}]*overscroll-behavior-y: none;/,
+    );
+  });
+});

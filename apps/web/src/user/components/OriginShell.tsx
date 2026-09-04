@@ -10,7 +10,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useQueries, useQuery } from '@tanstack/react-query';
 
@@ -23,6 +23,7 @@ import { listVaults, VAULTS_QUERY_KEY } from '../../lib/vaultApi';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
+import { useStandaloneDisplay } from '../../lib/pwaDisplayMode';
 import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
@@ -723,6 +724,12 @@ export function OriginShell() {
   }, [rosterSettled, vaultedRoster.data]);
   const location = useLocation();
   const { pathname } = location;
+  const navigate = useNavigate();
+  // An installed window has no browser back button (§7.1, V5-P13b), so the
+  // topbar grows one. `key === 'default'` is react-router's marker for the
+  // entry the app booted on: there is nothing behind it, so no button either.
+  const standalone = useStandaloneDisplay();
+  const showBack = standalone && location.key !== 'default';
   const [paletteOpen, setPaletteOpen] = useState(false);
   // The rail is display:none at this width, so anything that lives only inside
   // it has to be rendered elsewhere (see the topbar's AccountMenu).
@@ -899,6 +906,18 @@ export function OriginShell() {
 
         <div className="bt-main">
           <header className="bt-topbar">
+            {showBack ? (
+              <Button
+                aria-label={t('nav.back')}
+                className="bt-topbar__back"
+                data-testid="standalone-back"
+                icon="arrow-left"
+                iconOnly
+                onClick={() => navigate(-1)}
+                size="sm"
+                variant="quiet"
+              />
+            ) : null}
             <span className="bt-topbar__brand-slot bt-hide-above-md">
               <RailBrand />
             </span>

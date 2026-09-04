@@ -9,7 +9,9 @@
  * exactly the same green as a scenario that ran end to end. Two of the ten were
  * in that state (#1683), and nothing in CI noticed.
  *
- * So the ten scenarios are enumerated HERE, each mapped to the test that proves
+ * So the ten scenarios are enumerated HERE (in `V5_REQUIRED_SCENARIOS`, joined
+ * by whatever later v5 issues registered in `V5_PHASE_SCENARIOS` — together
+ * `V5_GRADED_SCENARIOS`), each mapped to the test that proves
  * it, and `.github/workflows/e2e-nightly.yml` fails the run when a mapped test
  * did not produce a passing result. A scenario that is genuinely blocked on
  * product work is `waived` — it does not fail the build, but it is reported as
@@ -273,6 +275,51 @@ export const V5_REQUIRED_SCENARIOS = [
 ];
 
 /**
+ * Scenarios a LATER v5 issue registered, which the P14 phase line does not name.
+ *
+ * They are graded exactly like the ten — a mapped test that stops running turns
+ * the nightly red — but they are kept in their own array so `V5_REQUIRED_SCENARIOS`
+ * stays a literal transcription of the phase line, and "did the phase drop one
+ * of its ten flows" remains an assertion someone can read off the source.
+ *
+ * @type {readonly RequiredScenario[]}
+ */
+export const V5_PHASE_SCENARIOS = [
+  {
+    id: 'pwa-install-flow',
+    scenario: 'installable-PWA install flow and standalone handling (V5-P13b, #1713)',
+    coverage: {
+      kind: 'playwright',
+      tests: [
+        {
+          spec: 'e2e/pwa-install.spec.ts',
+          title: 'pwa: the user origin serves an installable manifest and its iOS icon',
+        },
+        {
+          spec: 'e2e/pwa-install.spec.ts',
+          title:
+            'pwa: the install affordance appears, dismisses, and stays dismissed across a reload',
+        },
+        {
+          spec: 'e2e/pwa-install.spec.ts',
+          title:
+            'pwa: no install affordance in a standalone window, and the standalone rules are stamped',
+        },
+      ],
+    },
+  },
+];
+
+/**
+ * Everything the nightly actually grades: the phase line's ten, plus whatever
+ * later issues registered. This is the default `evaluateRequiredScenarios` runs
+ * against, so registering a scenario is a one-array edit.
+ *
+ * @type {readonly RequiredScenario[]}
+ */
+export const V5_GRADED_SCENARIOS = [...V5_REQUIRED_SCENARIOS, ...V5_PHASE_SCENARIOS];
+
+/**
  * A named STEP proof, as opposed to a whole-test proof.
  *
  * `host` is the test the step lives inside, so `e2e/v5-gate.spec.ts` can hold a
@@ -515,7 +562,7 @@ function passProblem(index, test) {
  * @param {readonly RequiredScenario[]} [scenarios]
  * @returns {ScenarioEvaluation[]}
  */
-export function evaluateRequiredScenarios(index, scenarios = V5_REQUIRED_SCENARIOS) {
+export function evaluateRequiredScenarios(index, scenarios = V5_GRADED_SCENARIOS) {
   return scenarios.map((scenario) => {
     const { coverage } = scenario;
 
