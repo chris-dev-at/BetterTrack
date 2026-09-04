@@ -972,36 +972,48 @@ export const assets = pgTable(
 );
 
 /**
- * Deletion watermark for the local asset catalog (§6.2, #1709) — ONE row,
- * holding the instant through which catalog deletions have been accounted for.
+ * Write watermark for the local asset catalog (§6.2, #1709, #1762) — ONE row,
+ * holding the instant through which catalog writes have been accounted for.
  *
  * `assetRepository.catalogWatermark` derives the search read's `Last-Modified`
- * from the newest visible asset's UUIDv7 creation time. That value can move
- * BACKWARDS: delete the newest visible row and the watermark drops to the one
- * before it, so a follow-up `If-Modified-Since: <old watermark>` is satisfied
- * and the caller is told `304 Not Modified` while still rendering the row that
- * was deleted. The watermark is `greatest(newest visible, this stamp)` instead,
- * and the stamp does not merely refuse to decrease — every deleting statement
- * moves it one HTTP-date second past the newest row anyone can still see. Not
- * decreasing would not be enough: a stamp already ahead (because some newer
- * asset — any account's, it is instance-wide) would swallow the next deletion
- * silently, and so would deleting anything below the visible maximum.
+ * from the newest visible asset's UUIDv7 creation time. On its own that value
+ * misses every mutation that is not "a newer row appeared":
  *
- * The stamp is written by the `assets_catalog_deletion_mark` AFTER DELETE
- * trigger (migration 0110), not by a repository, so no delete path — the
- * owner-scoped custom-asset delete, the paranoid detach function, an account
- * cascade — can bypass it. It holds no user id and no asset id: only a
- * timestamp derived from row ids, so it identifies nothing and survives a
- * paranoid enable without leaving a residue (see `services/export/manifest.ts`).
- * The trigger is statement-level, so its cost is one shared row updated per
- * deleting STATEMENT (a cascade of N rows stamps once), plus over-invalidation
- * across users — a 200 instead of a 304, always the safe direction (§6.13).
+ *  - it moves BACKWARDS on a delete of the newest visible row, so a follow-up
+ *    `If-Modified-Since: <old watermark>` is satisfied by the smaller value and
+ *    the caller is told `304 Not Modified` while still rendering the deleted row
+ *    (#1709);
+ *  - it does not move AT ALL on an update — `assets` has no per-row timestamp
+ *    and a rename keeps the id — so search keeps serving the old name under a
+ *    304 (#1762);
+ *  - it does not clear the HTTP-date second boundary on an insert, so a row
+ *    created later in the same second as the current watermark is invisible to
+ *    a second-granular validator (#1762).
+ *
+ * The watermark is `greatest(newest visible, this stamp)` instead, and the stamp
+ * does not merely refuse to decrease — every content-changing statement moves it
+ * one whole HTTP-date second past the newest row anyone can still see. Not
+ * decreasing would not be enough: a stamp already ahead (because some newer
+ * asset — any account's, it is instance-wide) would swallow the next write
+ * silently, and so would touching anything below the visible maximum.
+ *
+ * The stamp is written by the `assets_catalog_{insert,update,delete}_mark`
+ * statement-level triggers (migration 0112, extending 0110), not by a
+ * repository, so no write path — the custom-asset PATCH, the re-categorize
+ * sweep, the owner-scoped delete, the paranoid detach function, the provider
+ * fallback's upserts, an account cascade — can bypass it. It holds no user id
+ * and no asset id: only a timestamp derived from row ids, so it identifies
+ * nothing and survives a paranoid enable without leaving a residue (see
+ * `services/export/manifest.ts`). Statement-level, so its cost is one shared row
+ * updated per content-changing STATEMENT (a cascade or a bulk seed of N rows
+ * stamps once), plus over-invalidation across users — a 200 instead of a 304,
+ * always the safe direction (§6.13).
  */
-export const assetCatalogDeletions = pgTable('asset_catalog_deletions', {
-  /** Singleton guard: the trigger only ever writes `true`. */
+export const assetCatalogWatermark = pgTable('asset_catalog_watermark', {
+  /** Singleton guard: the triggers only ever write `true`. */
   singleton: boolean('singleton').primaryKey().default(true),
-  /** Deletions are accounted for through this instant; only ever moves forward. */
-  deletedThrough: timestamp('deleted_through', { withTimezone: true }).notNull(),
+  /** Catalog writes are accounted for through this instant; only moves forward. */
+  mutatedThrough: timestamp('mutated_through', { withTimezone: true }).notNull(),
 });
 
 export const priceHistory = pgTable(
@@ -3067,7 +3079,7 @@ export type UsageActivationRow = typeof usageActivations.$inferSelect;
 export type NewUsageActivationRow = typeof usageActivations.$inferInsert;
 export type AssetIdentityRow = typeof assetIdentities.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
-export type AssetCatalogDeletionRow = typeof assetCatalogDeletions.$inferSelect;
+export type AssetCatalogWatermarkRow = typeof assetCatalogWatermark.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;

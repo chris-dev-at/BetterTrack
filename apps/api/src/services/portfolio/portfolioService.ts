@@ -527,12 +527,16 @@ export interface PortfolioService {
    */
   invalidateHistory(portfolioId: string, fromDay: string): Promise<void>;
   /**
-   * Freshness watermark for the summary + history conditional reads (issue
-   * #555): the snapshot-state `updated_at` (issue #553), which advances on
-   * every history-invalidating write. Ownership-checked (404 on a
-   * foreign/missing id); null when the portfolio has no computed history yet.
-   * Advisory `Last-Modified` only — the authoritative validator is the
-   * body-derived ETag (a live "today" quote moves the ETag, not this).
+   * Ownership-checked read of the snapshot-state `updated_at` (issue #553),
+   * which advances on every history-invalidating write. 404 on a
+   * foreign/missing id; null when the portfolio has no computed history yet.
+   *
+   * NOT wired to the conditional reads any more (#1762). It fed an advisory
+   * `Last-Modified` on the summary + series routes, which are `liveToday` — so
+   * the date validator could never gate a 304 there, and `Cache-Control:
+   * private, no-cache` forbids a client using the header heuristically. §6.8.6
+   * puts it plainly: the portfolio rail emits no `Last-Modified`. What remains
+   * is the plain accessor for the snapshot state.
    */
   getSnapshotFreshness(userId: string, portfolioId: string): Promise<Date | null>;
 }
