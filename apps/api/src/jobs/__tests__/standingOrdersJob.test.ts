@@ -85,7 +85,13 @@ function silentBus(): EventBus {
 function makeCtx(): JobContext {
   const redis = new RedisMock() as unknown as Redis;
   redisMocks.push(redis);
-  return { events: silentBus(), deadLetter: createDeadLetter(redis), redis, logger };
+  return {
+    events: silentBus(),
+    deadLetter: createDeadLetter(redis),
+    redis,
+    logger,
+    isFeatureEnabled: async () => true,
+  };
 }
 
 function makeJob(): Job<Record<string, never>> {

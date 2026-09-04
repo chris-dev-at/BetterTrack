@@ -12,6 +12,7 @@
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
 import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
@@ -112,6 +113,7 @@ import { initObservability } from '../services/observability/sentry';
 import { createProblemService } from '../services/observability/problemService';
 import { createProblemRepository } from '../data/repositories/problemRepository';
 import { createAuditService } from '../services/audit/auditService';
+import { createFeatureFlagService } from '../services/featureFlags/featureFlagService';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport } from '../services/email/transport';
 import { createExportRepository } from '../data/repositories/exportRepository';
@@ -713,7 +715,26 @@ const definitions = assembleRegisteredJobDefinitions({
 
 assertParanoidJobBindings(definitions, ALL_QUEUE_NAMES);
 
-const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
+/**
+ * The worker's own read of the runtime kill switches (§13.5 V5-P2 arc (c)),
+ * built exactly like the API context's: same `app_settings` rows, same shared
+ * Redis snapshot, so an admin flip reaches the worker on the NEXT scheduled run
+ * — the producer-side equivalent of `requireFeature` reading per request.
+ */
+const featureFlags = createFeatureFlagService({
+  repo: createAppSettingsRepository(db),
+  redis: deadLetterConnection,
+  audit,
+  logger,
+});
+
+const ctx: JobContext = {
+  events,
+  deadLetter,
+  redis: deadLetterConnection,
+  logger,
+  isFeatureEnabled: (key) => featureFlags.isEnabled(key),
+};
 
 const running = createJobWorkers({
   createConnection,

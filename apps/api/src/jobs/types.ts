@@ -1,6 +1,8 @@
 import type { Job, JobsOptions, WorkerOptions } from 'bullmq';
 import type { Redis } from 'ioredis';
 
+import type { FeatureFlagKey } from '@bettertrack/contracts';
+
 import type { DomainEvent, EventBus } from '../events';
 import type { Logger } from '../logger';
 
@@ -78,6 +80,65 @@ export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 export const ALL_QUEUE_NAMES = Object.values(QUEUE_NAMES) as readonly QueueName[];
 
 /**
+ * Which runtime kill switch each queue belongs to (PROJECTPLAN.md §6.12: the
+ * flags are "read per request"; §13.5 V5-P2 arc (c)).
+ *
+ * A kill switch exists to STOP something, so gating only the HTTP router was
+ * half a switch: flipping `alerts` OFF hid the alerts surface — the user's way
+ * to see, pause or delete an alert — while `alerts.evaluate` kept firing and
+ * kept enqueuing `alert.triggered` onto the durable dispatch queue. A queue
+ * named here is shed at the job boundary by {@link JobDefinition.featureFlag},
+ * enforced centrally in `runJobDefinition`.
+ *
+ * The map is TOTAL over {@link QUEUE_NAMES} on purpose: a new queue does not
+ * typecheck until its author has answered "which switch owns this?", and `null`
+ * is the explicit answer "none". That is what stops the next flag-owning
+ * producer from silently escaping the switch the way this one did.
+ *
+ * `notifications.dispatch` stays `null` deliberately: it is the shared delivery
+ * lane for every event type, not the alerts producer, so gating it on `alerts`
+ * would kill unrelated notifications. Shedding happens where the fire is
+ * PRODUCED, so nothing reaches the durable queue in the first place.
+ */
+export const QUEUE_FEATURE_FLAGS: Readonly<Record<QueueName, FeatureFlagKey | null>> = {
+  'alerts.evaluate': 'alerts',
+  'prices.refreshDaily': null,
+  'prices.backfill': null,
+  'fx.refreshSpot': null,
+  'notifications.dispatch': null,
+  'notifications.digestDaily': null,
+  'notifications.digestWeekly': null,
+  'notifications.deferredDelivery': null,
+  'data.export': null,
+  'data.exportCleanup': null,
+  'snapshots.recompute': null,
+  'snapshots.backfill': null,
+  'portfolioVault.finalize': null,
+  'usage.rollup': null,
+  'notifications.earningsRemind': null,
+  'marketIntel.dividendScan': null,
+  'standingOrders.process': null,
+  'mirror.replicate': null,
+  'mirror.inviteCleanup': null,
+  'mirror.consistencySweep': null,
+  'webhooks.deliver': null,
+  'webhooks.deliveryCleanup': null,
+  'apiKeys.requestLogCleanup': null,
+  'data.retentionCleanup': null,
+  'system.heartbeat': null,
+};
+
+/** The switch that owns `name`, or null when the queue is ungated. */
+export function featureFlagForQueue(name: QueueName): FeatureFlagKey | null {
+  return QUEUE_FEATURE_FLAGS[name];
+}
+
+/** Every producer queue a given kill switch owns, in catalog order. */
+export function flagOwningQueues(flag: FeatureFlagKey): readonly QueueName[] {
+  return ALL_QUEUE_NAMES.filter((name) => QUEUE_FEATURE_FLAGS[name] === flag);
+}
+
+/**
  * The typed payload each queue carries. Scheduled jobs that operate over "all
  * relevant assets" take no payload; on-demand and event-driven jobs carry the
  * minimum needed to do their work.
@@ -120,6 +181,17 @@ export interface JobContext {
   deadLetter: DeadLetter;
   redis: Redis;
   logger: Logger;
+  /**
+   * Runtime kill-switch read (§13.5 V5-P2 arc (c)) — the worker's equivalent of
+   * the API's `requireFeature` guard. Required, not optional: a job context that
+   * cannot resolve a flag is a context whose flag-owning producers would keep
+   * running after the switch was flipped, so it must not be constructible.
+   *
+   * Resolved PER RUN, never captured at worker startup: the underlying service
+   * reads the admin-flipped value through its shared Redis snapshot, so a flip
+   * takes effect on the next scheduled run with no redeploy.
+   */
+  isFeatureEnabled(key: FeatureFlagKey): Promise<boolean>;
 }
 
 /**
@@ -165,6 +237,17 @@ export interface JobDefinition<N extends QueueName = QueueName> {
   handler(job: Job<JobPayload<N>>, ctx: JobContext): Promise<void | JobRunSummary>;
   /** Present → the job is registered as a repeatable schedule. */
   schedule?: RepeatSpec;
+  /**
+   * The runtime kill switch this producer belongs to (§13.5 V5-P2 arc (c)).
+   * Declarative on purpose: the handler stays unaware of flags, and the single
+   * execution seam (`runJobDefinition`) sheds the whole run — no evaluation, no
+   * side effect, no idempotency bucket consumed — while the switch is OFF.
+   *
+   * It must equal this queue's {@link QUEUE_FEATURE_FLAGS} entry;
+   * `assembleRegisteredJobDefinitions` refuses a production definition that
+   * omits its queue's flag or claims one the queue does not own.
+   */
+  featureFlag?: FeatureFlagKey;
   /**
    * The non-default options jobs on this queue carry, stated next to the
    * handler that relies on them. It must be the queue's entry from
