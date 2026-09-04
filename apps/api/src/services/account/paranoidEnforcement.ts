@@ -478,6 +478,9 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'trends',
     'evaluate',
     'evaluateRequired',
+    // The cash-write seam (#1754) is `evaluate` under the name every money
+    // write calls it by, so it is gated on the same (userId, portfolioId) pair.
+    'onCashWrite',
   ]),
   serviceBinding('portfolioServer', 'cashBudgets', 'portfolioIdFieldSecond', ['createBudget']),
   serviceBinding('portfolioServer', 'cashBudgets', 'cashBudgetIdSecond', [

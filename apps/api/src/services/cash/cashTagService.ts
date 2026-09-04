@@ -23,6 +23,7 @@ import type {
 import type { CashTagRecord, CashTagRepository } from '../../data/repositories/cashTagRepository';
 import { isDriverErrorCode } from '../../data/driverError';
 import { badRequest, conflict, notFound } from '../../errors';
+import type { CashWriteHook } from './cashBudgetService';
 import { isSupportedCashRuleRegex, tagsByRules } from './cashRuleEngine';
 
 /**
@@ -85,6 +86,13 @@ function toRuleDto(record: CashRuleRecord): CashRule {
 export interface CashTagServiceDeps {
   tags: CashTagRepository;
   rules: CashRuleRepository;
+  /**
+   * THE CASH-WRITE SEAM (#1754). A retag is not a money write, but it decides
+   * WHAT a movement counts against, so it can push a tag over its budget (or
+   * drop it back under) exactly like recording the spend did. Non-fatal: the
+   * retag itself must not fail because a budget alert could not be evaluated.
+   */
+  onCashWrite?: CashWriteHook;
 }
 
 export interface CashTagService {
@@ -112,7 +120,18 @@ export interface CashTagService {
 }
 
 export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
-  const { tags, rules } = deps;
+  const { tags, rules, onCashWrite } = deps;
+
+  /** The seam, swallowing: see {@link CashTagServiceDeps.onCashWrite}. */
+  async function afterCashWrite(userId: string, portfolioId: string): Promise<void> {
+    if (!onCashWrite) return;
+    try {
+      await onCashWrite(userId, portfolioId);
+    } catch {
+      // The evaluator is already non-throwing; this is the ordering rule made
+      // explicit — the tags are written, and they stay written.
+    }
+  }
 
   /**
    * Every id must be one of the CALLER's tags. Rejecting the whole request on a
@@ -187,6 +206,9 @@ export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
       const result = await tags.replaceMovementTags(userId, movementId, input.tagIds);
       if (!result.movementFound) throw notFound('Movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
       if (result.unknownTagIds.length > 0) throw TAG_REF_INVALID();
+      // The tag set decides which budget this movement's outflow counts
+      // against, so a retag re-evaluates the ledger it belongs to (#1754).
+      if (result.portfolioId !== null) await afterCashWrite(userId, result.portfolioId);
       return { movementId, tags: result.tags.map(toTagDto) };
     },
 

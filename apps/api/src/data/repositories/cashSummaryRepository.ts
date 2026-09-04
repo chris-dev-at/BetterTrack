@@ -19,6 +19,23 @@ import { cashMovementTags, cashTags, portfolioCashMovements } from '../schema';
  * totals whenever any row carries two tags. The totals are therefore computed
  * SEPARATELY, straight off the movements, and are the only figures that reconcile
  * to the ledger. The surface states this; the contract states it too.
+ *
+ * ── WHY INTERNAL TRANSFERS ARE NOT IN ANY BUCKET (#1754) ──
+ *
+ * Both legs of `POST /cash/transfer` live in the SAME portfolio (one INSERT, one
+ * `portfolioId` — see `cashMovementRepository.insertTransferPair`). Bucketing on
+ * the sign of `amount_eur` alone therefore reported a single €9,000 Main →
+ * Savings move as €9,000 of inflow AND €9,000 of outflow: `net` stayed right,
+ * but the overview read "Inflow €9.000 · Outflow €9.000", the by-tag donut made
+ * `transfer` the month's dominant "where the money went", and the Home cashflow
+ * widget drew two 9k bars for money that never left.
+ *
+ * `packages/domain/src/cashLedger.ts` already states the invariant every
+ * roll-up owes: the paired legs "cancel to zero in every sum". {@link
+ * EXTERNAL_LEG} is that invariant, applied to all four aggregates here — so
+ * the totals, the tag rows, the untagged residual and the trend points agree
+ * with each other and with the ledger. Deposits, withdrawals, fees and every
+ * engine-booked kind are untouched.
  */
 
 export interface CashMonthTotals {
@@ -44,6 +61,13 @@ export interface CashTrendRow {
   inflowMicros: number;
   outflowMicros: number;
 }
+
+/**
+ * The rows a cash-flow roll-up may count: everything EXCEPT the two legs of an
+ * internal transfer, which move money between two sources of the same portfolio
+ * and cancel (see the header). Applied by every aggregate in this file.
+ */
+const EXTERNAL_LEG = sql`${portfolioCashMovements.kind} NOT IN ('transfer_in', 'transfer_out')`;
 
 /** First instant of `period`, and of the month after it. */
 function monthBounds(period: string): { from: Date; toExclusive: Date } {
@@ -87,6 +111,7 @@ export function createCashSummaryRepository(db: Database) {
             eq(portfolioCashMovements.portfolioId, portfolioId),
             gte(portfolioCashMovements.executedAt, from),
             lt(portfolioCashMovements.executedAt, toExclusive),
+            EXTERNAL_LEG,
           ),
         );
       const row = rows[0];
@@ -120,6 +145,7 @@ export function createCashSummaryRepository(db: Database) {
             eq(portfolioCashMovements.portfolioId, portfolioId),
             gte(portfolioCashMovements.executedAt, from),
             lt(portfolioCashMovements.executedAt, toExclusive),
+            EXTERNAL_LEG,
           ),
         )
         .groupBy(cashTags.id, cashTags.name, cashTags.color, cashTags.system);
@@ -153,6 +179,7 @@ export function createCashSummaryRepository(db: Database) {
             eq(portfolioCashMovements.portfolioId, portfolioId),
             gte(portfolioCashMovements.executedAt, from),
             lt(portfolioCashMovements.executedAt, toExclusive),
+            EXTERNAL_LEG,
             sql`NOT EXISTS (
               SELECT 1 FROM ${cashMovementTags}
               WHERE ${cashMovementTags.movementId} = ${portfolioCashMovements.id}
@@ -189,6 +216,7 @@ export function createCashSummaryRepository(db: Database) {
             eq(portfolioCashMovements.portfolioId, portfolioId),
             gte(portfolioCashMovements.executedAt, from),
             lt(portfolioCashMovements.executedAt, toExclusive),
+            EXTERNAL_LEG,
           ),
         )
         // Bucketed in UTC, matching how the daily series buckets days and how the

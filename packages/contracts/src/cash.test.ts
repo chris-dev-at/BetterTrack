@@ -140,6 +140,22 @@ describe('cash-flow contracts (V5 cash fusion)', () => {
       expect(parsed).toEqual({ portfolioId: UUID, tagId: UUID2, amount: 300, currency: 'EUR' });
     });
 
+    it('admits EUR only, on create and on patch (#1754)', () => {
+      // A budget is measured against `amount_eur` with no FX step anywhere, so
+      // a foreign code would be a target the server judges as EUR while every
+      // surface renders it with the wrong symbol. Refused at the contract.
+      expect(
+        createCashBudgetRequestSchema.safeParse({
+          portfolioId: UUID,
+          tagId: UUID2,
+          amount: 100,
+          currency: 'USD',
+        }).success,
+      ).toBe(false);
+      expect(updateCashBudgetRequestSchema.safeParse({ currency: 'USD' }).success).toBe(false);
+      expect(updateCashBudgetRequestSchema.parse({ currency: 'EUR' })).toEqual({ currency: 'EUR' });
+    });
+
     it('validates the month and refuses a non-positive or non-finite amount', () => {
       expect(cashMonthSchema.safeParse('2026-13').success).toBe(false);
       expect(cashMonthSchema.safeParse('2026-00').success).toBe(false);
