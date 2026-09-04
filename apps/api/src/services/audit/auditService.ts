@@ -152,6 +152,8 @@ export const AuditAction = {
   OAuthClientDeleted: 'oauth.client_deleted',
   OAuthGrantAuthorized: 'oauth.grant_authorized',
   OAuthGrantRevoked: 'oauth.grant_revoked',
+  /** Boot reconcile widened a live first-party consent record. */
+  OAuthGrantScopesWidened: 'oauth.grant_scopes_widened',
   OAuthTokenIssued: 'oauth.token_issued',
   OAuthTokenRefreshed: 'oauth.token_refreshed',
   // Admin Problems page (§13.5 V5-P2, the Sentry replacement).

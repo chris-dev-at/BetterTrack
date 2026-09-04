@@ -74,7 +74,14 @@ function harness(existing: readonly SeedAccount[] = []): SeedHarness {
     },
     async seedOAuthClients() {
       state.oauthCalls += 1;
-      return [{ clientId: 'bettertrack-mobile', action: 'created', scopes: ['portfolio:read'] }];
+      return [
+        {
+          clientId: 'bettertrack-mobile',
+          action: 'converged',
+          scopes: ['portfolio:read'],
+          grantsWidened: 2,
+        },
+      ];
     },
   };
 
@@ -188,6 +195,7 @@ describe('seed command credential gates', () => {
     });
     expect(test.hashedPasswords).toEqual(['password']);
     expect([...test.info, ...test.errors].join('\n')).not.toContain('password');
+    expect(test.info.join('\n')).toContain('1 scopes, 2 active grants widened');
   });
 
   it('skips an existing admin before inspecting the current bootstrap password', async () => {
