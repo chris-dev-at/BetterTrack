@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { assetCatalogDeletions, assets, priceHistory } from '../schema';
+import { assetCatalogWatermark, assets, priceHistory } from '../schema';
 import type { AssetRow } from '../schema';
 
 /**
@@ -226,30 +226,43 @@ export function createAssetRepository(db: Database) {
      * Freshness watermark for `userId`'s visible catalog (issue #555): the
      * creation time of the newest visible asset — every global market asset
      * plus the caller's own custom assets, the same visibility the search read
-     * enforces. The `assets` table stores no per-row timestamp, but ids are
-     * UUIDv7 (§4.4), whose leading 48 bits ARE the row's creation-ms, so
-     * `max(id)` (uuid order == time order) yields it without a schema change.
-     * Drives the catalog-search `Last-Modified`; null when the caller can see
-     * no assets and nothing has ever been deleted. Deliberately
-     * query-independent — over-invalidation (a 200 instead of a 304) is always
-     * safe, and content edits (a rename that keeps the id) are caught by the
-     * per-request body ETag, not this watermark.
+     * enforces — raised by the instance-wide catalog write stamp. The `assets`
+     * table stores no per-row timestamp, but ids are UUIDv7 (§4.4), whose
+     * leading 48 bits ARE the row's creation-ms, so `max(id)` (uuid order ==
+     * time order) yields it without a schema change. Drives the catalog-search
+     * `Last-Modified`; null only on a catalog that is empty and has never been
+     * written. Deliberately query-independent — over-invalidation (a 200 instead
+     * of a 304) is always safe.
      *
-     * STEPS FORWARD ON DELETION (#1709). "Newest visible id" alone can move
-     * BACKWARDS: delete the newest visible row — an owner deleting a custom
-     * asset, the paranoid detach — and the watermark drops to the id before it,
-     * so a follow-up `If-Modified-Since` carrying the pre-delete value is
-     * satisfied by the smaller one and the caller is told 304 while still
-     * rendering the deleted asset. The second term closes that:
-     * `asset_catalog_deletions` is stamped by the statement-level AFTER DELETE
-     * trigger in migration 0110, which puts it one whole HTTP-date second past
-     * the newest row that is left (which dominates every caller's visible
-     * maximum) and past the newest row the statement removed. So the max here
-     * rises on EVERY deleting statement — including one whose row is older than
-     * the current stamp, and one that removed something below the visible
-     * maximum, both of which a merely-monotonic stamp would swallow. Both terms
-     * are read from the same UUIDv7 clock (the trigger never reads `now()`), so
-     * no server-clock skew enters the comparison.
+     * STEPS FORWARD ON EVERY CATALOG WRITE (#1709, #1762). "Newest visible id"
+     * alone is blind three ways, and each one produces a stale 304 on the
+     * `If-Modified-Since` rail — the rail whose whole audience is the callers
+     * that send no ETag, so "the body ETag catches it" is not an answer:
+     *
+     *  - it moves BACKWARDS on a delete of the newest visible row (an owner
+     *    deleting a custom asset, the paranoid detach), so a follow-up request
+     *    carrying the pre-delete value is satisfied by the smaller one and the
+     *    caller keeps rendering the deleted asset;
+     *  - it does not move at all on an UPDATE, because a rename keeps the id —
+     *    and `name` is exactly what `searchCatalog` returns and ranks on;
+     *  - it does not clear the HTTP-date second boundary on an INSERT: a row
+     *    created at 12:00:03.800 leaves a watermark of 12:00:03.100 advertising
+     *    the same `12:00:03`, so the §6.2 "Searching providers…" refetch loop
+     *    revalidates into a 304 and never sees the enriched row.
+     *
+     * The second term closes all three: `asset_catalog_watermark` is stamped by
+     * the statement-level AFTER INSERT / UPDATE / DELETE triggers in migrations
+     * 0110 + 0112, which put it one whole HTTP-date second past the newest row
+     * left in the table (which dominates every caller's visible maximum) and
+     * past the newest row the statement touched. So the max here rises on EVERY
+     * content-changing statement — including one whose rows are older than the
+     * current stamp, and one that touched something below the visible maximum,
+     * both of which a merely-monotonic stamp would swallow. Because the stamp is
+     * always a whole second and always above the other term, what this returns
+     * is what `Last-Modified` can carry losslessly, which is what lets the
+     * middleware compare exactly instead of flooring (`middleware/conditional`).
+     * Both terms are read from the same UUIDv7 clock (the triggers never read
+     * `now()`), so no server-clock skew enters the comparison.
      */
     async catalogWatermark(
       userId: string,
@@ -257,7 +270,7 @@ export function createAssetRepository(db: Database) {
     ): Promise<Date | null> {
       // One round-trip, two scalar subqueries: the newest visible id (uuid order
       // == time order, an ORDER BY over the id index — no aggregate on the uuid
-      // type, portable across engines) and the singleton deletion stamp, read as
+      // type, portable across engines) and the singleton write stamp, read as
       // epoch ms so no driver-specific timestamp parsing enters the comparison.
       const visibility = visibleTo(userId, options?.includeCustomAssets !== false);
       const result = await db.execute(sql`
@@ -269,19 +282,19 @@ export function createAssetRepository(db: Database) {
             limit 1
           ) as "newest",
           (
-            select (extract(epoch from ${assetCatalogDeletions.deletedThrough}) * 1000)::bigint
-            from ${assetCatalogDeletions}
+            select (extract(epoch from ${assetCatalogWatermark.mutatedThrough}) * 1000)::bigint
+            from ${assetCatalogWatermark}
             limit 1
-          ) as "deletedMs"
+          ) as "mutatedMs"
       `);
 
-      const row = resultRows<{ newest: string | null; deletedMs: string | number | null }>(
+      const row = resultRows<{ newest: string | null; mutatedMs: string | number | null }>(
         result,
       )[0];
       const newestMs = row?.newest != null ? uuidV7Millis(row.newest) : null;
-      const deletedMs = row?.deletedMs != null ? Number(row.deletedMs) : null;
-      if (newestMs === null && deletedMs === null) return null;
-      return new Date(Math.max(newestMs ?? 0, deletedMs ?? 0));
+      const mutatedMs = row?.mutatedMs != null ? Number(row.mutatedMs) : null;
+      if (newestMs === null && mutatedMs === null) return null;
+      return new Date(Math.max(newestMs ?? 0, mutatedMs ?? 0));
     },
 
     /**

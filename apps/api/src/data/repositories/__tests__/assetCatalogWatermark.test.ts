@@ -18,6 +18,10 @@ import { createStubMarketData } from '../../../testing/marketDataStubs';
  * verbatim. So these tests pin the stronger property the trigger implements:
  * every deleting statement STEPS the watermark forward, by a whole HTTP-date
  * second, whichever row it removed.
+ *
+ * #1762 extended that from "deleting" to "content-changing": inserts and
+ * updates step it the same way (see `catalogWrites.test.ts` for those), which
+ * makes the stamp instance-wide for every write, not only for deletions.
  */
 
 async function seedAsset(h: TestHarness, symbol: string, ownerId: string | null = null) {
@@ -107,7 +111,7 @@ describe('assetRepository.catalogWatermark — steps forward on deletion', () =>
     expectLaterSecond(await repo.catalogWatermark(user.id), before);
   });
 
-  it('is not silenced by another account having deleted a newer asset first (§10)', async () => {
+  it('is not silenced by another account having written a newer asset first (§10)', async () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const repo = createAssetRepository(h.db);
     const mine = await h.seedUser({ email: 'wm4@s.test', username: 'wm4' });
@@ -115,13 +119,20 @@ describe('assetRepository.catalogWatermark — steps forward on deletion', () =>
 
     const myCustom = await seedAsset(h, 'MYHOUSE', mine.id);
     const mineOnly = await repo.catalogWatermark(mine.id);
-    // Newer than everything of mine, and invisible to me — so creating it
-    // cannot move my watermark (§10: the read is visibility-scoped).
-    const theirCustom = await seedAsset(h, 'THEIRHOUSE', theirs.id);
-    expect((await repo.catalogWatermark(mine.id))!.getTime()).toBe(mineOnly!.getTime());
 
-    // The stamp is instance-wide, so THEIR deletion is what puts it ahead of my
-    // rows — the state any second user finds the instance in.
+    // Newer than everything of mine, and invisible to me. Since #1762 the stamp
+    // is instance-wide on WRITES as well as deletions, so this steps my
+    // watermark too: over-invalidation, a 200 instead of a 304, the only safe
+    // direction. What §10 governs is the RESPONSE, and that is unchanged —
+    // their row is not in my slice of the catalog, only the coarse freshness
+    // validator moved.
+    const theirCustom = await seedAsset(h, 'THEIRHOUSE', theirs.id);
+    const afterTheirInsert = await repo.catalogWatermark(mine.id);
+    expectLaterSecond(afterTheirInsert, mineOnly);
+    expect(await repo.searchCatalog(mine.id, 'THEIRHOUSE', 20)).toEqual([]);
+
+    // Their deletion likewise puts the stamp ahead of my rows — the state any
+    // second user finds the instance in. My own deletion still has to step it.
     await h.db.delete(schema.assets).where(eq(schema.assets.id, theirCustom));
     const afterTheirs = await repo.catalogWatermark(mine.id);
 
