@@ -67,7 +67,18 @@ const normalizeKey = (key: string): string => key.toLowerCase().replace(/[-_\s]/
 // Emails anywhere in a string, including the URL-encoded form (`%40`) a provider
 // error message carries when the address travelled in a query string.
 // Intentionally broad — over-redaction is safe here.
-const EMAIL_RE = /[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+//
+// The leading lookbehind is a REDOS GUARD, not a matching rule. Without it the
+// local-part `+` rescans from every offset inside one unbroken run of email
+// characters: on a long run with no `@` behind it, each of the n start offsets
+// backtracks over the whole tail, so the scan is O(n²) — 50k chars took ~1.5s
+// and 200k took ~24s, which is how an oversized message (a provider blob, or
+// the same message again inside the captured stack) stalled the capture path.
+// Anchoring to a run BOUNDARY leaves the accepted language untouched: a match
+// starting mid-run always has a counterpart starting at that run's first
+// character, whose local part merely extends further left, and the whole match
+// is replaced wholesale either way. Redundant start offsets are all it removes.
+const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 // A query-string parameter whose NAME says it carries a credential:
 // `?apikey=…`, `&access_token=…`, `?client_secret=…`. Key-based redaction only
