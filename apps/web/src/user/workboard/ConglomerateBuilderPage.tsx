@@ -310,9 +310,11 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
     [t],
   );
 
-  // AI draft (V5-P12): prefill the Builder with the resolved lines. It replaces
-  // the current positions with the draft; the user then reviews the weights,
-  // edits, and explicitly saves/activates — nothing auto-commits.
+  // AI draft (V5-P12, §6.5): this runs ONLY after the user confirmed the draft
+  // inside `NlBuilderPanel` — a returned basket sits in that panel until then, so
+  // the autosave below never sees an unconfirmed draft. Applying replaces the
+  // current positions (the panel names what that costs before the confirmation);
+  // from here on it is an ordinary edit the Builder autosaves like any other.
   const handleApplyDraft = useCallback((drafted: BuilderPosition[]) => {
     setNotice(null);
     setPositions(drafted);
@@ -408,6 +410,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
           onApplyDraft={handleApplyDraft}
           ownId={ownId}
           positions={positions}
+          basketName={name.trim() || defaultName}
         />
         <PositionsPanel
           positions={positions}
@@ -530,6 +533,7 @@ function AddAssetsPanel({
   onApplyDraft,
   ownId,
   positions,
+  basketName,
 }: {
   notice: string | null;
   onSelect: (item: SearchResultItem) => void;
@@ -537,6 +541,7 @@ function AddAssetsPanel({
   onApplyDraft: (positions: BuilderPosition[]) => void;
   ownId: string | null;
   positions: BuilderPosition[];
+  basketName: string;
 }) {
   const t = useT();
   return (
@@ -550,7 +555,11 @@ function AddAssetsPanel({
       <p className="text-xs bt-muted">{t('workboard.builder.addAssetsHint')}</p>
       {notice ? <Alert tone="error">{notice}</Alert> : null}
       <AssetSearchBox onSelect={onSelect} placeholder={t('workboard.builder.searchPlaceholder')} />
-      <NlBuilderPanel onApply={onApplyDraft} />
+      <NlBuilderPanel
+        onApply={onApplyDraft}
+        targetName={basketName}
+        targetPositionCount={positions.length}
+      />
       <NestConglomeratePanel onSelect={onSelectConglomerate} ownId={ownId} positions={positions} />
     </section>
   );

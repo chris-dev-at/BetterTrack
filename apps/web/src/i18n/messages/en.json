@@ -2647,7 +2647,14 @@
         "capReached": "You've reached today's AI limit. It resets tomorrow.",
         "error": "Couldn't draft a basket from that. Try rephrasing.",
         "applied": "Prefilled {{count}} positions — review the weights and save.",
-        "unresolved": "No catalog match for these — add them manually:"
+        "unresolved": "No catalog match for these — add them manually:",
+        "reviewTitle": "Review the AI draft",
+        "reviewDraft": "Draft ready: {{count}} positions. Nothing changes until you apply it.",
+        "replaceWarning": "Applying replaces all {{count}} positions in “{{name}}”.",
+        "apply": "Apply draft",
+        "discard": "Discard draft",
+        "nothingSavedYet": "Nothing has been saved yet — discarding leaves your blueprint unchanged.",
+        "notAdvice": "AI-generated and informational only — not financial advice."
       },
       "positionsHeading": "Positions",
       "autoBalance": "Auto-balance",
@@ -5105,7 +5112,7 @@
         },
         "ai": {
           "name": "AI",
-          "description": "AI insights and assistant (reserved — not yet built)."
+          "description": "AI portfolio insights and the natural-language Blueprint builder (local provider)."
         }
       }
     },
@@ -6756,6 +6763,7 @@
     "ask": {
       "title": "Ask BetterTrack",
       "body": "Questions over your own portfolios with explicit scope, linked answers and reviewable proposals — no unsolicited chat bubbles. AI insights and the natural-language Blueprint builder are live today; the full workspace lands here.",
+      "bodyUnavailable": "Questions over your own portfolios with explicit scope, linked answers and reviewable proposals — no unsolicited chat bubbles. This workspace lands here once it is built.",
       "p1": "You choose exactly which portfolios the answer may read",
       "p2": "Every figure links back to records and assumptions",
       "p3": "Scenario answers open as Workbench drafts",

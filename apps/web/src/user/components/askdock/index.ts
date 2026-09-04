@@ -9,4 +9,4 @@ export {
   useAskDockState,
   type AskDockState,
 } from './askDockStore';
-export { ASK_DOCK_MIN_WIDTH, useAskDockEligible } from './useAskDockEligible';
+export { ASK_DOCK_MIN_WIDTH, useAskDockAvailable, useAskDockEligible } from './useAskDockEligible';
