@@ -393,24 +393,39 @@ export const V5_SURFACE_INVENTORY = [
       'user/assets/AssetsSection.tsx',
       'user/assets/NewsDigestPage.tsx',
       'user/assets/newsFeed.tsx',
+      // The two home-board widgets call `marketIntelApi` directly and the widget
+      // picker decides whether they are reachable at all, so P5's capability
+      // gate lives in all three — clause 1 of the predicate above.
+      'user/home/AddWidgetDrawer.tsx',
+      'user/home/widgets/DividendsWidget.tsx',
+      'user/home/widgets/NewsWidget.tsx',
     ],
     copyRoots: [
       'assets.news',
       'assets.detail.dividends',
       'assets.detail.earnings',
       'assets.detail.splits',
+      'home.widgets.news',
+      'home.widgets.dividends',
     ],
-    copyReview: 'Dividend, earnings, split, per-asset news, and digest wording reviewed.',
+    copyReview:
+      'Dividend, earnings, split, per-asset news, digest and roll-up truncation wording reviewed; the two home widgets and the catalog rows that offer them were reviewed for their own copy only — a capped six-row glance carries no truncation line by design.',
     states: {
-      loading: unverified('Digest renders skeletons; embedded blocks avoid layout churn.'),
+      loading: unverified(
+        'Digest renders skeletons; embedded blocks avoid layout churn; both home widgets render skeleton blocks.',
+      ),
       empty: unverified(
-        'Digest has a shared empty state; configured feeds can render no headlines.',
+        'Digest has a shared empty state; configured feeds can render no headlines; both home widgets render a terse Empty.',
       ),
       error: hidden(
-        'Optional per-asset provider blocks are invisible when unconfigured by binding P5 spec; digest failure remains retryable.',
+        'Optional per-asset provider blocks are invisible when unconfigured by binding P5 spec; digest failure remains retryable; the catalog does not offer a widget this deployment has no capability for, and a widget already placed states its own unavailability.',
       ),
     },
-    tests: ['user/assets/NewsDigestPage.test.tsx', 'user/assets/AssetDetailPage.test.tsx'],
+    tests: [
+      'user/assets/NewsDigestPage.test.tsx',
+      'user/assets/AssetDetailPage.test.tsx',
+      'user/home/marketIntelWidgets.test.tsx',
+    ],
   },
   {
     id: 'p6-workboard-endgame',
@@ -830,6 +845,25 @@ export const V5_SURFACE_INVENTORY = [
     ],
   },
   {
+    id: 'p13b-installable-pwa',
+    phases: ['P13b'],
+    // Not a route: the affordance floats over whichever surface is on screen
+    // (anti-bloat), and the standalone-window rules are shell-wide.
+    routes: [],
+    components: ['user/components/InstallPrompt.tsx'],
+    copyRoots: ['pwa.install'],
+    copyReview:
+      'Install card and the iOS Add-to-Home-Screen coach mark reviewed in both catalogs; DE keeps the informal address the rest of the user app uses.',
+    states: {
+      loading: notAsync('Install capability is a synchronous browser fact, not a fetch.'),
+      empty: notAsync('No collection: the card is silent-by-default when no install path exists.'),
+      error: notAsync(
+        'The native prompt owns its own failure; a rejected prompt() is swallowed and the card stays dismissed.',
+      ),
+    },
+    tests: ['user/components/InstallPrompt.test.tsx'],
+  },
+  {
     id: 'p13c-admin-session-policy',
     phases: ['P13c'],
     routes: ['/admin/security'],
@@ -1219,11 +1253,6 @@ export const NON_V5_SURFACES = [
     note: 'V4 first-run step (email verification).',
   },
   {
-    path: 'user/home/AddWidgetDrawer.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 widget picker.',
-  },
-  {
     path: 'user/home/widgets/aggregateSafety.tsx',
     reason: 'no-v5-deliverable',
     note: 'PARANOID-E6 (#1416) home-board completeness guard; renders the shared unavailable outcome from the catalog.',
@@ -1269,11 +1298,6 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign R2 home-board widget (concentration).',
   },
   {
-    path: 'user/home/widgets/DividendsWidget.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 home-board widget (dividends).',
-  },
-  {
     path: 'user/home/widgets/LiquidityWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (liquidity).',
@@ -1287,11 +1311,6 @@ export const NON_V5_SURFACES = [
     path: 'user/home/widgets/NetWorthWidget.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 home-board widget (net worth).',
-  },
-  {
-    path: 'user/home/widgets/NewsWidget.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'Origin-redesign R2 home-board widget (news).',
   },
   {
     path: 'user/home/widgets/PerformanceChartWidget.tsx',
@@ -1580,6 +1599,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The privacy-sensitive shortcut is intentionally absent unless the owner audience read succeeds; loading, forbidden, and absent remain indistinguishable.',
   },
   {
+    component: 'user/social/chatSurface.tsx',
+    read: 'ChipShareShortcut.groupsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The group roster decides whether the shortcut may exist at all: an unresolved or failed read cannot tell an already-admitted group member from an excluded one, so the shortcut stays absent exactly as it does for an unresolved audience read — a spinner or error card inside the chat bubble would advertise a prompt the client cannot yet justify. The full-fidelity path stays the AudiencePicker, which observes the same query key and renders that read’s own states.',
+    delegatedTo: 'AudiencePicker',
+  },
+  {
     component: 'user/components/CmdKPalette.tsx',
     read: 'CmdKPalette.capabilities',
     states: ['loading', 'error'],
@@ -1721,6 +1748,27 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
   },
   {
     component: 'user/components/OriginShell.tsx',
+    read: 'RailAskToggle.available',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; while the read is loading or failed the rail row stays a plain link to /ask, which is the same row a disabled provider gets.',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
+    read: 'AskDockMount.available',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI, and the floating panel simply is not mounted.',
+  },
+  {
+    component: 'user/parked/ParkedPage.tsx',
+    read: 'AiGatedParked.capability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate decides only whether the parked /ask page may advertise the shipped AI features; unresolved and failed reads fall back to the copy that claims nothing, so there is no state of its own to draw.',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
     read: 'RailGroup.children',
     states: ['loading', 'error'],
     reason:
@@ -1795,6 +1843,20 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     states: ['loading', 'error'],
     reason:
       'The deploy-time capability bootstrap defaults to "offered", so an unresolved or failed read leaves the dividend factor gated on the projection read alone (#1681) — there is no state of its own to draw, and the server stays the real boundary.',
+  },
+  {
+    component: 'user/control/panels/NotificationsPanel.tsx',
+    read: 'useRoutableTypes.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered" (#1699), so an unresolved or failed read leaves every notification row exactly where it was — a skeleton or an error card over the delivery matrix would report a bootstrap failure as a settings failure, and the server refuses an unconfigured type either way.',
+  },
+  {
+    component: 'user/home/AddWidgetDrawer.tsx',
+    read: 'AddWidgetDrawer.capabilities',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability bootstrap defaults to "offered" (#1699), so an unresolved or failed read leaves the catalog exactly as it was — a skeleton or an error card inside the widget picker would replace a working catalog with a state about a bootstrap the user never asked for, and the widget itself still states its own unavailability if a deployment loses the capability later.',
   },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
@@ -2009,8 +2071,33 @@ export type V5AsyncStateDebtLedger = Readonly<
  * the read defaults to "offered", so an unresolved or failed fetch leaves the
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
+ *
+ * 215 → 219 with the V5-P5 roll-up honesty pass (#1699): the two market-intel
+ * home widgets join the inventory with one digest/calendar read each (both
+ * already draw skeletons, a terse unavailable state and an empty state), the
+ * widget catalog gains the deploy-capability read that decides whether it offers
+ * them at all, and the notifications panel gains the same capability read for
+ * its two opt-in market rows. The two capability reads deliberately draw no
+ * loading or error state of their own — the bootstrap defaults to "offered", so
+ * an unresolved or failed fetch leaves both surfaces exactly as they were — and
+ * are recorded as exemptions above rather than as debt, so the ceiling stays at
+ * zero.
+ *
+ * 219 → 220 with the V5-P8 chat chip group rung (#1726): `ChipShareShortcut`
+ * resolves the shared group's live roster so a recipient the server already
+ * admits through the `group` rung is not falsely prompted. Like the audience
+ * read beside it the shortcut is simply absent while that roster is unresolved
+ * or failing, recorded as an exemption above, so the ceiling stays at zero.
+ *
+ * 220 → 223 with the V5-P12 AI-surface gate (#1700): the AI capability read now
+ * also decides whether the rail's Ask row is a toggle (`RailAskToggle`), whether
+ * the floating panel is mounted at all (`AskDockMount`) and whether the parked
+ * `/ask` page advertises the shipped AI features (`AiGatedParked`). All three
+ * are the §6.18 gate — an unresolved or failed read is treated exactly like
+ * "no provider configured", so there is no loading or error state to draw — and
+ * are recorded as exemptions above rather than as debt; the ceiling stays zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 215;
+export const V5_ASYNC_READ_SITE_BASELINE = 223;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -2078,7 +2165,9 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // is unchanged: neither adds a state gap. (The cockpit's own two new reads
 // — queues and the deploy version — land on HealthPage, which is inside the
 // reviewed V5 inventory, not this ledger.)
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 81;
+// 81 → 79 with #1699: the news and dividends home widgets leave this deferred
+// ledger for the reviewed V5-P5 inventory, taking their one read each with them.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 79;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error

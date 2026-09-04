@@ -216,6 +216,32 @@ describe('WorkboardPage — upcoming earnings panel', () => {
     expect(screen.getByText('Confirmed')).toBeInTheDocument();
   });
 
+  test('says a capped calendar is partial rather than rendering it as complete', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+    vi.mocked(getEarningsCalendar).mockResolvedValue({
+      available: true,
+      entries: [CAL_ENTRY({ symbol: 'AAPL', name: 'Apple' })],
+      truncated: true,
+    });
+    renderPage();
+    expect(
+      await screen.findByText(
+        'Partial: you hold or watch more assets than we look up in one pass, so some are missing below.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('stays silent about truncation for a calendar that covered the whole book', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+    vi.mocked(getEarningsCalendar).mockResolvedValue({
+      available: true,
+      entries: [CAL_ENTRY({ symbol: 'AAPL', name: 'Apple' })],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Upcoming earnings')).toBeInTheDocument());
+    expect(screen.queryByText(/^Partial:/)).not.toBeInTheDocument();
+  });
+
   test('is absent when the calendar is unavailable (gate off / no capability)', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
     vi.mocked(getEarningsCalendar).mockResolvedValue({ available: false, entries: [] });

@@ -14,6 +14,20 @@ import { useAskDockEligible } from './useAskDockEligible';
 
 export const ASK_DOCK_ID = 'bt-askdock';
 
+/**
+ * Root attribute published while the panel is actually on screen.
+ *
+ * The dock owns the bottom-right corner and the z-45 layer, and it is rendered
+ * deep in the shell — so it paints over anything else parked there, including
+ * the install card that shares both (`.bt-install-prompt`, §7.1). The card reads
+ * this attribute and steps aside rather than sitting under the panel with its
+ * dismiss button unreachable. An attribute, not a shared store: the card is
+ * mounted outside the session gate (login is where a first-time visitor meets
+ * the app) where no dock exists, and "no dock rendered ⇒ no attribute" is
+ * exactly the answer it needs there.
+ */
+export const ASK_DOCK_ATTRIBUTE = 'data-bt-askdock';
+
 /** The panel's own trigger, found by the ARIA relationship it already declares. */
 const TRIGGER_SELECTOR = `[aria-controls="${ASK_DOCK_ID}"]`;
 
@@ -140,6 +154,16 @@ export function AskDock() {
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open, pinned, eligible]);
 
+  // Publish the panel's presence for the one rule that has to yield to it (see
+  // ASK_DOCK_ATTRIBUTE). Keyed on the same condition as the render below, so the
+  // attribute is up for exactly as long as the panel is.
+  const onScreen = open && eligible;
+  useEffect(() => {
+    if (!onScreen) return;
+    document.documentElement.setAttribute(ASK_DOCK_ATTRIBUTE, 'open');
+    return () => document.documentElement.removeAttribute(ASK_DOCK_ATTRIBUTE);
+  }, [onScreen]);
+
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (event.key !== 'Escape') return;
     // Anything modal above us owns Escape; the panel closes once nothing does.
@@ -150,9 +174,10 @@ export function AskDock() {
     closeAndRestoreFocus();
   }
 
-  // Below the breakpoint the panel does not exist at all (the rail row stays a
-  // link to `/ask`). The persisted state is left ALONE, so widening the window
-  // brings the panel back exactly as the user left it.
+  // Below the breakpoint — or with no local AI provider configured, which makes
+  // every AI surface disappear (§6.18) — the panel does not exist at all (the
+  // rail row stays a link to `/ask`). The persisted state is left ALONE, so
+  // widening the window brings the panel back exactly as the user left it.
   if (!open || !eligible) return null;
 
   return (

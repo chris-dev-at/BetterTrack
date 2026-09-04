@@ -424,7 +424,8 @@
     "expandRail": "Navigation ausklappen",
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
-    "collapseSection": "{{section}} einklappen"
+    "collapseSection": "{{section}} einklappen",
+    "back": "Zur\u00fcck"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -2102,7 +2103,9 @@
       "perMonth": "prognostiziert / Monat",
       "perYear": "prognostiziert / Jahr",
       "projectionUnresolved": "Ein prognostizierter Gesamtbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück. Die Termine unten sind davon nicht betroffen.",
+      "projectionTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb zeigen wir keinen Gesamtbetrag. Die Termine unten sind davon nicht betroffen.",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
+      "calendarTruncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
@@ -2376,6 +2379,7 @@
       },
       "earnings": {
         "heading": "Anstehende Quartalszahlen",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
         "held": "Gehalten",
         "watched": "Beobachtet",
         "heldTitle": "Du hältst diesen Wert",
@@ -2643,7 +2647,14 @@
         "capReached": "Du hast das heutige KI-Limit erreicht. Es wird morgen zurückgesetzt.",
         "error": "Daraus konnte kein Korb entworfen werden. Formuliere es anders.",
         "applied": "{{count}} Positionen vorausgefüllt — Gewichte prüfen und speichern.",
-        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:"
+        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:",
+        "reviewTitle": "KI-Entwurf prüfen",
+        "reviewDraft": "Entwurf bereit: {{count}} Positionen. Es ändert sich nichts, bis du ihn übernimmst.",
+        "replaceWarning": "Beim Übernehmen werden alle {{count}} Positionen in „{{name}}“ ersetzt.",
+        "apply": "Entwurf übernehmen",
+        "discard": "Entwurf verwerfen",
+        "nothingSavedYet": "Es wurde noch nichts gespeichert — beim Verwerfen bleibt dein Blueprint unverändert.",
+        "notAdvice": "KI-generiert und nur informativ — keine Anlageberatung."
       },
       "positionsHeading": "Positionen",
       "autoBalance": "Auto-Balance",
@@ -2769,6 +2780,7 @@
         "dividends": "Erwartete Dividenden"
       },
       "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
+      "dividendsTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
       "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
@@ -3012,7 +3024,8 @@
       "emptyTitle": "Keine aktuellen Nachrichten",
       "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest.",
       "unavailableTitle": "Nachrichten sind hier deaktiviert",
-      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt."
+      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt.",
+      "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige sind hier nicht erfasst."
     },
     "comingSoon": {
       "overview": {
@@ -3358,8 +3371,10 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "actionAdd": "Zusätzlich mit dieser Person teilen",
           "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
           "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
+          "confirmGroupDetach": "Mir ist bewusst, dass die aktuellen Mitglieder von {{group}} erhalten bleiben und {{username}} hinzukommt, das Element der Gruppe {{group}} danach aber nicht mehr folgt — spätere Änderungen an der Gruppe ändern dann nicht mehr, wer es sehen kann.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -5097,7 +5112,7 @@
         },
         "ai": {
           "name": "KI",
-          "description": "KI-Einblicke und Assistent (reserviert – noch nicht gebaut)."
+          "description": "KI-Portfolio-Einblicke und der Sprach-Blueprint-Builder (lokaler Anbieter)."
         }
       }
     },
@@ -6570,6 +6585,15 @@
       "body": "Maskiert jeden absoluten Betrag in der App — zeig BetterTrack anderen, ohne Zahlen offenzulegen."
     }
   },
+  "pwa": {
+    "install": {
+      "title": "BetterTrack installieren",
+      "body": "Füge es zu diesem Gerät hinzu — dann öffnet es sich in einem eigenen Fenster.",
+      "iosBody": "Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.",
+      "action": "Installieren",
+      "dismiss": "Nicht installieren"
+    }
+  },
   "parked": {
     "flag": "In Arbeit",
     "foot": "Im Produktplan reserviert — diese Oberfläche wartet auf ihre Umsetzung.",
@@ -6739,6 +6763,7 @@
     "ask": {
       "title": "BetterTrack fragen",
       "body": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. KI-Insights und der Sprach-Blueprint-Builder sind heute schon live; der volle Arbeitsbereich landet hier.",
+      "bodyUnavailable": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. Dieser Arbeitsbereich landet hier, sobald er gebaut ist.",
       "p1": "Du wählst genau, welche Portfolios die Antwort lesen darf",
       "p2": "Jede Zahl verlinkt zurück auf Datensätze und Annahmen",
       "p3": "Szenario-Antworten öffnen sich als Workbench-Entwürfe",

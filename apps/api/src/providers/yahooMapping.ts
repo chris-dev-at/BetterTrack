@@ -1,7 +1,9 @@
+import { DIVIDEND_FORWARD_YIELD_MAX } from '@bettertrack/contracts';
 import type {
   AssetFundamentals,
   AssetType,
   CurrencyCode,
+  DividendAmountBasis,
   DividendEvent,
   DividendEvents,
   EarningsEvent,
@@ -352,16 +354,45 @@ export function mapDividendEvents(
       : [];
 
   const detail = summary.summaryDetail ?? {};
-  const forwardYield = typeof detail.dividendYield === 'number' ? detail.dividendYield : null;
-  const trailingRaw =
-    typeof detail.trailingAnnualDividendRate === 'number'
-      ? detail.trailingAnnualDividendRate
-      : typeof detail.dividendRate === 'number'
-        ? detail.dividendRate
-        : null;
-  const trailingAmount = trailingRaw != null ? trailingRaw * scale : null;
 
-  return { currency, history, upcoming, forwardYield, trailingAmount };
+  // `forwardYield` is contracted as a FRACTION (0.015 ≈ 1.5 %). Yahoo has
+  // shipped both conventions for `dividendYield` over the years, and a percent
+  // value forwarded as a fraction renders 100× wrong wherever it is multiplied
+  // out. Anything outside the contract's range is therefore not a plausible
+  // yield but a unit mismatch: drop it (an absent figure, never a wrong one).
+  const yieldRaw = detail.dividendYield;
+  const forwardYield =
+    typeof yieldRaw === 'number' &&
+    Number.isFinite(yieldRaw) &&
+    yieldRaw >= 0 &&
+    yieldRaw <= DIVIDEND_FORWARD_YIELD_MAX
+      ? yieldRaw
+      : null;
+
+  // DECISION (#1741): the two annual-per-share figures Yahoo can supply are
+  // DIFFERENT bases — `trailingAnnualDividendRate` is a realized TTM sum (it
+  // includes special dividends), `dividendRate` is the forward-annualized
+  // regular rate (it does not) — and right after a special payout they differ by
+  // a large factor. Rather than pick one and lose the other, the number now
+  // travels WITH its basis, so a projection can state what it used. The
+  // preference order is unchanged (realized TTM when Yahoo has it, the
+  // forward-annualized rate otherwise): this publishes the basis, it does not
+  // re-pick the number.
+  const trailing: { raw: number; basis: DividendAmountBasis } | null =
+    typeof detail.trailingAnnualDividendRate === 'number'
+      ? { raw: detail.trailingAnnualDividendRate, basis: 'trailing-12m' }
+      : typeof detail.dividendRate === 'number'
+        ? { raw: detail.dividendRate, basis: 'forward-annualized' }
+        : null;
+
+  return {
+    currency,
+    history,
+    upcoming,
+    forwardYield,
+    trailingAmount: trailing ? trailing.raw * scale : null,
+    trailingAmountBasis: trailing?.basis ?? null,
+  };
 }
 
 /**

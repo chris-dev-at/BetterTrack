@@ -1825,6 +1825,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     dataExport: {
       purgeUserArtifacts: (userId: string) => exportHolder.service!.purgeUserArtifacts(userId),
     },
+    audience,
   });
 
   // Account data export (§13.4 V4-P6a, #494): the request handler enqueues the

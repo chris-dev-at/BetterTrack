@@ -58,6 +58,88 @@ async function seedPortfolio(userId: string, name: string): Promise<string> {
   return row!.id;
 }
 
+/**
+ * Everything a user of the V5-P9 expense area + the V5 cash-fusion labels owns:
+ * categories/transactions/rules/budgets, and tags/movement links/budgets/rules/
+ * rule links on the cash ledger. Every value carries `label` so a cross-user
+ * assertion can look for the OTHER user's rows by content, not just by id.
+ */
+async function seedExpenseAndCashSurface(
+  userId: string,
+  label: string,
+): Promise<Record<string, string>> {
+  const portfolioId = await seedPortfolio(userId, `${label}-Cash`);
+  const [source] = await harness.db
+    .insert(schema.portfolioCashSources)
+    .values({ portfolioId, name: `${label}-Bank`, type: 'bank', isMain: true })
+    .returning({ id: schema.portfolioCashSources.id });
+  const [movement] = await harness.db
+    .insert(schema.portfolioCashMovements)
+    .values({
+      portfolioId,
+      sourceId: source!.id,
+      kind: 'deposit',
+      amountEur: '100',
+      executedAt: new Date('2026-03-01T00:00:00.000Z'),
+      note: `${label}_MOVEMENT`,
+    })
+    .returning({ id: schema.portfolioCashMovements.id });
+  const [tag] = await harness.db
+    .insert(schema.cashTags)
+    .values({ userId, name: `${label}-Food` })
+    .returning({ id: schema.cashTags.id });
+  const [movementTag] = await harness.db
+    .insert(schema.cashMovementTags)
+    .values({ movementId: movement!.id, tagId: tag!.id })
+    .returning({ id: schema.cashMovementTags.id });
+  const [cashBudget] = await harness.db
+    .insert(schema.cashBudgets)
+    .values({ portfolioId, tagId: tag!.id, amount: '50.00' })
+    .returning({ id: schema.cashBudgets.id });
+  const [cashRule] = await harness.db
+    .insert(schema.cashRules)
+    .values({ userId, matchType: 'contains', pattern: `${label}-REWE` })
+    .returning({ id: schema.cashRules.id });
+  const [cashRuleTag] = await harness.db
+    .insert(schema.cashRuleTags)
+    .values({ ruleId: cashRule!.id, tagId: tag!.id })
+    .returning({ id: schema.cashRuleTags.id });
+  const [category] = await harness.db
+    .insert(schema.expenseCategories)
+    .values({ userId, name: `${label}-Groceries` })
+    .returning({ id: schema.expenseCategories.id });
+  const [expense] = await harness.db
+    .insert(schema.expenseTransactions)
+    .values({
+      userId,
+      categoryId: category!.id,
+      amount: '12.34',
+      bookedOn: '2026-03-02',
+      description: `${label}_EXPENSE`,
+    })
+    .returning({ id: schema.expenseTransactions.id });
+  const [expenseRule] = await harness.db
+    .insert(schema.expenseRules)
+    .values({ userId, categoryId: category!.id, matchType: 'contains', pattern: `${label}-BILLA` })
+    .returning({ id: schema.expenseRules.id });
+  const [expenseBudget] = await harness.db
+    .insert(schema.expenseBudgets)
+    .values({ userId, categoryId: category!.id, amount: '200.00' })
+    .returning({ id: schema.expenseBudgets.id });
+
+  return {
+    expenseCategories: category!.id,
+    expenseTransactions: expense!.id,
+    expenseRules: expenseRule!.id,
+    expenseBudgets: expenseBudget!.id,
+    cashTags: tag!.id,
+    cashMovementTags: movementTag!.id,
+    cashBudgets: cashBudget!.id,
+    cashRules: cashRule!.id,
+    cashRuleTags: cashRuleTag!.id,
+  };
+}
+
 async function seedPendingPortfolioMoveOut(userId: string, portfolioId: string): Promise<void> {
   await harness.db.insert(schema.portfolioVaultTransitionStates).values({
     portfolioId,
@@ -242,6 +324,238 @@ describe('account data export', () => {
       status: 'new',
     });
     expect(feedbackRows).not.toContainEqual(expect.objectContaining({ id: bobFeedback!.id }));
+  });
+
+  /**
+   * #1711: a user of the expense tracker used to receive a ZIP with ZERO of their
+   * hand-entered expenses, categories, rules and budgets, and none of the tags,
+   * budgets and rules they had applied to their cash movements — disclosed only
+   * as a line in `manifest.json`'s `skippedTables`. Both directions are asserted
+   * for both users, so the new reads are proved scoped as well as present.
+   */
+  it('carries the expense area and the cash-fusion labels, and only the owner’s rows', async () => {
+    const alice = await harness.seedUser({ email: 'exp-a@bettertrack.test', username: 'expa' });
+    const bob = await harness.seedUser({ email: 'exp-b@bettertrack.test', username: 'expb' });
+    const aliceIds = await seedExpenseAndCashSurface(alice.id, 'ALICE');
+    const bobIds = await seedExpenseAndCashSurface(bob.id, 'BOB');
+
+    const download = async (user: { email: string; password: string }) => {
+      const agent = await loginAgent(harness.app, user.email, user.password);
+      const requested = await agent
+        .post('/api/v1/account/export')
+        .set(...XRW)
+        .send({ password: user.password });
+      expect(requested.status).toBe(200);
+      const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+      const dl = await agent
+        .post('/api/v1/account/export/download')
+        .set(...XRW)
+        .send({ token: downloadToken })
+        .responseType('blob');
+      expect(dl.status).toBe(200);
+      return unzipText(dl.body as Buffer);
+    };
+
+    const entities = Object.keys(aliceIds);
+    for (const [user, own, other, otherLabel] of [
+      [alice, aliceIds, bobIds, 'BOB'],
+      [bob, bobIds, aliceIds, 'ALICE'],
+    ] as const) {
+      const files = await download(user);
+      for (const entity of entities) {
+        const raw = files[`data/${entity}.json`];
+        expect(raw, `missing data/${entity}.json`).toBeTruthy();
+        const rows = JSON.parse(raw!) as { id: string }[];
+        expect(rows.length, `data/${entity}.json is empty`).toBeGreaterThan(0);
+        expect(rows.map((row) => row.id)).toContain(own[entity]);
+        // Not one row belonging to the other account, by id or by content.
+        expect(rows.map((row) => row.id)).not.toContain(other[entity]);
+        expect(raw).not.toContain(otherLabel);
+      }
+    }
+  });
+
+  /**
+   * #1711: `holdings.csv` summed `numeric(20,8)` quantities as floats and filtered
+   * on a strict `!== 0`, so buy 0.1 + buy 0.2 − sell 0.3 printed a closed position
+   * as `5.551115123125783e-17`. The ZIP now applies the domain's `QTY_EPSILON`,
+   * the same rule the app's holdings view uses.
+   *
+   * The same float sum leaves the same dust on a position that is genuinely held
+   * (buy 0.1 + buy 0.2 → `0.30000000000000004`), so the third asset here pins the
+   * held case: the CSV snaps the net back to the column's own 8-decimal scale and
+   * prints `0.3`, the quantity the app shows.
+   */
+  it('leaves a fully closed position out of holdings.csv instead of printing float dust', async () => {
+    const user = await harness.seedUser({ email: 'dust@bettertrack.test', username: 'dust' });
+    const portfolioId = await seedPortfolio(user.id, 'Dust');
+    const [closed, held, fractional] = await harness.db
+      .insert(schema.assets)
+      .values([
+        {
+          providerId: 'yahoo',
+          providerRef: 'EXPORT-DUST-CLOSED',
+          type: 'stock',
+          symbol: 'DUSTC',
+          name: 'Closed position',
+          currency: 'EUR',
+          exchange: 'XETRA',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'EXPORT-DUST-HELD',
+          type: 'stock',
+          symbol: 'DUSTH',
+          name: 'Held position',
+          currency: 'EUR',
+          exchange: 'XETRA',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'EXPORT-DUST-FRACTIONAL',
+          type: 'stock',
+          symbol: 'DUSTF',
+          name: 'Held fractional position',
+          currency: 'EUR',
+          exchange: 'XETRA',
+        },
+      ])
+      .returning({ id: schema.assets.id });
+    await harness.db.insert(schema.transactions).values([
+      {
+        portfolioId,
+        assetId: closed!.id,
+        side: 'buy',
+        quantity: '0.1',
+        price: '10',
+        executedAt: new Date('2026-02-01T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: closed!.id,
+        side: 'buy',
+        quantity: '0.2',
+        price: '10',
+        executedAt: new Date('2026-02-02T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: closed!.id,
+        side: 'sell',
+        quantity: '0.3',
+        price: '11',
+        executedAt: new Date('2026-02-03T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: held!.id,
+        side: 'buy',
+        quantity: '2',
+        price: '10',
+        executedAt: new Date('2026-02-04T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: fractional!.id,
+        side: 'buy',
+        quantity: '0.1',
+        price: '10',
+        executedAt: new Date('2026-02-05T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: fractional!.id,
+        side: 'buy',
+        quantity: '0.2',
+        price: '10',
+        executedAt: new Date('2026-02-06T00:00:00.000Z'),
+      },
+    ]);
+
+    const collected = await collectUserExport(harness.db, user.id);
+    const lines = collected.csv.holdings.trim().split('\n');
+    expect(lines[0]).toBe('portfolioId,assetId,netQuantity');
+    expect(collected.csv.holdings).not.toContain(closed!.id);
+    // Dust would surface as scientific notation in the quantity column, so assert
+    // there rather than over the whole CSV: a UUID group boundary ("…b95e-1196…")
+    // matches /e-\d/ by itself, which failed this test on the ids alone.
+    for (const line of lines.slice(1)) expect(line.split(',').at(-1)).not.toMatch(/e/i);
+    expect(lines.slice(1).sort()).toEqual(
+      [`${portfolioId},${held!.id},2`, `${portfolioId},${fractional!.id},0.3`].sort(),
+    );
+  });
+
+  /**
+   * `cash_movement_tags` is scoped by the caller's CLEARTEXT portfolio ids —
+   * bound as portfolio ids, not as the resolved movement ids, because a movement
+   * set grows with the ledger and would push the statement past the postgres
+   * 65_534 bind-parameter cap on an account the row ceiling still admits. The two
+   * scopings must select the same links, so this pins the boundary the swap has
+   * to preserve on an account that owns BOTH kinds of portfolio: the vault-backed
+   * one's links stay out while the cleartext one's ride along, and the tag itself
+   * — user config either way — exports regardless of which movements it labels.
+   */
+  it('keeps a vault-backed portfolio’s cash-movement links out while carrying the cleartext ones', async () => {
+    const user = await harness.seedUser({ email: 'link@bettertrack.test', username: 'linkscope' });
+    const vaultId = '00000000-0000-7000-8000-0000000009c1';
+    await harness.db.insert(schema.vaults).values({
+      id: vaultId,
+      userId: user.id,
+      name: 'LINK_SCOPE_VAULT',
+      media: ['server'],
+      driveConnectionId: null,
+      headerDocId: '00000000-0000-7000-8000-0000000009c2',
+      commonDocId: '00000000-0000-7000-8000-0000000009c3',
+      retirementProofPublicKey: 'link-scope-verifier',
+      keyFingerprint: 'link-scope-fingerprint',
+    });
+    const cleartextPortfolioId = await seedPortfolio(user.id, 'Link-scope cleartext');
+    const lockedPortfolioId = await seedPortfolio(user.id, 'Link-scope locked');
+    await harness.db
+      .update(schema.portfolios)
+      .set({ vaultId })
+      .where(eq(schema.portfolios.id, lockedPortfolioId));
+
+    const [tag] = await harness.db
+      .insert(schema.cashTags)
+      .values({ userId: user.id, name: 'Link-scope tag' })
+      .returning({ id: schema.cashTags.id });
+    const movementIds: Record<'cleartext' | 'locked', string> = {
+      cleartext: '',
+      locked: '',
+    };
+    for (const [key, portfolioId] of [
+      ['cleartext', cleartextPortfolioId],
+      ['locked', lockedPortfolioId],
+    ] as const) {
+      const [source] = await harness.db
+        .insert(schema.portfolioCashSources)
+        .values({ portfolioId, name: `${key}-bank`, type: 'bank', isMain: true })
+        .returning({ id: schema.portfolioCashSources.id });
+      const [movement] = await harness.db
+        .insert(schema.portfolioCashMovements)
+        .values({
+          portfolioId,
+          sourceId: source!.id,
+          kind: 'deposit',
+          amountEur: '25',
+          executedAt: new Date('2026-04-01T00:00:00.000Z'),
+        })
+        .returning({ id: schema.portfolioCashMovements.id });
+      movementIds[key] = movement!.id;
+      await harness.db
+        .insert(schema.cashMovementTags)
+        .values({ movementId: movement!.id, tagId: tag!.id });
+    }
+
+    const collected = await collectUserExport(harness.db, user.id);
+    expect(collected.entities.cashMovementTags).toEqual([
+      expect.objectContaining({ movementId: movementIds.cleartext, tagId: tag!.id }),
+    ]);
+    expect(collected.entities.cashMovements).toEqual([
+      expect.objectContaining({ id: movementIds.cleartext }),
+    ]);
+    expect(collected.entities.cashTags).toEqual([expect.objectContaining({ id: tag!.id })]);
   });
 
   it('omits the admin-workspace feedback columns from the submitter’s export', async () => {

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { cloneElement, isValidElement } from 'react';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type {
   AnalyticsSeriesResponse,
@@ -53,7 +53,7 @@ vi.mock('../../lib/featureFlags', async (importOriginal) => ({
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { ApiError } from '../../lib/apiClient';
-import { formatMoney } from '../../lib/format';
+import { formatMoney, setMoneyCurrency } from '../../lib/format';
 import { getPortfolioDividendProjectionFor } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
@@ -136,8 +136,8 @@ function analytics(cagrPct: number): AnalyticsSeriesResponse {
 const DIVIDENDS_OFF: ProjectedDividendIncomeResponse = {
   available: false,
   currency: 'EUR',
-  monthlyTotalEur: 0,
-  yearlyTotalEur: 0,
+  monthlyTotalBase: 0,
+  yearlyTotalBase: 0,
   holdings: [],
 };
 
@@ -194,14 +194,14 @@ function projectedStat(): HTMLElement {
  * with in these tests (50 000 € start, 5 %/yr, no orders, no dividends). `asOf`
  * is irrelevant without standing orders — nothing is booked on a calendar day.
  */
-function engineFinalValue(horizonYears: number, monthlyDividendEur = 0): number {
+function engineFinalValue(horizonYears: number, monthlyDividend = 0): number {
   const result = projectNetWorth({
     asOf: '2026-01-01',
-    startingNetWorthEur: 50000,
+    startingNetWorth: 50000,
     horizonYears,
     annualReturnPct: 5,
     standingOrders: [],
-    monthlyDividendEur,
+    monthlyDividend,
     whatIfPlans: [],
   });
   return result.base[result.base.length - 1]!.value;
@@ -453,8 +453,8 @@ test('the dividend factor toggle is absent when this deployment has no market in
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
     available: true,
     currency: 'EUR',
-    monthlyTotalEur: 100,
-    yearlyTotalEur: 1200,
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
     holdings: [],
   });
   renderSection();
@@ -479,6 +479,26 @@ test('an unresolved projection leaves the dividend factor visible but disabled',
   expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
 });
 
+const DIVIDENDS_TRUNCATED_NOTE =
+  'You hold more assets than we project in one pass, so this factor stays out of the projection.';
+
+test('an over-cap projection names the fan-out budget, not the unresolvable-holding reason', async () => {
+  // #1690 refuses a book past MARKET_INTEL_ROLLUP_MAX_ASSETS before spending any
+  // provider budget, so `available:false` arrives with `truncated:true`. The two
+  // refusals are different answers and must not share copy.
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    ...DIVIDENDS_OFF,
+    truncated: true,
+  });
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(screen.getByText(DIVIDENDS_TRUNCATED_NOTE)).toBeInTheDocument();
+  expect(screen.queryByText(DIVIDENDS_UNRESOLVED_NOTE)).not.toBeInTheDocument();
+});
+
 test('a disabled dividend factor contributes nothing to the projected curve', async () => {
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_OFF);
   renderSection();
@@ -497,8 +517,8 @@ test('the dividend factor toggle appears when the provider is configured', async
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
     available: true,
     currency: 'EUR',
-    monthlyTotalEur: 100,
-    yearlyTotalEur: 1200,
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
     holdings: [],
   });
   const user = userEvent.setup();
@@ -535,12 +555,12 @@ const INCOME_BY_PORTFOLIO: Record<string, number> = {
 };
 
 function projectionFor(portfolioId: string): ProjectedDividendIncomeResponse {
-  const monthlyTotalEur = INCOME_BY_PORTFOLIO[portfolioId] ?? 0;
+  const monthlyTotalBase = INCOME_BY_PORTFOLIO[portfolioId] ?? 0;
   return {
     available: true,
     currency: 'EUR',
-    monthlyTotalEur,
-    yearlyTotalEur: monthlyTotalEur * 12,
+    monthlyTotalBase,
+    yearlyTotalBase: monthlyTotalBase * 12,
     holdings: [],
   };
 }
@@ -594,4 +614,88 @@ test('switching portfolios refetches rather than serving the other one’s figur
   await waitFor(() =>
     expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 900))),
   );
+});
+
+// ─── Denomination (#1741) ────────────────────────────────────────────────────
+//
+// `totals.totalValueEur` is denominated in the user's BASE despite its name, and
+// the dividend projection used to arrive pinned to EUR. The section added the
+// two and rendered the sum with the base's symbol, so a USD user's curve mixed
+// two currencies under one label. The projection now names its own denomination
+// and the section only spends it when it matches the balance it is added to —
+// the base that travels in the portfolio payload, not the display global.
+
+afterEach(() => setMoneyCurrency('EUR'));
+
+/** The same portfolio, denominated in another base (what its payload declares). */
+function portfolioInBase(baseCurrency: PortfolioResponse['baseCurrency']): PortfolioResponse {
+  return { ...PORTFOLIO, baseCurrency };
+}
+
+test('a USD-base curve spends the USD projection and renders it as USD', async () => {
+  setMoneyCurrency('USD');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('USD'));
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    available: true,
+    currency: 'USD',
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
+    holdings: [],
+  });
+  renderSection();
+  await screen.findByRole('checkbox', { name: 'Projected dividends' });
+
+  // $50,000 start + $100/month at 5 %/yr — one denomination end to end.
+  const projected = formatMoney(engineFinalValue(20, 100));
+  expect(projected).toContain('$');
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(projected));
+  expect(screen.getByTestId('projection-series-base')).toHaveTextContent(projected);
+  // And it is genuinely the dividend-bearing curve, not the bare one.
+  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineFinalValue(20)));
+});
+
+test('a projection in another denomination is not summed into the curve', async () => {
+  // A USD account holding a EUR-denominated projection (a cached response from
+  // before a base change). Adding €100/mo to a $50,000 balance is precisely the
+  // defect #1741 closes, so the factor stays out and says so.
+  setMoneyCurrency('USD');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('USD'));
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    available: true,
+    currency: 'EUR',
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
+    holdings: [],
+  });
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+});
+
+test('a stale portfolio payload does not let a fresh-base projection through', async () => {
+  // The narrow window the guard exists for, with the two responses landing on
+  // opposite sides of a base change: the display global and the projection have
+  // both moved to USD, the portfolio payload is still the cached EUR one. The
+  // balance being added to is EUR, so the USD projection is still a mix —
+  // comparing the projection to the display label alone would miss it.
+  setMoneyCurrency('USD');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('EUR'));
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    available: true,
+    currency: 'USD',
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
+    holdings: [],
+  });
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
 });
