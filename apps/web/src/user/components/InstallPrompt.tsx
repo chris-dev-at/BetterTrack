@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useT } from '../../i18n';
 import {
@@ -6,7 +6,7 @@ import {
   subscribeDisplayMode,
   supportsHomeScreenCoachMark,
 } from '../../lib/pwaDisplayMode';
-import { Button, Icon } from '../../ui/origin';
+import { Button } from '../../ui/origin';
 
 /**
  * The install affordance (PROJECTPLAN §7.1, V5-P13b).
@@ -68,8 +68,20 @@ export function InstallPrompt() {
   const [installedDisplay, setInstalledDisplay] = useState(isInstalledDisplay);
   const [coachMark, setCoachMark] = useState(false);
 
+  // The listener is registered once, so it reads the answer through a ref
+  // rather than closing over a `settled` that would be stale from mount on.
+  const settledRef = useRef(settled);
+  settledRef.current = settled;
+
   useEffect(() => {
     const onBeforeInstallPrompt = (event: Event): void => {
+      if (settledRef.current) {
+        // The user already answered, so this card will never render — and
+        // suppressing the browser's own affordance on top of that would leave
+        // them with strictly fewer install paths than before. Let Chromium's
+        // mini-infobar through and keep out of it.
+        return;
+      }
       // Chromium's own mini-infobar would otherwise appear beside this card.
       event.preventDefault();
       setDeferred(event as BeforeInstallPromptEvent);
@@ -158,16 +170,16 @@ export function InstallPrompt() {
             {t('pwa.install.action')}
           </Button>
         ) : null}
-        <button
+        <Button
           aria-label={t('pwa.install.dismiss')}
-          className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon"
           data-testid="pwa-install-dismiss"
+          icon="x"
+          iconOnly
           onClick={dismiss}
+          size="sm"
           title={t('pwa.install.dismiss')}
-          type="button"
-        >
-          <Icon name="x" size={15} />
-        </button>
+          variant="quiet"
+        />
       </div>
     </div>
   );

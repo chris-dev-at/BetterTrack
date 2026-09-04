@@ -7762,9 +7762,12 @@ html[data-bt-askdock='open'] .bt-install-prompt {
   /* `apple-mobile-web-app-status-bar-style: black-translucent` puts the status
      bar OVER the page, and unlike in Safari there is no chrome above the
      topbar to absorb it. The inset is 0 in a browser tab, so this is additive
-     only where it is needed. */
+     only where it is needed. The 6px base deliberately MATCHES the phone rule
+     above (`@media (max-width: 480px) .bt-topbar`): this longhand wins over
+     that shorthand at equal specificity, so anything else would silently
+     re-tune the phone topbar's spacing on top of adding the inset. */
   .bt-topbar {
-    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    padding-top: calc(6px + env(safe-area-inset-top, 0px));
   }
 
   /* No pull-to-refresh reload to fall back on, so the window must not
@@ -7775,7 +7778,7 @@ html[data-bt-askdock='open'] .bt-install-prompt {
 }
 
 :root[data-bt-display-mode='standalone'] .bt-topbar {
-  padding-top: calc(10px + env(safe-area-inset-top, 0px));
+  padding-top: calc(6px + env(safe-area-inset-top, 0px));
 }
 
 :root[data-bt-display-mode='standalone'] body {

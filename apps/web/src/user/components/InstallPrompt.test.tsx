@@ -144,6 +144,27 @@ describe('InstallPrompt', () => {
     expect(screen.queryByTestId('pwa-install-prompt')).not.toBeInTheDocument();
   });
 
+  /**
+   * Suppressing the browser's own affordance is only justified while ours is on
+   * screen. Once the user has answered, ours never renders again — leaving the
+   * event prevented would hand them strictly fewer install paths than they had
+   * before this component existed.
+   */
+  it('leaves the browser mini-infobar alone once the user has dismissed the card', async () => {
+    const user = userEvent.setup();
+    renderPrompt();
+    fireBeforeInstallPrompt();
+    await screen.findByTestId('pwa-install-prompt');
+    await user.click(screen.getByTestId('pwa-install-dismiss'));
+
+    const event = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
+      prompt: vi.fn(() => Promise.resolve()),
+    });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(screen.queryByTestId('pwa-install-prompt')).not.toBeInTheDocument();
+  });
+
   it('shows the Add-to-Home-Screen coach mark on iOS, where no event ever fires', async () => {
     stubNavigator({ userAgent: IOS_AGENT, standalone: false, maxTouchPoints: 5 });
     renderPrompt();

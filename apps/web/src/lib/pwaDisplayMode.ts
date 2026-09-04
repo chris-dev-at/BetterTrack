@@ -100,6 +100,12 @@ export function applyDisplayModeAttribute(standalone: boolean): void {
  * whole of what an install affordance can be there. Gated on the ABSENCE of
  * `onbeforeinstallprompt` so a browser that will offer the real prompt is never
  * handed instructions instead.
+ *
+ * `'standalone' in navigator` is a second deliberate narrowing: it is WebKit's
+ * own property, so Chrome/Firefox/Edge on iOS — which reach "Add to Home Screen"
+ * through their own menus, not Safari's Share sheet — get no card rather than
+ * two taps that do not exist where they are looking. Silence beats wrong
+ * instructions; the browsers' own menus still install the app.
  */
 export function supportsHomeScreenCoachMark(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
@@ -190,13 +196,12 @@ export function useStandaloneExternalLinks(active: boolean): void {
       if (event.defaultPrevented || event.button !== 0) return;
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 
+      // `closest('a')` also matches an SVG `<a>`, whose `href` is an
+      // `SVGAnimatedString` rather than a resolved URL. Narrow by instance so
+      // only real HTML anchors are read — deliberately, not by accident.
       const anchor = (event.target as Element | null)?.closest?.('a');
-      if (!anchor) return;
-      const href = standaloneEscapeHref(
-        anchor as HTMLAnchorElement,
-        window.location.origin,
-        appOrigins,
-      );
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      const href = standaloneEscapeHref(anchor, window.location.origin, appOrigins);
       if (href === null) return;
 
       event.preventDefault();

@@ -6577,9 +6577,9 @@
     "install": {
       "title": "Install BetterTrack",
       "body": "Add it to this device to open it in its own window.",
-      "iosBody": "Tap Share, then \u201cAdd to Home Screen\u201d.",
+      "iosBody": "Tap Share, then “Add to Home Screen”.",
       "action": "Install",
-      "dismiss": "Not now"
+      "dismiss": "Dismiss"
     }
   },
   "parked": {

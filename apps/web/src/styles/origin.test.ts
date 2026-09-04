@@ -288,10 +288,16 @@ describe('Installable PWA', () => {
     // The media query is the standard; the attribute is what pwaDisplayMode.ts
     // stamps from `navigator.standalone`, the only signal iOS below 16.4 gives.
     expect(originCss).toMatch(
-      /@media \(display-mode: standalone\) \{[\s\S]*?\.bt-topbar \{[^}]*padding-top: calc\(10px \+ env\(safe-area-inset-top, 0px\)\);/,
+      /@media \(display-mode: standalone\) \{[\s\S]*?\.bt-topbar \{[^}]*padding-top: calc\(6px \+ env\(safe-area-inset-top, 0px\)\);/,
     );
     expect(originCss).toMatch(
-      /:root\[data-bt-display-mode='standalone'\] \.bt-topbar \{[^}]*padding-top: calc\(10px \+ env\(safe-area-inset-top, 0px\)\);/,
+      /:root\[data-bt-display-mode='standalone'\] \.bt-topbar \{[^}]*padding-top: calc\(6px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+    // The standalone longhand overrides the phone rule's shorthand at equal
+    // specificity, so its base must stay that rule's own 6px: anything else
+    // silently re-tunes the phone topbar while claiming to add only the inset.
+    expect(originCss).toMatch(
+      /@media \(max-width: 480px\) \{[\s\S]*?\.bt-topbar \{[^}]*padding: calc\(6px \+ env\(safe-area-inset-top, 0px\)\)/,
     );
     expect(originCss).toMatch(
       /:root\[data-bt-display-mode='standalone'\] body \{[^}]*overscroll-behavior-y: none;/,
