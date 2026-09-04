@@ -21,6 +21,7 @@ const DIVIDENDS: DividendEvents = {
   upcoming: [],
   forwardYield: 0.0044,
   trailingAmount: 0.98,
+  trailingAmountBasis: 'trailing-12m',
 };
 
 interface IntelProvider extends AssetProvider {

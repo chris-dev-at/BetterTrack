@@ -17,11 +17,11 @@ import {
 function makeInput(overrides: Partial<ForecastInput> = {}): ForecastInput {
   return {
     asOf: '2026-01-15',
-    startingNetWorthEur: 1000,
+    startingNetWorth: 1000,
     horizonYears: 1,
     annualReturnPct: 0,
     standingOrders: [],
-    monthlyDividendEur: 0,
+    monthlyDividend: 0,
     whatIfPlans: [],
     ...overrides,
   };
@@ -29,11 +29,11 @@ function makeInput(overrides: Partial<ForecastInput> = {}): ForecastInput {
 
 /** A monthly cash-add flow (+EUR), open-ended, anchored on the 1st, from 2020. */
 function monthlyFlow(
-  amountEur: number,
+  amount: number,
   over: Partial<ForecastStandingOrder> = {},
 ): ForecastStandingOrder {
   return {
-    amountEur,
+    amount,
     cadence: 'monthly',
     anchorDay: 1,
     startDate: '2020-01-01',
@@ -82,13 +82,13 @@ describe('projectNetWorth — shape & dates', () => {
 
 describe('projectNetWorth — hand-computed fixtures (the gate criterion)', () => {
   test('flat balance when every factor is off', () => {
-    const result = projectNetWorth(makeInput({ startingNetWorthEur: 1000 }));
+    const result = projectNetWorth(makeInput({ startingNetWorth: 1000 }));
     expect(result.base.every((p) => p.value === 1000)).toBe(true);
   });
 
   test('pure lump growth: €1,000 at 10 %/yr reads €1,100 / €1,210 at 12 / 24 months', () => {
     const result = projectNetWorth(
-      makeInput({ startingNetWorthEur: 1000, annualReturnPct: 10, horizonYears: 2 }),
+      makeInput({ startingNetWorth: 1000, annualReturnPct: 10, horizonYears: 2 }),
     );
     expect(result.base[12]!.value).toBe(1100);
     expect(result.base[24]!.value).toBe(1210);
@@ -97,7 +97,7 @@ describe('projectNetWorth — hand-computed fixtures (the gate criterion)', () =
   test('zero-growth monthly contribution accumulates linearly', () => {
     // +100/mo for 12 months on a €1,000 base with no growth ⇒ €2,200.
     const result = projectNetWorth(
-      makeInput({ startingNetWorthEur: 1000, standingOrders: [monthlyFlow(100)] }),
+      makeInput({ startingNetWorth: 1000, standingOrders: [monthlyFlow(100)] }),
     );
     expect(result.base[6]!.value).toBe(1600);
     expect(last(result.base)).toBe(2200);
@@ -107,9 +107,9 @@ describe('projectNetWorth — hand-computed fixtures (the gate criterion)', () =
     // +200/mo order and +50/mo dividend on €1,000, no growth ⇒ €1,000 + 12·250.
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 1000,
+        startingNetWorth: 1000,
         standingOrders: [monthlyFlow(200)],
-        monthlyDividendEur: 50,
+        monthlyDividend: 50,
       }),
     );
     expect(last(result.base)).toBe(4000);
@@ -117,7 +117,7 @@ describe('projectNetWorth — hand-computed fixtures (the gate criterion)', () =
 
   test('a cash-deduct flow subtracts from net worth', () => {
     const result = projectNetWorth(
-      makeInput({ startingNetWorthEur: 5000, standingOrders: [monthlyFlow(-100)] }),
+      makeInput({ startingNetWorth: 5000, standingOrders: [monthlyFlow(-100)] }),
     );
     expect(last(result.base)).toBe(3800); // 5000 − 12·100
   });
@@ -125,8 +125,8 @@ describe('projectNetWorth — hand-computed fixtures (the gate criterion)', () =
 
 describe('projectNetWorth — factor toggling (base line responds)', () => {
   test('return factor on vs off', () => {
-    const on = projectNetWorth(makeInput({ startingNetWorthEur: 1000, annualReturnPct: 10 }));
-    const off = projectNetWorth(makeInput({ startingNetWorthEur: 1000, annualReturnPct: 0 }));
+    const on = projectNetWorth(makeInput({ startingNetWorth: 1000, annualReturnPct: 10 }));
+    const off = projectNetWorth(makeInput({ startingNetWorth: 1000, annualReturnPct: 0 }));
     expect(last(on.base)).toBe(1100);
     expect(last(off.base)).toBe(1000);
   });
@@ -139,8 +139,8 @@ describe('projectNetWorth — factor toggling (base line responds)', () => {
   });
 
   test('dividend factor on vs off', () => {
-    const withDiv = projectNetWorth(makeInput({ monthlyDividendEur: 50 }));
-    const without = projectNetWorth(makeInput({ monthlyDividendEur: 0 }));
+    const withDiv = projectNetWorth(makeInput({ monthlyDividend: 50 }));
+    const without = projectNetWorth(makeInput({ monthlyDividend: 0 }));
     expect(last(withDiv.base)).toBe(1600);
     expect(last(without.base)).toBe(1000);
   });
@@ -155,7 +155,7 @@ describe('projectNetWorth — factor toggling (base line responds)', () => {
             {
               id: 'own-return',
               label: 'Own return',
-              monthlyContributionEur: 100,
+              monthlyContribution: 100,
               annualReturnPct,
             },
           ],
@@ -182,7 +182,7 @@ describe('projectNetWorth — standing orders honor cadence & dates', () => {
     // Ends 2026-04-10; anchor-1 occurrences fire Feb, Mar, Apr, then stop.
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 0,
+        startingNetWorth: 0,
         standingOrders: [monthlyFlow(100, { endDate: '2026-04-10' })],
       }),
     );
@@ -194,7 +194,7 @@ describe('projectNetWorth — standing orders honor cadence & dates', () => {
   test('end date on the occurrence day is inclusive', () => {
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 0,
+        startingNetWorth: 0,
         standingOrders: [monthlyFlow(100, { anchorDay: 1, endDate: '2026-04-01' })],
       }),
     );
@@ -205,7 +205,7 @@ describe('projectNetWorth — standing orders honor cadence & dates', () => {
     // Starts 2026-06-15, anchor 20 ⇒ first fire in June (the 20th), 8 months left.
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 0,
+        startingNetWorth: 0,
         standingOrders: [monthlyFlow(100, { anchorDay: 20, startDate: '2026-06-15' })],
       }),
     );
@@ -216,10 +216,10 @@ describe('projectNetWorth — standing orders honor cadence & dates', () => {
   test('daily cadence contributes once per active day of the month', () => {
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 0,
+        startingNetWorth: 0,
         standingOrders: [
           {
-            amountEur: 10,
+            amount: 10,
             cadence: 'daily',
             anchorDay: null,
             startDate: '2020-01-01',
@@ -235,10 +235,10 @@ describe('projectNetWorth — standing orders honor cadence & dates', () => {
   test('daily cadence intersects its window with the month', () => {
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 0,
+        startingNetWorth: 0,
         standingOrders: [
           {
-            amountEur: 10,
+            amount: 10,
             cadence: 'daily',
             anchorDay: null,
             startDate: '2020-01-01',
@@ -257,8 +257,8 @@ describe('projectNetWorth — what-if overlays', () => {
     const result = projectNetWorth(
       makeInput({
         whatIfPlans: [
-          { id: 'p1', label: 'S&P 500', monthlyContributionEur: 100, annualReturnPct: null },
-          { id: 'p2', label: 'Bonds', monthlyContributionEur: 50, annualReturnPct: null },
+          { id: 'p1', label: 'S&P 500', monthlyContribution: 100, annualReturnPct: null },
+          { id: 'p2', label: 'Bonds', monthlyContribution: 50, annualReturnPct: null },
         ],
       }),
     );
@@ -271,7 +271,7 @@ describe('projectNetWorth — what-if overlays', () => {
     // No base growth/flows ⇒ base is flat 1000; +100/mo at 0 % ⇒ +1,200 at 12 mo.
     const result = projectNetWorth(
       makeInput({
-        whatIfPlans: [{ id: 'p', label: 'Plan', monthlyContributionEur: 100, annualReturnPct: 0 }],
+        whatIfPlans: [{ id: 'p', label: 'Plan', monthlyContribution: 100, annualReturnPct: 0 }],
       }),
     );
     const overlay = result.overlays[0]!;
@@ -283,9 +283,9 @@ describe('projectNetWorth — what-if overlays', () => {
     // Base at 10 % ⇒ 1100 at 12 mo; plan pinned to 0 % ⇒ +1,200 accumulation.
     const result = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 1000,
+        startingNetWorth: 1000,
         annualReturnPct: 10,
-        whatIfPlans: [{ id: 'p', label: 'Flat', monthlyContributionEur: 100, annualReturnPct: 0 }],
+        whatIfPlans: [{ id: 'p', label: 'Flat', monthlyContribution: 100, annualReturnPct: 0 }],
       }),
     );
     expect(last(result.base)).toBe(1100);
@@ -293,14 +293,12 @@ describe('projectNetWorth — what-if overlays', () => {
   });
 
   test('a plan with no own return uses the base return for its accumulation', () => {
-    const base = projectNetWorth(makeInput({ startingNetWorthEur: 0, annualReturnPct: 10 }));
+    const base = projectNetWorth(makeInput({ startingNetWorth: 0, annualReturnPct: 10 }));
     const withPlan = projectNetWorth(
       makeInput({
-        startingNetWorthEur: 0,
+        startingNetWorth: 0,
         annualReturnPct: 10,
-        whatIfPlans: [
-          { id: 'p', label: 'Plan', monthlyContributionEur: 100, annualReturnPct: null },
-        ],
+        whatIfPlans: [{ id: 'p', label: 'Plan', monthlyContribution: 100, annualReturnPct: null }],
       }),
     );
     // Base contributes nothing (starts at 0); the overlay is the plan's own FV.
@@ -340,7 +338,7 @@ describe('normalizeStandingOrders', () => {
       order({ kind: 'cash-add', amount: 200 }),
       order({ kind: 'cash-deduct', amount: 30 }),
     ]);
-    expect(normalized.map((o) => o.amountEur)).toEqual([200, -30]);
+    expect(normalized.map((o) => o.amount)).toEqual([200, -30]);
   });
 
   test('excludes paused orders', () => {
@@ -349,13 +347,13 @@ describe('normalizeStandingOrders', () => {
       order({ kind: 'cash-add', status: 'active', amount: 40 }),
     ]);
     expect(normalized).toHaveLength(1);
-    expect(normalized[0]!.amountEur).toBe(40);
+    expect(normalized[0]!.amount).toBe(40);
   });
 
   test('excludes archive-suspended orders while leaving unflagged active orders unchanged', () => {
     const active = order({ kind: 'cash-add', amount: 40 });
 
-    expect(normalizeStandingOrders([active])).toMatchObject([{ amountEur: 40 }]);
+    expect(normalizeStandingOrders([active])).toMatchObject([{ amount: 40 }]);
     expect(normalizeStandingOrders([{ ...active, suspendedByArchive: true }])).toEqual([]);
   });
 
@@ -376,5 +374,38 @@ describe('normalizeStandingOrders', () => {
       startDate: '2026-03-01',
       endDate: '2027-03-01',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Denomination (#1741)
+//
+// The projected dividend income used to arrive pinned to EUR while the starting
+// balance was in the user's base, so a USD/CHF/GBP user's curve summed two
+// currencies and rendered the total with one symbol. The engine's contract is
+// now explicit: it converts nothing, so whatever ONE denomination the caller
+// hands it comes back out — the dividend factor lands in the balance 1:1.
+
+describe('projectNetWorth — denomination (#1741)', () => {
+  test('the dividend factor enters the balance in the starting balance’s own units', () => {
+    // A USD-base account: $50,000 today and a $100/month projected dividend from
+    // a USD-denominated projection. No growth, so a year adds exactly 12 × 100
+    // of the SAME unit — a EUR figure smuggled in here would land as some other
+    // number entirely.
+    const usd = projectNetWorth(
+      makeInput({ startingNetWorth: 50_000, monthlyDividend: 100, horizonYears: 1 }),
+    );
+    expect(last(usd.base)).toBe(51_200);
+    expect(last(usd.base) - 50_000).toBe(12 * 100);
+  });
+
+  test('is currency-agnostic: identical inputs project identically in any base', () => {
+    // The engine holds no rate and no currency, so the ONLY way a base can reach
+    // the curve is through the caller's inputs. Pinning that keeps the mixing
+    // bug where it can be caught — at the boundary that resolves the factors.
+    const shape = { startingNetWorth: 50_000, monthlyDividend: 100, annualReturnPct: 7 };
+    const asUsd = projectNetWorth(makeInput(shape));
+    const asEur = projectNetWorth(makeInput(shape));
+    expect(asUsd.base).toEqual(asEur.base);
   });
 });

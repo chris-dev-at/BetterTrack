@@ -7,7 +7,7 @@ import { useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { useDeployCapability } from '../../lib/featureFlags';
-import { formatMoney } from '../../lib/format';
+import { formatMoney, getMoneyCurrency } from '../../lib/format';
 import {
   getPortfolioDividendProjectionFor,
   PORTFOLIO_DIVIDEND_PROJECTION_SCOPED_QUERY_KEY,
@@ -187,7 +187,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   }, [sampledReturnPct]);
 
   // ── Resolve the projection factors ──────────────────────────────────────────
-  const startingNetWorthEur = portfolioQuery.data?.totals.totalValueEur ?? 0;
+  const startingNetWorth = portfolioQuery.data?.totals.totalValueEur ?? 0;
   // `projectNetWorth` projects WHOLE years (it rounds its own input), so the
   // horizon is resolved to that same integer here, once, at the section
   // boundary: the label, the chart and the projected stat then all describe the
@@ -215,15 +215,23 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   // and explained, rather than removing the reason for the lower curve. Either
   // way an unusable factor contributes exactly 0, as before.
   const dividendProjection = marketIntel ? dividendQuery.data : undefined;
-  const dividendAvailable = dividendProjection?.available === true;
-  const dividendUnresolved = dividendProjection?.available === false;
-  const monthlyDividendEur =
-    dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalEur : 0;
+  // The projection now names its own denomination — the caller's base (§5.4) —
+  // and the balance it is added to is in that same base. They can still disagree
+  // for one render after a base change (a cached response), and adding a figure
+  // in another currency to this balance is exactly the defect #1741 closes: a
+  // mismatch counts as "could not resolve", so the factor contributes 0 and says
+  // so rather than silently distorting the curve.
+  const dividendDenominationMatches =
+    dividendProjection === undefined || dividendProjection.currency === getMoneyCurrency();
+  const dividendAvailable = dividendProjection?.available === true && dividendDenominationMatches;
+  const dividendUnresolved = dividendProjection !== undefined && !dividendAvailable;
+  const monthlyDividend =
+    dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalBase : 0;
 
   const whatIfPlans: ForecastWhatIfPlan[] = plans.map((plan, index) => ({
     id: plan.id,
     label: plan.label.trim() || t('forecast.projection.whatIf.defaultLabel', { n: index + 1 }),
-    monthlyContributionEur: safeNumber(plan.monthlyContribution),
+    monthlyContribution: safeNumber(plan.monthlyContribution),
     annualReturnPct: plan.ownReturn.trim() === '' ? null : safeNumber(plan.ownReturn),
   }));
 
@@ -231,20 +239,20 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     () =>
       projectNetWorth({
         asOf,
-        startingNetWorthEur,
+        startingNetWorth,
         horizonYears,
         annualReturnPct,
         standingOrders,
-        monthlyDividendEur,
+        monthlyDividend,
         whatIfPlans,
       }),
     [
       asOf,
-      startingNetWorthEur,
+      startingNetWorth,
       horizonYears,
       annualReturnPct,
       JSON.stringify(standingOrders),
-      monthlyDividendEur,
+      monthlyDividend,
       JSON.stringify(whatIfPlans),
     ],
   );
@@ -265,7 +273,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     return row;
   });
 
-  const finalBase = result.base[result.base.length - 1]?.value ?? startingNetWorthEur;
+  const finalBase = result.base[result.base.length - 1]?.value ?? startingNetWorth;
 
   // The base line plus each overlay, paired with a colour and final value — feeds
   // both the SVG lines and the accessible HTML legend the tests read.
@@ -435,7 +443,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <StatCard
           label={t('forecast.projection.startingLabel')}
-          value={formatMoney(startingNetWorthEur)}
+          value={formatMoney(startingNetWorth)}
         />
         <StatCard
           label={t('forecast.projection.projectedLabel', { years: horizonYears })}

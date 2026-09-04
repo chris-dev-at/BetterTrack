@@ -226,9 +226,14 @@ export function cachedIntel<T>(
   return { value, stale: false, asOf: INTEL_FETCHED_AT, ...overrides };
 }
 
-/** A canned {@link DividendEvents} payload, overridable per field. */
+/**
+ * A canned {@link DividendEvents} payload, overridable per field. The
+ * `trailingAmountBasis` is derived from the resulting amount unless the caller
+ * names one, so a fixture that only sets `trailingAmount` still satisfies the
+ * contract invariant "the basis is null exactly when the amount is".
+ */
 export function sampleDividendEvents(overrides: Partial<DividendEvents> = {}): DividendEvents {
-  return {
+  const merged = {
     currency: 'USD',
     history: [
       { exDate: '2026-02-07T00:00:00.000Z', payDate: null, amount: 0.24, currency: 'USD' },
@@ -244,7 +249,14 @@ export function sampleDividendEvents(overrides: Partial<DividendEvents> = {}): D
     ],
     forwardYield: 0.0044,
     trailingAmount: 0.98,
+    trailingAmountBasis: 'trailing-12m',
     ...overrides,
+  } satisfies DividendEvents;
+  return {
+    ...merged,
+    trailingAmountBasis:
+      overrides.trailingAmountBasis ??
+      (merged.trailingAmount == null ? null : merged.trailingAmountBasis),
   };
 }
 

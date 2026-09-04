@@ -181,6 +181,7 @@ beforeEach(() => {
     upcoming: [],
     forwardYield: null,
     trailingAmount: null,
+    trailingAmountBasis: null,
   });
   vi.mocked(useWatchlistMembership).mockReturnValue(makeWatchlistMembership());
   vi.mocked(useAddToWatchlist).mockReturnValue(makeAddToWatchlistMutation());
@@ -317,6 +318,7 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
     ],
     forwardYield: 0.0044,
     trailingAmount: 0.98,
+    trailingAmountBasis: 'trailing-12m' as const,
   };
 
   test('renders payout history, forward yield and next ex/pay dates from fixture data', async () => {

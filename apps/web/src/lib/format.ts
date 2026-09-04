@@ -123,6 +123,7 @@ interface LocaleFormatters {
   dateTimeSeconds: Intl.DateTimeFormat;
   date: Intl.DateTimeFormat;
   money: Map<string, Intl.NumberFormat>;
+  compactMoney: Map<string, Intl.NumberFormat>;
 }
 
 const localeCache = new Map<string, LocaleFormatters>();
@@ -179,6 +180,7 @@ function formatters(): LocaleFormatters {
         timeZone: DISPLAY_TIME_ZONE,
       }),
       money: new Map(),
+      compactMoney: new Map(),
     };
     localeCache.set(activeLocale, cached);
   }
@@ -213,6 +215,54 @@ function moneyFormatter(currency: string): Intl.NumberFormat {
   return formatter;
 }
 
+/**
+ * Compact money for a dense surface such as a chart axis: ICU's own
+ * short-compact notation, so the magnitude abbreviation follows the ACTIVE
+ * locale's own conventions (`1.2m` in en-GB, `1,2 Mio.` in de-AT) instead of a
+ * hardcoded `M`/`k` pair. CLDR is the authority on which magnitudes a locale
+ * abbreviates at all — German short-compact abbreviates millions but writes
+ * thousands out in full — so we take its answer rather than invent one.
+ *
+ * At most one decimal, and none when the value is whole (`999 €`, not `999,0 €`).
+ * Cached per locale + ISO code like {@link moneyFormatter}.
+ */
+function compactMoneyFormatter(currency: string): Intl.NumberFormat {
+  const cache = formatters().compactMoney;
+  let formatter = cache.get(currency);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(activeLocale, {
+      style: 'currency',
+      currency,
+      notation: 'compact',
+      compactDisplay: 'short',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 1,
+    });
+    cache.set(currency, formatter);
+  }
+  return formatter;
+}
+
+/**
+ * Re-compose ICU parts as symbol-LAST (§7.1), which Intl itself only does in
+ * some locales: drop the currency part and the spacing literal beside it, keep
+ * everything else (grouping, decimals, minus placement, a compact suffix like
+ * `Mio.`) exactly as ICU produced it, then append ` <symbol>`.
+ */
+function symbolLast(parts: Intl.NumberFormatPart[], currency: string): string {
+  const symbol = parts.find((part) => part.type === 'currency')?.value ?? currency;
+  const numeric = parts
+    .filter((part, index, all) => {
+      if (part.type === 'currency') return false;
+      // Drop the spacing literal that sits directly beside the currency symbol.
+      const beside = all[index - 1]?.type === 'currency' || all[index + 1]?.type === 'currency';
+      return !(part.type === 'literal' && beside);
+    })
+    .map((part) => part.value)
+    .join('');
+  return normalizeSpaces(`${numeric} ${symbol}`);
+}
+
 /** The locale's rendered currency symbol (`€`, `$`, `CHF`), for symbol-last composition. */
 function currencySymbolFor(currency: string): string {
   const parts = moneyFormatter(currency).formatToParts(0);
@@ -244,19 +294,27 @@ export function formatMoney(value: number | null | undefined, currency?: string)
   if (discreetMode) return DISCREET_MASK;
   currency ??= activeCurrency;
 
-  const parts = moneyFormatter(currency).formatToParts(withoutNegativeZero(value));
-  const symbol = parts.find((part) => part.type === 'currency')?.value ?? currency;
-  const numeric = parts
-    .filter((part, index, all) => {
-      if (part.type === 'currency') return false;
-      // Drop the spacing literal that sits directly beside the currency symbol.
-      const beside = all[index - 1]?.type === 'currency' || all[index + 1]?.type === 'currency';
-      return !(part.type === 'literal' && beside);
-    })
-    .map((part) => part.value)
-    .join('');
+  return symbolLast(moneyFormatter(currency).formatToParts(withoutNegativeZero(value)), currency);
+}
 
-  return normalizeSpaces(`${numeric} ${symbol}`);
+/**
+ * Money abbreviated for a chart axis, symbol-last and locale-aware:
+ * `formatCompactMoney(1_200_000)` → `"1,2 Mio. €"` (de-AT, EUR base), `"1.2M $"`
+ * (en-GB, USD base). The currency defaults to the user's **base currency**
+ * ({@link setMoneyCurrency}) exactly like {@link formatMoney} — an axis that
+ * hardcodes one labels the curve with a currency it never checked.
+ *
+ * Masked in discreet mode and {@link EM_DASH} for non-finite input, like every
+ * other absolute-amount helper here.
+ */
+export function formatCompactMoney(value: number | null | undefined, currency?: string): string {
+  if (!isFiniteNumber(value)) return EM_DASH;
+  if (discreetMode) return DISCREET_MASK;
+  currency ??= activeCurrency;
+  return symbolLast(
+    compactMoneyFormatter(currency).formatToParts(withoutNegativeZero(value)),
+    currency,
+  );
 }
 
 /**
