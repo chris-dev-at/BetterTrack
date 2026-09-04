@@ -1580,6 +1580,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The privacy-sensitive shortcut is intentionally absent unless the owner audience read succeeds; loading, forbidden, and absent remain indistinguishable.',
   },
   {
+    component: 'user/social/chatSurface.tsx',
+    read: 'ChipShareShortcut.groupsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The group roster decides whether the shortcut may exist at all: an unresolved or failed read cannot tell an already-admitted group member from an excluded one, so the shortcut stays absent exactly as it does for an unresolved audience read — a spinner or error card inside the chat bubble would advertise a prompt the client cannot yet justify. The full-fidelity path stays the AudiencePicker, which observes the same query key and renders that read’s own states.',
+    delegatedTo: 'AudiencePicker',
+  },
+  {
     component: 'user/components/CmdKPalette.tsx',
     read: 'CmdKPalette.capabilities',
     states: ['loading', 'error'],
@@ -2024,7 +2032,7 @@ export type V5AsyncStateDebtLedger = Readonly<
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
  *
- * 211 → 215 with the V5-P5 roll-up honesty pass (#1699): the two market-intel
+ * 215 → 219 with the V5-P5 roll-up honesty pass (#1699): the two market-intel
  * home widgets join the inventory with one digest/calendar read each (both
  * already draw skeletons, a terse unavailable state and an empty state), the
  * widget catalog gains the deploy-capability read that decides whether it offers
@@ -2034,8 +2042,14 @@ export type V5AsyncStateDebtLedger = Readonly<
  * an unresolved or failed fetch leaves both surfaces exactly as they were — and
  * are recorded as exemptions above rather than as debt, so the ceiling stays at
  * zero.
+ *
+ * 219 → 220 with the V5-P8 chat chip group rung (#1726): `ChipShareShortcut`
+ * resolves the shared group's live roster so a recipient the server already
+ * admits through the `group` rung is not falsely prompted. Like the audience
+ * read beside it the shortcut is simply absent while that roster is unresolved
+ * or failing, recorded as an exemption above, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 219;
+export const V5_ASYNC_READ_SITE_BASELINE = 220;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

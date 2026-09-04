@@ -677,6 +677,7 @@ export const REQUEST_COST_KEYS = [
   'backtestPreview',
   'analyticsSeries',
   'importCreate',
+  'importRowResolve',
 ] as const;
 export type RequestCostKey = (typeof REQUEST_COST_KEYS)[number];
 
@@ -1171,6 +1172,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
   // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
+  // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    6  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
   //
   // A note on `analyticsSeries`, so the next reader does not re-derive it from
   // the wrong bound: its work is sized by the DATA, never by the requested
@@ -1187,15 +1189,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // × the overlay count) in a follow-up.
   //
   // MODELLED NORMAL-USE BAR for the unit budget — the same one active user,
-  // pessimistically doing all four things inside the SAME minute (nobody
+  // pessimistically doing all five things inside the SAME minute (nobody
   // actually does):
   //
   //   * builder weight-tuning, one debounced preview every ~3 s  = 20 × 25 = 500
   //   * analytics range/filter/compare changes, ~12 refetches     = 12 × 10 = 120
   //   * shared-with-me list on focus + reconnect refetch, ~6      =  6 × 10 =  60
   //   * two CSV uploads                                          =  2 × 100 = 200
+  //   * a bulk kind sweep over a statement's undecided rows, ~20  = 20 ×  6 = 120
   //
-  //   ⇒ worst realistic 1 min ≈ 880 units → expensive 3000  (3.4×)
+  //   ⇒ worst realistic 1 min ≈ 1000 units → expensive 3000  (3.0×)
+  //
+  // The sweep is a BURST, not a rate: 20 is the bar for a normal statement's
+  // undecided rows, and the budget leaves room for ~500 confirmations inside one
+  // minute before the units run out. That ceiling sits just under `general`'s
+  // 600 req/min, which is what a sweep over an unusually large batch would meet
+  // first anyway — so the weight bounds a caller by the work it asks for without
+  // becoming the thing that stops an ordinary human confirming their file.
   //
   // …and, on the other side, every weight is large enough that the COST budget
   // bites BEFORE the request COUNT one would: a caller doing nothing but these
@@ -1468,12 +1478,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         decaySec: general.decaySec,
       },
       // Per-endpoint weights, in units. Rationale for each number — and the
-      // modelled bar the budget above clears by 3.4× — is in the §10 COST TABLE.
+      // modelled bar the budget above clears by 3.0× — is in the §10 COST TABLE.
       requestCosts: {
         socialShared: 10,
         backtestPreview: 25,
         analyticsSeries: 10,
         importCreate: 100,
+        importRowResolve: 6,
       },
       // Provider search, per user (§6.2). 300/min — its own generous budget
       // rather than a share of `general`, because the read is cheap and bounded:
@@ -1567,6 +1578,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // 120/min sustained (2 req/s) so scripted polling stays clear — with the
       // general escalation ladder for a runaway client. Bearer requests key this
       // by key id, independent of the per-user general counter.
+      // Note (#1730): that independence is now real. Bearer traffic used to pass
+      // the app-wide `general` guard first, so an admin-defined tier above the
+      // general budget (600/min) was undeliverable and a runaway integration
+      // could spend — and cool down — the owner's interactive browser
+      // allowance. `general` now skips bearer requests entirely, so this
+      // schedule and the admin tiers above it are the whole budget a key has.
       apiKey: {
         windowSec: 60,
         limit: 120,

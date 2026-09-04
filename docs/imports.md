@@ -30,6 +30,18 @@ portfolio + cash source.
      recorded (an existing transaction, dividend or external cash movement) or
      an earlier row of the same file. Skipped on apply, so re-importing the
      same file is a no-op.
+
+     **Cash rows are compared on `date + direction + amount + memo`**, and by
+     _occurrence_ rather than by mere existence. A bank statement legitimately
+     repeats an amount: two €500 deposits on the same day with different memos
+     ("Gehalt", "Bonus") are two movements, and even two byte-identical lines
+     are two movements. So the memo is part of the key, and a file line is a
+     duplicate only when the ledger already holds an unclaimed movement
+     matching it — the second identical line compares against the second
+     recorded movement, not against the first one twice. Re-importing the same
+     file therefore still dedupes every cash row, because the movements it
+     booked carry that memo and each line claims exactly the one it created.
+
    - `error` — the row itself is malformed (unknown type, unparseable
      date/number, non-EUR cash row …). Reported with its line number while the
      rest of the file still lands — never all-or-nothing. The framework
@@ -39,6 +51,7 @@ portfolio + cash source.
      below 10^12, prices/fees/amounts below 10^14 — derived from the column
      precision/scale), fails its **row** even when a mapper let it through, so
      no mapper can ever take a whole upload down with one malformed value.
+
 3. **Apply** (`POST /imports/:batchId/apply`): rows apply **chronologically**,
    each through the existing services — buys/sells via the portfolio service
    (oversell semantics and, when enabled, cash linkage included), dividends via
@@ -55,6 +68,10 @@ portfolio + cash source.
    re-checked against live data at apply time; rows the preview already flagged
    `duplicate` keep that verdict — deleting a mis-imported entity makes the row
    importable again via a **fresh upload**, not by re-applying an old preview.
+   Each row's outcome is written to the database as that row settles, not
+   flushed at the end: an apply interrupted halfway leaves the rows that booked
+   stamped `applied` and the untouched ones with no result at all, so the
+   preview still says exactly what landed.
    - `cashSourceId` picks the cash source for dividends and cash rows (the
      portfolio's Main when omitted).
    - `linkCashOnTrades` additionally funds buys from / credits sell proceeds to
