@@ -622,6 +622,11 @@ Prometheus. That opt-in is off by default and password-gated; see
 - **From your LAN** — set `BT_OBS_BIND_HOST` in `infra/.env` to the host's LAN
   IP (e.g. `192.168.1.10`), `docker compose up -d`, then open
   `http://192.168.1.10:3001`. **Never** set it to `0.0.0.0` on a public host.
+  Safe on its own — Grafana's own login still guards it — but **not** together
+  with `BT_GRAFANA_ANON_ENABLED=true`, which is server-wide and would publish
+  every dashboard to the LAN with no credential. The grafana service refuses to
+  start on that pair; see
+  [the one unsafe combination](monitoring.md#the-one-unsafe-combination-lan-bind-and-anonymous-access).
 
 Log in as `BT_GRAFANA_ADMIN_USER` (default `admin`). There is **no default
 password on any of these interfaces**: when `BT_GRAFANA_ADMIN_PASSWORD` is
@@ -639,8 +644,10 @@ predates this bootstrap: the entrypoint applies the file to the existing
 
 Setting `BT_GRAFANA_ADMIN_PASSWORD` to a real value uses that instead (and is
 what arms external access); it is applied to the existing account on the next
-restart. Sign-up and anonymous access are disabled. See `docs/monitoring.md` for
-rotation and `infra/.env.production.example` for every knob.
+restart. Sign-up is disabled, and so is anonymous access unless the admin-proxy
+recipe turns it on with `BT_GRAFANA_ANON_ENABLED` — which belongs to a loopback
+bind only, never to the LAN bind above. See `docs/monitoring.md` for that
+combination, for rotation, and `infra/.env.production.example` for every knob.
 
 ## Troubleshooting
 
