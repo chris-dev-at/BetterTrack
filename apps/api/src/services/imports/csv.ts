@@ -203,6 +203,18 @@ export function stripDecimalDecoration(input: string): string | null {
 }
 
 /**
+ * Unmistakably ENGLISH grouping with a decimal point: `1,234.56`. Both
+ * separators are present in the one order German notation can never produce, so
+ * a cell in this shape is not German — whatever the file's locale says.
+ *
+ * THE ONE COPY. {@link parseDecimal} refuses it, so every caller of the German
+ * parser inherits the guard: the broker mappers (Trade Republic, George,
+ * Flatex) as well as the generic path's `parseLocalizedDecimal`, which used to
+ * hold the only copy and therefore protected only itself.
+ */
+const ENGLISH_GROUPED_DECIMAL = /^\d{1,3}(,\d{3})+\.\d+$/;
+
+/**
  * Parse a broker-notation decimal. Handles German (`1.234,56` — comma decimal,
  * dot/space thousands) and plain (`1234.56`) notation in one pass: when a comma
  * is present it is the decimal separator and dots/spaces are grouping; without
@@ -212,6 +224,11 @@ export function stripDecimalDecoration(input: string): string | null {
  * AMBIGUOUS: `1.000` with no decimal comma is German grouping (1000) or a plain
  * decimal (1.0), and guessing wrong books a quantity ~1000× off. Refusing costs
  * one reported row; guessing costs money.
+ *
+ * `1,234.56` is refused for the mirror-image reason, and it is not even
+ * ambiguous: read as German it becomes 1.23456 — a thousandth of the real
+ * amount, booked silently. The guard runs on the DECORATION-STRIPPED value, so
+ * `'1,234.56 EUR'` and `'$1,234.56'` are refused exactly like the bare form.
  */
 export function parseDecimal(input: string): number | null {
   let cleaned = stripDecimalDecoration(input);
@@ -221,6 +238,7 @@ export function parseDecimal(input: string): number | null {
   const sign = cleaned.startsWith('-') ? -1 : 1;
   cleaned = cleaned.replace(/^[+-]/, '');
   if (/[+-]/.test(cleaned)) return null;
+  if (ENGLISH_GROUPED_DECIMAL.test(cleaned)) return null;
   if (cleaned.includes(',')) {
     // German notation: dots are thousands grouping, the comma is the decimal.
     cleaned = cleaned.replace(/\./g, '').replace(',', '.');

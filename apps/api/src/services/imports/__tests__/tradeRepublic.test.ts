@@ -140,6 +140,18 @@ describe('tradeRepublicMapper.map — per-row errors', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('refuses an English-grouped amount instead of booking a thousandth of it', () => {
+    // Read as German, `2,000.00` is 2.00 and `1,200` a quantity of 1.2 — the
+    // row is reported rather than staged with a silently wrong number.
+    const deposit = mapOne('2024-01-02;Einzahlung;;;;;;2,000.00;EUR');
+    expect(deposit.ok).toBe(false);
+    const quantity = mapOne('2024-01-02;Kauf;X AG;DE0001234567;1,200.00;50.00;0;-10,00;EUR');
+    expect(quantity.ok).toBe(false);
+    // The German form still parses.
+    const german = mapOne('2024-01-02;Einzahlung;;;;;;2.000,00;EUR');
+    expect(german.ok && german.row.amountEur).toBe(2000);
+  });
+
   it('fails a negative dividend Betrag instead of booking its magnitude as income (#529)', () => {
     // A reversal keeps the Dividende Typ but flips the sign — |Betrag| would
     // double-count the income (George/Flatex refuse the same shape).
