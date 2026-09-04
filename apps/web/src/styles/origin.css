@@ -7694,3 +7694,100 @@
   outline: 2px solid var(--bt-gold-graphic);
   outline-offset: 2px;
 }
+
+/* ── Installable PWA (§7.1, V5-P13b) ───────────────────────────────────────
+   The install affordance and the standalone-window rules. Both exist because
+   an installed BetterTrack runs with NO browser chrome: no address bar, no
+   reload, and on iOS no back button either. */
+
+/* ANTI-BLOAT (owner, binding): `position: fixed` keeps the card out of the
+   document flow, so it occupies no primary layout on any surface and pushes
+   nothing down. Bottom-corner, one line of copy, one tap to dismiss. */
+.bt-install-prompt {
+  position: fixed;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 45;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--bt-border);
+  border-radius: 12px;
+  background: var(--bt-surface-strong);
+  box-shadow: var(--bt-shadow-menu);
+}
+
+/* The AskDock claims the same corner AND the same layer (`.bt-askdock`:
+   right/bottom 16px, z-index 45) and is rendered deeper in the tree, so it
+   paints over this card — dismiss button included. The dock is a panel the user
+   just opened on purpose; an install offer can wait, so the card steps aside
+   while a dock is on screen and comes back when it closes. `data-bt-askdock` is
+   only ever set while the panel is actually rendered, so the card is untouched
+   on the sign-in screen, where no shell (and therefore no dock) exists. */
+html[data-bt-askdock='open'] .bt-install-prompt {
+  display: none;
+}
+
+.bt-install-prompt__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bt-install-prompt__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Clear of the bottom bar, which owns the foot of the screen on a phone. */
+@media (max-width: 760px) {
+  .bt-install-prompt {
+    right: calc(12px + env(safe-area-inset-right, 0px));
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    left: calc(12px + env(safe-area-inset-left, 0px));
+    max-width: none;
+  }
+}
+
+/* The standalone window's own rules. Declared TWICE on purpose: the media
+   query is the standard, and `[data-bt-display-mode='standalone']` is what
+   `lib/pwaDisplayMode.ts` stamps from `navigator.standalone` — the only signal
+   the iOS versions below 16.4 give us, and this row is the iOS app. */
+@media (display-mode: standalone) {
+  /* `apple-mobile-web-app-status-bar-style: black-translucent` puts the status
+     bar OVER the page, and unlike in Safari there is no chrome above the
+     topbar to absorb it. The inset is 0 in a browser tab, so this is additive
+     only where it is needed. The 6px base deliberately MATCHES the phone rule
+     above (`@media (max-width: 480px) .bt-topbar`): this longhand wins over
+     that shorthand at equal specificity, so anything else would silently
+     re-tune the phone topbar's spacing on top of adding the inset. */
+  .bt-topbar {
+    padding-top: calc(6px + env(safe-area-inset-top, 0px));
+  }
+
+  /* No pull-to-refresh reload to fall back on, so the window must not
+     rubber-band the whole document away from the fixed chrome. */
+  body {
+    overscroll-behavior-y: none;
+  }
+}
+
+:root[data-bt-display-mode='standalone'] .bt-topbar {
+  padding-top: calc(6px + env(safe-area-inset-top, 0px));
+}
+
+:root[data-bt-display-mode='standalone'] body {
+  overscroll-behavior-y: none;
+}
+
+/* The shell's own back button, rendered only in a standalone window. It is a
+   quiet icon button in the topbar's leading slot, where the browser's own back
+   button used to be. */
+.bt-topbar__back {
+  flex: none;
+}

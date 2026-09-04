@@ -211,6 +211,43 @@ export function normalizeSearchQuery(raw: string): string {
   return raw.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * Payload **shape version** per intel capability — the §5.3 cache's migration
+ * lever, and the reason a payload change is safe to deploy.
+ *
+ * An intel entry is stored as serialized JSON and read back verbatim: a fresh
+ * hit is returned with no schema parse and no revalidation, and the
+ * last-known-good stale copy is retained for `STALE_TTL_SECONDS` (7 days) —
+ * served, and never refreshed, for as long as the upstream is failing. So the
+ * entries a *previous* release wrote outlive the deploy by hours to days, and a
+ * release that changes what a payload MEANS cannot simply read them back: they
+ * arrive missing the new field and the new consumer misreads them.
+ *
+ * Bumping a capability's number changes its cache key, so those entries are
+ * never read again and expire on their own TTL — the new code only ever sees
+ * payloads its own release produced. A capability absent from this map is at
+ * version 1 and keeps the bare `capability` variant it has always used: a shape
+ * change to one payload must not evict the other five.
+ */
+const INTEL_PAYLOAD_VERSIONS: Partial<Record<ProviderCapability, number>> = {
+  // v2 (#1741): `trailingAmountBasis` now travels beside `trailingAmount`, and
+  // the portfolio projection treats a per-share amount carrying no basis as an
+  // unresolved holding (the two bases differ by a large factor after a special
+  // dividend). Without this bump every v1 entry would blank the whole
+  // projection until it expired.
+  dividends: 2,
+};
+
+/**
+ * The §5.3 cache-key variant for one intel capability, carrying its payload
+ * shape version (see {@link INTEL_PAYLOAD_VERSIONS}). Version 1 is the bare
+ * capability name, so only a payload that actually changed gets a new key.
+ */
+export function intelCacheVariant(capability: ProviderCapability): string {
+  const version = INTEL_PAYLOAD_VERSIONS[capability];
+  return version === undefined ? capability : `${capability}@v${version}`;
+}
+
 export function createMarketDataService(deps: CreateMarketDataServiceDeps): MarketDataService {
   const { registry, redis } = deps;
   const options = deps.options ?? {};
@@ -342,6 +379,10 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
    * provider (§13.5 V5-P5). Rejects with {@link CapabilityUnavailableError} when
    * the provider does not implement the capability — the read layer treats that
    * exactly like a provider error and degrades to the "unconfigured" shape.
+   *
+   * The key carries the payload's shape version ({@link intelCacheVariant}), so
+   * a release that changes what a payload means never reads back an entry the
+   * previous release wrote.
    */
   const loadIntel = <T>(
     ref: AssetRef,
@@ -354,7 +395,7 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
       return Promise.reject(new CapabilityUnavailableError(provider.id, capability));
     }
     return cache.getOrLoad<T>({
-      key: cacheKey(ref.providerId, ref.providerRef, 'intel', capability),
+      key: cacheKey(ref.providerId, ref.providerRef, 'intel', intelCacheVariant(capability)),
       ttlSeconds,
       staleTtlSeconds,
       negativeTtlSeconds,

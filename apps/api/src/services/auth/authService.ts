@@ -1011,7 +1011,16 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // so no cost to user requests), so a runtime change applies immediately.
       if (user.role === 'admin') {
         const lifetimeMs = (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000;
-        if (Date.now() - data.createdAt >= lifetimeMs) {
+        // Validate before comparing, exactly as the generation check above does,
+        // and fail CLOSED: an absent or non-numeric `createdAt` makes
+        // `Date.now() - createdAt` NaN, and `NaN >= lifetimeMs` is false — which
+        // would admit the session PERMANENTLY exempt from the absolute lifetime
+        // that §6.12 makes the whole admin security guarantee.
+        if (
+          !Number.isSafeInteger(data.createdAt) ||
+          data.createdAt <= 0 ||
+          Date.now() - data.createdAt >= lifetimeMs
+        ) {
           await destroySessionBestEffort(sessionId);
           await invalidateSession(data.userId, sessionId);
           return null;

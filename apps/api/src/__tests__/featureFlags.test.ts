@@ -1,8 +1,12 @@
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FEATURE_FLAG_KEYS, featureFlagsResponseSchema } from '@bettertrack/contracts';
 
+import {
+  FEATURE_FLAG_CACHE_KEY,
+  FEATURE_FLAG_PROPAGATION_UNCONFIRMED,
+} from '../services/featureFlags/featureFlagService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -15,7 +19,34 @@ beforeEach(async () => {
 
 afterEach(() => {
   // ioredis-mock/PGlite are torn down by the harness lifecycle.
+  vi.restoreAllMocks();
 });
+
+/** Loosely-typed handle on the harness Redis, so a single key can be broken. */
+type SpyableRedis = {
+  del: (...args: unknown[]) => Promise<unknown>;
+  set: (...args: unknown[]) => Promise<unknown>;
+};
+
+/**
+ * Break exactly the snapshot key's `del` (and optionally its `set`), leaving
+ * every other Redis call — sessions, rate limits — working. Returns nothing:
+ * `vi.restoreAllMocks()` in `afterEach` puts the client back.
+ */
+function breakSnapshotWrites(options: { set: boolean }): void {
+  const redis = harness.ctx.redis as unknown as SpyableRedis;
+  const realDel = redis.del.bind(redis);
+  const realSet = redis.set.bind(redis);
+  vi.spyOn(redis, 'del').mockImplementation(async (...args: unknown[]) => {
+    if (args[0] === FEATURE_FLAG_CACHE_KEY) throw new Error('redis unavailable (del)');
+    return realDel(...args);
+  });
+  if (!options.set) return;
+  vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
+    if (args[0] === FEATURE_FLAG_CACHE_KEY) throw new Error('redis unavailable (set)');
+    return realSet(...args);
+  });
+}
 
 type Agent = ReturnType<typeof request.agent>;
 
@@ -179,5 +210,82 @@ describe('admin toggle surface', () => {
 
     // And an anonymous caller gets the same 404 — requireAdmin discloses nothing.
     expect((await request(harness.app).get('/api/v1/admin/feature-flags')).status).toBe(404);
+  });
+});
+
+/**
+ * A kill switch is pulled to stop something already in progress, so a flip whose
+ * propagation could not be confirmed must not be reported as a clean flip
+ * (#1744). The snapshot has a TTL backstop, but "it may or may not have taken
+ * effect, and we won't tell you" is the wrong answer to give an admin.
+ */
+describe('a flip whose propagation cannot be confirmed is not reported as clean', () => {
+  it('falls back to rewriting the snapshot when the DEL fails — still 200, still effective at once', async () => {
+    const user = await loginUser();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    expect((await user.get('/api/v1/chat/conversations')).status).toBe(200);
+    breakSnapshotWrites({ set: false });
+
+    const flip = await adminAgent
+      .patch('/api/v1/admin/feature-flags/chat')
+      .set(...XRW)
+      .send({ enabled: false });
+    expect(flip.status).toBe(200);
+    expect(flip.body.flags.find((f: { key: string }) => f.key === 'chat').enabled).toBe(false);
+
+    // The rewrite propagated exactly like the DEL would have: next request refuses.
+    const refused = await user.get('/api/v1/chat/conversations');
+    expect(refused.status).toBe(404);
+    expect(refused.body.error?.code).toBe('FEATURE_DISABLED');
+  });
+
+  it('surfaces 503 when neither the DEL nor the rewrite lands — and still persists the value', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    breakSnapshotWrites({ set: true });
+
+    const flip = await adminAgent
+      .patch('/api/v1/admin/feature-flags/imports')
+      .set(...XRW)
+      .send({ enabled: false });
+    expect(flip.status).toBe(503);
+    expect(flip.body.error?.code).toBe(FEATURE_FLAG_PROPAGATION_UNCONFIRMED);
+    // The admin is told what IS true: saved, propagation unconfirmed.
+    expect(flip.body.error?.message).toMatch(/saved/i);
+
+    // The persisted row is correct regardless — the failure was propagation only.
+    vi.restoreAllMocks();
+    const list = await adminAgent.get('/api/v1/admin/feature-flags');
+    const imports = list.body.flags.find((f: { key: string }) => f.key === 'imports');
+    expect(imports.enabled).toBe(false);
+    expect(imports.updatedBy).toBe(admin.id);
+
+    // And the unconfirmed flip is in the audit log, marked as such.
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const entry = audit.body.entries.find(
+      (e: { action: string; meta?: { key?: string; propagated?: boolean } }) =>
+        e.action === 'feature_flag.changed' && e.meta?.key === 'imports',
+    );
+    expect(entry?.meta?.propagated).toBe(false);
+  });
+
+  it('marks a confirmed flip as propagated in the audit log', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send({ enabled: false })
+      .expect(200);
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const entry = audit.body.entries.find(
+      (e: { action: string; meta?: { key?: string; propagated?: boolean } }) =>
+        e.action === 'feature_flag.changed' && e.meta?.key === 'alerts',
+    );
+    expect(entry?.meta?.propagated).toBe(true);
   });
 });

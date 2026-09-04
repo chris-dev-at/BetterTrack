@@ -253,3 +253,54 @@ describe('Origin accessibility safety nets', () => {
     expect(originCss).toContain('.bt-skeleton::after');
   });
 });
+
+/**
+ * The installable-PWA rules (§7.1, V5-P13b). Both halves are stylesheet-only
+ * behaviour that no component test can observe: jsdom applies no CSS, so the
+ * fixed positioning and the standalone block are asserted against the source.
+ */
+describe('Installable PWA', () => {
+  it('floats the install affordance out of the document flow (anti-bloat)', () => {
+    // Binding owner rule: no shipped feature may make the app feel more
+    // bloated. `position: fixed` is what keeps this card from taking a single
+    // pixel of any page's layout.
+    expect(originCss).toMatch(/\.bt-install-prompt \{[^}]*position: fixed;[^}]*\}/);
+    expect(originCss).toMatch(/\.bt-install-prompt \{[^}]*env\(safe-area-inset-bottom, 0px\)/);
+    // Clear of the bottom bar, which owns the foot of a phone screen.
+    expect(originCss).toMatch(
+      /\.bt-install-prompt \{\s*right: calc\(12px[^}]*bottom: calc\(72px[^}]*\}/,
+    );
+  });
+
+  /**
+   * The card and the AskDock claim the same corner and the same layer, and the
+   * dock — rendered deeper in the tree — wins the paint. Without this rule the
+   * card, dismiss button included, is unreachable while the dock is open.
+   */
+  it('yields the corner to the AskDock, which shares it and paints above', () => {
+    expect(originCss).toMatch(/\.bt-askdock \{[^}]*right: 16px;[^}]*z-index: 45;/);
+    expect(originCss).toMatch(
+      /html\[data-bt-askdock='open'\] \.bt-install-prompt \{\s*display: none;\s*\}/,
+    );
+  });
+
+  it('compensates the translucent status bar in a standalone window, both ways', () => {
+    // The media query is the standard; the attribute is what pwaDisplayMode.ts
+    // stamps from `navigator.standalone`, the only signal iOS below 16.4 gives.
+    expect(originCss).toMatch(
+      /@media \(display-mode: standalone\) \{[\s\S]*?\.bt-topbar \{[^}]*padding-top: calc\(6px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+    expect(originCss).toMatch(
+      /:root\[data-bt-display-mode='standalone'\] \.bt-topbar \{[^}]*padding-top: calc\(6px \+ env\(safe-area-inset-top, 0px\)\);/,
+    );
+    // The standalone longhand overrides the phone rule's shorthand at equal
+    // specificity, so its base must stay that rule's own 6px: anything else
+    // silently re-tunes the phone topbar while claiming to add only the inset.
+    expect(originCss).toMatch(
+      /@media \(max-width: 480px\) \{[\s\S]*?\.bt-topbar \{[^}]*padding: calc\(6px \+ env\(safe-area-inset-top, 0px\)\)/,
+    );
+    expect(originCss).toMatch(
+      /:root\[data-bt-display-mode='standalone'\] body \{[^}]*overscroll-behavior-y: none;/,
+    );
+  });
+});

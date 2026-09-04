@@ -9,6 +9,7 @@ import {
   sampleEarningsEvents,
 } from '../../../testing/marketDataStubs';
 import { createMarketIntelService } from '../marketIntelService';
+import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../rollupBudget';
 
 // assetRepo is unused by earningsCalendar (it aggregates via intelRepo); a
 // throwing stub proves the calendar path never touches per-asset resolution.
@@ -241,5 +242,86 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
     });
     const res = await service.earningsCalendar('u1');
     expect(res).toEqual({ available: false, entries: [] });
+  });
+
+  it('does not mark a book inside the cap as truncated', async () => {
+    const marketData = createStubMarketData({ earnings: nextOn('2026-08-10T00:00:00.000Z') });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL, MSFT]),
+      enabled: true,
+      now: BEFORE_ALL,
+    });
+
+    expect((await service.earningsCalendar('u1')).truncated).toBeUndefined();
+  });
+});
+
+/** A synthetic book of `count` watch-only assets, symbols W000…, ids a-w000…. */
+function watchBook(count: number): UserIntelAsset[] {
+  return Array.from({ length: count }, (_, i) => {
+    const suffix = String(i).padStart(3, '0');
+    return {
+      assetId: `a-w${suffix}`,
+      symbol: `W${suffix}`,
+      name: `Watched ${suffix}`,
+      providerId: 'yahoo',
+      providerRef: `W${suffix}`,
+      held: false,
+      watched: true,
+    };
+  });
+}
+
+describe('marketIntel.earningsCalendar — provider fan-out budget (§5.3)', () => {
+  it('caps the provider calls at MARKET_INTEL_ROLLUP_MAX_ASSETS for a 200-asset book, and says it truncated', async () => {
+    const marketData = createStubMarketData({ earnings: nextOn('2026-08-10T00:00:00.000Z') });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo(watchBook(200)),
+      enabled: true,
+      now: BEFORE_ALL,
+    });
+
+    const res = await service.earningsCalendar('u1');
+    expect(marketData.calls.earnings).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(res.entries).toHaveLength(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    // The partial roll-up announces itself rather than passing as complete.
+    expect(res.truncated).toBe(true);
+  });
+
+  it('keeps held positions over watch-only assets, then symbol order — deterministically', async () => {
+    const marketData = createStubMarketData({ earnings: nextOn('2026-08-10T00:00:00.000Z') });
+    // One held asset whose symbol sorts LAST, plus a full cap's worth of
+    // watch-only ones: the held row must still survive the truncation.
+    const held: UserIntelAsset = {
+      assetId: 'a-zzz',
+      symbol: 'ZZZ',
+      name: 'Held last alphabetically',
+      providerId: 'yahoo',
+      providerRef: 'ZZZ',
+      held: true,
+      watched: false,
+    };
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([...watchBook(MARKET_INTEL_ROLLUP_MAX_ASSETS), held]),
+      enabled: true,
+      now: BEFORE_ALL,
+    });
+
+    const res = await service.earningsCalendar('u1');
+    expect(res.truncated).toBe(true);
+    const symbols = res.entries.map((e) => e.symbol).sort();
+    expect(symbols).toHaveLength(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(symbols).toContain('ZZZ');
+    // …and the watch-only survivors are the alphabetically first ones, so the
+    // selection is reproducible rather than "whatever the DB returned first".
+    expect(symbols.filter((s) => s !== 'ZZZ')).toEqual(
+      watchBook(MARKET_INTEL_ROLLUP_MAX_ASSETS - 1).map((a) => a.symbol),
+    );
   });
 });

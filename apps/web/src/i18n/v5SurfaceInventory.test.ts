@@ -100,6 +100,7 @@ user/components/AssetSearchBox.tsx
 user/components/AudiencePicker.tsx
 user/components/Avatar.tsx
 user/components/CmdKPalette.tsx
+user/components/InstallPrompt.tsx
 user/components/NotificationBell.tsx
 user/components/OriginShell.tsx
 user/components/TransactionDialog.tsx
@@ -126,8 +127,11 @@ user/forecast/ProjectionChart.tsx
 user/forecast/ProjectionSection.tsx
 user/forecast/StandingOrderDialog.tsx
 user/forecast/StandingOrdersSection.tsx
+user/home/AddWidgetDrawer.tsx
 user/home/HomePage.tsx
 user/home/WidgetFrame.tsx
+user/home/widgets/DividendsWidget.tsx
+user/home/widgets/NewsWidget.tsx
 user/home/widgets/PortfolioCardsWidget.tsx
 user/oauth/ConsentPage.tsx
 user/parked/ParkedPage.tsx

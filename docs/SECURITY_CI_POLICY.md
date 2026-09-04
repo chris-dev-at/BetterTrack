@@ -16,6 +16,18 @@ by `pnpm audit --prod`. Expiries are staggered by remediation family so their
 renewal work remains incremental rather than creating one repository-wide expiry
 cliff.
 
+The advisory registry is treated as a separate failure mode from the audit
+result. `pnpm audit` reports an unreachable registry as a JSON `error` envelope
+on stdout — sometimes with exit code 0 — which is shaped nothing like a report,
+so the verifier classifies it explicitly instead of blaming a malformed advisory
+map. That endpoint is intermittently flaky, so a registry error is retried up to
+three times; each attempt is bounded to a single 60s fetch
+(`npm_config_fetch_retries` / `npm_config_fetch_timeout`), which keeps all three
+attempts cheaper than one unbounded attempt. If every attempt fails the verifier
+**fails closed** and names the cause: an audit that could not run is not an audit
+that passed. Do not reach for `pnpm audit --ignore-registry-errors` — it turns a
+registry outage into a silent green.
+
 The **Supply-chain security** workflow builds all three deployable images and
 uploads readable Trivy reports plus CycloneDX SBOMs. It runs on image-affecting
 pull requests, daily, and manually; fixable CRITICAL container findings gate the

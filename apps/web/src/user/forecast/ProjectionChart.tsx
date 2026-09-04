@@ -8,7 +8,7 @@ import {
   YAxis,
 } from 'recharts';
 
-import { DISCREET_MASK, formatMoney, isDiscreetMode } from '../../lib/format';
+import { formatCompactMoney, formatMoney } from '../../lib/format';
 
 export interface ProjectionChartSeries {
   id: string;
@@ -40,9 +40,14 @@ export function ProjectionChart({
           stroke="var(--bt-chart-text)"
           fontSize={12}
         />
+        {/* The axis labels the same arithmetic the curve draws, so it reads the
+            active base currency and the active locale's magnitude abbreviations
+            (`1,2 Mio. €` in de-AT vs `1.2m €` in en-GB) rather than a hardcoded
+            `€…M`/`€…k` pair.
+            `formatCompactMoney` keeps the discreet-mode mask it always had. */}
         <YAxis
-          width={64}
-          tickFormatter={formatCompactEur}
+          width={80}
+          tickFormatter={(value: number) => formatCompactMoney(value)}
           stroke="var(--bt-chart-text)"
           fontSize={12}
         />
@@ -81,12 +86,4 @@ export function ProjectionChart({
       </LineChart>
     </ResponsiveContainer>
   );
-}
-
-function formatCompactEur(value: number): string {
-  if (isDiscreetMode()) return DISCREET_MASK;
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `€${(value / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `€${Math.round(value / 1_000)}k`;
-  return `€${Math.round(value)}`;
 }

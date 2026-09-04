@@ -176,8 +176,8 @@ beforeEach(() => {
   const noProjection: ProjectedDividendIncomeResponse = {
     available: false,
     currency: 'EUR',
-    monthlyTotalEur: 0,
-    yearlyTotalEur: 0,
+    monthlyTotalBase: 0,
+    yearlyTotalBase: 0,
     holdings: [],
   };
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue(noProjection);
