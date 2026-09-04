@@ -296,9 +296,10 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   cash_rule_tags: exported('cashRuleTags'),
   // V5-P10 outbound webhooks (#648): the subscription config is user-owned but
   // carries a stored signing secret (encrypted at rest, shown once) that must
-  // never leave the server — like discord_webhooks; its non-secret config export
-  // lands with a later export sweep (mirrors standing_orders). The delivery log
-  // is a bounded, retention-pruned operational record, not user data.
+  // never leave the server — like discord_webhooks; carrying its non-secret
+  // config needs a column projection like the feedback one, so it is a declared
+  // deferral rather than a plain select. The delivery log is a bounded,
+  // retention-pruned operational record, not user data.
   webhook_subscriptions: deferred(
     'Outbound-webhook subscriptions (V5-P10) — user-owned config whose row carries a stored signing secret that must never leave the server, so carrying it needs a projection like the feedback one, not a plain select.',
   ),

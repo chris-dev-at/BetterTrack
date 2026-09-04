@@ -72,6 +72,13 @@ export interface CollectedExport {
 }
 
 /**
+ * Decimal places of the `numeric(20,8)` quantity columns the holdings CSV sums.
+ * A net position is only meaningful to this scale, so anything past it is float
+ * artefact from the summation, not data.
+ */
+const QUANTITY_SCALE = 8;
+
+/**
  * Columns never written to an export, matched by their (camelCase) property name
  * as Drizzle returns them: password/token/secret hashes, the raw legacy share
  * token, and opaque binary caches. Stripping is by key name so a future sensitive
@@ -293,9 +300,10 @@ export async function collectUserExport(
     // The expense ledger is the expense area's analogue of `transactions`: an
     // append-only, user-scoped table this export now materializes in full
     // (V5-P9). The remaining expense/cash-fusion tables are per-user config
-    // (categories, rules, budgets, tags) or link rows bounded by the movements
-    // already counted above, so they stay out of the pre-flight for the same
-    // reason the other config tables do.
+    // (categories, rules, budgets, tags) or link rows whose count is the
+    // counted movements times the hand-created tags applied to each, so they
+    // stay out of the pre-flight for the same reason the other config tables
+    // do: the multiplier is a user action per row, not growth.
     countRows(
       db
         .select({ value: count() })
@@ -451,11 +459,31 @@ export async function collectUserExport(
   // movement link is scoped to the caller's own exported movements (never to the
   // tag, which would carry links to movements this export deliberately omits),
   // and a rule link to the caller's own rules.
-  const cashMovementIds = cashMovementRows.map((m) => m.id);
+  //
+  // The movement link binds the *portfolio* ids rather than the movement ids it
+  // is logically scoped by: the two sets select exactly the same links (the
+  // exported movements ARE the movements of `cleartextPortfolioIds`), but the
+  // movement set grows with the ledger, and the pre-flight ceiling admits up to
+  // `EXPORT_MAX_ROWS` movements while the postgres extended protocol refuses a
+  // statement above 65_534 bind parameters. Binding movement ids would therefore
+  // fail a large-but-supported account with an opaque driver error instead of
+  // the typed `ExportTooLargeError` the ceilings exist to guarantee. Every other
+  // id set bound here is hand-created config, so it stays at human scale.
   const cashRuleIds = cashRuleRows.map((r) => r.id);
   const [cashMovementTagRows, cashRuleTagRows] = await Promise.all([
-    inIds(cashMovementIds, (ids) =>
-      db.select().from(cashMovementTags).where(inArray(cashMovementTags.movementId, ids)),
+    inIds(cleartextPortfolioIds, (ids) =>
+      db
+        .select()
+        .from(cashMovementTags)
+        .where(
+          inArray(
+            cashMovementTags.movementId,
+            db
+              .select({ id: portfolioCashMovements.id })
+              .from(portfolioCashMovements)
+              .where(inArray(portfolioCashMovements.portfolioId, ids)),
+          ),
+        ),
     ),
     inIds(cashRuleIds, (ids) =>
       db.select().from(cashRuleTags).where(inArray(cashRuleTags.ruleId, ids)),
@@ -564,6 +592,13 @@ export async function collectUserExport(
   // view. `QTY_EPSILON` is the domain's answer to exactly that (a held quantity
   // within it of zero IS flat); the export uses the same rule rather than a
   // second one.
+  //
+  // The same float sum leaves the same dust on a position that is genuinely
+  // held — buy 0.1 + buy 0.2 nets `0.30000000000000004` — so the net is first
+  // snapped back to the column's own scale (`numeric(20,8)`), which is exactly
+  // the precision the stored quantities carry. Beyond that scale there is no
+  // information to preserve, only artefact, and the CSV then agrees with the
+  // app's holdings view for the held case too, not only the closed one.
   const holdingsMap = new Map<string, { portfolioId: string; assetId: string; net: number }>();
   for (const t of transactionRows) {
     const key = `${t.portfolioId}:${t.assetId}`;
@@ -575,6 +610,7 @@ export async function collectUserExport(
   const csvHoldings = toCsv(
     ['portfolioId', 'assetId', 'netQuantity'],
     [...holdingsMap.values()]
+      .map((h) => ({ ...h, net: Number(h.net.toFixed(QUANTITY_SCALE)) }))
       .filter((h) => Math.abs(h.net) > QTY_EPSILON)
       .map((h) => [h.portfolioId, h.assetId, h.net]),
   );

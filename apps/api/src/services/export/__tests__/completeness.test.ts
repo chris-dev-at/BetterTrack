@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -190,6 +194,28 @@ describe('account-export deferrals', () => {
       .filter(([, c]) => c.kind === 'skip' && /later export sweep/i.test(c.reason))
       .map(([table]) => table);
     expect(offenders, `retired deferral phrase still used by: ${offenders.join(', ')}`).toEqual([]);
+  });
+
+  /**
+   * The reason strings above are only half the disclosure — the block comments
+   * over each classification are what the next reader hits first, so the phrase
+   * has to be extinct in the file, not merely unused by the runtime values.
+   */
+  it('the retired phrase survives nowhere in manifest.ts, comments included', () => {
+    const manifestSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../manifest.ts'),
+      'utf8',
+    );
+    const offendingLines = manifestSource
+      .split('\n')
+      .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+      .filter(({ line }) => /later export sweep/i.test(line));
+    expect(
+      offendingLines,
+      `retired deferral phrase still in manifest.ts prose: ${offendingLines
+        .map(({ number }) => `line ${number}`)
+        .join(', ')}`,
+    ).toEqual([]);
   });
 });
 
