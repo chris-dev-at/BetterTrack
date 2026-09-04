@@ -2103,7 +2103,9 @@
       "perMonth": "prognostiziert / Monat",
       "perYear": "prognostiziert / Jahr",
       "projectionUnresolved": "Ein prognostizierter Gesamtbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück. Die Termine unten sind davon nicht betroffen.",
+      "projectionTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb zeigen wir keinen Gesamtbetrag. Die Termine unten sind davon nicht betroffen.",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
+      "calendarTruncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
@@ -2377,6 +2379,7 @@
       },
       "earnings": {
         "heading": "Anstehende Quartalszahlen",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
         "held": "Gehalten",
         "watched": "Beobachtet",
         "heldTitle": "Du hältst diesen Wert",
@@ -2770,6 +2773,7 @@
         "dividends": "Erwartete Dividenden"
       },
       "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
+      "dividendsTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
       "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
@@ -3013,7 +3017,8 @@
       "emptyTitle": "Keine aktuellen Nachrichten",
       "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest.",
       "unavailableTitle": "Nachrichten sind hier deaktiviert",
-      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt."
+      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt.",
+      "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige sind hier nicht erfasst."
     },
     "comingSoon": {
       "overview": {

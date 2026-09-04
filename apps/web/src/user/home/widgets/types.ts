@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react';
 
-import type { PortfolioSummary } from '@bettertrack/contracts';
+import type { DeployCapabilityKey, PortfolioSummary } from '@bettertrack/contracts';
 
 import type { IconName } from '../../../ui/origin';
 import type { WidgetSettings, WidgetSize, WidgetType } from '../config';
@@ -84,6 +84,19 @@ export interface WidgetDefinition {
   defaultSettings: WidgetSettings;
   /** Whether the settings popover offers the portfolio scope picker. */
   supportsScope: boolean;
+  /**
+   * Present ⇒ the widget is only OFFERED on a deployment that has this
+   * capability (§13.5 V5-P5: an unconfigured arc's blocks simply disappear).
+   * The rail and the ⌘K registry already gate their market-intel destinations
+   * this way; without the same key here the catalog keeps offering a widget
+   * whose only possible render is "not available", which is a destination leak
+   * rather than a feature.
+   *
+   * Gating the CATALOG, not the board: a widget already on someone's board when
+   * the capability goes away keeps rendering its own unavailable state, which is
+   * what a deliberately placed widget owes the user.
+   */
+  capability?: DeployCapabilityKey;
   /**
    * Whether this widget can honestly represent a VAULTED portfolio in its scope
    * (§14, PARANOID-E6 #1416). The server cannot read a sealed vault, so a widget
