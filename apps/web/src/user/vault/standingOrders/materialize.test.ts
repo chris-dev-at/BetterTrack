@@ -2,6 +2,8 @@ import { webcrypto } from 'node:crypto';
 
 import {
   decodeVaultEnvelope,
+  STANDING_ORDER_QUOTE_REFUSAL_VECTORS,
+  STANDING_ORDER_QUOTE_VECTOR_CURRENCY,
   vaultEnvelopeHeaderSchema,
   type VaultDocument,
   type VaultEntity,
@@ -2870,9 +2872,155 @@ describe('paranoid standing-order materialization', () => {
   });
 });
 
+describe('paranoid standing orders — refusals shared with the server engine (#1712)', () => {
+  it.each([...STANDING_ORDER_QUOTE_REFUSAL_VECTORS])(
+    'refuses $name for a buy, exactly as the API engine does',
+    async (vector) => {
+      const fixture = await decryptClientMoneyFixture();
+      const document = withOrders(fixture.document, [
+        standingOrder(MONTHLY_BUY_ID, {
+          kind: 'buy-asset',
+          assetId: CLIENT_MONEY_IDS.eurAsset,
+          amount: '1',
+          currency: STANDING_ORDER_QUOTE_VECTOR_CURRENCY,
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-20',
+        }),
+      ]);
+      const sync = createMutableTestSync(document, fixture.header);
+      const base = createClientMoneyMarket();
+      const market: MarketDataSource = {
+        ...base.market,
+        async quote(assetId, signal) {
+          const result = await base.market.quote(assetId, signal);
+          return {
+            ...result,
+            value: { ...result.value, price: vector.price, currency: vector.currency },
+          };
+        },
+      };
+      const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+
+      await expect(
+        materializeDueStandingOrders(sync, createVaultPortfolioStore(sync), market, {
+          now: () => new Date(BOOKED_AT),
+          timezone: 'Europe/Vienna',
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: {
+          booked: [],
+          deferred: [
+            { orderId: MONTHLY_BUY_ID, dueDate: '2026-07-27', reason: 'quote-unavailable' },
+          ],
+          failed: [],
+          skipped: [],
+        },
+      });
+      const active = sync.state.active!.document;
+      expect(live(active, 'transaction', occurrenceId)).toBeUndefined();
+      expect(live(active, 'standingOrderRun', occurrenceId)).toBeUndefined();
+      expect(order(active, MONTHLY_BUY_ID).data).toMatchObject({
+        lastRunAt: null,
+        lastPeriodKey: null,
+      });
+      expect(sync.mutationCount).toBe(0);
+    },
+  );
+
+  it('never books into an archived portfolio, and says so in the order DTO', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withArchivedPortfolio(
+      withOrders(fixture.document, [
+        standingOrder(DEDUCT_ID, {
+          kind: 'cash-deduct',
+          amount: '20',
+          label: 'Netflix',
+          cadence: 'monthly',
+          anchorDay: 10,
+          startDate: '2026-05-10',
+        }),
+      ]),
+      '2026-07-05T09:00:00.000Z',
+    );
+    const sync = createMutableTestSync(document, fixture.header);
+    const store = createVaultPortfolioStore(sync);
+    const market = createClientMoneyMarket();
+    const occurrenceId = await standingOrderOccurrenceId(DEDUCT_ID, '2026-07-10');
+    const movementsBefore = (sync.state.active!.document.entities.cashMovement ?? []).length;
+
+    await expect(
+      materializeDueStandingOrders(sync, store, market.market, {
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { today: '2026-07-27', booked: [], deferred: [], failed: [], skipped: [] },
+    });
+    const suspendedDocument = sync.state.active!.document;
+    expect(live(suspendedDocument, 'cashMovement', occurrenceId)).toBeUndefined();
+    expect((suspendedDocument.entities.cashMovement ?? []).length).toBe(movementsBefore);
+    // The watermark must not move either: an advanced `lastPeriodKey` would
+    // outlive the archive and defeat the server's no-back-fill restore rule.
+    expect(order(suspendedDocument, DEDUCT_ID).data).toMatchObject({
+      lastRunAt: null,
+      lastPeriodKey: null,
+    });
+    expect(sync.mutationCount).toBe(0);
+    await expect(store.listStandingOrders(CLIENT_MONEY_IDS.portfolio)).resolves.toMatchObject({
+      orders: [
+        expect.objectContaining({
+          id: DEDUCT_ID,
+          status: 'active',
+          suspendedByArchive: true,
+          nextRunDate: null,
+        }),
+      ],
+    });
+
+    // Restoring the portfolio lifts the suspension: the same order books, and
+    // the DTO's schedule comes back with it.
+    await store.restorePortfolio(CLIENT_MONEY_IDS.portfolio);
+    await expect(
+      materializeDueStandingOrders(sync, store, market.market, {
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        booked: [
+          { orderId: DEDUCT_ID, dueDate: '2026-07-10', kind: 'cash-deduct', status: 'created' },
+        ],
+      },
+    });
+    expect(live(sync.state.active!.document, 'cashMovement', occurrenceId)?.data).toMatchObject({
+      kind: 'withdrawal',
+      amountEur: '-20',
+      source: 'standing-order',
+    });
+    await expect(store.listStandingOrders(CLIENT_MONEY_IDS.portfolio)).resolves.toMatchObject({
+      orders: [expect.objectContaining({ id: DEDUCT_ID, suspendedByArchive: false })],
+    });
+  });
+});
+
 function withOrders(document: VaultDocument, orders: VaultEntity[]): VaultDocument {
   const next = structuredClone(document);
   next.entities.standingOrder = orders;
+  return next;
+}
+
+/** Soft-archive the fixture's portfolio, as `archivePortfolio` would (#1712). */
+function withArchivedPortfolio(document: VaultDocument, archivedAt: string): VaultDocument {
+  const next = structuredClone(document);
+  next.entities.portfolio = (next.entities.portfolio ?? []).map((entity) =>
+    entity.id === CLIENT_MONEY_IDS.portfolio
+      ? { ...entity, data: { ...entity.data, archivedAt } }
+      : entity,
+  );
   return next;
 }
 

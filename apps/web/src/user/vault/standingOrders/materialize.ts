@@ -1,4 +1,5 @@
 import {
+  standingOrderQuoteRefusal,
   VAULT_ENTITY_ROW_SCHEMAS,
   type StandingOrderKind,
   type VaultEntity,
@@ -8,6 +9,7 @@ import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 import { MarketDataSourceError, type MarketDataSource } from '../../../lib/marketDataSource';
 import {
   existingStandingOrderOccurrence,
+  isStandingOrderPortfolioArchived,
   VaultPortfolioStoreError,
   type VaultPortfolioStore,
 } from '../vaultPortfolioStore';
@@ -66,7 +68,7 @@ export interface FailedStandingOrder {
 export interface SkippedStandingOrder {
   orderId: string;
   dueDate: string;
-  reason: 'deleted' | 'status-changed' | 'no-longer-due';
+  reason: 'deleted' | 'status-changed' | 'no-longer-due' | 'portfolio-archived';
 }
 
 export interface StandingOrderMaterializationResult {
@@ -138,6 +140,15 @@ export async function materializeDueStandingOrders(
        * expose that corruption, which is where the user sees it.
        */
       if (order.row.status !== 'active') continue;
+      /*
+       * Archive is a suspension, not a pause: the server's scan excludes an
+       * archived portfolio outright and its restore path deliberately
+       * tombstones the elapsed period, so booking here would both move money
+       * into a portfolio the user believes frozen and advance `lastPeriodKey`
+       * past that no-back-fill rule (#1712). Silent, like a paused order —
+       * nothing is owed while the suspension holds.
+       */
+      if (isStandingOrderPortfolioArchived(snapshot.document, order.row.portfolioId)) continue;
       let dueDate: string | null;
       try {
         dueDate = dueStandingOrderOccurrence(order.row, today);
@@ -261,12 +272,20 @@ export async function materializeDueStandingOrders(
               recordedAt: new Date(Math.min(providerAsOfMs, now.getTime())).toISOString(),
             };
           }
-          if (
-            !Number.isFinite(quote.price) ||
-            quote.price <= 0 ||
-            quote.currency !== order.row.currency
-          ) {
-            throw moneyFailure('MARKET_DATA_INVALID', 'Standing-order quote is invalid.');
+          // The same rule the server engine applies before it claims a period
+          // (#1712): quote, order and asset currency must agree, and the price
+          // must be finite, positive and below the transaction ceiling.
+          const refusal = standingOrderQuoteRefusal({
+            price: quote.price,
+            quoteCurrency: quote.currency,
+            orderCurrency: order.row.currency,
+            assetCurrency: asset.currency,
+          });
+          if (refusal !== null) {
+            throw moneyFailure(
+              'MARKET_DATA_INVALID',
+              `Standing-order quote is invalid (${refusal}).`,
+            );
           }
         } catch (cause) {
           if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
@@ -309,6 +328,13 @@ export async function materializeDueStandingOrders(
       }
       if (commitOrder.row.status !== 'active') {
         result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'status-changed' });
+        adoptSnapshot(commitSnapshot);
+        continue;
+      }
+      if (isStandingOrderPortfolioArchived(commitSnapshot.document, commitOrder.row.portfolioId)) {
+        // An archive that landed (from another device) while the quote was in
+        // flight — the twin of the server's in-lock recheck.
+        result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'portfolio-archived' });
         adoptSnapshot(commitSnapshot);
         continue;
       }

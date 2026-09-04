@@ -43,8 +43,11 @@ function toRecord(row: CashSourceRow): CashSourceRecord {
 }
 
 export function createCashSourceRepository(db: Database) {
-  async function findMain(portfolioId: string): Promise<CashSourceRecord | null> {
-    const rows = await db
+  async function findMain(
+    portfolioId: string,
+    executor: Database = db,
+  ): Promise<CashSourceRecord | null> {
+    const rows = await executor
       .select()
       .from(portfolioCashSources)
       .where(
@@ -65,15 +68,23 @@ export function createCashSourceRepository(db: Database) {
    * Idempotent under concurrency via `portfolio_cash_sources_main_unique`
    * (any-arbiter DO NOTHING, then re-select — mirrors portfolios'
    * getOrCreateMain).
+   *
+   * Pass `executor` to provision inside a caller's transaction: this is a
+   * cleartext write, so a caller that serialises against archive/vault
+   * transitions (the standing-order engine, #1712) must have it share that
+   * transaction's lock and rollback rather than run on its own connection.
    */
-  async function getOrCreateMain(portfolioId: string): Promise<CashSourceRecord> {
-    const existing = await findMain(portfolioId);
+  async function getOrCreateMain(
+    portfolioId: string,
+    executor: Database = db,
+  ): Promise<CashSourceRecord> {
+    const existing = await findMain(portfolioId, executor);
     if (existing) return existing;
-    await db
+    await executor
       .insert(portfolioCashSources)
       .values({ portfolioId, name: MAIN_CASH_SOURCE_NAME, type: 'cash', isMain: true })
       .onConflictDoNothing();
-    const created = await findMain(portfolioId);
+    const created = await findMain(portfolioId, executor);
     if (!created) throw new Error('Main cash source vanished after upsert');
     return created;
   }
