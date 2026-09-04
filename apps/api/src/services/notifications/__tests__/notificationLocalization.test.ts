@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   ALERT_KINDS,
+  CHANNEL_SETUP_MESSAGE_KEYS,
   FEEDBACK_STATUSES,
   NOTIFICATION_MESSAGE_KEYS,
   notificationMessageSchema,
@@ -26,7 +27,12 @@ import {
   type DispatchableEvent,
   type NotificationDispatcher,
 } from '../notificationDispatcher';
-import { NOTIFICATION_COPY, renderNotificationMessage } from '../notificationI18n';
+import {
+  CHANNEL_SETUP_COPY,
+  channelSetupText,
+  NOTIFICATION_COPY,
+  renderNotificationMessage,
+} from '../notificationI18n';
 
 const OCCURRED_AT = '2026-07-20T10:00:00.000Z';
 
@@ -544,6 +550,26 @@ describe('dispatcher notification localization (#1138)', () => {
         (status) => NOTIFICATION_COPY[locale][FEEDBACK_STATUS_MESSAGE_KEYS[status]].title,
       );
       expect(new Set(titles).size, `${locale}: feedbackStatus* titles`).toBe(titles.length);
+    }
+  });
+
+  it('ships distinct EN and DE copy for every chat-channel setup message', () => {
+    // #1723: the Telegram link confirmation, the Discord save probe and the
+    // Discord test send were hardcoded English inside the services. They are
+    // keyed copy now — same EN+DE discipline as the dispatcher table above,
+    // and deliberately NOT part of NOTIFICATION_MESSAGE_KEYS: they carry no
+    // event, are never persisted as an inbox row and never reach the SPA, so
+    // the web catalogs (and the byte-identity test below) do not cover them.
+    expect(Object.keys(CHANNEL_SETUP_COPY.en)).toEqual([...CHANNEL_SETUP_MESSAGE_KEYS]);
+    expect(Object.keys(CHANNEL_SETUP_COPY.de)).toEqual([...CHANNEL_SETUP_MESSAGE_KEYS]);
+    for (const key of CHANNEL_SETUP_MESSAGE_KEYS) {
+      expect(CHANNEL_SETUP_COPY.de[key], key).not.toEqual(CHANNEL_SETUP_COPY.en[key]);
+      expect(CHANNEL_SETUP_COPY.en[key], key).not.toHaveLength(0);
+      // The renderer resolves the stored locale, with EN for anything unknown.
+      expect(channelSetupText(key, 'de')).toBe(CHANNEL_SETUP_COPY.de[key]);
+      expect(channelSetupText(key, 'en')).toBe(CHANNEL_SETUP_COPY.en[key]);
+      expect(channelSetupText(key, null)).toBe(CHANNEL_SETUP_COPY.en[key]);
+      expect(channelSetupText(key, 'fr')).toBe(CHANNEL_SETUP_COPY.en[key]);
     }
   });
 

@@ -1,4 +1,5 @@
 import type {
+  ChannelSetupMessageKey,
   NotificationMessage,
   NotificationMessageKey,
   NotificationMessageParams,
@@ -551,6 +552,40 @@ export const NOTIFICATION_COPY: Record<
     },
   },
 };
+
+/**
+ * Chat-channel setup copy (#1723) — the three texts a channel writes into the
+ * chat itself: the Telegram link confirmation, the Discord save probe and the
+ * Discord test send. They used to be hardcoded English inside the services, so
+ * a German user linking Telegram got an English greeting from an app they had
+ * set to German.
+ *
+ * Single strings, not title/body pairs: a chat message has no title, and the
+ * channels render these verbatim. `Record<EmailLocale, Record<key, string>>`
+ * makes a missing locale or a missing key a compile error.
+ */
+export const CHANNEL_SETUP_COPY: Record<EmailLocale, Record<ChannelSetupMessageKey, string>> = {
+  en: {
+    telegramLinked: 'BetterTrack — Telegram linked. You will receive your notifications here.',
+    discordConfigured: 'BetterTrack — Discord webhook configured. This channel is now armed.',
+    discordTest: 'BetterTrack test message — your notifications are wired up.',
+  },
+  de: {
+    telegramLinked:
+      'BetterTrack — Telegram verbunden. Deine Benachrichtigungen kommen ab jetzt hier an.',
+    discordConfigured:
+      'BetterTrack — Discord-Webhook eingerichtet. Dieser Kanal ist jetzt scharfgeschaltet.',
+    discordTest: 'BetterTrack-Testnachricht — deine Benachrichtigungen sind richtig verdrahtet.',
+  },
+};
+
+/** Render one chat-channel setup text in the recipient's stored locale. */
+export function channelSetupText(
+  key: ChannelSetupMessageKey,
+  locale: string | null | undefined,
+): string {
+  return CHANNEL_SETUP_COPY[resolveEmailLocale(locale)][key];
+}
 
 /** Build the wire descriptor attached to a notification payload. */
 export function notificationMessage(

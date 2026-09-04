@@ -166,6 +166,25 @@ export const notificationMessageSchema = z
 export type NotificationMessage = z.infer<typeof notificationMessageSchema>;
 
 /**
+ * Stable keys for the chat-channel SETUP texts (#1723).
+ *
+ * These are the messages a channel writes into the chat itself — the Telegram
+ * "you are linked" ping, the Discord save probe, the Discord test send — not
+ * dispatcher notifications: they carry no event, are never persisted as an
+ * inbox row and never reach the SPA, so they stay out of
+ * {@link NOTIFICATION_MESSAGE_KEYS} and out of the web catalogs. They live here
+ * so the server catalog (`services/notifications/notificationI18n.ts`) is
+ * compiler-bound to one shared key list and cannot ship a locale short of a
+ * key, exactly like the dispatcher copy above.
+ */
+export const CHANNEL_SETUP_MESSAGE_KEYS = [
+  'telegramLinked',
+  'discordConfigured',
+  'discordTest',
+] as const;
+export type ChannelSetupMessageKey = (typeof CHANNEL_SETUP_MESSAGE_KEYS)[number];
+
+/**
  * Additive payload envelope for inbox rows. Deep-link fields remain open-ended;
  * historical rows may omit both standardized fields (or have a null payload).
  *

@@ -13,12 +13,10 @@ import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
-import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
-import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   createParanoidEnforcementRepository,
@@ -121,12 +119,11 @@ import { createTwoFactorRepository } from '../data/repositories/twoFactorReposit
 import { createExportService } from '../services/export';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import { createTwoFactorService } from '../services/auth/twoFactorService';
-import { createFcmChannel } from '../services/notifications/fcm';
+import { createNotificationChannelSet } from '../services/notifications/channelSet';
 import { createNotificationCenter } from '../services/notifications/notificationCenter';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
 import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
-import { createWebPushChannel } from '../services/notifications/webPush';
 import { createCashTagRepository } from '../data/repositories/cashTagRepository';
 import { createCashBudgetRepository } from '../data/repositories/cashBudgetRepository';
 import { createCashSummaryRepository } from '../data/repositories/cashSummaryRepository';
@@ -238,16 +235,16 @@ const email = createEmailService({
 const notificationRepo = createNotificationRepository(db);
 const notificationDigestRepo = createNotificationDigestRepository(db);
 const alertRepo = createAlertRepository(db);
-const fcmChannel = createFcmChannel({
-  serviceAccountFile: config.push.fcmServiceAccountFile,
-  devices: createDeviceTokenRepository(db),
-  logger,
-});
-const webPushChannel = createWebPushChannel({
-  vapid: config.webPush,
-  subscriptions: createPushSubscriptionRepository(db),
-  logger,
-});
+// Every outbound channel comes from the ONE shared factory the API context
+// uses too (#1723). Before it the worker built only FCM + web push, so with the
+// V5-P0 kill-switch flipped ON the authoritative dispatcher silently dropped
+// every Telegram and Discord notification.
+const {
+  fcm: fcmChannel,
+  webPush: webPushChannel,
+  telegram: telegramChannel,
+  discord: discordChannel,
+} = createNotificationChannelSet({ db, config, logger });
 const dispatcher = createNotificationDispatcher({
   bus: events,
   repo: notificationRepo,
@@ -258,6 +255,8 @@ const dispatcher = createNotificationDispatcher({
   // log here at boot; the worker runs on either way.
   fcm: fcmChannel,
   webPush: webPushChannel,
+  telegram: telegramChannel,
+  discord: discordChannel,
   presence: createPresenceStore({ redis: deadLetterConnection }),
   // Digest cadence + queue (V5-P3): a daily/weekly type's outbound channels are
   // deferred into the digest queue; the digest jobs below deliver them.

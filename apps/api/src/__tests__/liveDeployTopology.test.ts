@@ -274,8 +274,66 @@ describe('compose readiness and cross-container exports (#939)', () => {
   });
 });
 
+/**
+ * Top-level property names of the object literal passed to
+ * `createNotificationDispatcher({ … })`, sorted. Full-line comments are dropped
+ * first (they carry commas and braces); string literals are skipped so a comma
+ * inside one cannot split a property.
+ */
+function dispatcherDependencyKeys(source: string): string[] {
+  const marker = 'createNotificationDispatcher({';
+  const start = source.indexOf(marker);
+  expect(start, 'source must construct a notification dispatcher').toBeGreaterThan(-1);
+  const body = source
+    .slice(start + marker.length)
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+
+  const pieces: string[] = [];
+  let current = '';
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i]!;
+    if (quote) {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') depth += 1;
+    else if (ch === '}' || ch === ']' || ch === ')') {
+      if (depth === 0) break; // the dispatcher literal's own closing brace
+      depth -= 1;
+    }
+    if (ch === ',' && depth === 0) {
+      pieces.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  pieces.push(current);
+
+  const keys: string[] = [];
+  for (const piece of pieces) {
+    const named = /^\s*([A-Za-z_$][\w$]*)\s*:/.exec(piece);
+    const shorthand = /^\s*([A-Za-z_$][\w$]*)\s*$/.exec(piece);
+    const key = named?.[1] ?? shorthand?.[1];
+    if (key) keys.push(key);
+  }
+  return keys.sort();
+}
+
 describe('worker entry registers the durable notification consumer + bridge (guard 2)', () => {
   const workerEntry = read('apps/api/src/scripts/worker.ts');
+  const apiContext = read('apps/api/src/http/context.ts');
 
   it('registers the notifications.dispatch consumer with the fully-built dispatcher + webhook bridge', () => {
     // V5-P10 (#648): the durable dispatch consumer also fans events out to the
@@ -284,6 +342,61 @@ describe('worker entry registers the durable notification consumer + bridge (gua
       /createNotificationsDispatchJob\(\{\s*dispatcher,\s*webhooks: webhookBridge,\s*\}\)/,
     );
     expect(workerEntry).toContain('createNotificationDispatcher(');
+  });
+
+  it('hands the worker dispatcher the SAME dependency set as the API dispatcher', () => {
+    // The 2026-09 drift (#1723): both processes built a dispatcher, but only
+    // the API built the Telegram + Discord channels. In production the worker
+    // is the authoritative dispatcher, so `routing.telegram && telegram` saw
+    // `undefined` and every Telegram/Discord notification was silently dropped
+    // — the kill-switch's "env flip restores" half never worked at all.
+    //
+    // Comparing the two dependency SETS is what makes this guard survive the
+    // next channel: adding one to a single entry point fails here, whichever
+    // entry point was forgotten.
+    const workerKeys = dispatcherDependencyKeys(workerEntry);
+    const apiKeys = dispatcherDependencyKeys(apiContext);
+    expect(workerKeys).toEqual(apiKeys);
+    // Named explicitly so deleting a channel from BOTH entry points — which
+    // the set comparison alone would happily accept — still fails.
+    for (const channel of ['fcm', 'webPush', 'telegram', 'discord']) {
+      expect(workerKeys, `dispatcher must receive the ${channel} channel`).toContain(channel);
+    }
+  });
+
+  it("builds both dispatchers' channels through the one shared factory", () => {
+    // Passing the same keys is necessary but not sufficient: the values have to
+    // come from the same place, or the worker can pass `telegram: null` forever
+    // while the API builds a live channel.
+    for (const [name, source] of [
+      ['worker entry', workerEntry],
+      ['api context', apiContext],
+    ] as const) {
+      expect(source, `${name} must build channels via createNotificationChannelSet`).toContain(
+        'createNotificationChannelSet({ db, config, logger })',
+      );
+    }
+  });
+
+  it('recognizes a channel added to only one entry point', () => {
+    // Self-test of the parser: it must see the keys, not just the substring.
+    const apiLike = `const d = createNotificationDispatcher({
+      bus: events,
+      // a comment, with a comma and a { brace
+      fcm: fcmChannel,
+      telegram: telegramChannel,
+      digest: { cadenceFor: (a, b) => x(a, b) },
+      logger,
+    });`;
+    const workerLike = apiLike.replace('      telegram: telegramChannel,\n', '');
+    expect(dispatcherDependencyKeys(apiLike)).toEqual([
+      'bus',
+      'digest',
+      'fcm',
+      'logger',
+      'telegram',
+    ]);
+    expect(dispatcherDependencyKeys(workerLike)).not.toEqual(dispatcherDependencyKeys(apiLike));
   });
 
   it('bridges the notification center onto the durable queue (never the ephemeral bus)', () => {
