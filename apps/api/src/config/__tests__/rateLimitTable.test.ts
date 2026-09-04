@@ -133,6 +133,8 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     socialSharedPerMinute: 6,
     /** Two CSV uploads. */
     importCreatePerMinute: 2,
+    /** One bulk kind sweep over a statement's undecided rows (one PATCH each). */
+    importRowResolvePerMinute: 20,
   };
 
   it('pins every weight, so a future edit is visible in a diff', () => {
@@ -151,6 +153,9 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       analyticsSeries: 10,
       // The row classifier drives ≈450 pg_trgm scans per staged batch.
       importCreate: 100,
+      // One call per row in the wizard's bulk sweep; each re-derives a row's
+      // instrument, hash and duplicate verdict against the portfolio.
+      importRowResolve: 6,
     });
   });
 
@@ -160,10 +165,11 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       COST_BAR.backtestPreviewPerMinute * requestCosts.backtestPreview +
       COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
       COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
-      COST_BAR.importCreatePerMinute * requestCosts.importCreate;
+      COST_BAR.importCreatePerMinute * requestCosts.importCreate +
+      COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(880);
+    expect(worstMinute).toBe(1000);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
   });

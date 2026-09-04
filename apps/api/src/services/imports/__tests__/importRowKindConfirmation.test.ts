@@ -400,6 +400,72 @@ describe('a person confirms the kind and the statement imports', () => {
     const row = rowByRaw(importPreviewResponseSchema.parse(res.body), 'MIETE JAENNER');
     expect(row.ruleTagIds).toEqual([tag.body.tag.id]);
   });
+
+  it('books two same-day card payments of equal amount as the two payments they are', async () => {
+    const { agent, pid } = await setup();
+    await fundMain(agent, pid, 1000);
+
+    // Two shops, one amount, one day. Both confirmations used to return 200
+    // while the second row silently flipped to `duplicate`, so one of the two
+    // €52.30 payments never reached the ledger.
+    const statement = [
+      'Datum;Buchungstext;Betrag',
+      '03.01.2024;HOFER DANKT KARTE 5678;-52,30',
+      '03.01.2024;BILLA DANKT KARTE 5678;-52,30',
+    ].join('\n');
+    const preview = await upload(agent, pid, statement, 'karte.csv');
+
+    for (const needle of ['HOFER', 'BILLA']) {
+      const res = await confirm(
+        agent,
+        preview.batch.id,
+        rowByRaw(preview, needle).id,
+        'withdrawal',
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(rowByRaw(importPreviewResponseSchema.parse(res.body), needle).flag).toBe('mapped');
+    }
+
+    const report = await apply(agent, preview.batch.id);
+    expect(report.applied).toBe(2);
+    const ledger = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+    expect(ledger.body.balanceEur).toBe(1000 - 104.6);
+    expect(ledger.body.movements).toHaveLength(3);
+  });
+
+  it('answers a bulk sweep without re-walking the cash ledger once per row', async () => {
+    const { agent, pid } = await setup();
+    await fundMain(agent, pid, 1000);
+
+    // The wizard's bulk affordance is one PATCH per row, and each PATCH used to
+    // page the WHOLE cash ledger 200 movements at a time to rebuild the same
+    // unchanged hash set — 12 rows, 12 full page walks, each one also paying
+    // for balances, sources and the page's tag join.
+    const lines = Array.from(
+      { length: 12 },
+      (_, i) =>
+        `${String(i + 1).padStart(2, '0')}.02.2024;HOFER DANKT KARTE ${i + 1};-${10 + i},00`,
+    );
+    const preview = await upload(
+      agent,
+      pid,
+      ['Datum;Buchungstext;Betrag', ...lines].join('\n'),
+      'sweep.csv',
+    );
+    expect(preview.rows).toHaveLength(12);
+    expect(preview.rows.every((r) => r.kind === null)).toBe(true);
+
+    const ledgerReads = vi.spyOn(harness.ctx.portfolio, 'getCashMovements');
+    for (const row of preview.rows) {
+      const res = await confirm(agent, preview.batch.id, row.id, 'withdrawal');
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    }
+    // Once for the batch, not once per row.
+    expect(ledgerReads).toHaveBeenCalledTimes(1);
+
+    // …and the sweep still books all twelve: cheaper, not weaker.
+    expect(await apply(agent, preview.batch.id)).toMatchObject({ applied: 12 });
+  });
 });
 
 describe('a zero amount is not a direction, and cannot be confirmed as one', () => {
