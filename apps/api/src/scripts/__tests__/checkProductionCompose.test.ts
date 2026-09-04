@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertGrafanaAdminCredential,
+  assertGrafanaAnonymousAccessBind,
+  assertGrafanaTelemetryDisabled,
   assertServiceLoggingLimits,
+  GRAFANA_TELEMETRY_SETTINGS,
   type RenderedCompose,
 } from '../checkProductionCompose';
 
@@ -203,6 +206,194 @@ describe('production Compose Grafana credential gate', () => {
 
     expect(() => assertGrafanaAdminCredential(rendered, 'test')).toThrow(
       'test: the grafana entrypoint must apply /var/lib/grafana/.bettertrack-admin-password to an already-provisioned grafana.db',
+    );
+  });
+});
+
+const telemetryOff: Record<string, string> = { ...GRAFANA_TELEMETRY_SETTINGS };
+const telemetryEntries = Object.entries(GRAFANA_TELEMETRY_SETTINGS);
+
+describe('production Compose Grafana telemetry gate', () => {
+  it('accepts the shipped shape: every outbound-call setting pinned off', () => {
+    const rendered = grafanaCompose({ environment: { ...telemetryOff } });
+
+    expect(() => assertGrafanaTelemetryDisabled(rendered, 'test')).not.toThrow();
+  });
+
+  it('names each setting it covers, so a reviewer can check the compose file against it', () => {
+    // Polarities differ: the gravatar switch is "disable", so its safe value is
+    // `true` while the analytics/news ones are `false`.
+    expect(GRAFANA_TELEMETRY_SETTINGS).toEqual({
+      GF_ANALYTICS_REPORTING_ENABLED: 'false',
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false',
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false',
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: 'false',
+      GF_NEWS_NEWS_FEED_ENABLED: 'false',
+      GF_SECURITY_DISABLE_GRAVATAR: 'true',
+    });
+  });
+
+  it.each(telemetryEntries)(
+    'fails when %s is dropped (Grafana defaults it the other way)',
+    (key) => {
+      const environment = { ...telemetryOff };
+      delete environment[key];
+
+      expect(() => assertGrafanaTelemetryDisabled(grafanaCompose({ environment }), 'test')).toThrow(
+        `test: grafana must set ${key}`,
+      );
+    },
+  );
+
+  it.each(telemetryEntries)(
+    'fails when %s is flipped back to the calling-out value',
+    (key, required) => {
+      const flipped = required === 'false' ? 'true' : 'false';
+      const rendered = grafanaCompose({ environment: { ...telemetryOff, [key]: flipped } });
+
+      expect(() => assertGrafanaTelemetryDisabled(rendered, 'test')).toThrow(
+        `test: grafana must keep ${key} at ${required} — it renders "${flipped}"`,
+      );
+    },
+  );
+});
+
+const anonymousGuardEntrypoint = [
+  '/bin/sh',
+  '-c',
+  'anon="${GF_AUTH_ANONYMOUS_ENABLED:-false}"\n' +
+    'bind="${BT_OBS_BIND_HOST:-127.0.0.1}"\n' +
+    'ack="${BT_GRAFANA_ANON_LAN_ACK:-}"\n' +
+    'if [ "$anon" = yes ] && [ "$loopback" = no ] && [ "$ack" = no ]; then\n' +
+    '  echo "bettertrack: refusing to start Grafana with anonymous access on the non-loopback bind $bind." >&2\n' +
+    '  exit 1\n' +
+    'fi\n' +
+    'exec /run.sh\n',
+];
+
+// The three key names appear in the real entrypoint's explanatory comments too,
+// so this is what a guard reduced to prose looks like: every name present, no
+// comparison left.
+const commentOnlyGuardEntrypoint = [
+  '/bin/sh',
+  '-c',
+  '# GF_AUTH_ANONYMOUS_ENABLED on a non-loopback BT_OBS_BIND_HOST used to be\n' +
+    '# refused here unless BT_GRAFANA_ANON_LAN_ACK named the exposure.\n' +
+    'exec /run.sh\n',
+];
+
+function anonymousCompose(
+  overrides: {
+    anonymous?: string;
+    role?: string;
+    bindHost?: string;
+    acknowledgement?: string;
+    entrypoint?: unknown;
+    ports?: unknown[];
+  } = {},
+): RenderedCompose {
+  return grafanaCompose({
+    environment: {
+      GF_AUTH_ANONYMOUS_ENABLED: overrides.anonymous ?? 'false',
+      GF_AUTH_ANONYMOUS_ORG_ROLE: overrides.role ?? 'Viewer',
+      BT_OBS_BIND_HOST: overrides.bindHost ?? '127.0.0.1',
+      BT_GRAFANA_ANON_LAN_ACK: overrides.acknowledgement ?? '',
+    },
+    entrypoint: overrides.entrypoint ?? anonymousGuardEntrypoint,
+    ports: overrides.ports ?? [{ target: 3000, host_ip: overrides.bindHost ?? '127.0.0.1' }],
+  });
+}
+
+describe('production Compose Grafana anonymous-access × bind-host gate', () => {
+  it('accepts the shipped default: anonymous access off on the loopback bind', () => {
+    expect(() => assertGrafanaAnonymousAccessBind(anonymousCompose(), 'test')).not.toThrow();
+  });
+
+  it('accepts the documented admin-proxy recipe: an anonymous Viewer on the loopback bind', () => {
+    const rendered = anonymousCompose({ anonymous: 'true', bindHost: '127.0.0.1' });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).not.toThrow();
+  });
+
+  it('accepts a LAN bind on its own, with Grafana keeping its own login', () => {
+    const rendered = anonymousCompose({ anonymous: 'false', bindHost: '192.168.1.10' });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).not.toThrow();
+  });
+
+  it('fails on the dangerous combination: an anonymous Viewer answering on a LAN bind', () => {
+    const rendered = anonymousCompose({ anonymous: 'true', bindHost: '192.168.1.10' });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: grafana renders anonymous access on the non-loopback bind 192.168.1.10',
+    );
+  });
+
+  it('fails when anonymous access meets a wildcard bind that publishes on every interface', () => {
+    const rendered = anonymousCompose({
+      anonymous: 'yes',
+      bindHost: '0.0.0.0',
+      ports: [{ target: 3000 }],
+    });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: grafana renders anonymous access on the non-loopback bind (all interfaces)',
+    );
+  });
+
+  it('allows the combination only when it is named explicitly', () => {
+    const rendered = anonymousCompose({
+      anonymous: 'true',
+      bindHost: '192.168.1.10',
+      acknowledgement: 'true',
+    });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).not.toThrow();
+  });
+
+  it('fails when anonymous access renders a role above Viewer', () => {
+    const rendered = anonymousCompose({ anonymous: 'true', role: 'Editor' });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: anonymous Grafana access must stay read-only',
+    );
+  });
+
+  it('fails when the bind host is no longer handed to the entrypoint guard', () => {
+    const rendered = grafanaCompose({
+      environment: { GF_AUTH_ANONYMOUS_ENABLED: 'false', BT_GRAFANA_ANON_LAN_ACK: '' },
+      entrypoint: anonymousGuardEntrypoint,
+      ports: [{ target: 3000, host_ip: '127.0.0.1' }],
+    });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: grafana must receive BT_OBS_BIND_HOST',
+    );
+  });
+
+  it('fails when the entrypoint drops the guard, so only the shipped defaults would be safe', () => {
+    const rendered = anonymousCompose({
+      entrypoint: ['/bin/sh', '-c', 'exec /run.sh\n'],
+    });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: the grafana entrypoint must keep the anonymous-access guard',
+    );
+  });
+
+  it('fails when the guard is gutted down to the comments that name its keys', () => {
+    const rendered = anonymousCompose({ entrypoint: commentOnlyGuardEntrypoint });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      "test: the grafana entrypoint must keep the anonymous-access guard's refusal",
+    );
+  });
+
+  it.each(['t', 'y'])('treats %s as anonymous access on, the way go-ini parseBool does', (flag) => {
+    const rendered = anonymousCompose({ anonymous: flag, bindHost: '192.168.1.10' });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: grafana renders anonymous access on the non-loopback bind 192.168.1.10',
     );
   });
 });
