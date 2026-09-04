@@ -623,8 +623,9 @@ export const friendGroupNameSchema = z.string().trim().min(1).max(FRIEND_GROUP_N
  * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
  * one user, its members are a subset of the owner's accepted friends, and it is
  * private to the owner — nobody else can see or use it. `members` is the current
- * roster (the same live set a `group` audience resolves against); `memberCount`
- * is a convenience for the picker's preview.
+ * roster (the same live set a `group` audience resolves against, so a disabled
+ * account is absent from both); `memberCount` is a convenience for the picker's
+ * preview.
  */
 export const friendGroupSchema = z
   .object({
@@ -632,6 +633,13 @@ export const friendGroupSchema = z
     name: z.string(),
     memberCount: z.number().int().nonnegative(),
     members: z.array(friendUserSchema),
+    /**
+     * How many of the owner's shares currently point at this circle — exactly
+     * what goes dark if it is deleted (a deleted group nulls `group_id` and its
+     * shares resolve to nobody, §6.9). Drives the delete-warning copy, so the
+     * owner is never asked to confirm a blind "shares will stop working".
+     */
+    shareCount: z.number().int().nonnegative(),
   })
   .strict();
 export type FriendGroup = z.infer<typeof friendGroupSchema>;

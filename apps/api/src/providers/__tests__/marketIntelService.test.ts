@@ -5,9 +5,14 @@ import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ApiError } from '../../errors';
+import { cacheKey, freshCacheKey, staleCacheKey } from '../cache';
 import { CircuitOpenError } from '../circuitBreaker';
 import { AssetNotFoundError, CapabilityUnavailableError } from '../errors';
-import { createMarketDataService, type MarketDataService } from '../marketDataService';
+import {
+  createMarketDataService,
+  intelCacheVariant,
+  type MarketDataService,
+} from '../marketDataService';
 import { createProviderRegistry, providerCapabilities } from '../registry';
 
 import { mapSplitEvents } from '../yahooMapping';
@@ -21,6 +26,7 @@ const DIVIDENDS: DividendEvents = {
   upcoming: [],
   forwardYield: 0.0044,
   trailingAmount: 0.98,
+  trailingAmountBasis: 'trailing-12m',
 };
 
 interface IntelProvider extends AssetProvider {
@@ -156,6 +162,52 @@ describe('MarketDataService intel caching/coalescing/breaker', () => {
     // catches this and degrades to `available: false`.
     await expect(service.getDividendEvents(REF)).rejects.toBeInstanceOf(CircuitOpenError);
     expect(provider.calls.dividends).toBe(afterTrip);
+  });
+});
+
+describe('MarketDataService intel payload versioning (#1741)', () => {
+  /** The key a release before the payload change wrote its dividends entry to. */
+  const V1_KEY = cacheKey('yahoo', 'AAPL', 'intel', 'dividends');
+  /** What that release stored: no `trailingAmountBasis` at all. */
+  const V1_PAYLOAD = {
+    currency: 'USD',
+    history: DIVIDENDS.history,
+    upcoming: [],
+    forwardYield: 0.0044,
+    trailingAmount: 0.98,
+  };
+
+  it('only the changed capability gets a new variant; the rest keep their bare key', () => {
+    expect(intelCacheVariant('dividends')).toBe('dividends@v2');
+    for (const capability of ['earnings', 'news', 'splits', 'fundamentals'] as const) {
+      expect(intelCacheVariant(capability)).toBe(capability);
+    }
+  });
+
+  it('an entry written before the payload change is never served — neither fresh nor stale', async () => {
+    // Both copies present, exactly as they are the moment a deploy lands: the
+    // fresh copy inside its 12 h window, the stale copy good for a week.
+    const entry = JSON.stringify({ value: V1_PAYLOAD, asOf: Date.now() });
+    await redis.set(freshCacheKey(V1_KEY), entry, 'EX', 12 * 60 * 60);
+    await redis.set(staleCacheKey(V1_KEY), entry, 'EX', 7 * 24 * 60 * 60);
+
+    const { provider, service } = serviceWith(makeProvider({ withIntel: true }));
+    const result = await service.getDividendEvents(REF);
+
+    // The v1 entry did not answer the read: the provider was asked, and what
+    // came back carries the basis the projection refuses to do without.
+    expect(provider.calls.dividends).toBe(1);
+    expect(result.stale).toBe(false);
+    expect(result.value.trailingAmountBasis).toBe('trailing-12m');
+    expect(result.value).toEqual(DIVIDENDS);
+
+    // The fresh payload was stored under the versioned key, and the v1 entry was
+    // left alone to expire on its own TTL.
+    const stored = await redis.get(
+      freshCacheKey(cacheKey('yahoo', 'AAPL', 'intel', 'dividends@v2')),
+    );
+    expect(stored).not.toBeNull();
+    expect(JSON.parse(stored ?? 'null')).toMatchObject({ value: DIVIDENDS });
   });
 });
 

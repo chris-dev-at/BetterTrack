@@ -830,6 +830,25 @@ export const V5_SURFACE_INVENTORY = [
     ],
   },
   {
+    id: 'p13b-installable-pwa',
+    phases: ['P13b'],
+    // Not a route: the affordance floats over whichever surface is on screen
+    // (anti-bloat), and the standalone-window rules are shell-wide.
+    routes: [],
+    components: ['user/components/InstallPrompt.tsx'],
+    copyRoots: ['pwa.install'],
+    copyReview:
+      'Install card and the iOS Add-to-Home-Screen coach mark reviewed in both catalogs; DE keeps the informal address the rest of the user app uses.',
+    states: {
+      loading: notAsync('Install capability is a synchronous browser fact, not a fetch.'),
+      empty: notAsync('No collection: the card is silent-by-default when no install path exists.'),
+      error: notAsync(
+        'The native prompt owns its own failure; a rejected prompt() is swallowed and the card stays dismissed.',
+      ),
+    },
+    tests: ['user/components/InstallPrompt.test.tsx'],
+  },
+  {
     id: 'p13c-admin-session-policy',
     phases: ['P13c'],
     routes: ['/admin/security'],
@@ -1580,6 +1599,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The privacy-sensitive shortcut is intentionally absent unless the owner audience read succeeds; loading, forbidden, and absent remain indistinguishable.',
   },
   {
+    component: 'user/social/chatSurface.tsx',
+    read: 'ChipShareShortcut.groupsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The group roster decides whether the shortcut may exist at all: an unresolved or failed read cannot tell an already-admitted group member from an excluded one, so the shortcut stays absent exactly as it does for an unresolved audience read — a spinner or error card inside the chat bubble would advertise a prompt the client cannot yet justify. The full-fidelity path stays the AudiencePicker, which observes the same query key and renders that read’s own states.',
+    delegatedTo: 'AudiencePicker',
+  },
+  {
     component: 'user/components/CmdKPalette.tsx',
     read: 'CmdKPalette.capabilities',
     states: ['loading', 'error'],
@@ -2009,8 +2036,14 @@ export type V5AsyncStateDebtLedger = Readonly<
  * the read defaults to "offered", so an unresolved or failed fetch leaves the
  * palette exactly as it was — which is recorded as an exemption above rather
  * than as debt, so the ceiling stays at zero.
+ *
+ * 215 → 216 with the V5-P8 chat chip group rung (#1726): `ChipShareShortcut`
+ * resolves the shared group's live roster so a recipient the server already
+ * admits through the `group` rung is not falsely prompted. Like the audience
+ * read beside it the shortcut is simply absent while that roster is unresolved
+ * or failing, recorded as an exemption above, so the ceiling stays at zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 215;
+export const V5_ASYNC_READ_SITE_BASELINE = 216;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

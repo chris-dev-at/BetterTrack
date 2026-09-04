@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState, type FormEvent } from 'react';
+import { useId, useMemo, useState, type FormEvent } from 'react';
 
 import type { FriendGroup } from '@bettertrack/contracts';
 
@@ -48,6 +48,10 @@ function DeleteGroupDialog({
   error: boolean;
 }) {
   const t = useT();
+  // Name how many shares go dark: deleting a circle six items point at must not
+  // read exactly like deleting one nothing points at (#1710). The count is the
+  // server's live `shareCount`, not a guess.
+  const plural = group.shareCount === 0 ? 'none' : group.shareCount === 1 ? 'one' : 'other';
   return (
     <Dialog
       phoneSheet
@@ -55,7 +59,9 @@ function DeleteGroupDialog({
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
-        <p className="bt-soft">{t('social.groups.deleteWarning')}</p>
+        <p className="bt-soft">
+          {t(`social.groups.deleteWarning.${plural}`, { count: group.shareCount })}
+        </p>
         {error ? <Alert tone="error">{t('social.groups.deleteError')}</Alert> : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={pending} onClick={onClose} variant="quiet">
@@ -78,6 +84,10 @@ function GroupCard({ group }: { group: FriendGroup }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(group.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // One card per group, each with its own expander: a hard-coded input id would
+  // repeat in the document as soon as two cards are open, and the second card's
+  // label would focus the first card's field.
+  const nameFieldId = useId();
 
   const friendsQuery = useQuery({
     queryKey: ['social', 'friends'],
@@ -160,9 +170,9 @@ function GroupCard({ group }: { group: FriendGroup }) {
               if (canRename) renameMutation.mutate(trimmed);
             }}
           >
-            <Field className="flex-1" htmlFor="groupName" label={t('social.groups.nameLabel')}>
+            <Field className="flex-1" htmlFor={nameFieldId} label={t('social.groups.nameLabel')}>
               <Input
-                id="groupName"
+                id={nameFieldId}
                 maxLength={60}
                 name="groupName"
                 onChange={(e) => setName(e.target.value)}

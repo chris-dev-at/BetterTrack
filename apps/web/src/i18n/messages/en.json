@@ -424,7 +424,8 @@
     "expandRail": "Expand navigation",
     "collapseRail": "Collapse navigation",
     "expandSection": "Expand {{section}}",
-    "collapseSection": "Collapse {{section}}"
+    "collapseSection": "Collapse {{section}}",
+    "back": "Back"
   },
   "askdock": {
     "pin": "Keep open",
@@ -3358,8 +3359,10 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "actionAdd": "Share it with them too",
           "confirmWiden": "I understand this widens access to {{username}}.",
           "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
+          "confirmGroupDetach": "I understand this keeps the current members of {{group}} and adds {{username}}, but the item stops following that group — later changes to {{group}} no longer change who can see it.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }
@@ -3511,7 +3514,11 @@
       "mutateError": "Could not update the group. Please try again.",
       "delete": "Delete group",
       "deleteTitle": "Delete “{{name}}”",
-      "deleteWarning": "Anything shared with this group will no longer be visible to its members. This cannot be undone.",
+      "deleteWarning": {
+        "none": "Nothing is shared with this group right now, so deleting it changes nothing for your friends. This cannot be undone.",
+        "one": "1 shared item points at this group and will no longer be visible to its members. This cannot be undone.",
+        "other": "{{count}} shared items point at this group and will no longer be visible to its members. This cannot be undone."
+      },
       "deleting": "Deleting…",
       "deleteError": "Could not delete the group. Please try again."
     }
@@ -6564,6 +6571,15 @@
     "discreet": {
       "title": "Discreet mode",
       "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "Install BetterTrack",
+      "body": "Add it to this device to open it in its own window.",
+      "iosBody": "Tap Share, then “Add to Home Screen”.",
+      "action": "Install",
+      "dismiss": "Dismiss"
     }
   },
   "parked": {

@@ -45,6 +45,16 @@ async function loginAgent(app: Application, identifier: string, password: string
   return agent;
 }
 
+/** Flip the logged-in user's base currency via the settings endpoint (§5.4). */
+async function setBase(agent: ReturnType<typeof request.agent>, baseCurrency: string) {
+  const res = await agent
+    .patch('/api/v1/settings/account')
+    .set(...XRW)
+    .send({ baseCurrency });
+  expect(res.status).toBe(200);
+  expect(res.body.baseCurrency).toBe(baseCurrency);
+}
+
 async function seedGlobalAsset(
   h: TestHarness,
   overrides: Partial<typeof schema.assets.$inferInsert> = {},
@@ -416,7 +426,7 @@ describe('GET /api/v1/assets/portfolio/dividend-projection — scope (V5-P6b, #1
     expect(allParsed.success).toBe(true);
     if (!allParsed.success) return;
     expect(allParsed.data.available).toBe(true);
-    expect(allParsed.data.yearlyTotalEur).toBe(100);
+    expect(allParsed.data.yearlyTotalBase).toBe(100);
     expect(allParsed.data.holdings).toHaveLength(2);
 
     // Scoped: the shown portfolio's income ALONE. This is the figure the
@@ -428,14 +438,14 @@ describe('GET /api/v1/assets/portfolio/dividend-projection — scope (V5-P6b, #1
     const scopedParsed = projectedDividendIncomeResponseSchema.safeParse(scoped.body);
     expect(scopedParsed.success).toBe(true);
     if (!scopedParsed.success) return;
-    expect(scopedParsed.data.yearlyTotalEur).toBe(10);
+    expect(scopedParsed.data.yearlyTotalBase).toBe(10);
     expect(scopedParsed.data.holdings.map((holding) => holding.assetId)).toEqual([first.assetId]);
 
     const other = await agent
       .get('/api/v1/assets/portfolio/dividend-projection')
       .query({ portfolioId: second.portfolioId });
-    expect(other.body.yearlyTotalEur).toBe(90);
-    expect(other.body.monthlyTotalEur).toBe(7.5);
+    expect(other.body.yearlyTotalBase).toBe(90);
+    expect(other.body.monthlyTotalBase).toBe(7.5);
   });
 
   it("another user's portfolio id yields an empty projection, never their income", async () => {
@@ -449,8 +459,70 @@ describe('GET /api/v1/assets/portfolio/dividend-projection — scope (V5-P6b, #1
       .get('/api/v1/assets/portfolio/dividend-projection')
       .query({ portfolioId: ownerPortfolio.portfolioId });
     expect(res.status).toBe(200);
-    expect(res.body.yearlyTotalEur).toBe(0);
+    expect(res.body.yearlyTotalBase).toBe(0);
     expect(res.body.holdings).toEqual([]);
+  });
+
+  it('answers in the caller’s base currency, at the stubbed spot rate (§5.4, #1741)', async () => {
+    // One EUR payer (10 shares × 1 €/share = 10 €/yr) plus a stubbed EURUSD /
+    // EURCHF spot, so every expected figure below is exact rather than merely
+    // "not the EUR number".
+    const h = await createTestApp({
+      marketData: createStubMarketData({
+        dividends: () =>
+          cachedIntel(
+            sampleDividendEvents({ currency: 'EUR', trailingAmount: 1, history: [], upcoming: [] }),
+          ),
+        quote: (ref) => {
+          const rate =
+            ref.providerRef === 'EURUSD=X' ? 1.25 : ref.providerRef === 'EURCHF=X' ? 0.95 : null;
+          if (rate === null) throw new Error(`no stub quote for ${ref.providerRef}`);
+          return {
+            value: {
+              price: rate,
+              currency: ref.providerRef.slice(3, 6),
+              prevClose: null,
+              asOf: new Date().toISOString(),
+            },
+            stale: false,
+            asOf: Date.now(),
+          };
+        },
+      }),
+    });
+    const user = await h.seedUser();
+    await seedPortfolioWithHolding(h, user.id, 10);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    // EUR baseline — the pre-#1741 response, kept as the regression bar.
+    const eur = await agent.get('/api/v1/assets/portfolio/dividend-projection');
+    expect(eur.status).toBe(200);
+    expect(projectedDividendIncomeResponseSchema.safeParse(eur.body).success).toBe(true);
+    expect(eur.body.currency).toBe('EUR');
+    expect(eur.body.yearlyTotalBase).toBe(10);
+
+    await setBase(agent, 'USD');
+    const usd = await agent.get('/api/v1/assets/portfolio/dividend-projection');
+    expect(usd.status).toBe(200);
+    expect(projectedDividendIncomeResponseSchema.safeParse(usd.body).success).toBe(true);
+    expect(usd.body.currency).toBe('USD');
+    // 10.00 € × 1.25 = 12.50 $/yr, and the monthly spread of exactly that.
+    expect(usd.body.yearlyTotalBase).toBe(12.5);
+    expect(usd.body.monthlyTotalBase).toBe(1.04); // round2(12.5 / 12)
+    // The holding stays in its OWN dividend currency; only the base figure moves.
+    expect(usd.body.holdings[0].currency).toBe('EUR');
+    expect(usd.body.holdings[0].annualIncomeBase).toBe(12.5);
+
+    await setBase(agent, 'CHF');
+    const chf = await agent.get('/api/v1/assets/portfolio/dividend-projection');
+    expect(chf.body.currency).toBe('CHF');
+    expect(chf.body.yearlyTotalBase).toBe(9.5); // 10.00 € × 0.95
+
+    // Back to EUR: conversion is read-time only, so the original response must
+    // come back byte-identical — the base is a passthrough, not a re-rating.
+    await setBase(agent, 'EUR');
+    const eurAgain = await agent.get('/api/v1/assets/portfolio/dividend-projection');
+    expect(eurAgain.body).toEqual(eur.body);
   });
 
   it('rejects a malformed portfolioId (400)', async () => {

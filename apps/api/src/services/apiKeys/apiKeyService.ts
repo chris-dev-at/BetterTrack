@@ -12,6 +12,7 @@ import {
   type CreateApiKeyResponse,
   type CreateApiKeyTierRequest,
   type UpdateApiKeyTierRequest,
+  withImpliedReadScopes,
 } from '@bettertrack/contracts';
 
 import type { ApiKeyRepository } from '../../data/repositories/apiKeyRepository';
@@ -22,10 +23,12 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 import type { ApiKeyRequestLogRow, ApiKeyRow, ApiKeyTierRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import { API_KEY_LIMITER_NAMESPACE } from '../../http/middleware/rateLimit';
 import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
+import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 
 /** The resolved principal behind a valid bearer token. */
 export interface ApiKeyPrincipal {
@@ -127,10 +130,22 @@ const DEFAULT_TIER_CACHE_TTL_MS = 15_000;
 /** Bound on the per-key audit view — the most recent lines only. */
 export const API_KEY_AUDIT_LIST_LIMIT = 200;
 
+/**
+ * Bound on the limiter-reset fan-out of one administrative tier edit (#1730).
+ * Beyond it the remaining keys keep their cooldown until it decays on its own,
+ * and the overflow is logged rather than silently dropped.
+ */
+export const API_KEY_TIER_RESET_MAX_KEYS = 500;
+
 const toSummary = (row: ApiKeyRow): ApiKeySummary => ({
   id: row.id,
   name: row.name,
-  scopes: row.scopes as ApiKeyScope[],
+  // Report the EFFECTIVE scope set, not the stored one (#1730): `scopeSatisfies`
+  // lets a held `:write` satisfy its `:read` at request time, so a key stored as
+  // `['portfolio:write']` really can call the read-only routes. The consent
+  // screen already expands this way; the key list must not understate what a
+  // credential can reach. Display-time only — the stored row is never rewritten.
+  scopes: withImpliedReadScopes(row.scopes as ApiKeyScope[]),
   createdAt: row.createdAt.toISOString(),
   lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
 });
@@ -213,6 +228,28 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
   const invalidateDefaultTier = (): void => {
     defaultTierCache = null;
   };
+
+  /**
+   * Clear the live per-key limiter state (cooldown marker, window counter and
+   * escalation level) for keys whose budget just changed (#1730).
+   *
+   * `consume` short-circuits on the cooldown marker BEFORE it reads the limit,
+   * and the escalation level outlives the cooldown by its decay window — so
+   * without this a key that climbed to rung 3 keeps 429ing for the rest of the
+   * old cooldown after an admin RAISES its tier, and its next overflow still
+   * jumps a rung. Best-effort: the tier change is already durable in Postgres,
+   * so a Redis failure is logged, never propagated into the admin response.
+   */
+  async function clearKeyLimiterState(keyIds: readonly string[]): Promise<void> {
+    if (keyIds.length === 0) return;
+    try {
+      await Promise.all(
+        keyIds.map((keyId) => resetProgressiveLimiter(redis, API_KEY_LIMITER_NAMESPACE, keyId)),
+      );
+    } catch (err) {
+      logger.warn({ err, keys: keyIds.length }, 'api-key limiter reset after tier change failed');
+    }
+  }
 
   async function publishInvalidation(
     event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
@@ -394,6 +431,35 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       const row = await tierRepo.update(id, patch);
       if (!row) throw notFound('API key tier not found.', 'API_KEY_TIER_NOT_FOUND');
       invalidateDefaultTier();
+      // A budget edit must take effect on the very next request of every key it
+      // covers, not after the old cooldown expires (#1730). A rename changes no
+      // budget, so it clears nothing. `isDefault` counts: flipping it moves the
+      // untiered keys onto (or off) this allowance.
+      if (
+        patch.requestLimit !== undefined ||
+        patch.windowSec !== undefined ||
+        patch.isDefault !== undefined
+      ) {
+        const assigned = await repo.listActiveIdsByTier(id, API_KEY_TIER_RESET_MAX_KEYS);
+        // Keys with no explicit tier resolve the default row, so they carry this
+        // tier's budget exactly while it IS the default.
+        const inheriting = row.isDefault
+          ? await repo.listActiveIdsByTier(null, API_KEY_TIER_RESET_MAX_KEYS)
+          : [];
+        const affected = [...new Set([...assigned, ...inheriting])];
+        if (
+          assigned.length === API_KEY_TIER_RESET_MAX_KEYS ||
+          inheriting.length === API_KEY_TIER_RESET_MAX_KEYS
+        ) {
+          // Never silently truncate: the keys past the cap keep their cooldown
+          // until it decays, and an operator can see that it happened.
+          logger.warn(
+            { tierId: id, reset: affected.length, cap: API_KEY_TIER_RESET_MAX_KEYS },
+            'api-key tier edit hit the limiter-reset cap; remaining keys cool down normally',
+          );
+        }
+        await clearKeyLimiterState(affected);
+      }
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierUpdated,
@@ -434,6 +500,9 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       }
       const row = await repo.setTier(id, tierId);
       if (!row) throw notFound('API key not found.', 'API_KEY_NOT_FOUND');
+      // The new allowance must be live on this key's very next request, even if
+      // it is mid-cooldown under the old one (#1730).
+      await clearKeyLimiterState([id]);
       // One targeted joined read to rehydrate the tier name — no O(N) scan.
       const withTier = await repo.findByIdWithTier(id);
       await audit.record({
