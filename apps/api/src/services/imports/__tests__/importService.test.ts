@@ -1045,6 +1045,126 @@ describe('POST /imports/:batchId/apply — golden fixture', () => {
     expect((await transactions(agent, pid)).map((t) => t.side).sort()).toEqual(['buy', 'sell']);
   });
 
+  /**
+   * CASH IS NOT IDENTIFIED BY ITS AMOUNT. Day + direction + amount is an
+   * identity for a trade (with its instrument) and a fiction for a bank
+   * statement: repeated amounts are routine there, and treating the repeat as
+   * a duplicate silently drops real money out of the ledger. The rows below are
+   * the three reproductions from the hardening issue, each of which lost money.
+   */
+  describe('same-day cash rows of equal amount', () => {
+    const FLATEX_CASH_HEADER = 'Buchtag;Valuta;Buchungsinformationen;TA-Nr.;Betrag';
+
+    it('books two Flatex deposits that differ only in their memo, then dedupes the re-import', async () => {
+      const { agent, pid } = await setup();
+      const csv = [
+        FLATEX_CASH_HEADER,
+        '02.01.2024;02.01.2024;Einzahlung SEPA Gehalt ACME GmbH;100001;500,00',
+        '02.01.2024;02.01.2024;Einzahlung SEPA Bonus Muster AG;100002;500,00',
+      ].join('\n');
+
+      const preview = await upload(agent, pid, csv);
+      expect(preview.rows.map((r) => r.flag)).toEqual(['mapped', 'mapped']);
+      const result = await apply(agent, preview.batch.id);
+      expect(result.applied).toBe(2);
+      const ledger = await cash(agent, pid);
+      expect(ledger.balanceEur).toBe(1000);
+      expect(ledger.movements).toHaveLength(2);
+
+      // IDEMPOTENCY IS THE OTHER HALF: the memo that separated them is the memo
+      // their movements carry, so the same file re-uploaded matches both.
+      const second = await upload(agent, pid, csv);
+      expect(second.batch.counts).toMatchObject({ mapped: 0, duplicate: 2 });
+      expect(await apply(agent, second.batch.id)).toMatchObject({ applied: 0, skipped: 2 });
+      expect((await cash(agent, pid)).balanceEur).toBe(1000);
+    });
+
+    it('books two byte-identical Trade Republic deposits, then dedupes the re-import', async () => {
+      const { agent, pid } = await setup();
+      // Nothing distinguishes these two lines at all — no memo, no reference.
+      // They are still two €100 deposits, and the ledger used to end at €100.
+      const line = '2024-01-02;Einzahlung;;;;;;100,00;EUR';
+      const csv = [HEADER, line, line].join('\n');
+
+      const preview = await upload(agent, pid, csv);
+      expect(preview.rows.map((r) => r.flag)).toEqual(['mapped', 'mapped']);
+      expect(await apply(agent, preview.batch.id)).toMatchObject({ applied: 2 });
+      expect((await cash(agent, pid)).balanceEur).toBe(200);
+
+      // Occurrence-counting is what makes the repeat importable AND the
+      // re-import a no-op: two recorded movements answer two file lines.
+      const second = await upload(agent, pid, csv);
+      expect(second.rows.map((r) => r.flag)).toEqual(['duplicate', 'duplicate']);
+      expect(await apply(agent, second.batch.id)).toMatchObject({ applied: 0, skipped: 2 });
+      expect((await cash(agent, pid)).balanceEur).toBe(200);
+    });
+
+    it('books only the missing occurrence when one of the two movements is gone', async () => {
+      const { agent, pid } = await setup();
+      const line = '2024-01-02;Einzahlung;;;;;;100,00;EUR';
+      const csv = [HEADER, line, line].join('\n');
+      await apply(agent, (await upload(agent, pid, csv)).batch.id);
+
+      const movements = (await cash(agent, pid)).movements;
+      expect(movements).toHaveLength(2);
+      const doomed = movements[0] as unknown as { id: string };
+      const del = await agent
+        .delete(`/api/v1/portfolios/${pid}/cash/movements/${doomed.id}`)
+        .set(...XRW);
+      expect(del.status, JSON.stringify(del.body)).toBe(200);
+
+      // One recorded, two claimed: the first line matches it, the second is a
+      // movement nobody holds any more.
+      const second = await upload(agent, pid, csv);
+      expect(second.rows.map((r) => r.flag)).toEqual(['duplicate', 'mapped']);
+      expect(await apply(agent, second.batch.id)).toMatchObject({ applied: 1, skipped: 1 });
+      expect((await cash(agent, pid)).balanceEur).toBe(200);
+    });
+
+    it('tells a duplicate cash row which fields it was compared on', async () => {
+      const { agent, pid } = await setup();
+      const csv = `${HEADER}\n2024-01-02;Einzahlung;;;;;;100,00;EUR`;
+      await apply(agent, (await upload(agent, pid, csv)).batch.id);
+
+      const second = await upload(agent, pid, csv);
+      const message = second.rows[0]?.message ?? '';
+      expect(second.rows[0]?.flag).toBe('duplicate');
+      // A cash row has no instrument, no quantity and no price, so the trade
+      // wording sent people hunting for columns their statement never had.
+      expect(message).toMatch(/date, direction, amount and memo/i);
+      expect(message).not.toMatch(/instrument/i);
+    });
+  });
+
+  it('records what booked when a row fails after money has already moved', async () => {
+    const { agent, pid, user } = await setup();
+    const csv = [
+      HEADER,
+      '2024-01-02;Einzahlung;;;;;;100,00;EUR',
+      '2024-01-03;Einzahlung;;;;;;200,00;EUR',
+      '2024-01-04;Auszahlung;;;;;;-50,00;EUR',
+    ].join('\n');
+    const preview = await upload(agent, pid, csv);
+
+    // Interrupt the run at the third row and look at what the DATABASE says
+    // about the first two AT THAT MOMENT. Results used to be accumulated in
+    // memory and flushed in one statement after the loop, so anything that
+    // threw in between left real money in the ledger, the batch `applied`, and
+    // every row result null — no way to learn what had booked, and every retry
+    // a 409.
+    let midRun: Array<string | null> = [];
+    vi.spyOn(harness.ctx.portfolio, 'withdrawCash').mockImplementation(async () => {
+      const view = await harness.ctx.imports.getBatch(user.id, preview.batch.id);
+      midRun = view.rows.map((r) => r.result);
+      throw new Error('the process died here');
+    });
+
+    const result = await apply(agent, preview.batch.id);
+    expect(midRun).toEqual(['applied', 'applied', null]);
+    expect(result).toMatchObject({ applied: 2, failed: 1 });
+    expect((await cash(agent, pid)).balanceEur).toBe(300);
+  });
+
   it('books a batch exactly once under concurrent applies (atomic pending→applied claim)', async () => {
     const { agent, pid } = await setup();
     const preview = await upload(agent, pid, FIXTURE);

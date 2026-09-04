@@ -142,6 +142,18 @@ describe('georgeMapper.map — per-row errors', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('refuses an English-grouped amount instead of booking a thousandth of it', () => {
+    // `1,234.56` read as German notation is 1.23456. The row is reported, not
+    // staged with an amount three orders of magnitude too small.
+    const amount = mapOne('02.01.2024;Ertrag;X AG;AT0000123456;;;1,234.56;;EUR');
+    expect(amount.ok).toBe(false);
+    const price = mapOne('02.01.2024;Kauf;X AG;AT0000123456;1;1,234.56;-1.234,56;0,00;EUR');
+    expect(price.ok).toBe(false);
+    // The German forms this mapper actually receives still parse.
+    const german = mapOne('02.01.2024;Ertrag;X AG;AT0000123456;;;1.234,56;;EUR');
+    expect(german.ok && german.row.amountEur).toBe(1234.56);
+  });
+
   it('fails a row without any instrument identity', () => {
     expect(mapOne('02.01.2024;Kauf;;;1;10,00;-10,00;0,00;EUR').ok).toBe(false);
   });
