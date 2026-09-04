@@ -2839,14 +2839,19 @@
     },
     "savings": {
       "title": "Savings plan",
-      "summary": "What monthly contribution reaches your target.",
+      "summary": "What monthly contribution reaches your target — or how long it takes.",
+      "solve": { "label": "Solve for", "contribution": "Contribution", "years": "Years" },
       "target": "Target (€)",
       "principal": "Starting principal (€)",
       "ratePct": "Annual return (%)",
       "years": "Years",
+      "monthlyContributionInput": "Monthly contribution (€)",
       "compoundingPerYear": "Compounding steps per year",
       "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily.",
       "monthlyContribution": "Required monthly contribution",
+      "yearsNeeded": "Years needed",
+      "yearsValue": "≈ {{years}} years",
+      "notReachable": "Not reachable with these inputs.",
       "feasible": "Reachable"
     },
     "dividend": {
@@ -2862,9 +2867,11 @@
     },
     "withdrawal": {
       "title": "Withdrawal plan",
-      "summary": "How long a balance lasts at a given monthly draw.",
+      "summary": "How long a balance lasts, or what you can safely take each month.",
+      "solve": { "label": "Solve for", "horizon": "Horizon", "rate": "Safe withdrawal" },
       "balance": "Starting balance (€)",
       "monthlyWithdrawal": "Monthly withdrawal (€)",
+      "horizonYears": "Payout horizon (years)",
       "annualReturnPct": "Expected annual return (%)",
       "horizonLabel": "Depletion horizon",
       "statusLabel": "Status",
@@ -2872,7 +2879,8 @@
       "statusDepletes": "Depletes",
       "sustainable": "Never depletes at this rate.",
       "notComputable": "Not computable with these inputs.",
-      "monthsValue": "≈ {{months}} months (≈ {{years}} years)"
+      "monthsValue": "≈ {{months}} months (≈ {{years}} years)",
+      "rateLabel": "Sustainable monthly withdrawal"
     },
     "standingOrders": {
       "title": "Standing orders",
