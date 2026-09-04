@@ -1793,10 +1793,15 @@ async function expectNoPageOverflow(
 }
 
 /**
- * Phone breakpoint where origin.css declares the 44px minimum
+ * Phone breakpoint where origin.css declares the 44px minimum for the USER app
  * (`@media (max-width: 480px)`, mirrored by the shell's PHONE_SHELL_MAX_WIDTH).
  * The mid-band 600px profiles sit deliberately above it: no 44px rule applies
  * there, so measuring them would assert a contract the design never made.
+ *
+ * The console's own floor reaches further — up to its `md` drawer handoff at
+ * 767.98px — but both admin profiles below are phones (390/360), so this one
+ * ceiling covers every measured surface. Widening it would start measuring
+ * user-app surfaces that were never given the rule.
  */
 const TAP_TARGET_MAX_VIEWPORT_WIDTH = 480;
 const MIN_TAP_TARGET_PX = 44;
@@ -1848,8 +1853,12 @@ const TAP_TARGET_SELECTORS = [
  *
  * NOT measured, exactly as in the user list above: every other interactive
  * control in the console — dense table affordances, inline links, the
- * `SegmentedControl` cells and page-local inputs. Announced per profile by
- * {@link announceTapTargetScope} rather than left to a reader's assumption.
+ * `SegmentedControl` cells and page-local inputs. A page-local control joins
+ * the measurement by wearing the marker, which is how the API-keys tier picker
+ * (`pages/ApiKeysPage.tsx`) is in it; one that never wears it is invisible
+ * here, so do not read a green sweep as "every console control was measured".
+ * Announced per profile by {@link announceTapTargetScope} rather than left to a
+ * reader's assumption.
  */
 const ADMIN_TAP_TARGET_SELECTORS = [
   '#admin-topbar button',
