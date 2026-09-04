@@ -287,22 +287,35 @@ export function createCashBudgetRepository(db: Database) {
      * IDEMPOTENCY KEY: `UNIQUE(budget_id, period_key)`.
      *
      * Claim a period BEFORE notifying, so a blown budget fires exactly one alert
-     * per month however many times the evaluator runs. Returns false when the
+     * per month however many times the evaluator runs. Returns `null` when the
      * period was already claimed — the caller then emits nothing.
+     *
+     * The claimed row's ID is what comes back, because the claim is the alert's
+     * identity all the way to the notification dispatcher (#1754): a claim can
+     * be RELEASED when the budget falls back under its target, so a later
+     * overrun in the same month takes a NEW claim and must not be deduped
+     * against the alert the released one already produced.
      */
-    async claimFire(budgetId: string, periodKey: string): Promise<boolean> {
+    async claimFire(budgetId: string, periodKey: string): Promise<string | null> {
       const inserted = await db
         .insert(cashBudgetFires)
         .values({ budgetId, periodKey })
         .onConflictDoNothing({ target: [cashBudgetFires.budgetId, cashBudgetFires.periodKey] })
         .returning({ id: cashBudgetFires.id });
-      return inserted.length > 0;
+      return inserted[0]?.id ?? null;
     },
 
     /**
-     * Give a claim back when the notification was not durably accepted, so the
-     * next run may try again. Without this, a transport outage would silently
-     * consume the month's single alert.
+     * Give a claim back, so a later evaluation of the same month may alert
+     * again. Two callers (both in `cashBudgetService`):
+     *
+     *  - the notification was not durably accepted (a `false` or a throw out of
+     *    `emit`) — without this a transport outage would silently consume the
+     *    month's single alert;
+     *  - THE RE-ARM PATH (#1754): the budget is no longer exceeded, so the
+     *    claim no longer describes anything. A claim marks a period as
+     *    ALERTED, not as spent, and dropping back under the target must let the
+     *    next overrun in the same month alert again.
      */
     async releaseFire(budgetId: string, periodKey: string): Promise<void> {
       await db
@@ -312,7 +325,11 @@ export function createCashBudgetRepository(db: Database) {
         );
     },
 
-    /** Whether a period has already fired, for the progress read. */
+    /**
+     * The budgets of one portfolio that already hold a claim for `period` —
+     * what the RE-ARM rule reads (#1754), so `releaseFire` is only issued for a
+     * budget that actually has a claim to give back.
+     */
     async firedPeriods(portfolioId: string, period: string): Promise<Set<string>> {
       const rows = await db
         .select({ budgetId: cashBudgetFires.budgetId })

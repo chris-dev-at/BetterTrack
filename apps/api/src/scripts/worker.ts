@@ -373,7 +373,11 @@ const portfolioVaultFinalizationSnapshots = createPortfolioSnapshotService({
   currencyService,
   logger,
 });
-const portfolioVaultFinalizationCashBudgets = createCashBudgetService({
+// Cash budgets, the worker's instance. Two entry points, both used below: the
+// move-out finalizer needs `evaluateRequired` (a failure there must stay
+// durable), and the portfolio service takes `onCashWrite` — the non-throwing
+// seam every cash write this process books runs through (#1754).
+const cashBudgets = createCashBudgetService({
   budgets: createCashBudgetRepository(db),
   summaries: createCashSummaryRepository(db),
   tags: createCashTagRepository(db),
@@ -401,7 +405,7 @@ const portfolioVaultFinalizer = createPortfolioVaultMoveOutFinalizer({
     }
   },
   runAfterMoveOutUnlock: async (userId, portfolioId, plan) => {
-    await portfolioVaultFinalizationCashBudgets.evaluateRequired(userId, portfolioId);
+    await cashBudgets.evaluateRequired(userId, portfolioId);
     await events.publish({
       type: 'portfolio.changed',
       userId,
@@ -460,6 +464,10 @@ const portfolioService = createPortfolioService({
   cashSourceRepo,
   // Read-only: lets the cash ledger DTO carry each movement's tags (V5 cash fusion).
   cashTagRepo: createCashTagRepository(db),
+  // THE CASH-WRITE SEAM (#1754), the worker's copy: a cash movement this
+  // process books (a standing order's monthly deduction, a replicated apply)
+  // re-evaluates the portfolio's budgets exactly as the API's does.
+  onCashWrite: cashBudgets.onCashWrite,
   marketData,
   currencyService,
   referenceBackfill: createReferenceBackfill({

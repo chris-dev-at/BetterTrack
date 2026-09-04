@@ -19,6 +19,7 @@ import {
   type CashTag,
 } from '@bettertrack/contracts';
 
+import { cashBudgetFires } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -112,6 +113,54 @@ async function setTags(agent: Agent, movementId: string, tagIds: string[]) {
     .put(`/api/v1/cash/movements/${movementId}/tags`)
     .set(...XRW)
     .send({ tagIds });
+}
+
+async function fee(agent: Agent, portfolioId: string, amountEur: number, executedAt?: string) {
+  const res = await agent
+    .post(`/api/v1/portfolios/${portfolioId}/cash/fee`)
+    .set(...XRW)
+    .send({ amountEur, ...(executedAt !== undefined ? { executedAt } : {}) });
+  expect(res.status).toBe(201);
+  return res.body.movement as CashMovement;
+}
+
+/** A second cash source, so the internal-transfer paths have two endpoints. */
+async function createSource(agent: Agent, portfolioId: string, name: string): Promise<string> {
+  const res = await agent
+    .post(`/api/v1/portfolios/${portfolioId}/cash/sources`)
+    .set(...XRW)
+    .send({ name, type: 'bank' });
+  expect(res.status).toBe(201);
+  return res.body.source.id as string;
+}
+
+async function mainSourceId(agent: Agent, portfolioId: string): Promise<string> {
+  const res = await agent.get(`/api/v1/portfolios/${portfolioId}/cash/sources`);
+  expect(res.status).toBe(200);
+  return res.body.sources[0].id as string;
+}
+
+async function createBudget(
+  agent: Agent,
+  portfolioId: string,
+  tagId: string,
+  amount: number,
+): Promise<string> {
+  const res = await agent
+    .post('/api/v1/cash/budgets')
+    .set(...XRW)
+    .send({ portfolioId, tagId, amount });
+  expect(res.status).toBe(201);
+  return cashBudgetResponseSchema.parse(res.body).budget.id;
+}
+
+/** How many `budget.exceeded` alerts this account's inbox holds. */
+async function budgetAlerts(agent: Agent): Promise<number> {
+  const res = await agent.get('/api/v1/notifications?limit=100');
+  expect(res.status).toBe(200);
+  return notificationListResponseSchema
+    .parse(res.body)
+    .items.filter((n) => n.type === 'budget.exceeded').length;
 }
 
 /** The tag ids on one movement, straight off the ledger read. */
@@ -780,6 +829,200 @@ describe('cash budgets', () => {
     expect(await fires()).toBe(1);
   });
 
+  it('alerts from the SPEND alone — a tagged withdrawal, no budget edit anywhere', async () => {
+    const agent = await newUserAgent('spend@bettertrack.test', 'spenduser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+    await deposit(agent, portfolioId, 5000, `${PERIOD}-01T00:00:00.000Z`);
+
+    // 1 Aug in the failure scenario: the target is set while nothing is spent,
+    // so the create-time evaluation finds nothing and claims nothing.
+    await createBudget(agent, portfolioId, food.id, 300);
+    expect(await budgetAlerts(agent)).toBe(0);
+
+    // Then the month's spending happens. THE BUDGET IS NEVER TOUCHED AGAIN.
+    for (const day of ['05', '12', '20']) {
+      const spend = await withdraw(agent, portfolioId, 300, `${PERIOD}-${day}T00:00:00.000Z`);
+      expect((await setTags(agent, spend.id, [food.id])).status).toBe(200);
+    }
+
+    // €900 against a €300 target: the alert is owed to the user off the money
+    // writes themselves — which is the whole point of the write-path seam.
+    expect(await budgetAlerts(agent)).toBe(1);
+    const rows = cashBudgetListResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`)).body,
+    ).budgets;
+    expect(rows[0]).toMatchObject({ spent: 900, exceeded: true });
+  });
+
+  it('evaluates on EVERY cash write path, so a new write cannot skip the seam', async () => {
+    const agent = await newUserAgent('seam@bettertrack.test', 'seamuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+    await deposit(agent, portfolioId, 9000, `${PERIOD}-01T00:00:00.000Z`);
+    const spend = await withdraw(agent, portfolioId, 300, `${PERIOD}-05T00:00:00.000Z`);
+    await setTags(agent, spend.id, [food.id]);
+    await createBudget(agent, portfolioId, food.id, 100);
+    expect(await budgetAlerts(agent)).toBe(1);
+
+    const main = await mainSourceId(agent, portfolioId);
+    const savings = await createSource(agent, portfolioId, 'Savings');
+    const spare = await withdraw(agent, portfolioId, 1, `${PERIOD}-06T00:00:00.000Z`);
+
+    // Each case clears the fire claim first. The budget stays blown throughout,
+    // so re-claiming — and therefore a second alert — happens if and ONLY if the
+    // path under test evaluated. None of these writes touches the budget row.
+    const paths: Array<readonly [string, () => Promise<unknown>]> = [
+      ['deposit', () => deposit(agent, portfolioId, 5, `${PERIOD}-07T00:00:00.000Z`)],
+      ['withdraw', () => withdraw(agent, portfolioId, 5, `${PERIOD}-08T00:00:00.000Z`)],
+      ['fee', () => fee(agent, portfolioId, 5, `${PERIOD}-09T00:00:00.000Z`)],
+      [
+        'transfer',
+        () =>
+          agent
+            .post(`/api/v1/portfolios/${portfolioId}/cash/transfer`)
+            .set(...XRW)
+            .send({
+              fromSourceId: main,
+              toSourceId: savings,
+              amountEur: 50,
+              executedAt: `${PERIOD}-10T00:00:00.000Z`,
+            })
+            .expect(201),
+      ],
+      [
+        'set-balance',
+        () =>
+          agent
+            .post(`/api/v1/portfolios/${portfolioId}/cash/sources/${savings}/set-balance`)
+            .set(...XRW)
+            .send({ balanceEur: 20 })
+            .expect(200),
+      ],
+      [
+        'movement PATCH',
+        () =>
+          agent
+            .patch(`/api/v1/portfolios/${portfolioId}/cash/movements/${spare.id}`)
+            .set(...XRW)
+            .send({ amountEur: 2 })
+            .expect(200),
+      ],
+      [
+        'movement tags',
+        async () => {
+          expect((await setTags(agent, spare.id, [])).status).toBe(200);
+        },
+      ],
+      [
+        'movement DELETE',
+        () =>
+          agent
+            .delete(`/api/v1/portfolios/${portfolioId}/cash/movements/${spare.id}`)
+            .set(...XRW)
+            .send({})
+            .expect(200),
+      ],
+    ];
+
+    let expected = 1;
+    for (const [name, write] of paths) {
+      await harness.db.delete(cashBudgetFires);
+      await write();
+      expected += 1;
+      expect(await budgetAlerts(agent), `${name} must evaluate budgets`).toBe(expected);
+    }
+  });
+
+  it('never fails the money write when the notifier throws, and keeps the movement', async () => {
+    const agent = await newUserAgent('boom@bettertrack.test', 'boomuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+    await deposit(agent, portfolioId, 5000, `${PERIOD}-01T00:00:00.000Z`);
+    await createBudget(agent, portfolioId, food.id, 100);
+
+    const realEmit = harness.ctx.notify.emit.bind(harness.ctx.notify);
+    harness.ctx.notify.emit = async (event) => {
+      if (event.type === 'budget.exceeded') throw new Error('notifier down');
+      return realEmit(event);
+    };
+
+    const spend = await withdraw(agent, portfolioId, 400, `${PERIOD}-05T00:00:00.000Z`);
+    const tagged = await setTags(agent, spend.id, [food.id]);
+    expect(tagged.status).toBe(200);
+
+    // The write committed and stayed committed — a budget alert is a side
+    // effect of moving money and can never roll it back.
+    const movements = await ledger(agent, portfolioId);
+    expect(movements.some((m) => m.id === spend.id)).toBe(true);
+    expect(await budgetAlerts(agent)).toBe(0);
+
+    // The claim was given back, so the very next evaluation alerts for real.
+    harness.ctx.notify.emit = realEmit;
+    await withdraw(agent, portfolioId, 1, `${PERIOD}-06T00:00:00.000Z`);
+    expect(await budgetAlerts(agent)).toBe(1);
+  });
+
+  it('re-arms the month once the budget is back under its target', async () => {
+    const agent = await newUserAgent('rearm@bettertrack.test', 'rearmuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+    await deposit(agent, portfolioId, 5000, `${PERIOD}-01T00:00:00.000Z`);
+    await createBudget(agent, portfolioId, food.id, 200);
+
+    const misTagged = await withdraw(agent, portfolioId, 250, `${PERIOD}-05T00:00:00.000Z`);
+    await setTags(agent, misTagged.id, [food.id]);
+    expect(await budgetAlerts(agent)).toBe(1);
+
+    // The €250 row was mis-tagged: untagging drops the month back under €200.
+    expect((await setTags(agent, misTagged.id, [])).status).toBe(200);
+    expect(await budgetAlerts(agent)).toBe(1);
+
+    // …and the genuine overrun later the same month is alerted, instead of
+    // being swallowed by a claim taken for spend that no longer exists.
+    const real = await withdraw(agent, portfolioId, 600, `${PERIOD}-20T00:00:00.000Z`);
+    await setTags(agent, real.id, [food.id]);
+    expect(await budgetAlerts(agent)).toBe(2);
+
+    // Still exactly once while the condition holds: more spend, no third alert.
+    const more = await withdraw(agent, portfolioId, 30, `${PERIOD}-22T00:00:00.000Z`);
+    await setTags(agent, more.id, [food.id]);
+    expect(await budgetAlerts(agent)).toBe(2);
+  });
+
+  it('refuses a budget denominated in anything but EUR, on create and on patch', async () => {
+    const agent = await newUserAgent('fx@bettertrack.test', 'fxbuduser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+
+    // THE DECISION (#1754): the ledger is EUR, `spent` comes off `amount_eur`
+    // and the comparison has no FX step — so a $100 target would be judged as
+    // €100 and rendered as "$95.00 / $100.00". Refused at the contract instead.
+    const created = await agent
+      .post('/api/v1/cash/budgets')
+      .set(...XRW)
+      .send({ portfolioId, tagId: food.id, amount: 100, currency: 'USD' });
+    expect(created.status).toBe(400);
+
+    const budgetId = await createBudget(agent, portfolioId, food.id, 100);
+    const patched = await agent
+      .patch(`/api/v1/cash/budgets/${budgetId}`)
+      .set(...XRW)
+      .send({ currency: 'USD' });
+    expect(patched.status).toBe(400);
+
+    // So the €95-against-$100 case cannot arise: the only reachable budget is
+    // EUR, and €95 against €100 is correctly NOT over.
+    await deposit(agent, portfolioId, 5000, `${PERIOD}-01T00:00:00.000Z`);
+    const spend = await withdraw(agent, portfolioId, 95, `${PERIOD}-05T00:00:00.000Z`);
+    await setTags(agent, spend.id, [food.id]);
+    const rows = cashBudgetListResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`)).body,
+    ).budgets;
+    expect(rows[0]).toMatchObject({ currency: 'EUR', spent: 95, exceeded: false });
+    expect(await budgetAlerts(agent)).toBe(0);
+  });
+
   it('does not alert a target that is only exactly met', async () => {
     const agent = await newUserAgent('exact@bettertrack.test', 'exactuser');
     const portfolioId = await defaultPortfolioId(agent);
@@ -860,6 +1103,80 @@ describe('cash summary and trends', () => {
     // June has no movements at all: a zero, not a hole a chart would slope over.
     expect(trend.points[1]).toMatchObject({ inflow: 0, outflow: 0 });
     expect(trend.points[2]).toMatchObject({ inflow: 0, outflow: 80 });
+  });
+
+  it('reports an internal transfer as no flow at all — it cancels in every roll-up', async () => {
+    const agent = await newUserAgent('xfer@bettertrack.test', 'xferuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    await deposit(agent, portfolioId, 9000, '2026-06-20T00:00:00.000Z');
+    const main = await mainSourceId(agent, portfolioId);
+    const savings = await createSource(agent, portfolioId, 'Savings');
+
+    // The month's ONLY activity: €9,000 moved from Main to Savings.
+    const moved = await agent
+      .post(`/api/v1/portfolios/${portfolioId}/cash/transfer`)
+      .set(...XRW)
+      .send({
+        fromSourceId: main,
+        toSourceId: savings,
+        amountEur: 9000,
+        executedAt: `${PERIOD}-03T00:00:00.000Z`,
+      });
+    expect(moved.status).toBe(201);
+
+    const summary = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}`)).body,
+    );
+    // Both legs live in this portfolio, so bucketing on sign alone used to read
+    // "Inflow €9.000 · Outflow €9.000" for money that never left the book.
+    expect(summary).toMatchObject({ totalInflow: 0, totalOutflow: 0, net: 0 });
+    // The by-tag breakdown inherits the exclusion, so a self-transfer can no
+    // longer be the month's dominant "where the money went".
+    expect(summary.tags.every((row) => row.inflow === 0 && row.outflow === 0)).toBe(true);
+
+    const trend = cashTrendResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/trends?portfolioId=${portfolioId}&months=2`)).body,
+    );
+    expect(trend.points[1]).toMatchObject({ month: PERIOD, inflow: 0, outflow: 0 });
+  });
+
+  it('leaves deposits, withdrawals and fees untouched in a month mixing them with a transfer', async () => {
+    const agent = await newUserAgent('mixed@bettertrack.test', 'mixeduser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+    await deposit(agent, portfolioId, 2000, `${PERIOD}-01T00:00:00.000Z`);
+    const spend = await withdraw(agent, portfolioId, 120, `${PERIOD}-04T00:00:00.000Z`);
+    await setTags(agent, spend.id, [food.id]);
+    await fee(agent, portfolioId, 5, `${PERIOD}-05T00:00:00.000Z`);
+
+    const main = await mainSourceId(agent, portfolioId);
+    const savings = await createSource(agent, portfolioId, 'Savings');
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/cash/transfer`)
+      .set(...XRW)
+      .send({
+        fromSourceId: main,
+        toSourceId: savings,
+        amountEur: 500,
+        executedAt: `${PERIOD}-06T00:00:00.000Z`,
+      })
+      .expect(201);
+
+    const summary = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}`)).body,
+    );
+    // The real flows are exactly what they were before the transfer existed.
+    expect(summary).toMatchObject({ totalInflow: 2000, totalOutflow: 125, net: 1875 });
+    const byTag = new Map(summary.tags.map((row) => [row.tagId, row]));
+    expect(byTag.get(food.id)!.outflow).toBe(120);
+    expect([...byTag.values()].some((row) => row.name === 'Transfer' && row.outflow > 0)).toBe(
+      false,
+    );
+
+    const trend = cashTrendResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/trends?portfolioId=${portfolioId}&months=1`)).body,
+    );
+    expect(trend.points[0]).toMatchObject({ month: PERIOD, inflow: 2000, outflow: 125 });
   });
 
   it('is portfolio-scoped, so another book s cash never leaks in', async () => {

@@ -95,6 +95,7 @@ import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
+import type { CashWriteHook } from '../cash/cashBudgetService';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -157,6 +158,18 @@ export interface PortfolioServiceDeps {
    * cannot start writing classification as a side effect of moving money.
    */
   cashTagRepo: Pick<CashTagRepository, 'tagIdsForMovements'>;
+  /**
+   * THE CASH-WRITE SEAM (#1754): called after every write in this service that
+   * moves cash — deposit / withdraw / fee, transfer, movement update + delete,
+   * set-balance. Wired to `cashBudgetService.onCashWrite`, which re-evaluates
+   * the portfolio's budgets for the current month and alerts once each.
+   *
+   * Optional and NON-FATAL by construction (see `afterCashWrite`): a budget
+   * alert is a side effect of moving money and must never fail the write that
+   * triggered it, nor roll it back — the money is already committed when the
+   * hook runs.
+   */
+  onCashWrite?: CashWriteHook;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -574,8 +587,27 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     notify,
     liveRing,
     logger,
+    onCashWrite,
   } = deps;
   const now = deps.now ?? Date.now;
+
+  /**
+   * THE CASH-WRITE SEAM (#1754). Every write below that moves cash ends here,
+   * so budget evaluation is wired ONCE rather than remembered per endpoint.
+   *
+   * Called AFTER the movement is committed and swallowing everything: the
+   * evaluator is already non-throwing, and this second belt makes the ordering
+   * rule explicit — a budget alert must never fail, or roll back, the money
+   * write it hangs off.
+   */
+  async function afterCashWrite(userId: string, portfolioId: string): Promise<void> {
+    if (!onCashWrite) return;
+    try {
+      await onCashWrite(userId, portfolioId);
+    } catch (err) {
+      logger?.warn({ err, userId, portfolioId }, 'cash write budget hook failed');
+    }
+  }
 
   // The STORAGE base (EUR): the cash ledger's currency and the denomination of
   // the cached history ingredients. A caller's per-user base (V3-P10d) never
@@ -1087,6 +1119,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // outflow reshapes it from its own day on (§16 rule 4).
     await invalidateHistory(portfolioId, dayOf(executedAt));
     const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+    // A withdrawal or a fee is spend: it is the write that most often blows a
+    // per-tag budget (#1754).
+    await afterCashWrite(userId, portfolioId);
     return {
       movement: movementToDto(movement),
       sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
@@ -2491,6 +2526,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // invalidate from the (possibly back-dated) transfer day (§16 rule 4).
       await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // The legs cancel in every roll-up, but they are still tagged rows in the
+      // month a budget measures — evaluate like any other cash write (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         outgoing: movementToDto(outgoing),
         incoming: movementToDto(incoming),
@@ -2542,6 +2580,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // effective now, so only today's (never-persisted) point moves (§16 rule 4).
       await invalidateHistory(portfolioId, dayOf(domainMovement.occurredAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // The recorded delta is a normal movement, so it counts exactly like a
+      // hand-entered one (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         movement: movementToDto(movement),
         deltaEur: domainMovement.amountEur,
@@ -2569,6 +2610,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // deposit reshapes it from its own day on (§16 rule 4).
       await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // An inflow never raises a budget's spend on its own, but it takes the
+      // same seam as every other cash write: the enumeration is the point, and
+      // a re-armed period may be waiting on any evaluation (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         movement: movementToDto(movement),
         sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
@@ -2669,6 +2714,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         updated.executedAt < previous.executedAt ? updated.executedAt : previous.executedAt;
       await invalidateHistory(portfolioId, dayOf(from));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // A correction can raise the month's spend, or drop it back under the
+      // target and RE-ARM the period's claim (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         movement: movementToDto(updated),
         sourceBalanceEur: balanceBySource.get(updated.sourceId) ?? 0,
@@ -2708,6 +2756,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
       await invalidateHistory(portfolioId, dayOf(removed.executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      // Removing spend is the classic re-arm trigger: the month may drop back
+      // under its target (#1754).
+      await afterCashWrite(userId, portfolioId);
       return {
         sourceId: removed.sourceId,
         sourceBalanceEur: balanceBySource.get(removed.sourceId) ?? 0,
