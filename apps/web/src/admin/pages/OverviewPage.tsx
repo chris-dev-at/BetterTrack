@@ -176,7 +176,12 @@ export function OverviewPage() {
         <section
           aria-label={t('admin.overview.attention.title')}
           className={cx(
-            'flex flex-col rounded-none border border-l-[3px] bg-neutral-900 lg:col-span-2',
+            // `min-w-0`: a grid item's automatic minimum size is its min-content
+            // width, and the rows below truncate a `white-space: nowrap` detail
+            // line — so without this the column is sized to the longest detail
+            // string and the page scrolls sideways on a 360px phone instead of
+            // the row ellipsizing as designed.
+            'flex min-w-0 flex-col rounded-none border border-l-[3px] bg-neutral-900 lg:col-span-2',
             attention.length > 0
               ? 'border-amber-900/70 border-l-amber-500'
               : 'border-neutral-800 border-l-neutral-700',

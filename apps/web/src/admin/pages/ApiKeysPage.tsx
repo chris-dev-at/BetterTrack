@@ -141,42 +141,48 @@ function TiersPanel({
       ) : tiers.length === 0 ? (
         <EmptyState>{t('admin.apiKeys.rateTiers.empty')}</EmptyState>
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="py-2">{t('admin.apiKeys.rateTiers.name')}</th>
-              <th className="py-2">{t('admin.apiKeys.rateTiers.limit')}</th>
-              <th className="py-2">{t('admin.apiKeys.rateTiers.window')}</th>
-              <th className="py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {tiers.map((tier) => (
-              <tr key={tier.id} className="border-t border-slate-200/60">
-                <td className="py-2">
-                  {tier.name}{' '}
-                  {tier.isDefault ? (
-                    <Badge tone="sky">{t('admin.apiKeys.rateTiers.default')}</Badge>
-                  ) : null}
-                </td>
-                <td className="py-2">{tier.requestLimit}</td>
-                <td className="py-2">{tier.windowSec}</td>
-                <td className="py-2 text-right">
-                  {!tier.isDefault ? (
-                    <span className="inline-flex gap-2">
-                      <Button variant="ghost" onClick={() => void makeDefault(tier)}>
-                        {t('admin.apiKeys.rateTiers.makeDefault')}
-                      </Button>
-                      <Button variant="ghost" onClick={() => void remove(tier)}>
-                        {t('common.delete')}
-                      </Button>
-                    </span>
-                  ) : null}
-                </td>
+        // Every other console table sits in a horizontal scroller; these three
+        // were the exception, so a table whose columns do not fit — the German
+        // headers alone are 384px — widened the whole page instead of scrolling
+        // inside its card. The phone gate measures this route now.
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="py-2">{t('admin.apiKeys.rateTiers.name')}</th>
+                <th className="py-2">{t('admin.apiKeys.rateTiers.limit')}</th>
+                <th className="py-2">{t('admin.apiKeys.rateTiers.window')}</th>
+                <th className="py-2" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {tiers.map((tier) => (
+                <tr key={tier.id} className="border-t border-slate-200/60">
+                  <td className="py-2">
+                    {tier.name}{' '}
+                    {tier.isDefault ? (
+                      <Badge tone="sky">{t('admin.apiKeys.rateTiers.default')}</Badge>
+                    ) : null}
+                  </td>
+                  <td className="py-2">{tier.requestLimit}</td>
+                  <td className="py-2">{tier.windowSec}</td>
+                  <td className="py-2 text-right">
+                    {!tier.isDefault ? (
+                      <span className="inline-flex gap-2">
+                        <Button variant="ghost" onClick={() => void makeDefault(tier)}>
+                          {t('admin.apiKeys.rateTiers.makeDefault')}
+                        </Button>
+                        <Button variant="ghost" onClick={() => void remove(tier)}>
+                          {t('common.delete')}
+                        </Button>
+                      </span>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <form className="flex flex-wrap items-end gap-3" onSubmit={onCreate}>
@@ -261,52 +267,54 @@ function KeysPanel({
       ) : keys.length === 0 ? (
         <EmptyState>{t('admin.apiKeys.keys.empty')}</EmptyState>
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="py-2">{t('admin.apiKeys.keys.name')}</th>
-              <th className="py-2">{t('admin.apiKeys.keys.owner')}</th>
-              <th className="py-2">{t('admin.apiKeys.keys.tier')}</th>
-              <th className="py-2">{t('admin.apiKeys.keys.lastUsed')}</th>
-              <th className="py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((key) => (
-              <tr key={key.id} className="border-t border-slate-200/60">
-                <td className="py-2">
-                  {key.name}{' '}
-                  {key.revokedAt ? (
-                    <Badge tone="amber">{t('admin.apiKeys.keys.revoked')}</Badge>
-                  ) : null}
-                </td>
-                <td className="py-2 font-mono text-xs">{key.userId}</td>
-                <td className="py-2">
-                  <select
-                    className="rounded border border-slate-300 bg-transparent px-2 py-1 text-sm"
-                    value={key.tierId ?? ''}
-                    onChange={(e) => void assign(key, e.target.value)}
-                    disabled={Boolean(key.revokedAt)}
-                    aria-label={t('admin.apiKeys.keys.tierAria', { name: key.name })}
-                  >
-                    <option value="">{t('admin.apiKeys.keys.defaultTier')}</option>
-                    {tiers.map((tier) => (
-                      <option key={tier.id} value={tier.id}>
-                        {tier.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td className="py-2">{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : '—'}</td>
-                <td className="py-2 text-right">
-                  <Button variant="ghost" onClick={() => setAuditKey(key)}>
-                    {t('admin.apiKeys.keys.viewAudit')}
-                  </Button>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="py-2">{t('admin.apiKeys.keys.name')}</th>
+                <th className="py-2">{t('admin.apiKeys.keys.owner')}</th>
+                <th className="py-2">{t('admin.apiKeys.keys.tier')}</th>
+                <th className="py-2">{t('admin.apiKeys.keys.lastUsed')}</th>
+                <th className="py-2" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {keys.map((key) => (
+                <tr key={key.id} className="border-t border-slate-200/60">
+                  <td className="py-2">
+                    {key.name}{' '}
+                    {key.revokedAt ? (
+                      <Badge tone="amber">{t('admin.apiKeys.keys.revoked')}</Badge>
+                    ) : null}
+                  </td>
+                  <td className="py-2 font-mono text-xs">{key.userId}</td>
+                  <td className="py-2">
+                    <select
+                      className="rounded border border-slate-300 bg-transparent px-2 py-1 text-sm"
+                      value={key.tierId ?? ''}
+                      onChange={(e) => void assign(key, e.target.value)}
+                      disabled={Boolean(key.revokedAt)}
+                      aria-label={t('admin.apiKeys.keys.tierAria', { name: key.name })}
+                    >
+                      <option value="">{t('admin.apiKeys.keys.defaultTier')}</option>
+                      {tiers.map((tier) => (
+                        <option key={tier.id} value={tier.id}>
+                          {tier.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-2">{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : '—'}</td>
+                  <td className="py-2 text-right">
+                    <Button variant="ghost" onClick={() => setAuditKey(key)}>
+                      {t('admin.apiKeys.keys.viewAudit')}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {auditKey ? <AuditModal apiKey={auditKey} onClose={() => setAuditKey(null)} /> : null}
@@ -335,26 +343,28 @@ function AuditModal({ apiKey, onClose }: { apiKey: AdminApiKey; onClose: () => v
       ) : !audit.data || audit.data.entries.length === 0 ? (
         <EmptyState>{t('admin.apiKeys.audit.empty')}</EmptyState>
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="py-2">{t('admin.apiKeys.audit.when')}</th>
-              <th className="py-2">{t('admin.apiKeys.audit.method')}</th>
-              <th className="py-2">{t('admin.apiKeys.audit.path')}</th>
-              <th className="py-2">{t('admin.apiKeys.audit.status')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {audit.data.entries.map((entry) => (
-              <tr key={entry.id} className="border-t border-slate-200/60">
-                <td className="py-2">{formatDateTime(entry.createdAt)}</td>
-                <td className="py-2 font-mono text-xs">{entry.method}</td>
-                <td className="py-2 font-mono text-xs">{entry.path}</td>
-                <td className="py-2">{entry.status}</td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="py-2">{t('admin.apiKeys.audit.when')}</th>
+                <th className="py-2">{t('admin.apiKeys.audit.method')}</th>
+                <th className="py-2">{t('admin.apiKeys.audit.path')}</th>
+                <th className="py-2">{t('admin.apiKeys.audit.status')}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {audit.data.entries.map((entry) => (
+                <tr key={entry.id} className="border-t border-slate-200/60">
+                  <td className="py-2">{formatDateTime(entry.createdAt)}</td>
+                  <td className="py-2 font-mono text-xs">{entry.method}</td>
+                  <td className="py-2 font-mono text-xs">{entry.path}</td>
+                  <td className="py-2">{entry.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Modal>
   );

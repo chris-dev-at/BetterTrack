@@ -1510,7 +1510,28 @@ async function settleAdminRoute(page: Page, route: string, target: string): Prom
   await page.goto(target);
 
   if (ADMIN_ANONYMOUS_ROUTES.includes(route as (typeof ADMIN_ANONYMOUS_ROUTES)[number])) {
-    await expect(page.locator('#root')).not.toBeEmpty({ timeout: 20_000 });
+    // "`#root` is not empty" is NOT enough here, and measuring it is how this
+    // spec's first CI run reported a signed-out page with zero controls on it:
+    // `/admin/*` is a lazy chunk behind `App.tsx`'s Suspense fallback, that
+    // fallback is the USER app's `Splash`, and it fills `#root` on its own. The
+    // signed-out console is a form (sign-in is the only way in), so waiting for
+    // one waits past both the chunk and `LoginPage`'s own session probe — which
+    // renders a bare `Spinner` while `status === 'loading'`.
+    await expect(
+      page.locator('#root form'),
+      `${route} rendered no signed-out console form — still the Suspense splash?`,
+    ).toBeVisible({ timeout: 30_000 });
+    // Belt and braces, and a named failure if a future anonymous route settles
+    // differently: the console imports none of the `.bt-*` language
+    // (`admin/components/tokens.ts`), so the splash's own class is the exact
+    // signal that what is on screen is the fallback rather than the console.
+    await expect(
+      page.locator('#root .bt-app'),
+      `${route} still showed the Suspense splash instead of the console`,
+    ).toHaveCount(0);
+    await expect(page.locator('#root [role="status"]:has(.animate-spin)')).toHaveCount(0, {
+      timeout: 30_000,
+    });
   } else {
     await expect(
       page.locator('#admin-topbar'),

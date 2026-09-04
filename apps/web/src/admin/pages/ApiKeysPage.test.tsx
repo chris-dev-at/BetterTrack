@@ -134,6 +134,22 @@ test('opens the per-key audit log', async () => {
   expect(within(dialog).getByText('/portfolios')).toBeInTheDocument();
 });
 
+test('every key-governance table scrolls horizontally instead of widening the page', async () => {
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('button', { name: 'View audit' }));
+  const tables = await screen.findAllByRole('table');
+
+  // Tiers, keys and the per-key audit log. jsdom does no layout, so the wrapper
+  // class is the regression contract: an unscrolled table is sized to its
+  // columns' min-content, which pushed the German header row to 384px inside a
+  // 328px phone column until these three joined every other console table.
+  expect(tables).toHaveLength(3);
+  for (const table of tables) {
+    expect(table.parentElement).toHaveClass('overflow-x-auto');
+  }
+});
+
 test('renders the extracted key-governance copy in German', async () => {
   renderPage('de');
 
