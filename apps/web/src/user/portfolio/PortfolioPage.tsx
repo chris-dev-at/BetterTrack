@@ -1428,7 +1428,7 @@ function DividendIntelSection() {
   if (!hasProjection && entries.length === 0) return null;
 
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
-  const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
+  const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
 
   return (
     <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
@@ -1452,7 +1452,10 @@ function DividendIntelSection() {
       {hasProjection ? (
         <p className="flex items-baseline gap-2">
           <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
-            {formatMoney(total, 'EUR')}
+            {/* The projection declares its own denomination (the caller's base,
+                §5.4) — rendering a hard 'EUR' beside a base-denominated net
+                worth labelled a currency the arithmetic never used. */}
+            {formatMoney(total, proj?.currency)}
           </span>
           <span className="bt-meta">
             {view === 'monthly'
