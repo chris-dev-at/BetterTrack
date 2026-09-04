@@ -2,12 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { WEBHOOK_SIGNATURE_TOLERANCE_SECONDS } from '@bettertrack/contracts';
 
-import {
-  buildWebhookPayload,
-  signWebhookPayload,
-  type SignableEvent,
-  verifyWebhookSignature,
-} from '../webhookSigner';
+import type { ChatMessageEvent, DomainEvent, MirrorNotificationEvent } from '../../../events';
+import { buildWebhookPayload, signWebhookPayload, verifyWebhookSignature } from '../webhookSigner';
 
 const SECRET = 'whsec_vector_secret';
 const TIMESTAMP = '1735689600';
@@ -42,28 +38,82 @@ describe('webhook signer', () => {
     },
   );
 
-  it('preserves the event in its envelope and serializes the exact signed body', () => {
-    const event: SignableEvent & {
-      userId: string;
-      alertId: string;
-      metadata: { source: string };
-    } = {
-      type: 'alert.triggered',
+  /**
+   * The envelope used to carry the whole runtime event. It now carries the
+   * per-type allowlist (`WEBHOOK_EVENT_PAYLOAD_SCHEMAS`), so the fields the
+   * event holds for internal use — a private message preview, other accounts'
+   * ids — never reach a receiver. The signature covers exactly those bytes.
+   */
+  it('discloses only the allowlisted fields and serializes the exact signed body', () => {
+    const event: ChatMessageEvent = {
+      type: 'chat.message',
       occurredAt: '2025-01-01T00:00:00.000Z',
       userId: 'user-123',
-      alertId: 'alert-123',
-      metadata: { source: 'price-alert' },
+      senderId: 'sender-456',
+      senderUsername: 'sender',
+      conversationId: 'conversation-789',
+      messageId: 'message-abc',
+      bodyPreview: 'BANK-PIN-4711 meet me at noon',
+      hasChip: false,
     };
 
-    const { payload, body } = buildWebhookPayload('delivery-123', event);
+    const built = buildWebhookPayload('delivery-123', event);
 
-    expect(payload).toEqual({
+    expect(built).not.toBeNull();
+    expect(built!.payload).toEqual({
       id: 'delivery-123',
-      type: event.type,
+      type: 'chat.message',
       createdAt: event.occurredAt,
-      data: event,
+      data: {
+        userId: 'user-123',
+        conversationId: 'conversation-789',
+        messageId: 'message-abc',
+        senderId: 'sender-456',
+        senderUsername: 'sender',
+      },
     });
-    expect(body).toBe(JSON.stringify(payload));
+    expect(built!.body).toBe(JSON.stringify(built!.payload));
+    expect(built!.body).not.toContain('BANK-PIN-4711');
+    expect(built!.body).not.toContain('hasChip');
+  });
+
+  it('keeps a mirror notice free of the internal privacy principals', () => {
+    const event: MirrorNotificationEvent = {
+      type: 'mirror.member_removed',
+      occurredAt: '2025-01-01T00:00:00.000Z',
+      userId: 'recipient-1',
+      chainId: 'chain-1',
+      chainName: 'Household',
+      actorId: 'actor-2',
+      ownerId: 'owner-3',
+      subjectUserIds: ['subject-4'],
+      actorUsername: 'actor',
+      refId: 'ref-1',
+    };
+
+    const built = buildWebhookPayload('delivery-124', event);
+
+    expect(built!.payload.data).toEqual({
+      userId: 'recipient-1',
+      chainId: 'chain-1',
+      chainName: 'Household',
+      actorUsername: 'actor',
+      refId: 'ref-1',
+    });
+    for (const principal of ['actor-2', 'owner-3', 'subject-4']) {
+      expect(built!.body).not.toContain(principal);
+    }
+  });
+
+  it('refuses to serialize an event outside the subscribable catalog', () => {
+    const event: DomainEvent = {
+      type: 'portfolio.changed',
+      userId: 'user-123',
+      portfolioId: 'portfolio-1',
+      occurredAt: '2025-01-01T00:00:00.000Z',
+    };
+
+    expect(buildWebhookPayload('delivery-125', event)).toBeNull();
   });
 });
 

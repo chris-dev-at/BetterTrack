@@ -11,7 +11,10 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  *   enqueued by the bridge. BullMQ provides the retry/backoff: a still-retryable
  *   failure throws so the queue re-runs it with exponential backoff; the
  *   dispatcher owns the terminal outcome (log row + auto-disable streak). Runs at
- *   {@link WEBHOOK_DELIVER_ATTEMPTS} attempts. Idempotency key:
+ *   {@link WEBHOOK_DELIVER_ATTEMPTS} attempts, across
+ *   {@link WEBHOOK_DELIVER_CONCURRENCY} worker slots under
+ *   {@link WEBHOOK_DELIVER_LIMITER}, so one dead receiver cannot monopolize the
+ *   queue every other user's deliveries share. Idempotency key:
  *   `(subscription_id, delivery_id)`; `delivery_id` is deterministically derived
  *   from the logical event and is also the delivery-log primary key.
  * - `webhooks.deliveryCleanup` — a daily sweep that prunes delivery-log rows
@@ -29,6 +32,24 @@ const DELIVER_JOB_OPTIONS = QUEUE_JOB_OPTIONS[QUEUE_NAMES.webhooksDeliver];
  * always the number BullMQ actually stamps on the job.
  */
 export const WEBHOOK_DELIVER_ATTEMPTS: number = DELIVER_JOB_OPTIONS.attempts;
+
+/**
+ * How many deliveries the worker runs at once. The queue is ONE global FIFO
+ * shared by every user, and a black-holed receiver holds its slot for the full
+ * transport timeout on each of its {@link WEBHOOK_DELIVER_ATTEMPTS} attempts —
+ * at BullMQ's default concurrency of 1 that is minutes of head-of-line blocking
+ * for everybody else. Running several in parallel means one stalled receiver
+ * occupies one slot, not the queue.
+ */
+export const WEBHOOK_DELIVER_CONCURRENCY = 8;
+
+/**
+ * Throughput ceiling across those slots (BullMQ `limiter`, the
+ * `marketDataJobs` idiom): a burst of deliveries — 20 subscriptions × a fan-out
+ * event — is spread rather than fired at once, so outbound POSTs cannot crowd
+ * out the rest of the worker's work.
+ */
+export const WEBHOOK_DELIVER_LIMITER = { max: 20, duration: 1000 } as const;
 
 /** Delivery-log retention window enforced by the cleanup job. */
 export const WEBHOOK_DELIVERY_RETENTION_DAYS = 30;
@@ -68,6 +89,10 @@ export function createWebhookDeliverJob(
 ): JobDefinition<'webhooks.deliver'> {
   return {
     name: QUEUE_NAMES.webhooksDeliver,
+    workerOptions: {
+      concurrency: WEBHOOK_DELIVER_CONCURRENCY,
+      limiter: { ...WEBHOOK_DELIVER_LIMITER },
+    },
     async handler(job) {
       const maxAttempts = job.opts.attempts ?? WEBHOOK_DELIVER_ATTEMPTS;
       // BullMQ increments `attemptsMade` only AFTER a failed attempt, so at

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { feedbackStatusSchema } from './feedback';
+
 /**
  * Outbound webhooks (PROJECTPLAN.md §13.5 V5-P10, issue 1/2) — the "API as a
  * product" outbound leg. A user subscribes a URL to one or more event types;
@@ -397,17 +399,238 @@ export const webhookDeliveryListResponseSchema = z
 export type WebhookDeliveryListResponse = z.infer<typeof webhookDeliveryListResponseSchema>;
 
 /**
- * The wire shape of a delivered payload (the POST body). `data` is the raw
- * user-scoped domain event; `id` is the unique delivery id (also the
- * `X-BetterTrack-Delivery` header) a receiver dedupes retries on. Documented for
- * receivers — the signature covers the serialized form of exactly this object.
+ * The `data` allowlist: what each catalog event may disclose on the wire.
+ *
+ * A webhook body is a per-type HAND-PICKED projection of the domain event, never
+ * the event itself — the runtime event carries fields (private message text,
+ * third-party account uuids) that a subscriber's URL must never receive, and a
+ * `Record<string, unknown>` cannot say which. Every schema is `.strict()`, so a
+ * field that is not listed here cannot reach a receiver even if it is later
+ * added to the producing event.
+ *
+ * The reference for each entry is the payload the API's own inbox notification
+ * builds for the same event: a webhook discloses AT MOST what the bell row does.
+ * Where an integration surface legitimately needs more, the entry says so.
+ * `userId` rides every payload — it is always the subscription owner's own id
+ * (fan-out is strictly per-subscriber), so it names nobody else while letting a
+ * receiver that serves several accounts route the delivery.
+ *
+ * Strictly additive over time, exactly like {@link WEBHOOK_EVENT_TYPES}: a new
+ * catalog type must declare its payload here, and widening an existing one is a
+ * disclosure decision.
  */
-export const webhookEventPayloadSchema = z
+const userId = z.string();
+const itemKind = z.enum(['portfolio', 'watchlist', 'conglomerate', 'idea']);
+
+/**
+ * The eight MIRRORCHAIN lifecycle notices share one payload: the chain, the
+ * member the notice is about, and the occurrence discriminator. `actorId`,
+ * `ownerId` and `subjectUserIds` are internal privacy principals — third-party
+ * account uuids the inbox row never carries — so none of them is on the wire.
+ */
+const mirrorPayloadSchema = z
   .object({
-    id: z.string(),
-    type: webhookEventTypeSchema,
-    createdAt: z.string(),
-    data: z.record(z.unknown()),
+    userId,
+    chainId: z.string(),
+    chainName: z.string(),
+    actorUsername: z.string(),
+    refId: z.string(),
   })
   .strict();
+
+export const WEBHOOK_EVENT_PAYLOAD_SCHEMAS = {
+  /** Inbox parity; the alert's rule/threshold is resolved at render time, not here. */
+  'alert.triggered': z.object({ userId, alertId: z.string(), assetId: z.string() }).strict(),
+  'friend.request': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), requestId: z.string() })
+    .strict(),
+  'friend.accepted': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), requestId: z.string() })
+    .strict(),
+  'portfolio.shared': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), portfolioId: z.string() })
+    .strict(),
+  'watchlist.shared': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), watchlistId: z.string() })
+    .strict(),
+  'conglomerate.shared': z
+    .object({ userId, actorId: z.string(), actorUsername: z.string(), conglomerateId: z.string() })
+    .strict(),
+  'friend.activity': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      itemKind: z.enum(['portfolio', 'watchlist']),
+      itemId: z.string(),
+      activity: z.enum(['buy', 'sell', 'watchlist_add']),
+      assetSymbol: z.string(),
+    })
+    .strict(),
+  'follow.published': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      itemKind,
+      itemId: z.string(),
+      itemName: z.string(),
+    })
+    .strict(),
+  'follow.alert.created': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      alertId: z.string(),
+      assetId: z.string(),
+    })
+    .strict(),
+  'follow.alert.fired': z
+    .object({
+      userId,
+      actorId: z.string(),
+      actorUsername: z.string(),
+      alertId: z.string(),
+      assetId: z.string(),
+    })
+    .strict(),
+  /** Informational only — the credential itself never rides the event. */
+  'account.temp_password': z.object({ userId }).strict(),
+  /** Informational only — carries no download token. */
+  'account.data_export': z.object({ userId }).strict(),
+  /** Inbox parity minus the free-text company `name` (the symbol identifies it). */
+  'earnings.reminder': z
+    .object({
+      userId,
+      assetId: z.string(),
+      symbol: z.string(),
+      earningsDate: z.string(),
+      estimated: z.boolean(),
+    })
+    .strict(),
+  /**
+   * Message ids and the sender only. `bodyPreview` — the first 140 characters of
+   * the sender's private message — is deliberately ABSENT: a receiver URL may be
+   * plain `http:`, and the push channel carries no preview either. A receiver
+   * that wants the text refetches the thread through the enforcement layer.
+   */
+  'chat.message': z
+    .object({
+      userId,
+      conversationId: z.string(),
+      messageId: z.string(),
+      senderId: z.string(),
+      senderUsername: z.string(),
+    })
+    .strict(),
+  /**
+   * More than the inbox on purpose: the per-share payout and its currency are
+   * public market data (never a holding size), and a dividend integration is
+   * useless without them.
+   */
+  'dividend.event': z
+    .object({
+      userId,
+      assetId: z.string(),
+      symbol: z.string(),
+      exDate: z.string(),
+      payDate: z.string().nullable(),
+      amount: z.number().nullable(),
+      currency: z.string().nullable(),
+    })
+    .strict(),
+  /** Inbox parity minus the user's free-text `categoryName`. */
+  'budget.exceeded': z
+    .object({
+      userId,
+      budgetId: z.string(),
+      categoryId: z.string(),
+      period: z.string(),
+      amount: z.number(),
+      spent: z.number(),
+      currency: z.string(),
+    })
+    .strict(),
+  'mirror.invite': mirrorPayloadSchema,
+  'mirror.member_joined': mirrorPayloadSchema,
+  'mirror.member_left': mirrorPayloadSchema,
+  'mirror.member_removed': mirrorPayloadSchema,
+  'mirror.removed': mirrorPayloadSchema,
+  'mirror.ownership_transferred': mirrorPayloadSchema,
+  'mirror.chain_dissolved': mirrorPayloadSchema,
+  'mirror.sync_stalled': mirrorPayloadSchema,
+  /** Inbox parity minus the user's free-text `orderLabel`. */
+  'standing_order.skipped': z
+    .object({
+      userId,
+      standingOrderId: z.string(),
+      periodKey: z.string(),
+      outcome: z.enum(['deferred', 'dropped', 'booking_failed']),
+      droppedCount: z.number().int().optional(),
+    })
+    .strict(),
+  'feedback.status_changed': z
+    .object({
+      userId,
+      feedbackId: z.string(),
+      status: feedbackStatusSchema,
+      lastStatusChangeAt: z.string(),
+    })
+    .strict(),
+  'feedback.reply_created': z
+    .object({ userId, feedbackId: z.string(), messageId: z.string() })
+    .strict(),
+  /**
+   * The commenter is named by `actorUsername` only: `actorId` is another
+   * account's internal id and the inbox row omits it too.
+   */
+  'comment.created': z
+    .object({
+      userId,
+      commentId: z.string(),
+      itemKind,
+      itemId: z.string(),
+      itemName: z.string(),
+      actorUsername: z.string(),
+    })
+    .strict(),
+} as const satisfies Record<WebhookEventType, z.ZodTypeAny>;
+
+/** The `data` a delivery of event type `T` carries. */
+export type WebhookEventDataOf<T extends WebhookEventType> = z.infer<
+  (typeof WEBHOOK_EVENT_PAYLOAD_SCHEMAS)[T]
+>;
+
+type WebhookEventPayloadVariant = {
+  [T in WebhookEventType]: z.ZodObject<
+    {
+      id: z.ZodString;
+      type: z.ZodLiteral<T>;
+      createdAt: z.ZodString;
+      data: (typeof WEBHOOK_EVENT_PAYLOAD_SCHEMAS)[T];
+    },
+    'strict'
+  >;
+}[WebhookEventType];
+
+const webhookEventPayloadVariants = WEBHOOK_EVENT_TYPES.map((type) =>
+  z
+    .object({
+      id: z.string(),
+      type: z.literal(type),
+      createdAt: z.string(),
+      data: WEBHOOK_EVENT_PAYLOAD_SCHEMAS[type],
+    })
+    .strict(),
+) as unknown as [WebhookEventPayloadVariant, ...WebhookEventPayloadVariant[]];
+
+/**
+ * The wire shape of a delivered payload (the POST body): a stable delivery `id`
+ * (also the `X-BetterTrack-Delivery` header, which a receiver dedupes retries
+ * on), the event `type`, the event's `createdAt`, and the type's allowlisted
+ * `data` ({@link WEBHOOK_EVENT_PAYLOAD_SCHEMAS}). Documented for receivers — the
+ * signature covers the serialized form of exactly this object.
+ */
+export const webhookEventPayloadSchema = z.discriminatedUnion('type', webhookEventPayloadVariants);
 export type WebhookEventPayload = z.infer<typeof webhookEventPayloadSchema>;

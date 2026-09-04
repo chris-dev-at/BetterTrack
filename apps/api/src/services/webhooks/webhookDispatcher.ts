@@ -274,7 +274,18 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
         });
       }
 
-      const { body } = buildWebhookPayload(job.deliveryId, job.event);
+      // Fail-closed: an event with no declared per-type disclosure is never
+      // serialized to a receiver. The bridge only enqueues catalog types, so a
+      // miss here means a stale job from a since-removed type.
+      const built = buildWebhookPayload(job.deliveryId, job.event);
+      if (!built) {
+        logger.warn(
+          { subscriptionId: sub.id, type: job.event.type },
+          'webhook delivery skipped: event type has no payload allowlist',
+        );
+        return { outcome: 'skipped', status: null };
+      }
+      const { body } = built;
       const timestamp = String(Math.floor(now() / 1000));
 
       let secret: string;
