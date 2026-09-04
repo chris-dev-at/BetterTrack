@@ -1,13 +1,25 @@
+import type { Job } from 'bullmq';
+import { eq } from 'drizzle-orm';
+import { pino } from 'pino';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FEATURE_FLAG_KEYS, featureFlagsResponseSchema } from '@bettertrack/contracts';
 
+import { createAlertRepository } from '../data/repositories/alertRepository';
+import * as schema from '../data/schema';
+import { createAlertsEvaluateJob, createDeadLetter, runJobDefinition } from '../jobs';
+import type { JobContext } from '../jobs';
+import type { Logger } from '../logger';
+import { alertFireLockKey, alertFireWindowStart } from '../services/alerts/alertEvaluator';
 import {
   FEATURE_FLAG_CACHE_KEY,
   FEATURE_FLAG_PROPAGATION_UNCONFIRMED,
 } from '../services/featureFlags/featureFlagService';
+import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
+import type { NotificationCenter } from '../services/notifications/notificationCenter';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { createStubMarketData } from '../testing/marketDataStubs';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -287,5 +299,138 @@ describe('a flip whose propagation cannot be confirmed is not reported as clean'
         e.action === 'feature_flag.changed' && e.meta?.key === 'alerts',
     );
     expect(entry?.meta?.propagated).toBe(true);
+  });
+});
+
+describe('a killed feature stops its background producer, not only its router', () => {
+  /** Recording stand-in for the durable dispatch boundary (#368). */
+  function recordingCenter(): NotificationCenter & { emitted: DispatchableEvent[] } {
+    const emitted: DispatchableEvent[] = [];
+    return {
+      emitted,
+      async emit(event) {
+        emitted.push(event);
+        return true;
+      },
+    };
+  }
+
+  function jobCtx(): JobContext {
+    return {
+      events: harness.ctx.events,
+      deadLetter: createDeadLetter(harness.ctx.redis),
+      redis: harness.ctx.redis,
+      logger: pino({ level: 'silent' }) as unknown as Logger,
+      // The REAL service the admin flip writes through — the worker resolves
+      // flags exactly the way the API context does.
+      isFeatureEnabled: (key) => harness.ctx.featureFlags.isEnabled(key),
+    };
+  }
+
+  function scheduledRun(processedOn: number): Job<Record<string, never>> {
+    return {
+      id: 'alerts-run',
+      name: 'alerts.evaluate',
+      data: {},
+      processedOn,
+    } as unknown as Job<Record<string, never>>;
+  }
+
+  it('flipping alerts OFF stops alerts.evaluate firing — and flipping it back ON resumes on the next run', async () => {
+    const user = await harness.seedUser({ email: 'alert-owner@bt.test', username: 'alertowner' });
+    const [asset] = await harness.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'AAPL',
+        type: 'stock',
+        symbol: 'AAPL',
+        name: 'Apple Inc.',
+        currency: 'USD',
+      })
+      .returning({ id: schema.assets.id });
+    const alert = await createAlertRepository(harness.db).create({
+      userId: user.id,
+      assetId: asset!.id,
+      kind: 'price_above',
+      threshold: 100,
+      refPrice: null,
+      repeat: false,
+    });
+
+    const notify = recordingCenter();
+    const quoted: string[] = [];
+    const job = createAlertsEvaluateJob({
+      db: harness.db,
+      marketData: createStubMarketData({
+        quote: (ref) => {
+          quoted.push(ref.providerRef);
+          return {
+            value: {
+              price: 150,
+              currency: 'USD',
+              dayChangePct: null,
+              asOf: '2026-07-07T00:00:00.000Z',
+            },
+            stale: false,
+            asOf: 0,
+          };
+        },
+      }),
+      notify,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+    const ctx = jobCtx();
+
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send({ enabled: false })
+      .expect(200);
+
+    // Both halves of the switch, from the same flip: the router refuses…
+    const userAgent = request.agent(harness.app);
+    await userAgent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password })
+      .expect(200);
+    const refused = await userAgent.get('/api/v1/alerts');
+    expect(refused.status).toBe(404);
+    expect(refused.body.error?.code).toBe('FEATURE_DISABLED');
+
+    // …and the scheduled producer sheds its run.
+    const offAt = Date.parse('2026-07-07T15:00:00.000Z');
+    await runJobDefinition(job, scheduledRun(offAt), ctx);
+
+    expect(quoted).toEqual([]);
+    expect(notify.emitted).toEqual([]);
+    const [offRow] = await harness.db
+      .select()
+      .from(schema.alerts)
+      .where(eq(schema.alerts.id, alert.id));
+    expect(offRow!.status).toBe('active');
+    // No (alert, window) bucket was consumed while the switch was off.
+    expect(
+      await harness.ctx.redis.get(alertFireLockKey(alert.id, alertFireWindowStart(offAt))),
+    ).toBeNull();
+
+    // Flip back ON: same worker process, same definition and context — the flag
+    // is read per run, so the next run fires.
+    await adminAgent
+      .patch('/api/v1/admin/feature-flags/alerts')
+      .set(...XRW)
+      .send({ enabled: true })
+      .expect(200);
+    expect((await userAgent.get('/api/v1/alerts')).status).toBe(200);
+
+    await runJobDefinition(job, scheduledRun(Date.parse('2026-07-07T15:01:00.000Z')), ctx);
+
+    expect(quoted).toEqual(['AAPL']);
+    expect(notify.emitted).toEqual([
+      expect.objectContaining({ type: 'alert.triggered', userId: user.id, alertId: alert.id }),
+    ]);
   });
 });
