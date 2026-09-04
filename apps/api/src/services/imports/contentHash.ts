@@ -16,8 +16,26 @@ import { floorCents } from '../../domain/cashLedger';
  *   round-trip exit) are two real rows, so the side must not collide, exactly
  *   like `deposit` vs `withdrawal` below;
  * - dividends have no qty/price — the EUR gross takes the price slot;
- * - cash rows have no instrument — the kind takes the instrument slot and the
- *   EUR magnitude the price slot (`deposit` vs `withdrawal` must not collide).
+ * - cash rows have no instrument — the kind takes the instrument slot, the EUR
+ *   magnitude the price slot (`deposit` vs `withdrawal` must not collide), and
+ *   the memo/reference the otherwise-empty quantity slot.
+ *
+ * THE CASH MEMO IS PART OF THE KEY, and that is a money fix rather than a
+ * refinement. Day + direction + amount alone is not an identity on a bank
+ * statement: two €500 deposits on the same day ("Gehalt ACME GmbH" and "Bonus
+ * Muster AG") are two real movements, and hashing them equal discarded the
+ * second and left the ledger €500 short. The memo is what the file says
+ * distinguishes them, it survives into the booked movement's `note` verbatim,
+ * and the ledger side of the comparison reads it back from there — so a
+ * re-import of the SAME file still hashes every cash row onto the movement it
+ * created and dedupes it.
+ *
+ * A memo cannot be the whole answer, because two file lines may be identical in
+ * every column (`Einzahlung ;;;; 100,00` twice). Those are still two movements,
+ * and the caller settles them by MULTIPLICITY — counting how many matching
+ * movements the ledger already holds against how many the file claims — which
+ * is why `importService` counts occurrences of a cash hash instead of testing
+ * set membership.
  *
  * `instrument` is the resolved catalog asset id when resolution succeeded (so
  * hashes are comparable with already-recorded transactions/dividends), else the
@@ -57,6 +75,14 @@ export interface ContentHashInput {
   price: number | null;
   /** EUR magnitude for dividend/cash rows (takes the price slot). */
   amountEur: number | null;
+  /**
+   * The cash row's memo/reference — the file's `note`, or the booked movement's
+   * `note` when hashing what the portfolio already holds. Ignored for every
+   * other kind, and REQUIRED rather than defaulted: a caller that silently
+   * omitted it would hash a memo-bearing row as if it had none, which is either
+   * a lost movement or a double booking depending on which side forgot.
+   */
+  reference: string | null;
 }
 
 /**
@@ -72,9 +98,22 @@ function centFloored(amountEur: number | null): number | null {
   return amountEur === null ? null : floorCents(amountEur);
 }
 
+/**
+ * Canonical memo rendering for the cash quantity slot. Whitespace is collapsed
+ * and the ends trimmed so the same memo hashes identically however the two
+ * sides of the comparison happen to carry it (a CSV cell arrives trimmed; a
+ * stored note is whatever was written). Case is PRESERVED — "Gehalt" and
+ * "GEHALT" are the same memo to a reader, but folding case can only merge
+ * distinct movements, and merging is the failure that costs money here.
+ */
+export function canonicalReference(reference: string | null): string {
+  return (reference ?? '').replace(/\s+/g, ' ').trim();
+}
+
 /** The §13.4 content hash (`date+instrument+qty+price`), sha-256 hex. */
 export function contentHash(input: ContentHashInput): string {
   const isTrade = input.kind === 'buy' || input.kind === 'sell';
+  const isCash = input.kind === 'deposit' || input.kind === 'withdrawal';
   const instrument = isTrade
     ? `${input.kind}:${input.instrument ?? ''}`
     : input.kind === 'dividend'
@@ -84,7 +123,9 @@ export function contentHash(input: ContentHashInput): string {
   const key = [
     hashDay(input.executedAt),
     instrument ?? '',
-    canonicalAmount(input.quantity, QUANTITY_HASH_SCALE),
+    isCash
+      ? canonicalReference(input.reference)
+      : canonicalAmount(input.quantity, QUANTITY_HASH_SCALE),
     canonicalAmount(priceSlot, AMOUNT_HASH_SCALE),
   ].join('|');
   return createHash('sha256').update(key).digest('hex');

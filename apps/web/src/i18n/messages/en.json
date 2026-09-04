@@ -424,7 +424,8 @@
     "expandRail": "Expand navigation",
     "collapseRail": "Collapse navigation",
     "expandSection": "Expand {{section}}",
-    "collapseSection": "Collapse {{section}}"
+    "collapseSection": "Collapse {{section}}",
+    "back": "Back"
   },
   "askdock": {
     "pin": "Keep open",
@@ -2102,7 +2103,9 @@
       "perMonth": "projected / month",
       "perYear": "projected / year",
       "projectionUnresolved": "We couldn't work out a projected total for this portfolio just now — part of the data it needs didn't come back. The dates below are unaffected.",
+      "projectionTruncated": "You hold more assets than we project in one pass, so no total is shown. The dates below are unaffected.",
       "calendarTitle": "Upcoming ex-dividend dates",
+      "calendarTruncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
       "exOn": "ex {{date}}",
       "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
@@ -2376,6 +2379,7 @@
       },
       "earnings": {
         "heading": "Upcoming earnings",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
         "held": "Held",
         "watched": "Watch",
         "heldTitle": "You hold this asset",
@@ -2776,6 +2780,7 @@
         "dividends": "Projected dividends"
       },
       "dividendsUnresolved": "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.",
+      "dividendsTruncated": "You hold more assets than we project in one pass, so this factor stays out of the projection.",
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
       "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",
@@ -3019,7 +3024,8 @@
       "emptyTitle": "No recent news",
       "emptyDescription": "News appears here once there are headlines for the assets you hold or watch.",
       "unavailableTitle": "News is switched off here",
-      "unavailableDescription": "Market intelligence is not configured for this installation, so no headlines are collected."
+      "unavailableDescription": "Market intelligence is not configured for this installation, so no headlines are collected.",
+      "truncated": "Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here."
     },
     "comingSoon": {
       "overview": {
@@ -3365,8 +3371,10 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "actionAdd": "Share it with them too",
           "confirmWiden": "I understand this widens access to {{username}}.",
           "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
+          "confirmGroupDetach": "I understand this keeps the current members of {{group}} and adds {{username}}, but the item stops following that group — later changes to {{group}} no longer change who can see it.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }
@@ -3518,7 +3526,11 @@
       "mutateError": "Could not update the group. Please try again.",
       "delete": "Delete group",
       "deleteTitle": "Delete “{{name}}”",
-      "deleteWarning": "Anything shared with this group will no longer be visible to its members. This cannot be undone.",
+      "deleteWarning": {
+        "none": "Nothing is shared with this group right now, so deleting it changes nothing for your friends. This cannot be undone.",
+        "one": "1 shared item points at this group and will no longer be visible to its members. This cannot be undone.",
+        "other": "{{count}} shared items point at this group and will no longer be visible to its members. This cannot be undone."
+      },
       "deleting": "Deleting…",
       "deleteError": "Could not delete the group. Please try again."
     }
@@ -6571,6 +6583,15 @@
     "discreet": {
       "title": "Discreet mode",
       "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "Install BetterTrack",
+      "body": "Add it to this device to open it in its own window.",
+      "iosBody": "Tap Share, then “Add to Home Screen”.",
+      "action": "Install",
+      "dismiss": "Dismiss"
     }
   },
   "parked": {

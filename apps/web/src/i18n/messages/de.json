@@ -424,7 +424,8 @@
     "expandRail": "Navigation ausklappen",
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
-    "collapseSection": "{{section}} einklappen"
+    "collapseSection": "{{section}} einklappen",
+    "back": "Zur\u00fcck"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -2102,7 +2103,9 @@
       "perMonth": "prognostiziert / Monat",
       "perYear": "prognostiziert / Jahr",
       "projectionUnresolved": "Ein prognostizierter Gesamtbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück. Die Termine unten sind davon nicht betroffen.",
+      "projectionTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb zeigen wir keinen Gesamtbetrag. Die Termine unten sind davon nicht betroffen.",
       "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
+      "calendarTruncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
@@ -2376,6 +2379,7 @@
       },
       "earnings": {
         "heading": "Anstehende Quartalszahlen",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige fehlen unten.",
         "held": "Gehalten",
         "watched": "Beobachtet",
         "heldTitle": "Du hältst diesen Wert",
@@ -2776,6 +2780,7 @@
         "dividends": "Erwartete Dividenden"
       },
       "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
+      "dividendsTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
       "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
@@ -3019,7 +3024,8 @@
       "emptyTitle": "Keine aktuellen Nachrichten",
       "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest.",
       "unavailableTitle": "Nachrichten sind hier deaktiviert",
-      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt."
+      "unavailableDescription": "Für diese Installation ist Markt-Intelligenz nicht konfiguriert, daher werden keine Schlagzeilen gesammelt.",
+      "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen — einige sind hier nicht erfasst."
     },
     "comingSoon": {
       "overview": {
@@ -3365,8 +3371,10 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "actionAdd": "Zusätzlich mit dieser Person teilen",
           "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
           "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
+          "confirmGroupDetach": "Mir ist bewusst, dass die aktuellen Mitglieder von {{group}} erhalten bleiben und {{username}} hinzukommt, das Element der Gruppe {{group}} danach aber nicht mehr folgt — spätere Änderungen an der Gruppe ändern dann nicht mehr, wer es sehen kann.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -3518,7 +3526,11 @@
       "mutateError": "Gruppe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "delete": "Gruppe löschen",
       "deleteTitle": "„{{name}}“ löschen",
-      "deleteWarning": "Alles, was mit dieser Gruppe geteilt wird, ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+      "deleteWarning": {
+        "none": "Mit dieser Gruppe ist derzeit nichts geteilt – das Löschen ändert für deine Freunde nichts. Dies kann nicht rückgängig gemacht werden.",
+        "one": "1 geteiltes Element verweist auf diese Gruppe und ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+        "other": "{{count}} geteilte Elemente verweisen auf diese Gruppe und sind für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden."
+      },
       "deleting": "Wird gelöscht…",
       "deleteError": "Gruppe konnte nicht gelöscht werden. Bitte versuche es erneut."
     }
@@ -6571,6 +6583,15 @@
     "discreet": {
       "title": "Diskreter Modus",
       "body": "Maskiert jeden absoluten Betrag in der App — zeig BetterTrack anderen, ohne Zahlen offenzulegen."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "BetterTrack installieren",
+      "body": "Füge es zu diesem Gerät hinzu — dann öffnet es sich in einem eigenen Fenster.",
+      "iosBody": "Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.",
+      "action": "Installieren",
+      "dismiss": "Nicht installieren"
     }
   },
   "parked": {

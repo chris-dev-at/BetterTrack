@@ -55,6 +55,38 @@ describe('redactString', () => {
       'GET /assets?symbol=AAPL&range=1y',
     );
   });
+
+  it('stays linear on a long unbroken run — the scrub cannot stall the capture', () => {
+    // A capture is scrubbed BEFORE it is capped, so `redactString` sees the raw
+    // message at full length, and again inside the captured stack whose first
+    // line repeats it. The email pattern used to rescan from every offset in one
+    // unbroken run of email characters, making that O(n²): a 200k-char blob —
+    // well inside what an upstream HTML error page or a rejected upload yields —
+    // took ~24s, blowing the capture path's budget on a single problem.
+    //
+    // 200k is deliberately 4x the 50k that already cost ~1.5s: quadratic doubles
+    // four-fold per doubling, so a regression here misses this bound by orders
+    // of magnitude rather than flaking against it.
+    const blob = `blob rejected: ${'A'.repeat(200_000)}`;
+    const started = performance.now();
+    const out = redactString(blob);
+    const elapsed = performance.now() - started;
+
+    expect(out).toBe(blob); // nothing email-shaped in it — no redaction, just the scan
+    expect(elapsed).toBeLessThan(1_000);
+  });
+
+  it('still redacts an email that follows a long run of email characters', () => {
+    // The guard that makes the scan linear anchors matching to a run boundary.
+    // An address sitting at the end of a long run must still go — under-redaction
+    // would be a PII leak, which is the one failure this scrubber cannot have.
+    expect(redactString(`${'A'.repeat(100_000)}alice@example.com`)).toBe(REDACTED_EMAIL);
+    expect(redactString(`${'A'.repeat(50_000)} bob@example.com`)).toBe(
+      `${'A'.repeat(50_000)} ${REDACTED_EMAIL}`,
+    );
+    // …and one reached only by backtracking over a long local part.
+    expect(redactString(`x${'a.b-c'.repeat(20_000)}@example.com`)).toBe(REDACTED_EMAIL);
+  });
 });
 
 describe('scrubEvent', () => {

@@ -401,6 +401,7 @@ describe('FriendsPage', () => {
       name: 'Family',
       memberCount: 0,
       members: [],
+      shareCount: 0,
     });
     const user = userEvent.setup();
     const { container } = renderPage();

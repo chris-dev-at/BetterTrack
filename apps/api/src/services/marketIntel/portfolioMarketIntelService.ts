@@ -24,11 +24,14 @@ import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudge
  * like the per-asset reads: gate off ⇒ the "unavailable" shape (`available:
  * false`, empty) so the UI hides the blocks entirely.
  *
- * The projection basis is the provider's trailing-12-month dividend per share
- * (`trailingAmount`) as the forward estimate — the standard "assume it
- * continues" proxy — converted to EUR at the current spot rate through the §5.4
- * currency keystone. The monthly view is an even `yearly / 12` spread, the clean
- * series shape the V5-P6b Forecast will consume.
+ * The projection basis is the provider's annual dividend per share
+ * (`trailingAmount`, whose basis the payload names) as the forward estimate —
+ * the standard "assume it continues" proxy — converted **once** into the
+ * caller's base currency at the current spot rate through the §5.4 currency
+ * keystone. §5.4's rule is that the base is always a parameter and never a
+ * literal: this read used to pin EUR, which the V5-P6b Forecast then added to a
+ * base-denominated net worth. The monthly view is an even `yearly / 12` spread,
+ * the clean series shape the Forecast consumes.
  */
 export interface PortfolioMarketIntelService {
   /**
@@ -38,9 +41,9 @@ export interface PortfolioMarketIntelService {
    */
   dividendCalendar(userId: string): Promise<DividendCalendarResponse>;
   /**
-   * Projected dividend income, monthly + yearly EUR (arc a). All-or-nothing
-   * (#1616), so a book over the fan-out cap returns the unavailable shape with
-   * `truncated: true` and issues no provider calls.
+   * Projected dividend income, monthly + yearly, in the caller's base currency
+   * (arc a). All-or-nothing (#1616), so a book over the fan-out cap returns the
+   * unavailable shape with `truncated: true` and issues no provider calls.
    *
    * Without `portfolioId` the read spans every active, non-vaulted portfolio —
    * the cross-portfolio income line the portfolio page has always shown. With
@@ -48,13 +51,33 @@ export interface PortfolioMarketIntelService {
    * portfolio's net worth, so adding the other portfolios' dividends to that
    * curve overstates it.
    */
-  projectedIncome(userId: string, portfolioId?: string): Promise<ProjectedDividendIncomeResponse>;
+  projectedIncome(
+    userId: string,
+    opts?: ProjectedIncomeOptions,
+  ): Promise<ProjectedDividendIncomeResponse>;
+}
+
+/** Per-request narrowing + denomination for {@link PortfolioMarketIntelService.projectedIncome}. */
+export interface ProjectedIncomeOptions {
+  /** Narrow the read to ONE portfolio (what the Forecast needs); omitted ⇒ user-wide. */
+  portfolioId?: string;
+  /**
+   * The caller's base currency (§5.4 — "always a parameter"). Omitted ⇒ the
+   * currency service's own default, which keeps a caller that has no user
+   * context on the historical EUR behaviour.
+   */
+  baseCurrency?: string;
 }
 
 export interface PortfolioMarketIntelDeps {
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getDividendEvents'>;
   repo: Pick<MarketIntelRepository, 'listHeldPositionsForUser' | 'listWatchlistAssetsForUser'>;
-  currency: Pick<CurrencyService, 'convert'>;
+  /**
+   * The §5.4 conversion keystone. `withBase` is what lets the projection answer
+   * in the CALLER's base instead of a hardcoded EUR, over the very same
+   * FxRateSource (so the §5.3 caches and coalescing stay shared).
+   */
+  currency: Pick<CurrencyService, 'baseCurrency' | 'toBase' | 'withBase'>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ everything reports unavailable. */
   enabled: boolean;
   /** Injectable clock (tests); defaults to the wall clock. */
@@ -62,16 +85,27 @@ export interface PortfolioMarketIntelDeps {
   logger?: Logger;
 }
 
-const UNAVAILABLE_CALENDAR: DividendCalendarResponse = { available: false, entries: [] };
-const UNAVAILABLE_PROJECTION: ProjectedDividendIncomeResponse = {
-  available: false,
-  currency: 'EUR',
-  monthlyTotalEur: 0,
-  yearlyTotalEur: 0,
-  holdings: [],
-};
+/** A conversion view already pinned to one base — all the projection needs of it. */
+type ProjectionFx = Pick<CurrencyService, 'baseCurrency' | 'toBase'>;
 
-/** Round a monetary EUR amount to cents — the API never leaks float noise. */
+const UNAVAILABLE_CALENDAR: DividendCalendarResponse = { available: false, entries: [] };
+
+/**
+ * The unavailable projection. `currency` still names the base those zeros are
+ * in: a UI that renders "€0.00" to a USD user is the same mislabel the totals
+ * used to carry.
+ */
+function unavailableProjection(currency: string): ProjectedDividendIncomeResponse {
+  return {
+    available: false,
+    currency,
+    monthlyTotalBase: 0,
+    yearlyTotalBase: 0,
+    holdings: [],
+  };
+}
+
+/** Round a monetary amount to cents — the API never leaks float noise. */
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -109,6 +143,14 @@ export function createPortfolioMarketIntelService(
     providerId: row.providerId,
     providerRef: row.providerRef,
   });
+
+  /**
+   * The §5.4 conversion view for a request's effective base: the caller's
+   * per-user base when supplied, the service default otherwise. Same idiom (and
+   * the same shared FxRateSource) as `portfolioService.fxFor`.
+   */
+  const fxFor = (base?: string): ProjectionFx =>
+    base === undefined ? currency : currency.withBase(base);
 
   return {
     async dividendCalendar(userId) {
@@ -182,10 +224,13 @@ export function createPortfolioMarketIntelService(
       return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
     },
 
-    async projectedIncome(userId, portfolioId) {
-      if (!enabled) return UNAVAILABLE_PROJECTION;
+    async projectedIncome(userId, opts) {
+      // Resolved BEFORE the gate check so every exit — including the ones that
+      // publish nothing — declares the denomination its zeros are in.
+      const fx = fxFor(opts?.baseCurrency);
+      if (!enabled) return unavailableProjection(fx.baseCurrency);
 
-      const held = await repo.listHeldPositionsForUser(userId, portfolioId);
+      const held = await repo.listHeldPositionsForUser(userId, opts?.portfolioId);
 
       // The projection is all-or-nothing (#1616): a total that misses holdings
       // is never published. So a book over the fan-out cap can only ever produce
@@ -194,7 +239,7 @@ export function createPortfolioMarketIntelService(
       // flag `truncated` so the caller can tell "too large to compute" apart
       // from "one holding could not be resolved".
       if (held.length > MARKET_INTEL_ROLLUP_MAX_ASSETS) {
-        return { ...UNAVAILABLE_PROJECTION, truncated: true as const };
+        return { ...unavailableProjection(fx.baseCurrency), truncated: true as const };
       }
 
       const holdings: ProjectedDividendHolding[] = [];
@@ -236,15 +281,30 @@ export function createPortfolioMarketIntelService(
             return;
           }
           if (annualPerShare <= 0) return;
+          // Contract invariant: the basis is null exactly when the amount is. A
+          // payload that breaks it carries a number nobody can describe — and
+          // the two bases differ by a large factor right after a special
+          // dividend — so it is a gap, not a silently-trusted figure.
+          const basis = events.trailingAmountBasis;
+          if (basis == null) {
+            hasUnresolvedHolding = true;
+            logger?.debug?.(
+              { assetId: row.assetId },
+              'dividend projection: per-share amount without a basis',
+            );
+            return;
+          }
           const divCurrency = events.currency ?? row.currency;
           const annualNative = row.quantity * annualPerShare;
-          let annualEur: number;
+          // Exactly ONE conversion, native → the caller's base, through the §5.4
+          // keystone (identity for a holding already in that base).
+          let annualBase: number;
           try {
-            annualEur = await currency.convert(annualNative, divCurrency, 'EUR');
+            annualBase = await fx.toBase(annualNative, divCurrency);
           } catch (err) {
             hasUnresolvedHolding = true;
             logger?.debug?.(
-              { err, assetId: row.assetId, currency: divCurrency },
+              { err, assetId: row.assetId, currency: divCurrency, base: fx.baseCurrency },
               'dividend projection FX conversion failed',
             );
             return;
@@ -256,7 +316,8 @@ export function createPortfolioMarketIntelService(
             quantity: row.quantity,
             annualPerShare,
             currency: divCurrency,
-            annualIncomeEur: round2(annualEur),
+            annualPerShareBasis: basis,
+            annualIncomeBase: round2(annualBase),
           });
         }),
       );
@@ -266,17 +327,17 @@ export function createPortfolioMarketIntelService(
       // resolved — a provider error, a half-filled payload, or a failed
       // conversion — so a smaller total is never presented as complete income
       // (it also feeds the V5-P6b Forecast).
-      if (hasUnresolvedHolding) return UNAVAILABLE_PROJECTION;
+      if (hasUnresolvedHolding) return unavailableProjection(fx.baseCurrency);
 
-      holdings.sort((a, b) => b.annualIncomeEur - a.annualIncomeEur);
-      const yearlyTotalEur = round2(holdings.reduce((sum, h) => sum + h.annualIncomeEur, 0));
-      const monthlyTotalEur = round2(yearlyTotalEur / 12);
+      holdings.sort((a, b) => b.annualIncomeBase - a.annualIncomeBase);
+      const yearlyTotalBase = round2(holdings.reduce((sum, h) => sum + h.annualIncomeBase, 0));
+      const monthlyTotalBase = round2(yearlyTotalBase / 12);
 
       return {
         available: true,
-        currency: 'EUR',
-        monthlyTotalEur,
-        yearlyTotalEur,
+        currency: fx.baseCurrency,
+        monthlyTotalBase,
+        yearlyTotalBase,
         holdings,
       };
     },

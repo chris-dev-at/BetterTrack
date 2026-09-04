@@ -65,6 +65,7 @@ vi.mock('../vault/useVaultedPortfolioStores', () => ({
 }));
 
 import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { createUnlockedVaultPortfolioAccess } from '../vault/resolvedPortfolioStore';
 import type { UnlockedVaultPortfolioAccess } from '../vault/resolvedPortfolioStore';
 import type { UnlockedVaultPortfolioStoreResolution } from '../vault/portfolioStoreResolver';
@@ -219,6 +220,17 @@ function disposedAccess(): UnlockedVaultPortfolioAccess {
 
 // ─── Harness ──────────────────────────────────────────────────────────────────
 
+/**
+ * Every case here mounts the whole of `PortfolioPage` behind the vault wrapper,
+ * so the first thing each one waits for is that page's initial query cascade
+ * settling — overview, history and the market-intel reads — not an interaction.
+ * That is what `waitForColdStart` is for (see `src/test/setup.ts`): on a loaded
+ * CI runner the cascade crosses Testing Library's 1 s default and the page is
+ * still painting skeletons when the wait expires. The waits that follow a
+ * settled render — the negative ones, and anything after a swap has already
+ * been observed — deliberately keep the short default so a real regression
+ * still fails fast.
+ */
 function renderUnlocked(access: UnlockedVaultPortfolioAccess) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const tree = (current: UnlockedVaultPortfolioAccess) => (
@@ -271,14 +283,16 @@ describe('an unlocked vault portfolio whose access was swapped underneath it', (
     const { swapAccess } = renderUnlocked(disposedAccess());
 
     // The dead access states its failure, because for THAT access it is true.
-    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be read from its vault/i);
+    expect(await waitForColdStart(() => screen.getByRole('alert'))).toHaveTextContent(
+      /could not be read from its vault/i,
+    );
 
     // The registry re-resolved; the live store is mounted under the same
     // portfolio id, and the page must start clean rather than repaint the
     // rejection the disposed one cached.
     swapAccess(liveAccess('vault-access-live'));
 
-    expect(await screen.findAllByText(NET_WORTH)).not.toHaveLength(0);
+    expect(await waitForColdStart(() => screen.getAllByText(NET_WORTH))).not.toHaveLength(0);
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   });
 
@@ -287,7 +301,7 @@ describe('an unlocked vault portfolio whose access was swapped underneath it', (
     // generic copy's advice is the one action that makes this worse.
     renderUnlocked(disposedAccess());
 
-    const alert = await screen.findByRole('alert');
+    const alert = await waitForColdStart(() => screen.getByRole('alert'));
     expect(alert).not.toHaveTextContent(/refresh/i);
     expect(alert).toHaveTextContent(/the vault stays open on this device/i);
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
@@ -300,7 +314,7 @@ describe('an unlocked vault portfolio the resolver-backed store cannot write', (
   test('offers no write it can only refuse, and announces no unavailability', async () => {
     renderUnlocked(liveAccess('vault-access-1'));
 
-    expect(await screen.findAllByText(NET_WORTH)).not.toHaveLength(0);
+    expect(await waitForColdStart(() => screen.getAllByText(NET_WORTH))).not.toHaveLength(0);
 
     for (const name of ['+ Transaction', '+ Custom investment', '+ Deposit', '− Withdraw']) {
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
@@ -317,7 +331,7 @@ describe('an unlocked vault portfolio the resolver-backed store cannot write', (
     renderUnlocked(liveAccess('vault-access-2'));
 
     // Hiding the writes must not cost the surface anything it can answer.
-    expect(await screen.findAllByText(NET_WORTH)).not.toHaveLength(0);
+    expect(await waitForColdStart(() => screen.getAllByText(NET_WORTH))).not.toHaveLength(0);
     expect(screen.getByText('2.288,42 €')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Value over time' })).toBeInTheDocument();
   });
@@ -333,7 +347,7 @@ describe('the name an unlocked vault portfolio is given', () => {
     });
     const { container } = renderUnlocked(access);
 
-    expect(await screen.findAllByText(NET_WORTH)).not.toHaveLength(0);
+    expect(await waitForColdStart(() => screen.getAllByText(NET_WORTH))).not.toHaveLength(0);
     expect(container.textContent).not.toContain('__vaulted_portfolio__');
   });
 });

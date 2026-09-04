@@ -70,6 +70,15 @@ export function NewsDigestPage() {
 
   const unavailable = data !== undefined && !data.available;
   const groups = data?.available ? data.groups : [];
+  // The server caps the per-request provider fan-out (§5.3), so a book past that
+  // budget yields a digest covering only part of it. Say so on a single line —
+  // a partial digest rendered as complete reads as "nothing else happened".
+  // The line is tied to `truncated`, NOT to having groups to show: the cap runs
+  // over the raw book before the news-capability filter, so a capped selection
+  // can yield zero groups, and the empty state ("News appears here once there
+  // are headlines for the assets you hold or watch") is the loudest
+  // claim-of-completeness on the page.
+  const truncated = data?.available === true && data.truncated === true;
 
   return (
     <div className="flex flex-col gap-6">
@@ -101,17 +110,18 @@ export function NewsDigestPage() {
             title={t('assets.news.unavailableTitle')}
             description={t('assets.news.unavailableDescription')}
           />
-        ) : groups.length === 0 ? (
-          <EmptyState
-            icon="📰"
-            title={t('assets.news.emptyTitle')}
-            description={t('assets.news.emptyDescription')}
-          />
         ) : (
           <div className="flex flex-col gap-3">
-            {groups.map((g) => (
-              <NewsGroupCard key={g.assetId} group={g} />
-            ))}
+            {truncated ? <p className="bt-meta">{t('assets.news.truncated')}</p> : null}
+            {groups.length === 0 ? (
+              <EmptyState
+                icon="📰"
+                title={t('assets.news.emptyTitle')}
+                description={t('assets.news.emptyDescription')}
+              />
+            ) : (
+              groups.map((g) => <NewsGroupCard key={g.assetId} group={g} />)
+            )}
           </div>
         )}
       </section>

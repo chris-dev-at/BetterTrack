@@ -9,6 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AppSettingsRepository } from '../../data/repositories/appSettingsRepository';
+import { ApiError } from '../../errors';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 
@@ -32,6 +33,13 @@ export const FEATURE_FLAG_CACHE_KEY = 'feature-flags:effective';
 
 /** Snapshot TTL: a backstop so a lost DEL self-heals; writes invalidate directly. */
 export const FEATURE_FLAG_CACHE_TTL_SECONDS = 60;
+
+/**
+ * Error code a flip returns when the snapshot could not be dropped OR rewritten
+ * (§13.5 V5-P2 arc (c), #1744). The value IS persisted; what is unknown is
+ * whether the running instances have picked it up yet.
+ */
+export const FEATURE_FLAG_PROPAGATION_UNCONFIRMED = 'FEATURE_FLAG_PROPAGATION_UNCONFIRMED';
 
 /** Stable English metadata per flag — API/audit only; the SPA renders i18n. */
 export const FEATURE_FLAG_REGISTRY: Record<FeatureFlagKey, { description: string }> = {
@@ -132,6 +140,38 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
   }
 
   /**
+   * Drop the shared snapshot so the next read recomputes from the store, via TWO
+   * independent commands: DEL first (cheap and race-free), and only if that
+   * throws, overwrite the snapshot with the values we just persisted — equally
+   * propagating, a different command, so a Redis that is degraded rather than
+   * down still gets one honest chance. Returns false only when BOTH fail.
+   *
+   * The overwrite is correct-by-construction: it re-reads the store AFTER the
+   * upsert, so the snapshot it writes is the post-flip map, never a stale one.
+   */
+  async function invalidateSnapshot(): Promise<boolean> {
+    try {
+      await redis.del(FEATURE_FLAG_CACHE_KEY);
+      return true;
+    } catch (err) {
+      logger.warn({ err }, 'feature-flag cache invalidation failed — rewriting the snapshot');
+    }
+    try {
+      const fresh = await loadFromStore();
+      await redis.set(
+        FEATURE_FLAG_CACHE_KEY,
+        JSON.stringify(fresh),
+        'EX',
+        FEATURE_FLAG_CACHE_TTL_SECONDS,
+      );
+      return true;
+    } catch (err) {
+      logger.error({ err }, 'feature-flag snapshot rewrite failed — flip may not have propagated');
+      return false;
+    }
+  }
+
+  /**
    * Flip one flag (audit-logged) and invalidate the snapshot so the next request
    * — HTTP or socket — reads the new value. Returns the full refreshed registry.
    *
@@ -140,6 +180,22 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
    * gateway's existing revalidation sweep, which re-reads these flags once per
    * pass. That keeps one flip = one DEL here, with the shed bounded by
    * `REALTIME_FEATURE_SHED_MAX_DELAY_MS` instead of a new eviction fan-out.
+   *
+   * Propagation is NOT best-effort (#1744). A kill switch exists to stop
+   * something already in progress, so "it may or may not have taken effect and
+   * we won't say" is the one answer the admin must never get. Order and
+   * reasoning:
+   *
+   *  1. persist first — the durable value is what the TTL backstop and every
+   *     cold read converge on, so it must land even when Redis is unusable;
+   *  2. audit always, carrying `propagated` — a flip that could not be confirmed
+   *     is exactly the one worth finding in the log later;
+   *  3. then, and only if invalidation failed both ways, throw 503. The write is
+   *     kept (retrying is idempotent) and the message says so; what the error
+   *     reports is the unconfirmed propagation, not a lost write. Swallowing it
+   *     into a 200 — or widening the try so the failure disappears into the
+   *     returned registry — would report a flip that the serving instances may
+   *     keep ignoring for the full {@link FEATURE_FLAG_CACHE_TTL_SECONDS}.
    */
   async function setFlag(
     key: FeatureFlagKey,
@@ -147,19 +203,22 @@ export function createFeatureFlagService(deps: FeatureFlagServiceDeps) {
     actor: FeatureFlagActor,
   ): Promise<AdminFeatureFlag[]> {
     await repo.upsert(settingKey(key), enabled, actor.id);
-    try {
-      await redis.del(FEATURE_FLAG_CACHE_KEY);
-    } catch (err) {
-      logger.warn({ err }, 'feature-flag cache invalidation failed');
-    }
+    const propagated = await invalidateSnapshot();
     // `targetId` is a uuid column — the flag key rides in `meta`, not there.
     await audit.record({
       actorId: actor.id,
       action: AuditAction.FeatureFlagChanged,
       targetType: 'feature_flag',
       ip: actor.ip ?? null,
-      meta: { key, enabled },
+      meta: { key, enabled, propagated },
     });
+    if (!propagated) {
+      throw new ApiError(
+        503,
+        FEATURE_FLAG_PROPAGATION_UNCONFIRMED,
+        `The '${key}' switch was saved, but the shared cache could not be refreshed: running instances may keep the previous value for up to ${FEATURE_FLAG_CACHE_TTL_SECONDS} seconds. Retry to confirm it has taken effect.`,
+      );
+    }
     return listForAdmin();
   }
 

@@ -41,6 +41,15 @@ id = "generic-api-key"
     # same rule-level allowlist.
     '''^apps/api/src/services/analytics/__tests__/usageActivation\.test\.ts$''',
     '''^apps/api/src/services/imports/__tests__/importService\.test\.ts$''',
+    # The V5-P2 malformed-body test posts a deliberately fake credential
+    # (`hunter2-correct-horse-battery`) inside a truncated JSON login body, then
+    # asserts no fragment of it reaches a persisted problem row. The literal is
+    # the subject of the assertion, not a credential: it is never a valid login
+    # and the body it sits in is unparseable by construction. Only its length
+    # trips the generic heuristic — the byte-identical prefix in the sibling
+    # case above it does not. Same rule-level allowlist, so every other detector
+    # stays active on this file.
+    '''^apps/api/src/__tests__/problemCapture\.test\.ts$''',
     '''^apps/web/src/user/vault/vectors\.fixture\.json$''',
     # E3 deterministic BIP39/HKDF/AES-GCM test vectors; public, never production key material.
     '''^apps/web/src/user/vault/keys/keys\.test\.ts$''',

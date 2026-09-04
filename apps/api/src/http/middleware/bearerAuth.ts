@@ -460,9 +460,12 @@ export const ACCOUNT_SECURITY_SCOPE = 'account:security';
  * (auth, vault sync, tax-year documentation) resolve before this table.
  *
  * The `/settings` catch-all keeps the coarse account/profile bucket on the
- * social scope (unchanged since V2-P12); the more specific `/settings/notifications`
- * prefs route is remapped to the notifications scope in {@link resolvePolicy}
- * before this table is consulted (#361).
+ * social scope (unchanged since V2-P12); every sub-path that belongs to another
+ * module is remapped in {@link resolvePolicy} before this table is consulted —
+ * notification preferences (#361), the notification CHANNELS and the tax regime
+ * (#1730). {@link SETTINGS_SUBPATH_POLICY_CENSUS} pins the full sub-path
+ * classification and is walked against the real router stack, so a new
+ * `/settings` sub-router cannot silently inherit the social scope.
  *
  * This table is also consumed by the real-app mount census in
  * `checkOpenapiCoverage.ts`. Do not add a second classification list: runtime
@@ -612,6 +615,111 @@ export const MODULE_POLICIES = [
     reason: 'Consent is session-bound and token exchange is handled on the public pre-guard rail.',
   },
 ] as const satisfies readonly BearerModulePolicy[];
+
+/** One `/settings` sub-path's pinned bearer classification (see the census below). */
+export interface SettingsSubPathPolicy {
+  /** The mount-relative sub-path — exactly one segment under `/settings`. */
+  readonly subPath: `/settings/${string}`;
+  /** How a safe method (GET) on that sub-path resolves. */
+  readonly safe: ResolvedBearerPolicyClassification;
+  /** How a non-safe method (POST) on that sub-path resolves. */
+  readonly unsafe: ResolvedBearerPolicyClassification;
+  /** Why this classification — the decision, in one line. */
+  readonly reason: string;
+}
+
+/**
+ * `/settings` is not one module. A single Express router hosts notification
+ * preferences, the notification CHANNELS, account/profile preferences, the home
+ * layout, the tax regime and the credential surfaces — so the coarse
+ * `/settings → social:*` row in {@link MODULE_POLICIES} cannot be the whole
+ * answer. #1730 found channel setup inheriting it: a key its owner believes is
+ * "Social only" could re-point the account's notification egress at the
+ * holder's own Telegram chat, and a `notifications:*` key — the row a user ticks
+ * for "Notifications" — was refused on the very routes it names.
+ *
+ * Every sub-path mounted under `/settings` is therefore classified here, with
+ * the reason stated. `resolvePolicy` remains the single resolver; this census is
+ * the documentation plus the gate: `bearerPlatform.test.ts` walks the REAL
+ * router stack against it, so a NEW `/settings` sub-router either gets a row
+ * here (a deliberate decision) or fails the test — it can never quietly inherit
+ * the social scope.
+ */
+export const SETTINGS_SUBPATH_POLICY_CENSUS = [
+  {
+    subPath: '/settings/notifications',
+    safe: { kind: 'scope', read: 'notifications:read', write: 'notifications:write' },
+    unsafe: { kind: 'scope', read: 'notifications:read', write: 'notifications:write' },
+    reason:
+      'The per-type delivery matrix is the surface the notifications scope exists for (#361).',
+  },
+  {
+    subPath: '/settings/telegram',
+    safe: { kind: 'scope', read: 'notifications:read', write: 'notifications:write' },
+    unsafe: { kind: 'scope', read: 'notifications:read', write: 'notifications:write' },
+    reason:
+      'Channel setup IS notification egress: linking binds where every alert is delivered (#1730).',
+  },
+  {
+    subPath: '/settings/discord',
+    safe: { kind: 'scope', read: 'notifications:read', write: 'notifications:write' },
+    unsafe: { kind: 'scope', read: 'notifications:read', write: 'notifications:write' },
+    reason:
+      'Same class as Telegram: the webhook target and the test send are notification egress (#1730).',
+  },
+  {
+    subPath: '/settings/taxes',
+    safe: { kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' },
+    unsafe: { kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' },
+    reason:
+      'The tax regime is portfolio data — it decides how every future sell and dividend is taxed (#1730).',
+  },
+  {
+    subPath: '/settings/account',
+    safe: { kind: 'scope', read: 'social:read', write: 'social:write' },
+    unsafe: { kind: 'scope', read: 'social:read', write: 'social:write' },
+    reason:
+      'Deliberate catch-all rider: profile/visibility/chat preferences are the social-facing account bucket (V2-P12).',
+  },
+  {
+    subPath: '/settings/home',
+    safe: { kind: 'scope', read: 'social:read', write: 'social:write' },
+    unsafe: { kind: 'scope', read: 'social:read', write: 'social:write' },
+    reason: 'Deliberate catch-all rider: the home layout is a per-account UI preference (V2-P12).',
+  },
+  {
+    subPath: '/settings/widget-layout',
+    safe: { kind: 'scope', read: 'social:read', write: 'social:write' },
+    unsafe: { kind: 'scope', read: 'social:read', write: 'social:write' },
+    reason: 'Deliberate catch-all rider: widget placement is a per-account UI preference.',
+  },
+  {
+    subPath: '/settings/api-keys',
+    safe: { kind: 'session-only' },
+    unsafe: { kind: 'session-only' },
+    reason: 'A delegated credential must never mint, list or revoke credentials.',
+  },
+  {
+    subPath: '/settings/oauth-clients',
+    safe: { kind: 'session-only' },
+    unsafe: { kind: 'session-only' },
+    reason: 'App registration is credential issuance — cookie-session only, like key management.',
+  },
+  {
+    subPath: '/settings/oauth-grants',
+    safe: { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE },
+    unsafe: { kind: 'session-only' },
+    reason:
+      'Only the exact first-party GET/DELETE allowlist opens; every other method stays session-only.',
+  },
+  {
+    subPath: '/settings/webhooks',
+    safe: { kind: 'session-only' },
+    unsafe: { kind: 'session-only' },
+    reason:
+      'Outbound webhook management carries a signing-secret lifecycle — cookie-session only (V5-P10).',
+  },
+] as const satisfies readonly SettingsSubPathPolicy[];
 
 /**
  * Bearer-callable sub-paths of the otherwise cookie-only `/auth/*` group (#361).
@@ -830,6 +938,32 @@ function resolvePolicy(
   // scope (#361), checked before the coarse `/settings` → social catch-all.
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {
     return { kind: 'scope', read: 'notifications:read', write: 'notifications:write' };
+  }
+  // #1730: notification CHANNEL setup is notification egress, not social data.
+  // Linking Telegram binds whichever chat id replies to a raw pending code the
+  // response body hands out, and the Discord webhook target is where every alert
+  // is delivered — so a "Social only" key must not be able to re-point (or, via
+  // DELETE, silence) the account's notifications, and the `notifications:*` key
+  // a user ticks for exactly this must not be refused on it. Checked before the
+  // coarse `/settings` → social catch-all; write still implies read through the
+  // one authoritative `scopeSatisfies`.
+  if (
+    path === '/settings/telegram' ||
+    path.startsWith('/settings/telegram/') ||
+    path === '/settings/discord' ||
+    path.startsWith('/settings/discord/')
+  ) {
+    return { kind: 'scope', read: 'notifications:read', write: 'notifications:write' };
+  }
+  // #1730: the tax regime is a deliberate decision, not a silent social-scope
+  // inheritance. GET reports the account's tax mode and country; PATCH switches
+  // it and applies FORWARD to every future sell and dividend (§16 2026-07-08).
+  // That is portfolio data — the module whose figures it changes — so ticking
+  // Portfolio read/write is what grants it, and no social-scoped key can flip
+  // the account's tax regime. `/settings/taxes/years` keeps its own narrower
+  // read-only account-security allowlist, resolved above this row.
+  if (path === '/settings/taxes' || path.startsWith('/settings/taxes/')) {
+    return { kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' };
   }
   for (const p of MODULE_POLICIES) {
     if (path === p.prefix || path.startsWith(`${p.prefix}/`)) {
