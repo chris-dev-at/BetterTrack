@@ -216,8 +216,11 @@ export function createStandingOrderRepository(db: Database) {
     /**
      * Every active order on a non-vaulted portfolio across all users — the
      * daily engine's scan input. Joins the asset so a buy has its provider ref
-     * + native currency for the quote. `vault_id IS NULL` is deliberate policy
-     * defense for stale rows, not reliance on move-in having purged the order.
+     * for the poll and its native currency for the booking guard, which refuses
+     * a quote whose currency is not the asset's (#1712 — a stored price is a
+     * bare number, converted later at `assets.currency`). `vault_id IS NULL` is
+     * deliberate policy defense for stale rows, not reliance on move-in having
+     * purged the order.
      */
     async listActive(): Promise<StandingOrderWithAsset[]> {
       const rows = await joinedSelect()

@@ -29,6 +29,7 @@ import {
   setCashBalanceResponseSchema,
   SOURCE_TAG_STANDING_ORDER,
   standingOrderListResponseSchema,
+  standingOrderQuoteRefusal,
   standingOrderSchema,
   taxSettingsResponseSchema,
   transactionInputSchema,
@@ -1965,17 +1966,20 @@ async function materializeStandingOrderOccurrence(
       const assetId = stringField(order.data, 'assetId');
       const asset = resolveTransactionAsset(document, assetId);
       const orderCurrency = stringField(order.data, 'currency');
-      if (input.quoteCurrency !== orderCurrency || asset.currency !== orderCurrency) {
+      // One shared rule with the server engine (#1712): currency agreement
+      // across quote, order and asset, plus a finite, positive price below the
+      // transaction ceiling. A missing price/currency is simply not bookable.
+      const price = input.price ?? Number.NaN;
+      const refusal = standingOrderQuoteRefusal({
+        price,
+        quoteCurrency: input.quoteCurrency ?? '',
+        orderCurrency,
+        assetCurrency: asset.currency,
+      });
+      if (refusal !== null) {
         throw storeError(
           'VAULT_DATA_INVALID',
-          'The standing-order quote currency does not match the local asset snapshot.',
-        );
-      }
-      const price = input.price;
-      if (price == null || !Number.isFinite(price) || price <= 0) {
-        throw storeError(
-          'VAULT_DATA_INVALID',
-          'A positive current quote is required for a buy standing order.',
+          `A standing-order buy needs a bookable quote (${refusal}).`,
         );
       }
       ledgerEntity = entityRecord(
@@ -2157,14 +2161,40 @@ function requireLiveStandingOrder(document: VaultDocument, orderId: string): Vau
   return order;
 }
 
+/**
+ * Whether this portfolio's schedules are suspended because it is archived —
+ * the twin of the server's `listActive` filter and its in-lock recheck, which
+ * both exclude an archived portfolio from every booking (#1712). A portfolio
+ * that is not in the document is not "archived" here; the callers that need it
+ * to exist raise their own not-found.
+ */
+export function isStandingOrderPortfolioArchived(
+  document: VaultDocument,
+  portfolioId: string,
+): boolean {
+  const portfolio = findLiveEntity(document, 'portfolio', portfolioId);
+  return portfolio !== undefined && nullableStringField(portfolio.data, 'archivedAt') !== null;
+}
+
 function assertStandingOrderDefinition(
   document: VaultDocument,
   order: VaultEntity,
   input: VaultStandingOrderOccurrenceInput,
 ): void {
-  const portfolio = requirePortfolio(document, stringField(order.data, 'portfolioId'));
+  const portfolioId = stringField(order.data, 'portfolioId');
+  const portfolio = requirePortfolio(document, portfolioId);
   if (stringField(order.data, 'userId') !== stringField(portfolio.data, 'userId')) {
     throw storeError('VAULT_DATA_INVALID', 'The standing order and portfolio owners do not match.');
+  }
+  // The last-resort guard for an archive that commits (here: on another device)
+  // between the scan's decision and this write. The server refuses the same
+  // booking under its portfolio lock; archive is a suspension, not a pause, so
+  // no row may be written and no watermark advanced while it holds.
+  if (isStandingOrderPortfolioArchived(document, portfolioId)) {
+    throw storeError(
+      'VAULT_OPERATION_UNAVAILABLE',
+      'A standing order on an archived portfolio cannot be booked.',
+    );
   }
   const isBuy = stringField(order.data, 'kind') === 'buy-asset';
   const assetId = nullableStringField(order.data, 'assetId');
@@ -3631,11 +3661,16 @@ function standingOrderFromEntity(
   const status = stringField(entity.data, 'status');
   const lastPeriodKey = nullableStringField(entity.data, 'lastPeriodKey');
   const today = calendarDayInTimezone(new Date(now), 'Europe/Vienna');
+  const portfolioId = stringField(entity.data, 'portfolioId');
+  // Archive suspends the schedule exactly as it does server-side, so the DTO
+  // carries it and `nextRunDate` is computed from the same predicate the API
+  // uses (`status === 'active' && !suspendedByArchive`, #1712).
+  const suspendedByArchive = isStandingOrderPortfolioArchived(document, portfolioId);
   return parseVaultData(
     () =>
       standingOrderSchema.parse({
         id: entity.id,
-        portfolioId: stringField(entity.data, 'portfolioId'),
+        portfolioId,
         kind,
         assetId,
         assetSymbol: asset?.symbol ?? null,
@@ -3648,6 +3683,7 @@ function standingOrderFromEntity(
         startDate,
         endDate,
         status,
+        suspendedByArchive,
         lastRunAt: nullableStringField(entity.data, 'lastRunAt'),
         lastPeriodKey,
         nextRunDate: nextStandingOrderRunDate(
@@ -3659,7 +3695,7 @@ function standingOrderFromEntity(
           },
           today,
           lastPeriodKey,
-          status === 'active',
+          status === 'active' && !suspendedByArchive,
         ),
         createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
         updatedAt: stringField(entity.data, 'updatedAt', entity.editedAt),
