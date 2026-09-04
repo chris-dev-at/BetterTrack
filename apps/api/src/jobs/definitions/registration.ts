@@ -1,5 +1,5 @@
 import { QUEUE_JOB_OPTIONS } from '../options';
-import { QUEUE_NAMES, type JobDefinition, type QueueName } from '../types';
+import { QUEUE_FEATURE_FLAGS, QUEUE_NAMES, type JobDefinition, type QueueName } from '../types';
 
 const DECLARED_QUEUE_JOB_OPTIONS: Partial<Record<QueueName, object>> = QUEUE_JOB_OPTIONS;
 
@@ -214,6 +214,12 @@ export type RegisteredJobDefinitions = {
  * from that map. An inline object here would look authoritative next to the
  * handler while every enqueued job carried the plain defaults — which is
  * exactly how `webhooks.deliver` came to retry 3 times against a documented 5.
+ *
+ * The kill-switch check is the same shape and exists for the same reason: the
+ * queue catalog says which switch owns a queue ({@link QUEUE_FEATURE_FLAGS}),
+ * and a production definition on an owned queue may not boot without declaring
+ * it — otherwise the switch would keep gating only the HTTP router while the
+ * producer behind it kept firing.
  */
 export function assembleRegisteredJobDefinitions(
   definitions: RegisteredJobDefinitions,
@@ -231,6 +237,14 @@ export function assembleRegisteredJobDefinitions(
     ) {
       throw new Error(
         `${registration.source.file}#${registration.source.symbol} declares jobOptions that are not the QUEUE_JOB_OPTIONS entry for ${definition.name}; enqueued jobs would not carry them`,
+      );
+    }
+    const owningFlag = QUEUE_FEATURE_FLAGS[definition.name];
+    if ((definition.featureFlag ?? null) !== owningFlag) {
+      throw new Error(
+        owningFlag
+          ? `${registration.source.file}#${registration.source.symbol} does not declare featureFlag '${owningFlag}'; the '${owningFlag}' kill switch would not stop ${definition.name}`
+          : `${registration.source.file}#${registration.source.symbol} declares featureFlag '${definition.featureFlag}', which does not own ${definition.name} in QUEUE_FEATURE_FLAGS`,
       );
     }
     return definition;

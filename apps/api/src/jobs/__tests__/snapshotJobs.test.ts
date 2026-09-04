@@ -70,6 +70,7 @@ function makeCtx(): JobContext {
     deadLetter: createDeadLetter(redis),
     redis,
     logger,
+    isFeatureEnabled: async () => true,
   };
 }
 
