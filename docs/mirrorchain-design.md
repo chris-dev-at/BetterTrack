@@ -233,6 +233,16 @@ mr.mirror_id)`. Such a row exists only on the origin copy and silently
 mr.local_id = t.id)`. Local-only duplicate; safe to delete through the
   services.
 
+Both scans are bounded per run AND paged: they detect without repairing, so a
+plain `LIMIT n` would re-report the same arbitrary page forever and hide
+everything behind it, with one chain's residuals starving every other chain.
+Each scan therefore has a total order and a keyset cursor that resumes past the
+last row reported, so the whole set is walked across successive runs; a run
+reports how many findings it deferred. Findings reach the admin Problems page as
+ONE row per anomaly class with an occurrence count and a bounded example list —
+never one row per finding, which would spend the whole per-kind capture budget
+on a single storm and drop unrelated errors with it.
+
 **Joining = replaying the one true log.** When a chain is **created** — either
 "make this portfolio a group portfolio" (convert) or "new group portfolio"
 (empty) — the creator's portfolio becomes the origin copy and, for a convert,
@@ -259,7 +269,13 @@ Two layers, both binding:
    win, never a field merge: a field merge could manufacture a financial row no
    member ever reviewed). A `*.delete` is terminal: appending any later op
    targeting a deleted `mirror_id` is refused at the door (`409
-MIRROR_ROW_DELETED`).
+MIRROR_ROW_DELETED`). "`*.delete`" is meant literally and mechanically — the
+   terminal set is DERIVED from the op-kind list (`tx.delete`,
+   `dividend.delete`, `cash.delete` today), so a delete kind added later is
+   terminal the moment it exists, and both guards — the submit path's door check
+   and the in-transaction append check — read that one list. A hand-maintained
+   copy of it is how `cash.delete` spent a release non-terminal, letting an edit
+   racing a delete be acknowledged and then dropped on replay.
 
 2. **Stale-edit guard (the UX): optimistic concurrency at append.** Chain DTOs
    expose per-row `mirror.version` = the seq of the last op that targeted that

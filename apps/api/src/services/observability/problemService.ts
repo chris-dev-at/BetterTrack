@@ -70,9 +70,26 @@ export interface ListProblemsResult {
   droppedCapturesTotal: number;
 }
 
+export interface ProblemCaptureOptions {
+  /**
+   * How many occurrences this ONE call folds in (≥ 1, default 1). For a caller
+   * that already aggregated — the mirror consistency sweep, which finds N
+   * identical residuals in one pass — reporting them as N calls would either
+   * spend N of the window's write budget on distinct fingerprints or, once the
+   * message is id-free, cost N pointless round trips to say the same thing.
+   * This says it once, with the true count. It does NOT widen the write budget:
+   * the capture still spends exactly one fingerprint's write.
+   */
+  occurrences?: number;
+}
+
 export interface ProblemService {
   /** Capture an unhandled error (the `createErrorHandler` report seam). */
-  captureError(err: unknown, context?: ProblemCaptureContext): void;
+  captureError(
+    err: unknown,
+    context?: ProblemCaptureContext,
+    options?: ProblemCaptureOptions,
+  ): void;
   /** Capture a permanently-failed BullMQ job. */
   captureJobFailure(err: unknown, meta: { queue: string; jobId?: string }): void;
   /**
@@ -283,7 +300,10 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     rawMessage: string,
     context: ProblemCaptureContext | null,
     discriminator = '',
+    observedRaw = 1,
   ): void => {
+    // A caller-supplied count is folded in, never trusted blindly.
+    const observed = Number.isFinite(observedRaw) ? Math.max(1, Math.trunc(observedRaw)) : 1;
     // Scrub, THEN cap: the scrubber must see the whole string (a token cut in
     // half matches nothing), and `problems.title`/`.message` are unbounded
     // `text` that the admin page renders, so nothing else keeps a pathological
@@ -299,7 +319,7 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
 
     rollWindow(now());
     const state = tracked.get(fingerprint);
-    let occurrences = 1;
+    let occurrences = observed;
     if (state === undefined) {
       const spent = writesByKind.get(kind) ?? 0;
       if (spent >= maxWrites) {
@@ -314,12 +334,12 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       tracked.set(fingerprint, { writes: 1, pending: 0 });
     } else if (state.writes <= maxRepeatWrites) {
       state.writes += 1;
-      occurrences = 1 + state.pending;
+      occurrences = observed + state.pending;
       state.pending = 0;
     } else {
-      // Throttled, not dropped: the occurrence rides along with this
+      // Throttled, not dropped: the occurrences ride along with this
       // fingerprint's next write, so no count is lost.
-      state.pending += 1;
+      state.pending += observed;
       return;
     }
 
@@ -364,7 +384,7 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   };
 
   return {
-    captureError(err, context) {
+    captureError(err, context, options) {
       const { name, message, stack } = describeError(err);
       // The request facts, when the caller had any, are what tells two endpoints
       // throwing the same `TypeError` apart — without them they fold into one
@@ -377,7 +397,7 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
         route === null ? '' : `${method ?? ''} ${redactString(route)} ${status ?? ''}`.trim();
       const withStack: ProblemCaptureContext | null =
         stack === null ? (context ?? null) : { ...context, stack: boundStack(stack) };
-      capture('error', name, message, withStack, discriminator);
+      capture('error', name, message, withStack, discriminator, options?.occurrences);
     },
 
     captureJobFailure(err, meta) {

@@ -59,6 +59,7 @@ export {
   MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID,
   MIRROR_CONSISTENCY_SWEEP_CRON,
   MIRROR_CONSISTENCY_SWEEP_TZ,
+  MIRROR_SWEEP_ITEMISED_EXAMPLES,
   type MirrorReplicateJobDeps,
   type MirrorInviteCleanupJobDeps,
   type MirrorConsistencySweepJobDeps,
