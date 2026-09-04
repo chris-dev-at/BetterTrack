@@ -2103,7 +2103,9 @@
       "perMonth": "projected / month",
       "perYear": "projected / year",
       "projectionUnresolved": "We couldn't work out a projected total for this portfolio just now — part of the data it needs didn't come back. The dates below are unaffected.",
+      "projectionTruncated": "You hold more assets than we project in one pass, so no total is shown. The dates below are unaffected.",
       "calendarTitle": "Upcoming ex-dividend dates",
+      "calendarTruncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
       "exOn": "ex {{date}}",
       "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
@@ -2377,6 +2379,7 @@
       },
       "earnings": {
         "heading": "Upcoming earnings",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass, so some are missing below.",
         "held": "Held",
         "watched": "Watch",
         "heldTitle": "You hold this asset",
@@ -2770,6 +2773,7 @@
         "dividends": "Projected dividends"
       },
       "dividendsUnresolved": "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.",
+      "dividendsTruncated": "You hold more assets than we project in one pass, so this factor stays out of the projection.",
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
       "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",
@@ -3013,7 +3017,8 @@
       "emptyTitle": "No recent news",
       "emptyDescription": "News appears here once there are headlines for the assets you hold or watch.",
       "unavailableTitle": "News is switched off here",
-      "unavailableDescription": "Market intelligence is not configured for this installation, so no headlines are collected."
+      "unavailableDescription": "Market intelligence is not configured for this installation, so no headlines are collected.",
+      "truncated": "Partial digest: you hold or watch more assets than we look up in one pass, so some are not covered here."
     },
     "comingSoon": {
       "overview": {

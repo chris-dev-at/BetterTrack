@@ -540,6 +540,12 @@ function UpcomingEarningsZone() {
       <h2 id="earnings-heading" className="text-lg font-semibold bt-soft">
         {t('workboard.overview.earnings.heading')}
       </h2>
+      {/* The server caps the per-request provider fan-out (§5.3); a book past
+          that budget produces a calendar covering only part of it, and one line
+          says so rather than letting the panel read as the whole book. */}
+      {data.truncated === true ? (
+        <p className="bt-meta">{t('workboard.overview.earnings.truncated')}</p>
+      ) : null}
       <div className="overflow-hidden bt-panel">
         <ul className="bt-band">
           {rows.map((e) => (

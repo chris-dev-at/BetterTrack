@@ -57,7 +57,9 @@ export interface MarketIntelService {
    * ascending by date (the Workboard panel, arc b). Unavailable/empty when the
    * gate is off; an asset with no dated upcoming report, one whose report is
    * already in the past (or a provider without the earnings capability, or one
-   * that errors) is simply dropped.
+   * that errors) is simply dropped. The provider fan-out is capped per request
+   * (`MARKET_INTEL_ROLLUP_MAX_ASSETS`); a book larger than the cap yields
+   * `truncated: true` rather than a silently partial calendar.
    */
   earningsCalendar(userId: string): Promise<EarningsCalendarResponse>;
   /**
@@ -188,9 +190,14 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     // Filtering a combined result after the fact would still make the kept
     // calendar read killed transaction/holding rows — and the account's own
     // custom-asset symbol/name/provider ref — from the server.
-    const assets = includeHoldings
-      ? await intelRepo.listUserWatchAndHoldAssets(userId)
-      : await intelRepo.listUserWatchAssets(userId);
+    // One provider call per asset lands on the queue every other consumer
+    // shares (§5.3), so the book is capped per request and the response says
+    // when that happened. See rollupBudget.ts for the sizing and the ordering.
+    const { selected, truncated } = capRollupSubjects(
+      includeHoldings
+        ? await intelRepo.listUserWatchAndHoldAssets(userId)
+        : await intelRepo.listUserWatchAssets(userId),
+    );
 
     // "Upcoming" is UTC-day-based: a report dated today still belongs on the
     // panel, anything strictly before today has already happened. The guard is
@@ -200,7 +207,7 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     const todayStart = new Date(now()).toISOString().slice(0, 10);
 
     const entries: EarningsCalendarEntry[] = [];
-    for (const a of assets) {
+    for (const a of selected) {
       const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
       // Skip assets whose resolved provider can't serve earnings.
       if (!marketData.intelCapabilities(ref).earnings) continue;
@@ -230,7 +237,7 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     }
     // Ascending by date — the next report first (the panel reads chronologically).
     entries.sort((x, y) => x.date.localeCompare(y.date));
-    return { available: true, entries };
+    return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
   }
 
   return {

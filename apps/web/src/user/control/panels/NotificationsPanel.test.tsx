@@ -3,6 +3,15 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+// The deploy-time market-intel capability (§13.5 V5-P5) decides whether the two
+// opt-in market rows exist; default it ON so every other case is unaffected.
+const deployCapabilities = vi.hoisted(() => ({ marketIntel: true }));
+vi.mock('../../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/featureFlags')>()),
+  useDeployCapability: (key: string) =>
+    key === 'marketIntel' ? deployCapabilities.marketIntel : true,
+}));
+
 vi.mock('../../../lib/settingsApi', () => ({
   getNotificationSettings: vi.fn(),
   updateNotificationSettings: vi.fn(),
@@ -539,5 +548,56 @@ describe('NotificationsPanel — Telegram & Discord channels (V4-P10)', () => {
     expect(updateNotificationSettings).toHaveBeenCalledWith({
       matrix: { 'friend.request': { ...ALL_ON, webpush: false } },
     });
+  });
+});
+
+// ─── Market-intel rows (§13.5 V5-P5) ─────────────────────────────────────────
+//
+// With the arc unconfigured the earnings/dividend jobs are hard no-ops, so a row
+// that lets a user switch those notifications on promises delivery that can
+// never happen. The arc's surfaces simply disappear instead.
+
+describe('NotificationsPanel — market-intel rows follow the deployment capability', () => {
+  beforeEach(() => {
+    deployCapabilities.marketIntel = true;
+  });
+
+  test('offers the earnings and dividend rows when the capability is present', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    // The label appears twice by design — once as a matrix row, once as a
+    // cadence row in the digest fold.
+    expect(await screen.findAllByText('Earnings reminders')).not.toHaveLength(0);
+    expect(screen.getAllByText('Dividend reminders')).not.toHaveLength(0);
+    expect(screen.getByText('Markets')).toBeInTheDocument();
+
+    // …and each keeps its cadence control in the digest fold.
+    await user.click(screen.getByText('Delivery frequency'));
+    expect(
+      await screen.findByRole('combobox', { name: 'Delivery frequency for Earnings reminders' }),
+    ).toBeInTheDocument();
+  });
+
+  test('hides both rows, the category and their cadence when it is absent', async () => {
+    deployCapabilities.marketIntel = false;
+    const user = userEvent.setup();
+    renderPanel();
+
+    // Wait for the matrix itself so the absences below are real, not "not yet".
+    expect(await screen.findByText('Alerts')).toBeInTheDocument();
+    expect(screen.queryByText('Earnings reminders')).not.toBeInTheDocument();
+    expect(screen.queryByText('Dividend reminders')).not.toBeInTheDocument();
+    // The `markets` category holds nothing else, so its heading goes too rather
+    // than sitting over an empty group.
+    expect(screen.queryByText('Markets')).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('Delivery frequency'));
+    expect(
+      await screen.findByRole('combobox', { name: 'Delivery frequency for Price alerts' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('combobox', { name: 'Delivery frequency for Earnings reminders' }),
+    ).not.toBeInTheDocument();
   });
 });
