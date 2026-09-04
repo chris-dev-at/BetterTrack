@@ -171,8 +171,16 @@ export interface PortfolioSnapshotService {
   /**
    * Recompute every portfolio with history (the backfill / nightly roll).
    * Failures are collected per portfolio, never aborting the sweep.
+   *
+   * `degraded` lists the portfolios that persisted NOTHING because FX was
+   * unavailable ({@link fxProbeFailure}). Those are not failures — nothing threw
+   * and reads stay correct — but they are not converged either: each stays dirty
+   * and re-runs the engine on every read until FX recovers. Reporting them keeps
+   * a long outage from reading as a clean sweep.
    */
-  recomputeAll(opts?: RecomputeOptions): Promise<{ total: number; failures: string[] }>;
+  recomputeAll(
+    opts?: RecomputeOptions,
+  ): Promise<{ total: number; failures: string[]; degraded: string[] }>;
 }
 
 /**
@@ -262,6 +270,27 @@ const FX_CAUSE_DEPTH = 4;
  *    no close near the date. The same probe will succeed once FX recovers, so
  *    the artifacts it yields are degraded and must never be frozen into the
  *    snapshot table as a clean computation.
+ *
+ * The split is a cause-chain heuristic, and it has three KNOWN residues. Each is
+ * a deliberate choice, not an oversight:
+ *
+ *  1. A pair whose provider answers with an EMPTY series instead of a 404 raises
+ *     the causeless `No EUR{ccy}=X close on or within N days` throw
+ *     (`marketDataFxSource`), so a permanently dead pair classifies
+ *     `unavailable`: that portfolio then persists nothing and stays dirty
+ *     indefinitely — correct on every read, but uncached. Deriving
+ *     `unconvertible` from an empty series was rejected because a cached-empty
+ *     outage has the same shape, and re-freezing an outage is the strictly worse
+ *     failure (this is defect 1 of issue #1729). Yahoo's answer for an unknown
+ *     pair is the 404, so this is the corner, not the common case.
+ *  2. A SPURIOUS upstream 404 is negative-cached and re-thrown as
+ *     `AssetNotFoundError` (`providers/cache.ts`), so a probe inside that window
+ *     reads a transient 404 as permanent. Bounded by the negative TTL rather
+ *     than forever, which is the boundary the issue draws.
+ *  3. Anything that is not an `FxRateUnavailableError` — an invalid currency
+ *     code, but also `currencyService.getRate`'s non-finite/≤0 rate guard —
+ *     classifies `unconvertible`. That keeps those inputs on the pre-fix
+ *     drop-and-persist behaviour the issue requires to stay unregressed.
  */
 function fxProbeFailure(err: unknown): 'unavailable' | 'unconvertible' {
   if (!(err instanceof FxRateUnavailableError)) return 'unconvertible';
@@ -887,7 +916,20 @@ export function createPortfolioSnapshotService(
     }
   }
 
-  async function recompute(portfolioId: string, opts: RecomputeOptions = {}): Promise<void> {
+  /** What one recompute did — see {@link PortfolioSnapshotService.recomputeAll}. */
+  type RecomputeOutcome = 'persisted' | 'raced' | 'degraded' | 'skipped';
+
+  /**
+   * One portfolio's recompute, reporting its outcome so the sweep can COUNT the
+   * degraded runs. `skipped` covers the paths that legitimately write no rows:
+   * a paranoid portfolio, a portfolio the policy gate refused, and a history
+   * that vanished entirely (state cleared instead).
+   */
+  async function recomputeOne(
+    portfolioId: string,
+    opts: RecomputeOptions = {},
+  ): Promise<RecomputeOutcome> {
+    let outcome: RecomputeOutcome = 'skipped';
     const apply = async () => {
       if (await deps.isParanoidPortfolio?.(portfolioId)) return;
       const state = await snapshotRepo.getState(portfolioId);
@@ -903,20 +945,28 @@ export function createPortfolioSnapshotService(
         { version: state?.version ?? null, dirtyFrom: state?.dirtyFrom ?? null },
         opts.healFrom ?? null,
       );
-      if (!result.applied) {
-        logger?.info(
-          { portfolioId, reason: result.reason },
-          result.reason === 'degraded'
-            ? 'snapshot recompute degraded by unavailable FX; left dirty for a later run'
-            : 'snapshot recompute raced an invalidation; skipped persist',
-        );
+      if (result.applied) {
+        outcome = 'persisted';
+        return;
       }
+      outcome = result.reason === 'degraded' ? 'degraded' : 'raced';
+      logger?.info(
+        { portfolioId, reason: result.reason },
+        result.reason === 'degraded'
+          ? 'snapshot recompute degraded by unavailable FX; left dirty for a later run'
+          : 'snapshot recompute raced an invalidation; skipped persist',
+      );
     };
     if (deps.runIfAllowedPortfolio) {
       await deps.runIfAllowedPortfolio(portfolioId, apply);
     } else {
       await apply();
     }
+    return outcome;
+  }
+
+  async function recompute(portfolioId: string, opts: RecomputeOptions = {}): Promise<void> {
+    await recomputeOne(portfolioId, opts);
   }
 
   return {
@@ -1033,9 +1083,12 @@ export function createPortfolioSnapshotService(
     async recomputeAll(opts = {}) {
       const targets = await snapshotRepo.listSnapshotTargets();
       const failures: string[] = [];
+      const degraded: string[] = [];
       for (const target of targets) {
         try {
-          await recompute(target.portfolioId, opts);
+          if ((await recomputeOne(target.portfolioId, opts)) === 'degraded') {
+            degraded.push(target.portfolioId);
+          }
         } catch (err) {
           failures.push(target.portfolioId);
           logger?.warn(
@@ -1044,7 +1097,7 @@ export function createPortfolioSnapshotService(
           );
         }
       }
-      return { total: targets.length, failures };
+      return { total: targets.length, failures, degraded };
     },
   };
 }

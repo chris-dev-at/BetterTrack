@@ -744,6 +744,13 @@ describe('daily snapshots — a degraded run is never persisted as clean (#1729)
     expect(degraded.assets.map((a) => a.assetId)).not.toContain(usdAsset.id);
     expect(await snapshotRows(h, pid)).toEqual([]);
 
+    // The nightly sweep REPORTS the refusal rather than swallowing it: not a
+    // failure (nothing threw, reads stay correct), but not converged either —
+    // without this the backfill logs a clean run while nothing is being cached.
+    const outageSweep = await h.ctx.snapshots.recomputeAll({});
+    expect(outageSweep.failures).toEqual([]);
+    expect(outageSweep.degraded).toContain(pid);
+
     // FX recovers: the next run rewrites the WHOLE affected range, including the
     // days the nightly roll's 35-day heal window would never have reached.
     fxDown = false;
@@ -760,6 +767,9 @@ describe('daily snapshots — a degraded run is never persisted as clean (#1729)
     const oldest = rows[0]!;
     expect((oldest.assetValues as Record<string, number>)[usdAsset.id]).toBeCloseTo(480, 9);
     expect(Number(oldest.valueEur)).toBeCloseTo(1000 + 200 + 480, 9);
+
+    // ...and the sweep stops reporting it, so the warn is outage-scoped.
+    expect((await h.ctx.snapshots.recomputeAll({})).degraded).toEqual([]);
   });
 
   it('still drops a genuinely unconvertible currency and persists that run', async () => {

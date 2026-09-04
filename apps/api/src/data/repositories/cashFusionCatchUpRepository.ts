@@ -552,6 +552,24 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
         // `portfolioSnapshotRepository`'s markDirty/deleteFrom run, issued in
         // THIS transaction so the ledger rows and their invalidation land or
         // roll back together.
+        //
+        // Three conscious deviations, so a reader does not take them for misses:
+        //  - The statements are hand-copied rather than called: neither
+        //    `markDirty` nor `deleteFrom` accepts a `tx`, and atomicity with the
+        //    ledger write is the whole point. The `least(coalesce(…))` marker
+        //    expression therefore lives in two files and must change in both.
+        //  - Lock order here is state row → snapshot rows, the reverse of
+        //    `saveComputation`'s absent-state-row path, so a concurrent
+        //    recompute can deadlock. Safe by construction: Postgres aborts one
+        //    side, this owner rolls back whole and the script is documented
+        //    re-runnable, and the recompute is retried by BullMQ. Not worth a
+        //    redesign for an operator-run one-off.
+        //  - No `isParanoidPortfolio` fence (which `snapshots.invalidate()`
+        //    applies). A vaulted portfolio would collect a stray state row that
+        //    nothing reads (`listSnapshotTargets` filters `vault_id IS NULL`,
+        //    `getSeries` returns empty), and this script is already writing
+        //    cleartext ledger rows for every owner it finds — the fence would be
+        //    the smaller half of that question, not an answer to it.
         if (invalidatedFrom !== null) {
           await tx
             .insert(portfolioSnapshotState)

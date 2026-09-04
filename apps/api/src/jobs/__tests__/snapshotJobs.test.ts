@@ -209,7 +209,7 @@ describe('snapshots.backfill', () => {
 
   it('throws on a failing portfolio and dead-letters once attempts are exhausted', async () => {
     const failing: Pick<PortfolioSnapshotService, 'recomputeAll'> = {
-      recomputeAll: vi.fn().mockResolvedValue({ total: 3, failures: ['p-broken'] }),
+      recomputeAll: vi.fn().mockResolvedValue({ total: 3, failures: ['p-broken'], degraded: [] }),
     };
     const def = createSnapshotsBackfillJob({
       snapshots: failing as PortfolioSnapshotService,
@@ -233,6 +233,40 @@ describe('snapshots.backfill', () => {
     const [entry] = await ctx.deadLetter.list();
     expect(entry?.queue).toBe('snapshots.backfill');
     expect(entry?.failedReason).toContain('p-broken');
+  });
+
+  it('warns about FX-degraded portfolios without failing the sweep (issue #1729)', async () => {
+    // A degraded portfolio persisted nothing because FX was unavailable: not a
+    // failure (nothing threw, reads stay correct), but it stays dirty and
+    // recomputes on every read, so a sustained outage must not read as a clean
+    // sweep — the operator gets a warn line instead of silence.
+    const degrading: Pick<PortfolioSnapshotService, 'recomputeAll'> = {
+      recomputeAll: vi
+        .fn()
+        .mockResolvedValue({ total: 4, failures: [], degraded: ['p-fx-a', 'p-fx-b'] }),
+    };
+    const def = createSnapshotsBackfillJob({
+      snapshots: degrading as PortfolioSnapshotService,
+    });
+    const warns: Array<[Record<string, unknown>, string]> = [];
+    const capturing: JobContext = {
+      ...makeCtx(),
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: (obj: unknown, msg?: string) => {
+          warns.push([obj as Record<string, unknown>, msg ?? '']);
+        },
+        error: () => {},
+      } as unknown as Logger,
+    };
+
+    await expect(def.handler(makeJob({}), capturing)).resolves.toBeUndefined();
+
+    expect(warns).toHaveLength(1);
+    const [fields, message] = warns[0]!;
+    expect(message).toMatch(/unavailable FX/);
+    expect(fields).toMatchObject({ total: 4, degraded: 2, firstDegraded: 'p-fx-a' });
   });
 });
 

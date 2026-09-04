@@ -35,6 +35,12 @@ import {
  * daily snapshots are invalidated from the earliest day written — inside the
  * same transaction, and reported per owner as `invalidatedFrom`.
  *
+ * OPERATOR NOTE: on a deployment where `--apply` already ran under the
+ * PRE-#1729 build (movements written, no invalidation), a second run repairs
+ * nothing — it inserts nothing, so it invalidates nothing. Those owners' rows
+ * older than the nightly heal window stay stale and need a one-off
+ * `snapshots.invalidate(portfolioId, earliestWrittenDay)`.
+ *
  * SAFE TO RE-RUN. Every inserted row's primary key is borrowed from its source
  * row or derived deterministically from the owner, so a second run plans nothing.
  * Each owner is applied in one transaction that re-derives the reconciliation and
