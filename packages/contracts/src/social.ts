@@ -915,6 +915,11 @@ export type CommentThreadQuery = z.infer<typeof commentThreadQuerySchema>;
  * older page. `commentCount` is the whole thread's live count — the collapsed
  * count the SPA renders without ever fetching a page (anti-bloat), which the
  * cheaper {@link commentThreadSummaryResponseSchema} serves on its own.
+ *
+ * The count is always the exact live total, but it is not always a separate
+ * query: a first page that did not fill IS the whole live thread, so the server
+ * takes the count from the page it already read and never issues a `count(*)`
+ * (#1725). A page that filled, and every cursor page, still counts.
  */
 export const commentThreadResponseSchema = z
   .object({
@@ -932,7 +937,13 @@ export type CommentThreadResponse = z.infer<typeof commentThreadResponseSchema>;
  * The collapsed thread head: the live comment count + the item-level reactions,
  * with no comment bodies at all. Same audience rule as the thread itself. The
  * SPA reads THIS while the section is collapsed, so a 20 000-comment thread
- * costs one count and one aggregate instead of the whole conversation.
+ * costs one count and one aggregate instead of the whole conversation — and
+ * since #1725 that is true of the *work* as well as the response: the count is
+ * served by `item_comments_thread_idx`, which is partial on the tombstone, and
+ * it loads no row body at all. (An audience-narrowed thread additionally
+ * filters by author, a column that index does not carry, so that variant still
+ * checks the heap per candidate row — bounded to the thread's live entries
+ * either way.)
  */
 export const commentThreadSummaryResponseSchema = z
   .object({

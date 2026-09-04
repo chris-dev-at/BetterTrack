@@ -344,11 +344,10 @@ describe('commentService — audience and moderation boundaries', () => {
     expect(harness.comments.softDelete).not.toHaveBeenCalled();
   });
 
-  it('reads ONE bounded page and reports the whole thread count', async () => {
+  it('reads ONE bounded page and takes the count from it when the page IS the thread', async () => {
     const harness = makeHarness();
     admitOwner(harness, 'portfolio');
     harness.comments.listForItem.mockResolvedValue([commentRow()]);
-    harness.comments.countForItem.mockResolvedValue(4200);
 
     const thread = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
 
@@ -357,9 +356,35 @@ describe('commentService — audience and moderation boundaries', () => {
       before: undefined,
       authorIds: undefined,
     });
-    // A page that did not fill ends the walk — no cursor, but the true count.
+    // A page that did not fill ends the walk — and, with no cursor above it, it
+    // is the WHOLE live thread, so the count comes out of the page instead of a
+    // `count(*)` the 30 s poll would repeat forever (#1725).
     expect(thread.nextCursor).toBeNull();
-    expect(thread.commentCount).toBe(4200);
+    expect(thread.commentCount).toBe(1);
+    expect(harness.comments.countForItem).not.toHaveBeenCalled();
+  });
+
+  it('still counts when the page cannot prove the total — a full page, or an older one', async () => {
+    const harness = makeHarness();
+    admitOwner(harness, 'portfolio');
+    // A full page + the lookahead row: an older page exists, so the page the
+    // viewer gets says nothing about how long the thread is.
+    harness.comments.listForItem.mockResolvedValue(
+      Array.from({ length: COMMENT_PAGE_SIZE + 1 }, (_unused, index) =>
+        commentRow({ id: `comment-${index}` }),
+      ),
+    );
+    harness.comments.countForItem.mockResolvedValue(4200);
+
+    const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
+    expect(first.commentCount).toBe(4200);
+
+    // A cursor page is short here, but rows NEWER than the cursor are outside it
+    // — the count is not derivable and must still be asked for.
+    harness.comments.listForItem.mockResolvedValue([commentRow()]);
+    const older = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, 'comment-0');
+    expect(older.commentCount).toBe(4200);
+    expect(harness.comments.countForItem).toHaveBeenCalledTimes(2);
   });
 
   it('hands back the boundary comment ID as the cursor and passes it through unparsed', async () => {
