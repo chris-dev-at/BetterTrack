@@ -54,6 +54,48 @@ async function backdateSessionCreatedAt(
   return rewritten;
 }
 
+/**
+ * Rewrite a live session's `createdAt` to an arbitrary JSON value — including a
+ * missing or non-numeric one, which is what a legacy or corrupted record looks
+ * like. Returns the number of sessions rewritten.
+ */
+async function rewriteSessionCreatedAt(
+  redis: TestHarness['ctx']['redis'],
+  userId: string,
+  createdAt: unknown,
+): Promise<number> {
+  const keys = await redis.keys('sess:*');
+  let rewritten = 0;
+  for (const key of keys) {
+    const raw = await redis.get(key);
+    if (!raw) continue;
+    const data = JSON.parse(raw) as { userId: string; createdAt?: unknown };
+    if (data.userId !== userId) continue;
+    if (createdAt === undefined) delete data.createdAt;
+    else data.createdAt = createdAt;
+    const pttl = await redis.pttl(key);
+    if (pttl > 0) await redis.set(key, JSON.stringify(data), 'PX', pttl);
+    else await redis.set(key, JSON.stringify(data));
+    rewritten += 1;
+  }
+  return rewritten;
+}
+
+/** The live session keys a user currently holds. */
+async function sessionKeysFor(
+  redis: TestHarness['ctx']['redis'],
+  userId: string,
+): Promise<string[]> {
+  const keys = await redis.keys('sess:*');
+  const owned: string[] = [];
+  for (const key of keys) {
+    const raw = await redis.get(key);
+    if (!raw) continue;
+    if ((JSON.parse(raw) as { userId: string }).userId === userId) owned.push(key);
+  }
+  return owned;
+}
+
 async function loginUser(app: Application, identifier: string, password: string) {
   const agent = request.agent(app);
   const res = await agent
@@ -177,6 +219,45 @@ describe('admin session expiry — early, absolute, live-configurable (§13.5 V5
     expect((await adminAgent.get('/api/v1/admin/stats')).status).toBe(404);
 
     // The user session is governed by the user-app rules (#418) — still alive.
+    expect((await userAgent.get('/api/v1/auth/me')).status).toBe(200);
+  });
+
+  /**
+   * The lifetime check is evaluated as `Date.now() - createdAt >= lifetimeMs`.
+   * A missing or non-numeric `createdAt` makes that NaN, and `NaN >= lifetimeMs`
+   * is false — so the malformed record was ADMITTED, permanently exempt from the
+   * one clause §6.12 makes the whole admin security guarantee. It now fails
+   * closed, exactly as the security-generation check beside it already did.
+   */
+  it.each([
+    // The three NaN-producing shapes — the ones that used to be admitted.
+    ['missing', undefined],
+    ['a non-numeric string', 'yesterday'],
+    ['an object', { at: 1 }],
+    // Coerces to 0, so it already read as an ancient session; pinned so the
+    // added validation cannot quietly change that outcome either.
+    ['null', null],
+  ])('destroys an admin session whose createdAt is %s', async (_label, createdAt) => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    // Valid to start — the untouched record is admitted.
+    expect((await adminAgent.get('/api/v1/admin/stats')).status).toBe(200);
+
+    expect(await rewriteSessionCreatedAt(harness.ctx.redis, admin.id, createdAt)).toBe(1);
+
+    // Refused (404, the admin no-leak refusal) AND destroyed, not just rejected.
+    expect((await adminAgent.get('/api/v1/admin/stats')).status).toBe(404);
+    expect(await sessionKeysFor(harness.ctx.redis, admin.id)).toHaveLength(0);
+  });
+
+  it('leaves a USER session with the same malformed createdAt alone (admin-only clause)', async () => {
+    const user = await harness.seedUser();
+    const userAgent = await loginUser(harness.app, user.email, user.password);
+    expect((await userAgent.get('/api/v1/auth/me')).status).toBe(200);
+
+    expect(await rewriteSessionCreatedAt(harness.ctx.redis, user.id, undefined)).toBe(1);
+
     expect((await userAgent.get('/api/v1/auth/me')).status).toBe(200);
   });
 });

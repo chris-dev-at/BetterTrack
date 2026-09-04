@@ -657,3 +657,127 @@ describe('shutdown telemetry flush', () => {
     );
   });
 });
+
+/**
+ * Malformed request bodies must not reach the capture at all (§13.5 V5-P2).
+ * `express.json()` is mounted at the top of the chain, so a parse or limit
+ * failure used to `next(err)` straight past the rate limiter to the terminal
+ * handler, become a 500, and be captured — with the parser's own message, which
+ * quotes the first bytes of the body. An anonymous caller could therefore mint
+ * unlimited distinct rows, spend the whole per-kind budget, and blind the
+ * Sentry replacement for every genuine 500 behind it.
+ */
+describe('malformed request bodies are client faults, never captured problems', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createTestApp();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('answers truncated JSON with 400 and writes no problem row', async () => {
+    const res = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set('X-Requested-With', 'BetterTrack')
+      .set('Content-Type', 'application/json')
+      .send('{"identifier": "victim@example.com", "password": "hunter2-correct-horse');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: { code: 'MALFORMED_BODY', message: 'The request body is not valid JSON.' },
+    });
+
+    await harness.ctx.problems.flush();
+    expect(await harness.db.select().from(problems)).toHaveLength(0);
+  });
+
+  it('leaks no fragment of the refused body into a persisted problem', async () => {
+    // Even when something else is captured in the same window, the malformed
+    // body must contribute nothing: no password, no note, no username.
+    await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set('X-Requested-With', 'BetterTrack')
+      .set('Content-Type', 'application/json')
+      .send('{"password": "hunter2-correct-horse-battery');
+    harness.ctx.problems.captureError(new Error('something genuinely broke'));
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows)).not.toContain('hunter2');
+    expect(JSON.stringify(rows)).not.toContain('password');
+  });
+
+  it('answers a body over the global bound with 413 and writes no problem row', async () => {
+    const res = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set('X-Requested-With', 'BetterTrack')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ identifier: 'a@b.test', password: 'x'.repeat(200 * 1024) }));
+
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({
+      error: { code: 'PAYLOAD_TOO_LARGE', message: 'The request body exceeds the size limit.' },
+    });
+
+    await harness.ctx.problems.flush();
+    expect(await harness.db.select().from(problems)).toHaveLength(0);
+  });
+
+  it('cannot exhaust the per-kind capture budget — a genuine 500 still lands', async () => {
+    // The app.ts wiring on a throwaway router, against a deliberately tiny
+    // budget: the burst that used to spend it now costs nothing at all.
+    const { repo, fingerprints } = fakeRepo();
+    const service = createProblemService({ repo, now: () => 0, maxWritesPerWindow: 3 });
+    const app = express();
+    app.use(express.json({ limit: '100kb' }));
+    app.post('/thing', (_req, res) => {
+      res.json({ ok: true });
+    });
+    app.get('/boom', () => {
+      throw new Error('the genuinely new 500');
+    });
+    app.use(createErrorHandler(harness.ctx.logger, (err, ctx) => service.captureError(err, ctx)));
+
+    for (let i = 0; i < 20; i += 1) {
+      const res = await request(app)
+        .post('/thing')
+        .set('Content-Type', 'application/json')
+        // A distinct attacker-chosen prefix per request: letters are not folded
+        // by the fingerprint normaliser, so each used to mint its own row.
+        .send(`{"a": ${'Q'.repeat(i + 1)}`);
+      expect(res.status).toBe(400);
+    }
+    await service.flush();
+    expect(fingerprints()).toBe(0);
+
+    expect((await request(app).get('/boom')).status).toBe(500);
+    await service.flush();
+    expect(fingerprints()).toBe(1);
+  });
+
+  it('is metered by the general limiter like any other request', async () => {
+    // The failure is deferred past `limiters.general`, so a malformed body is no
+    // longer an unauthenticated, unmetered path into the process.
+    const limited = await createTestApp({
+      rateLimitsEnabled: true,
+      env: { RATE_LIMIT_BURST_LIMIT: '4', RATE_LIMIT_BURST_WINDOW_SEC: '60' },
+    });
+    const statuses: number[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      const res = await request(limited.app)
+        .post('/api/v1/auth/login')
+        .set('X-Requested-With', 'BetterTrack')
+        .set('Content-Type', 'application/json')
+        .send(`{"a": ${'Q'.repeat(i + 1)}`);
+      statuses.push(res.status);
+    }
+
+    expect(statuses[0]).toBe(400);
+    expect(statuses).toContain(429);
+    await limited.dispose();
+  });
+});

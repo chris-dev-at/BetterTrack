@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../../../config/env';
 import { ApiError } from '../../../errors';
 import type { AppContext } from '../../context';
+import type { ProgressiveSchedule } from '../../../services/security/progressiveLimiter';
 import { createRateLimiters } from '../rateLimit';
 
 let redis: Redis;
@@ -16,13 +17,15 @@ beforeEach(async () => {
 });
 
 // A generous base `apiKey` schedule; per-key tiers override only (limit, window).
-const ctx = (): AppContext => {
+// `overrides` lets one test tighten the interactive `general` pair to prove a
+// bearer request never spends it (#1730).
+const ctx = (overrides: { general?: ProgressiveSchedule } = {}): AppContext => {
   const base = { windowSec: 60, limit: 120, cooldownsSec: [20, 60], decaySec: 900 };
   const config = {
     rateLimits: {
       enabled: true,
-      general: base,
-      generalBurst: base,
+      general: overrides.general ?? base,
+      generalBurst: overrides.general ?? base,
       // The cost dimension (§10 COST TABLE, #1643) is irrelevant to per-key
       // tiers, but `createRateLimiters` builds every limiter up front.
       expensive: base,
@@ -135,5 +138,70 @@ describe('per-key rate tier enforcement (§13.5 V5-P10, issue 2/2)', () => {
       expect((await runOnce(apiKey, untiered)).err).toBeUndefined();
     }
     expect((await runOnce(apiKey, untiered)).err).toBeInstanceOf(ApiError);
+  });
+});
+
+/**
+ * #1730 — the per-key tier was silently bounded by the per-user `general`
+ * budget, because a bearer request resolves `req.authUser` too and therefore
+ * landed in the owner's interactive counter first. `general` now hands bearer
+ * requests straight through; `apiKeyGuard` is the whole budget a key has.
+ */
+describe('#1730 a key’s tier is not capped by the owner’s general budget', () => {
+  const OWNER = 'user-1';
+  const TIGHT: ProgressiveSchedule = {
+    windowSec: 60,
+    limit: 2,
+    cooldownsSec: [20, 60],
+    decaySec: 900,
+  };
+
+  /** Drive one handler for a request that may or may not carry a bearer key. */
+  const run = (
+    handler: (req: Request, res: Response, next: NextFunction) => void,
+    apiKey?: Request['apiKey'],
+  ): Promise<unknown> => {
+    const req = {
+      ip: '10.0.0.1',
+      method: 'GET',
+      // Set for BOTH kinds: a bearer principal resolves `authUser` as well, which
+      // is exactly why it used to meter into the owner's bucket.
+      authUser: { id: OWNER },
+      apiKey,
+    } as unknown as Request;
+    const res = { setHeader() {} } as unknown as Response;
+    return new Promise((resolve) => handler(req, res, (err?: unknown) => resolve(err)));
+  };
+
+  it('reaches a tier well above the general limit, denied only by its own tier', async () => {
+    const { general, apiKey } = createRateLimiters(ctx({ general: TIGHT }));
+    const key = personal('key-fast', 5);
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(await run(general, key), `general #${i + 1}`).toBeUndefined();
+      expect(await run(apiKey, key), `apiKey #${i + 1}`).toBeUndefined();
+    }
+    // The 6th is refused by the KEY's own tier — never by the general budget of 2.
+    expect(await run(general, key)).toBeUndefined();
+    const overflow = await run(apiKey, key);
+    expect(overflow).toBeInstanceOf(ApiError);
+    expect((overflow as ApiError).statusCode).toBe(429);
+  });
+
+  it('leaves the owner’s interactive allowance untouched', async () => {
+    const { general, apiKey } = createRateLimiters(ctx({ general: TIGHT }));
+    const key = personal('key-busy', 100);
+
+    for (let i = 0; i < 20; i += 1) {
+      await run(general, key);
+      await run(apiKey, key);
+    }
+
+    // The human's browser session still has its full 2-request allowance, and
+    // the runaway integration never armed the general cooldown that would have
+    // locked them out of the web UI.
+    expect(await run(general)).toBeUndefined();
+    expect(await run(general)).toBeUndefined();
+    expect(await run(general)).toBeInstanceOf(ApiError);
   });
 });

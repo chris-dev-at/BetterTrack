@@ -103,6 +103,28 @@ export function createApiKeyRepository(db: Database) {
       return row ? { ...row.key, tierName: row.tierName ?? null } : undefined;
     },
 
+    /**
+     * Active (non-revoked) key ids resolving to `tierId` — or, for `null`, the
+     * keys that inherit whatever tier is currently the default. Bounded by
+     * `limit` so an administrative tier edit can never fan out an unbounded
+     * limiter reset; a revoked key can no longer make a request, so its stale
+     * limiter state is irrelevant (#1730).
+     */
+    async listActiveIdsByTier(tierId: string | null, limit: number): Promise<string[]> {
+      const rows = await db
+        .select({ id: apiKeys.id })
+        .from(apiKeys)
+        .where(
+          and(
+            tierId === null ? isNull(apiKeys.tierId) : eq(apiKeys.tierId, tierId),
+            isNull(apiKeys.revokedAt),
+          ),
+        )
+        .orderBy(desc(apiKeys.createdAt))
+        .limit(limit);
+      return rows.map((row) => row.id);
+    },
+
     /** Admin assigns (or clears → default) a key's tier. Returns the updated row. */
     async setTier(id: string, tierId: string | null): Promise<ApiKeyRow | undefined> {
       const [row] = await db.update(apiKeys).set({ tierId }).where(eq(apiKeys.id, id)).returning();
