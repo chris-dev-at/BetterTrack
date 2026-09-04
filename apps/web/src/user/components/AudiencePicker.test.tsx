@@ -471,7 +471,7 @@ describe('AudiencePicker — friend groups (V5-P8)', () => {
 
   test('the group rung shows its confirm and cannot submit until a group is chosen', async () => {
     vi.mocked(listGroups).mockResolvedValue({
-      groups: [{ id: GROUP, name: 'Family', memberCount: 3, members: [] }],
+      groups: [{ id: GROUP, name: 'Family', memberCount: 3, members: [], shareCount: 0 }],
     });
     vi.mocked(setAudience).mockResolvedValue({
       state: {

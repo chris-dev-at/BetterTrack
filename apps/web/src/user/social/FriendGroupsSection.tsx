@@ -48,6 +48,10 @@ function DeleteGroupDialog({
   error: boolean;
 }) {
   const t = useT();
+  // Name how many shares go dark: deleting a circle six items point at must not
+  // read exactly like deleting one nothing points at (#1710). The count is the
+  // server's live `shareCount`, not a guess.
+  const plural = group.shareCount === 0 ? 'none' : group.shareCount === 1 ? 'one' : 'other';
   return (
     <Dialog
       phoneSheet
@@ -55,7 +59,9 @@ function DeleteGroupDialog({
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
-        <p className="bt-soft">{t('social.groups.deleteWarning')}</p>
+        <p className="bt-soft">
+          {t(`social.groups.deleteWarning.${plural}`, { count: group.shareCount })}
+        </p>
         {error ? <Alert tone="error">{t('social.groups.deleteError')}</Alert> : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={pending} onClick={onClose} variant="quiet">
