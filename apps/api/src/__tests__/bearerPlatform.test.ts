@@ -33,11 +33,14 @@ import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import {
   ACCOUNT_SECURITY_SCOPE,
+  SETTINGS_SUBPATH_POLICY_CENSUS,
   passkeyManagementRouteAcceptsBearer,
   pathAcceptsBearer,
+  resolveBearerPolicyClassification,
   taxYearDocumentationRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrTaxYearDocumentationBearer } from '../http/routes/settingsRoutes';
+import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
 import { ACCOUNT_PASSKEY_NAMESPACE } from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
@@ -1714,5 +1717,144 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
       .set(...XRW)
       .send({ mediaSet: [] });
     expect(reached.status, JSON.stringify(reached.body)).toBe(400);
+  });
+});
+
+/**
+ * #1730 — `/settings` is one router hosting several modules, so the coarse
+ * `/settings → social:*` row used to hand notification CHANNEL setup (and the
+ * account's tax regime) to a key its owner ticked "Social" for. These pin the
+ * two deliberate decision rows plus the census that stops the next sub-router
+ * inheriting the social scope silently.
+ */
+describe('#1730 /settings sub-path bearer classification', () => {
+  // The channel-egress routes named in the issue. They 404 while
+  // BT_TELEGRAM_DISCORD_ENABLED is off, but the scope guard is mounted app-wide
+  // BEFORE the routers, so the refusal is observable either way — and the
+  // admitted case asserts only "not 403", i.e. it got past the guard.
+  const channelRoutes = [
+    { method: 'post' as const, path: '/settings/telegram/link' },
+    { method: 'post' as const, path: '/settings/telegram/confirm' },
+    { method: 'delete' as const, path: '/settings/telegram' },
+    { method: 'post' as const, path: '/settings/discord/webhook' },
+    { method: 'delete' as const, path: '/settings/discord' },
+  ];
+
+  const send = (
+    token: string,
+    row: { method: 'get' | 'post' | 'patch' | 'delete'; path: string },
+  ) => {
+    const url = `/api/v1${row.path}`;
+    const base = request(harness.app);
+    const started =
+      row.method === 'get'
+        ? base.get(url)
+        : row.method === 'post'
+          ? base.post(url)
+          : row.method === 'delete'
+            ? base.delete(url)
+            : base.patch(url);
+    return started.set(bearer(token));
+  };
+
+  it.each(channelRoutes)(
+    'refuses a social-only key on $method $path (the notification-egress capture)',
+    async (row) => {
+      const { token } = await mintKey(['social:read', 'social:write']);
+      const res = await send(token, row);
+      expect(res.status, `${row.method} ${row.path}`).toBe(403);
+      expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+      expect(res.body.error.message).toContain('notifications:write');
+    },
+  );
+
+  it.each(channelRoutes)('admits a notifications:write key on $method $path', async (row) => {
+    const { token } = await mintKey(['notifications:read', 'notifications:write']);
+    const res = await send(token, row);
+    expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).not.toBe(403);
+  });
+
+  it('reads the channel status under notifications:read — and under write alone (#371)', async () => {
+    for (const scopes of [['notifications:read'], ['notifications:write']]) {
+      const { token } = await mintKey(scopes);
+      for (const path of ['/settings/telegram', '/settings/discord']) {
+        const res = await send(token, { method: 'get', path });
+        expect(res.status, `${path} with ${scopes.join()}`).not.toBe(403);
+      }
+    }
+    const { token } = await mintKey(['social:read']);
+    const denied = await send(token, { method: 'get', path: '/settings/telegram' });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('gates the tax regime on the portfolio pair, not on social:*', async () => {
+    const social = await mintKey(['social:read', 'social:write']);
+    const readDenied = await send(social.token, { method: 'get', path: '/settings/taxes' });
+    expect(readDenied.status).toBe(403);
+    expect(readDenied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    const writeDenied = await request(harness.app)
+      .patch('/api/v1/settings/taxes')
+      .set(bearer(social.token))
+      .send({ mode: 'manual' });
+    expect(writeDenied.status).toBe(403);
+    expect(writeDenied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const reader = await mintKey(['portfolio:read']);
+    expect((await send(reader.token, { method: 'get', path: '/settings/taxes' })).status).toBe(200);
+    // Read-only stays read-only: the implication is one-way.
+    const readerWrite = await request(harness.app)
+      .patch('/api/v1/settings/taxes')
+      .set(bearer(reader.token))
+      .send({ mode: 'manual' });
+    expect(readerWrite.status).toBe(403);
+
+    const writer = await mintKey(['portfolio:write']);
+    const patched = await request(harness.app)
+      .patch('/api/v1/settings/taxes')
+      .set(bearer(writer.token))
+      .send({ mode: 'manual' });
+    expect(patched.status, JSON.stringify(patched.body)).not.toBe(403);
+    // write-implies-read reaches the GET too.
+    expect((await send(writer.token, { method: 'get', path: '/settings/taxes' })).status).toBe(200);
+  });
+
+  it('keeps /settings/taxes/years on its own read-only account-security allowlist', () => {
+    expect(resolveBearerPolicyClassification('/settings/taxes/years', 'GET')).toEqual({
+      kind: 'scope',
+      read: ACCOUNT_SECURITY_SCOPE,
+      write: ACCOUNT_SECURITY_SCOPE,
+    });
+    expect(resolveBearerPolicyClassification('/settings/taxes/years', 'POST')).toEqual({
+      kind: 'session-only',
+    });
+  });
+
+  it('censuses every mounted /settings sub-path — a new sub-router cannot inherit social:*', () => {
+    const prefix = '/api/v1/settings/';
+    const mounted = new Set(
+      buildRouteTable()
+        .filter((surface) => surface.path.startsWith(prefix))
+        .map((surface) => surface.path.slice(prefix.length).split('/')[0])
+        .filter((segment): segment is string => Boolean(segment)),
+    );
+    const censused = new Set(
+      SETTINGS_SUBPATH_POLICY_CENSUS.map((entry) => entry.subPath.slice('/settings/'.length)),
+    );
+    // Left: a sub-router shipped without a deliberate decision. Right: a census
+    // row for a surface that no longer exists.
+    expect([...mounted].filter((segment) => !censused.has(segment)).sort()).toEqual([]);
+    expect([...censused].filter((segment) => !mounted.has(segment)).sort()).toEqual([]);
+  });
+
+  it('resolves each censused sub-path exactly as the census declares', () => {
+    for (const entry of SETTINGS_SUBPATH_POLICY_CENSUS) {
+      expect(resolveBearerPolicyClassification(entry.subPath, 'GET'), entry.subPath).toEqual(
+        entry.safe,
+      );
+      expect(resolveBearerPolicyClassification(entry.subPath, 'POST'), entry.subPath).toEqual(
+        entry.unsafe,
+      );
+    }
   });
 });

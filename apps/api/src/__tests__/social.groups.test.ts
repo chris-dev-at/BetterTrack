@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -105,6 +106,15 @@ async function carolId(aliceAgent: Agent): Promise<string> {
     (f: { user: { username: string } }) => f.user.username === 'carol',
   );
   return carol.user.id as string;
+}
+
+/** The `portfolio.shared` rows a user actually received (the `*.shared` fan-out). */
+async function sharedNotifications(userId: string) {
+  const rows = await harness.db
+    .select()
+    .from(schema.notifications)
+    .where(eq(schema.notifications.userId, userId));
+  return rows.filter((r) => r.type === 'portfolio.shared');
 }
 
 async function shareToGroup(agent: Agent, portfolioId: string, groupId: string) {
@@ -443,6 +453,125 @@ describe('My items reports a group share by name and live size', () => {
       friendCount: 1,
       group: null,
     });
+  });
+});
+
+/**
+ * The reach summary has to agree with ENFORCEMENT, not with the rows that
+ * happen to be stored (#1710). Every read authorizes through a friendship join
+ * AND an active-owner join; a summary computed without those can claim a reach
+ * the enforcement layer refuses — precisely the failure the surface exists to
+ * prevent, since the §16 friction ladder tells the owner to trust this badge.
+ */
+describe('the reach summary agrees with what enforcement grants', () => {
+  async function myPortfolio(agent: Agent, portfolioId: string) {
+    const res = await agent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    return mySharedResponseSchema
+      .parse(res.body)
+      .portfolios.find((p) => p.portfolioId === portfolioId);
+  }
+
+  it('drops an unfriended recipient from the count, the ids and the reach', async () => {
+    const { aliceAgent, carolAgent, bob, carol, pid } = await scenario();
+    const shared = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [bob.id, carol.id], confirmWiden: true });
+    expect(shared.status).toBe(200);
+    expect((await myPortfolio(aliceAgent, pid))?.friendCount).toBe(2);
+    expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+
+    // Unfriending carol closes her access instantly (the friendship join). The
+    // owner surface must say so on the very next read.
+    expect((await aliceAgent.delete(`/api/v1/social/friends/${carol.id}`).set(...XRW)).status).toBe(
+      204,
+    );
+    expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+    expect(await myPortfolio(aliceAgent, pid)).toMatchObject({
+      audience: 'specific_friends',
+      friendCount: 1,
+    });
+    const audience = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);
+    expect(audience.status).toBe(200);
+    expect(audience.body.friendIds).toEqual([bob.id]);
+  });
+
+  it('prunes the grant, so re-friending does not silently restore the share', async () => {
+    const { aliceAgent, carolAgent, carol, pid } = await scenario();
+    await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [carol.id], confirmWiden: true });
+    expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+
+    await aliceAgent.delete(`/api/v1/social/friends/${carol.id}`).set(...XRW);
+    // Re-friending is a plain accept — no re-share, no widen confirmation. The
+    // old membership row must not be lying in wait to become a live grant again.
+    await befriend(aliceAgent, carolAgent, 'carol');
+    expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+    expect((await myPortfolio(aliceAgent, pid))?.friendCount).toBe(0);
+    expect(
+      (await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`)).body.friendIds,
+    ).toEqual([]);
+  });
+
+  it('excludes a disabled member from both group rosters and from the fan-out', async () => {
+    const { aliceAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(1);
+    expect(await sharedNotifications(bob.id)).toHaveLength(1);
+
+    // An admin disable only flips the status column; nothing prunes rosters. A
+    // disabled account cannot sign in and is refused by every read's active-user
+    // join, so the reported reach is now ZERO — not "Family · 1".
+    await harness.db
+      .update(schema.users)
+      .set({ status: 'disabled' })
+      .where(eq(schema.users.id, bob.id));
+
+    const summary = await myPortfolio(aliceAgent, pid);
+    expect(summary?.group).toEqual({ id: groupId, name: 'Family', memberCount: 0 });
+    // …and the two owner surfaces agree on that roster size.
+    const list = await aliceAgent.get('/api/v1/social/groups');
+    expect(friendGroupListResponseSchema.safeParse(list.body).success).toBe(true);
+    expect(list.body.groups[0]).toMatchObject({ id: groupId, memberCount: 0 });
+    expect(list.body.groups[0].memberCount).toBe(summary?.group?.memberCount);
+
+    // Re-sharing to the circle sends the disabled member nothing new.
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+    expect(await sharedNotifications(bob.id)).toHaveLength(1);
+  });
+
+  it('reports the same roster size on both surfaces for an active member', async () => {
+    const { aliceAgent, bob, carol, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    await addMember(aliceAgent, groupId, carol.id);
+    await shareToGroup(aliceAgent, pid, groupId);
+
+    const list = await aliceAgent.get('/api/v1/social/groups');
+    expect(list.body.groups[0].memberCount).toBe(2);
+    expect((await myPortfolio(aliceAgent, pid))?.group?.memberCount).toBe(2);
+  });
+
+  it('counts the shares pointing at a circle, so the delete warning can name them', async () => {
+    const { aliceAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    // A fresh circle, and one that a mutation just touched, both report zero.
+    expect((await addMember(aliceAgent, groupId, bob.id)).body.shareCount).toBe(0);
+
+    await shareToGroup(aliceAgent, pid, groupId);
+    expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].shareCount).toBe(1);
+
+    // Narrowing the item away from the circle drops the count again.
+    await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'private' });
+    expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].shareCount).toBe(0);
   });
 });
 
