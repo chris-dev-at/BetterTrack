@@ -2647,7 +2647,14 @@
         "capReached": "Du hast das heutige KI-Limit erreicht. Es wird morgen zurückgesetzt.",
         "error": "Daraus konnte kein Korb entworfen werden. Formuliere es anders.",
         "applied": "{{count}} Positionen vorausgefüllt — Gewichte prüfen und speichern.",
-        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:"
+        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:",
+        "reviewTitle": "KI-Entwurf prüfen",
+        "reviewDraft": "Entwurf bereit: {{count}} Positionen. Es ändert sich nichts, bis du ihn übernimmst.",
+        "replaceWarning": "Beim Übernehmen werden alle {{count}} Positionen in „{{name}}“ ersetzt.",
+        "apply": "Entwurf übernehmen",
+        "discard": "Entwurf verwerfen",
+        "nothingSavedYet": "Es wurde noch nichts gespeichert — beim Verwerfen bleibt dein Blueprint unverändert.",
+        "notAdvice": "KI-generiert und nur informativ — keine Anlageberatung."
       },
       "positionsHeading": "Positionen",
       "autoBalance": "Auto-Balance",
@@ -5105,7 +5112,7 @@
         },
         "ai": {
           "name": "KI",
-          "description": "KI-Einblicke und Assistent (reserviert – noch nicht gebaut)."
+          "description": "KI-Portfolio-Einblicke und der Sprach-Blueprint-Builder (lokaler Anbieter)."
         }
       }
     },
@@ -6756,6 +6763,7 @@
     "ask": {
       "title": "BetterTrack fragen",
       "body": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. KI-Insights und der Sprach-Blueprint-Builder sind heute schon live; der volle Arbeitsbereich landet hier.",
+      "bodyUnavailable": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. Dieser Arbeitsbereich landet hier, sobald er gebaut ist.",
       "p1": "Du wählst genau, welche Portfolios die Antwort lesen darf",
       "p2": "Jede Zahl verlinkt zurück auf Datensätze und Annahmen",
       "p3": "Szenario-Antworten öffnen sich als Workbench-Entwürfe",

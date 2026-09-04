@@ -1748,6 +1748,27 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
   },
   {
     component: 'user/components/OriginShell.tsx',
+    read: 'RailAskToggle.available',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; while the read is loading or failed the rail row stays a plain link to /ask, which is the same row a disabled provider gets.',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
+    read: 'AskDockMount.available',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI, and the floating panel simply is not mounted.',
+  },
+  {
+    component: 'user/parked/ParkedPage.tsx',
+    read: 'AiGatedParked.capability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate decides only whether the parked /ask page may advertise the shipped AI features; unresolved and failed reads fall back to the copy that claims nothing, so there is no state of its own to draw.',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
     read: 'RailGroup.children',
     states: ['loading', 'error'],
     reason:
@@ -2067,8 +2088,16 @@ export type V5AsyncStateDebtLedger = Readonly<
  * admits through the `group` rung is not falsely prompted. Like the audience
  * read beside it the shortcut is simply absent while that roster is unresolved
  * or failing, recorded as an exemption above, so the ceiling stays at zero.
+ *
+ * 220 → 223 with the V5-P12 AI-surface gate (#1700): the AI capability read now
+ * also decides whether the rail's Ask row is a toggle (`RailAskToggle`), whether
+ * the floating panel is mounted at all (`AskDockMount`) and whether the parked
+ * `/ask` page advertises the shipped AI features (`AiGatedParked`). All three
+ * are the §6.18 gate — an unresolved or failed read is treated exactly like
+ * "no provider configured", so there is no loading or error state to draw — and
+ * are recorded as exemptions above rather than as debt; the ceiling stays zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 220;
+export const V5_ASYNC_READ_SITE_BASELINE = 223;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
