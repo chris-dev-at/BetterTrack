@@ -537,15 +537,29 @@ describe('self-service password-reset concurrency', () => {
       // difference, which shifts every pair smoothly. Consistent with that, the
       // same statistic sat near 11 ms back when the burst was 16 requests deep.
       //
+      // That second acquisition is an INPUT to the measurement here, not a
+      // verdict on it: whether the `password_reset.requested` audit insert
+      // belongs inside the per-address advisory lock at all is the question open
+      // issue #1645 owns, and this test deliberately takes no position on it. It
+      // only stops the pool queue in FRONT of that insert from being reported as
+      // a branch timing leak. If #1645 moves the insert, this test keeps passing.
+      //
       // So the 24 pairs are now sampled in waves of `pairsPerWave` instead of one
       // 48-deep burst. Nothing about the measurement is weakened: the count, both
       // bounds and the same-tick pairing are unchanged, every probe still takes
       // its per-address advisory lock, and each wave still puts two probes on the
       // same lock per branch so the row-lock path is contended rather than quiet.
-      // What is gone is the twenty-deep connection queue in front of the known
-      // branch's audit write. A real leak — known-branch work that outgrows
-      // PASSWORD_RESET_RESPONSE_FLOOR_MS — shifts every pair and still trips both
-      // bounds; it never depended on the pool being oversubscribed.
+      // Note what the in-flight depth could ever have bought: with a pool of
+      // INTEGRATION_DB_POOL_MAX connections, at most that many probes can be
+      // inside a transaction — so lock-waiter depth was never 24 even when 48
+      // requests were in flight; the other 44 were queued for a CONNECTION, in
+      // front of the lock rather than on it. Waves of two put four requests
+      // against three connections, which is the deepest genuine lock contention
+      // this harness can produce. What is gone is only the twenty-deep connection
+      // queue in front of the known branch's audit write. A real leak —
+      // known-branch work that outgrows PASSWORD_RESET_RESPONSE_FLOOR_MS — shifts
+      // every pair and still trips both bounds; it never depended on the pool
+      // being oversubscribed.
       const pairedDeltas = pairs
         .map(([known, unknown]) => Math.abs(known.elapsedMs - unknown.elapsedMs))
         .sort((a, b) => a - b);

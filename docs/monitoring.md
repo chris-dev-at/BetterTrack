@@ -115,17 +115,23 @@ contract, including that the entrypoint guard is still wired up.
 
 Grafana OSS is first-party-only here, matching the rest of the arc (and the
 reason a Sentry DSN is rejected outright). The compose service pins off every
-outbound call the stock image makes — these are compose literals, not
+call the stock image makes on its own — these are compose literals, not
 owner-settable variables, and `checkProductionCompose` fails if one is dropped
 or flipped:
 
-| Setting                                 | Stock default | Stops                                        |
-| --------------------------------------- | ------------- | -------------------------------------------- |
-| `GF_ANALYTICS_REPORTING_ENABLED`        | `true`        | usage statistics to `stats.grafana.org`      |
-| `GF_ANALYTICS_CHECK_FOR_UPDATES`        | `true`        | Grafana version checks against `grafana.com` |
-| `GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES` | `true`        | plugin update checks against `grafana.com`   |
-| `GF_ANALYTICS_FEEDBACK_LINKS_ENABLED`   | `true`        | grafana.com feedback links in the UI         |
-| `GF_NEWS_NEWS_FEED_ENABLED`             | `true`        | the grafana.com news feed on the home page   |
+| Setting                                 | Stock default | Pinned to | Stops                                                 |
+| --------------------------------------- | ------------- | --------- | ----------------------------------------------------- |
+| `GF_ANALYTICS_REPORTING_ENABLED`        | `true`        | `false`   | usage statistics to `stats.grafana.org`               |
+| `GF_ANALYTICS_CHECK_FOR_UPDATES`        | `true`        | `false`   | Grafana version checks against `grafana.com`          |
+| `GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES` | `true`        | `false`   | plugin update checks against `grafana.com`            |
+| `GF_ANALYTICS_FEEDBACK_LINKS_ENABLED`   | `true`        | `false`   | grafana.com feedback links in the UI                  |
+| `GF_NEWS_NEWS_FEED_ENABLED`             | `true`        | `false`   | the grafana.com news feed on the home page            |
+| `GF_SECURITY_DISABLE_GRAVATAR`          | `false`       | `true`    | the server-side avatar proxy to `secure.gravatar.com` |
+
+(The last row is an inverted switch — `true` means "disabled".) What remains is
+**admin-initiated only**: opening Grafana's _Plugins_ page queries the
+grafana.com plugin catalogue. Nothing calls out in the background, so a bare
+`docker compose up` on this stack makes no outbound Grafana request at all.
 
 **Why not an `internal:` docker network instead?** It was considered and
 rejected: `internal: true` blocks a network's outbound NAT, but the
@@ -293,10 +299,12 @@ and degrading gracefully when the stack is down:
   With a LAN bind the grafana service refuses to start unless
   `BT_GRAFANA_ANON_LAN_ACK=true` names the exposure; `checkProductionCompose`
   covers the same pairing and the presence of the runtime guard.
-- **Nothing phones home** — usage reporting, version and plugin update checks and
-  the news feed are pinned off in the compose service, so the stack never calls
-  `grafana.com` / `stats.grafana.org`, and `checkProductionCompose` keeps it
-  that way.
+- **Nothing phones home** — usage reporting, version and plugin update checks,
+  feedback links, the news feed and the server-side Gravatar proxy are pinned off
+  in the compose service, so the stack never calls `grafana.com` /
+  `stats.grafana.org` / `secure.gravatar.com` on its own, and
+  `checkProductionCompose` keeps it that way. The one remaining grafana.com path
+  is admin-initiated: the plugin catalogue behind Grafana's _Plugins_ page.
 - **No default credential on any bound interface** — the compose service carries
   no inline `GF_SECURITY_ADMIN_PASSWORD`; an unset/placeholder/`admin` value is
   replaced by a random password generated into the `grafanadata` volume, so the

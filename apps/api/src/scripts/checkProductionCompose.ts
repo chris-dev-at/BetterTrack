@@ -311,36 +311,43 @@ export function assertGrafanaAdminCredential(config: RenderedCompose, topology: 
 }
 
 /**
- * Grafana OSS phones home out of the box: anonymous usage statistics to
- * `stats.grafana.org`, version + plugin update checks against `grafana.com`,
- * and the grafana.com news feed. The V5-P2 observability arc is first-party
- * only with zero owner setup (the same rule that rejects a Sentry DSN), so the
- * compose service pins every one of them off. They are deliberately compose
- * literals rather than `${BT_…}` inputs — this gate is what keeps them from
- * being re-enabled, or dropped and silently defaulting back to `true`.
+ * Grafana OSS reaches out of the box: anonymous usage statistics to
+ * `stats.grafana.org`, version + plugin update checks and feedback links
+ * against `grafana.com`, the grafana.com news feed, and — for every signed-in
+ * user — a server-side avatar proxy to `secure.gravatar.com`. The V5-P2
+ * observability arc is first-party only with zero owner setup (the same rule
+ * that rejects a Sentry DSN), so the compose service pins every one of them
+ * off. They are deliberately compose literals rather than `${BT_…}` inputs —
+ * this gate is what keeps them from being re-enabled, or dropped and silently
+ * defaulting back to the calling-out value.
+ *
+ * The polarities differ, so each key carries its required value:
+ * `GF_SECURITY_DISABLE_GRAVATAR` must be `true`, the rest `false`.
  */
-export const GRAFANA_TELEMETRY_SETTINGS: readonly string[] = [
-  'GF_ANALYTICS_REPORTING_ENABLED',
-  'GF_ANALYTICS_CHECK_FOR_UPDATES',
-  'GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES',
-  'GF_ANALYTICS_FEEDBACK_LINKS_ENABLED',
-  'GF_NEWS_NEWS_FEED_ENABLED',
-];
+export const GRAFANA_TELEMETRY_SETTINGS: Readonly<Record<string, 'true' | 'false'>> = {
+  GF_ANALYTICS_REPORTING_ENABLED: 'false',
+  GF_ANALYTICS_CHECK_FOR_UPDATES: 'false',
+  GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false',
+  GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: 'false',
+  GF_NEWS_NEWS_FEED_ENABLED: 'false',
+  GF_SECURITY_DISABLE_GRAVATAR: 'true',
+};
 
 export function assertGrafanaTelemetryDisabled(config: RenderedCompose, topology: string): void {
   const environment = renderedService(config, topology, 'grafana').environment ?? {};
 
-  for (const key of GRAFANA_TELEMETRY_SETTINGS) {
+  for (const [key, required] of Object.entries(GRAFANA_TELEMETRY_SETTINGS)) {
     const value = environment[key];
     assert(
       value !== undefined,
-      `${topology}: grafana must set ${key} — Grafana OSS defaults it to true and calls ` +
-        `grafana.com / stats.grafana.org, which the first-party-only observability arc forbids`,
+      `${topology}: grafana must set ${key}=${required} — Grafana OSS defaults it the other way ` +
+        `and calls grafana.com / stats.grafana.org / secure.gravatar.com, which the ` +
+        `first-party-only observability arc forbids`,
     );
     assert.equal(
       String(value).trim().toLowerCase(),
-      'false',
-      `${topology}: grafana must keep ${key} disabled — it renders "${String(value)}"`,
+      required,
+      `${topology}: grafana must keep ${key} at ${required} — it renders "${String(value)}"`,
     );
   }
 }
@@ -349,9 +356,15 @@ const GRAFANA_ANONYMOUS_KEY = 'GF_AUTH_ANONYMOUS_ENABLED';
 const GRAFANA_ANONYMOUS_ROLE_KEY = 'GF_AUTH_ANONYMOUS_ORG_ROLE';
 const GRAFANA_BIND_HOST_KEY = 'BT_OBS_BIND_HOST';
 const GRAFANA_ANONYMOUS_ACK_KEY = 'BT_GRAFANA_ANON_LAN_ACK';
+/** Fragment of the entrypoint guard's own refusal — code, not comment prose. */
+const GRAFANA_ANONYMOUS_GUARD_REFUSAL = 'refusing to start Grafana';
 
+// Grafana parses `auth.anonymous.enabled` with go-ini's parseBool, which also
+// accepts the single letters `t` and `y`. A guard must not disagree with the
+// thing it guards in the unsafe direction, so the same set is honoured here and
+// in the entrypoint's `case` arms.
 function isEnabledFlag(value: unknown): boolean {
-  return ['true', '1', 'yes', 'on'].includes(
+  return ['true', 't', '1', 'yes', 'y', 'on'].includes(
     String(value ?? '')
       .trim()
       .toLowerCase(),
@@ -427,6 +440,15 @@ export function assertGrafanaAnonymousAccessBind(config: RenderedCompose, topolo
         `reads ${key}, so an owner .env could still combine anonymous access with a LAN bind`,
     );
   }
+  // The three key names above also appear in the entrypoint's own explanatory
+  // comments, so name-presence alone would pass on a guard gutted down to its
+  // prose. Anchor on the refusal itself — the one string only the live branch
+  // emits — the way `assertGrafanaAdminCredential` anchors on its refusal arm.
+  assert(
+    bootstrap.includes(GRAFANA_ANONYMOUS_GUARD_REFUSAL),
+    `${topology}: the grafana entrypoint must keep the anonymous-access guard's refusal ` +
+      `("${GRAFANA_ANONYMOUS_GUARD_REFUSAL}") — reading the keys in a comment is not a guard`,
+  );
 }
 
 function validateTopology(config: RenderedCompose, topology: ProductionTopology): void {

@@ -410,18 +410,21 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: '${BT_GRAFANA_ANON_ENABLED:-false}'
       GF_AUTH_ANONYMOUS_ORG_ROLE: 'Viewer'
       # ── First-party only: no phoning home (§13.5 V5-P2 arc (a)) ────────────
-      # Grafana OSS defaults every one of these to `true`: anonymous usage
-      # statistics to stats.grafana.org, version + plugin update checks against
-      # grafana.com, and the grafana.com news feed on the home dashboard. The
-      # arc's contract is zero owner setup and FIRST-PARTY ONLY — the same rule
-      # that rejects a Sentry DSN — so they are pinned off here rather than left
-      # to an owner-settable variable; `checkProductionCompose` fails on any
-      # other value so the default cannot silently regress.
+      # Stock Grafana OSS calls out on its own: anonymous usage statistics to
+      # stats.grafana.org, version + plugin update checks and feedback links
+      # against grafana.com, the grafana.com news feed on the home dashboard,
+      # and a server-side avatar proxy to secure.gravatar.com for every
+      # signed-in user. The arc's contract is zero owner setup and FIRST-PARTY
+      # ONLY — the same rule that rejects a Sentry DSN — so they are pinned off
+      # here rather than left to an owner-settable variable;
+      # `checkProductionCompose` fails on any other value so the default cannot
+      # silently regress. Note the gravatar switch is inverted: `true` = off.
       GF_ANALYTICS_REPORTING_ENABLED: 'false'
       GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
       GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: 'false'
       GF_NEWS_NEWS_FEED_ENABLED: 'false'
+      GF_SECURITY_DISABLE_GRAVATAR: 'true'
       # Read by the bootstrap only (Grafana itself never sees these two names).
       # The entrypoint compares the anonymous-access flag against the bind host
       # and refuses the unauthenticated-LAN combination; BT_GRAFANA_ANON_LAN_ACK
@@ -457,9 +460,23 @@ services:
         anon="$$(printf '%s' "$$anon" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
         bind="$$(printf '%s' "$$bind" | tr -d '[:space:]' | sed 's/[][]//g' | tr '[:upper:]' '[:lower:]')"
         ack="$$(printf '%s' "$$ack" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-        case "$$anon" in true | 1 | yes | on) anon=yes ;; *) anon=no ;; esac
-        case "$$bind" in 127.*.*.* | localhost | ::1) loopback=yes ;; *) loopback=no ;; esac
-        case "$$ack" in true | 1 | yes | on) ack=yes ;; *) ack=no ;; esac
+        # `t` and `y` are in the set because go-ini's parseBool — what Grafana
+        # itself uses for auth.anonymous.enabled — accepts them; a guard that
+        # disagrees with the thing it guards must disagree the safe way.
+        case "$$anon" in true | t | 1 | yes | y | on) anon=yes ;; *) anon=no ;; esac
+        # 127.*.*.* is a glob, not an IP test, so require digits-and-dots only —
+        # the checker's /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/ classifies the same.
+        case "$$bind" in
+          localhost | ::1) loopback=yes ;;
+          127.*.*.*)
+            case "$$(printf '%s' "$$bind" | tr -d '0-9.')" in
+              '') loopback=yes ;;
+              *) loopback=no ;;
+            esac
+            ;;
+          *) loopback=no ;;
+        esac
+        case "$$ack" in true | t | 1 | yes | y | on) ack=yes ;; *) ack=no ;; esac
         if [ "$$anon" = yes ] && [ "$$loopback" = no ] && [ "$$ack" = no ]; then
           echo "bettertrack: refusing to start Grafana with anonymous access on the non-loopback bind $$bind." >&2
           echo "bettertrack: BT_GRAFANA_ANON_ENABLED=true is server-wide, so every device that can reach $$bind would read every dashboard with no credential." >&2

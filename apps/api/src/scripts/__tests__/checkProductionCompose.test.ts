@@ -210,27 +210,31 @@ describe('production Compose Grafana credential gate', () => {
   });
 });
 
-const telemetryOff = Object.fromEntries(GRAFANA_TELEMETRY_SETTINGS.map((key) => [key, 'false']));
+const telemetryOff: Record<string, string> = { ...GRAFANA_TELEMETRY_SETTINGS };
+const telemetryEntries = Object.entries(GRAFANA_TELEMETRY_SETTINGS);
 
 describe('production Compose Grafana telemetry gate', () => {
-  it('accepts the shipped shape: every phone-home setting pinned off', () => {
+  it('accepts the shipped shape: every outbound-call setting pinned off', () => {
     const rendered = grafanaCompose({ environment: { ...telemetryOff } });
 
     expect(() => assertGrafanaTelemetryDisabled(rendered, 'test')).not.toThrow();
   });
 
   it('names each setting it covers, so a reviewer can check the compose file against it', () => {
-    expect([...GRAFANA_TELEMETRY_SETTINGS]).toEqual([
-      'GF_ANALYTICS_REPORTING_ENABLED',
-      'GF_ANALYTICS_CHECK_FOR_UPDATES',
-      'GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES',
-      'GF_ANALYTICS_FEEDBACK_LINKS_ENABLED',
-      'GF_NEWS_NEWS_FEED_ENABLED',
-    ]);
+    // Polarities differ: the gravatar switch is "disable", so its safe value is
+    // `true` while the analytics/news ones are `false`.
+    expect(GRAFANA_TELEMETRY_SETTINGS).toEqual({
+      GF_ANALYTICS_REPORTING_ENABLED: 'false',
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false',
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false',
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: 'false',
+      GF_NEWS_NEWS_FEED_ENABLED: 'false',
+      GF_SECURITY_DISABLE_GRAVATAR: 'true',
+    });
   });
 
-  it.each(GRAFANA_TELEMETRY_SETTINGS)(
-    'fails when %s is dropped (Grafana defaults it to true)',
+  it.each(telemetryEntries)(
+    'fails when %s is dropped (Grafana defaults it the other way)',
     (key) => {
       const environment = { ...telemetryOff };
       delete environment[key];
@@ -241,13 +245,17 @@ describe('production Compose Grafana telemetry gate', () => {
     },
   );
 
-  it.each(GRAFANA_TELEMETRY_SETTINGS)('fails when %s is flipped back on', (key) => {
-    const rendered = grafanaCompose({ environment: { ...telemetryOff, [key]: 'true' } });
+  it.each(telemetryEntries)(
+    'fails when %s is flipped back to the calling-out value',
+    (key, required) => {
+      const flipped = required === 'false' ? 'true' : 'false';
+      const rendered = grafanaCompose({ environment: { ...telemetryOff, [key]: flipped } });
 
-    expect(() => assertGrafanaTelemetryDisabled(rendered, 'test')).toThrow(
-      `test: grafana must keep ${key} disabled — it renders "true"`,
-    );
-  });
+      expect(() => assertGrafanaTelemetryDisabled(rendered, 'test')).toThrow(
+        `test: grafana must keep ${key} at ${required} — it renders "${flipped}"`,
+      );
+    },
+  );
 });
 
 const anonymousGuardEntrypoint = [
@@ -256,6 +264,21 @@ const anonymousGuardEntrypoint = [
   'anon="${GF_AUTH_ANONYMOUS_ENABLED:-false}"\n' +
     'bind="${BT_OBS_BIND_HOST:-127.0.0.1}"\n' +
     'ack="${BT_GRAFANA_ANON_LAN_ACK:-}"\n' +
+    'if [ "$anon" = yes ] && [ "$loopback" = no ] && [ "$ack" = no ]; then\n' +
+    '  echo "bettertrack: refusing to start Grafana with anonymous access on the non-loopback bind $bind." >&2\n' +
+    '  exit 1\n' +
+    'fi\n' +
+    'exec /run.sh\n',
+];
+
+// The three key names appear in the real entrypoint's explanatory comments too,
+// so this is what a guard reduced to prose looks like: every name present, no
+// comparison left.
+const commentOnlyGuardEntrypoint = [
+  '/bin/sh',
+  '-c',
+  '# GF_AUTH_ANONYMOUS_ENABLED on a non-loopback BT_OBS_BIND_HOST used to be\n' +
+    '# refused here unless BT_GRAFANA_ANON_LAN_ACK named the exposure.\n' +
     'exec /run.sh\n',
 ];
 
@@ -355,6 +378,22 @@ describe('production Compose Grafana anonymous-access × bind-host gate', () => 
 
     expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
       'test: the grafana entrypoint must keep the anonymous-access guard',
+    );
+  });
+
+  it('fails when the guard is gutted down to the comments that name its keys', () => {
+    const rendered = anonymousCompose({ entrypoint: commentOnlyGuardEntrypoint });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      "test: the grafana entrypoint must keep the anonymous-access guard's refusal",
+    );
+  });
+
+  it.each(['t', 'y'])('treats %s as anonymous access on, the way go-ini parseBool does', (flag) => {
+    const rendered = anonymousCompose({ anonymous: flag, bindHost: '192.168.1.10' });
+
+    expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
+      'test: grafana renders anonymous access on the non-loopback bind 192.168.1.10',
     );
   });
 });
