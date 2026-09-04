@@ -830,6 +830,25 @@ export const V5_SURFACE_INVENTORY = [
     ],
   },
   {
+    id: 'p13b-installable-pwa',
+    phases: ['P13b'],
+    // Not a route: the affordance floats over whichever surface is on screen
+    // (anti-bloat), and the standalone-window rules are shell-wide.
+    routes: [],
+    components: ['user/components/InstallPrompt.tsx'],
+    copyRoots: ['pwa.install'],
+    copyReview:
+      'Install card and the iOS Add-to-Home-Screen coach mark reviewed in both catalogs; DE keeps the informal address the rest of the user app uses.',
+    states: {
+      loading: notAsync('Install capability is a synchronous browser fact, not a fetch.'),
+      empty: notAsync('No collection: the card is silent-by-default when no install path exists.'),
+      error: notAsync(
+        'The native prompt owns its own failure; a rejected prompt() is swallowed and the card stays dismissed.',
+      ),
+    },
+    tests: ['user/components/InstallPrompt.test.tsx'],
+  },
+  {
     id: 'p13c-admin-session-policy',
     phases: ['P13c'],
     routes: ['/admin/security'],
