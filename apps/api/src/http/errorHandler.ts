@@ -8,6 +8,8 @@ import { ApiError, EnvelopeApiError } from '../errors';
 import type { Logger } from '../logger';
 import { normalizeRoutePath } from '../services/security/routePath';
 
+import { bodyParserApiError } from './bodyLimits';
+
 /**
  * The request facts a report carries. Written to the captured problem's context
  * AND to the log line, so a row on the admin Problems page and the container log
@@ -105,29 +107,42 @@ export function createErrorHandler(logger: Logger, report?: ErrorReporter): Erro
       requestId: randomUUID(),
     });
 
+    // A body-parser failure (truncated JSON, a body over the bound, an encoding
+    // we do not speak) is a CLIENT fault that used to arrive here as a plain
+    // `Error` and leave as a 500 — wrong status, 5xx metric pollution, and a
+    // captured Problems row whose message quoted the body. Normalised first so
+    // it travels the ordinary `ApiError` path: right status, no report, no
+    // capture. `ApiError`/`ZodError` are never candidates, so their handling
+    // below is untouched.
+    const effective = bodyParserApiError(err) ?? err;
+
     if (!res.headersSent) {
       res.removeHeader('ETag');
       res.removeHeader('Last-Modified');
 
-      if (err instanceof ApiError) {
+      if (effective instanceof ApiError) {
         // `EnvelopeApiError` contributes top-level members beside `error` (the
         // Vaults v2 CAS contract's `currentVersion`, design r2 §15). Spread FIRST
         // so `error` always wins — an envelope can add fields, never rewrite the
         // error itself.
-        res.status(err.statusCode).json({
-          ...(err instanceof EnvelopeApiError ? err.envelope : {}),
+        res.status(effective.statusCode).json({
+          ...(effective instanceof EnvelopeApiError ? effective.envelope : {}),
           error: {
-            code: err.code,
-            message: err.message,
-            ...(err.details !== undefined ? { details: err.details } : {}),
+            code: effective.code,
+            message: effective.message,
+            ...(effective.details !== undefined ? { details: effective.details } : {}),
           },
         });
         return;
       }
 
-      if (err instanceof ZodError) {
+      if (effective instanceof ZodError) {
         res.status(400).json({
-          error: { code: 'VALIDATION_ERROR', message: 'Invalid request.', details: err.flatten() },
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid request.',
+            details: effective.flatten(),
+          },
         });
         return;
       }
@@ -137,7 +152,7 @@ export function createErrorHandler(logger: Logger, report?: ErrorReporter): Erro
       return;
     }
 
-    if (!(err instanceof ApiError) && !(err instanceof ZodError)) {
+    if (!(effective instanceof ApiError) && !(effective instanceof ZodError)) {
       reportUnexpected(err, contextFor());
     }
 

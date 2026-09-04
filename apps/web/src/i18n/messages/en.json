@@ -424,7 +424,8 @@
     "expandRail": "Expand navigation",
     "collapseRail": "Collapse navigation",
     "expandSection": "Expand {{section}}",
-    "collapseSection": "Collapse {{section}}"
+    "collapseSection": "Collapse {{section}}",
+    "back": "Back"
   },
   "askdock": {
     "pin": "Keep open",
@@ -6575,6 +6576,15 @@
     "discreet": {
       "title": "Discreet mode",
       "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "Install BetterTrack",
+      "body": "Add it to this device to open it in its own window.",
+      "iosBody": "Tap Share, then “Add to Home Screen”.",
+      "action": "Install",
+      "dismiss": "Dismiss"
     }
   },
   "parked": {

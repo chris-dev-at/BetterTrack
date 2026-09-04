@@ -70,6 +70,34 @@ export const dividendEventSchema = z
   .strict();
 export type DividendEvent = z.infer<typeof dividendEventSchema>;
 
+/**
+ * Which basis an annual dividend-per-share figure carries. The two are NOT
+ * interchangeable, and a provider commonly populates only one of them:
+ *
+ * - `trailing-12m` — the **realized** sum of the last twelve months' payouts, so
+ *   it INCLUDES one-off special dividends (a company that just paid one reads
+ *   high for a full year afterwards).
+ * - `forward-annualized` — the last **regular** payout × its frequency, so it
+ *   EXCLUDES specials but assumes the regular schedule continues unchanged.
+ *
+ * Right after a special payout the two can differ by a large factor, so a
+ * consumer that projects forward from the number must be able to see which one
+ * it got — hence {@link dividendEventsSchema.shape.trailingAmountBasis}.
+ */
+export const DIVIDEND_AMOUNT_BASES = ['trailing-12m', 'forward-annualized'] as const;
+export const dividendAmountBasisSchema = z.enum(DIVIDEND_AMOUNT_BASES);
+export type DividendAmountBasis = z.infer<typeof dividendAmountBasisSchema>;
+
+/**
+ * Upper bound `forwardYield` is validated against. The field's convention is a
+ * **fraction** (`0.015` ≈ 1.5 %); a provider that reports percent instead
+ * (`1.5`) would render 100× wrong wherever the value is multiplied out. A figure
+ * above this bound is therefore not a plausible yield but a unit mismatch, and
+ * the provider mappers drop it to `null` rather than publish it — an absent
+ * block, never a wrong number. 1 = 100 %/yr, far above any real forward yield.
+ */
+export const DIVIDEND_FORWARD_YIELD_MAX = 1;
+
 /** The provider payload for the dividends capability. */
 export const dividendEventsSchema = z
   .object({
@@ -80,12 +108,27 @@ export const dividendEventsSchema = z
     /** Known upcoming ex/pay dates (forward calendar). */
     upcoming: z.array(dividendEventSchema),
     /**
-     * Forward annual dividend yield as the provider reports it (a fraction —
-     * `0.015` ≈ 1.5 %), where cheaply available (arc e). Null when absent.
+     * Forward annual dividend yield as a **fraction** — `0.015` ≈ 1.5 % — where
+     * cheaply available (arc e). Null when absent, and null (not passed through)
+     * when the provider's figure falls outside `[0, DIVIDEND_FORWARD_YIELD_MAX]`,
+     * which means it is not in this convention at all.
      */
-    forwardYield: z.number().nullable(),
-    /** Trailing 12-month dividend per share in `currency`, where available. */
+    forwardYield: z.number().min(0).max(DIVIDEND_FORWARD_YIELD_MAX).nullable(),
+    /**
+     * Annual dividend per share in `currency`, where available — the forward
+     * estimate a projection multiplies. Its basis is **not** fixed: providers
+     * supply a realized trailing-12-month sum or a forward-annualized regular
+     * rate depending on what they populate, so read `trailingAmountBasis` to
+     * know which one this payload carries. (The field name is historical; it has
+     * always carried whichever of the two the provider had.)
+     */
     trailingAmount: z.number().nonnegative().nullable(),
+    /**
+     * Which basis {@link DIVIDEND_AMOUNT_BASES} `trailingAmount` carries. Null
+     * exactly when `trailingAmount` is null — a number never travels without the
+     * basis that explains it.
+     */
+    trailingAmountBasis: dividendAmountBasisSchema.nullable(),
   })
   .strict();
 export type DividendEvents = z.infer<typeof dividendEventsSchema>;
@@ -155,10 +198,12 @@ export type DividendCalendarResponse = z.infer<typeof dividendCalendarResponseSc
 
 /**
  * One holding's projected annual dividend income. `annualPerShare` is the
- * forward estimate in the asset's dividend `currency` (the provider's trailing
- * 12-month dividend per share, the standard "assume it continues" proxy);
- * `annualIncomeEur` is `quantity × annualPerShare` converted to EUR at the
- * current spot rate.
+ * forward estimate in the asset's **dividend** `currency` (the standard "assume
+ * it continues" proxy) and `annualPerShareBasis` names which basis that estimate
+ * carries. `annualIncomeBase` is `quantity × annualPerShare` converted once, at
+ * the current spot rate, into the **response's** `currency` — the caller's base
+ * (§5.4) — which is a different field from this holding's `currency`; the
+ * suffix is what keeps the two apart.
  */
 export const projectedDividendHoldingSchema = z
   .object({
@@ -168,24 +213,34 @@ export const projectedDividendHoldingSchema = z
     quantity: z.number().nonnegative(),
     annualPerShare: z.number().nonnegative(),
     currency: currencyCodeSchema,
-    annualIncomeEur: z.number().nonnegative(),
+    annualPerShareBasis: dividendAmountBasisSchema,
+    annualIncomeBase: z.number().nonnegative(),
   })
   .strict();
 export type ProjectedDividendHolding = z.infer<typeof projectedDividendHoldingSchema>;
 
 /**
  * `GET /assets/portfolio/dividend-projection` — projected dividend income for
- * the whole portfolio, monthly + yearly, EUR. `monthlyTotalEur` is
- * `yearlyTotalEur / 12` (an even spread — the clean series shape the V5-P6b
- * Forecast consumes). `currency` is always EUR. `available: false` (gate off) ⇒
- * zeros/empty and hidden.
+ * the whole portfolio, monthly + yearly.
+ *
+ * `currency` is the **caller's base currency** (§5.4: EUR is the default, never
+ * a constant), and every `…Base`-suffixed amount here and in `holdings` is
+ * denominated in it. That is not cosmetic: the V5-P6b Forecast adds this figure
+ * to a base-denominated net worth and renders the sum with the base's symbol, so
+ * a EUR-pinned total would put two denominations under one label. The field
+ * names deliberately no longer assert a currency — the payload names it.
+ *
+ * `monthlyTotalBase` is `yearlyTotalBase / 12` (an even spread — the clean
+ * series shape the Forecast consumes). `available: false` (gate off, an
+ * unresolvable holding, or a book over the fan-out cap) ⇒ zeros/empty and
+ * hidden, with `currency` still naming the base those zeros are in.
  */
 export const projectedDividendIncomeResponseSchema = z
   .object({
     available: z.boolean(),
     currency: currencyCodeSchema,
-    monthlyTotalEur: z.number().nonnegative(),
-    yearlyTotalEur: z.number().nonnegative(),
+    monthlyTotalBase: z.number().nonnegative(),
+    yearlyTotalBase: z.number().nonnegative(),
     holdings: z.array(projectedDividendHoldingSchema),
     truncated: rollupTruncatedSchema,
   })

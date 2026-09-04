@@ -100,6 +100,7 @@ user/components/AssetSearchBox.tsx
 user/components/AudiencePicker.tsx
 user/components/Avatar.tsx
 user/components/CmdKPalette.tsx
+user/components/InstallPrompt.tsx
 user/components/NotificationBell.tsx
 user/components/OriginShell.tsx
 user/components/TransactionDialog.tsx

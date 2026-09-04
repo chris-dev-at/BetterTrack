@@ -327,8 +327,8 @@ function transactionPage(
 const UNAVAILABLE_PROJECTION: ProjectedDividendIncomeResponse = {
   available: false,
   currency: 'EUR',
-  monthlyTotalEur: 0,
-  yearlyTotalEur: 0,
+  monthlyTotalBase: 0,
+  yearlyTotalBase: 0,
   holdings: [],
 };
 
@@ -342,8 +342,8 @@ const CALENDAR_ONLY_PROJECTION: ProjectedDividendIncomeResponse = {
 const RESOLVED_PROJECTION: ProjectedDividendIncomeResponse = {
   available: true,
   currency: 'EUR',
-  monthlyTotalEur: 100,
-  yearlyTotalEur: 1200,
+  monthlyTotalBase: 100,
+  yearlyTotalBase: 1200,
   holdings: [
     {
       assetId: 'a1',
@@ -352,7 +352,8 @@ const RESOLVED_PROJECTION: ProjectedDividendIncomeResponse = {
       quantity: 100,
       annualPerShare: 12,
       currency: 'EUR',
-      annualIncomeEur: 1200,
+      annualPerShareBasis: 'trailing-12m',
+      annualIncomeBase: 1200,
     },
   ],
 };
@@ -1843,6 +1844,24 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
     const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
     expect(within(block).queryByText(TRUNCATED_PROJECTION_NOTE)).not.toBeInTheDocument();
     expect(within(block).queryByText(TRUNCATED_CALENDAR_NOTE)).not.toBeInTheDocument();
+  });
+
+  test('renders the income total in the user’s base currency, not a hard EUR (#1741)', async () => {
+    // The projection declares its own denomination — the caller's base (§5.4).
+    // The line used to render `formatMoney(total, 'EUR')` beside a net-worth
+    // header denominated in that base, so a USD user read a euro symbol on a
+    // dollar figure.
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+      ...RESOLVED_PROJECTION,
+      currency: 'USD',
+    });
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(block).getByText('100,00 $')).toBeInTheDocument();
+    expect(within(block).queryByText('100,00 €')).not.toBeInTheDocument();
   });
 
   test('keeps the projection when the calendar has nothing to show', async () => {

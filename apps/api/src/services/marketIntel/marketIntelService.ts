@@ -102,6 +102,7 @@ const UNAVAILABLE_DIVIDENDS: DividendsResponse = {
   upcoming: [],
   forwardYield: null,
   trailingAmount: null,
+  trailingAmountBasis: null,
 };
 const UNAVAILABLE_EARNINGS: EarningsResponse = { available: false, next: null, recent: [] };
 const UNAVAILABLE_NEWS: NewsResponse = { available: false, headlines: [] };

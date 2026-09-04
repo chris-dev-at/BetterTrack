@@ -424,7 +424,8 @@
     "expandRail": "Navigation ausklappen",
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
-    "collapseSection": "{{section}} einklappen"
+    "collapseSection": "{{section}} einklappen",
+    "back": "Zur\u00fcck"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -6575,6 +6576,15 @@
     "discreet": {
       "title": "Diskreter Modus",
       "body": "Maskiert jeden absoluten Betrag in der App — zeig BetterTrack anderen, ohne Zahlen offenzulegen."
+    }
+  },
+  "pwa": {
+    "install": {
+      "title": "BetterTrack installieren",
+      "body": "Füge es zu diesem Gerät hinzu — dann öffnet es sich in einem eigenen Fenster.",
+      "iosBody": "Tippe auf „Teilen“ und dann auf „Zum Home-Bildschirm“.",
+      "action": "Installieren",
+      "dismiss": "Nicht installieren"
     }
   },
   "parked": {
