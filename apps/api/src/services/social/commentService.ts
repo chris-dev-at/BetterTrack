@@ -354,6 +354,15 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     // Newest-first out of SQL; oldest-first for the reader.
     const rows = (hasOlder ? page.slice(0, COMMENT_PAGE_SIZE) : page).reverse();
     const oldest = rows[0];
+    // The newest page can PROVE the whole thread's count whenever it did not
+    // fill: no cursor means the page starts at the newest comment, and no older
+    // page means it ends at the oldest, so the page IS the live thread under the
+    // very filter `countForItem` would apply (#1725). Counting it costs nothing,
+    // and that is the shape of every ordinary thread — so the poll that refetches
+    // page 0 every 30 s stops issuing a `count(*)` alongside it. A page that
+    // filled, or any older page, still asks the repository: the count stays exact
+    // for every caller, and the partial thread index makes it an index-only scan.
+    const provenCount = cursor === undefined && !hasOlder ? rows.length : undefined;
     const [reactionMap, itemReactions, commentCount] = await Promise.all([
       reactions.summaryForComments(
         viewerId,
@@ -361,7 +370,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
         allowedActorIds,
       ),
       reactions.summaryForItem(viewerId, kind, subjectId, allowedActorIds),
-      comments.countForItem(kind, subjectId, allowedActorIds),
+      provenCount ?? comments.countForItem(kind, subjectId, allowedActorIds),
     ]);
     const commentList: ItemComment[] = rows.map((row) => ({
       id: row.id,

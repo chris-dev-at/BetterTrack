@@ -31,29 +31,42 @@ describe('finding 1 — punctuation trimming is linear, not quadratic', () => {
     expect(elapsed).toBeLessThan(250);
   });
 
-  it('scales linearly across doublings instead of 4x per doubling', { timeout: 20_000 }, () => {
-    // CHANGED, AND SAID OUT LOUD — this test used to sample `'.'.repeat(n) + 'x'`,
-    // the vector that makes the merged `/[.,;]+$/` backtrack. Against the FIXED
-    // code that input is O(1): the trailing `x` is not punctuation, so the walk
-    // in `trimTrailingFrom` stops on its first step and returns `cell` by
-    // reference. Both samples were therefore ~0.01ms of pure timer noise — and
-    // because `Math.max(small, 1)` pinned the bound at a flat 8ms whenever
-    // `small < 1ms`, which was always, the assertion really read "the large
-    // sample must not be interrupted for 8ms". Any GC pause or scheduler
-    // preempt on a shared runner failed it; measured ratios on an IDLE machine
-    // ranged 1.7x to 25.6x. It failed CI on #1691 at 9.198ms.
+  it('costs the same per character at 16x the run length', { timeout: 20_000 }, () => {
+    // The input is `'.'.repeat(n) + 'x' + '.'.repeat(n)`, not the plain
+    // `'.'.repeat(n) + 'x'` of the test above. Against the FIXED code that
+    // simpler input is O(1) — the trailing `x` is not punctuation, so the walk
+    // in `trimTrailingFrom` stops on its first step — so a sample would be pure
+    // timer noise. The TRAILING run makes the walk do real O(n) work, while the
+    // LEADING run keeps the merged `/[.,;]+$/`'s catastrophic backtracking
+    // fully intact: re-measured against it on this exact input, 8k→122ms,
+    // 16k→482ms, 32k→1977ms, a clean 4x per doubling.
     //
-    // Appending a trailing punctuation run makes the walk — and its `slice` —
-    // do the real O(n) work, so a sample is milliseconds instead of
-    // microseconds, while the LEADING run keeps the regex's catastrophic
-    // backtracking fully intact. Re-measured against `/[.,;]+$/` on this exact
-    // input: 8k→31ms, 16k→126ms, 32k→496ms — still a clean 4x per doubling, so
-    // this still fails on the merged code it was written to kill.
+    // CHANGED, AND SAID OUT LOUD — this used to time 32k and 128k over an EQUAL
+    // number of calls and assert `large < small * 8`, the geometric midpoint
+    // between linear's 4x and quadratic's 16x. That compares two samples of
+    // deliberately unequal duration: the large one runs over a 4x longer window
+    // and so absorbs 4x more of whatever else the runner is doing, which on a
+    // shared `ubuntu-latest` running the rest of this suite in parallel workers
+    // is a lot. It measured 3.91x–4.02x on an idle machine and failed CI at
+    // 8.70x (23.05ms vs 200.42ms) — a measurement artifact, not a regression,
+    // and the second flake in this one test after #1691.
+    //
+    // Holding the TOTAL characters equal and varying only the chunk size fixes
+    // the asymmetry at the source. Both samples then allocate the same, run for
+    // the same duration, and are exposed to the same amount of interference:
+    //   linear    ⇒ same total work per sample     ⇒ ratio ~1
+    //   quadratic ⇒ cost per call scales with n²,
+    //               and 16x fewer calls of 16x the size ⇒ ratio ~16
+    // Measured 0.99x–1.00x linear and 15.1x–16.1x against `/[.,;]+$/` (scaled
+    // down, since the quadratic form needs ~3.5 minutes at these sizes). A
+    // threshold of 4x is a factor of 4 clear of BOTH — noise has to inflate the
+    // large sample 4x to red this, and the quadratic form it exists to kill has
+    // to be understated 4x to slip past.
     const cell = (n: number): string => `${'.'.repeat(n)}x${'.'.repeat(n)}`;
     const trimmed = (n: number): string => `${'.'.repeat(n)}x`;
 
     // Fail FAST if the quadratic form ever comes back: one call at 128k costs
-    // 0.4ms linear against 9.7s quadratic, so 100ms is unreachable by machine
+    // 0.4ms linear against ~8s quadratic, so 100ms is unreachable by machine
     // noise from either side. Without this the timing loop below would grind
     // for ~16 minutes before the suite timed out.
     const big = cell(128_000);
@@ -61,34 +74,44 @@ describe('finding 1 — punctuation trimming is linear, not quadratic', () => {
     expect(trimTrailingPunctuation(big)).toBe(trimmed(128_000));
     expect(performance.now() - startedOne).toBeLessThan(100);
 
-    // `min` over repeats is the right estimator for "what does this cost":
-    // interference can only ever ADD time, so the fastest observed run is the
-    // one closest to the true cost.
-    const best = (n: number): number => {
-      const input = cell(n);
-      let sink = 0;
-      const once = (): number => {
-        const started = performance.now();
-        for (let i = 0; i < 100; i++) sink += trimTrailingPunctuation(input).length;
-        return performance.now() - started;
-      };
-      once(); // warm up the JIT so the first sample is not an outlier
-      const samples = [once(), once(), once()];
-      expect(sink).toBeGreaterThan(0); // the work is observed, never optimized away
-      return Math.min(...samples);
+    const SMALL = 16_000;
+    const LARGE = 256_000;
+    const LARGE_CALLS = 20;
+    const SMALL_CALLS = LARGE_CALLS * (LARGE / SMALL); // identical characters in total
+    const smallInput = cell(SMALL);
+    const largeInput = cell(LARGE);
+
+    let sink = 0;
+    const sample = (input: string, calls: number): number => {
+      const started = performance.now();
+      for (let i = 0; i < calls; i++) sink += trimTrailingPunctuation(input).length;
+      return performance.now() - started;
     };
 
-    const small = best(32_000);
-    const large = best(128_000);
+    sample(smallInput, SMALL_CALLS); // warm the JIT for both shapes so that
+    sample(largeInput, LARGE_CALLS); // neither pays first-call cost in a sample
+
+    // Interleaved, because contention drifts: measuring all of one size and
+    // then all of the other lets a busy stretch land entirely on one of them.
+    // `min` over rounds is the right estimator — interference can only ever ADD
+    // time, so the fastest round is the one closest to the true cost.
+    let bestRatio = Number.POSITIVE_INFINITY;
+    let bestSmall = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 5; round++) {
+      const small = sample(smallInput, SMALL_CALLS);
+      const large = sample(largeInput, LARGE_CALLS);
+      bestSmall = Math.min(bestSmall, small);
+      bestRatio = Math.min(bestRatio, large / small);
+    }
+
+    expect(sink).toBeGreaterThan(0); // the work is observed, never optimized away
     // Guard the measurement before trusting it. A sample too small to rise
     // above timer granularity makes the ratio meaningless — that is precisely
-    // how the previous version stopped testing anything without saying so. If
-    // a faster machine ever trips this, raise the iteration count in `best`.
-    expect(small).toBeGreaterThan(1);
-    // 4x the input. Quadratic ⇒ ~16x the time; linear ⇒ ~4x. Allow a very
-    // generous 8x so this measures the COMPLEXITY CLASS, not the machine.
-    // Measured 3.98x–4.03x across 20 trials, both samples tens of ms.
-    expect(large).toBeLessThan(small * 8);
+    // how an earlier version stopped testing anything without saying so. Both
+    // samples are ~24ms here; if a faster machine ever trips this, raise
+    // LARGE_CALLS (SMALL_CALLS follows it, keeping the totals equal).
+    expect(bestSmall).toBeGreaterThan(1);
+    expect(bestRatio).toBeLessThan(4);
   });
 
   it(
