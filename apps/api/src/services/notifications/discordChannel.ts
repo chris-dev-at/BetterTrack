@@ -3,6 +3,7 @@ import type { Logger } from '../../logger';
 import { decryptSecret, type SecretBoxKeyring } from '../crypto/secretBox';
 
 import type { PushMessage } from './fcm';
+import { channelSetupText } from './notificationI18n';
 
 /**
  * Discord notification channel (§13.4 V4-P10). Delivers a rendered
@@ -39,10 +40,11 @@ export interface DiscordChannel {
 
   /**
    * Send a diagnostic "This is BetterTrack" message to the user's saved
-   * webhook. Returns `ok`/`gone`/`error` so the settings UI can surface it
-   * cleanly. No prune on `error` (the URL might be fine; Discord flaked).
+   * webhook, rendered in `locale` (#1723). Returns `ok`/`gone`/`error` so the
+   * settings UI can surface it cleanly. No prune on `error` (the URL might be
+   * fine; Discord flaked).
    */
-  sendTest(userId: string): Promise<DiscordSendOutcome>;
+  sendTest(userId: string, locale: string | null | undefined): Promise<DiscordSendOutcome>;
 
   /**
    * Send `message` to a candidate webhook URL WITHOUT persisting anything — the
@@ -146,12 +148,12 @@ export function createDiscordChannel(deps: CreateDiscordChannelDeps): DiscordCha
       }
     },
 
-    async sendTest(userId): Promise<DiscordSendOutcome> {
+    async sendTest(userId, locale): Promise<DiscordSendOutcome> {
       const url = await resolveUrl(userId);
       if (!url) return 'gone';
       // Deliberately does NOT prune on the test path: the user is exercising
       // it interactively and expects to see the failure, not a silent removal.
-      return post(url, 'BetterTrack test message — your notifications are wired up.');
+      return post(url, channelSetupText('discordTest', locale));
     },
 
     async probe(url, text): Promise<DiscordSendOutcome> {

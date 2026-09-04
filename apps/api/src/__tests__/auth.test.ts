@@ -448,16 +448,19 @@ describe('self-service password-reset concurrency', () => {
       const response = await requestPasswordReset(harness, email);
       return { response, elapsedMs: performance.now() - startedAt };
     };
-    const pairCount = 8;
+    // Depth is load-bearing twice over. It exercises the per-address
+    // serialization distribution rather than one quiet database request whose
+    // fixed 250 ms floor can hide the row-lock branch — and it is what gives
+    // the tail bound below any outlier tolerance at all (see `tailIndex`).
+    const pairCount = 24;
 
     // Launch N pairs together against the same known and same unknown address.
-    // This exercises the per-address serialization distribution, not one quiet
-    // database request whose fixed 250 ms floor can hide the row-lock branch.
     const pairs = await Promise.all(
       Array.from({ length: pairCount }, () =>
         Promise.all([timedRequest(user.email), timedRequest('nobody-here@test.dev')]),
       ),
     );
+    // Nearest-rank percentile: the smallest sample at or above the fraction.
     const percentile = (samples: readonly number[], fraction: number) =>
       samples[Math.ceil(samples.length * fraction) - 1]!;
 
@@ -491,10 +494,30 @@ describe('self-service password-reset concurrency', () => {
     // The bounds below are the originals, unchanged — only the statistic they
     // are applied to is corrected — and they still trip on an injected
     // known-branch delay that pushes past PASSWORD_RESET_RESPONSE_FLOOR_MS.
+    //
+    // The pairing above fixed WHICH samples are differenced; the sample COUNT
+    // is what makes the tail bound a tail bound. Nearest rank puts the 0.9
+    // index at `ceil(n * 0.9) - 1`, which at the previous n = 8 was index 7 of
+    // 8 — the plain MAXIMUM. So the "p90 < 100 ms" line tolerated zero
+    // outliers and was really asserting that no single one of eight requests
+    // ever hit a scheduler stall. It failed CI again on exactly that: deltas of
+    // 0.1, 0.2, 9.1, 11.1, 12.0, 14.2, 19.3 and one 124.8 ms straggler, on a
+    // commit that touched no code on this path. Seven pairs agreeing inside
+    // 20 ms is the branch difference; the eighth is the runner. At n = 24 the
+    // index is 21 of 24, so two stragglers are absorbed while a real leak —
+    // which shifts every pair, not one — still trips both bounds.
     const pairedDeltas = pairs
       .map(([known, unknown]) => Math.abs(known.elapsedMs - unknown.elapsedMs))
       .sort((a, b) => a - b);
     const observed = `paired |known - unknown| (ms): ${pairedDeltas.map((delta) => delta.toFixed(1)).join(', ')}`;
+
+    // Guard the guard: if `pairCount` is ever lowered, the tail bound must fail
+    // here rather than silently decay back into "maximum < 100 ms".
+    const tailIndex = Math.ceil(pairCount * 0.9) - 1;
+    expect(
+      pairCount - 1 - tailIndex,
+      'p90 must exclude outliers, not be the max',
+    ).toBeGreaterThanOrEqual(2);
 
     expect(percentile(pairedDeltas, 0.5), observed).toBeLessThan(75);
     expect(percentile(pairedDeltas, 0.9), observed).toBeLessThan(100);

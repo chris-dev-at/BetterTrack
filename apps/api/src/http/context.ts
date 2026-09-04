@@ -45,10 +45,6 @@ import { createPasskeyRepository } from '../data/repositories/passkeyRepository'
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
-import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
-import { createDiscordWebhookRepository } from '../data/repositories/discordWebhookRepository';
-import { createTelegramLinkRepository } from '../data/repositories/telegramLinkRepository';
-import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createChatRepository } from '../data/repositories/chatRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
@@ -266,7 +262,6 @@ import {
 } from '../services/customAssets/customAssetService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
-import { createFcmChannel } from '../services/notifications/fcm';
 import {
   createNotificationCenter,
   type NotificationCenter,
@@ -286,8 +281,7 @@ import {
   type NotificationSettingsService,
 } from '../services/notifications/notificationSettingsService';
 import { createPresenceStore, type PresenceStore } from '../services/notifications/presence';
-import { createTelegramChannel } from '../services/notifications/telegramChannel';
-import { createDiscordChannel } from '../services/notifications/discordChannel';
+import { createNotificationChannelSet } from '../services/notifications/channelSet';
 import {
   createTelegramSetupService,
   type TelegramSetupService,
@@ -296,7 +290,6 @@ import {
   createDiscordSetupService,
   type DiscordSetupService,
 } from '../services/notifications/discordSetupService';
-import { createWebPushChannel } from '../services/notifications/webPush';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import {
@@ -915,51 +908,24 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const notificationRepo = createNotificationRepository(db);
   const notificationDigestRepo = createNotificationDigestRepository(db);
-  const deviceTokenRepo = createDeviceTokenRepository(db);
-  const pushSubscriptionRepo = createPushSubscriptionRepository(db);
-  // V4-P10 additive channels: Telegram (per-user chat link, bot token in env)
-  // and Discord (per-user webhook URL, encrypted at rest via secretBox).
-  const telegramLinkRepo = createTelegramLinkRepository(db);
-  const discordWebhookRepo = createDiscordWebhookRepository(db);
   const alertRepo = createAlertRepository(db);
   // Written by the realtime gateway, read at dispatch time (cross-process via
   // Redis) to suppress notifying about the surface the user is viewing (#368).
   const presence = createPresenceStore({ redis });
 
-  // Push channels, env-gated (#421): null = unconfigured/unloadable (one warn
-  // log inside the factory). The nulls also drive the settings surface's
-  // channel-availability report, so the UI can only offer live columns.
-  const fcmChannel = createFcmChannel({
-    serviceAccountFile: config.push.fcmServiceAccountFile,
+  // Every outbound channel (+ its store) comes from the ONE shared factory the
+  // worker entry uses too (#1723) — the API and worker dispatchers cannot be
+  // given different channel sets without a compile error.
+  const {
     devices: deviceTokenRepo,
-    logger,
-  });
-  const webPushChannel = createWebPushChannel({
-    vapid: config.webPush,
     subscriptions: pushSubscriptionRepo,
-    logger,
-  });
-  // Telegram channel (V4-P10, V5-P0 kill-switch): null when the global env
-  // kill-switch is OFF or BT_TELEGRAM_BOT_TOKEN is unset — the matrix column
-  // stays hidden, the setup routes 404, and the dispatcher below skips the
-  // channel entirely. Existing rows are preserved for a later re-enable.
-  const telegramChannel = config.telegram.enabled
-    ? createTelegramChannel({
-        botToken: config.telegram.botToken,
-        links: telegramLinkRepo,
-        logger,
-      })
-    : null;
-  // Discord channel (V4-P10, V5-P0 kill-switch): null when the global env
-  // kill-switch is OFF — same treatment as Telegram, per-user webhook rows are
-  // preserved so a flip-back restores them.
-  const discordChannel = config.discord.enabled
-    ? createDiscordChannel({
-        webhooks: discordWebhookRepo,
-        encryptionKey: config.recordEncryption,
-        logger,
-      })
-    : null;
+    telegramLinks: telegramLinkRepo,
+    discordWebhooks: discordWebhookRepo,
+    fcm: fcmChannel,
+    webPush: webPushChannel,
+    telegram: telegramChannel,
+    discord: discordChannel,
+  } = createNotificationChannelSet({ db, config, logger });
 
   // The delivery core. The WORKER runs the authoritative instance inside the
   // `notifications.dispatch` job; this API-side twin serves synchronous test
@@ -1785,12 +1751,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     enabled: config.telegram.enabled,
     botToken: config.telegram.botToken,
     links: telegramLinkRepo,
+    // Recipient locale for the link-confirmation chat message (#1723).
+    users: userRepo,
     channel: telegramChannel,
     logger,
   });
   const discordSetup = createDiscordSetupService({
     enabled: config.discord.enabled,
     webhooks: discordWebhookRepo,
+    // Recipient locale for the save probe + test message (#1723).
+    users: userRepo,
     channel: discordChannel,
     encryptionKey: config.recordEncryption,
     logger,

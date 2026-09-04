@@ -14,8 +14,12 @@ import { createDiscordChannel } from '../services/notifications/discordChannel';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
+import { createNotificationChannelSet } from '../services/notifications/channelSet';
+import { createTelegramSetupService } from '../services/notifications/telegramSetupService';
+import { createDiscordSetupService } from '../services/notifications/discordSetupService';
+import { CHANNEL_SETUP_COPY } from '../services/notifications/notificationI18n';
 import type { FriendRequestEvent } from '../events';
-import { telegramLinks, discordWebhooks } from '../data/schema';
+import { telegramLinks, discordWebhooks, users } from '../data/schema';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -450,5 +454,283 @@ describe('V5-P0 kill-switch — Telegram + Discord deactivated by default', () =
     } finally {
       await on.ctx.events.close();
     }
+  });
+});
+
+// ─── #1723: the WORKER is the authoritative dispatcher ───────────────────────
+//
+// In production `queues` is non-null, so `notify.emit` enqueues
+// `notifications.dispatch` and the WORKER process delivers it. The worker used
+// to build only FCM + web push, so `routing.telegram && telegram` saw
+// `undefined` and every Telegram/Discord notification was dropped on the floor
+// — the kill-switch's "env flip restores" half never worked in a deployment
+// running infra/docker-compose.yml's worker service.
+//
+// Both entry points now build their channels through the ONE shared
+// `createNotificationChannelSet` factory, so these tests exercise the worker's
+// own wiring: the same call, with the same config, that scripts/worker.ts makes.
+// `liveDeployTopology.test.ts` pins that the worker still uses it and still
+// hands the same dependency set to the dispatcher.
+
+describe('worker dispatcher wiring delivers Telegram + Discord (#1723)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Link a confirmed Telegram chat and a saved Discord webhook for `userId`. */
+  async function linkBothChannels(h: TestHarness, userId: string, webhookUrl: string) {
+    await h.db.insert(telegramLinks).values({
+      userId,
+      chatId: '778899',
+      botUsername: 'bt_bot',
+      linkCode: null,
+      linkCodeExpiresAt: null,
+      linkedAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await createDiscordWebhookRepository(h.db).upsert(userId, {
+      encryptedUrl: encryptSecret(webhookUrl, h.ctx.config.recordEncryption),
+      webhookIdMasked: '…abcd',
+    });
+  }
+
+  /** Records every outbound call the channels make through the global fetch. */
+  function stubFetch(): Array<{ url: string; body: string }> {
+    const calls: Array<{ url: string; body: string }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (u: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        calls.push({ url: String(u), body: String(init?.body ?? '') });
+        return new Response('{"ok":true}', { status: 200 });
+      }),
+    );
+    return calls;
+  }
+
+  it('kill-switch ON: an event dispatched through the worker wiring reaches both channels', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const webhookUrl = 'https://discord.com/api/webhooks/424242/worker-token';
+    await linkBothChannels(harness, alice.id, webhookUrl);
+    const calls = stubFetch();
+
+    // Exactly what scripts/worker.ts runs at boot.
+    const channels = createNotificationChannelSet({
+      db: harness.db,
+      config: harness.ctx.config,
+      logger: harness.ctx.logger,
+    });
+    expect(
+      channels.telegram,
+      'kill-switch ON ⇒ the worker builds a Telegram channel',
+    ).not.toBeNull();
+    expect(channels.discord, 'kill-switch ON ⇒ the worker builds a Discord channel').not.toBeNull();
+
+    const dispatcher = createNotificationDispatcher({
+      bus: harness.ctx.events,
+      repo: createNotificationRepository(harness.db),
+      users: createUserRepository(harness.db),
+      fcm: channels.fcm,
+      webPush: channels.webPush,
+      telegram: channels.telegram,
+      discord: channels.discord,
+      logger: harness.ctx.logger,
+    });
+
+    const event: FriendRequestEvent = {
+      type: 'friend.request',
+      userId: alice.id,
+      actorId: 'bob',
+      actorUsername: 'bob',
+      requestId: 'req-worker-1',
+      occurredAt: new Date().toISOString(),
+    };
+    await dispatcher.dispatch(event);
+
+    const telegramCalls = calls.filter((c) => c.url.includes('/sendMessage'));
+    expect(telegramCalls).toHaveLength(1);
+    expect(JSON.parse(telegramCalls[0]!.body).chat_id).toBe('778899');
+    const discordCalls = calls.filter((c) => c.url === webhookUrl);
+    expect(discordCalls).toHaveLength(1);
+    expect(JSON.parse(discordCalls[0]!.body).content).toContain('New friend request');
+  });
+
+  it('kill-switch OFF: the same wiring builds no channel and attempts no send', async () => {
+    const off = await createTestApp({ env: { BT_TELEGRAM_BOT_TOKEN: 'TEST-BOT-TOKEN' } });
+    try {
+      const alice = await off.seedUser({ email: 'alice@bt.test', username: 'alice' });
+      const webhookUrl = 'https://discord.com/api/webhooks/424242/off-token';
+      // Rows are PRESERVED across a deactivation — the proof that nothing sends
+      // has to come from the channel set, not from missing data.
+      await linkBothChannels(off, alice.id, webhookUrl);
+      const calls = stubFetch();
+
+      const channels = createNotificationChannelSet({
+        db: off.db,
+        config: off.ctx.config,
+        logger: off.ctx.logger,
+      });
+      expect(channels.telegram).toBeNull();
+      expect(channels.discord).toBeNull();
+      // The rows survived the flip.
+      expect(await createDiscordWebhookRepository(off.db).findForUser(alice.id)).not.toBeNull();
+
+      const dispatcher = createNotificationDispatcher({
+        bus: off.ctx.events,
+        repo: createNotificationRepository(off.db),
+        users: createUserRepository(off.db),
+        telegram: channels.telegram,
+        discord: channels.discord,
+        logger: off.ctx.logger,
+      });
+      await dispatcher.dispatch({
+        type: 'friend.request',
+        userId: alice.id,
+        actorId: 'bob',
+        actorUsername: 'bob',
+        requestId: 'req-worker-off',
+        occurredAt: new Date().toISOString(),
+      } satisfies FriendRequestEvent);
+
+      expect(calls).toHaveLength(0);
+    } finally {
+      await off.ctx.events.close();
+    }
+  });
+});
+
+// ─── #1723: chat-channel setup copy honours the recipient's locale ───────────
+//
+// The Telegram link confirmation, the Discord save probe and the Discord test
+// message used to be hardcoded English regardless of the recipient's stored
+// locale. They now render from the keyed EN+DE `CHANNEL_SETUP_COPY` catalog,
+// which means both setup services resolve the user row. The services are built
+// here with an injected fetch (the file's established pattern) because the
+// context-owned instances capture the real global fetch at boot; `context.ts`
+// passing the user repository is enforced by the compiler, not by this test.
+
+describe('channel setup messages render in the recipient locale (#1723)', () => {
+  /** Records outbound calls and answers the Telegram + Discord happy paths. */
+  function recordingFetch(pendingCode: () => string) {
+    const calls: Array<{ url: string; body: string }> = [];
+    const fn = vi.fn(async (u: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(u);
+      calls.push({ url, body: String(init?.body ?? '') });
+      if (url.includes('/getMe')) {
+        return new Response(JSON.stringify({ ok: true, result: { username: 'bt_bot' } }), {
+          status: 200,
+        });
+      }
+      if (url.includes('/getUpdates')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: [{ message: { chat: { id: 246810 }, text: `/start ${pendingCode()}` } }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    return { calls, fetchFn: fn as unknown as typeof fetch };
+  }
+
+  function telegramSetupFor(fetchFn: typeof fetch) {
+    const links = createTelegramLinkRepository(harness.db);
+    return createTelegramSetupService({
+      enabled: true,
+      botToken: 'TEST-BOT-TOKEN',
+      links,
+      users: createUserRepository(harness.db),
+      channel: createTelegramChannel({
+        botToken: 'TEST-BOT-TOKEN',
+        links,
+        logger: harness.ctx.logger,
+        fetchFn,
+        minSpacingMs: 0,
+      }),
+      logger: harness.ctx.logger,
+      fetchFn,
+    });
+  }
+
+  function discordSetupFor(fetchFn: typeof fetch) {
+    const webhooks = createDiscordWebhookRepository(harness.db);
+    return createDiscordSetupService({
+      enabled: true,
+      webhooks,
+      users: createUserRepository(harness.db),
+      channel: createDiscordChannel({
+        webhooks,
+        encryptionKey: harness.ctx.config.recordEncryption,
+        logger: harness.ctx.logger,
+        fetchFn,
+        minSpacingMs: 0,
+      }),
+      encryptionKey: harness.ctx.config.recordEncryption,
+      logger: harness.ctx.logger,
+    });
+  }
+
+  it('a DE recipient gets the German Telegram link confirmation', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    await harness.db.update(users).set({ locale: 'de' }).where(eq(users.id, alice.id));
+
+    let code = '';
+    const { calls, fetchFn } = recordingFetch(() => code);
+    const setup = telegramSetupFor(fetchFn);
+
+    code = (await setup.startLink(alice.id)).pendingCode!;
+    expect((await setup.confirmLink(alice.id)).linked).toBe(true);
+
+    // The welcome ping is deliberately fire-and-forget, so wait for it to land.
+    await vi.waitFor(() => {
+      expect(calls.filter((c) => c.url.includes('/sendMessage'))).toHaveLength(1);
+    });
+    const welcome = JSON.parse(calls.find((c) => c.url.includes('/sendMessage'))!.body);
+    expect(welcome.text).toBe(CHANNEL_SETUP_COPY.de.telegramLinked);
+    expect(welcome.text).not.toBe(CHANNEL_SETUP_COPY.en.telegramLinked);
+  });
+
+  it('an EN recipient keeps the English Telegram link confirmation', async () => {
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    let code = '';
+    const { calls, fetchFn } = recordingFetch(() => code);
+    const setup = telegramSetupFor(fetchFn);
+
+    code = (await setup.startLink(bob.id)).pendingCode!;
+    expect((await setup.confirmLink(bob.id)).linked).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(calls.filter((c) => c.url.includes('/sendMessage'))).toHaveLength(1);
+    });
+    const welcome = JSON.parse(calls.find((c) => c.url.includes('/sendMessage'))!.body);
+    expect(welcome.text).toBe(CHANNEL_SETUP_COPY.en.telegramLinked);
+  });
+
+  it('a DE recipient gets the German Discord save probe and test message', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    await harness.db.update(users).set({ locale: 'de' }).where(eq(users.id, alice.id));
+
+    const { calls, fetchFn } = recordingFetch(() => '');
+    const setup = discordSetupFor(fetchFn);
+
+    await setup.save(alice.id, 'https://discord.com/api/webhooks/13/de-token');
+    expect(await setup.test(alice.id)).toBe('ok');
+
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[0]!.body).content).toContain(CHANNEL_SETUP_COPY.de.discordConfigured);
+    expect(JSON.parse(calls[1]!.body).content).toContain(CHANNEL_SETUP_COPY.de.discordTest);
+  });
+
+  it('an EN recipient keeps the English Discord copy', async () => {
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const { calls, fetchFn } = recordingFetch(() => '');
+    const setup = discordSetupFor(fetchFn);
+
+    await setup.save(bob.id, 'https://discord.com/api/webhooks/14/en-token');
+    expect(await setup.test(bob.id)).toBe('ok');
+
+    expect(JSON.parse(calls[0]!.body).content).toContain(CHANNEL_SETUP_COPY.en.discordConfigured);
+    expect(JSON.parse(calls[1]!.body).content).toContain(CHANNEL_SETUP_COPY.en.discordTest);
   });
 });
