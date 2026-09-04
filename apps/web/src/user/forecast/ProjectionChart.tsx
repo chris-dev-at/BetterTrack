@@ -42,7 +42,7 @@ export function ProjectionChart({
         />
         {/* The axis labels the same arithmetic the curve draws, so it reads the
             active base currency and the active locale's magnitude abbreviations
-            (`1,2 Mio. €` in de-AT vs `1.2m $` in en-GB) rather than a hardcoded
+            (`1,2 Mio. €` in de-AT vs `1.2m €` in en-GB) rather than a hardcoded
             `€…M`/`€…k` pair.
             `formatCompactMoney` keeps the discreet-mode mask it always had. */}
         <YAxis

@@ -217,12 +217,21 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const dividendProjection = marketIntel ? dividendQuery.data : undefined;
   // The projection now names its own denomination — the caller's base (§5.4) —
   // and the balance it is added to is in that same base. They can still disagree
-  // for one render after a base change (a cached response), and adding a figure
-  // in another currency to this balance is exactly the defect #1741 closes: a
-  // mismatch counts as "could not resolve", so the factor contributes 0 and says
-  // so rather than silently distorting the curve.
+  // for one render after a base change (either response may be the cached one),
+  // and adding a figure in another currency to this balance is exactly the
+  // defect #1741 closes: a mismatch counts as "could not resolve", so the factor
+  // contributes 0 and says so rather than silently distorting the curve.
+  //
+  // The comparison is against the OTHER OPERAND's own denomination — the base
+  // that travels beside `totals.totalValueEur` in the very same payload — not
+  // against the display global. Comparing to the global would compare one
+  // operand to the label and let a stale portfolio payload through in exactly
+  // the window this guard exists for. Without a portfolio payload there is no
+  // balance either (the start is 0), so the display currency it renders under is
+  // the right fallback.
+  const netWorthCurrency = portfolioQuery.data?.baseCurrency ?? getMoneyCurrency();
   const dividendDenominationMatches =
-    dividendProjection === undefined || dividendProjection.currency === getMoneyCurrency();
+    dividendProjection === undefined || dividendProjection.currency === netWorthCurrency;
   const dividendAvailable = dividendProjection?.available === true && dividendDenominationMatches;
   const dividendUnresolved = dividendProjection !== undefined && !dividendAvailable;
   const monthlyDividend =

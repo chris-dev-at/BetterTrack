@@ -299,8 +299,9 @@ export function formatMoney(value: number | null | undefined, currency?: string)
 
 /**
  * Money abbreviated for a chart axis, symbol-last and locale-aware:
- * `formatCompactMoney(1_200_000)` → `"1,2 Mio. €"` (de-AT, EUR base), `"1.2M $"`
- * (en-GB, USD base). The currency defaults to the user's **base currency**
+ * `formatCompactMoney(1_200_000)` → `"1,2 Mio. €"` (de-AT, EUR base),
+ * `"1.2m US$"` (en-GB, USD base — ICU's en-GB symbol for USD is `US$`, and the
+ * magnitude suffix is lowercase). The currency defaults to the user's **base currency**
  * ({@link setMoneyCurrency}) exactly like {@link formatMoney} — an axis that
  * hardcodes one labels the curve with a currency it never checked.
  *

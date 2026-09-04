@@ -602,12 +602,19 @@ test('switching portfolios refetches rather than serving the other one’s figur
 // the dividend projection used to arrive pinned to EUR. The section added the
 // two and rendered the sum with the base's symbol, so a USD user's curve mixed
 // two currencies under one label. The projection now names its own denomination
-// and the section only spends it when it matches the balance it is added to.
+// and the section only spends it when it matches the balance it is added to —
+// the base that travels in the portfolio payload, not the display global.
 
 afterEach(() => setMoneyCurrency('EUR'));
 
+/** The same portfolio, denominated in another base (what its payload declares). */
+function portfolioInBase(baseCurrency: PortfolioResponse['baseCurrency']): PortfolioResponse {
+  return { ...PORTFOLIO, baseCurrency };
+}
+
 test('a USD-base curve spends the USD projection and renders it as USD', async () => {
   setMoneyCurrency('USD');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('USD'));
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
     available: true,
     currency: 'USD',
@@ -632,9 +639,34 @@ test('a projection in another denomination is not summed into the curve', async 
   // before a base change). Adding €100/mo to a $50,000 balance is precisely the
   // defect #1741 closes, so the factor stays out and says so.
   setMoneyCurrency('USD');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('USD'));
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
     available: true,
     currency: 'EUR',
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
+    holdings: [],
+  });
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+});
+
+test('a stale portfolio payload does not let a fresh-base projection through', async () => {
+  // The narrow window the guard exists for, with the two responses landing on
+  // opposite sides of a base change: the display global and the projection have
+  // both moved to USD, the portfolio payload is still the cached EUR one. The
+  // balance being added to is EUR, so the USD projection is still a mix —
+  // comparing the projection to the display label alone would miss it.
+  setMoneyCurrency('USD');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('EUR'));
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    available: true,
+    currency: 'USD',
     monthlyTotalBase: 100,
     yearlyTotalBase: 1200,
     holdings: [],
