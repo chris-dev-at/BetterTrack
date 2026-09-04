@@ -1,4 +1,6 @@
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
+
+import { apiBaseUrl } from './runtimeConfig';
 
 /**
  * Display-mode facts for the installable user app (PROJECTPLAN §7.1, V5-P13b).
@@ -111,19 +113,47 @@ export function supportsHomeScreenCoachMark(): boolean {
 }
 
 /**
+ * The origins that ARE this app, and must therefore never be handed to another
+ * browser.
+ *
+ * The page origin is only half of it: BetterTrack ships split-origin
+ * (`window.__BT__.apiOrigin`, §7.1 and `lib/apiClient.ts`), and the API origin
+ * carries top-level navigations the app performs deliberately — Google sign-in
+ * and Google linking both assign `${apiBaseUrl()}/auth/google/start` to the
+ * whole window (`lib/userApi.ts`). Escaping those would finish the OAuth round
+ * trip in the real browser, where an installed iOS PWA cannot see the session
+ * cookie it just set — sign-in would be impossible from the installed app.
+ */
+export function sameAppOrigins(pageOrigin: string): readonly string[] {
+  const origins = new Set<string>([pageOrigin]);
+  try {
+    origins.add(new URL(apiBaseUrl(), pageOrigin).origin);
+  } catch {
+    // A malformed injected apiOrigin leaves the page origin as the only answer,
+    // which is the conservative one: more links escape, none are swallowed.
+  }
+  return [...origins];
+}
+
+/**
  * The absolute URL an anchor must be sent to the real browser with, or `null`
  * when it may be followed in place.
  *
  * Standalone windows have no address bar and no back button, so an in-place
  * navigation to another origin strands the user inside a page they cannot leave
- * — the app is simply gone until they force-quit it. Same-origin routing is
- * untouched (that is the app itself), and so is anything that already escapes:
- * an explicit `target`, a download, or a scheme (`mailto:`, `tel:`) the OS
- * hands to another app anyway.
+ * — the app is simply gone until they force-quit it. The app's own origins are
+ * untouched ({@link sameAppOrigins}), and so is anything that already escapes or
+ * opts out: an explicit `target` (including `_self`, the per-anchor "follow this
+ * in place"), a download, or a scheme (`mailto:`, `tel:`) the OS hands to
+ * another app anyway.
  */
-export function standaloneEscapeHref(anchor: HTMLAnchorElement, origin: string): string | null {
+export function standaloneEscapeHref(
+  anchor: HTMLAnchorElement,
+  origin: string,
+  appOrigins: readonly string[] = sameAppOrigins(origin),
+): string | null {
   const target = anchor.getAttribute('target');
-  if (target !== null && target !== '' && target !== '_self') return null;
+  if (target !== null && target !== '') return null;
   if (anchor.hasAttribute('download')) return null;
   if (anchor.getAttribute('href') === null) return null;
 
@@ -134,7 +164,7 @@ export function standaloneEscapeHref(anchor: HTMLAnchorElement, origin: string):
     return null;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  if (url.origin === origin) return null;
+  if (appOrigins.includes(url.origin)) return null;
   return url.href;
 }
 
@@ -143,6 +173,14 @@ export function standaloneEscapeHref(anchor: HTMLAnchorElement, origin: string):
  * the chromeless window. See {@link standaloneEscapeHref} for what qualifies.
  */
 export function useStandaloneExternalLinks(active: boolean): void {
+  // The injected runtime config is written before the bundle loads and never
+  // changes afterwards, so the app's origins are resolved once per activation
+  // rather than on every click.
+  const appOrigins = useMemo(
+    () => (typeof window === 'undefined' ? [] : sameAppOrigins(window.location.origin)),
+    [],
+  );
+
   useEffect(() => {
     if (!active || typeof document === 'undefined') return;
 
@@ -154,7 +192,11 @@ export function useStandaloneExternalLinks(active: boolean): void {
 
       const anchor = (event.target as Element | null)?.closest?.('a');
       if (!anchor) return;
-      const href = standaloneEscapeHref(anchor as HTMLAnchorElement, window.location.origin);
+      const href = standaloneEscapeHref(
+        anchor as HTMLAnchorElement,
+        window.location.origin,
+        appOrigins,
+      );
       if (href === null) return;
 
       event.preventDefault();
@@ -163,5 +205,23 @@ export function useStandaloneExternalLinks(active: boolean): void {
 
     document.addEventListener('click', onClick);
     return () => document.removeEventListener('click', onClick);
-  }, [active]);
+  }, [active, appOrigins]);
+}
+
+/**
+ * True when there is a real entry behind the current one in THIS window's
+ * history, so a back affordance has somewhere to go.
+ *
+ * react-router's `location.key !== 'default'` is NOT that answer: `'default'`
+ * marks only the initial location OBJECT, and any boot-time redirect
+ * (`RequireUser`'s `<Navigate to="/login" replace>`, the first-run gate, the
+ * switcher's replace-mode `setSearchParams`) mints a fresh key while the history
+ * index stays at 0. The index is what the router itself writes into
+ * `window.history.state`, so read it from there: at 0 a `navigate(-1)` either
+ * does nothing or walks the user out of the app entirely.
+ */
+export function canNavigateBack(): boolean {
+  if (typeof window === 'undefined') return false;
+  const index = (window.history.state as { idx?: unknown } | null)?.idx;
+  return typeof index === 'number' && index > 0;
 }

@@ -1,4 +1,8 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
+
+import { newAdminRequestContext } from './support/adminApi';
+import { expectUserShellReady } from './support/flows';
+import { provisionUserInContext } from './support/users';
 
 /**
  * The installable-PWA half of V5-P13b (PROJECTPLAN §7.1).
@@ -35,6 +39,33 @@ async function fireBeforeInstallPrompt(page: Page): Promise<void> {
       return Promise.resolve();
     };
     window.dispatchEvent(event);
+  });
+}
+
+/**
+ * Stub `(display-mode: standalone)` before the app boots. Playwright has no
+ * display-mode emulation, and this is the one input `lib/pwaDisplayMode.ts`
+ * reads, so the app cannot tell the difference.
+ */
+async function pretendStandalone(target: Pick<Page, 'addInitScript'>): Promise<void> {
+  await target.addInitScript(() => {
+    const real = window.matchMedia.bind(window);
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) =>
+        query.includes('display-mode: standalone')
+          ? {
+              matches: true,
+              media: query,
+              onchange: null,
+              addEventListener: () => {},
+              removeEventListener: () => {},
+              addListener: () => {},
+              removeListener: () => {},
+              dispatchEvent: () => false,
+            }
+          : real(query),
+    });
   });
 }
 
@@ -110,25 +141,7 @@ test.describe('installable PWA', () => {
   test('pwa: no install affordance in a standalone window, and the standalone rules are stamped', async ({
     page,
   }) => {
-    await page.addInitScript(() => {
-      const real = window.matchMedia.bind(window);
-      Object.defineProperty(window, 'matchMedia', {
-        configurable: true,
-        value: (query: string) =>
-          query.includes('display-mode: standalone')
-            ? {
-                matches: true,
-                media: query,
-                onchange: null,
-                addEventListener: () => {},
-                removeEventListener: () => {},
-                addListener: () => {},
-                removeListener: () => {},
-                dispatchEvent: () => false,
-              }
-            : real(query),
-      });
-    });
+    await pretendStandalone(page);
 
     await page.goto('/login');
 
@@ -139,5 +152,48 @@ test.describe('installable PWA', () => {
     // Already an app: nothing to install, so nothing is offered.
     await fireBeforeInstallPrompt(page);
     await expect(page.getByTestId('pwa-install-prompt')).toHaveCount(0);
+  });
+
+  /**
+   * The other half of the acceptance line: the in-app back affordance. A
+   * chromeless window has no browser back at all on iOS, so the topbar brings
+   * its own — and it must exist ONLY where `navigate(-1)` has somewhere to go.
+   * Needs the authenticated shell, hence the provisioned account.
+   */
+  test('pwa: a standalone window carries its own back button, and never a dead one', async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+
+    const apiRequest = await newAdminRequestContext(newRequestContext);
+    const context = await browser.newContext();
+    await pretendStandalone(context);
+    const user = await provisionUserInContext(context, apiRequest, 'pwaback');
+    await apiRequest.dispose();
+    const page = user.page;
+
+    try {
+      // A fresh load is history index 0, whatever boot-time redirects the shell
+      // performed on the way (each mints a new router location key while the
+      // index stays put). A back button here would be dead, or would walk the
+      // user out of the app entirely.
+      await page.goto('/portfolio');
+      await expectUserShellReady(page);
+      await expect(page.locator('html')).toHaveAttribute('data-bt-display-mode', 'standalone');
+      await expect(page.getByTestId('standalone-back')).toHaveCount(0);
+
+      // One real in-app navigation, and the affordance appears.
+      await page.locator('.bt-rail-item__link[href="/assets"]').first().click();
+      await expect(page).toHaveURL(/\/assets$/);
+      const back = page.getByTestId('standalone-back');
+      await expect(back).toBeVisible();
+
+      await back.click();
+      await expect(page).toHaveURL(/\/portfolio/);
+      // Back at the entry the window opened on, so the control retires again.
+      await expect(page.getByTestId('standalone-back')).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
   });
 });

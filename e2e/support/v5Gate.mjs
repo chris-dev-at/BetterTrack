@@ -305,6 +305,10 @@ export const V5_PHASE_SCENARIOS = [
           title:
             'pwa: no install affordance in a standalone window, and the standalone rules are stamped',
         },
+        {
+          spec: 'e2e/pwa-install.spec.ts',
+          title: 'pwa: a standalone window carries its own back button, and never a dead one',
+        },
       ],
     },
   },

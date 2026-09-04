@@ -5,13 +5,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DISPLAY_MODE_ATTRIBUTE,
   applyDisplayModeAttribute,
+  canNavigateBack,
   isInstalledDisplay,
   isStandaloneDisplay,
+  sameAppOrigins,
   standaloneEscapeHref,
   subscribeDisplayMode,
   supportsHomeScreenCoachMark,
   useStandaloneExternalLinks,
 } from './pwaDisplayMode';
+
+/** The split-origin deployment: the SPA on one origin, the API on another. */
+const API_ORIGIN = 'https://api.bettertrack.test';
+
+function stubApiOrigin(apiOrigin: string): void {
+  window.__BT__ = { app: 'user', apiOrigin };
+}
 
 /**
  * jsdom 26 ships no `matchMedia`, so every case installs the one it needs and
@@ -50,10 +59,12 @@ function stubNavigator(patch: Record<string, unknown>): void {
 afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia');
   Reflect.deleteProperty(window, 'onbeforeinstallprompt');
+  Reflect.deleteProperty(window, '__BT__');
   for (const key of ['standalone', 'userAgent', 'maxTouchPoints']) {
     Reflect.deleteProperty(navigator, key);
   }
   document.documentElement.removeAttribute(DISPLAY_MODE_ATTRIBUTE);
+  window.history.replaceState(null, '', window.location.pathname);
   vi.restoreAllMocks();
 });
 
@@ -182,6 +193,59 @@ describe('standalone external-link escape', () => {
     expect(standaloneEscapeHref(anchor('<a href="mailto:a@b.c">m</a>'), origin)).toBeNull();
     expect(standaloneEscapeHref(anchor('<a>no href</a>'), origin)).toBeNull();
   });
+
+  /**
+   * The deployment topology this app actually ships in is split-origin: the SPA
+   * talks to `window.__BT__.apiOrigin` cross-origin with credentials (§7.1). The
+   * API origin is therefore part of the app, and Google sign-in is a deliberate
+   * top-level navigation to it (`googleStartUrl()`, rendered by `GoogleButton`
+   * and the Connections panel with no `target`). Handing that click to the real
+   * browser finishes the OAuth round trip in Safari, whose cookie jar an
+   * installed iOS PWA cannot see — sign-in would be impossible from the app.
+   */
+  it('follows an anchor to the configured API origin in place, not in the browser', () => {
+    stubApiOrigin(API_ORIGIN);
+    expect(sameAppOrigins(origin)).toEqual([origin, API_ORIGIN]);
+
+    const googleStart = anchor(`<a href="${API_ORIGIN}/api/v1/auth/google/start">g</a>`);
+    expect(standaloneEscapeHref(googleStart, origin)).toBeNull();
+
+    // A different third party on the same scheme is still sent out.
+    expect(standaloneEscapeHref(anchor('<a href="https://example.com/x">x</a>'), origin)).toBe(
+      'https://example.com/x',
+    );
+  });
+
+  it('falls back to the page origin alone in a same-origin deployment', () => {
+    stubApiOrigin('');
+    expect(sameAppOrigins(origin)).toEqual([origin]);
+  });
+
+  it('treats an explicit target="_self" as the per-anchor opt-out it reads as', () => {
+    expect(
+      standaloneEscapeHref(anchor('<a href="https://example.com" target="_self">x</a>'), origin),
+    ).toBeNull();
+  });
+});
+
+describe('canNavigateBack', () => {
+  it('is false on the entry the app booted on, even after a boot-time replace', () => {
+    // react-router mints a FRESH `location.key` for `<Navigate replace>` while
+    // the history index stays at 0 — which is why the key is not the signal.
+    expect(canNavigateBack()).toBe(false);
+    window.history.replaceState({ idx: 0, key: 'fresh-key' }, '', '/login');
+    expect(canNavigateBack()).toBe(false);
+  });
+
+  it('is true once a real entry sits behind the current one', () => {
+    window.history.pushState({ idx: 1, key: 'second' }, '', '/portfolio');
+    expect(canNavigateBack()).toBe(true);
+  });
+
+  it('is false when the history carries no router index at all', () => {
+    window.history.replaceState({ usr: 'something else' }, '', '/portfolio');
+    expect(canNavigateBack()).toBe(false);
+  });
 });
 
 describe('useStandaloneExternalLinks', () => {
@@ -191,6 +255,7 @@ describe('useStandaloneExternalLinks', () => {
       <div>
         <a href="https://example.com/docs">external</a>
         <a href="/portfolio">internal</a>
+        <a href={`${API_ORIGIN}/api/v1/auth/google/start`}>google</a>
       </div>
     );
   }
@@ -208,6 +273,21 @@ describe('useStandaloneExternalLinks', () => {
     open.mockClear();
     await user.click(getByText('internal'));
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it('lets the Google sign-in navigation reach the API origin in place', async () => {
+    stubApiOrigin(API_ORIGIN);
+    const open = vi.fn();
+    Object.defineProperty(window, 'open', { configurable: true, writable: true, value: open });
+    const user = userEvent.setup();
+
+    const { getByText } = render(<Harness active />);
+    await user.click(getByText('google'));
+    expect(open).not.toHaveBeenCalled();
+
+    // …and a genuine third party from the same window still escapes.
+    await user.click(getByText('external'));
+    expect(open).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noopener,noreferrer');
   });
 
   it('does nothing in an ordinary browser tab, which has its own way back', async () => {

@@ -34,9 +34,14 @@ function stubNavigator(patch: Record<string, unknown>): void {
 const IOS_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15';
 
 /** The Chromium event, in the shape the component actually reads. */
-function fireBeforeInstallPrompt(): { prompt: ReturnType<typeof vi.fn> } {
+function fireBeforeInstallPrompt(outcome?: 'accepted' | 'dismissed'): {
+  prompt: ReturnType<typeof vi.fn>;
+} {
   const prompt = vi.fn(() => Promise.resolve());
-  const event = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), { prompt });
+  const event = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
+    prompt,
+    ...(outcome ? { userChoice: Promise.resolve({ outcome }) } : {}),
+  });
   window.dispatchEvent(event);
   return { prompt };
 }
@@ -91,6 +96,36 @@ describe('InstallPrompt', () => {
     });
     window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('settles permanently once the user accepts the native sheet', async () => {
+    const user = userEvent.setup();
+    renderPrompt();
+    fireBeforeInstallPrompt('accepted');
+    await screen.findByTestId('pwa-install-prompt');
+
+    await user.click(screen.getByRole('button', { name: 'Install' }));
+    await waitFor(() => expect(localStorage.getItem('bt.pwa.install')).toBe('installed'));
+  });
+
+  /**
+   * Cancelling Chromium's sheet is the user declining THAT sheet, not declining
+   * the app forever — and the browser keeps firing `beforeinstallprompt`. The
+   * permanent "no" lives on the dismiss button, which is where the user gives it.
+   */
+  it('does not treat a cancelled native sheet as a permanent no', async () => {
+    const user = userEvent.setup();
+    renderPrompt();
+    fireBeforeInstallPrompt('dismissed');
+    await screen.findByTestId('pwa-install-prompt');
+
+    await user.click(screen.getByRole('button', { name: 'Install' }));
+    await waitFor(() => expect(screen.queryByTestId('pwa-install-prompt')).not.toBeInTheDocument());
+    expect(localStorage.getItem('bt.pwa.install')).toBeNull();
+
+    // The next event the browser fires brings the affordance back.
+    fireBeforeInstallPrompt('accepted');
+    expect(await screen.findByTestId('pwa-install-prompt')).toBeInTheDocument();
   });
 
   it('dismisses on request, and the dismissal survives a remount', async () => {

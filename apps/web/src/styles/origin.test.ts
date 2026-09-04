@@ -272,6 +272,18 @@ describe('Installable PWA', () => {
     );
   });
 
+  /**
+   * The card and the AskDock claim the same corner and the same layer, and the
+   * dock — rendered deeper in the tree — wins the paint. Without this rule the
+   * card, dismiss button included, is unreachable while the dock is open.
+   */
+  it('yields the corner to the AskDock, which shares it and paints above', () => {
+    expect(originCss).toMatch(/\.bt-askdock \{[^}]*right: 16px;[^}]*z-index: 45;/);
+    expect(originCss).toMatch(
+      /html\[data-bt-askdock='open'\] \.bt-install-prompt \{\s*display: none;\s*\}/,
+    );
+  });
+
   it('compensates the translucent status bar in a standalone window, both ways', () => {
     // The media query is the standard; the attribute is what pwaDisplayMode.ts
     // stamps from `navigator.standalone`, the only signal iOS below 16.4 gives.

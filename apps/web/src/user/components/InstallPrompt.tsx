@@ -107,12 +107,29 @@ export function InstallPrompt() {
   const install = useCallback(() => {
     const event = deferred;
     if (!event) return;
-    // Hide immediately: the native sheet owns the interaction from here, and
-    // either outcome (installed, or declined) is an answer we must respect.
+    // Hide immediately: the native sheet owns the interaction from here. But
+    // stepping aside is not an answer — only an ACCEPTED install settles this
+    // permanently. Cancelling Chromium's sheet is the user declining that sheet,
+    // not declining the app forever, and Chromium keeps firing
+    // `beforeinstallprompt` on later loads; the card comes back with that fresh
+    // event (never with this one — `prompt()` may only be called once). The
+    // permanent "no" stays where the user actually gives it: the dismiss button.
     setDeferred(null);
-    writeSettled(DISMISSED);
-    setSettled(true);
-    void event.prompt().catch(() => undefined);
+    void (async () => {
+      try {
+        await event.prompt();
+        const choice = await event.userChoice;
+        if (choice?.outcome !== 'accepted') return;
+      } catch {
+        // The sheet could not be shown (already consumed, gesture expired).
+        // Nothing was answered, so nothing is persisted.
+        return;
+      }
+      // `appinstalled` normally lands this too; writing it here means an
+      // acceptance is respected even where that event never fires.
+      writeSettled(INSTALLED);
+      setSettled(true);
+    })();
   }, [deferred]);
 
   // Already an app ⇒ nothing to install; settled ⇒ the user has answered.

@@ -7719,6 +7719,17 @@
   box-shadow: var(--bt-shadow-menu);
 }
 
+/* The AskDock claims the same corner AND the same layer (`.bt-askdock`:
+   right/bottom 16px, z-index 45) and is rendered deeper in the tree, so it
+   paints over this card — dismiss button included. The dock is a panel the user
+   just opened on purpose; an install offer can wait, so the card steps aside
+   while a dock is on screen and comes back when it closes. `data-bt-askdock` is
+   only ever set while the panel is actually rendered, so the card is untouched
+   on the sign-in screen, where no shell (and therefore no dock) exists. */
+html[data-bt-askdock='open'] .bt-install-prompt {
+  display: none;
+}
+
 .bt-install-prompt__text {
   display: flex;
   flex-direction: column;
