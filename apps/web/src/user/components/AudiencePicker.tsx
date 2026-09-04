@@ -192,12 +192,17 @@ export function AudiencePicker({
     const loaded = audienceQuery.data;
     if (!authoritativeKey || snapshotKey === authoritativeKey || !loaded) return;
     setSelected(loaded.audience);
-    setFriendIds(new Set(loaded.friendIds));
+    // Seed ONLY ids the friends list can render. The server no longer names a
+    // recipient whose friendship has dissolved (#1710), but an id with no row to
+    // tick would otherwise sit invisibly in state and be re-submitted on Save —
+    // an unticked checkbox silently standing for a named recipient.
+    const selectable = new Set((friendsQuery.data?.friends ?? []).map((f) => f.user.id));
+    setFriendIds(new Set(loaded.friendIds.filter((id) => selectable.has(id))));
     setGroupId(loaded.groupId);
     setAcknowledged(false);
     setWidenConfirmed(false);
     setSnapshotKey(authoritativeKey);
-  }, [audienceQuery.data, authoritativeKey, snapshotKey]);
+  }, [audienceQuery.data, authoritativeKey, friendsQuery.data, snapshotKey]);
 
   const snapshotReady = authoritativeKey !== null && snapshotKey === authoritativeKey;
   const audience: ShareAudience = selected ?? 'private';
