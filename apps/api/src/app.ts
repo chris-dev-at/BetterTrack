@@ -2,7 +2,11 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 
-import { GLOBAL_JSON_BODY_LIMIT } from './http/bodyLimits';
+import {
+  GLOBAL_JSON_BODY_LIMIT,
+  deferBodyParserFailure,
+  raiseDeferredBodyParserFailure,
+} from './http/bodyLimits';
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
@@ -92,26 +96,33 @@ export function createApp(ctx: AppContext) {
   // (§4.6, §10). The allowlist is the derived web+admin origins.
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
   const regularJson = express.json({ limit: GLOBAL_JSON_BODY_LIMIT });
-  app.use((req, res, next) => {
-    // The decrypted restore is a deflate-expanded multiple of the bounded
-    // encrypted envelope (see `PARANOID_RESTORE_PLAINTEXT_FACTOR`).
-    // Defer restore parsers to their routes, after authentication + the vault
-    // rate limiter; every other JSON request keeps the 100 KiB global bound.
-    // The account-disable route re-applies this same bound for callers that are
-    // not paranoid, so the deferral widens nothing with nothing to restore.
-    // Express routes case-insensitively by default, so match the same way —
-    // otherwise `/Disable` reaches the handler under the 100 KiB bound and 413s.
-    const path = req.path.toLowerCase();
-    if (
-      (req.method === 'POST' &&
-        (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)) ||
-      isPortfolioVaultMoveOutHttpPath(req.method, path)
-    ) {
-      next();
-      return;
-    }
-    regularJson(req, res, next);
-  });
+  // A parse or limit failure here would otherwise `next(err)` straight to the
+  // terminal handler, skipping every middleware below — the rate limiter
+  // included. `deferBodyParserFailure` parks it instead; it is re-raised by the
+  // `raiseDeferredBodyParserFailure` mount after the limiters, so a malformed
+  // body is metered like any other request (§13.5 V5-P2).
+  app.use(
+    deferBodyParserFailure((req, res, next) => {
+      // The decrypted restore is a deflate-expanded multiple of the bounded
+      // encrypted envelope (see `PARANOID_RESTORE_PLAINTEXT_FACTOR`).
+      // Defer restore parsers to their routes, after authentication + the vault
+      // rate limiter; every other JSON request keeps the 100 KiB global bound.
+      // The account-disable route re-applies this same bound for callers that are
+      // not paranoid, so the deferral widens nothing with nothing to restore.
+      // Express routes case-insensitively by default, so match the same way —
+      // otherwise `/Disable` reaches the handler under the 100 KiB bound and 413s.
+      const path = req.path.toLowerCase();
+      if (
+        (req.method === 'POST' &&
+          (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)) ||
+        isPortfolioVaultMoveOutHttpPath(req.method, path)
+      ) {
+        next();
+        return;
+      }
+      regularJson(req, res, next);
+    }),
+  );
   app.use(cookieParser(ctx.config.sessionSecrets));
 
   // Public API docs (§5 Meta, §6.13): mounted at the origin root, BEFORE the
@@ -162,11 +173,24 @@ export function createApp(ctx: AppContext) {
     '/api/v1/admin/monitoring/grafana',
     requireAdmin,
     requireAdminTwoFactor(ctx),
+    // This mount TERMINATES the request four `app.use` calls before the global
+    // `enforcePasswordChange` below, so the guard has to be repeated here — an
+    // admin forced into a password change is 403'd on every other `/api/v1`
+    // route and must not keep serving the whole proxied Grafana, its own admin
+    // UI and datasource management included (§6.12).
+    enforcePasswordChange,
+    // Grafana's datasource POSTs are re-serialised from `req.body`, so a body
+    // that never parsed must be refused here rather than forwarded empty.
+    raiseDeferredBodyParserFailure,
     createGrafanaProxyMiddleware(ctx),
   );
 
   app.use('/api/v1', limiters.general);
   app.use('/api/v1', limiters.apiKey);
+  // The deferred body-parser failure lands HERE: after the general and per-key
+  // limiters have metered the request, before any route can act on the empty
+  // body the deferral left in its place.
+  app.use(raiseDeferredBodyParserFailure);
   // The OAuth token endpoint is machine-to-machine (a partner backend, no cookie
   // and no bearer): mount it BEFORE the CSRF guard so it stays public, but AFTER
   // the general limiter so it is still rate-limited (by IP for anonymous callers).

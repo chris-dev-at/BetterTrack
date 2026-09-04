@@ -102,6 +102,111 @@ describe('createErrorHandler validator stripping', () => {
   });
 });
 
+/**
+ * Body-parser failures are CLIENT faults (§13.5 V5-P2). Before this they
+ * arrived as plain `Error`s, were classified as unexpected, and left as a 500
+ * that was also captured onto the admin Problems page — with the parser's own
+ * message, which quotes the first bytes of the body.
+ */
+describe('createErrorHandler body-parser failures', () => {
+  function bodyParserApp(report: ReturnType<typeof vi.fn>, limit = '100kb') {
+    const app = express();
+    app.disable('etag');
+    app.use(express.json({ limit }));
+    app.post('/thing', (_req, res) => {
+      res.json({ ok: true });
+    });
+    app.use(createErrorHandler(logger, report));
+    return app;
+  }
+
+  it('answers truncated JSON with 400 and never reports it', async () => {
+    const report = vi.fn();
+    const res = await request(bodyParserApp(report))
+      .post('/thing')
+      .set('Content-Type', 'application/json')
+      .send('{"password": "hunter2-correct-horse');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: { code: 'MALFORMED_BODY', message: 'The request body is not valid JSON.' },
+    });
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it('never echoes a fragment of the body it refused', async () => {
+    const report = vi.fn();
+    const res = await request(bodyParserApp(report))
+      .post('/thing')
+      .set('Content-Type', 'application/json')
+      .send('{"password": "hunter2-correct-horse');
+
+    expect(JSON.stringify(res.body)).not.toContain('hunter2');
+    expect(JSON.stringify(res.body)).not.toContain('password');
+  });
+
+  it('answers an over-bound body with 413 and never reports it', async () => {
+    const report = vi.fn();
+    const res = await request(bodyParserApp(report, '1kb'))
+      .post('/thing')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ note: 'x'.repeat(4096) }));
+
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({
+      error: { code: 'PAYLOAD_TOO_LARGE', message: 'The request body exceeds the size limit.' },
+    });
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it('answers an unsupported content encoding with 415 and never reports it', async () => {
+    const report = vi.fn();
+    const res = await request(bodyParserApp(report))
+      .post('/thing')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'brotlipop')
+      .send('{"a":1}');
+
+    expect(res.status).toBe(415);
+    expect(res.body.error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    expect(report).not.toHaveBeenCalled();
+  });
+
+  it('does not report a body-parser failure after headers are already sent', () => {
+    const report = vi.fn();
+    const handler = createErrorHandler(logger, report);
+    const { res, status } = mockRes(true);
+    const next = vi.fn();
+    const parseFailure = Object.assign(new SyntaxError('Unexpected token in "{"pw": secret'), {
+      type: 'entity.parse.failed',
+      status: 400,
+      expose: true,
+    });
+
+    handler(parseFailure, {} as Request, res, next);
+
+    expect(report).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(parseFailure);
+  });
+
+  it('still treats a 5xx-shaped error carrying a type as unexpected', () => {
+    const report = vi.fn();
+    const handler = createErrorHandler(logger, report);
+    const { res, status } = mockRes();
+    const err = Object.assign(new Error('upstream exploded'), {
+      type: 'stream.encoding.set',
+      status: 500,
+      expose: false,
+    });
+
+    handler(err, {} as Request, res, vi.fn());
+
+    expect(status).toHaveBeenCalledWith(500);
+    expect(report).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('createErrorHandler PII-safe reporting', () => {
   it('reports an unexpected error (the 500 path) to the reporter', () => {
     const report = vi.fn();
