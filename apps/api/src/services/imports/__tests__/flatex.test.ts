@@ -189,6 +189,20 @@ describe('flatexMapper.map — per-row errors and cash-text classification', () 
     expect(mapOneCash('gestern;;Einzahlung;1;100,00').ok).toBe(false);
   });
 
+  it('refuses an English-grouped amount instead of booking a thousandth of it', () => {
+    // `1,234.56` read as German notation is 1.23456: the deposit used to stage
+    // `mapped` at a thousandth of the money the statement says arrived.
+    const deposit = mapOneCash('02.01.2024;02.01.2024;Einzahlung SEPA Gehalt;100001;1,234.56');
+    expect(deposit.ok).toBe(false);
+    const price = mapOneSecurities(
+      '15.01.2024;;DE0001234567;X AG;10;1,234.56;EUR;0,00;-12.345,60;Kauf',
+    );
+    expect(price.ok).toBe(false);
+    // The German form is unaffected.
+    const german = mapOneCash('02.01.2024;02.01.2024;Einzahlung SEPA Gehalt;100001;1.234,56');
+    expect(german.ok && german.row.amountEur).toBe(1234.56);
+  });
+
   it('fails sign-contradicting reversal (Storno) rows instead of booking their magnitude', () => {
     // A Storno keeps the original booking's text but flips the amount sign —
     // booking Math.abs would double-count (original + its reversal).

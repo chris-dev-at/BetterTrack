@@ -177,10 +177,15 @@ export function deriveRowForKind(
     ok: true,
     row: {
       kind,
-      // A cash movement is not about an instrument, and dedupe depends on that:
-      // `contentHash` keys cash on a null instrument, so a memo left in `name`
-      // would hash differently from the identical hand-recorded movement and
-      // defeat the duplicate check.
+      // A cash movement is not about an instrument: `contentHash` keys cash on
+      // a null instrument, so a memo parked in `name` would hash differently
+      // from the same movement recorded by hand and defeat the duplicate check.
+      //
+      // The memo is not discarded, though — it stays in `note` below, which is
+      // the field the booking carries into the ledger and therefore the only
+      // one both sides of a dedupe can read. `contentHash` takes it from there
+      // as the cash key's discriminator, which is what keeps two same-day
+      // €500 deposits with different memos two movements rather than one.
       isin: kind === 'dividend' ? fields.isin : null,
       symbol: kind === 'dividend' ? fields.symbol : null,
       name: kind === 'dividend' ? fields.name : null,
