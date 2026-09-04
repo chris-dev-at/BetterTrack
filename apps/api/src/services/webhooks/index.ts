@@ -34,6 +34,6 @@ export {
   signWebhookPayload,
   verifyWebhookSignature,
   buildWebhookPayload,
-  type SignableEvent,
+  type WebhookDeliverableEvent,
   type VerifyWebhookSignatureOptions,
 } from './webhookSigner';
