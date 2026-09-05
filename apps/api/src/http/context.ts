@@ -59,6 +59,7 @@ import { createWorkboardRepository } from '../data/repositories/workboardReposit
 import { createEventBus, type EventBus } from '../events';
 import {
   createBackfillScheduler,
+  createExportBuildEnqueuer,
   createQueueRegistry,
   noopBackfillScheduler,
   type BackfillScheduler,
@@ -1889,16 +1890,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const exportEnqueue =
     deps.exportEnqueue ??
     (queues
-      ? async (jobId: string, opts?: { delayMs?: number }) => {
-          // `delayMs` is how a build deferred by a portfolio-vault finalization
-          // waits for the sweep that clears it — the queue's own retry ladder is
-          // far too short to reach one (#1812).
-          await queues.enqueue(
-            'data.export',
-            { jobId },
-            ...(opts?.delayMs !== undefined ? [{ delay: opts.delayMs }] : []),
-          );
-        }
+      ? // The queue mapping (including `delayMs` → BullMQ `delay`) lives once in
+        // `createExportBuildEnqueuer` so this root and the worker's cannot drift.
+        createExportBuildEnqueuer(queues)
       : (jobId: string, opts?: { delayMs?: number }) =>
           // The synchronous test transport has no equivalent of a delayed
           // re-drive, and re-entering the build inline would recurse instead of

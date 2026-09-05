@@ -50,7 +50,10 @@ const LEGACY_EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
  * A `pending` job old enough that nothing will build it any more (#1812) — the
  * queue lost the work. The server applies the same shared window when a fresh
  * request arrives (it retires the row instead of 429-ing on it), so offering
- * the form here can never hand the user a refusal.
+ * the form here matches what the request will do — as far as the two clocks
+ * agree. A browser clock running fast can offer the form slightly early and get
+ * the server's 429; the server stays authoritative, and the error surfaces
+ * normally.
  */
 function isStalledPending(status: ExportStatusResponse): boolean {
   if (status.status !== 'pending' || !status.requestedAt) return false;

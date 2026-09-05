@@ -115,6 +115,9 @@ type BuildOutcome = 'built' | 'deferred';
 /** Map key for one server-resident vault document (`vault_blobs` PK). */
 const vaultBlobAddress = (vaultId: string, docId: string): string => `${vaultId}:${docId}`;
 
+/** One current vault document as packaged: its bytes and the metadata describing them. */
+type PackagedVaultDoc = VaultCiphertextExport['docs'][number];
+
 export interface ExportServiceDeps {
   config: AppConfig;
   db: Database;
@@ -186,6 +189,11 @@ export interface ExportService {
   /**
    * Resolve (without consuming) a download for `(user, token)`; throws 404 when
    * it fails closed.
+   *
+   * Inspection only — it hands back a resolved archive path and never spends the
+   * one-time token, so it must not be used to serve one. Every serving path goes
+   * through {@link ExportService.withDownload}, which spends the token exactly
+   * once the transfer has completed (#1812); the HTTP route is wired to that.
    */
   resolveDownload(input: { userId: string; token: string }): Promise<ExportDownload>;
   /**
@@ -274,33 +282,61 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   /**
    * Read the current server-resident vault documents in bounded batches, keyed
    * by their `(vaultId, docId)` address. Owner-scoped in SQL exactly like the
-   * manifest projection it follows.
+   * manifest projection it follows, and batched on BOTH halves of the PK, so
+   * `EXPORT_VAULT_BLOB_READ_CHUNK` rows per statement is an exact bound even
+   * when two of a user's vaults share a `docId`.
+   *
+   * The manifest fields are read WITH the bytes, in the same row: the earlier
+   * projection and this read are two statements without a shared snapshot, and
+   * vault writes do not take the account transition lock. Describing the blob by
+   * the row it came from is what keeps `manifest.json` true of the `.btvault`
+   * beside it when a doc is rewritten mid-build (#1812).
    */
   const readVaultBlobs = async (
     userId: string,
     addresses: { vaultId: string; docId: string }[],
-  ): Promise<Map<string, Uint8Array>> => {
-    const byAddress = new Map<string, Uint8Array>();
-    for (let i = 0; i < addresses.length; i += EXPORT_VAULT_BLOB_READ_CHUNK) {
-      const chunk = addresses.slice(i, i + EXPORT_VAULT_BLOB_READ_CHUNK);
-      const rows = await db
-        .select({
-          vaultId: vaultBlobs.vaultId,
-          docId: vaultBlobs.docId,
-          blob: vaultBlobs.blob,
-        })
-        .from(vaultBlobs)
-        .innerJoin(vaultConfigs, eq(vaultConfigs.id, vaultBlobs.vaultId))
-        .where(
-          and(
-            eq(vaultConfigs.userId, userId),
-            inArray(
-              vaultBlobs.docId,
-              chunk.map((address) => address.docId),
+  ): Promise<Map<string, PackagedVaultDoc>> => {
+    const byAddress = new Map<string, PackagedVaultDoc>();
+    const docIdsByVault = new Map<string, string[]>();
+    for (const address of addresses) {
+      const docIds = docIdsByVault.get(address.vaultId);
+      if (docIds) docIds.push(address.docId);
+      else docIdsByVault.set(address.vaultId, [address.docId]);
+    }
+    for (const [vaultId, docIds] of docIdsByVault) {
+      for (let i = 0; i < docIds.length; i += EXPORT_VAULT_BLOB_READ_CHUNK) {
+        const chunk = docIds.slice(i, i + EXPORT_VAULT_BLOB_READ_CHUNK);
+        const rows = await db
+          .select({
+            docId: vaultBlobs.docId,
+            docKind: vaultBlobs.docKind,
+            version: vaultBlobs.version,
+            formatVersion: vaultBlobs.formatVersion,
+            sizeBytes: vaultBlobs.sizeBytes,
+            updatedAt: vaultBlobs.updatedAt,
+            blob: vaultBlobs.blob,
+          })
+          .from(vaultBlobs)
+          .innerJoin(vaultConfigs, eq(vaultConfigs.id, vaultBlobs.vaultId))
+          .where(
+            and(
+              eq(vaultConfigs.userId, userId),
+              eq(vaultBlobs.vaultId, vaultId),
+              inArray(vaultBlobs.docId, chunk),
             ),
-          ),
-        );
-      for (const row of rows) byAddress.set(vaultBlobAddress(row.vaultId, row.docId), row.blob);
+          );
+        for (const row of rows) {
+          byAddress.set(vaultBlobAddress(vaultId, row.docId), {
+            docId: row.docId,
+            docKind: row.docKind as VaultDocKind,
+            version: row.version,
+            formatVersion: row.formatVersion,
+            sizeBytes: row.sizeBytes,
+            updatedAt: row.updatedAt,
+            blob: row.blob,
+          });
+        }
+      }
     }
     return byAddress;
   };
@@ -606,23 +642,20 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
                 .where(eq(users.id, job.userId))
                 .limit(1),
               // E1 per-vault ciphertext is independent of the legacy account-wide
-              // privacy flag. Select only the safe manifest projection — WITHOUT
-              // the opaque bytes — owner-scoped in SQL; the LEFT JOIN keeps an
-              // empty server-backed vault visible in the manifest. The bytes are
-              // read below, once the declared sizes have been checked against the
-              // packaging ceiling: a per-doc cap times an uncapped number of
-              // vaulted portfolios is otherwise gigabytes resident in the worker
-              // before any limit is consulted (#1812).
+              // privacy flag. Select only the vault addresses and their DECLARED
+              // sizes — WITHOUT the opaque bytes — owner-scoped in SQL; the LEFT
+              // JOIN keeps an empty server-backed vault visible in the manifest.
+              // The bytes, and the metadata that describes them, are read below
+              // once these declared sizes have been checked against the packaging
+              // ceiling: a per-doc cap times an uncapped number of vaulted
+              // portfolios is otherwise gigabytes resident in the worker before
+              // any limit is consulted (#1812).
               db
                 .select({
                   vaultId: vaultConfigs.id,
                   media: vaultConfigs.media,
                   docId: vaultBlobs.docId,
-                  docKind: vaultBlobs.docKind,
-                  version: vaultBlobs.version,
-                  formatVersion: vaultBlobs.formatVersion,
                   sizeBytes: vaultBlobs.sizeBytes,
-                  updatedAt: vaultBlobs.updatedAt,
                 })
                 .from(vaultConfigs)
                 .leftJoin(vaultBlobs, eq(vaultBlobs.vaultId, vaultConfigs.id))
@@ -665,7 +698,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
               throw new ExportTooLargeError('content_bytes', ciphertextBytes, maxContentBytes);
             }
 
-            const blobsByAddress = await readVaultBlobs(
+            const docsByAddress = await readVaultBlobs(
               job.userId,
               vaultDocRows
                 .filter((row) => row.docId !== null)
@@ -684,31 +717,14 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
                 vaultsById.set(row.vaultId, vault);
               }
               if (row.docId === null) continue;
-              // Every selected doc column is NOT NULL; only the LEFT JOIN can make
-              // it nullable, and a non-null PK means the complete row is present.
-              if (
-                row.docKind === null ||
-                row.version === null ||
-                row.formatVersion === null ||
-                row.sizeBytes === null ||
-                row.updatedAt === null
-              ) {
-                throw new Error('incomplete current vault document row');
-              }
-              const blob = blobsByAddress.get(vaultBlobAddress(row.vaultId, row.docId));
-              // The doc was written or removed between the manifest read and the
-              // byte read. Not packageable as read; a plain build failure the
-              // queue retries, never a half-truthful archive.
-              if (!blob) throw new Error('current vault document vanished mid-build');
-              vault.docs.push({
-                docId: row.docId,
-                docKind: row.docKind as VaultDocKind,
-                version: row.version,
-                formatVersion: row.formatVersion,
-                sizeBytes: row.sizeBytes,
-                updatedAt: row.updatedAt,
-                blob,
-              });
+              const doc = docsByAddress.get(vaultBlobAddress(row.vaultId, row.docId));
+              // The doc was removed between the address read and the byte read.
+              // Not packageable as read; a plain build failure the queue retries,
+              // never a half-truthful archive. A doc REWRITTEN in that window is
+              // packaged from its own row, so the manifest still describes the
+              // bytes carried beside it.
+              if (!doc) throw new Error('current vault document vanished mid-build');
+              vault.docs.push(doc);
             }
 
             const collected = await collectUserExport(db, job.userId, {
@@ -716,9 +732,19 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
               ...(deps.limits?.maxRows !== undefined ? { maxRows: deps.limits.maxRows } : {}),
             });
             await deps.afterCollect?.(job.userId);
+            // Re-read the metadata WITH the bytes, for the same reason the
+            // per-vault docs do: the pre-flight projection above is a separate
+            // statement, so a vault rewritten in between would otherwise be
+            // described by the version/size it no longer has.
             const [paranoidBlobRow] = paranoidVaultMeta
               ? await db
-                  .select({ blob: paranoidVaults.blob })
+                  .select({
+                    version: paranoidVaults.version,
+                    formatVersion: paranoidVaults.formatVersion,
+                    sizeBytes: paranoidVaults.sizeBytes,
+                    updatedAt: paranoidVaults.updatedAt,
+                    blob: paranoidVaults.blob,
+                  })
                   .from(paranoidVaults)
                   .where(eq(paranoidVaults.userId, job.userId))
                   .limit(1)
@@ -726,10 +752,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
             // A vault written away between the two reads simply is not packaged;
             // the manifest then reports `included: false` rather than claiming a
             // file the archive does not carry.
-            const vault =
-              paranoidVaultMeta && paranoidBlobRow
-                ? { ...paranoidVaultMeta, blob: paranoidBlobRow.blob }
-                : undefined;
+            const vault = paranoidVaultMeta && paranoidBlobRow ? paranoidBlobRow : undefined;
             const generatedAt = now();
             const zip = buildExportZip({
               userId: job.userId,

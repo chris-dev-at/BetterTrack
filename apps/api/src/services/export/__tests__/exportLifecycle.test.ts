@@ -1,9 +1,10 @@
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 
 import { eq } from 'drizzle-orm';
+import { strFromU8, unzipSync } from 'fflate';
 import request from 'supertest';
 import type { Application } from 'express';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -332,42 +333,111 @@ describe('export artifact lifecycle', () => {
     // materialized several times the ceiling in link rows (#1812).
     harness = await createTestApp({
       env: { BT_EXPORT_DIR: EXPORT_DIR },
-      // One movement is inside this ceiling; the two tags on it are not.
-      exportLimits: { maxRows: 1 },
+      // Two rows of headroom: the movement on its own is inside this ceiling,
+      // and only the two tags stamped on it can carry the account past it.
+      exportLimits: { maxRows: 2 },
     });
-    const user = await harness.seedUser();
-    const [portfolio] = await harness.db
-      .insert(schema.portfolios)
-      .values({ userId: user.id, name: 'TEST VECTOR tag ceiling portfolio' })
-      .returning({ id: schema.portfolios.id });
-    const [source] = await harness.db
-      .insert(schema.portfolioCashSources)
-      .values({ portfolioId: portfolio!.id, name: 'Bank', type: 'bank', isMain: true })
-      .returning({ id: schema.portfolioCashSources.id });
-    const [movement] = await harness.db
-      .insert(schema.portfolioCashMovements)
-      .values({
-        portfolioId: portfolio!.id,
-        sourceId: source!.id,
-        kind: 'deposit',
-        amountEur: '100',
-        executedAt: new Date('2026-03-01T00:00:00.000Z'),
-      })
-      .returning({ id: schema.portfolioCashMovements.id });
-    for (const name of ['TEST VECTOR system tag', 'TEST VECTOR rule tag']) {
-      const [tag] = await harness.db
-        .insert(schema.cashTags)
-        .values({ userId: user.id, name })
-        .returning({ id: schema.cashTags.id });
-      await harness.db
-        .insert(schema.cashMovementTags)
-        .values({ movementId: movement!.id, tagId: tag!.id });
-    }
-    const agent = await loginAgent(harness.app, user.email, user.password);
-    const { jobId } = await requestExport(agent, user.password);
 
+    /** One portfolio with one cash movement; optionally two tags stamped on it. */
+    const seedMovement = async (tagged: boolean) => {
+      const user = await harness.seedUser(
+        tagged
+          ? { email: 'tagged@bettertrack.test', username: 'taggeduser' }
+          : { email: 'untagged@bettertrack.test', username: 'untaggeduser' },
+      );
+      const [portfolio] = await harness.db
+        .insert(schema.portfolios)
+        .values({ userId: user.id, name: 'TEST VECTOR tag ceiling portfolio' })
+        .returning({ id: schema.portfolios.id });
+      const [source] = await harness.db
+        .insert(schema.portfolioCashSources)
+        .values({ portfolioId: portfolio!.id, name: 'Bank', type: 'bank', isMain: true })
+        .returning({ id: schema.portfolioCashSources.id });
+      const [movement] = await harness.db
+        .insert(schema.portfolioCashMovements)
+        .values({
+          portfolioId: portfolio!.id,
+          sourceId: source!.id,
+          kind: 'deposit',
+          amountEur: '100',
+          executedAt: new Date('2026-03-01T00:00:00.000Z'),
+        })
+        .returning({ id: schema.portfolioCashMovements.id });
+      if (tagged) {
+        for (const name of ['TEST VECTOR system tag', 'TEST VECTOR rule tag']) {
+          const [tag] = await harness.db
+            .insert(schema.cashTags)
+            .values({ userId: user.id, name })
+            .returning({ id: schema.cashTags.id });
+          await harness.db
+            .insert(schema.cashMovementTags)
+            .values({ movementId: movement!.id, tagId: tag!.id });
+        }
+      }
+      const agent = await loginAgent(harness.app, user.email, user.password);
+      return requestExport(agent, user.password);
+    };
+
+    // Control: the identical account WITHOUT the tags is admitted, so the
+    // refusal below is the tag count doing the work — not some other seeded row
+    // drifting the account over the ceiling on its own.
+    const admitted = await seedMovement(false);
+    expect(await jobRow(admitted.jobId)).toMatchObject({ status: 'ready' });
+
+    const { jobId } = await seedMovement(true);
     expect(await jobRow(jobId)).toMatchObject({ status: 'failed', error: 'EXPORT_TOO_LARGE' });
     expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip.building`))).toBe(false);
+  });
+
+  it('describes the vault ciphertext it packaged, not the version it first read', async () => {
+    // Reading the manifest projection and the bytes as two statements is what
+    // keeps the ceiling pre-flight, but they are no longer one snapshot and vault
+    // writes do not take the account transition lock. A doc rewritten in between
+    // must therefore be described by the row its bytes came from — packaging new
+    // bytes under the old version/sizeBytes would ship a manifest that lies
+    // about the `.btvault` beside it (#1812).
+    const user = await harness.seedUser();
+    const original = Buffer.from([0x01, 0x02, 0x03]);
+    const rewritten = Buffer.from('REWRITTEN_MID_BUILD_CIPHERTEXT');
+    await harness.db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server'] })
+      .where(eq(schema.users.id, user.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: original.byteLength,
+      blob: original,
+    });
+    const service = buildService({
+      // The one seam inside the build, between the metadata read and the byte
+      // read: exactly the window a concurrent vault write occupies.
+      afterCollect: async () => {
+        await harness.db
+          .update(schema.paranoidVaults)
+          .set({ version: 2, sizeBytes: rewritten.byteLength, blob: rewritten })
+          .where(eq(schema.paranoidVaults.userId, user.id));
+      },
+    });
+    const { jobId } = await reserveJob(user.id);
+
+    await service.buildExport(jobId);
+
+    const row = await jobRow(jobId);
+    expect(row).toMatchObject({ status: 'ready' });
+    const files = unzipSync(new Uint8Array(await readFile(row!.filePath!)));
+    const packaged = files['paranoid/current-vault.btvault']!;
+    expect(Buffer.from(packaged).equals(rewritten)).toBe(true);
+    const manifest = JSON.parse(strFromU8(files['manifest.json']!)) as {
+      paranoidVault: { included: boolean; version: number; sizeBytes: number };
+    };
+    expect(manifest.paranoidVault).toMatchObject({
+      included: true,
+      version: 2,
+      sizeBytes: rewritten.byteLength,
+    });
+    expect(manifest.paranoidVault.sizeBytes).toBe(packaged.byteLength);
   });
 
   it('refuses on the declared vault ciphertext size before a single blob is read', async () => {

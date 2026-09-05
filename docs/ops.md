@@ -50,6 +50,14 @@ the API serves it. Leaving it blank keeps the built-in 128 MiB default. The
 refusal happens pre-flight — the ciphertext sizes are summed before any blob is
 read — so an over-cap account never allocates.
 
+Raising that cap is a worker-memory decision, not only a size one: the archive
+is assembled whole in memory, so size the worker container above the value you
+set (several GiB of RSS if you go near the top of the range). Note also that the
+whole archive is separately capped at 1 GiB, and vault ciphertext does not
+compress, so a content cap set at the very top of the documented range trips the
+archive limit first — treat 1 GiB as the ceiling of the range, not a usable
+working value.
+
 Render both effective production topologies after editing Compose. The
 committed example supplies inert interpolation values; substitute `infra/.env`
 to validate one deployment's configured values:
