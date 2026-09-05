@@ -219,9 +219,7 @@ describe('AI features — NL conglomerate builder (§13.5 V5-P12 2/2)', () => {
 
     // …and the user's whole interactive budget is intact: BOTH slots still buy
     // a real enrichment, and the third is refused — so the budget is genuinely
-    // being enforced and this assertion is not vacuous. (All three requests
-    // share one budget window: the harness pins the enrichment clock, so a slow
-    // run cannot roll the window between them — see `searchEnrichmentNow`.)
+    // being enforced and this assertion is not vacuous.
     const first = await agent.get('/api/v1/search?q=zzzalpha');
     expect(first.body.enriching).toBe(true);
     const second = await agent.get('/api/v1/search?q=zzzbeta');

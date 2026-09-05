@@ -211,6 +211,10 @@ const liveLoopRatesKey = (assetId: string): string =>
  * process still fences its OWN provider work with its own clock — but as an
  * elapsed-duration measurement from the instant this election was requested,
  * never as a comparison against a timestamp another process wrote.
+ *
+ * Version floor: calling `TIME` before a write requires Redis >= 7, where
+ * effects replication is unconditional (the deploy stack pins Redis 7). On
+ * Redis 5/6 this script would first need `redis.replicate_commands()`.
  */
 const COORDINATE_LOOP_SCRIPT = `
 local instanceId = ARGV[1]

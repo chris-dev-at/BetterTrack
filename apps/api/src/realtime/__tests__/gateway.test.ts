@@ -1742,7 +1742,13 @@ describe('realtime gateway — room and presence budgets (§13.5 V5-P1)', () => 
         false,
       );
       await expect(
-        harness.ctx.presence.isPresent(user.id, 'chat', budgetUuid(REALTIME_MAX_ROOMS_PER_SOCKET)),
+        harness.ctx.presence.isPresent(
+          user.id,
+          'chat',
+          // The LAST subject the socket actually entered — indexing this by the
+          // room cap would pass vacuously the moment the two caps diverge.
+          budgetUuid(REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET - 1),
+        ),
       ).resolves.toBe(false);
     });
   });

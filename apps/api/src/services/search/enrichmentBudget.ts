@@ -50,13 +50,6 @@ export interface SearchEnrichmentBudgetDeps {
   budget: number;
   /** Window length in seconds. */
   windowSeconds: number;
-  /**
-   * Test seam: the clock the window id is derived from. Defaults to the real
-   * time. The window is epoch-aligned, so a test that spans a boundary lands on
-   * the next window's key and is silently handed a second budget — pin this and
-   * the admissions a test makes are the admissions it asserts on.
-   */
-  now?: () => number;
 }
 
 /** Budget that admits everything — the batch paths that carry their own ceiling. */
@@ -68,7 +61,6 @@ export function createSearchEnrichmentBudget(
   deps: SearchEnrichmentBudgetDeps,
 ): SearchEnrichmentBudget {
   const { redis, logger, budget, windowSeconds } = deps;
-  const now = deps.now ?? Date.now;
 
   return {
     async admit(userId, query) {
@@ -77,7 +69,7 @@ export function createSearchEnrichmentBudget(
       // user out past the window. (Fixed window — a caller straddling the
       // boundary may see up to 2× the budget, the standard trade for not
       // keeping a per-request timestamp log.)
-      const key = enrichmentBudgetKey(userId, windowSeconds, now());
+      const key = enrichmentBudgetKey(userId, windowSeconds, Date.now());
       // Lowercased so "BAYN" and "bayn" spend one slot, exactly as they
       // coalesce onto one guard key in the enrichment itself.
       const member = query.toLowerCase();

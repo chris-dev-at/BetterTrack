@@ -67,9 +67,18 @@ export function createPresenceStore(deps: CreatePresenceStoreDeps): PresenceStor
     },
     async leaveMany(userId, subjects): Promise<void> {
       const keys = subjects.map((subject) => presenceKey(userId, subject.surface, subject.id));
+      // A failing slice must not abandon the ones behind it: every batch is
+      // attempted, and the first error is re-thrown so the caller still learns
+      // the teardown was incomplete.
+      let failure: unknown;
       for (let from = 0; from < keys.length; from += PRESENCE_LEAVE_BATCH) {
-        await redis.del(...keys.slice(from, from + PRESENCE_LEAVE_BATCH));
+        try {
+          await redis.del(...keys.slice(from, from + PRESENCE_LEAVE_BATCH));
+        } catch (error) {
+          failure ??= error;
+        }
       }
+      if (failure !== undefined) throw failure;
     },
     async isPresent(userId, surface, id): Promise<boolean> {
       return (await redis.exists(presenceKey(userId, surface, id))) === 1;
