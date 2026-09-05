@@ -68,7 +68,11 @@ import type { Logger } from '../logger';
 import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createHealthService, type HealthService } from '../services/health/healthService';
 import { createReadinessService, type ReadinessService } from '../services/health/readinessService';
-import { initObservability, type Observability } from '../services/observability/sentry';
+import {
+  initObservability,
+  SENTRY_REFUSED_MESSAGE,
+  type Observability,
+} from '../services/observability/sentry';
 import { createMarketData, purgeManualAssetCaches } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
@@ -147,6 +151,7 @@ import {
   createProblemService,
   type ProblemService,
 } from '../services/observability/problemService';
+import { createProblemDropTally } from '../services/observability/problemDropTally';
 import {
   createMonitoringService,
   type MonitoringService,
@@ -544,8 +549,9 @@ export interface AppContext {
    */
   queues: QueueRegistry | null;
   /**
-   * Error tracking handle (§13.4 V4-P5a). Real Sentry client when BT_SENTRY_DSN
-   * is set, a no-op otherwise — so the error handler always has something to call.
+   * The retired external error-tracking handle (§16 2026-07-17). Always inert —
+   * a set `BT_SENTRY_DSN` is refused, not honoured — so the error handler always
+   * has something to call and it never leaves the box.
    */
   observability: Observability;
   /** Admin health snapshot behind `GET /admin/health` (§13.4 V4-P5a). */
@@ -714,9 +720,10 @@ export interface BuildContextDeps {
 export function buildContext(deps: BuildContextDeps): AppContext {
   const { config, db, redis, logger } = deps;
 
-  // Error tracking (§13.4 V4-P5a): a real Sentry client only when BT_SENTRY_DSN
-  // is set (never in tests), else a no-op — so the error handler wiring below is
-  // unconditional and boot is byte-identical when the DSN is absent.
+  // Error tracking (§16 2026-07-17): external Sentry is retired, so this NEVER
+  // initialises an SDK — it returns an inert handle, and reports a configured
+  // DSN as a refusal that becomes a problem row below. The error handler wiring
+  // stays unconditional either way.
   const observability = initObservability(config, logger, { serverName: 'api' });
 
   const userRepo = createUserRepository(db);
@@ -785,7 +792,24 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement):
   // built early so the market-data breaker below can report provider failures
   // into it. Rate-capped + PII-scrubbed; the admin resolve flow uses `audit`.
-  const problems = createProblemService({ repo: createProblemRepository(db), audit, logger });
+  // The worker refuses its own captures against its own in-memory budget, and
+  // every `kind: 'job'` capture happens there — so the admin list reads that
+  // process's tally out of Redis and publishes the merged number.
+  const workerDropTally = createProblemDropTally(redis, 'worker', { logger });
+  const problems = createProblemService({
+    repo: createProblemRepository(db),
+    audit,
+    logger,
+    peerDrops: () => workerDropTally.read(),
+  });
+  // A retired-Sentry DSN in the env is an operator who believes errors are being
+  // collected somewhere they are not. Say it where the operator actually looks.
+  if (observability.refusedDsn) {
+    problems.captureError(new Error(SENTRY_REFUSED_MESSAGE), {
+      process: 'api',
+      source: 'config',
+    });
+  }
 
   // First-party usage analytics (§13.5 V5-P2 arc (b)): the capture side buffers
   // in memory and flushes on a timer in real processes; tests keep the timer off

@@ -591,6 +591,20 @@ an authenticated path (owner directive 2026-07-19) — see **`docs/monitoring.md
   BullMQ queue depth + job outcomes, provider calls, market cache hit rate, and
   websocket connections. Data persists in the `grafanadata` volume.
 
+### Error tracking is the admin Problems page — `BT_SENTRY_DSN` is refused
+
+External Sentry is retired (§16 2026-07-17). Captured errors — unhandled request
+errors, permanently-failed jobs, worker/provider failures, and now **unhandled
+rejections and uncaught exceptions in either process** — land in the `problems`
+table, PII-scrubbed, and are read at **admin → Problems**. Refused captures (the
+rate cap) are published on that page too, including the ones the **worker**
+process refused, so "the page is quiet" always means quiet and never blind.
+
+Nothing enables an external tracker any more. `BT_SENTRY_DSN` left in an old
+`.env` is **refused at boot**: the SDK is never initialised, no event leaves the
+box, an error line is logged and a problem row is captured naming the variable.
+Remove it — there is nothing to point it at.
+
 ### Exposure guarantee (localhost/LAN by default)
 
 By default neither service is reachable from a public origin — the §16

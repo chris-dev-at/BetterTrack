@@ -229,6 +229,7 @@ function buildInertContext(): AppContext {
     queues: null,
     observability: {
       enabled: false,
+      refusedDsn: false,
       captureException() {},
       async flush() {
         return true;
