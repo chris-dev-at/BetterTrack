@@ -59,6 +59,7 @@ import { createWorkboardRepository } from '../data/repositories/workboardReposit
 import { createEventBus, type EventBus } from '../events';
 import {
   createBackfillScheduler,
+  createExportBuildEnqueuer,
   createQueueRegistry,
   noopBackfillScheduler,
   type BackfillScheduler,
@@ -660,7 +661,7 @@ export interface BuildContextDeps {
    * the durable `data.export` BullMQ enqueue in production and to a direct
    * synchronous build under test (BullMQ can't run on ioredis-mock).
    */
-  exportEnqueue?: (jobId: string) => Promise<void>;
+  exportEnqueue?: (jobId: string, opts?: { delayMs?: number }) => Promise<void>;
   /** Test seam: pause an export build after collection under the transition lock. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Test seam: shrink the export build ceilings so the refusal path is provable. */
@@ -1889,10 +1890,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const exportEnqueue =
     deps.exportEnqueue ??
     (queues
-      ? async (jobId: string) => {
-          await queues.enqueue('data.export', { jobId });
-        }
-      : (jobId: string) => exportHolder.service!.buildExport(jobId));
+      ? // The queue mapping (including `delayMs` → BullMQ `delay`) lives once in
+        // `createExportBuildEnqueuer` so this root and the worker's cannot drift.
+        createExportBuildEnqueuer(queues)
+      : (jobId: string, opts?: { delayMs?: number }) =>
+          // The synchronous test transport has no equivalent of a delayed
+          // re-drive, and re-entering the build inline would recurse instead of
+          // waiting; a test that exercises the deferral supplies its own seam.
+          opts?.delayMs !== undefined
+            ? Promise.resolve()
+            : exportHolder.service!.buildExport(jobId));
   const dataExport = createExportService({
     config,
     db,

@@ -247,7 +247,7 @@ export interface CreateTestAppOptions {
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
   /** Recording data-export build transport for atomic request-gate tests. */
-  exportEnqueue?: (jobId: string) => Promise<void>;
+  exportEnqueue?: (jobId: string, opts?: { delayMs?: number }) => Promise<void>;
   /** Pause an export after collection while its account transition lock is held. */
   exportAfterCollect?: (userId: string) => void | Promise<void>;
   /** Shrink the export build ceilings (#1714) so the clean-refusal path is provable. */

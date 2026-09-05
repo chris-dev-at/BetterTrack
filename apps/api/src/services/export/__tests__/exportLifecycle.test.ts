@@ -1,14 +1,19 @@
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 
 import { eq } from 'drizzle-orm';
+import { strFromU8, unzipSync } from 'fflate';
 import request from 'supertest';
 import type { Application } from 'express';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { exportRequestResponseSchema, exportStatusResponseSchema } from '@bettertrack/contracts';
+import {
+  EXPORT_PENDING_STALE_MS,
+  exportRequestResponseSchema,
+  exportStatusResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
 import { createExportRepository } from '../../../data/repositories/exportRepository';
@@ -102,10 +107,52 @@ async function reserveJob(userId: string): Promise<{ jobId: string; token: strin
     userId,
     downloadTokenHash: hashToken(token),
     since: new Date(Date.now() - 60_000),
+    stalePendingBefore: new Date(Date.now() - EXPORT_PENDING_STALE_MS),
   });
   expect(reservation.kind).toBe('created');
   if (reservation.kind !== 'created') throw new Error('unreachable');
   return { jobId: reservation.job.id, token };
+}
+
+// TEST VECTOR: one server-backed per-vault config and its current document.
+const VAULT_VECTOR = {
+  vaultId: '00000000-0000-7000-8000-0000000009a1',
+  headerDocId: '00000000-0000-7000-8000-0000000009a2',
+  commonDocId: '00000000-0000-7000-8000-0000000009a3',
+} as const;
+
+/**
+ * A server-media vault with current documents. `declaredSize` defaults to the
+ * real byte length; a test that must prove the ceiling is consulted BEFORE the
+ * bytes are read sets it to something the stored blob is not.
+ */
+async function seedServerVault(
+  userId: string,
+  vaultId: string,
+  docs: { docId: string; docKind: 'header' | 'common'; bytes: number; declaredSize?: number }[],
+): Promise<void> {
+  await harness.db.insert(schema.vaults).values({
+    id: vaultId,
+    userId,
+    name: 'TEST VECTOR export vault',
+    headerDocId: VAULT_VECTOR.headerDocId,
+    commonDocId: VAULT_VECTOR.commonDocId,
+    media: ['server'],
+    driveConnectionId: null,
+    retirementProofPublicKey: 'TEST VECTOR export vault proof key',
+    keyFingerprint: 'TEST VECTOR export vault fingerprint',
+  });
+  for (const doc of docs) {
+    await harness.db.insert(schema.vaultBlobs).values({
+      vaultId,
+      docId: doc.docId,
+      docKind: doc.docKind,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: doc.declaredSize ?? doc.bytes,
+      blob: Buffer.alloc(doc.bytes, 7),
+    });
+  }
 }
 
 async function jobRow(jobId: string) {
@@ -276,6 +323,186 @@ describe('export artifact lifecycle', () => {
 
     expect(await jobRow(jobId)).toMatchObject({ status: 'failed', error: 'EXPORT_TOO_LARGE' });
     expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip.building`))).toBe(false);
+  });
+
+  it('counts the auto-stamped cash-movement tags in the pre-flight, not only the movements', async () => {
+    // `cash_movement_tags` is machine-generated at a MULTIPLE of the ledger: a
+    // system tag is stamped on every movement INSERT and a matching rule stamps
+    // its whole tag set on every noted movement, uncapped over the back
+    // catalogue. Counting the movements alone admitted an account and then
+    // materialized several times the ceiling in link rows (#1812).
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      // Two rows of headroom: the movement on its own is inside this ceiling,
+      // and only the two tags stamped on it can carry the account past it.
+      exportLimits: { maxRows: 2 },
+    });
+
+    /** One portfolio with one cash movement; optionally two tags stamped on it. */
+    const seedMovement = async (tagged: boolean) => {
+      const user = await harness.seedUser(
+        tagged
+          ? { email: 'tagged@bettertrack.test', username: 'taggeduser' }
+          : { email: 'untagged@bettertrack.test', username: 'untaggeduser' },
+      );
+      const [portfolio] = await harness.db
+        .insert(schema.portfolios)
+        .values({ userId: user.id, name: 'TEST VECTOR tag ceiling portfolio' })
+        .returning({ id: schema.portfolios.id });
+      const [source] = await harness.db
+        .insert(schema.portfolioCashSources)
+        .values({ portfolioId: portfolio!.id, name: 'Bank', type: 'bank', isMain: true })
+        .returning({ id: schema.portfolioCashSources.id });
+      const [movement] = await harness.db
+        .insert(schema.portfolioCashMovements)
+        .values({
+          portfolioId: portfolio!.id,
+          sourceId: source!.id,
+          kind: 'deposit',
+          amountEur: '100',
+          executedAt: new Date('2026-03-01T00:00:00.000Z'),
+        })
+        .returning({ id: schema.portfolioCashMovements.id });
+      if (tagged) {
+        for (const name of ['TEST VECTOR system tag', 'TEST VECTOR rule tag']) {
+          const [tag] = await harness.db
+            .insert(schema.cashTags)
+            .values({ userId: user.id, name })
+            .returning({ id: schema.cashTags.id });
+          await harness.db
+            .insert(schema.cashMovementTags)
+            .values({ movementId: movement!.id, tagId: tag!.id });
+        }
+      }
+      const agent = await loginAgent(harness.app, user.email, user.password);
+      return requestExport(agent, user.password);
+    };
+
+    // Control: the identical account WITHOUT the tags is admitted, so the
+    // refusal below is the tag count doing the work — not some other seeded row
+    // drifting the account over the ceiling on its own.
+    const admitted = await seedMovement(false);
+    expect(await jobRow(admitted.jobId)).toMatchObject({ status: 'ready' });
+
+    const { jobId } = await seedMovement(true);
+    expect(await jobRow(jobId)).toMatchObject({ status: 'failed', error: 'EXPORT_TOO_LARGE' });
+    expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip.building`))).toBe(false);
+  });
+
+  it('describes the vault ciphertext it packaged, not the version it first read', async () => {
+    // Reading the manifest projection and the bytes as two statements is what
+    // keeps the ceiling pre-flight, but they are no longer one snapshot and vault
+    // writes do not take the account transition lock. A doc rewritten in between
+    // must therefore be described by the row its bytes came from — packaging new
+    // bytes under the old version/sizeBytes would ship a manifest that lies
+    // about the `.btvault` beside it (#1812).
+    const user = await harness.seedUser();
+    const original = Buffer.from([0x01, 0x02, 0x03]);
+    const rewritten = Buffer.from('REWRITTEN_MID_BUILD_CIPHERTEXT');
+    await harness.db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server'] })
+      .where(eq(schema.users.id, user.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: original.byteLength,
+      blob: original,
+    });
+    const service = buildService({
+      // The one seam inside the build, between the metadata read and the byte
+      // read: exactly the window a concurrent vault write occupies.
+      afterCollect: async () => {
+        await harness.db
+          .update(schema.paranoidVaults)
+          .set({ version: 2, sizeBytes: rewritten.byteLength, blob: rewritten })
+          .where(eq(schema.paranoidVaults.userId, user.id));
+      },
+    });
+    const { jobId } = await reserveJob(user.id);
+
+    await service.buildExport(jobId);
+
+    const row = await jobRow(jobId);
+    expect(row).toMatchObject({ status: 'ready' });
+    const files = unzipSync(new Uint8Array(await readFile(row!.filePath!)));
+    const packaged = files['paranoid/current-vault.btvault']!;
+    expect(Buffer.from(packaged).equals(rewritten)).toBe(true);
+    const manifest = JSON.parse(strFromU8(files['manifest.json']!)) as {
+      paranoidVault: { included: boolean; version: number; sizeBytes: number };
+    };
+    expect(manifest.paranoidVault).toMatchObject({
+      included: true,
+      version: 2,
+      sizeBytes: rewritten.byteLength,
+    });
+    expect(manifest.paranoidVault.sizeBytes).toBe(packaged.byteLength);
+  });
+
+  it('refuses on the declared vault ciphertext size before a single blob is read', async () => {
+    // The blobs used to be selected — unbounded, `bytea` and all — before any
+    // ceiling was consulted, so a runaway account was resident in the worker
+    // BEFORE being refused (#1812). The declared size here is a deliberate lie
+    // (8 MiB claimed, 16 bytes stored): only a pre-flight sum over the metadata
+    // can refuse this account, and packaging the actual bytes would succeed.
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      // Far above an ordinary archive, so nothing else can trip the ceiling.
+      exportLimits: { maxContentBytes: 5_000_000 },
+    });
+    const user = await harness.seedUser();
+    await seedServerVault(user.id, VAULT_VECTOR.vaultId, [
+      {
+        docId: VAULT_VECTOR.headerDocId,
+        docKind: 'header',
+        bytes: 16,
+        declaredSize: 8 * 1024 * 1024,
+      },
+    ]);
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const { jobId } = await requestExport(agent, user.password);
+
+    expect(await jobRow(jobId)).toMatchObject({ status: 'failed', error: 'EXPORT_TOO_LARGE' });
+    expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip`))).toBe(false);
+    expect(existsSync(joinPath(EXPORT_DIR, `${jobId}.zip.building`))).toBe(false);
+  });
+
+  it('exports an account whose ciphertext outgrew the ceiling once the deployment raises it', async () => {
+    // The over-ceiling refusal is terminal, so without a knob an account past
+    // the built-in limit could NEVER obtain its §6.1 archive. The ceiling is
+    // deployment-configurable (BT_EXPORT_MAX_CONTENT_BYTES) — asserted end to
+    // end: the same account, refused under a low ceiling, exports under a
+    // raised one (#1812).
+    const docBytes = 300_000;
+    const seed = async () => {
+      const user = await harness.seedUser();
+      await seedServerVault(user.id, VAULT_VECTOR.vaultId, [
+        { docId: VAULT_VECTOR.headerDocId, docKind: 'header', bytes: docBytes },
+      ]);
+      const agent = await loginAgent(harness.app, user.email, user.password);
+      return requestExport(agent, user.password);
+    };
+
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR, BT_EXPORT_MAX_CONTENT_BYTES: '200000' },
+    });
+    const refused = await seed();
+    expect(await jobRow(refused.jobId)).toMatchObject({
+      status: 'failed',
+      error: 'EXPORT_TOO_LARGE',
+    });
+
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR, BT_EXPORT_MAX_CONTENT_BYTES: '50000000' },
+    });
+    const built = await seed();
+    const row = await jobRow(built.jobId);
+    expect(row).toMatchObject({ status: 'ready', error: null });
+    expect(existsSync(row!.filePath!)).toBe(true);
+    // The ciphertext really is in the archive — raising the ceiling did not
+    // quietly drop what it exists to carry.
+    expect(row!.fileSize!).toBeGreaterThan(0);
   });
 
   it('releases the privacy lock at the absolute bound even when the reader never stops', async () => {
