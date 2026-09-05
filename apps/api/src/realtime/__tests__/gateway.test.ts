@@ -1617,6 +1617,92 @@ describe('realtime gateway — room and presence budgets (§13.5 V5-P1)', () => 
     });
   });
 
+  it('gives back a room reserved after its socket had already disconnected', async () => {
+    // `room.join` crosses an awaited admission round trip before the handler
+    // reserves anything, and the disconnect handler releases the room budget
+    // synchronously — so a socket that dies inside that await used to leave its
+    // reservation in the gateway-lifetime user map with nothing left to free it.
+    let releaseAdmission: (() => void) | undefined;
+    const heldAdmission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    let userCommands = 0;
+    const releaseConnection = vi.fn(async () => undefined);
+    const admission = controlledAdmission({
+      releaseConnection,
+      consumeUserCommand: vi.fn(async () => {
+        userCommands += 1;
+        // Park only the racing join; every later command is admitted at once.
+        if (userCommands === 1) await heldAdmission;
+        return true;
+      }),
+    });
+    // One refill quantum per command, so the 64 honest joins below exercise the
+    // room budget rather than the socket command bucket.
+    let controlledClockMs = Date.now();
+    const controlled = await listenControlledGateway({
+      admission,
+      leaseTtlMs: 60_000,
+      commandNow: () => (controlledClockMs += 60),
+    });
+    const clientSockets: ClientSocket[] = [];
+    const connectControlled = async (): Promise<ClientSocket> => {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+      return client;
+    };
+    try {
+      const racing = await connectControlled();
+      racing.emit(REALTIME_CLIENT_EVENTS.roomJoin, {
+        room: { kind: 'asset', id: budgetUuid(900) },
+      });
+      await vi.waitFor(() => expect(userCommands).toBe(1));
+      racing.disconnect();
+      // The disconnect handler frees the room budget BEFORE it releases the
+      // connection lease, so this is the point where the cleanup provably ran.
+      await vi.waitFor(() => expect(releaseConnection).toHaveBeenCalledTimes(1));
+      releaseAdmission?.();
+
+      // The user's whole distinct-room budget must still be spendable: the
+      // racing join reserved a room nothing below re-joins, so a leaked slot
+      // costs exactly the last of these 64 joins.
+      const first = await connectControlled();
+      const second = await connectControlled();
+      for (let index = 0; index < REALTIME_MAX_ROOMS_PER_SOCKET; index += 1) {
+        await expect(joinRoom(first, 'asset', budgetUuid(index))).resolves.toEqual({ ok: true });
+      }
+      for (
+        let index = 0;
+        index < REALTIME_MAX_ROOMS_PER_USER - REALTIME_MAX_ROOMS_PER_SOCKET;
+        index += 1
+      ) {
+        await expect(joinRoom(second, 'asset', budgetUuid(100 + index))).resolves.toEqual({
+          ok: true,
+        });
+      }
+      // …and the cap itself still bites one room later, on a socket with its
+      // own budget untouched.
+      const third = await connectControlled();
+      await expect(joinRoom(third, 'asset', budgetUuid(901))).resolves.toEqual({
+        ok: false,
+        error: 'USER_ROOM_LIMIT',
+      });
+    } finally {
+      releaseAdmission?.();
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
   it('caps presence claims per socket and clears them in bounded round trips', async () => {
     commandClockMs = Date.now();
     await listenWithGateway();

@@ -735,6 +735,19 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: reserved.error });
       return;
     }
+    // The command reached here through an awaited admission round trip, so the
+    // socket may already have disconnected — and its `disconnect` handler
+    // releases the room budget synchronously. Socket.IO flips `disconnected`
+    // BEFORE emitting that event, so reserving and checking with no await
+    // between them makes the two orders exhaustive: either the check sees a live
+    // socket and the cleanup that follows will find this entry, or we hand the
+    // slot back here. Without it a reservation taken after the cleanup would sit
+    // in the gateway-lifetime user map with no socket left to release it.
+    if (socket.disconnected) {
+      if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
+      respond({ ok: false, error: 'GONE' });
+      return;
+    }
     // The join itself stays idempotent and unconditional even for a room the
     // budget already counts: another path (a live unwatch) may have evicted the
     // socket meanwhile, and an ack must never report a membership it lacks.
@@ -747,13 +760,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         // would leave the socket admitted on an authorization taken before it.
         const admitted = await withAccountPrivacyLock(principal.userId, async () => {
           const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
-          if (!allowed) return false;
+          if (!allowed) return 'FORBIDDEN' as const;
+          // The same disconnect race, now on the far side of the authorization
+          // round trip: the adapter has already forgotten a disconnected socket,
+          // so joining it here would strand its id in the adapter's room map.
+          if (socket.disconnected) return 'GONE' as const;
           await socket.join(name);
-          return true;
+          return 'ok' as const;
         });
-        if (!admitted) {
+        if (admitted !== 'ok') {
+          // A no-op when the disconnect cleanup already gave the slot back.
           if (reserved.fresh) releaseClientRoom(socket, principal.userId, name);
-          respond({ ok: false, error: 'FORBIDDEN' });
+          respond({ ok: false, error: admitted });
           return;
         }
         respond({ ok: true });
@@ -911,7 +929,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
     }
     if (leaveRoom && !socket.disconnected) {
-      await socket.leave(assetRoom(assetId));
+      // Through `leaveClientRoom`, so a socket that had ALSO `room.join`ed this
+      // asset gives back the slot it is losing the membership for instead of
+      // paying for a room it no longer sits in. A no-op for the usual case where
+      // the room is a watch-only membership the budget never counted.
+      await leaveClientRoom(socket, entry.userId, assetRoom(assetId));
     }
   }
 

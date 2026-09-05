@@ -292,6 +292,11 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     expect(secondStub.calls.poll).toBeGreaterThanOrEqual(2);
   });
 
+  // Note for the next reader: under `ioredis-mock` the script's
+  // `TIME`-derived `now` is `epoch_ms mod 2^32`, not `epoch_ms` — the mock's Lua
+  // truncates to 32 bits where real Redis 7 does this in double precision. Both
+  // tests below stay honest either way: every comparison in the script reads the
+  // SAME wrapped value, so the skew and lease assertions mean what they say.
   it('keeps one provider loop when peer clocks are skewed by seconds', async () => {
     const behindStub = createStubMarketData({ poll: () => quoteResult(100) });
     const aheadStub = createStubMarketData({ poll: () => quoteResult(200) });

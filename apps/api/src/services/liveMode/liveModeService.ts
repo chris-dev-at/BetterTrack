@@ -196,7 +196,7 @@ export const liveLoopLeaderKey = (assetId: string): string =>
   `bt:live:leader:${encodeURIComponent(assetId)}`;
 export const liveLoopProcessesKey = (assetId: string): string =>
   `bt:live:processes:${encodeURIComponent(assetId)}`;
-export const liveLoopRatesKey = (assetId: string): string =>
+const liveLoopRatesKey = (assetId: string): string =>
   `bt:live:rates:${encodeURIComponent(assetId)}`;
 
 /**
