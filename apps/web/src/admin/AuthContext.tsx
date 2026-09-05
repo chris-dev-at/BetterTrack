@@ -358,12 +358,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ]);
         if (controller.signal.aborted) return;
         const current = sessions.find((session) => session.current);
-        if (!current) return;
+        // No `current` row, or a malformed timestamp (NaN would arm a zero-delay
+        // timer and sign a working admin out instantly): the derivation produced
+        // nothing usable, so drop any deadline it produced before. "Unknown stays
+        // unknown" has to include forgetting a previous answer, or a re-read that
+        // came back empty would leave the older, differently-derived deadline armed.
+        if (!current) {
+          setSessionDeadline(null);
+          return;
+        }
         const deadline =
           new Date(current.createdAt).getTime() + policy.sessionLifetimeHours * HOUR_MS;
-        // A malformed timestamp yields NaN, and NaN would arm a zero-delay timer
-        // that signs a working admin out instantly. Unknown stays unknown.
-        if (!Number.isFinite(deadline)) return;
+        if (!Number.isFinite(deadline)) {
+          setSessionDeadline(null);
+          return;
+        }
+        // Clock-disagreement screen, applied HERE because this is the one moment
+        // the session is provably alive: the server just answered both reads on
+        // this very cookie. So a deadline that is further out than the widest
+        // window the policy allows, OR further in the past than that same width,
+        // cannot be the truth — it is this browser's clock disagreeing with the
+        // server's, in one direction or the other. Symmetry matters: a clock
+        // running AHEAD would otherwise make `remaining <= 0` on the first
+        // evaluation after every successful login and lock the operator out of
+        // their own console. Unknown is the safe state; the seams still sign out
+        // on the next 401/404.
+        if (Math.abs(deadline - Date.now()) > ADMIN_SESSION_LIFETIME_MAX_HOURS * HOUR_MS) {
+          setSessionDeadline(null);
+          return;
+        }
         setSessionDeadline(deadline);
       } catch {
         // Unreadable window — see above. Never manufacture a sign-out from it.
@@ -376,14 +399,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status !== 'authenticated' || sessionDeadline === null) return;
     const remaining = sessionDeadline - Date.now();
+    // Both skew directions were screened out where the deadline was derived (see
+    // above), so a deadline that is already behind us here is a real expiry — at
+    // most one policy window old — and not a browser clock running ahead.
     if (remaining <= 0) {
       clearSession('expired');
       return;
     }
-    // A deadline further out than the widest window the policy allows means this
-    // browser's clock disagrees with the server's by more than the whole policy
-    // range. Leave the timer unarmed rather than trusting either side: an
-    // unknown deadline is the safe state, and the seams still sign out on 401/404.
+    // Defence in depth for the same screen: never arm a timer further out than
+    // the widest window the policy allows.
     if (remaining > ADMIN_SESSION_LIFETIME_MAX_HOURS * HOUR_MS) return;
     const timer = setTimeout(() => clearSession('expired'), remaining);
     return () => clearTimeout(timer);

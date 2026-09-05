@@ -17,6 +17,7 @@ import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useT, type TranslateFn } from '../../i18n';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
+import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
@@ -958,9 +959,11 @@ function UserAuditLog({ userId }: { userId: string }) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (err instanceof ApiError && err.isNotAuthorized) {
           // Same 401-or-404 rule as `useResource`, and the same reason: on the
-          // admin origin this is the V5-P13c window closing, so the login screen
-          // names it instead of bouncing silently.
-          clearSession('expired');
+          // admin origin this is normally the V5-P13c window closing, so the login
+          // screen names it instead of bouncing silently. A `USER_NOT_FOUND` 404 —
+          // this very page's route, for an account a colleague just deleted — is
+          // NOT an expiry, so it signs out without the claim.
+          clearSession(adminSignOutReason(err));
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {

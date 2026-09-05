@@ -4966,6 +4966,7 @@
         "change": "E-Mail ändern",
         "enabledNotice": "E-Mail-Codes aktiviert.",
         "disabledNotice": "E-Mail-Codes deaktiviert.",
+        "disableError": "E-Mail-Codes konnten nicht deaktiviert werden. Bitte versuche es erneut.",
         "turnOff": "Deaktivieren",
         "turningOff": "Wird deaktiviert…"
       },

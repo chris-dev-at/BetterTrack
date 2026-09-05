@@ -4966,6 +4966,7 @@
         "change": "Change email",
         "enabledNotice": "Email codes enabled.",
         "disabledNotice": "Email codes disabled.",
+        "disableError": "Couldn't turn off email codes. Please try again.",
         "turnOff": "Turn off",
         "turningOff": "Turning off…"
       },

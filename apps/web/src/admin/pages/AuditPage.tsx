@@ -6,6 +6,7 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
+import { adminSignOutReason } from '../sessionExpiry';
 import { formatDateTime } from '../../lib/format';
 import { Alert, Button, EmptyState, PageHeader, Spinner } from '../components/ui';
 
@@ -42,9 +43,10 @@ export function AuditPage() {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (err instanceof ApiError && err.isNotAuthorized) {
           // Same 401-or-404 rule as `useResource`, and the same reason: on the
-          // admin origin this is the V5-P13c window closing, so the login screen
-          // names it instead of bouncing silently.
-          clearSession('expired');
+          // admin origin this is normally the V5-P13c window closing, so the login
+          // screen names it instead of bouncing silently — unless the 404 named a
+          // domain outcome, which is a row talking and not this session.
+          clearSession(adminSignOutReason(err));
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {

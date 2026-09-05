@@ -44,15 +44,19 @@ import { SettingsPage } from './pages/SettingsPage';
  * console does with that 404, and about not waiting for it at all.
  *
  * The claims, one per acceptance criterion:
- *  1. a write from each of the six hand-rolled pages signs the console out and
- *     lands on the login screen with the translated expiry notice;
+ *  1. a write from each of the six hand-rolled pages — and every keyless write on
+ *     the P13c page itself — signs the console out and lands on the login screen
+ *     with the translated expiry notice;
  *  2. `useAdminMutation`'s 404 disposition is per call site — no-row-id writes
  *     are auth loss, row-scoped writes still surface "row gone";
  *  3. a 403 `ADMIN_2FA_SETUP_REQUIRED` stays a distinct outcome;
  *  4. an idle console reaches the login screen when the deadline passes, with
  *     no operator click;
  *  5. lowering the lifetime shortens the client-held deadline;
- *  6. the read path's 401-or-404 sign-out is unchanged.
+ *  6. the read path's 401-or-404 sign-out is unchanged, and only CLAIMS an expiry
+ *     when the 404 named no domain outcome;
+ *  7. a browser clock that disagrees with the server's, in EITHER direction, is
+ *     never turned into a sign-out.
  */
 
 /** Expected copy always comes from the catalog, so EN and DE assert the same claim. */
@@ -255,6 +259,73 @@ describe('an expired admin session signs the console out from every hand-rolled 
     ).not.toBeInTheDocument();
   });
 
+  test('Security — regenerating recovery codes, the same page two cards up', async () => {
+    vi.mocked(api.regenerateRecoveryCodes).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: message('en', 'admin.twoFactor.recoveryCodes.regenerate'),
+      }),
+    );
+
+    await expectExpiryScreen();
+    // The defect this replaces: the bare `catch` printed "couldn't regenerate"
+    // on a console whose every next request would fail identically.
+    expect(
+      screen.queryByText(message('en', 'admin.twoFactor.recoveryCodes.regenerateError')),
+    ).not.toBeInTheDocument();
+  });
+
+  test('Security — turning the email method off', async () => {
+    vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
+      setupRequired: false,
+      totpEnabled: true,
+      totpPending: false,
+      emailEnabled: true,
+      twoFactorEmail: 'codes@bettertrack.test',
+      recoveryCodesRemaining: 8,
+    });
+    vi.mocked(api.disableEmailTwoFactor).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: message('en', 'admin.twoFactor.email.turnOff') }),
+    );
+
+    await expectExpiryScreen();
+    // Previously the raw English server envelope ("Not found") was rendered under
+    // the card — worse than the banner the P13c card two rows below removed.
+    expect(screen.queryByText('Not found')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(message('en', 'admin.twoFactor.email.disableError')),
+    ).not.toBeInTheDocument();
+  });
+
+  test('Security — the TOTP disable code field, which keeps its own error mapping', async () => {
+    vi.mocked(api.disableTotp).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: message('en', 'admin.twoFactor.totp.reenroll') }),
+    );
+    await user.type(
+      await screen.findByLabelText(message('en', 'admin.twoFactor.totp.disableCodeLabel')),
+      '111111',
+    );
+    await user.click(
+      screen.getByRole('button', {
+        name: message('en', 'admin.twoFactor.totp.disableAndContinue'),
+      }),
+    );
+
+    await expectExpiryScreen();
+    expect(screen.queryByText('Not found')).not.toBeInTheDocument();
+  });
+
   test('Feature flags — a kill-switch toggle', async () => {
     vi.mocked(api.getFeatureFlags).mockResolvedValue(featureFlags);
     vi.mocked(api.setFeatureFlag).mockRejectedValue(expiredAdminSession());
@@ -300,6 +371,32 @@ describe('an expired admin session signs the console out from every hand-rolled 
     await expectExpiryScreen('de');
     expect(screen.queryByText(message('de', 'common.genericError'))).not.toBeInTheDocument();
   });
+});
+
+test('a rejected TOTP code is a rejected code, not an expired session', async () => {
+  // `POST /admin/security/2fa/totp/disable` answers 401 TWO_FACTOR_INVALID_CODE
+  // for a mistyped code — which is exactly why this one control keeps its own
+  // mapping instead of moving to the write seam, whose 401 is auth loss. A typo
+  // must never sign the operator out.
+  vi.mocked(api.disableTotp).mockRejectedValue(
+    new ApiError(401, 'TWO_FACTOR_INVALID_CODE', 'That two-factor code is incorrect.'),
+  );
+  const user = userEvent.setup();
+  renderConsole(<SecuritySettingsPage />);
+
+  await user.click(
+    await screen.findByRole('button', { name: message('en', 'admin.twoFactor.totp.reenroll') }),
+  );
+  await user.type(
+    await screen.findByLabelText(message('en', 'admin.twoFactor.totp.disableCodeLabel')),
+    '111111',
+  );
+  await user.click(
+    screen.getByRole('button', { name: message('en', 'admin.twoFactor.totp.disableAndContinue') }),
+  );
+
+  expect(await screen.findByText('That two-factor code is incorrect.')).toBeInTheDocument();
+  expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
 });
 
 describe("useAdminMutation's 404 disposition", () => {
@@ -384,11 +481,31 @@ describe('the read path keeps its own 401-or-404 sign-out', () => {
     return <p>{resource.data ? 'loaded' : 'no data'}</p>;
   }
 
-  test.each([401, 404])('a %i on a read signs the console out', async (status) => {
-    vi.mocked(api.getSettings).mockRejectedValue(new ApiError(status, 'ERR', 'refused'));
+  test.each([
+    [401, 'UNAUTHENTICATED'],
+    [404, 'NOT_FOUND'],
+  ])('a %i on a read signs the console out and names the expiry', async (status, code) => {
+    vi.mocked(api.getSettings).mockRejectedValue(new ApiError(status, code, 'refused'));
     renderConsole(<ResourceProbe />);
 
     await expectExpiryScreen();
+  });
+
+  test('a domain 404 still ends the surface, but claims no expiry', async () => {
+    // `GET /admin/users/:id` answers USER_NOT_FOUND for an account another admin
+    // just deleted. The structural sign-out is pre-existing; what must not happen
+    // is the login screen asserting that THIS admin's session window closed.
+    vi.mocked(api.getSettings).mockRejectedValue(
+      new ApiError(404, 'USER_NOT_FOUND', 'User not found.'),
+    );
+    renderConsole(<ResourceProbe />);
+
+    expect(
+      await screen.findByRole('button', { name: message('en', 'auth.login.submit') }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(message('en', 'auth.adminLogin.sessionExpired')),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -447,6 +564,28 @@ describe('the client-held deadline (V5-P13c)', () => {
     await vi.advanceTimersByTimeAsync(7 * 60 * 60 * 1000);
 
     await expectExpiryScreen();
+  });
+
+  test.each([
+    // Clock BEHIND the server: the deadline lands further out than any policy
+    // window could reach. Already guarded.
+    ['behind', SESSION_CREATED_AT_MS - 40 * 60 * 60 * 1000],
+    // Clock AHEAD of the server: the deadline is already in the past on the very
+    // first evaluation after a successful login. Unguarded, this signed the admin
+    // straight back out with "your session expired" and they could never get in.
+    ['ahead', SESSION_CREATED_AT_MS + 40 * 60 * 60 * 1000],
+  ])('a browser clock %s the server never manufactures a sign-out', async (_direction, now) => {
+    vi.setSystemTime(now);
+    vi.mocked(api.getSettings).mockResolvedValue(settings);
+    renderConsole(<SettingsPage />);
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    await waitFor(() => expect(api.listOwnSessions).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(60 * 1000);
+
+    // The server is the authority in both directions: an unusable deadline is
+    // unknown, and the seams still sign out on the next 401/404.
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
   });
 
   test('an unreadable window never manufactures a sign-out', async () => {
