@@ -137,6 +137,19 @@ export interface ColumnMapResult {
    * a structural property rather than a promise in a doc comment.
    */
   fieldWinners: Partial<Record<MappableField, FieldWinner>>;
+  /**
+   * Column INDEXES assigned the `ignore` field — the columns a reader must take
+   * no value from. Ascending.
+   *
+   * By index rather than by header, for the reason {@link mapColumnsInternal}
+   * documents about `unmapped`: two columns may share a header while only one of
+   * them is informational, so a name cannot be turned back into a column.
+   *
+   * DETERMINISTIC ONLY, exactly like {@link ColumnMapResult.fieldWinners}: an AI
+   * proposal of `ignore` is a suggestion, and a suggestion may not be the reason
+   * a column stops being evidence.
+   */
+  ignoredColumns: number[];
 }
 
 /**
@@ -900,7 +913,12 @@ function mapColumnsInternal(
     };
   }
 
-  return { result: { mappings, unmapped, fieldWinners }, assignedIndexes };
+  const ignoredColumns = scored
+    .filter((s) => s.field === 'ignore')
+    .map((s) => s.index)
+    .sort((a, b) => a - b);
+
+  return { result: { mappings, unmapped, fieldWinners, ignoredColumns }, assignedIndexes };
 }
 
 function round(value: number): number {
@@ -1093,7 +1111,15 @@ function applyAiProposals(
     unmapped.push(header);
   });
 
-  return { mappings, unmapped, fieldWinners: result.fieldWinners };
+  // `ignoredColumns` rides through untouched for the same reason `fieldWinners`
+  // does: a model proposing `ignore` is a suggestion, never a decision that a
+  // column stops being evidence.
+  return {
+    mappings,
+    unmapped,
+    fieldWinners: result.fieldWinners,
+    ignoredColumns: result.ignoredColumns,
+  };
 }
 
 /**

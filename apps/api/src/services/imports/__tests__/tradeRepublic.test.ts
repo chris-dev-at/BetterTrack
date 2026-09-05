@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { parseCsv } from '../csv';
+import { flatexMapper } from '../mappers/flatex';
 import { tradeRepublicMapper } from '../mappers/tradeRepublic';
+import type { MappedLine } from '../types';
 import { createMapperRegistry } from '../registry';
 import { ALL_MAPPERS } from '../mappers';
 
@@ -152,6 +154,40 @@ describe('tradeRepublicMapper.map — per-row errors', () => {
     expect(german.ok && german.row.amountEur).toBe(2000);
   });
 
+  it('reads a negative Zinsen row as money OUT rather than booking it as a deposit', () => {
+    // `Zinsen` names no direction — TR books credit interest and negative
+    // interest / Verwahrentgelt under the same word — so the sign decides.
+    // Absolutising it turned a €5 charge into a €5 credit: a €10 swing per row.
+    const charge = mapOne('2024-01-02;Zinsen;;;;;;-5,00;EUR');
+    expect(charge.ok).toBe(true);
+    expect(charge.ok && charge.row).toMatchObject({
+      kind: 'withdrawal',
+      amountEur: 5,
+      isin: null,
+      name: null,
+      note: 'Interest payment (Trade Republic)',
+    });
+    // The positive form is unchanged.
+    const credit = mapOne('2024-05-02;Zinsen;;;;;;3,75;EUR');
+    expect(credit.ok && credit.row).toMatchObject({ kind: 'deposit', amountEur: 3.75 });
+  });
+
+  it('refuses a negative Einzahlung instead of booking €500 of money IN', () => {
+    const result = mapOne('2024-01-02;Einzahlung;;;;;;-500,00;EUR');
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('Storno');
+  });
+
+  it('still takes the magnitude of an unsigned Auszahlung (TR does not sign them)', () => {
+    // The asymmetry `kindDerivation.ts` states: a minus sign speaks on its own,
+    // a plus does not. TR prints Auszahlungen both ways — the golden fixture
+    // carries a positive one — so a positive Betrag stays a magnitude.
+    const unsigned = mapOne('2024-06-01;Auszahlung;;;;;;250,00;EUR');
+    expect(unsigned.ok && unsigned.row).toMatchObject({ kind: 'withdrawal', amountEur: 250 });
+    const signed = mapOne('2024-06-01;Auszahlung;;;;;;-250,00;EUR');
+    expect(signed.ok && signed.row).toMatchObject({ kind: 'withdrawal', amountEur: 250 });
+  });
+
   it('fails a negative dividend Betrag instead of booking its magnitude as income (#529)', () => {
     // A reversal keeps the Dividende Typ but flips the sign — |Betrag| would
     // double-count the income (George/Flatex refuse the same shape).
@@ -187,5 +223,61 @@ describe('tradeRepublicMapper.map — per-row errors', () => {
     expect(result.ok).toBe(true);
     expect(result.ok && result.row.isin).toBeNull();
     expect(result.ok && result.row.name).toBe('Muster AG');
+  });
+});
+
+/**
+ * ONE sign rule, two mappers. Trade Republic and Flatex both carry a German
+ * cash statement whose amount column is signed, and they used to disagree about
+ * what the sign means: Flatex derived `Zinsen` from it and refused a
+ * text/sign contradiction, while Trade Republic absolutised everything and
+ * booked a negative interest charge as a credit. Wherever the sign SPEAKS —
+ * every negative amount — the two must now answer alike.
+ *
+ * A POSITIVE amount is deliberately not part of this parity: it is not evidence
+ * of direction (`kindDerivation.ts`), Flatex's cash export signs its
+ * Auszahlungen and Trade Republic's does not, so `Auszahlung;250,00` is a
+ * magnitude in one file and a contradiction in the other. That divergence is
+ * about the two FILES, not about the rule.
+ */
+describe('sign handling parity — trade republic vs flatex', () => {
+  const TR_HEADER = 'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung';
+  const FLATEX_CASH_HEADER = 'Buchtag;Valuta;Buchungsinformationen;TA-Nr.;Betrag';
+
+  const outcome = (line: MappedLine): string =>
+    line.ok ? `${line.row.kind} ${String(line.row.amountEur)}` : 'refused';
+
+  const cases: Array<{ what: string; tr: string; flatex: string; expected: string }> = [
+    {
+      what: 'interest credited',
+      tr: '02.01.2024;Zinsen;;;;;;1,25;EUR',
+      flatex: '02.01.2024;;Zinsen Q1;1;1,25',
+      expected: 'deposit 1.25',
+    },
+    {
+      what: 'interest charged (negative interest / Verwahrentgelt)',
+      tr: '02.01.2024;Zinsen;;;;;;-5,00;EUR',
+      flatex: '02.01.2024;;Zinsen Q1;1;-5,00',
+      expected: 'withdrawal 5',
+    },
+    {
+      what: 'a reversed deposit',
+      tr: '02.01.2024;Einzahlung;;;;;;-500,00;EUR',
+      flatex: '02.01.2024;;Einzahlung SEPA;1;-500,00',
+      expected: 'refused',
+    },
+    {
+      what: 'a reversed dividend',
+      tr: '15.03.2024;Dividende;Muster Tech AG;DE0001234567;;;;-12,50;EUR',
+      flatex: '15.03.2024;;Ertragsgutschrift DE0001234567 Muster Tech AG;1;-12,50',
+      expected: 'refused',
+    },
+  ];
+
+  it.each(cases)('agrees on $what', ({ tr, flatex, expected }) => {
+    const [trLine] = tradeRepublicMapper.map(parseCsv(`${TR_HEADER}\n${tr}`));
+    const [flatexLine] = flatexMapper.map(parseCsv(`${FLATEX_CASH_HEADER}\n${flatex}`));
+    expect(outcome(trLine!)).toBe(expected);
+    expect(outcome(flatexLine!)).toBe(expected);
   });
 });

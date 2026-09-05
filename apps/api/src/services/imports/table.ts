@@ -155,6 +155,19 @@ export interface RowFlag {
   line: number;
   /** The row-level issue kinds affecting this row, deduped and sorted. */
   flags: TableIssueKind[];
+  /**
+   * For each COLUMN-scoped flag on this row, the columns that raised it
+   * (ascending, deduped). A row-level flag — a summary row, a width mismatch —
+   * contributes no entry at all, because it is about the whole row.
+   *
+   * The sniff runs BEFORE the column mapper, so it cannot know that a column is
+   * one nothing reads. This is what lets a caller that DOES know decide: see
+   * {@link sniffFlagsByRow}'s `ignoredColumns`, which drops a flag every one of
+   * whose columns is mapped to `ignore`. Without it, one informational FX or
+   * exchange-rate column demotes 100 % of a file's rows to manual review while
+   * citing a column no value is ever read from.
+   */
+  columns: Partial<Record<TableIssueKind, number[]>>;
 }
 
 /**
@@ -197,8 +210,51 @@ export interface SniffedTable {
  * each one up in O(1) instead of scanning. Rows with nothing to report are
  * absent, so `map.get(i) ?? []` is the whole join.
  */
-export function sniffFlagsByRow(table: SniffedTable): Map<number, readonly TableIssueKind[]> {
-  return new Map(table.rowFlags.map((f) => [f.row, f.flags]));
+export function sniffFlagsByRow(
+  table: SniffedTable,
+  options: { ignoredColumns?: ReadonlySet<number> } = {},
+): Map<number, readonly TableIssueKind[]> {
+  const ignored = options.ignoredColumns;
+  if (ignored === undefined || ignored.size === 0) {
+    return new Map(table.rowFlags.map((f) => [f.row, f.flags]));
+  }
+  const out = new Map<number, readonly TableIssueKind[]>();
+  for (const flag of table.rowFlags) {
+    // A column-scoped flag survives while ANY column that raised it is read.
+    // Row-level flags carry no columns and are therefore never dropped.
+    const kept = flag.flags.filter((kind) => {
+      const columns = flag.columns[kind];
+      return columns === undefined || columns.some((column) => !ignored.has(column));
+    });
+    if (kept.length > 0) out.set(flag.row, kept);
+  }
+  return out;
+}
+
+/**
+ * The file's default currency AS A READER SEES IT — the majority ISO code among
+ * the cells of the columns that reader takes values from.
+ *
+ * {@link SniffedTable.defaultCurrency} is the same majority over EVERY column,
+ * because the sniff runs before the column mapper and has no way to know which
+ * columns are informational. That answer is wrong for the shape it was most
+ * likely to meet: a statement whose amounts are plainly EUR next to a `Type
+ * Foreign Currency` column of `USD` — mapped to `ignore` at 0.9 — declared the
+ * whole file USD, and every cash row was then refused as non-EUR while deleting
+ * only that column imported the identical file cleanly.
+ *
+ * So a caller that knows the mapping passes the `ignore`-mapped columns here and
+ * uses THIS answer. Columns the mapper could not name at all are deliberately
+ * still counted: an unrecognised column of ISO codes might be the amounts' own
+ * currency, and the safe failure for that is a refusal, not a silent EUR.
+ */
+export function defaultCurrencyForTable(
+  table: SniffedTable,
+  options: { ignoredColumns?: ReadonlySet<number> } = {},
+): string {
+  const ignored = options.ignoredColumns;
+  if (ignored === undefined || ignored.size === 0) return table.defaultCurrency;
+  return detectDefaultCurrency(sampleCells(table.rows, 4000, ignored));
 }
 
 /** Thrown when no sniff front-end can claim the buffer (e.g. an XLSX today). */
@@ -922,7 +978,7 @@ export const ISO_CURRENCIES = new Set([
 ]);
 
 /** Majority standalone ISO code among data cells; `EUR` when none (§14 cash ledger). */
-function detectDefaultCurrency(cells: string[]): string {
+function detectDefaultCurrency(cells: Iterable<string>): string {
   const freq = new Map<string, number>();
   for (const cell of cells) {
     if (/^[A-Z]{3}$/.test(cell) && ISO_CURRENCIES.has(cell)) {
@@ -1063,10 +1119,16 @@ function capRowIssues(issues: TableIssue[], aggregate: (hidden: number) => strin
 }
 
 /** Non-empty cells of the data rows, capped — sampling, not a full scan contract. */
-function sampleCells(rows: string[][], maxCells = 4000): string[] {
+function sampleCells(
+  rows: string[][],
+  maxCells = 4000,
+  ignoredColumns?: ReadonlySet<number>,
+): string[] {
   const out: string[] = [];
   for (const row of rows) {
-    for (const cell of row) {
+    for (let column = 0; column < row.length; column++) {
+      if (ignoredColumns?.has(column)) continue;
+      const cell = row[column] ?? '';
       if (cell.trim() !== '') out.push(cell);
       if (out.length >= maxCells) return out;
     }
@@ -1358,11 +1420,22 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
   // Row-level findings are collected COMPLETE here and only the operator-facing
   // `issues` list is capped afterwards — see RowFlag.
   const rowFlags = new Map<number, Set<TableIssueKind>>();
-  const flagRow = (row: number, kind: TableIssueKind): void => {
+  // Which columns raised a COLUMN-scoped flag on a row — see RowFlag.columns.
+  const rowFlagColumns = new Map<number, Map<TableIssueKind, Set<number>>>();
+  const flagRow = (row: number, kind: TableIssueKind, column = -1): void => {
     if (!ROW_FLAG_KINDS.has(kind)) return;
     const set = rowFlags.get(row);
     if (set) set.add(kind);
     else rowFlags.set(row, new Set([kind]));
+    if (column < 0) return;
+    let byKind = rowFlagColumns.get(row);
+    if (!byKind) {
+      byKind = new Map();
+      rowFlagColumns.set(row, byKind);
+    }
+    const columns = byKind.get(kind);
+    if (columns) columns.add(column);
+    else byKind.set(kind, new Set([column]));
   };
 
   issues.push(...raggedRowIssues(rows, lineNumbers, headers, header !== undefined, flagRow));
@@ -1435,11 +1508,18 @@ function sniffCsvTable(text: string, options: SniffOptions): SniffedTable | null
     issues,
     rowFlags: [...rowFlags.entries()]
       .sort(([a], [b]) => a - b)
-      .map(([row, flags]) => ({
-        row,
-        line: lineNumbers[row] ?? -1,
-        flags: [...flags].sort(),
-      })),
+      .map(([row, flags]) => {
+        const columns: RowFlag['columns'] = {};
+        for (const [kind, set] of rowFlagColumns.get(row) ?? []) {
+          columns[kind] = [...set].sort((a, b) => a - b);
+        }
+        return {
+          row,
+          line: lineNumbers[row] ?? -1,
+          flags: [...flags].sort(),
+          columns,
+        };
+      }),
   };
 }
 
@@ -1475,7 +1555,7 @@ function raggedRowIssues(
   lineNumbers: number[],
   headers: string[],
   hasHeader: boolean,
-  flagRow: (row: number, kind: TableIssueKind) => void,
+  flagRow: (row: number, kind: TableIssueKind, column?: number) => void,
 ): TableIssue[] {
   if (!hasHeader) return [];
   const width = headers.length;
@@ -1578,7 +1658,7 @@ function ambiguousNumberIssues(
   lineNumbers: number[],
   headers: string[],
   locale: NumberLocale,
-  flagRow: (row: number, kind: TableIssueKind) => void,
+  flagRow: (row: number, kind: TableIssueKind, column?: number) => void,
 ): TableIssue[] {
   // A fold, not `Math.max(...rows.map(…))`: spreading one argument per row
   // overflows the call stack on a large upload, which is a crash a hostile
@@ -1598,7 +1678,7 @@ function ambiguousNumberIssues(
         firstRow = index;
         sample = cell.trim();
       }
-      flagRow(index, 'ambiguous-grouped-number');
+      flagRow(index, 'ambiguous-grouped-number', column);
     });
     if (count === 0) continue;
     const label = headers[column]?.trim();

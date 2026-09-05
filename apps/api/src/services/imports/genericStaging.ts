@@ -10,6 +10,7 @@ import { stripDecimalDecoration } from './csv';
 import { deriveRowForKind } from './kindDerivation';
 import { classifyRows, type ClassifiableRow, type ClassifyContext } from './rowClassifier';
 import {
+  defaultCurrencyForTable,
   parseLocalizedDay,
   parseLocalizedDecimal,
   sniffFlagsByRow,
@@ -106,14 +107,19 @@ function cell(value: string | undefined): string | null {
 
 /**
  * The file's stated currency for a row: its own currency column when it has a
- * readable one, else the majority currency the sniff found. Anything that is
- * not a three-letter ISO code is discarded rather than passed on — staging's
- * `char(3)` column would reject it and take the whole insert with it.
+ * readable one, else the file's default. Anything that is not a three-letter ISO
+ * code is discarded rather than passed on — staging's `char(3)` column would
+ * reject it and take the whole insert with it.
+ *
+ * The default comes from {@link defaultCurrencyForTable} rather than the sniff's
+ * own mapping-blind `defaultCurrency`: it is the majority over the columns this
+ * module actually reads, so an informational FX column the mapper has already
+ * decided to `ignore` cannot restate the whole file's currency.
  */
-function rowCurrency(raw: string | null, table: SniffedTable): string {
+function rowCurrency(raw: string | null, fileCurrency: string): string {
   const stated = raw?.toUpperCase() ?? null;
   if (stated !== null && CURRENCY_PATTERN.test(stated)) return stated;
-  const fallback = table.defaultCurrency.toUpperCase();
+  const fallback = fileCurrency.toUpperCase();
   return CURRENCY_PATTERN.test(fallback) ? fallback : 'EUR';
 }
 
@@ -182,7 +188,13 @@ export async function stageGenericFile(
   if (!understood) return null;
   const { table, mapping } = understood;
 
-  const flagsByRow = sniffFlagsByRow(table);
+  // The columns the mapper decided carry no value for us. Both the sniff's
+  // per-row doubt and the file's default currency are scoped to what is left:
+  // an `ignore`-mapped column may not force a row to manual review, and may not
+  // restate the file's currency, because nothing below ever reads it.
+  const ignoredColumns = new Set(mapping.ignoredColumns);
+  const flagsByRow = sniffFlagsByRow(table, { ignoredColumns });
+  const fileCurrency = defaultCurrencyForTable(table, { ignoredColumns });
 
   // One projection per data row, in file order. Values stay RAW out of
   // `extractRowFields` by contract, so every parse below goes through the
@@ -298,7 +310,7 @@ export async function stageGenericFile(
       price: row.priceNum,
       fee: row.fee === null ? null : parseLocalizedDecimal(row.fee, table.numberLocale),
       amount: row.amountNum,
-      currency: rowCurrency(row.currency, table),
+      currency: rowCurrency(row.currency, fileCurrency),
       note: row.description,
     };
 
@@ -336,7 +348,18 @@ export async function stageGenericFile(
     // plain error, not a question: the machine's reading and the row's content
     // disagree, and asking a person to re-assert the same kind would not change
     // what the row is missing.
-    if (!derived.ok) return fail(derived.error);
+    //
+    // A CURRENCY refusal is the exception, and it is why `deriveRowForKind`
+    // names its refusals. It says nothing about the kind — the row's units are
+    // simply not ones the EUR-only cash ledger holds (§14) — and the same row
+    // may still be derivable as a trade, which keeps its native currency. Ending
+    // it here made the refusal unrecoverable: the row was persisted with every
+    // column null, so nothing the wizard offered could reach it, and a person
+    // whose file merely carried an odd currency column had no move but to
+    // re-export. It stays refused, and now it stays confirmable.
+    if (!derived.ok) {
+      return derived.refusal === 'currency' ? undecided(derived.error) : fail(derived.error);
+    }
     return { line: row.line, raw, ok: true, row: derived.row };
   });
 

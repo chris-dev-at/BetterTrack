@@ -32,6 +32,7 @@ import {
   IMPORT_ENRICHMENT_QUERY_BUDGET,
   IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
 } from '../importService';
+import { ALL_MAPPERS } from '../mappers';
 import type { SearchService } from '../../search/searchService';
 import type { BrokerMapper } from '../types';
 
@@ -1163,6 +1164,54 @@ describe('POST /imports/:batchId/apply — golden fixture', () => {
     expect(midRun).toEqual(['applied', 'applied', null]);
     expect(result).toMatchObject({ applied: 2, failed: 1 });
     expect((await cash(agent, pid)).balanceEur).toBe(300);
+  });
+
+  it('never reports a booked row as "nothing was booked" when recording its result fails', async () => {
+    const { agent, pid, user } = await setup();
+    // `setRowResult` is a plain UPDATE that runs AFTER the money moves. It used
+    // to sit inside the try that guards `applyRow`, so its failure was caught by
+    // the handler written for a booking that never happened: the €2.000 deposit
+    // was in the ledger and the response said `failed: 1` plus "Nothing was
+    // booked for it." — with the staged contentHash making a re-import dedupe
+    // the row away.
+    const repo = createImportRepository(harness.db);
+    let refused = 0;
+    const imports = createImportService({
+      importRepo: {
+        ...repo,
+        setRowResult: async (input) => {
+          if (input.result === 'applied') {
+            refused += 1;
+            throw new Error('the results table went away');
+          }
+          return repo.setRowResult(input);
+        },
+      },
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      cashRuleRepo: createCashRuleRepository(harness.db),
+      cashTagRepo: createCashTagRepository(harness.db),
+      search: harness.ctx.search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: ALL_MAPPERS,
+    });
+
+    const preview = await imports.createBatch(user.id, {
+      portfolioId: pid,
+      filename: 'deposit.csv',
+      content: [HEADER, '2024-01-02;Einzahlung;;;;;;2.000,00;EUR'].join('\n'),
+    });
+    const result = await imports.applyBatch(user.id, preview.batch.id, {});
+
+    expect(refused).toBe(1);
+    // The money is there…
+    expect((await cash(agent, pid)).balanceEur).toBe(2000);
+    // …so the report says so, and says nothing about a failure to book.
+    expect(result).toMatchObject({ applied: 1, failed: 0 });
+    expect(result.rows[0]?.result).toBe('applied');
+    expect(JSON.stringify(result.rows)).not.toContain('Nothing was booked');
   });
 
   it('books a batch exactly once under concurrent applies (atomic pending→applied claim)', async () => {
