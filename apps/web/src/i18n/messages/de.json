@@ -24,7 +24,8 @@
       "heading": "Admin-Anmeldung",
       "notAdmin": "Dies ist ein Nutzerkonto, kein Administratorkonto — melde dich bitte über die Haupt-App an.",
       "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
-      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut."
+      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut.",
+      "sessionExpired": "Deine Admin-Sitzung ist abgelaufen. Bitte melde dich erneut an."
     },
     "adminForcedPassword": {
       "info": "Lege ein neues Passwort fest, bevor du mit der Admin-Konsole fortfährst."

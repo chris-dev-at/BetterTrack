@@ -8,6 +8,8 @@ import {
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { useAuth } from '../AuthContext';
+import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { Alert, Button, PageHeader, Spinner, TextField } from '../components/ui';
 import {
@@ -325,11 +327,15 @@ function RecoveryCodesControl({
  */
 function SessionPolicyCard() {
   const t = useT();
+  const { refreshSessionDeadline } = useAuth();
   const policy = useResource((signal) => api.getSessionPolicy(signal), []);
   const [hours, setHours] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  // Client-side range validation only. The transport failure lives on the shared
+  // write seam below, so an expired admin session signs the console out instead
+  // of being rendered as "couldn't update the session lifetime" — the P13c card
+  // was the worst instance of that bug.
+  const [rangeError, setRangeError] = useState<string | null>(null);
 
   // Seed the editable field from the loaded value exactly once (keeps the input
   // controlled without clobbering the admin's in-progress edit on re-render).
@@ -342,25 +348,35 @@ function SessionPolicyCard() {
   const min = policy.data?.minHours ?? ADMIN_SESSION_LIFETIME_MIN_HOURS;
   const max = policy.data?.maxHours ?? ADMIN_SESSION_LIFETIME_MAX_HOURS;
 
+  const save = useAdminMutation(
+    async (nextHours: number) => {
+      const next = await api.updateSessionPolicy({ sessionLifetimeHours: nextHours });
+      setHours(String(next.sessionLifetimeHours));
+      setNotice(t('admin.security.sessionPolicy.saved'));
+      // Lowering the lifetime shortens sessions that are already live server-side,
+      // so re-read the window here too — otherwise this console would keep the
+      // deadline it computed from the old, longer policy.
+      refreshSessionDeadline();
+    },
+    {
+      errorKey: 'admin.security.sessionPolicy.saveError',
+      // `PATCH /admin/security/session-policy` is a singleton with no row id: a
+      // 404 is the §6.12 "not an admin" answer, i.e. this very window closed.
+      notFound: 'session',
+    },
+  );
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setNotice(null);
-    setError(null);
+    setRangeError(null);
+    save.clearError();
     const parsed = Number(hours);
     if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-      setError(t('admin.security.sessionPolicy.rangeError', { min, max }));
+      setRangeError(t('admin.security.sessionPolicy.rangeError', { min, max }));
       return;
     }
-    setSaving(true);
-    try {
-      const next = await api.updateSessionPolicy({ sessionLifetimeHours: parsed });
-      setHours(String(next.sessionLifetimeHours));
-      setNotice(t('admin.security.sessionPolicy.saved'));
-    } catch {
-      setError(t('admin.security.sessionPolicy.saveError'));
-    } finally {
-      setSaving(false);
-    }
+    await save.run(parsed);
   }
 
   return (
@@ -380,7 +396,9 @@ function SessionPolicyCard() {
       ) : (
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           {notice ? <Alert tone="success">{notice}</Alert> : null}
-          {error ? <Alert tone="error">{error}</Alert> : null}
+          {(rangeError ?? save.error) ? (
+            <Alert tone="error">{rangeError ?? save.error}</Alert>
+          ) : null}
           <TextField
             type="number"
             min={min}
@@ -395,8 +413,8 @@ function SessionPolicyCard() {
             {t('admin.security.sessionPolicy.hint', { min, max })}
           </p>
           <div>
-            <Button type="submit" variant="secondary" disabled={saving}>
-              {saving
+            <Button type="submit" variant="secondary" disabled={save.pending}>
+              {save.pending
                 ? t('admin.security.sessionPolicy.saving')
                 : t('admin.security.sessionPolicy.save')}
             </Button>

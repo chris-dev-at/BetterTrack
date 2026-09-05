@@ -102,7 +102,11 @@ export function useResource<T>(
           return;
         }
         if (err instanceof ApiError && err.isNotAuthorized) {
-          clearSession();
+          // 401 OR 404 — unchanged (V5-P13c must not regress the read path, which
+          // is what makes a live-refresh page bounce on the first tick after the
+          // window closes instead of 401-looping). The reason is new: the login
+          // screen names the expiry, exactly as the write seam does.
+          clearSession('expired');
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {

@@ -175,7 +175,12 @@ function RegistrationModeSection({ resource }: { resource: ReadHandle<AppSetting
       setBaseline(result.registrationMode);
       setSaved(true);
     },
-    { errorKey: 'admin.registration.modeSaveError' },
+    {
+      errorKey: 'admin.registration.modeSaveError',
+      // Same `PATCH /admin/settings` route as SettingsPage: no row id, so a 404
+      // is the closed admin session, not a missing setting (V5-P13c).
+      notFound: 'session',
+    },
   );
 
   const dirty = baseline !== null && selected !== baseline;
@@ -436,7 +441,13 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
       setMaxUses('1');
       setExpiresInDays('');
     },
-    { errorKey: 'admin.registration.createTokenError', onSuccess: tokens.reload },
+    {
+      errorKey: 'admin.registration.createTokenError',
+      // `POST /admin/registration-tokens` mints a row rather than addressing one,
+      // so nothing here can be "already gone" — a 404 is auth loss.
+      notFound: 'session',
+      onSuccess: tokens.reload,
+    },
   );
 
   const revoke = useAdminMutation((id: string) => api.revokeRegistrationToken(id), {

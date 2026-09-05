@@ -957,7 +957,10 @@ function UserAuditLog({ userId }: { userId: string }) {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (err instanceof ApiError && err.isNotAuthorized) {
-          clearSession();
+          // Same 401-or-404 rule as `useResource`, and the same reason: on the
+          // admin origin this is the V5-P13c window closing, so the login screen
+          // names it instead of bouncing silently.
+          clearSession('expired');
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {
@@ -1071,7 +1074,13 @@ function NotesTab({
       await api.createUserNote(userId, { body });
       setDraft('');
     },
-    { errorKey: 'admin.userDetail.notes.addError', onSuccess: reloadAll },
+    {
+      // `POST /admin/users/:id/notes` is addressed by the user row, which another
+      // admin can delete while this pane is open — a banner, not a sign-out.
+      notFound: 'surface',
+      errorKey: 'admin.userDetail.notes.addError',
+      onSuccess: reloadAll,
+    },
   );
 
   const remove = useAdminMutation((noteId: string) => api.deleteUserNote(userId, noteId), {

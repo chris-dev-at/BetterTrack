@@ -1,10 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 
 import type { AdminFeatureFlag, FeatureFlagKey } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
+import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
@@ -18,8 +19,6 @@ import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
  */
 export function FeatureFlagsPage() {
   const t = useT();
-  const [busyKey, setBusyKey] = useState<FeatureFlagKey | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [flags, setFlags] = useState<AdminFeatureFlag[] | null>(null);
 
   const resource = useResource((signal) => api.getFeatureFlags(signal), []);
@@ -27,20 +26,19 @@ export function FeatureFlagsPage() {
   // Prefer the optimistic post-toggle list, falling back to the fetched one.
   const rows = flags ?? resource.data?.flags ?? null;
 
-  const toggle = useCallback(
+  const toggle = useAdminMutation(
     async (key: FeatureFlagKey, enabled: boolean) => {
-      setBusyKey(key);
-      setActionError(null);
-      try {
-        const next = await api.setFeatureFlag(key, enabled);
-        setFlags(next.flags);
-      } catch {
-        setActionError(t('admin.featureFlags.actionError'));
-      } finally {
-        setBusyKey(null);
-      }
+      const next = await api.setFeatureFlag(key, enabled);
+      setFlags(next.flags);
     },
-    [t],
+    {
+      errorKey: 'admin.featureFlags.actionError',
+      // The `:key` in `PATCH /admin/feature-flags/:key` is a fixed contract enum,
+      // not a row another operator can delete: the only way this 404s is the
+      // §6.12 "not an admin" answer — an expired admin window (V5-P13c). Signing
+      // out beats a banner on a console whose next request will fail the same way.
+      notFound: 'session',
+    },
   );
 
   return (
@@ -61,7 +59,7 @@ export function FeatureFlagsPage() {
         </Button>
       </div>
 
-      {actionError ? <Alert tone="error">{actionError}</Alert> : null}
+      {toggle.error ? <Alert tone="error">{toggle.error}</Alert> : null}
 
       {loading && !rows ? (
         <Spinner label={t('admin.featureFlags.title')} />
@@ -111,8 +109,8 @@ export function FeatureFlagsPage() {
                   <td className="px-3 py-3 text-right">
                     <Button
                       variant="secondary"
-                      disabled={busyKey === flag.key}
-                      onClick={() => void toggle(flag.key, !flag.enabled)}
+                      disabled={toggle.isPending(flag.key)}
+                      onClick={() => void toggle.runFor(flag.key, flag.key, !flag.enabled)}
                     >
                       {flag.enabled
                         ? t('admin.featureFlags.disable')

@@ -54,7 +54,13 @@ export function SettingsPage() {
       setBaseline(result.betaMode);
       setSaved(true);
     },
-    { errorKey: 'admin.settings.saveError' },
+    {
+      errorKey: 'admin.settings.saveError',
+      // `PATCH /admin/settings` addresses no row, so a 404 can only mean this
+      // console is no longer an admin — the V5-P13c window closed (§6.12 answers
+      // 404, not 401, to everyone else). Sign out instead of blaming the save.
+      notFound: 'session',
+    },
   );
 
   const dirty = baseline !== null && betaMode !== baseline;

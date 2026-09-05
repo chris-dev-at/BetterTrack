@@ -15,11 +15,18 @@ import { isAdminTwoFactorSetupRequired, useAuth } from './AuthContext';
  * two tabs, or a colleague acting first. Treating it as auth loss would log a
  * working admin out through the 2FA trap over a stale row.
  *
- *  - `surface` (default) — show the error banner, keep the session. Correct for
- *    anything addressed by an id that another actor can remove.
- *  - `session` — treat it as auth loss, exactly as reads do. Only for writes
- *    against a route with no row id, where a 404 really can only mean "you are
- *    not an admin here any more".
+ *  - `surface` — show the error banner, keep the session. Correct for anything
+ *    addressed by an id that another actor can remove.
+ *  - `session` — treat it as auth loss, exactly as reads do. For writes against
+ *    a route with no removable row id, where a 404 really can only mean "you are
+ *    not an admin here any more" — which, on a live console, means the V5-P13c
+ *    session window closed.
+ *
+ * There is deliberately NO default (V5-P13c, #1779). When `surface` was the
+ * fallback, every one of the seam's call sites inherited it silently and not one
+ * opted into `session`, so an expired admin session surfaced as "could not save"
+ * on a console whose every next request would also fail. Naming the disposition
+ * per call site is a one-line cost that keeps that decision visible in review.
  */
 export type AdminMutationNotFoundPolicy = 'surface' | 'session';
 
@@ -32,8 +39,8 @@ interface AdminMutationOptions {
   errorKey: string;
   /** Run after a successful call — typically a `useResource` reload. */
   onSuccess?: () => void;
-  /** How to read a 404. Defaults to `surface`; see the type's docs. */
-  notFound?: AdminMutationNotFoundPolicy;
+  /** How to read a 404. Required — see the type's docs for why there is no default. */
+  notFound: AdminMutationNotFoundPolicy;
   /**
    * Catalog key for the banner when a `surface` 404 says the row is gone. Falls
    * back to `errorKey` when a call site has nothing more specific to say.
@@ -110,7 +117,7 @@ export function useAdminMutation<TArgs extends readonly unknown[]>(
 
   const execute = useCallback(
     async (key: PendingKey, args: TArgs): Promise<boolean> => {
-      const { errorKey, notFound = 'surface', notFoundErrorKey, onSuccess } = optionsRef.current;
+      const { errorKey, notFound, notFoundErrorKey, onSuccess } = optionsRef.current;
       setPendingKeys((current) => new Set(current).add(key));
       setError(null);
       try {
@@ -121,9 +128,15 @@ export function useAdminMutation<TArgs extends readonly unknown[]>(
         const status = err instanceof ApiError ? err.status : null;
         const authLoss = status === 401 || (status === 404 && notFound === 'session');
         if (authLoss) {
-          clearSession();
+          // The console is dead, not the row: sign out with the V5-P13c reason so
+          // the login screen says the admin session expired instead of leaving a
+          // red "could not save" on a surface that can no longer save anything.
+          clearSession('expired');
           return false;
         }
+        // Checked AFTER auth loss, and unreachable from it: the mandatory-2FA gate
+        // answers 403, never 401/404, so an unenrolled admin still lands in the
+        // enrollment wizard rather than being read as an expired session.
         if (isAdminTwoFactorSetupRequired(err)) {
           requireTwoFactorSetup();
           return false;

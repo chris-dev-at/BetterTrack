@@ -41,7 +41,10 @@ export function AuditPage() {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (err instanceof ApiError && err.isNotAuthorized) {
-          clearSession();
+          // Same 401-or-404 rule as `useResource`, and the same reason: on the
+          // admin origin this is the V5-P13c window closing, so the login screen
+          // names it instead of bouncing silently.
+          clearSession('expired');
           return;
         }
         if (isAdminTwoFactorSetupRequired(err)) {

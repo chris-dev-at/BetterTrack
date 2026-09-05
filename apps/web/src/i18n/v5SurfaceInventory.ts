@@ -869,15 +869,20 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/admin/security'],
     components: ['admin/pages/SecuritySettingsPage.tsx'],
     copyRoots: ['admin.security'],
-    copyReview: 'Independent 6–24 h admin-session policy and no-step-up wording reviewed.',
+    copyReview:
+      'Independent 6–24 h admin-session policy and no-step-up wording reviewed, plus the expiry notice the console signs out with (#1779, EN + DE).',
     states: {
-      loading: unverified('2FA and session-policy resources render localized Spinner states.'),
+      loading: covered(
+        'Both resources (2FA status, session policy) render a localized Spinner while pending.',
+      ),
       empty: notAsync(
         'Policy is a required singleton; 2FA method absence is an actionable setup state.',
       ),
-      error: unverified('Both resource failures expose retry; save validation remains inline.'),
+      error: covered(
+        'Both resource failures render a localized Alert with retry; the save failure now routes through the shared write seam, so an expired admin window signs the console out with a translated notice instead of an inline banner, and only range validation stays inline.',
+      ),
     },
-    tests: ['admin/pages/SecuritySettingsPage.test.tsx'],
+    tests: ['admin/pages/SecuritySettingsPage.test.tsx', 'admin/sessionExpiry.test.tsx'],
   },
 ] as const satisfies readonly V5SurfaceReview[];
 

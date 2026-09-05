@@ -24,7 +24,8 @@
       "heading": "Admin sign in",
       "notAdmin": "This is a user account, not an administrator — please sign in through the main app.",
       "invalidCredentials": "Invalid email/username or password.",
-      "genericError": "Unable to sign in. Please try again."
+      "genericError": "Unable to sign in. Please try again.",
+      "sessionExpired": "Your admin session expired. Please sign in again."
     },
     "adminForcedPassword": {
       "info": "Set a new password before continuing to the admin console."
