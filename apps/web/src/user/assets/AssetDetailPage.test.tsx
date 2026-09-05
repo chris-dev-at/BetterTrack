@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { useMemo, useState } from 'react';
 
 // ─── API mocks ────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ import {
   getAssetSplits,
 } from '../../lib/marketIntelApi';
 import { listWatchlists, useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
+import { RealtimeContext, type RealtimeContextValue } from '../../lib/realtime';
 import { setViewportWidth } from '../../test/viewport';
 import { AssetDetailPage } from './AssetDetailPage';
 
@@ -709,6 +711,80 @@ describe('AssetDetailPage — Live Mode (§6.3, V3-P7b)', () => {
     );
     expect(screen.queryByText(/live.*(unavailable|error|failed)/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText('Live price chart for BAYN.DE')).toBeInTheDocument();
+  });
+
+  test('a liveMode kill switch labels the chart delayed instead of leaving a healthy live state', async () => {
+    // The gateway sheds this socket's live watches (`feature.disabled`) and keeps
+    // the connection UP (§13.5 V5-P2 arc (c)): nothing else on the page can tell
+    // "no frames are coming" from "the stream is quiet".
+    const user = userEvent.setup();
+    let setShed: ((shed: boolean) => void) | undefined;
+
+    function Harness() {
+      const [shed, setter] = useState(false);
+      setShed = setter;
+      const realtime = useMemo<RealtimeContextValue>(
+        () => ({
+          connected: true,
+          featureDisabled: { realtime: false, liveMode: shed },
+          on: () => () => {},
+          joinRoom: () => () => {},
+          watchLive: async () => ({
+            frames: [
+              {
+                assetId: ASSET_ID,
+                price: 28.9,
+                currency: 'EUR',
+                dayChangePct: null,
+                at: '2024-06-01T12:00:00.000Z',
+              },
+            ],
+            coverageFrom: '2024-06-01T12:00:00.000Z',
+          }),
+          unwatchLive: () => {},
+          presenceEnter: () => {},
+          presenceLeave: () => {},
+        }),
+        [shed],
+      );
+      return (
+        <RealtimeContext.Provider value={realtime}>
+          <MemoryRouter initialEntries={[`/assets/${ASSET_ID}`]}>
+            <Routes>
+              <Route path="/assets/:id" element={<AssetDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </RealtimeContext.Provider>
+      );
+    }
+
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <Harness />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+
+    // Healthy stream: no delayed/fallback wording at all.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Live price chart for BAYN.DE')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Live unavailable — showing delayed data')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Live updates every 60 s while the stream reconnects.'),
+    ).not.toBeInTheDocument();
+
+    act(() => setShed!(true));
+
+    // The chart is now on the 60 s poll and SAYS so — it never keeps presenting
+    // the last streamed frame as a current live price.
+    await waitFor(() =>
+      expect(screen.getByText('Live unavailable — showing delayed data')).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText('Live updates every 60 s while the stream reconnects.'),
+    ).not.toBeInTheDocument();
   });
 
   test('a window switch stays in live mode with the picked window selected', async () => {

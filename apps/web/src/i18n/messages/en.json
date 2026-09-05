@@ -3055,6 +3055,8 @@
       "waiting": "Waiting for live prices…",
       "fallbackNote": "Live updates every 60 s while the stream reconnects.",
       "chartAriaLabel": "Live price chart for {{symbol}}",
+      "unavailable": "Live unavailable — showing delayed data",
+      "unavailableHint": "The server paused live updates. The chart refreshes every 60 s instead.",
       "marketClosed": "Market closed",
       "marketClosedHint": "Showing the most recent session. Live updates resume when the market reopens."
     },

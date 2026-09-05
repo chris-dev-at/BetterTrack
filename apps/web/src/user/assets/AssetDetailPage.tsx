@@ -985,6 +985,7 @@ export function AssetDetailPage() {
     chartPoints: livePoints,
     generation: liveGeneration,
     streaming,
+    unavailable: liveUnavailable,
     marketState: liveMarketState,
   } = useLiveSeries(id, liveWindow, liveRate, liveActive, quoteQuery.data);
 
@@ -1074,7 +1075,18 @@ export function AssetDetailPage() {
               onWindowChange={setLiveWindow}
               onRateChange={setLiveRate}
             />
-            {liveActive && marketClosed ? (
+            {/* The server shed Live Mode (§13.5 V5-P2 arc (c)). Say so: the
+                chart is on the 60 s poll, not on a stream that happens to be
+                quiet — never present the last frame as a current live price. */}
+            {liveActive && liveUnavailable ? (
+              <span
+                className="bt-badge gap-1 px-2 py-0.5 text-xs"
+                title={t('assets.live.unavailableHint')}
+              >
+                <span aria-hidden="true" className="bt-dot h-1.5 w-1.5" />
+                {t('assets.live.unavailable')}
+              </span>
+            ) : liveActive && marketClosed ? (
               <span
                 className="bt-badge gap-1 px-2 py-0.5 text-xs"
                 title={t('assets.live.marketClosedHint')}
