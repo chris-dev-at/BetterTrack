@@ -232,8 +232,71 @@ export interface AllocationLine {
   /**
    * §6.7-style human explanation for a positive-weight position left at qty 0,
    * naming its price, its slice, and the ≈ minimum budget that would reach it.
+   * Exactly `unreachableWeightNote(line.unreachable)`.
    */
   note?: string;
+  /**
+   * The structured facts behind {@link AllocationLine.note}, present whenever it
+   * is. Everything here is denominated in the `budgetEur` THIS call was given —
+   * so a caller that scaled the budget down before calling (the Invest
+   * Calculator withholds an unresolved nested share, #1811) must restate the
+   * note in its own denomination via {@link unreachableWeightNote}, or it hands
+   * the user a budget that reproduces the identical note.
+   */
+  unreachable?: UnreachableWeight;
+}
+
+/**
+ * A positive-weight position the budget could not reach, and the figures its
+ * note names: the price of one increment, the slice that fell short of it, and
+ * the ≈ minimum budget that does reach it.
+ */
+export interface UnreachableWeight {
+  symbol: string;
+  mode: AllocationMode;
+  /** The buyable increment: 1 share in whole mode, the fractional step otherwise. */
+  step: number;
+  /** Price of one share, in the budget's currency. */
+  priceEur: number;
+  /** This position's slice of the budget (`wᵢ · B`). */
+  targetEur: number;
+  /** The ≈ minimum budget that buys at least one increment of this position. */
+  suggestedBudgetEur: number;
+}
+
+/**
+ * Restate an unreachable weight in the denomination of a budget the caller
+ * scaled by `resolvedFraction` before calling (`allocatable = total ·
+ * resolvedFraction`, the Invest Calculator's withheld nested share — #1811).
+ *
+ * Only the suggested budget moves: `wᵢ` is normalised over what reached the
+ * engine, so `wᵢ · allocatable` already IS the position's slice of the caller's
+ * whole budget, and the price is a price. The figure is ceiled to cents like
+ * every other suggestion — rounded down it would name a budget that still
+ * misses the share it promises. A fraction of 1 (nothing withheld) is the
+ * identity.
+ */
+export function rescaleUnreachableWeight(
+  u: UnreachableWeight,
+  resolvedFraction: number,
+): UnreachableWeight {
+  if (!(resolvedFraction > 0) || resolvedFraction >= 1) return u;
+  return { ...u, suggestedBudgetEur: ceilCents(u.suggestedBudgetEur / resolvedFraction) };
+}
+
+/**
+ * Render an unreachable weight as the §6.7 note — the one place the sentence is
+ * built, so a caller restating the figure in its own denomination produces the
+ * same sentence the engine would have.
+ */
+export function unreachableWeightNote(u: UnreachableWeight): string {
+  return u.mode === 'whole'
+    ? `${u.symbol} share price (${fmtEur(u.priceEur)} €) exceeds its ${fmtEur(
+        u.targetEur,
+      )} € slice; raise the budget to ≥ ~${fmtEur(u.suggestedBudgetEur)} € or use fractional mode.`
+    : `${u.symbol}: one ${u.step}-share step (${fmtEur(u.step * u.priceEur)} €) exceeds its ${fmtEur(
+        u.targetEur,
+      )} € slice; raise the budget to ≥ ~${fmtEur(u.suggestedBudgetEur)} €.`;
 }
 
 export interface AllocationResult {
@@ -680,16 +743,17 @@ export function allocateBudget(input: AllocationInput): AllocationResult {
     // the force pass shrank it below one — surfaced explicitly with a budget
     // that reaches it, never silently mis-weighted (§6.7).
     if (s.k === 0 && s.weight > 0) {
-      line.note =
-        mode === 'whole'
-          ? `${s.symbol} share price (${fmtEur(s.priceEur)} €) exceeds its ${fmtEur(
-              s.targetEur,
-            )} € slice; raise the budget to ≥ ~${fmtEur(suggestedMinBudget(s))} € or use fractional mode.`
-          : `${s.symbol}: one ${step}-share step (${fmtEur(step * s.priceEur)} €) exceeds its ${fmtEur(
-              s.targetEur,
-            )} € slice; raise the budget to ≥ ~${fmtEur(
-              ceilCents((step * s.priceEur) / s.weight),
-            )} €.`;
+      const unreachable: UnreachableWeight = {
+        symbol: s.symbol,
+        mode,
+        step,
+        priceEur: s.priceEur,
+        targetEur: s.targetEur,
+        suggestedBudgetEur:
+          mode === 'whole' ? suggestedMinBudget(s) : ceilCents((step * s.priceEur) / s.weight),
+      };
+      line.unreachable = unreachable;
+      line.note = unreachableWeightNote(unreachable);
       warnings.push(line.note);
     }
     return line;

@@ -23,6 +23,8 @@ import {
   AllocationError,
   type AllocationPositionInput,
   type AllocationResult,
+  rescaleUnreachableWeight,
+  unreachableWeightNote,
 } from '../../domain/allocation';
 import { ApiError, badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
@@ -696,35 +698,54 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       throw err;
     }
 
+    // The engine's "raise the budget to ≥ ~X" figures are in the budget IT was
+    // given — the allocatable remainder. Told to the user verbatim they are
+    // short by exactly the withheld share, and re-entering one would withhold
+    // the same fraction again and reproduce the identical note (#1811). So every
+    // note is re-rendered in the caller's own denomination; with nothing
+    // withheld the rescale is the identity and the sentence is unchanged.
+    const resolvedFraction = flat.unresolvedPct > 0 ? allocatableEur / req.budgetEur : 1;
+    const notes: string[] = [];
+    const buyList = result.positions.map((line) => {
+      // Every input position was resolved and quoted above before the
+      // engine ran, so its native price/currency is always present here.
+      const native = nativeByAssetId.get(line.assetId)!;
+      const row: AllocateResponse['positions'][number] = {
+        assetId: line.assetId,
+        symbol: line.symbol,
+        name: nameByAssetId.get(line.assetId) ?? line.symbol,
+        qty: line.qty,
+        costEur: line.costEur,
+        nativePrice: native.price,
+        currency: native.currency,
+        actualPct: line.actualPct,
+        targetPct: line.targetPct,
+        deltaPp: line.deltaPp,
+      };
+      if (line.unbuyable) row.unbuyable = true;
+      if (line.unreachable !== undefined) {
+        row.note = unreachableWeightNote(
+          rescaleUnreachableWeight(line.unreachable, resolvedFraction),
+        );
+        notes.push(row.note);
+      } else if (line.note !== undefined) {
+        row.note = line.note;
+        notes.push(line.note);
+      }
+      return row;
+    });
+
     return {
-      positions: result.positions.map((line) => {
-        // Every input position was resolved and quoted above before the
-        // engine ran, so its native price/currency is always present here.
-        const native = nativeByAssetId.get(line.assetId)!;
-        const row: AllocateResponse['positions'][number] = {
-          assetId: line.assetId,
-          symbol: line.symbol,
-          name: nameByAssetId.get(line.assetId) ?? line.symbol,
-          qty: line.qty,
-          costEur: line.costEur,
-          nativePrice: native.price,
-          currency: native.currency,
-          actualPct: line.actualPct,
-          targetPct: line.targetPct,
-          deltaPp: line.deltaPp,
-        };
-        if (line.unbuyable) row.unbuyable = true;
-        if (line.note !== undefined) row.note = line.note;
-        return row;
-      }),
+      positions: buyList,
       totalCostEur: result.totalCostEur,
       // `totalCostEur + leftoverEur === budgetEur` still holds: the withheld
       // slice is part of the leftover, not money that vanished.
       leftoverEur: result.leftoverEur + withheldEur,
+      // The banner repeats the per-row notes, so it repeats them as restated.
       warnings:
         withheldEur > 0
           ? [
-              ...result.warnings,
+              ...notes,
               `${withheldEur.toFixed(2)} ${fx.baseCurrency} is left unallocated: ${flat.unresolvedPct.toFixed(2)} % of this conglomerate is a nested conglomerate with no assets in it.`,
             ]
           : result.warnings,

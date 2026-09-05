@@ -387,15 +387,17 @@ function canonicalCompositionOrder(
 }
 
 /**
- * Grace, in calendar days, between a comparison series' last covered day and the
- * shared window's end before the series is refused as not covering it (#1755).
+ * Grace, in calendar days, between a secondary series' covered span and the
+ * shared window it is measured over — at EITHER end — before the series is
+ * refused as not covering it (#1755, #1811).
  *
- * The window's end is the primary basket's last TRADING day, and two baskets on
- * different exchanges do not close on the same holidays — a US basket compared
- * against a DAX basket over a window ending on a day only one of them traded is
- * short by a day through no fault of the data. A week absorbs every such
- * calendar mismatch (the longest ordinary market closure is a long weekend)
- * while a delisting, the case this guards, is short by months or years.
+ * The window's ends are the primary basket's first and last TRADING days, and
+ * two baskets on different exchanges do not close on the same holidays — a US
+ * basket compared against a DAX basket over a window ending on a day only one of
+ * them traded is short by a day through no fault of the data. A week absorbs
+ * every such calendar mismatch (the longest ordinary market closure is a long
+ * weekend) while the cases this guards — a delisting, a provider history gap —
+ * are short by months or years.
  */
 export const COMPARISON_COVERAGE_GRACE_DAYS = 7;
 
@@ -789,11 +791,10 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
 
       // 5. Benchmark run (V4-P7): the SAME engine over the primary's effective
       //    window with the SAME base currency, late-listing mode and rebalance
-      //    schedule — apples-to-apples by construction. A benchmark whose data
-      //    starts after the primary t₀ would silently compare a shorter window
-      //    (the engine reports that via its clip notice), so it is rejected as
-      //    a 422 instead — the same outcome the pre-V4-P7 overlay produced for
-      //    a benchmark short of t₀.
+      //    schedule — apples-to-apples by construction. A benchmark that does
+      //    not cover that window — at EITHER end (#1811) — would silently
+      //    compare a shorter one, so it is refused with a 422 through the same
+      //    rule a non-primary comparison series goes through.
       let benchmark: BacktestBenchmarkResult | null = null;
       if (resolvedBenchmark) {
         let benchResult: BacktestResult;
@@ -810,12 +811,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         } catch (err) {
           throw mapEngineError(err);
         }
-        if (benchResult.notice !== null) {
-          throw unprocessable(
-            `Benchmark ${resolvedBenchmark.label} does not cover the backtest window — ${benchResult.notice}.`,
-            'BACKTEST_UNAVAILABLE',
-          );
-        }
+        assertCoversWindow(
+          `Benchmark ${resolvedBenchmark.label}`,
+          'the backtest window',
+          benchResult,
+          { start: result.startDate, end: result.endDate },
+        );
         benchmark = {
           kind: resolvedBenchmark.kind,
           refId: resolvedBenchmark.refId,
@@ -1179,26 +1180,9 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       } catch (err) {
         throw mapEngineError(err);
       }
-      if (result.notice !== null) {
-        throw unprocessable(
-          `Conglomerate ${basket.name} does not cover the comparison window — ${result.notice}.`,
-          'BACKTEST_UNAVAILABLE',
-        );
-      }
-      // …and the same refusal when the data stops INSIDE the window (#1755).
-      // Only the start used to be checked, so a basket whose constituent was
-      // delisted mid-window was charted as a line that simply stopped, with its
-      // stats annualised over the fraction it survived and then printed in a
-      // grid — and differenced — against series that ran the whole window. A
-      // series that does not cover the window is not comparable over it, at
-      // either end.
-      const shortfallDays = coverageShortfallDays(result.endCoverage, window.end);
-      if (shortfallDays > COMPARISON_COVERAGE_GRACE_DAYS) {
-        throw unprocessable(
-          `Conglomerate ${basket.name} does not cover the comparison window — its data ends ${result.endCoverage!.date}, before ${window.end}.`,
-          'BACKTEST_UNAVAILABLE',
-        );
-      }
+      // A series that does not cover the window is not comparable over it, at
+      // either end (#1755, #1811) — the same rule the benchmark path applies.
+      assertCoversWindow(`Conglomerate ${basket.name}`, 'the comparison window', result, window);
       series.push({
         conglomerateId: basket.id,
         name: basket.name,
@@ -1208,16 +1192,21 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       });
     }
 
-    // The reported window end is the last day EVERY charted series reaches, not
-    // the primary's own (#1755): the grace above tolerates a series whose
-    // exchange was shut on the primary's final day, and a response must never
-    // claim an end date one of its own curves stops short of.
+    // The reported window is the span EVERY charted series reaches — the latest
+    // first day and the earliest last day, not the primary's own (#1755,
+    // #1811): the grace above tolerates a series whose exchange was shut on the
+    // primary's first or final day, and a response must never claim a date one
+    // of its own curves does not reach.
+    const startDate = series.reduce((latest, s) => {
+      const first = s.series[0]?.date ?? latest;
+      return first > latest ? first : latest;
+    }, window.start);
     const endDate = series.reduce((earliest, s) => {
       const last = s.series[s.series.length - 1]?.date ?? earliest;
       return last < earliest ? last : earliest;
     }, window.end);
 
-    return { startDate: window.start, endDate, mode, rebalance, series };
+    return { startDate, endDate, mode, rebalance, series };
   }
 }
 
@@ -1242,19 +1231,70 @@ interface ComparisonCore {
 }
 
 /**
+ * Calendar days from `from` to `to`, floored at 0 (`to` on/before `from` ⇒ 0).
+ * Calendar days, not trading days: the gaps these measure are exactly the ones a
+ * trading calendar cannot explain.
+ */
+function calendarDaysBetween(from: string, to: string): number {
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+  return Number.isFinite(days) && days > 0 ? days : 0;
+}
+
+/**
  * Calendar days between the last day a basket covered and the window end it was
  * asked to cover — `0` when it covered the end (the engine reports no coverage
- * gap at all). Calendar days, not trading days: the gap this measures is exactly
- * the one a trading calendar cannot explain.
+ * gap at all).
  */
 function coverageShortfallDays(
   coverage: { date: string; symbol: string } | null,
   windowEnd: string,
 ): number {
   if (coverage === null) return 0;
-  const days =
-    (Date.parse(`${windowEnd}T00:00:00Z`) - Date.parse(`${coverage.date}T00:00:00Z`)) / 86_400_000;
-  return Number.isFinite(days) && days > 0 ? days : 0;
+  return calendarDaysBetween(coverage.date, windowEnd);
+}
+
+/**
+ * Refuse a SECONDARY series — a V4-P7 benchmark, or a non-primary series of an
+ * N-way comparison — that does not cover the window it is being measured over.
+ * One rule for both paths (#1811); both are the same promise, that the overlaid
+ * curve and the stats printed beside the primary's describe the same window:
+ *
+ *  1. its common start is after the window start (the engine's own clip notice);
+ *  2. its first covered day is materially after the window start — an old series
+ *     with a provider gap right after t₀, or simply a different exchange
+ *     calendar, which no notice fires for;
+ *  3. its data stops inside the window (`endCoverage`) — a delisting.
+ *
+ * (2) and (3) allow {@link COMPARISON_COVERAGE_GRACE_DAYS} so an ordinary
+ * holiday mismatch between two exchanges is still comparable. Without them a
+ * series short of the window is charted as a line that simply starts late or
+ * stops early, with stats annualised over the fraction it covered and then
+ * differenced, in one grid, against series that ran the whole window.
+ */
+function assertCoversWindow(
+  subject: string,
+  windowLabel: string,
+  result: BacktestResult,
+  window: { start: string; end: string },
+): void {
+  if (result.notice !== null) {
+    throw unprocessable(
+      `${subject} does not cover ${windowLabel} — ${result.notice}.`,
+      'BACKTEST_UNAVAILABLE',
+    );
+  }
+  if (calendarDaysBetween(window.start, result.startDate) > COMPARISON_COVERAGE_GRACE_DAYS) {
+    throw unprocessable(
+      `${subject} does not cover ${windowLabel} — its data starts ${result.startDate}, after ${window.start}.`,
+      'BACKTEST_UNAVAILABLE',
+    );
+  }
+  if (coverageShortfallDays(result.endCoverage, window.end) > COMPARISON_COVERAGE_GRACE_DAYS) {
+    throw unprocessable(
+      `${subject} does not cover ${windowLabel} — its data ends ${result.endCoverage!.date}, before ${window.end}.`,
+      'BACKTEST_UNAVAILABLE',
+    );
+  }
 }
 
 /**

@@ -87,6 +87,48 @@ describe('backtestPreviewRequestSchema — benchmark field (V4-P7)', () => {
   });
 });
 
+describe('backtestPreviewRequestSchema — one position per asset (#1811)', () => {
+  it('rejects a repeated assetId, in every mode × rebalance combination', () => {
+    // The engine keys a basket by asset id — a repeat is two cursors on one key,
+    // not a heavier weight — so this is a wire invariant, exactly as
+    // `conglomerateIds must be unique` is for a comparison. Without it the same
+    // body 500ed or not depending on the mode and schedule chosen.
+    for (const mode of ['clip', 'cash', 'redistribute']) {
+      for (const rebalance of ['none', 'monthly']) {
+        const parsed = backtestPreviewRequestSchema.safeParse({
+          ...BASE_REQUEST,
+          mode,
+          rebalance,
+          positions: [
+            { assetId: UUID_A, weight: 60 },
+            { assetId: UUID_A, weight: 40 },
+          ],
+        });
+        expect(parsed.success).toBe(false);
+        expect(parsed.error?.issues[0]?.path).toEqual(['positions']);
+      }
+    }
+  });
+
+  it('accepts distinct assets, and the same weight expressed once', () => {
+    expect(
+      backtestPreviewRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        positions: [
+          { assetId: UUID_A, weight: 60 },
+          { assetId: UUID_B, weight: 40 },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      backtestPreviewRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        positions: [{ assetId: UUID_A, weight: 100 }],
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
   it('accepts a full benchmark block with kind, refId, label, series and stats', () => {
     const response = {
