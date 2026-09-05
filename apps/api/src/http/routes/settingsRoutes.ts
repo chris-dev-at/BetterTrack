@@ -23,7 +23,7 @@ import {
   type WidgetLayoutNamespaceParam,
 } from '@bettertrack/contracts';
 
-import { forbidden } from '../../errors';
+import { forbidden, notFound } from '../../errors';
 
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
 import { TelegramSetupError } from '../../services/notifications/telegramSetupService';
@@ -111,14 +111,21 @@ export function createSettingsRouter(ctx: AppContext): Router {
   // renders (the SPA keys the setup cards off `channelsConfigurable` on the
   // notifications response). Code, schema and rows all stay intact; flipping
   // the env restores every route unchanged.
-  if (!ctx.config.telegram.enabled) {
-    router.use('/telegram', (_req, res) => {
-      res.status(404).end();
+  //
+  // The guard keys on `offered` — the kill-switch ALONE (#1795). A missing bot
+  // token is NOT a refusal: with the switch ON and no token, `/settings/telegram`
+  // answers the documented `available: false` body (§13.4 V4-P10), exactly as
+  // Discord does for its own "nothing configured yet" state. And the refusal
+  // carries the standard `{error:{code,message}}` envelope every other 404 in
+  // this API carries, rather than an empty body a client cannot read.
+  if (!ctx.config.telegram.offered) {
+    router.use('/telegram', (_req, _res, next) => {
+      next(notFound('Telegram notifications are deactivated.', 'CHANNEL_DEACTIVATED'));
     });
   }
-  if (!ctx.config.discord.enabled) {
-    router.use('/discord', (_req, res) => {
-      res.status(404).end();
+  if (!ctx.config.discord.offered) {
+    router.use('/discord', (_req, _res, next) => {
+      next(notFound('Discord notifications are deactivated.', 'CHANNEL_DEACTIVATED'));
     });
   }
 

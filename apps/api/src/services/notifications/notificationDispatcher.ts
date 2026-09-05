@@ -44,8 +44,11 @@ import type { EmailService } from '../email/emailService';
 import type { MirrorEmailVariant } from '../email/templates';
 import type { Logger } from '../../logger';
 
+import { notificationChannelSkippedTotal } from '../../metrics';
+
 import type { DiscordChannel } from './discordChannel';
 import { digestPeriodKey } from './digestService';
+import type { DeactivatableChannel } from './killSwitch';
 import type { FcmChannel, PushMessage } from './fcm';
 import type { PresenceStore } from './presence';
 import { isInQuietHours, quietHoursWindowEnd } from './quietHours';
@@ -79,6 +82,25 @@ import { notificationMessage, renderNotificationMessage } from './notificationI1
  *    bell push, no email/push) and the message simply lands in the open thread.
  *  - **Defaults on.** A user with no settings row gets every channel; only an
  *    explicit override (or mute/presence) suppresses.
+ *  - **A deactivated channel never CONSUMES an event** (V5-P0 kill-switch,
+ *    #1795). Telegram and Discord arrive here as `null` while
+ *    `BT_TELEGRAM_DISCORD_ENABLED` is off. The rule, in one sentence: *an event
+ *    whose only destinations are deactivated channels the recipient is actually
+ *    linked to is left undelivered and re-deliverable — no inbox row, no dedupe
+ *    marker, nothing written* — so the very same event re-dispatched after the
+ *    env flip delivers exactly once. It is deliberately NOT rerouted to the bell
+ *    (that would invent a channel the user routed off) and deliberately NOT
+ *    marked delivered (that is precisely the permanent swallow this rule exists
+ *    to prevent). Two deliberate exclusions: a recipient with no linked chat /
+ *    saved webhook loses nothing (the default matrix routes both channels ON for
+ *    every type, so treating that as a loss would defer nearly every event on a
+ *    deactivated deployment), and a globally muted recipient keeps the existing
+ *    hidden marker (mute is the user's own decision, not a deployment failure).
+ *    Every skipped fan-out — whether the event reached other live channels
+ *    (`dropped`) or had none (`deferred`) — increments
+ *    `bettertrack_notification_channel_skipped_total` and warns once per
+ *    (channel, outcome) per process, so an operator running with the switch off
+ *    can see what it costs.
  *
  * The dispatcher is NOT a bus subscriber anymore: the Redis pub/sub bus stays
  * strictly ephemeral (realtime fan-out — it still carries the
@@ -423,6 +445,20 @@ export interface NotificationDispatcherDeps {
   telegram?: TelegramChannel | null;
   /** Discord channel; always built when webhooks storage is wired. Deliveries no-op for a user with no saved webhook (V4-P10). */
   discord?: DiscordChannel | null;
+  /**
+   * Per-user link state for the two channels the V5-P0 kill-switch can
+   * deactivate (#1795): does this recipient have the linked chat / saved
+   * webhook the switch promises to preserve? Consulted ONLY when the channel
+   * itself is null (i.e. the deployment deactivated it) — a live deployment
+   * never pays for it. It is what separates "this user genuinely loses a
+   * delivery" from "the default matrix routes a channel this user never set
+   * up", and only the former may defer an event. Omit/null ⇒ no recipient is
+   * treated as linked, so the pre-#1795 marker behaviour stands.
+   */
+  deactivatedLinks?: {
+    telegram(userId: string): Promise<boolean>;
+    discord(userId: string): Promise<boolean>;
+  } | null;
   /** Active-view presence (#368). Omit to disable suppression (never suppresses). */
   presence?: PresenceStore;
   /**
@@ -478,12 +514,51 @@ export function createNotificationDispatcher(
     webPush,
     telegram,
     discord,
+    deactivatedLinks,
     presence,
     digest,
     quietHours,
     logger,
   } = deps;
   const now = deps.now ?? (() => new Date());
+
+  // V5-P0 kill-switch signal (#1795). The counter carries the volume; the log
+  // carries the discovery, once per (channel, outcome) per process so a
+  // deactivated deployment gets an operator-visible line without a log flood.
+  const warnedDeactivated = new Set<string>();
+  function recordDeactivatedSkip(
+    channel: DeactivatableChannel,
+    outcome: 'dropped' | 'deferred',
+    type: string,
+  ): void {
+    notificationChannelSkippedTotal.inc({ channel, outcome });
+    const key = `${channel}:${outcome}`;
+    if (warnedDeactivated.has(key)) return;
+    warnedDeactivated.add(key);
+    logger?.warn(
+      { channel, outcome, type },
+      outcome === 'deferred'
+        ? `${channel} is deactivated (BT_TELEGRAM_DISCORD_ENABLED) and was this notification's only routed channel: nothing delivered, nothing recorded — it stays deliverable after an env flip`
+        : `${channel} is deactivated (BT_TELEGRAM_DISCORD_ENABLED): fan-out skipped for a user who still routes notifications to it`,
+    );
+  }
+
+  /**
+   * Does the recipient hold the link/webhook a deactivated channel preserves?
+   * A probe failure answers `false` — the conservative direction, since it
+   * keeps the pre-#1795 marker behaviour rather than inventing a deferral.
+   */
+  async function hasPreservedLink(channel: DeactivatableChannel, userId: string): Promise<boolean> {
+    if (!deactivatedLinks) return false;
+    try {
+      return channel === 'telegram'
+        ? await deactivatedLinks.telegram(userId)
+        : await deactivatedLinks.discord(userId);
+    } catch (err) {
+      logger?.warn({ err, channel }, 'deactivated channel link probe failed');
+      return false;
+    }
+  }
 
   /** Build the event's locale-neutral message + routing payload. */
   async function render(event: DispatchableEvent): Promise<RenderedNotification | null> {
@@ -1013,6 +1088,34 @@ export function createNotificationDispatcher(
     const muted = recipient.notificationsMuted;
     const routing: TypeRouting = await repo.routingFor(event.userId, event.type);
 
+    // V5-P0 kill-switch (#1795): channels this event is routed to that the
+    // deployment cannot deliver on AND where the recipient holds the link the
+    // switch promises to preserve — i.e. a delivery genuinely lost, not merely
+    // the default matrix routing a channel this user never set up. When no
+    // destination survives, return before the insert below: writing the dedupe
+    // marker here is what used to consume the event forever, invisibly, and
+    // reduced the promised env-flip restore to a restore of the link row alone.
+    const deactivatedRouted: DeactivatableChannel[] = [];
+    if (routing.telegram && !telegram && (await hasPreservedLink('telegram', event.userId))) {
+      deactivatedRouted.push('telegram');
+    }
+    if (routing.discord && !discord && (await hasPreservedLink('discord', event.userId))) {
+      deactivatedRouted.push('discord');
+    }
+    const hasLiveDestination =
+      routing.inapp ||
+      (routing.email && Boolean(email) && Boolean(recipient.email)) ||
+      (routing.push && Boolean(fcm)) ||
+      (routing.webpush && Boolean(webPush)) ||
+      (routing.telegram && Boolean(telegram)) ||
+      (routing.discord && Boolean(discord));
+    if (!muted && !hasLiveDestination && deactivatedRouted.length > 0) {
+      for (const channel of deactivatedRouted) {
+        recordDeactivatedSkip(channel, 'deferred', event.type);
+      }
+      return;
+    }
+
     // Presence suppression (#368): never on stale data — the store's TTL bounds
     // it. Errors fail open (deliver rather than swallow) and log.
     let suppressedByPresence = false;
@@ -1240,6 +1343,12 @@ export function createNotificationDispatcher(
         // through the redactor here too (Pino serializes the `err` object).
         logger?.warn({ err, type: event.type }, 'telegram fan-out failed');
       }
+    } else if (deactivatedRouted.includes('telegram')) {
+      // The recipient is linked and routes this type here, but the channel is
+      // not built in this deployment. The event did reach a live channel (else
+      // the early return above fired), so this is a per-channel loss — still
+      // worth an operator-visible signal (#1795).
+      recordDeactivatedSkip('telegram', 'dropped', event.type);
     }
     if (routing.discord && discord) {
       try {
@@ -1247,6 +1356,8 @@ export function createNotificationDispatcher(
       } catch (err) {
         logger?.warn({ err, type: event.type }, 'discord fan-out failed');
       }
+    } else if (deactivatedRouted.includes('discord')) {
+      recordDeactivatedSkip('discord', 'dropped', event.type);
     }
   }
 

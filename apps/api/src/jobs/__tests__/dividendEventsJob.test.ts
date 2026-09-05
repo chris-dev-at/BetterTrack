@@ -9,7 +9,10 @@ import type { AssetRef, DividendEvents } from '@bettertrack/contracts';
 
 import type { Database } from '../../data/db';
 import type { HeldAssetHolderRow } from '../../data/repositories/marketIntelRepository';
-import { createNotificationRepository } from '../../data/repositories/notificationRepository';
+import {
+  createNotificationRepository,
+  type TypeRouting,
+} from '../../data/repositories/notificationRepository';
 import { notifications } from '../../data/schema';
 import type { Logger } from '../../logger';
 import {
@@ -114,7 +117,7 @@ function scanDeps(opts: {
       enqueue: (event) => harness.ctx.notificationDispatcher.dispatch(event),
     }),
     redis,
-    isEnabled: dividendNotifyGate(repo),
+    isEnabled: dividendNotifyGate(repo, { telegram: true, discord: true }),
     runIfAllowed: async (_userId: string, action: () => Promise<void>) => {
       await action();
       return true;
@@ -610,5 +613,35 @@ describe('marketIntel.dividendScan — completion log (#1791)', () => {
     expect(degraded.warn).toHaveLength(1);
     expect(degraded.warn[0]!.msg).toBe('marketIntel.dividendScan completed with skips');
     expect(degraded.warn[0]!.payload).toMatchObject({ skipped: 1, usersDeferred: 1 });
+  });
+});
+
+describe('dividendNotifyGate — V5-P0 kill-switch (#1795)', () => {
+  const routing = (over: Partial<TypeRouting> = {}): TypeRouting => ({
+    inapp: false,
+    email: false,
+    push: false,
+    webpush: false,
+    telegram: false,
+    discord: false,
+    ...over,
+  });
+
+  it('does not count a deactivated Telegram/Discord as "wants this type"', async () => {
+    const routingFor = async () => routing({ telegram: true, discord: true });
+    const off = dividendNotifyGate({ routingFor }, { telegram: false, discord: false });
+    await expect(off('u1')).resolves.toBe(false);
+
+    // Same stored routing, kill-switch back on: the opt-in returns untouched.
+    const on = dividendNotifyGate({ routingFor }, { telegram: true, discord: true });
+    await expect(on('u1')).resolves.toBe(true);
+  });
+
+  it('still counts a live channel while the additive ones are deactivated', async () => {
+    const gate = dividendNotifyGate(
+      { routingFor: async () => routing({ inapp: true, telegram: true }) },
+      { telegram: false, discord: false },
+    );
+    await expect(gate('u1')).resolves.toBe(true);
   });
 });

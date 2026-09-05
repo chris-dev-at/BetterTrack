@@ -267,6 +267,8 @@ const {
   webPush: webPushChannel,
   telegram: telegramChannel,
   discord: discordChannel,
+  telegramLinks: telegramLinkRepo,
+  discordWebhooks: discordWebhookRepo,
 } = createNotificationChannelSet({ db, config, logger });
 const dispatcher = createNotificationDispatcher({
   bus: events,
@@ -280,6 +282,14 @@ const dispatcher = createNotificationDispatcher({
   webPush: webPushChannel,
   telegram: telegramChannel,
   discord: discordChannel,
+  // V5-P0 kill-switch (#1795): while a channel is deactivated the dispatcher
+  // asks whether the recipient still holds the link the switch preserves — a
+  // linked user's event is left undelivered and re-deliverable instead of being
+  // marked delivered and lost. Never queried while the channel is live.
+  deactivatedLinks: {
+    telegram: async (userId) => Boolean((await telegramLinkRepo.findForUser(userId))?.chatId),
+    discord: async (userId) => Boolean(await discordWebhookRepo.findForUser(userId)),
+  },
   presence: createPresenceStore({ redis: deadLetterConnection }),
   // Digest cadence + queue (V5-P3): a daily/weekly type's outbound channels are
   // deferred into the digest queue; the digest jobs below deliver them.
@@ -632,7 +642,12 @@ const definitions = assembleRegisteredJobDefinitions({
       intelRepo: createMarketIntelRepository(db),
       marketData,
       notify,
-      isEnabled: earningsNotifyGate(notificationRepo),
+      // The kill-switch view of the two additive channels (#1795): a user
+      // routed only to a deactivated Telegram/Discord is not an opt-in.
+      isEnabled: earningsNotifyGate(notificationRepo, {
+        telegram: config.telegram.enabled,
+        discord: config.discord.enabled,
+      }),
       enabled: config.marketIntel.enabled,
       runIfAllowed: earningsParanoidFilter.runAllowed,
     }),
@@ -645,7 +660,10 @@ const definitions = assembleRegisteredJobDefinitions({
       repo: createMarketIntelRepository(db),
       marketData,
       notify,
-      isEnabled: dividendNotifyGate(notificationRepo),
+      isEnabled: dividendNotifyGate(notificationRepo, {
+        telegram: config.telegram.enabled,
+        discord: config.discord.enabled,
+      }),
       enabled: config.marketIntel.enabled,
       runIfAllowed: dividendParanoidFilter.runAllowed,
     }),
