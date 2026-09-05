@@ -48,6 +48,12 @@ const FIXTURES: Fixture[] = [
   { symbol: 'BRK-B', name: 'Berkshire Hathaway Inc. New' },
   { symbol: 'META', name: 'Meta Platforms, Inc.' },
   { symbol: 'XAUEUR=X', name: 'Gold (EUR)' },
+  // The two shapes a hand-rolled tokenizer gets wrong in the direction that
+  // sheds a good hit (#1810 review): a hyphen inside a DOTTED run is one `host`
+  // token (`brk-b.us`, no `brk` part), and a `float` that runs into a letter
+  // stops there (`1.5` + `x`, not `1.5x`).
+  { symbol: 'BRK-B.US', name: 'Berkshire Hathaway US Listing' },
+  { symbol: 'LEV15.DE', name: 'Amundi 1.5x Daily Leveraged' },
 ];
 
 /**
@@ -55,6 +61,13 @@ const FIXTURES: Fixture[] = [
  * tier 2 (substring and word/tsquery), the misspelling that only similarity
  * ordering can rank, and the compound tokens (`BTC-USD` splits, `BAYN.DE` does
  * not) where a hand-rolled tokenizer is most likely to be wrong.
+ *
+ * The last two isolate the word arm from the substring arm, which is the only
+ * way a tokenizer bug is visible at all: `'us brk'` matches "BRK-B.US Berkshire
+ * … US Listing" only if `brk-b.us` is wrongly split into parts, and
+ * `'1.5 leveraged'` matches "Amundi 1.5x Daily Leveraged" only if `1.5x` is
+ * correctly split into `1.5` + `x`. Neither is reachable through
+ * `String.includes`, so each one grades purely on the lexemes.
  */
 const QUERIES = [
   'bayer',
@@ -81,6 +94,11 @@ const QUERIES = [
   'ETH',
   'v',
   'zzzz',
+  'brk',
+  'brk-b.us',
+  '1.5x',
+  'us brk',
+  '1.5 leveraged',
 ];
 
 const asHit = (fixture: Fixture): AssetSearchResult =>
@@ -99,7 +117,18 @@ function rows<T>(result: unknown): T[] {
   return ((result as { rows?: unknown }).rows ?? []) as T[];
 }
 
-/** The tier + score the catalog read computes, in the read's own `ORDER BY`. */
+/**
+ * The tier + score the catalog read computes, in the read's own `ORDER BY`.
+ *
+ * The name tiebreak is taken `collate "C"` (#1810 review). The JS mirror sorts
+ * names by codepoint, which is what `C`/`POSIX` — and the PGlite these tests run
+ * on — do, but a glibc `en_US.UTF-8` database folds case and ignores punctuation
+ * at the primary level and would order `'EUR/USD'` and `'Ethereum USD'` the
+ * other way round. Without the explicit collation this assertion would pass here
+ * and fail the moment it moved to the real-Postgres slice — and it would be
+ * asserting the database's locale, not the parity the test is about. The tier
+ * and similarity assertions above are collation-free and stay unqualified.
+ */
 async function sqlRanking(h: TestHarness, query: string): Promise<SqlRank[]> {
   const result = await h.db.execute(sql`
     select ${schema.assets.symbol} as "symbol",
@@ -110,7 +139,7 @@ async function sqlRanking(h: TestHarness, query: string): Promise<SqlRank[]> {
     where ${schema.assets.ownerId} is null
     order by ${catalogTierSql(query)},
              ${catalogSimilaritySql(query)} desc,
-             ${schema.assets.name}
+             ${schema.assets.name} collate "C"
   `);
   return rows<{ symbol: string; name: string; tier: number | string; sim: number | string }>(
     result,

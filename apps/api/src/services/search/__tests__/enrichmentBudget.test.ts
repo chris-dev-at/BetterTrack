@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import * as schema from '../../../data/schema';
@@ -202,6 +202,20 @@ describe('interactive enrichment budget', () => {
 
 describe('the budget key is out of reach of a crafted query (#1810)', () => {
   const VICTIM = '018f6f00-0000-7000-8000-0000000000bb';
+  // The window id is part of the key, so every `Date.now()` these tests read —
+  // the one they compute the victim's key from and the one `admit()` reads
+  // inside — has to be the same one. A real clock crossing a minute boundary
+  // between the two would put them on different keys and quietly turn the
+  // WRONGTYPE assertions into assertions about an untouched key.
+  // Only the clock is faked, not `setTimeout` — the enrichment's own run budget
+  // and PGlite's startup still have to run on real timers.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-05T12:00:30.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   async function makeBudget(redis: Redis) {
     const h = await createTestApp({ marketData: createStubMarketData() });

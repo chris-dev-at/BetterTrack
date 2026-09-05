@@ -88,6 +88,41 @@ describe('seedAssetCatalog (§6.2(c) plumbing)', () => {
     expect(matches.map((m) => m.providerRef)).toEqual(['BAYN.DE']);
   });
 
+  it('compares a NULL exchange rather than always rewriting it (#1810)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const repo = createAssetRepository(h.db);
+    // `exchange` is the one nullable column in the refresh set, so its
+    // `IS DISTINCT FROM` is the one that has to hold a null on either side —
+    // both to keep an unchanged re-seed silent (the watermark is stamped per
+    // content-changing statement) and to let null↔value actually correct.
+    const unlisted: CatalogSeedEntry = { ...ENTRIES[0]!, exchange: null };
+
+    expect(await seedAssetCatalog(repo, [unlisted])).toEqual({
+      created: 1,
+      existing: 0,
+      refreshed: 0,
+    });
+    expect(await seedAssetCatalog(repo, [unlisted])).toEqual({
+      created: 0,
+      existing: 1,
+      refreshed: 0,
+    });
+
+    expect(await seedAssetCatalog(repo, [ENTRIES[0]!])).toEqual({
+      created: 0,
+      existing: 1,
+      refreshed: 1,
+    });
+    expect(await repo.findGlobal('yahoo', 'BAYN.DE')).toMatchObject({ exchange: 'XETRA' });
+
+    expect(await seedAssetCatalog(repo, [unlisted])).toEqual({
+      created: 0,
+      existing: 1,
+      refreshed: 1,
+    });
+    expect(await repo.findGlobal('yahoo', 'BAYN.DE')).toMatchObject({ exchange: null });
+  });
+
   it('never overwrites a user’s custom asset with a global refresh (§10, #1810)', async () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const repo = createAssetRepository(h.db);

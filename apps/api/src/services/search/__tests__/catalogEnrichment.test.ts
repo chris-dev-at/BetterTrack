@@ -11,6 +11,7 @@ import {
   providerHit,
   type StubMarketDataControls,
 } from '../../../testing/marketDataStubs';
+import { COMMON_SYMBOLS_SEED, isCuratedCatalogRef, seedAssetCatalog } from '../catalogSeed';
 import {
   createCatalogEnrichment,
   enrichGuardKey,
@@ -206,35 +207,161 @@ describe('catalogEnrichment', () => {
     expect(backfill.enqueued).toHaveLength(1);
   });
 
-  it('a re-enrichment corrects the row it finds instead of leaving it frozen (#1810)', async () => {
-    let name = 'Apple Computer, Inc.';
-    let currency = 'USD';
+  it('a re-enrichment corrects the NAME it finds instead of leaving it frozen (#1810)', async () => {
+    // A ref the shipped list does not curate, so the provider is the only
+    // writer this row has (see the curated case below).
+    expect(isCuratedCatalogRef('yahoo', 'SRTX.DE')).toBe(false);
+    let name = 'Sartorix Vorzug';
     const { h, assetRepo, backfill, enrichment, redis } = await makeEnrichment({
-      search: () => [providerHit({ providerRef: 'AAPL', symbol: 'AAPL', name, currency })],
+      search: () => [
+        providerHit({ providerRef: 'SRTX.DE', symbol: 'SRTX.DE', name, exchange: 'XETRA' }),
+      ],
     });
 
-    await enrichment.request('apple');
+    await enrichment.request('sartorix');
     await enrichment.settled();
-    const first = await assetRepo.findGlobal('yahoo', 'AAPL');
-    expect(first?.name).toBe('Apple Computer, Inc.');
+    const first = await assetRepo.findGlobal('yahoo', 'SRTX.DE');
+    expect(first?.name).toBe('Sartorix Vorzug');
 
-    // The provider corrects the row (a rename, a fixed currency). `name` is
-    // what the catalog read returns AND ranks on, and `currency` decides base-
-    // currency conversion — neither had a repair path before #1810.
-    name = 'Apple Inc.';
-    currency = 'EUR';
-    await redis.del(enrichGuardKey('apple'));
-    await enrichment.request('apple');
+    // The provider corrects the row. `name` is what the catalog read returns
+    // AND ranks on, so a stale one makes the row unfindable by its real name —
+    // and until #1810 it had no repair path at all.
+    name = 'Sartorix AG Vorzugsaktien';
+    await redis.del(enrichGuardKey('sartorix'));
+    await enrichment.request('sartorix');
     await enrichment.settled();
 
-    const refreshed = await assetRepo.findGlobal('yahoo', 'AAPL');
-    expect(refreshed?.name).toBe('Apple Inc.');
-    expect(refreshed?.currency).toBe('EUR');
+    const refreshed = await assetRepo.findGlobal('yahoo', 'SRTX.DE');
+    expect(refreshed?.name).toBe('Sartorix AG Vorzugsaktien');
     // In place: same row, same id — every transaction pointing at it survives —
     // and no second backfill, because nothing was created.
     expect(refreshed?.id).toBe(first?.id);
     expect(await h.db.select({ id: schema.assets.id }).from(schema.assets)).toHaveLength(1);
     expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it('never lets the search projection rewrite a stored currency or type (#1810)', async () => {
+    // `yahooProvider.search` has no currency to read: `currencyForSearchResult`
+    // infers one from the symbol shape and answers 'USD' when nothing matches,
+    // and `mapAssetType` answers 'stock' for an unknown quote type. Both are
+    // documented as picker-badge-only guesses. `assets.currency` is money — a
+    // pay-from-cash buy books a PERSISTED cash movement converted through it —
+    // so a guess must never land on a row that already exists.
+    let hit = providerHit({
+      providerRef: '^XYZ',
+      symbol: '^XYZ',
+      name: 'Some Traded Index',
+      type: 'index',
+      currency: 'EUR',
+    });
+    const { assetRepo, enrichment, redis } = await makeEnrichment({ search: () => [hit] });
+
+    await enrichment.request('xyz');
+    await enrichment.settled();
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({
+      currency: 'EUR',
+      type: 'index',
+    });
+
+    // Second pass: the same ref comes back with the projection's fallbacks —
+    // the exact shape `^ATX` (a seeded EUR index on VIE, which matches no rule)
+    // takes. The row keeps the currency and type it was created with.
+    hit = providerHit({
+      providerRef: '^XYZ',
+      symbol: '^XYZ',
+      name: 'Some Traded Index (renamed)',
+      type: 'stock',
+      currency: 'USD',
+    });
+    await redis.del(enrichGuardKey('xyz'));
+    await enrichment.request('xyz');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({
+      currency: 'EUR',
+      type: 'index',
+      // …while the one column the projection does carry still refreshes.
+      name: 'Some Traded Index (renamed)',
+    });
+  });
+
+  it('never rewrites a CURATED row, so the seed and the provider cannot flap (#1810)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const assetRepo = createAssetRepository(h.db);
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    // One shipped entry, seeded exactly as boot seeds it.
+    const curated = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === '^GDAXI')!;
+    await seedAssetCatalog(assetRepo, [curated]);
+
+    const enrichment = createCatalogEnrichment({
+      marketData: createStubMarketData({
+        // What Yahoo would say about the same ref: its own casing, its own
+        // exchange label.
+        search: () => [
+          providerHit({
+            providerRef: '^GDAXI',
+            symbol: '^GDAXI',
+            name: 'DAX PERFORMANCE-INDEX',
+            exchange: 'GER',
+            currency: 'USD',
+            type: 'stock',
+          }),
+        ],
+      }),
+      assetRepo,
+      backfill: createRecordingBackfill(),
+      redis,
+      logger: h.ctx.logger,
+    });
+
+    await enrichment.request('dax');
+    await enrichment.settled();
+
+    // Untouched — every column still the curated one. Were the two writers to
+    // fight over this row, each flip would also be a content-changing statement,
+    // and the catalog watermark trigger would push the instance-wide search
+    // `Last-Modified` another second ahead for every client.
+    expect(await assetRepo.findGlobal('yahoo', '^GDAXI')).toMatchObject({
+      name: curated.name,
+      exchange: curated.exchange,
+      currency: curated.currency,
+      type: curated.type,
+    });
+  });
+
+  it('does not blank a stored name when the provider supplied none (#1810)', async () => {
+    // `yahooProvider.search` falls back to the bare symbol when a quote carries
+    // neither `longname` nor `shortname`. Writing that back would replace a real
+    // name with a ticker — the exact findability §6.2 ranks on.
+    const { assetRepo, enrichment } = await makeEnrichment({
+      // The nameless shape: name === symbol, and no exchange either.
+      search: () => [
+        providerHit({
+          providerRef: 'NAMELESS.DE',
+          symbol: 'NAMELESS.DE',
+          name: 'NAMELESS.DE',
+          exchange: null,
+        }),
+      ],
+    });
+    await assetRepo.upsertGlobal({
+      providerId: 'yahoo',
+      providerRef: 'NAMELESS.DE',
+      type: 'stock',
+      symbol: 'NAMELESS.DE',
+      name: 'Nameless Holding SE',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    });
+
+    await enrichment.request('nameless');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'NAMELESS.DE')).toMatchObject({
+      name: 'Nameless Holding SE',
+      exchange: 'XETRA',
+    });
   });
 });
 

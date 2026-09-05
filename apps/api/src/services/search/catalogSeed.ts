@@ -1,4 +1,8 @@
-import type { AssetRepository, GlobalAssetUpsert } from '../../data/repositories/assetRepository';
+import {
+  REFRESHABLE_ASSET_FIELDS,
+  type AssetRepository,
+  type GlobalAssetUpsert,
+} from '../../data/repositories/assetRepository';
 import { CATALOG_SEED_ENTRIES } from './catalogSeedData';
 
 /**
@@ -12,8 +16,9 @@ import { CATALOG_SEED_ENTRIES } from './catalogSeedData';
  * earlier version of this comment cited one that was never written — so the two
  * writers that keep a global row honest are this seed and the interactive
  * provider fallback, both through `assetRepository.upsertGlobal`, which now
- * corrects the provider-owned columns of a row it finds instead of leaving it
- * frozen at whatever its first touch happened to say.
+ * corrects a row it finds instead of leaving it frozen at whatever its first
+ * touch happened to say. They correct DIFFERENT columns and never the same row:
+ * see {@link isCuratedCatalogRef}.
  */
 export type CatalogSeedEntry = GlobalAssetUpsert;
 
@@ -24,6 +29,28 @@ export type CatalogSeedEntry = GlobalAssetUpsert;
  * (~600+ rows); this module owns the idempotent, backfill-free upsert plumbing.
  */
 export const COMMON_SYMBOLS_SEED: readonly CatalogSeedEntry[] = CATALOG_SEED_ENTRIES;
+
+/** `(providerId, providerRef)` of every shipped entry, as one comparable string. */
+const CURATED_REFS: ReadonlySet<string> = new Set(
+  CATALOG_SEED_ENTRIES.map((entry) => `${entry.providerId}\u0000${entry.providerRef}`),
+);
+
+/**
+ * Whether this `(providerId, providerRef)` is one the shipped list curates.
+ *
+ * The interactive provider fallback asks before it refreshes anything (#1810
+ * review). Both writers reach the same rows — a user searching "dax" gets
+ * Yahoo hits for refs the seed already owns — and they describe them
+ * differently on purpose: the list carries a curated `exchange` (`XETRA`) and
+ * a curated `name`, Yahoo returns `exchDisp` and its own casing. Left to fight,
+ * each would rewrite the other's value, and because the catalog watermark is
+ * stamped per content-changing STATEMENT and is instance-wide, every flip would
+ * push the search `Last-Modified` another second ahead for every client. So the
+ * curated list wins on its own rows: corrections to them ship in a release, not
+ * from a picker projection.
+ */
+export const isCuratedCatalogRef = (providerId: string, providerRef: string): boolean =>
+  CURATED_REFS.has(`${providerId}\u0000${providerRef}`);
 
 export interface CatalogSeedResult {
   /** Rows this run inserted. */
@@ -49,6 +76,12 @@ export interface CatalogSeedResult {
  * Re-seeding an install whose shipped list has since been corrected updates the
  * affected rows in place (same id, so every transaction and watchlist entry
  * pointing at them survives); an unchanged entry is not written at all.
+ *
+ * The seed refreshes EVERY descriptive column, unlike the provider fallback
+ * (`catalogEnrichment.ts`), because this list is curated: each row's type,
+ * exchange and native currency were checked by hand against the real listing,
+ * so it is the one writer entitled to correct `currency` — the column
+ * `portfolioService` converts persisted cash movements through.
  */
 export async function seedAssetCatalog(
   assetRepo: AssetRepository,
@@ -58,7 +91,9 @@ export async function seedAssetCatalog(
   let existing = 0;
   let refreshed = 0;
   for (const entry of entries) {
-    const { created: wasCreated, refreshed: wasRefreshed } = await assetRepo.upsertGlobal(entry);
+    const { created: wasCreated, refreshed: wasRefreshed } = await assetRepo.upsertGlobal(entry, {
+      refresh: REFRESHABLE_ASSET_FIELDS,
+    });
     if (wasCreated) created += 1;
     else existing += 1;
     if (wasRefreshed) refreshed += 1;

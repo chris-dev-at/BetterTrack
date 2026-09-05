@@ -110,11 +110,50 @@ export interface UpsertGlobalResult {
   /**
    * True when the row already existed and this call CORRECTED at least one of
    * its provider-owned descriptive columns (#1810). Always false on a create,
-   * and false when the incoming values matched what was stored — the unchanged
-   * re-seed / re-enrichment writes nothing at all.
+   * false when the caller asked for no refresh, and false when the incoming
+   * values matched what was stored — the unchanged re-seed / re-enrichment
+   * writes nothing at all.
    */
   refreshed: boolean;
 }
+
+/**
+ * The descriptive columns an existing global row's refresh may correct, in the
+ * order the UPDATE writes them. `id`, `owner_id` and `meta` are deliberately
+ * absent: a correction is an in-place edit of what a source describes, never a
+ * re-identify (every transaction, holding and watchlist row points at `id`).
+ */
+export const REFRESHABLE_ASSET_FIELDS = ['type', 'symbol', 'name', 'exchange', 'currency'] as const;
+
+export type RefreshableAssetField = (typeof REFRESHABLE_ASSET_FIELDS)[number];
+
+/**
+ * Which of {@link REFRESHABLE_ASSET_FIELDS} THIS caller is allowed to correct.
+ *
+ * The set is per caller and not a property of the table (#1810 review), because
+ * the two writers know different things. The shipped seed list is curated: it
+ * carries a hand-checked type, exchange and native currency per row, so it may
+ * refresh everything. A provider *search* hit is a projection built to fill a
+ * picker: `yahooProvider.search` has no currency field to read at all, so
+ * `currencyForSearchResult` guesses one from the symbol shape and falls back to
+ * `'USD'`, and `mapAssetType` falls back to `'stock'` for an unknown quote type
+ * — documented as safe precisely because "an imperfect guess here only affects
+ * the picker badge, never a stored amount" (`yahooMapping.ts`). That contract
+ * held only while an existing row was write-once. So the enrichment passes the
+ * narrow set (`services/search/catalogEnrichment.ts`): `currency` is money —
+ * `portfolioService` converts persisted cash movements through it, and tax,
+ * snapshots, import validation and paranoid rehydration all read the same
+ * column — and stays with the authoritative `getMeta`/`getQuote` +
+ * `normalizeCurrency` path.
+ *
+ * Omitting the option entirely keeps the pre-#1810 behaviour: insert or nothing.
+ */
+export interface UpsertGlobalOptions {
+  refresh?: readonly RefreshableAssetField[];
+}
+
+/** The `SET` payload of a refresh: a subset of the descriptive columns. */
+type AssetRefreshValues = Partial<Pick<typeof assets.$inferInsert, RefreshableAssetField>>;
 
 /**
  * The catalog read's ranking TIER for one row (§6.2), as SQL: exact symbol (0)
@@ -373,7 +412,7 @@ export function createAssetRepository(db: Database) {
     /**
      * Upsert of a global market asset (§6.2), idempotent on the partial unique
      * index `assets_global_provider_ref_unique`: first touch INSERTs, a later
-     * touch REFRESHES the provider-owned descriptive columns.
+     * touch REFRESHES the descriptive columns its caller is authoritative for.
      *
      * `ON CONFLICT DO NOTHING ... RETURNING` returns the row only when this call
      * inserted it; an empty return means the row already exists (or a concurrent
@@ -383,24 +422,29 @@ export function createAssetRepository(db: Database) {
      * The refresh arm (#1810) is the second half. Until it existed a global row
      * was WRITE-ONCE — nothing in the repo could correct one, because the custom
      * -asset update is gated on `owner_id = user AND provider_id = 'manual'` and
-     * there is no admin asset editor. So a provider's own correction (a renamed
-     * issuer, a re-listed exchange, a wrong `currency` — which
-     * `assetService.getDetail` reads to decide base-currency conversion) was
-     * frozen at first touch, and a corrected `catalogSeedData` entry was a no-op
-     * on every existing install. `name` is the sharpest case: it is what
-     * `searchCatalog` both returns AND ranks on, so a stale one makes the row
-     * unfindable by its real name, permanently.
+     * there is no admin asset editor. So a correction shipped in the curated
+     * seed list (a renamed issuer, a re-listed exchange, a wrong `currency` —
+     * which `assetService.getDetail` reads to decide base-currency conversion)
+     * was a no-op on every existing install, and a name a provider has since
+     * fixed stayed frozen at first touch. `name` is the sharpest case: it is
+     * what `searchCatalog` both returns AND ranks on, so a stale one makes the
+     * row unfindable by its real name, permanently.
      *
-     * Three properties keep the arm narrow:
+     * Four properties keep the arm narrow:
+     *  - it happens only for the columns THIS caller named in
+     *    {@link UpsertGlobalOptions.refresh}, so a caller whose input is a
+     *    best-effort projection cannot overwrite a column it merely guessed —
+     *    the reason `currency` survives a re-enrichment (see
+     *    {@link UpsertGlobalOptions}). No `refresh` at all means insert-or-nothing;
      *  - it is scoped to `owner_id IS NULL`, so a user's custom asset can never
      *    be overwritten by a global refresh — same boundary as §10 everywhere
      *    else, restated in the WHERE rather than assumed from the unique index;
-     *  - it writes only the columns a provider owns. `id` (every transaction,
-     *    holding and watchlist row points at it), `owner_id` and `meta` are
-     *    never touched, so a correction is an in-place edit, not a re-identify;
-     *  - it is guarded by an `IS DISTINCT FROM` over exactly those columns, so
-     *    an unchanged re-seed or re-enrichment issues no write at all. That is
-     *    not just I/O: the statement-level catalog-watermark trigger
+     *  - `id` (every transaction, holding and watchlist row points at it),
+     *    `owner_id` and `meta` are never refreshable, so a correction is an
+     *    in-place edit, not a re-identify;
+     *  - it is guarded by an `IS DISTINCT FROM` over exactly the named columns,
+     *    so an unchanged re-seed or re-enrichment issues no write at all. That
+     *    is not just I/O: the statement-level catalog-watermark trigger
      *    (migrations 0110/0112) stamps once per content-changing STATEMENT, so
      *    600 unconditional no-op updates at boot would push the search
      *    `Last-Modified` 600 seconds into the future for every client.
@@ -410,7 +454,10 @@ export function createAssetRepository(db: Database) {
      * that was skipped, this path can never strand a key for a losing upsert;
      * the refresh is an UPDATE, so it does not run that trigger at all.
      */
-    async upsertGlobal(input: GlobalAssetUpsert): Promise<UpsertGlobalResult> {
+    async upsertGlobal(
+      input: GlobalAssetUpsert,
+      options?: UpsertGlobalOptions,
+    ): Promise<UpsertGlobalResult> {
       const inserted = await db
         .insert(assets)
         .values({
@@ -428,35 +475,49 @@ export function createAssetRepository(db: Database) {
 
       if (inserted[0]) return { row: inserted[0], created: true, refreshed: false };
 
-      const refreshed = await db
-        .update(assets)
-        .set({
-          type: input.type,
-          symbol: input.symbol,
-          name: input.name,
-          exchange: input.exchange,
-          currency: input.currency,
-        })
-        .where(
-          and(
-            eq(assets.providerId, input.providerId),
-            eq(assets.providerRef, input.providerRef),
-            isNull(assets.ownerId),
-            // Only when something actually differs (see above). `type` is an
-            // enum and `currency` a char(3); both are compared as text so no
-            // parameter-type inference rides on this predicate.
-            sql`(
-              ${assets.type}::text is distinct from ${input.type}
-              or ${assets.symbol} is distinct from ${input.symbol}
-              or ${assets.name} is distinct from ${input.name}
-              or ${assets.exchange} is distinct from ${input.exchange}
-              or ${assets.currency}::text is distinct from ${input.currency}
-            )`,
-          ),
-        )
-        .returning();
+      const wanted = new Set(options?.refresh ?? []);
+      if (wanted.size > 0) {
+        const values: AssetRefreshValues = {};
+        // Only when something actually differs (see above). `type` is an enum
+        // and `currency` a char(3); both are compared as text so no parameter
+        // -type inference rides on this predicate.
+        const changed: SQL[] = [];
+        if (wanted.has('type')) {
+          values.type = input.type;
+          changed.push(sql`${assets.type}::text is distinct from ${input.type}`);
+        }
+        if (wanted.has('symbol')) {
+          values.symbol = input.symbol;
+          changed.push(sql`${assets.symbol} is distinct from ${input.symbol}`);
+        }
+        if (wanted.has('name')) {
+          values.name = input.name;
+          changed.push(sql`${assets.name} is distinct from ${input.name}`);
+        }
+        if (wanted.has('exchange')) {
+          values.exchange = input.exchange;
+          changed.push(sql`${assets.exchange} is distinct from ${input.exchange}::text`);
+        }
+        if (wanted.has('currency')) {
+          values.currency = input.currency;
+          changed.push(sql`${assets.currency}::text is distinct from ${input.currency}`);
+        }
 
-      if (refreshed[0]) return { row: refreshed[0], created: false, refreshed: true };
+        const refreshed = await db
+          .update(assets)
+          .set(values)
+          .where(
+            and(
+              eq(assets.providerId, input.providerId),
+              eq(assets.providerRef, input.providerRef),
+              isNull(assets.ownerId),
+              or(...changed),
+            ),
+          )
+          .returning();
+
+        if (refreshed[0]) return { row: refreshed[0], created: false, refreshed: true };
+      }
 
       const existing = await this.findGlobal(input.providerId, input.providerRef);
       if (!existing) {

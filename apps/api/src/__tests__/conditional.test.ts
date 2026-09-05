@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createAssetRepository,
+  REFRESHABLE_ASSET_FIELDS,
   type GlobalAssetUpsert,
 } from '../data/repositories/assetRepository';
 import * as schema from '../data/schema';
@@ -531,7 +532,10 @@ describe('conditional reads — catalog search (GET /api/v1/search)', () => {
     // the same rail as the custom-asset rename above: the seed (or a provider
     // re-enrichment) correcting a stale name keeps the row's id, so only the
     // catalog write stamp can carry it to a client holding the old validator.
-    const { created, refreshed } = await repo.upsertGlobal({ ...seeded, name: 'CONDG Corp' });
+    const { created, refreshed } = await repo.upsertGlobal(
+      { ...seeded, name: 'CONDG Corp' },
+      { refresh: REFRESHABLE_ASSET_FIELDS },
+    );
     expect({ created, refreshed }).toEqual({ created: false, refreshed: true });
 
     const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);

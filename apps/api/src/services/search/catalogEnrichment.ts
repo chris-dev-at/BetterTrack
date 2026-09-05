@@ -4,11 +4,15 @@ import type { Redis } from 'ioredis';
 
 import type { AssetSearchResult } from '@bettertrack/contracts';
 
-import type { AssetRepository } from '../../data/repositories/assetRepository';
+import type {
+  AssetRepository,
+  RefreshableAssetField,
+} from '../../data/repositories/assetRepository';
 import type { BackfillScheduler } from '../../jobs';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import { sha256Base64Url } from '../crypto/tokens';
+import { isCuratedCatalogRef } from './catalogSeed';
 
 /**
  * Provider-fallback orchestration for the local-first search (PROJECTPLAN.md
@@ -171,26 +175,59 @@ const ENRICH_GUARD_COMPLETE_SCRIPT =
  *
  * The `simple` configuration does no stemming and drops no stop words, so a
  * lexeme is just a lowercased token, and what is left to mirror is the default
- * parser's tokenisation. Three rules cover everything a ticker catalog holds:
- * a token runs over letters/digits and may be joined by `.`, `-` or `/`
- * (`^GDAXI` → `gdaxi`, `GC=F` → `gc` + `f`, `Inc.` → `inc`); a HYPHENATED token
- * additionally yields its parts (`BTC-USD` → `btc-usd`, `btc`, `usd`); a dotted
- * or slashed one does NOT (`BAYN.DE` is the single host token `bayn.de`,
- * `EUR/USD` the single file token `eur/usd`) — which is exactly why a query of
- * `de` must not, and here does not, match `BAYN.DE`.
+ * parser's tokenisation. Four rules cover everything a ticker catalog holds:
+ *  - a token runs over letters/digits and may be joined by `.`, `-` or `/`
+ *    (`^GDAXI` → `gdaxi`, `GC=F` → `gc` + `f`, `Inc.` → `inc`);
+ *  - a run of the `asciihword` shape — hyphens, and NO `.` or `/` — also yields
+ *    its parts (`BTC-USD` → `btc-usd`, `btc`, `usd`; `All-World` → `all-world`,
+ *    `all`, `world`). A run that mixes them does not: `BRK-B.US` is the single
+ *    `host` token `brk-b.us`, and splitting it would invent a lexeme `brk` that
+ *    the row's own tsvector has not got (#1810 review);
+ *  - a purely dotted or slashed run is likewise one token — `BAYN.DE` the `host`
+ *    `bayn.de`, `EUR/USD` the `file` `eur/usd` — which is exactly why a query of
+ *    `de` must not, and here does not, match `BAYN.DE`;
+ *  - a `float` (digits `.` digits) that runs straight into a letter ends there:
+ *    `1.5x` is `1.5` + `x` to the parser, not one token (a leveraged-fund name
+ *    is where that shows up).
  *
  * Exotic token classes the parser knows and this does not — e-mail addresses,
- * URLs, version numbers — would tokenise differently; none can occur in a
- * symbol or an instrument name, and `__tests__/rankParity.test.ts` holds the
+ * URLs, versions like `v1.2.3` — would tokenise differently; none can occur in
+ * a symbol or an instrument name, and `__tests__/rankParity.test.ts` holds the
  * result against the real `plainto_tsquery` for the shapes that do.
  */
 export function simpleLexemes(text: string): Set<string> {
   const lexemes = new Set<string>();
   for (const [run] of text.toLowerCase().matchAll(/[\p{L}\p{N}]+(?:[.\-/][\p{L}\p{N}]+)*/gu)) {
-    lexemes.add(run);
-    if (run.includes('-')) for (const part of run.split('-')) lexemes.add(part);
+    for (const token of splitFloatPrefixes(run)) {
+      lexemes.add(token);
+      // `asciihword` only: the parser reads a run carrying a `.` or `/` as one
+      // host/file token, parts and all.
+      if (token.includes('-') && !/[./]/.test(token)) {
+        for (const part of token.split('-')) lexemes.add(part);
+      }
+    }
   }
   return lexemes;
+}
+
+/**
+ * Split the leading `float`s off a run, the one place the parser stops inside
+ * what this tokenizer would otherwise read as one word: `1.5x` → `1.5`, `x`.
+ * A run whose float is followed by `.` or another digit (`1.5.2`, `v1.2.3`) is
+ * a version/file token and is left whole.
+ */
+function splitFloatPrefixes(run: string): string[] {
+  const tokens: string[] = [];
+  let rest = run;
+  for (;;) {
+    const float = /^[0-9]+\.[0-9]+(?=\p{L})/u.exec(rest);
+    if (!float) {
+      tokens.push(rest);
+      return tokens;
+    }
+    tokens.push(float[0]);
+    rest = rest.slice(float[0].length);
+  }
 }
 
 /**
@@ -267,9 +304,15 @@ export function rankProviderHits(
       (a, b) =>
         a.tier - b.tier ||
         b.sim - a.sim ||
-        // `order by "name"`. Codepoint order, where the database applies its
-        // collation — they part company only on accents and case, which sit
-        // below two terms that have already decided the ranking.
+        // `order by "name"`. CODEPOINT order, where the database applies its
+        // own collation: on a `C`/`POSIX` database (and on the PGlite the tests
+        // run) these are the same order, on a glibc `en_US.UTF-8` one they part
+        // company wherever case or punctuation is the only difference
+        // (`'EUR/USD'` vs `'Ethereum USD'`). That residue is deliberate — the
+        // mirror can only implement one collation, and it is the third term of
+        // three, so it moves a hit only among hits the first two terms have
+        // already declared equally relevant. `__tests__/rankParity.test.ts`
+        // pins the parity under `collate "C"` for that reason.
         (a.hit.name < b.hit.name ? -1 : a.hit.name > b.hit.name ? 1 : 0) ||
         // Array#sort is stable in V8, but the index tiebreak states the intent
         // rather than relying on it: all else equal, provider order is kept.
@@ -335,6 +378,45 @@ function tierOf(
   return 3;
 }
 
+/**
+ * Which columns of an ALREADY EXISTING catalog row this provider search hit is
+ * allowed to correct (#1810 review). Empty is the common answer, and empty means
+ * the upsert writes nothing at all.
+ *
+ * A hit is not a description of an instrument, it is the projection
+ * `AssetProvider.search` can build from a picker payload — and two of its fields
+ * are openly guesses. Yahoo's search returns no currency, so
+ * `currencyForSearchResult` infers one from the symbol shape and otherwise
+ * answers `'USD'`; `mapAssetType` answers `'stock'` for a quote type it does not
+ * know. Both are documented as safe because they only tint a badge, which was
+ * true while an existing row was write-once. It stopped being true the moment
+ * this upsert could UPDATE: `^ATX` is a seeded EUR index whose currency the
+ * search projection would guess as USD (no `=X`, no `-`, no venue suffix, no
+ * `VIE` in the exchange table), and `assets.currency` is money — a pay-from-cash
+ * buy books a PERSISTED cash movement converted through it
+ * (`portfolioService`), tax, snapshots and the asset page value through it, the
+ * CSV import rejects rows that disagree with it, and paranoid rehydration
+ * refuses on it. So `currency` and `type` are never refreshed here; they stay
+ * with the curated seed list and the authoritative `getMeta`/`getQuote` +
+ * `normalizeCurrency` path.
+ *
+ * What is left is what the projection genuinely carries:
+ *  - `name`, but only when the provider actually supplied one. `yahooProvider`
+ *    falls back to the bare symbol when a quote has neither `longname` nor
+ *    `shortname`, and writing that would replace `'DAX Performance Index'` with
+ *    `'^GDAXI'` — destroying exactly the findability-by-name §6.2 ranks on;
+ *  - `exchange`, when non-blank, for the same reason.
+ * A curated row is refreshed by neither: {@link isCuratedCatalogRef}.
+ */
+export function providerRefreshFields(hit: AssetSearchResult): RefreshableAssetField[] {
+  if (isCuratedCatalogRef(hit.providerId, hit.providerRef)) return [];
+  const fields: RefreshableAssetField[] = [];
+  const name = hit.name.trim();
+  if (name !== '' && name !== hit.symbol.trim()) fields.push('name');
+  if (hit.exchange != null && hit.exchange.trim() !== '') fields.push('exchange');
+  return fields;
+}
+
 export interface CatalogEnrichmentDeps {
   marketData: MarketDataService;
   assetRepo: AssetRepository;
@@ -396,15 +478,21 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
         // backfill right away, exactly once. Rows that already existed —
         // seeded (§6.2(c)) or created by an earlier search — are warmed on
         // first *reference* instead (services/assets/referenceBackfill.ts).
-        const { row, created } = await assetRepo.upsertGlobal({
-          providerId: hit.providerId,
-          providerRef: hit.providerRef,
-          type: hit.type,
-          symbol: hit.symbol,
-          name: hit.name,
-          exchange: hit.exchange ?? null,
-          currency: hit.currency,
-        });
+        // A create writes the whole projection (there is nothing to destroy and
+        // the badge has to say something); an existing row is corrected only in
+        // the columns this hit is authoritative for.
+        const { row, created } = await assetRepo.upsertGlobal(
+          {
+            providerId: hit.providerId,
+            providerRef: hit.providerRef,
+            type: hit.type,
+            symbol: hit.symbol,
+            name: hit.name,
+            exchange: hit.exchange ?? null,
+            currency: hit.currency,
+          },
+          { refresh: providerRefreshFields(hit) },
+        );
         if (created) await backfill.enqueue(row.id);
       }
     } catch (err) {
