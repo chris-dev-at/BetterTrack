@@ -39,8 +39,9 @@ import {
   useWatchlistMembership,
 } from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
-import { nextUpcomingDividend, utcDay } from '../../lib/dividendDates';
+import { nextUpcomingDividend } from '../../lib/dividendDates';
 import {
+  displayZoneDay,
   formatDate,
   formatDateTime,
   formatPercent,
@@ -301,13 +302,13 @@ function DividendsSection({ assetId }: { assetId: string }) {
   // Invisible when unconfigured — the whole block disappears (regression-guarded).
   if (!data?.available) return null;
 
-  const { history, upcoming, forwardYield, trailingAmount, currency } = data;
+  const { history, upcoming, forwardYield, trailingAmount, trailingAmountBasis, currency } = data;
   // The next event that is genuinely still ahead — and its ex-date only when
   // THAT has not passed either. A payload whose ex-date is behind us but whose
   // payout is still to come is the normal shape upstream (#1758): showing
   // "Next ex-date" for a day already gone is a date in the past under an
   // upcoming label, so only the pay date survives for that event.
-  const today = utcDay();
+  const today = displayZoneDay();
   const next = nextUpcomingDividend(upcoming, today);
   const nextExDate = next?.exDate && next.exDate.slice(0, 10) >= today ? next.exDate : null;
   const nextPayDate = next?.payDate && next.payDate.slice(0, 10) >= today ? next.payDate : null;
@@ -316,6 +317,16 @@ function DividendsSection({ assetId }: { assetId: string }) {
   // the same hazard the Home widget guards against, and `currency` is genuinely
   // nullable here (the provider maps an unmappable code to null).
   const showTrailing = trailingAmount != null && currency !== null;
+  // The field name is historical: the mapper publishes whichever basis the
+  // provider had — a realized 12-month sum OR a forward-annualized regular rate
+  // (`providers/yahooMapping.ts`) — and the contract is explicit that a consumer
+  // must read `trailingAmountBasis` to know which. Captioning an annualised rate
+  // "TTM per share" asserts twelve months of payouts nobody read (#1790); the
+  // portfolio and forecast surfaces already caption it from the basis.
+  const trailingLabel =
+    trailingAmountBasis === 'forward-annualized'
+      ? t('assets.detail.dividends.trailingForward')
+      : t('assets.detail.dividends.trailing');
   const nothingToShow =
     forwardYield == null &&
     !showTrailing &&
@@ -350,10 +361,7 @@ function DividendsSection({ assetId }: { assetId: string }) {
           />
         ) : null}
         {showTrailing ? (
-          <StatCard
-            label={t('assets.detail.dividends.trailing')}
-            value={formatUnitPrice(trailingAmount, currency)}
-          />
+          <StatCard label={trailingLabel} value={formatUnitPrice(trailingAmount, currency)} />
         ) : null}
         {nextExDate ? (
           <StatCard
@@ -456,8 +464,9 @@ function EarningsSection({ assetId }: { assetId: string }) {
   // so without this the page announces "Next report — 31 Jul" in mid-August. The
   // Workboard calendar and the reminder job both drop it (marketIntelService.ts,
   // earningsReminder.ts); this surface is the one that did not (#1790). Same
-  // UTC-day boundary as those two: a report dated today is still ahead.
-  const today = utcDay();
+  // boundary as the calendar: the DISPLAY-zone day this date is rendered in
+  // (#1827), on which a report dated today is still ahead.
+  const today = displayZoneDay();
   const next =
     data.next && data.next.date && data.next.date.slice(0, 10) >= today ? data.next : null;
   if (!next && data.recent.length === 0) return null;

@@ -3013,6 +3013,7 @@
         "title": "Dividenden",
         "forwardYield": "Erwartete Rendite",
         "trailing": "Letzte 12 Monate je Anteil",
+        "trailingForward": "Hochgerechnet je Anteil",
         "nextExDate": "Nächster Ex-Tag",
         "nextPayDate": "Nächster Zahltag",
         "history": "Ausschüttungsverlauf",

@@ -3013,6 +3013,7 @@
         "title": "Dividends",
         "forwardYield": "Forward yield",
         "trailing": "TTM per share",
+        "trailingForward": "Annualised per share",
         "nextExDate": "Next ex-date",
         "nextPayDate": "Next pay date",
         "history": "Payout history",

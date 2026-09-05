@@ -10,7 +10,7 @@ import {
   createStubMarketData,
   sampleEarningsEvents,
 } from '../../../testing/marketDataStubs';
-import { runEarningsReminderScan } from '../earningsReminder';
+import { EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET, runEarningsReminderScan } from '../earningsReminder';
 
 // A fixed clock; earnings dates are placed relative to it.
 const NOW = Date.parse('2026-07-18T09:00:00.000Z');
@@ -96,6 +96,7 @@ const NOTHING = {
   suppressed: 0,
   failed: 0,
   errored: 0,
+  rowsSkipped: 0,
   assetsFailed: 0,
   usersFailed: 0,
   usersDeferred: 0,
@@ -136,11 +137,12 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     });
   });
 
-  it('emits nothing and leaves NO marker for a recipient who never opted in', async () => {
+  it('emits nothing, reads no provider and leaves NO marker for a recipient who never opted in', async () => {
     const notify = stubNotify();
+    const marketData = marketDataWithEarnings({ AAPL: day(2) });
     const res = await runEarningsReminderScan({
       intelRepo: intelRepo([asset({})]),
-      marketData: marketDataWithEarnings({ AAPL: day(2) }),
+      marketData,
       redis,
       notify,
       isEnabled: optedOut,
@@ -150,6 +152,11 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     });
 
     expect(res.reminded).toBe(0);
+    // The gate is checked BEFORE the read, not after it: `earnings.reminder` is
+    // off by default on every channel, so on a deployment where nobody enabled
+    // it this daily scan would otherwise spend one upstream call per distinct
+    // held/watched asset, every day, for zero notifications (#1827).
+    expect(marketData.calls.earnings).toBe(0);
     // No emit ⇒ the dispatcher never writes its inbox row, which doubles as the
     // dedupe marker; and no 45-day idempotency lock is taken either. Both would
     // otherwise say "already handled" once the recipient enables the type.
@@ -618,6 +625,78 @@ describe('runEarningsReminderScan — crash window and isolation (#1791)', () =>
 
     expect(res).toMatchObject({ reminded: 0, assetsFailed: 1, skipped: 1, degraded: true });
     expect(notify.emit).not.toHaveBeenCalled();
+  });
+
+  it('re-attempts a blipped asset for the next recipient instead of writing it off', async () => {
+    // Two recipients of the SAME asset, both with a report inside the window.
+    // Caching the first read's failure as "no report" cost every later holder of
+    // that asset their reminder for the day, with no retry inside the run — the
+    // failure the dividend scan's per-asset attempt budget exists to prevent.
+    const notify = stubNotify();
+    let attempts = 0;
+    const marketData = createStubMarketData({
+      earnings: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('rate limited');
+        return cachedIntel(
+          sampleEarningsEvents({
+            next: {
+              date: day(1),
+              periodEnd: null,
+              epsEstimate: 1.4,
+              epsActual: null,
+              estimated: true,
+            },
+          }),
+        );
+      },
+    });
+
+    const res = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo([asset({ userId: 'u1' }), asset({ userId: 'u2' })]),
+      marketData,
+      notify,
+    });
+
+    expect(res.reminded).toBe(1);
+    expect(notify.events.map((e) => e.userId)).toEqual(['u2']);
+    // The blip cost exactly ONE recipient their reminder this run, and the run
+    // says so: the asset itself resolved, so it is not counted as failed.
+    expect(res).toMatchObject({ rowsSkipped: 1, assetsFailed: 0, skipped: 1, degraded: true });
+    expect(marketData.calls.earnings).toBe(2);
+  });
+
+  it('stops re-attempting an asset once its per-run budget is spent', async () => {
+    const notify = stubNotify();
+    const marketData = createStubMarketData({
+      earnings: () => {
+        throw new Error('provider down');
+      },
+    });
+    // One more recipient than the budget allows attempts: the extra rows are
+    // recorded skips, not extra upstream calls.
+    const rows = Array.from({ length: EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET + 2 }, (_, i) =>
+      asset({ userId: `u${i + 1}` }),
+    );
+
+    const res = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo(rows),
+      marketData,
+      notify,
+    });
+
+    expect(marketData.calls.earnings).toBe(EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET);
+    expect(res).toMatchObject({
+      reminded: 0,
+      rowsSkipped: rows.length,
+      assetsFailed: 1,
+      skipped: rows.length,
+      degraded: true,
+    });
   });
 
   it('skips the row — never notifies — when the marker store is unreachable', async () => {
