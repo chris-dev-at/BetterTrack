@@ -109,8 +109,10 @@ import { createUsageAnalyticsService } from '../services/analytics/usageAnalytic
 import { createLogger } from '../logger';
 import { createMetricsServer } from '../metrics';
 import { createMarketData, purgeManualAssetCaches } from '../providers';
-import { initObservability } from '../services/observability/sentry';
+import { initObservability, SENTRY_REFUSED_MESSAGE } from '../services/observability/sentry';
 import { createProblemService } from '../services/observability/problemService';
+import { createProblemDropTally } from '../services/observability/problemDropTally';
+import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
 import { createProblemRepository } from '../data/repositories/problemRepository';
 import { createAuditService } from '../services/audit/auditService';
 import { createFeatureFlagService } from '../services/featureFlags/featureFlagService';
@@ -143,8 +145,10 @@ import { releaseRetiredLiveAssets } from '../services/liveMode';
 
 const config = loadConfig();
 const logger = createLogger(config);
-// Error tracking (§13.4 V4-P5a): init in the worker too, so BullMQ job failures
-// AND any uncaught worker error are captured. A no-op when BT_SENTRY_DSN is unset.
+// External Sentry is retired (§16 2026-07-17): this never initialises an SDK.
+// A DSN found in the env is refused and captured as a problem below, so the
+// operator learns it from the admin Problems page rather than believing errors
+// are being shipped somewhere they are not.
 const observability = initObservability(config, logger, { serverName: 'worker' });
 const createConnection = jobConnectionFactory(config.redisUrl);
 
@@ -200,7 +204,24 @@ const standingOrderParanoidFilter = createParanoidUserJobFilter(
 // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement): the
 // worker captures its own permanently-failed jobs and provider failures into
 // the shared `problems` table. No audit sink here — resolve/reopen is admin-only.
-const problems = createProblemService({ repo: createProblemRepository(db), logger });
+// Refusals are published to a Redis tally the API reads: this process serves no
+// admin surface, so a drop counted only here is a drop the operator never sees.
+const workerDropTally = createProblemDropTally(deadLetterConnection, 'worker', { logger });
+const problems = createProblemService({
+  repo: createProblemRepository(db),
+  logger,
+  onDrop: (kind, reason) => workerDropTally.record(kind, reason),
+});
+// Same fatal-error seam the API installs: a rejected promise inside a job
+// callback's `.then`, a socket handler, an unref'd timer — none of them reaches
+// the BullMQ failure hooks, so without this the container dies silently.
+registerProcessErrorCapture({ problems, logger, process: 'worker' });
+if (observability.refusedDsn) {
+  problems.captureError(new Error(SENTRY_REFUSED_MESSAGE), {
+    process: 'worker',
+    source: 'config',
+  });
+}
 const marketDataConnection = createConnection();
 const { registry: providerRegistry, service: marketData } = createMarketData({
   db,
@@ -783,8 +804,10 @@ async function shutdown(signal: string): Promise<void> {
       metricsServer.closeIdleConnections();
       await new Promise<void>((resolve) => metricsServer.close(() => resolve()));
     }
-    // Persist any in-flight problem captures before the DB connection closes.
+    // Persist any in-flight problem captures (and any deferred occurrences)
+    // before the DB connection closes, and publish the last refusals.
     await problems.flush();
+    await workerDropTally.settled();
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await marketData.settled();
@@ -794,7 +817,7 @@ async function shutdown(signal: string): Promise<void> {
     await marketDataConnection.quit();
     await lockClient.end();
     await client.end();
-    // Flush any buffered Sentry events before the process exits.
+    // Retired external tracker (§16 2026-07-17): inert, closed for symmetry.
     await observability.close();
   } catch (err) {
     logger.error({ err }, 'error during worker shutdown');

@@ -185,10 +185,11 @@ const envSchema = z.object({
   BT_VAPID_PUBLIC_KEY: z.string().optional(),
   BT_VAPID_PRIVATE_KEY: z.string().optional(),
   BT_VAPID_SUBJECT: z.string().optional(),
-  // ── Error tracking (Sentry, §13.4 V4-P5a) ──────────────────────────────────
-  // Env-gated: with BT_SENTRY_DSN unset the SDK never initializes and boot is
-  // byte-identical. The two sample rates are 0..1 fractions (errors default to
-  // full capture, tracing off) so an operator can dial cost without a redeploy.
+  // ── Error tracking (RETIRED external Sentry, §16 2026-07-17) ───────────────
+  // Kept in the schema so an old `.env` still VALIDATES — and so boot can name
+  // what it is refusing. None of them configures anything any more: the SDK is
+  // never initialised, and a set DSN is reported as a problem on the admin
+  // Problems page (§13.5 V5-P2 arc (d)) instead of shipping events off-box.
   BT_SENTRY_DSN: z.string().optional(),
   BT_SENTRY_ERROR_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
   BT_SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
@@ -855,17 +856,17 @@ export interface AppConfig {
     /** Fallback per-user daily completion cap when none is stored. */
     dailyCap: number;
   };
-  /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
+  /**
+   * The RETIRED external error tracker (§16 2026-07-17). There is no `enabled`
+   * and no `dsn`: the SDK is never initialised on any code path, so the DSN
+   * itself is never needed — the only thing boot cares about is that one was
+   * configured, which it refuses loudly (§13.5 V5-P2 arc (d), the admin
+   * Problems page is the replacement).
+   */
   sentry: {
-    enabled: boolean;
-    dsn?: string;
-    /** 0..1 fraction of errors captured. */
-    errorSampleRate: number;
-    /** 0..1 fraction of transactions traced. */
-    tracesSampleRate: number;
-    /** Environment tag on every event; defaults to NODE_ENV. */
-    environment: string;
-    /** Release tag stamped on every event (the deployed API version). */
+    /** True when `BT_SENTRY_DSN` is set — a refusal signal, never a switch. */
+    dsnConfigured: boolean;
+    /** Release tag of this build, named in the refusal. */
     release: string;
   };
   /** Phone push via FCM HTTP v1 (#368). Channel exists iff the file is set AND loads. */
@@ -1401,11 +1402,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       dailyCap: e.BT_AI_DAILY_CAP,
     },
     sentry: {
-      enabled: Boolean(e.BT_SENTRY_DSN),
-      dsn: e.BT_SENTRY_DSN,
-      errorSampleRate: e.BT_SENTRY_ERROR_SAMPLE_RATE,
-      tracesSampleRate: e.BT_SENTRY_TRACES_SAMPLE_RATE,
-      environment: e.BT_SENTRY_ENVIRONMENT ?? e.NODE_ENV,
+      // Presence only — the value is deliberately NOT carried onto the config,
+      // so no code path can reach a DSN even by accident.
+      dsnConfigured: Boolean(e.BT_SENTRY_DSN && e.BT_SENTRY_DSN.trim() !== ''),
       release: `${API_SERVICE_NAME}@${API_VERSION}`,
     },
     push: {
