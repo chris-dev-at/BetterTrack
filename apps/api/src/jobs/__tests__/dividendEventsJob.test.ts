@@ -22,9 +22,11 @@ import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { createDeadLetter } from '../deadLetter';
 import {
   DIVIDEND_EVENT_HORIZON_DAYS,
+  DIVIDEND_PROVIDER_ATTEMPTS_PER_ASSET,
   createDividendEventsScanJob,
   dividendNotifyGate,
   runDividendEventsScan,
+  type DividendScanResult,
 } from '../definitions/dividendEventsJob';
 import type { JobContext } from '../types';
 
@@ -32,10 +34,15 @@ const NOW = Date.parse('2026-07-18T00:00:00.000Z');
 
 let harness: TestHarness;
 let db: Database;
+let redis: Redis;
 
 beforeEach(async () => {
   harness = await createTestApp();
   db = harness.db;
+  redis = new RedisMock() as unknown as Redis;
+  // ioredis-mock shares its keyspace across instances — flush so each test's
+  // notify-once markers start clean.
+  await redis.flushall();
 });
 
 afterEach(async () => {
@@ -83,6 +90,12 @@ async function dividendRows(userId: string) {
   return rows.filter((r) => r.type === 'dividend.event' && !r.hidden);
 }
 
+/** Every `dividend.event` row, hidden dedupe markers included. */
+async function allDividendRows(userId: string) {
+  const rows = await db.select().from(notifications).where(eq(notifications.userId, userId));
+  return rows.filter((r) => r.type === 'dividend.event');
+}
+
 /** Build the scan deps around the harness's real dispatcher. */
 function scanDeps(opts: {
   holders: HeldAssetHolderRow[];
@@ -100,6 +113,7 @@ function scanDeps(opts: {
     notify: createNotificationCenter({
       enqueue: (event) => harness.ctx.notificationDispatcher.dispatch(event),
     }),
+    redis,
     isEnabled: dividendNotifyGate(repo),
     runIfAllowed: async (_userId: string, action: () => Promise<void>) => {
       await action();
@@ -109,6 +123,22 @@ function scanDeps(opts: {
     now: () => NOW,
   };
 }
+
+/** The all-zero scan result — the shape a no-op run returns. */
+const NOTHING: DividendScanResult = {
+  assetsScanned: 0,
+  candidates: 0,
+  emitted: 0,
+  suppressed: 0,
+  failed: 0,
+  errored: 0,
+  holdersSkipped: 0,
+  assetsFailed: 0,
+  usersFailed: 0,
+  usersDeferred: 0,
+  skipped: 0,
+  degraded: false,
+};
 
 describe('marketIntel.dividendScan (V5-P5)', () => {
   it('fires exactly once per user+asset+ex-date across repeated runs (clock-mocked idempotency)', async () => {
@@ -125,10 +155,10 @@ describe('marketIntel.dividendScan (V5-P5)', () => {
     const first = await runDividendEventsScan(deps);
     const second = await runDividendEventsScan(deps);
 
-    // Both runs emit (the job does not dedupe), but the dispatcher's
-    // (recipient, asset, ex-date) key collapses them to ONE visible row.
+    // The scan's OWN durable marker stops the second emit before it happens —
+    // it no longer leans on the dispatcher collapsing a re-emit.
     expect(first.emitted).toBe(1);
-    expect(second.emitted).toBe(1);
+    expect(second).toMatchObject({ emitted: 0, suppressed: 1, candidates: 1, degraded: false });
     const rows = await dividendRows(user.id);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.title).toContain('AAA');
@@ -177,7 +207,7 @@ describe('marketIntel.dividendScan (V5-P5)', () => {
     });
 
     const result = await runDividendEventsScan(deps);
-    expect(result).toEqual({ assetsScanned: 0, emitted: 0 });
+    expect(result).toEqual(NOTHING);
     expect(await dividendRows(user.id)).toHaveLength(0);
   });
 
@@ -198,7 +228,8 @@ describe('marketIntel.dividendScan (V5-P5)', () => {
         return true;
       },
     });
-    expect(result).toEqual({ assetsScanned: 0, emitted: 0 });
+    // Deferred, not "nothing to do": the run is degraded and names the skip.
+    expect(result).toEqual({ ...NOTHING, usersDeferred: 1, skipped: 1, degraded: true });
     expect(await dividendRows(user.id)).toHaveLength(0);
   });
 });
@@ -235,15 +266,39 @@ function recordingCenter(): NotificationCenter & { emitted: DispatchableEvent[] 
   };
 }
 
-function makeJobCtx(): JobContext {
-  const redis = new RedisMock() as unknown as Redis;
+function makeJobCtx(logger?: Logger): JobContext {
   return {
     events: harness.ctx.events,
     deadLetter: createDeadLetter(redis),
     redis,
-    logger: pino({ level: 'silent' }) as unknown as Logger,
+    logger: logger ?? (pino({ level: 'silent' }) as unknown as Logger),
     isFeatureEnabled: async () => true,
   };
+}
+
+interface LogLine {
+  payload: Record<string, unknown>;
+  msg: string;
+}
+
+/** A logger double that keeps the completion line the handler wrote. */
+function capturingLogger() {
+  const info: LogLine[] = [];
+  const warn: LogLine[] = [];
+  const push = (sink: LogLine[]) => (payload: Record<string, unknown>, msg?: string) => {
+    sink.push({ payload, msg: msg ?? '' });
+  };
+  const noop = () => {};
+  const logger = {
+    info: push(info),
+    warn: push(warn),
+    error: noop,
+    debug: noop,
+    trace: noop,
+    fatal: noop,
+    child: () => logger,
+  };
+  return { logger: logger as unknown as Logger, info, warn };
 }
 
 describe('marketIntel.dividendScan — run clock (#1543)', () => {
@@ -253,6 +308,7 @@ describe('marketIntel.dividendScan — run clock (#1543)', () => {
     const {
       now: _now,
       notify: _notify,
+      redis: _redis,
       ...deps
     } = scanDeps({
       holders: [holder(user.id)],
@@ -281,5 +337,278 @@ describe('marketIntel.dividendScan — run clock (#1543)', () => {
       }),
     ]);
     expect(DIVIDEND_EVENT_HORIZON_DAYS).toBe(7);
+  });
+});
+
+/**
+ * The notify-once guard (#1791). The dispatcher's dedupe marker for an in-app
+ * recipient IS the visible inbox row, and that row is hard-deletable by its
+ * owner — so leaning on it alone re-notified a holder on EVERY remaining day of
+ * the horizon, on every channel. The scan now holds its own durable marker.
+ */
+describe('marketIntel.dividendScan — notify-once guard (#1791)', () => {
+  const EX_DATE = '2026-07-21T00:00:00.000Z';
+  const upcoming = [{ exDate: EX_DATE, payDate: null, amount: 0.3, currency: 'USD' }];
+  const day = (n: number) => NOW + n * 86_400_000;
+
+  /** Emits into the real dispatcher AND records every emit, so "one
+   *  notification across all channels" is asserted at the fan-out's source. */
+  function countingCenter(): NotificationCenter & { emits: DispatchableEvent[] } {
+    const emits: DispatchableEvent[] = [];
+    return {
+      emits,
+      async emit(event) {
+        emits.push(event);
+        await harness.ctx.notificationDispatcher.dispatch(event);
+        return true;
+      },
+    };
+  }
+
+  it('does not re-notify after the holder deletes the in-app row', async () => {
+    const user = await harness.seedUser({ email: 'clears@bt.test', username: 'clears' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const deps = { ...scanDeps({ holders: [holder(user.id)], upcoming }), notify };
+
+    const first = await runDividendEventsScan(deps);
+    expect(first.emitted).toBe(1);
+
+    // The holder reads and clears it. `deleteOne` hard-deletes the visible row —
+    // which used to be the ONLY thing standing between them and a re-notify.
+    const [row] = await dividendRows(user.id);
+    expect(await createNotificationRepository(db).deleteOne(user.id, row!.id)).toBe(true);
+    expect(await allDividendRows(user.id)).toHaveLength(0);
+
+    const second = await runDividendEventsScan({ ...deps, now: () => day(1) });
+
+    expect(second).toMatchObject({ emitted: 0, suppressed: 1, candidates: 1, degraded: false });
+    expect(notify.emits).toHaveLength(1);
+    expect(await allDividendRows(user.id)).toHaveLength(0);
+  });
+
+  it('notifies once across the whole horizon window, clearing the inbox each day', async () => {
+    const user = await harness.seedUser({ email: 'horizon@bt.test', username: 'horizon' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const deps = { ...scanDeps({ holders: [holder(user.id)], upcoming }), notify };
+    const repo = createNotificationRepository(db);
+
+    for (let d = 0; d < DIVIDEND_EVENT_HORIZON_DAYS; d += 1) {
+      // The ex-date stays inside the horizon on every one of these days.
+      await runDividendEventsScan({ ...deps, now: () => day(d) });
+      await repo.deleteBulk(user.id, 'all');
+    }
+
+    expect(notify.emits).toHaveLength(1);
+  });
+
+  it('notifies once when the provider amends the ex-date inside the horizon', async () => {
+    // The #1758 ruling, applied to payouts: an amended date is the SAME event —
+    // exactly one notification, no "date changed" follow-up.
+    const user = await harness.seedUser({ email: 'amend@bt.test', username: 'amend' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const deps = { ...scanDeps({ holders: [holder(user.id)], upcoming }), notify };
+
+    const announced = await runDividendEventsScan(deps);
+    const amended = await runDividendEventsScan({
+      ...deps,
+      marketData: marketDataWith([
+        { exDate: '2026-07-22T00:00:00.000Z', payDate: null, amount: 0.3, currency: 'USD' },
+      ]),
+      now: () => day(1),
+    });
+
+    expect(announced.emitted).toBe(1);
+    expect(amended).toMatchObject({ emitted: 0, suppressed: 1, degraded: false });
+    expect(notify.emits).toHaveLength(1);
+    expect(notify.emits[0]).toMatchObject({ exDate: EX_DATE });
+  });
+
+  it('still notifies for the NEXT payout, a month after the one already sent', async () => {
+    // The anchor recognises an amended date, not "this asset, ever": a monthly
+    // distributor's next ex-date is far outside the match window.
+    const user = await harness.seedUser({ email: 'monthly@bt.test', username: 'monthly' });
+    await optIn(user.id);
+    const notify = countingCenter();
+    const deps = { ...scanDeps({ holders: [holder(user.id)], upcoming }), notify };
+
+    await runDividendEventsScan(deps);
+    const nextMonth = await runDividendEventsScan({
+      ...deps,
+      marketData: marketDataWith([
+        { exDate: '2026-08-21T00:00:00.000Z', payDate: null, amount: 0.3, currency: 'USD' },
+      ]),
+      now: () => day(31),
+    });
+
+    expect(nextMonth).toMatchObject({ emitted: 1, suppressed: 0 });
+    expect(notify.emits.map((e) => e.type === 'dividend.event' && e.exDate)).toEqual([
+      EX_DATE,
+      '2026-08-21T00:00:00.000Z',
+    ]);
+  });
+
+  it('does not count a refused enqueue as sent, and retries it on the next scan', async () => {
+    const user = await harness.seedUser({ email: 'refused@bt.test', username: 'refused' });
+    await optIn(user.id);
+    const deps = scanDeps({ holders: [holder(user.id)], upcoming });
+
+    const refused = await runDividendEventsScan({
+      ...deps,
+      notify: { emit: async () => false },
+    });
+
+    expect(refused).toEqual({
+      ...NOTHING,
+      assetsScanned: 1,
+      candidates: 1,
+      failed: 1,
+      skipped: 1,
+      degraded: true,
+    });
+    // The counters decompose exactly into the reported outcomes.
+    expect(refused.emitted + refused.suppressed + refused.failed + refused.errored).toBe(
+      refused.candidates,
+    );
+    expect(await dividendRows(user.id)).toHaveLength(0);
+
+    // The claim was rolled back, so a healthy transport delivers next scan.
+    const notify = countingCenter();
+    const retried = await runDividendEventsScan({ ...deps, notify, now: () => day(1) });
+    expect(retried).toMatchObject({ emitted: 1, failed: 0, degraded: false });
+    expect(notify.emits).toHaveLength(1);
+  });
+
+  it('re-attempts a failed asset for the next holder instead of dropping the whole book', async () => {
+    const holders: HeldAssetHolderRow[] = [];
+    for (const name of ['h1', 'h2', 'h3']) {
+      const user = await harness.seedUser({ email: `${name}@bt.test`, username: name });
+      await optIn(user.id);
+      holders.push(holder(user.id));
+    }
+    let calls = 0;
+    const notify = countingCenter();
+    const result = await runDividendEventsScan({
+      ...scanDeps({ holders, upcoming }),
+      notify,
+      marketData: createStubMarketData({
+        dividends: () => {
+          calls += 1;
+          // A rate-limit blip on the FIRST holder's fetch only.
+          if (calls === 1) throw new Error('rate limited');
+          return cachedIntel(dividends(upcoming));
+        },
+      }),
+    });
+
+    expect(calls).toBe(2);
+    expect(notify.emits.map((e) => e.userId)).toEqual([holders[1]!.userId, holders[2]!.userId]);
+    expect(result).toMatchObject({
+      emitted: 2,
+      holdersSkipped: 1,
+      assetsFailed: 0,
+      skipped: 1,
+      degraded: true,
+    });
+  });
+
+  it('bounds the re-attempts and reports every skipped holder when the asset never resolves', async () => {
+    const holders: HeldAssetHolderRow[] = [];
+    for (const name of ['d1', 'd2', 'd3', 'd4']) {
+      const user = await harness.seedUser({ email: `${name}@bt.test`, username: name });
+      await optIn(user.id);
+      holders.push(holder(user.id));
+    }
+    let calls = 0;
+    const result = await runDividendEventsScan({
+      ...scanDeps({ holders, upcoming }),
+      marketData: createStubMarketData({
+        dividends: () => {
+          calls += 1;
+          throw new Error('provider down');
+        },
+      }),
+    });
+
+    expect(calls).toBe(DIVIDEND_PROVIDER_ATTEMPTS_PER_ASSET);
+    expect(result).toMatchObject({
+      emitted: 0,
+      candidates: 0,
+      holdersSkipped: holders.length,
+      assetsFailed: 1,
+      skipped: holders.length,
+      degraded: true,
+    });
+  });
+
+  it('isolates a repository throw at one user so the rest of the book still runs', async () => {
+    const holders: HeldAssetHolderRow[] = [];
+    for (const name of ['u1', 'u2', 'u3']) {
+      const user = await harness.seedUser({ email: `${name}@bt.test`, username: name });
+      await optIn(user.id);
+      holders.push(holder(user.id));
+    }
+    const notify = countingCenter();
+    const deps = scanDeps({ holders, upcoming });
+    const result = await runDividendEventsScan({
+      ...deps,
+      notify,
+      repo: {
+        ...deps.repo,
+        listHeldAssetHoldersForUser: async (userId: string) => {
+          if (userId === holders[1]!.userId) throw new Error('db hiccup');
+          return holders.filter((row) => row.userId === userId);
+        },
+      },
+    });
+
+    expect(notify.emits.map((e) => e.userId)).toEqual([holders[0]!.userId, holders[2]!.userId]);
+    expect(result).toMatchObject({ emitted: 2, usersFailed: 1, skipped: 1, degraded: true });
+  });
+});
+
+describe('marketIntel.dividendScan — completion log (#1791)', () => {
+  const upcoming = [
+    { exDate: '2026-09-04T00:00:00.000Z', payDate: null, amount: 0.3, currency: 'USD' },
+  ];
+
+  /** The job deps, minus what the handler supplies from its own context. */
+  function jobDeps(over: Partial<ReturnType<typeof scanDeps>> = {}) {
+    const {
+      now: _now,
+      redis: _redis,
+      ...deps
+    } = { ...scanDeps({ holders: [], upcoming }), ...over };
+    return deps;
+  }
+
+  it('logs a clean run as complete and a run with any skip as degraded', async () => {
+    const user = await harness.seedUser({ email: 'log@bt.test', username: 'log' });
+    await optIn(user.id);
+    const base = scanDeps({ holders: [holder(user.id)], upcoming });
+
+    const clean = capturingLogger();
+    await createDividendEventsScanJob(jobDeps(base)).handler(makeJob(), makeJobCtx(clean.logger));
+
+    expect(clean.warn).toEqual([]);
+    expect(clean.info).toHaveLength(1);
+    expect(clean.info[0]!.msg).toBe('marketIntel.dividendScan complete');
+    expect(clean.info[0]!.payload).toMatchObject({ emitted: 1, skipped: 0 });
+
+    const degraded = capturingLogger();
+    await createDividendEventsScanJob(
+      jobDeps({
+        ...base,
+        runIfAllowed: async () => false,
+      }),
+    ).handler(makeJob(), makeJobCtx(degraded.logger));
+
+    // A run that skipped anything cannot report as complete.
+    expect(degraded.info).toEqual([]);
+    expect(degraded.warn).toHaveLength(1);
+    expect(degraded.warn[0]!.msg).toBe('marketIntel.dividendScan completed with skips');
+    expect(degraded.warn[0]!.payload).toMatchObject({ skipped: 1, usersDeferred: 1 });
   });
 });
