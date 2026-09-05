@@ -13,6 +13,8 @@ export {
 export {
   createWebhookDispatcher,
   createPinnedWebhookTransport,
+  isPermanentWebhookStatus,
+  WEBHOOK_PERMANENT_RESPONSE_STATUSES,
   type WebhookDispatcher,
   type WebhookDispatcherDeps,
   type WebhookDeliveryJob,

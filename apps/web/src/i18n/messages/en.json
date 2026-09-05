@@ -1042,7 +1042,19 @@
           "empty": "No deliveries recorded yet.",
           "loadError": "Couldn't load deliveries.",
           "success": "Delivered",
-          "failed": "Failed"
+          "failed": "Failed",
+          "showDetail": "Why?",
+          "hideDetail": "Hide",
+          "attempts": "Attempts: {{count}}",
+          "reason": {
+            "http": "The receiver rejected the delivery with HTTP {{status}}.",
+            "refused": "The destination was blocked — it resolves to a network range webhooks may not reach.",
+            "unresolved": "The destination host could not be resolved.",
+            "timeout": "The receiver did not respond in time.",
+            "secret": "The signing secret could not be read, so nothing was sent.",
+            "unsubscribed": "This event type was removed from the webhook before the delivery was sent.",
+            "network": "The connection to the receiver failed."
+          }
         },
         "secretModal": {
           "title": "Your webhook signing secret",

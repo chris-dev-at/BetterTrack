@@ -8,7 +8,12 @@ import {
   JOB_REGISTRATION_DESCRIPTORS,
   type RegisteredJobDefinitions,
 } from '../definitions/registration';
-import { BACKOFF_BASE_MS, DEFAULT_JOB_OPTIONS, QUEUE_JOB_OPTIONS } from '../options';
+import {
+  BACKOFF_BASE_MS,
+  DEFAULT_JOB_OPTIONS,
+  QUEUE_JOB_OPTIONS,
+  WEBHOOK_BACKOFF_JITTER,
+} from '../options';
 import { createQueueRegistry, type QueueRegistry } from '../queues';
 import {
   ALL_QUEUE_NAMES,
@@ -63,7 +68,11 @@ describe('queue registry job options (§13.5 V5-P10)', () => {
     const merged = await effectiveEnqueuedOptions(newRegistry(), QUEUE_NAMES.webhooksDeliver);
 
     expect(merged.attempts).toBe(5);
-    expect(merged.backoff).toEqual({ type: 'exponential', delay: BACKOFF_BASE_MS });
+    expect(merged.backoff).toEqual({
+      type: 'exponential',
+      delay: BACKOFF_BASE_MS,
+      jitter: WEBHOOK_BACKOFF_JITTER,
+    });
     // The §9 defaults the override does not mention survive.
     expect(merged.removeOnComplete).toEqual(DEFAULT_JOB_OPTIONS.removeOnComplete);
     expect(merged.removeOnFail).toEqual(DEFAULT_JOB_OPTIONS.removeOnFail);
@@ -76,7 +85,11 @@ describe('queue registry job options (§13.5 V5-P10)', () => {
 
     expect(merged.attempts).toBe(1);
     // Untouched keys still come from the declaration/defaults.
-    expect(merged.backoff).toEqual({ type: 'exponential', delay: BACKOFF_BASE_MS });
+    expect(merged.backoff).toEqual({
+      type: 'exponential',
+      delay: BACKOFF_BASE_MS,
+      jitter: WEBHOOK_BACKOFF_JITTER,
+    });
   });
 
   it('leaves a queue without a declaration on DEFAULT_JOB_OPTIONS', async () => {

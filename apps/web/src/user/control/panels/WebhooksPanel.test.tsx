@@ -3,9 +3,14 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type {
-  CreateWebhookSubscriptionResponse,
-  WebhookSubscriptionListResponse,
+import {
+  WEBHOOK_DELIVERY_REFUSED_ERROR,
+  WEBHOOK_DELIVERY_SECRET_ERROR,
+  WEBHOOK_DELIVERY_TIMEOUT_ERROR,
+  WEBHOOK_DELIVERY_UNRESOLVED_ERROR,
+  type CreateWebhookSubscriptionResponse,
+  type WebhookDeliveryListResponse,
+  type WebhookSubscriptionListResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../../lib/webhooksApi', () => ({
@@ -56,6 +61,23 @@ const CREATED: CreateWebhookSubscriptionResponse = {
   },
   secret: 'whsec_shown_once_secret',
 };
+
+/** One failed delivery row: no HTTP status, only a scrubbed reason string. */
+function delivery(
+  suffix: string,
+  error: string,
+  attempts: number,
+): WebhookDeliveryListResponse['deliveries'][number] {
+  return {
+    id: `00000000-0000-0000-0000-0000000000${suffix}`,
+    eventType: 'alert.triggered',
+    status: 'failed',
+    responseStatus: null,
+    attempts,
+    error,
+    createdAt: '2026-07-02T08:00:00.000Z',
+  };
+}
 
 function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
@@ -161,6 +183,40 @@ describe('WebhooksPanel', () => {
 
     expect(await screen.findByText('https://receiver.test/hook')).toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
+  });
+
+  // Four structurally different failures all record `responseStatus: null`, so
+  // without a per-cause explanation they are one identical red badge and the
+  // user cannot tell a broken DNS record from a blocked destination.
+  test('explains each statusless failure cause distinctly, folded away by default', async () => {
+    const failures: WebhookDeliveryListResponse = {
+      deliveries: [
+        delivery('01', WEBHOOK_DELIVERY_REFUSED_ERROR, 1),
+        delivery('02', WEBHOOK_DELIVERY_TIMEOUT_ERROR, 5),
+        delivery('03', WEBHOOK_DELIVERY_UNRESOLVED_ERROR, 4),
+        delivery('04', WEBHOOK_DELIVERY_SECRET_ERROR, 3),
+      ],
+    };
+    vi.mocked(listWebhooks).mockResolvedValue(ONE);
+    vi.mocked(listWebhookDeliveries).mockResolvedValue(failures);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Deliveries' }));
+
+    // §13.5: the list is exactly as tall as before — the reasons are folded.
+    const toggles = await screen.findAllByRole('button', { name: /Why\?$/ });
+    expect(toggles).toHaveLength(4);
+    expect(screen.queryByText(/did not respond in time/i)).not.toBeInTheDocument();
+
+    for (const toggle of toggles) await user.click(toggle);
+
+    expect(screen.getByText(/resolves to a network range webhooks may not reach/i)).toBeVisible();
+    expect(screen.getByText(/did not respond in time/i)).toBeVisible();
+    expect(screen.getByText(/host could not be resolved/i)).toBeVisible();
+    expect(screen.getByText(/signing secret could not be read/i)).toBeVisible();
+    // …and how much the delivery actually cost.
+    expect(screen.getByText('Attempts: 5')).toBeVisible();
   });
 
   test('Paranoid mode marks a subscribed event it never fires instead of hiding it', async () => {
