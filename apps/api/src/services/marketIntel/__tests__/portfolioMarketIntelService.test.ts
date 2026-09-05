@@ -196,6 +196,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -232,6 +233,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -310,6 +312,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -335,6 +338,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -381,6 +385,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -406,6 +411,7 @@ describe('portfolio projected dividend income (V5-P5)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -706,6 +712,7 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
       truncated: true,
     });
@@ -752,6 +759,7 @@ describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -914,6 +922,7 @@ describe('projected dividend income — denomination (§5.4, #1741)', () => {
       currency: 'USD',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
   });
@@ -966,7 +975,110 @@ describe('projected dividend income — denomination (§5.4, #1741)', () => {
       currency: 'EUR',
       monthlyTotalBase: 0,
       yearlyTotalBase: 0,
+      basis: null,
       holdings: [],
     });
+  });
+});
+
+describe('projected dividend income — the basis the total is made of (#1790)', () => {
+  /** The projection over one EUR book, with no FX in the way. */
+  function serviceFor(
+    dividends: Record<string, DividendEvents>,
+    quantities: Record<string, number>,
+  ) {
+    return createPortfolioMarketIntelService({
+      marketData: createStubMarketData({ dividends: dividendsByRef(dividends) }),
+      repo: stubRepo({
+        held: Object.entries(quantities).map(([providerRef, quantity], i) =>
+          held({
+            assetId: `asset-${i}`,
+            providerRef,
+            symbol: providerRef,
+            currency: 'EUR',
+            quantity,
+          }),
+        ),
+      }),
+      currency,
+      enabled: true,
+      now: () => NOW,
+    });
+  }
+
+  it('names the single basis every contributing holding shared', async () => {
+    const service = serviceFor(
+      {
+        AAA: makeDividends({
+          currency: 'EUR',
+          trailingAmount: 2,
+          trailingAmountBasis: 'forward-annualized',
+        }),
+      },
+      { AAA: 10 },
+    );
+    const result = await service.projectedIncome('user-1');
+    expect(result.yearlyTotalBase).toBe(20);
+    expect(result.basis).toBe('forward-annualized');
+  });
+
+  it('publishes a special-inflated trailing figure WITH its basis, rather than as forward income', async () => {
+    // The (b) scenario: 1,000 shares of a name that paid a $15 special beside
+    // its $4.64 regular payout. The provider reports the realized TTM sum, so
+    // the projection is ~4.2× the true forward figure — and for a year the
+    // surfaces called it "projected dividend income" with nothing beside it.
+    // The number is not re-picked (some providers give only this one); it is
+    // published with what it is, and the UI renders that.
+    const service = serviceFor(
+      {
+        SPCL: makeDividends({
+          currency: 'EUR',
+          trailingAmount: 19.64,
+          trailingAmountBasis: 'trailing-12m',
+        }),
+      },
+      { SPCL: 1000 },
+    );
+    const result = await service.projectedIncome('user-1');
+    expect(result.yearlyTotalBase).toBe(19_640);
+    expect(result.monthlyTotalBase).toBeCloseTo(1636.67, 2);
+    expect(result.basis).toBe('trailing-12m');
+  });
+
+  it('calls a book that mixes the two bases mixed, and still totals it', async () => {
+    // Providers populate whichever annual per-share field they have, so a real
+    // book legitimately sums a realized TTM holding and a forward-annualized
+    // one. Refusing the total would blank the figure for most books; presenting
+    // it as one kind of number was the defect. It says "mixed".
+    const service = serviceFor(
+      {
+        AAA: makeDividends({
+          currency: 'EUR',
+          trailingAmount: 2,
+          trailingAmountBasis: 'trailing-12m',
+        }),
+        BBB: makeDividends({
+          currency: 'EUR',
+          trailingAmount: 1,
+          trailingAmountBasis: 'forward-annualized',
+        }),
+      },
+      { AAA: 10, BBB: 10 },
+    );
+    const result = await service.projectedIncome('user-1');
+    expect(result.yearlyTotalBase).toBe(30);
+    expect(result.basis).toBe('mixed');
+    expect(result.holdings.map((h) => h.annualPerShareBasis).sort()).toEqual([
+      'forward-annualized',
+      'trailing-12m',
+    ]);
+  });
+
+  it('names no basis when nothing contributed — an empty total describes nothing', async () => {
+    const service = serviceFor({ AAA: makeDividends({ currency: 'EUR' }) }, { AAA: 10 });
+    const result = await service.projectedIncome('user-1');
+    expect(result.available).toBe(true);
+    expect(result.yearlyTotalBase).toBe(0);
+    expect(result.basis).toBeNull();
   });
 });

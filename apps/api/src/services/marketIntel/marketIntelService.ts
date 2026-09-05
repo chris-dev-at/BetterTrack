@@ -1,5 +1,6 @@
 import type {
   AssetRef,
+  DividendEvent,
   DividendsResponse,
   EarningsCalendarEntry,
   EarningsCalendarResponse,
@@ -39,6 +40,43 @@ export const NEWS_DIGEST_HEADLINES_PER_GROUP = 10;
 /** The stated ceiling on one digest response, in headlines. */
 export const NEWS_DIGEST_MAX_HEADLINES =
   MARKET_INTEL_ROLLUP_MAX_ASSETS * NEWS_DIGEST_HEADLINES_PER_GROUP;
+
+/**
+ * Payouts one dividend response may carry — 25 years of quarterly payments, so
+ * no real payer is cut, and a provider that streams thousands of rows cannot
+ * make the asset page arbitrarily large. The bound lives HERE for the same
+ * reason {@link NEWS_DIGEST_HEADLINES_PER_GROUP} does (#1790): a provider is not
+ * a trust boundary, and a mapper is per-provider while this is the one place
+ * every provider's dividend payload passes through. When the list is longer, the
+ * MOST RECENT payouts are what survives.
+ */
+export const DIVIDEND_HISTORY_MAX_EVENTS = 100;
+
+/**
+ * Dedupe + bound a provider's payout history, ascending by ex-date.
+ *
+ * Duplicates are collapsed on `(exDate, amount)`: upstream re-sending one event
+ * twice is the observed failure, and it used to add a second identical bar and
+ * shift every later point of the only payout-history chart in the product. Two
+ * rows sharing an ex-date with DIFFERENT amounts are deliberately kept: from
+ * here an amended amount and a special paid alongside the regular dividend are
+ * indistinguishable, and dropping one would silently delete real money. The
+ * chart's date axis (#1790) is what stops them distorting the series.
+ */
+function normalizeDividendHistory(history: DividendEvent[]): DividendEvent[] {
+  const seen = new Set<string>();
+  const deduped: DividendEvent[] = [];
+  for (const event of history) {
+    const key = `${event.exDate ?? ''}|${event.amount ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  deduped.sort((a, b) => (a.exDate ?? '').localeCompare(b.exDate ?? ''));
+  return deduped.length > DIVIDEND_HISTORY_MAX_EVENTS
+    ? deduped.slice(deduped.length - DIVIDEND_HISTORY_MAX_EVENTS)
+    : deduped;
+}
 
 /** Digest groups newest-first by their most recent headline, symbol as tiebreak. */
 function byNewestHeadline(x: NewsDigestGroup, y: NewsDigestGroup): number {
@@ -275,7 +313,11 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).dividends) return UNAVAILABLE_DIVIDENDS;
         try {
           const cached = await marketData.getDividendEvents(ref);
-          return { available: true, ...cached.value };
+          return {
+            available: true,
+            ...cached.value,
+            history: normalizeDividendHistory(cached.value.history),
+          };
         } catch {
           // A provider error/timeout (or an open breaker with nothing cached)
           // degrades to unavailable — never a 5xx on an asset page (§13.5 V5-P5).

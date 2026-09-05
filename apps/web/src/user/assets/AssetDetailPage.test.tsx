@@ -193,17 +193,27 @@ beforeEach(() => {
 });
 
 describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
+  /** An ISO instant `days` from now — "upcoming" is relative to the real clock. */
+  const earningsIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
   test('shows the earnings block with the next date + estimated badge', async () => {
     vi.mocked(getAssetEarnings).mockResolvedValue({
       available: true,
       next: {
-        date: '2026-08-10T00:00:00.000Z',
+        date: earningsIso(30),
+        periodEnd: null,
         epsEstimate: 1.42,
         epsActual: null,
         estimated: true,
       },
       recent: [
-        { date: '2026-04-30T00:00:00.000Z', epsEstimate: 1.5, epsActual: 1.53, estimated: false },
+        {
+          date: null,
+          periodEnd: earningsIso(-120),
+          epsEstimate: 1.5,
+          epsActual: 1.53,
+          estimated: false,
+        },
       ],
     });
     renderPage();
@@ -211,6 +221,45 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
     expect(screen.getByText('Next report')).toBeInTheDocument();
     // Estimated (amber) badge distinguishes an unconfirmed date.
     expect(screen.getByText('Estimated')).toBeInTheDocument();
+  });
+
+  test('never labels a report that already happened "Next report" (#1790)', async () => {
+    // The provider keeps returning the last date it knew about (and the read
+    // path serves that payload stale for days), so on 15 Aug a company that
+    // reported on 31 Jul still arrives as `earningsDate: [2025-07-31]`. The
+    // Workboard calendar drops it; this page used to print it under "Next
+    // report". With no past reports either, the whole block has nothing to say.
+    vi.mocked(getAssetEarnings).mockResolvedValue({
+      available: true,
+      next: {
+        date: earningsIso(-15),
+        periodEnd: null,
+        epsEstimate: 1.42,
+        epsActual: null,
+        estimated: true,
+      },
+      recent: [],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText('Earnings')).not.toBeInTheDocument();
+    expect(screen.queryByText('Next report')).not.toBeInTheDocument();
+  });
+
+  test('dates a reported quarter as the fiscal period it is, not as a report date', async () => {
+    // Yahoo's history carries the fiscal PERIOD END (28 Jun for a June quarter),
+    // while the announcement lands over a month later. The row says which.
+    const periodEnd = '2026-06-28T00:00:00.000Z';
+    vi.mocked(getAssetEarnings).mockResolvedValue({
+      available: true,
+      next: null,
+      recent: [{ date: null, periodEnd, epsEstimate: 1.5, epsActual: 1.53, estimated: false }],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Earnings')).toBeInTheDocument());
+    expect(screen.getByText(`Period ended ${formatDate(periodEnd)}`)).toBeInTheDocument();
+    // …and never bare, which would read as the day results were announced.
+    expect(screen.queryByText(formatDate(periodEnd))).not.toBeInTheDocument();
   });
 
   test('hides the earnings block when the capability is unavailable', async () => {
@@ -338,6 +387,44 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
     expect(screen.getByText('Next ex-date')).toBeInTheDocument();
     expect(screen.getByText('Next pay date')).toBeInTheDocument();
     expect(screen.getByLabelText('Dividend payout history')).toBeInTheDocument();
+    // The stat is a FRACTION multiplied out here, which is exactly why the
+    // provider mapper may only publish a figure whose unit it determined
+    // (#1790): 0.44 % of a payer must never surface as 44 %.
+    expect(screen.getByText('0,44 %')).toBeInTheDocument();
+    expect(screen.queryByText('44,00 %')).not.toBeInTheDocument();
+  });
+
+  test('plots the payout history on a time axis, so a skipped quarter is a gap (#1790)', async () => {
+    // Two payouts a quarter apart, then a two-quarter gap: a company that
+    // skipped a payment. Plotted in array order all three sit equally spaced and
+    // the skip is invisible; on a time axis the last gap is twice the first.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      history: [
+        { exDate: dividendIso(-360), payDate: null, amount: 0.24, currency: 'USD' },
+        { exDate: dividendIso(-270), payDate: null, amount: 0.25, currency: 'USD' },
+        { exDate: dividendIso(-90), payDate: null, amount: 0.26, currency: 'USD' },
+      ],
+    });
+    renderPage();
+    const chart = await screen.findByLabelText('Dividend payout history');
+    const points = chart.querySelector('polyline')?.getAttribute('points') ?? '';
+    const xs = points.split(' ').map((pair) => Number(pair.split(',')[0]));
+    expect(xs).toHaveLength(3);
+    // 90 days, then 180: the second gap is (about) twice the first, never equal.
+    expect(xs[2]! - xs[1]!).toBeCloseTo(2 * (xs[1]! - xs[0]!), 1);
+  });
+
+  test('lets the history caption row wrap, so a 360px phone does not scroll sideways (#1799)', async () => {
+    // Nothing in this row can shrink: the sparkline is a fixed 140px and the two
+    // captions bottom out at their longest word, so on a German 360px phone the
+    // three of them together were 16px wider than the viewport and the whole
+    // page scrolled horizontally. The mobile gate that catches that takes ~17
+    // minutes and is not a required check, so the wrap is pinned here too.
+    vi.mocked(getAssetDividends).mockResolvedValue(availableDividends);
+    renderPage();
+    const chart = await screen.findByLabelText('Dividend payout history');
+    expect(chart.closest('.bt-panel--pad')).toHaveClass('flex-wrap');
   });
 
   test('drops a "next ex-date" that has already passed, keeping the pay date (#1758)', async () => {

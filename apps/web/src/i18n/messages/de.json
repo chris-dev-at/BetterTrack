@@ -426,7 +426,7 @@
     "collapseRail": "Navigation einklappen",
     "expandSection": "{{section}} ausklappen",
     "collapseSection": "{{section}} einklappen",
-    "back": "Zur\u00fcck"
+    "back": "Zurück"
   },
   "askdock": {
     "pin": "Offen halten",
@@ -2130,7 +2130,12 @@
       "exOn": "Ex {{date}}",
       "payOn": "Zahltag {{date}}",
       "showMore": "{{count}} weitere anzeigen",
-      "showLess": "Weniger anzeigen"
+      "showLess": "Weniger anzeigen",
+      "basis": {
+        "trailing12m": "Basiert auf den Ausschüttungen der letzten 12 Monate — eine Sonderdividende ist darin enthalten.",
+        "forwardAnnualized": "Basiert auf der letzten regulären Ausschüttung, auf ein Jahr hochgerechnet.",
+        "mixed": "Gemischte Basis: ein Teil aus den Ausschüttungen der letzten 12 Monate (inklusive Sonderdividenden), der Rest aus der hochgerechneten regulären Ausschüttung."
+      }
     },
     "import": {
       "title": "Broker-CSV-Import",
@@ -2832,6 +2837,11 @@
         "returnLabel": "Rendite (%)",
         "returnPlaceholder": "Basis",
         "remove": "Entfernen"
+      },
+      "dividendsBasis": {
+        "trailing12m": "Die Dividenden stammen aus den Ausschüttungen der letzten 12 Monate — eine Sonderdividende ist darin enthalten.",
+        "forwardAnnualized": "Die Dividenden stammen aus der letzten regulären Ausschüttung, auf ein Jahr hochgerechnet.",
+        "mixed": "Die Dividenden mischen zwei Grundlagen: teils aus den Ausschüttungen der letzten 12 Monate (inklusive Sonderdividenden), teils aus der hochgerechneten regulären Ausschüttung."
       }
     },
     "calculators": {
@@ -2856,7 +2866,11 @@
     "savings": {
       "title": "Sparplan",
       "summary": "Welcher Monatsbetrag erreicht dein Ziel – oder wie lange es dauert?",
-      "solve": { "label": "Berechnen", "contribution": "Sparbetrag", "years": "Jahre" },
+      "solve": {
+        "label": "Berechnen",
+        "contribution": "Sparbetrag",
+        "years": "Jahre"
+      },
       "target": "Ziel (€)",
       "principal": "Startkapital (€)",
       "ratePct": "Jährliche Rendite (%)",
@@ -2884,7 +2898,11 @@
     "withdrawal": {
       "title": "Entnahmeplan",
       "summary": "Wie lange ein Kapitalstock reicht – oder was du monatlich sicher entnehmen kannst.",
-      "solve": { "label": "Berechnen", "horizon": "Reichweite", "rate": "Sichere Entnahme" },
+      "solve": {
+        "label": "Berechnen",
+        "horizon": "Reichweite",
+        "rate": "Sichere Entnahme"
+      },
       "balance": "Startkapital (€)",
       "monthlyWithdrawal": "Monatliche Entnahme (€)",
       "horizonYears": "Entnahmedauer (Jahre)",
@@ -2995,7 +3013,8 @@
         "nextExDate": "Nächster Ex-Tag",
         "nextPayDate": "Nächster Zahltag",
         "history": "Ausschüttungsverlauf",
-        "historyAriaLabel": "Verlauf der Dividendenausschüttungen"
+        "historyAriaLabel": "Verlauf der Dividendenausschüttungen",
+        "historyRange": "{{from}} – {{to}}"
       },
       "earnings": {
         "title": "Quartalszahlen",
@@ -3004,7 +3023,8 @@
         "estimated": "Geschätzt",
         "confirmed": "Bestätigt",
         "epsEstimate": "Erw. EPS {{value}}",
-        "epsActual": "EPS {{value}}"
+        "epsActual": "EPS {{value}}",
+        "periodEnded": "Zeitraum bis {{date}}"
       },
       "splits": {
         "title": "Aktiensplits",
@@ -3211,7 +3231,10 @@
     "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
     "share": "Teilen…",
     "groupsNone": "Du hast noch keine Gruppen. Erstelle auf der Freunde-Seite eine, um mit einem Kreis zu teilen.",
-    "groupMemberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
+    "groupMemberCount": {
+      "one": "{{count}} Mitglied",
+      "other": "{{count}} Mitglieder"
+    },
     "groupsAtLimit": "Das sind alle {{count}} Gruppen – das Maximum. Verwalte sie auf der Personen-Seite.",
     "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
   },
@@ -3525,7 +3548,10 @@
       "cloneError": "Diese Idee konnte nicht geklont werden."
     },
     "comments": {
-      "count": { "one": "{{count}} Kommentar", "other": "{{count}} Kommentare" },
+      "count": {
+        "one": "{{count}} Kommentar",
+        "other": "{{count}} Kommentare"
+      },
       "empty": "Noch keine Kommentare.",
       "loadError": "Die Kommentare konnten nicht geladen werden. Bitte versuche es erneut.",
       "placeholder": "Kommentar hinzufügen…",
@@ -3550,7 +3576,10 @@
       "loadError": "Deine Gruppen konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyTitle": "Noch keine Gruppen",
       "emptyDescription": "Erstelle eine Gruppe, um mit einem bestimmten Freundeskreis zu teilen.",
-      "memberCount": { "one": "{{count}} Mitglied", "other": "{{count}} Mitglieder" },
+      "memberCount": {
+        "one": "{{count}} Mitglied",
+        "other": "{{count}} Mitglieder"
+      },
       "nameLabel": "Gruppenname",
       "renameAction": "Umbenennen",
       "membersHeading": "Mitglieder",

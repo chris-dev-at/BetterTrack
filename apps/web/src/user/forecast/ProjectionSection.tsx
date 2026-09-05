@@ -1,9 +1,13 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contracts';
+import type {
+  DividendProjectionBasis,
+  PortfolioHistoryRange,
+  PortfolioSummary,
+} from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
+import { type TranslateFn, useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { useDeployCapability } from '../../lib/featureFlags';
@@ -441,7 +445,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                   ? t('forecast.projection.dividendsTruncated')
                   : dividendUnresolved
                     ? t('forecast.projection.dividendsUnresolved')
-                    : undefined
+                    : // A resolved factor says what its number is made of: a
+                      // `trailing-12m` estimate carries any special dividend of
+                      // the last twelve months and so projects income the
+                      // schedule does not promise, and a book may legitimately
+                      // mix the two bases (#1790). The contract has named the
+                      // basis since #1741; this is the Forecast rendering it.
+                      dividendBasisNote(dividendProjection?.basis ?? null, t)
               }
               onChange={setDividendEnabled}
             />
@@ -578,6 +588,27 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
  * An optional `note` sits outside that label — a disabled factor has to say why
  * without renaming the control the assertion and the user both look for.
  */
+/**
+ * What the dividend factor's number is made of, as the Forecast says it.
+ * Undefined when the projection names no basis — an unusable factor contributes
+ * 0 and already carries its own explanation.
+ */
+function dividendBasisNote(
+  basis: DividendProjectionBasis | null,
+  t: TranslateFn,
+): string | undefined {
+  switch (basis) {
+    case 'trailing-12m':
+      return t('forecast.projection.dividendsBasis.trailing12m');
+    case 'forward-annualized':
+      return t('forecast.projection.dividendsBasis.forwardAnnualized');
+    case 'mixed':
+      return t('forecast.projection.dividendsBasis.mixed');
+    default:
+      return undefined;
+  }
+}
+
 function FactorToggle({
   label,
   checked,

@@ -186,6 +186,7 @@ beforeEach(() => {
     currency: 'EUR',
     monthlyTotalBase: 0,
     yearlyTotalBase: 0,
+    basis: null,
     holdings: [],
   };
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue(noProjection);

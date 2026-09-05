@@ -23,6 +23,7 @@ import type {
   YahooIncomeStatementRow,
   YahooNewsResult,
   YahooQuoteSummaryResult,
+  YahooSummaryDetail,
 } from './yahooClient';
 
 /**
@@ -321,6 +322,79 @@ function byIsoDate(a: { date?: string | null }, b: { date?: string | null }): nu
   return (a.date ?? '').localeCompare(b.date ?? '');
 }
 
+/** Ascending over a nullable ISO fiscal period end (nulls sort first, stable). */
+function byPeriodEnd(a: { periodEnd?: string | null }, b: { periodEnd?: string | null }): number {
+  return (a.periodEnd ?? '').localeCompare(b.periodEnd ?? '');
+}
+
+/**
+ * How far a candidate reading may sit from the cross-check and still count as
+ * confirmed. The two readings of one reported number (fraction vs percent) are
+ * exactly 100× apart, so any factor below 10 can confirm at most one of them;
+ * 5 leaves room for the cross-check's own imprecision — a previous close that
+ * moved, or a trailing rate inflated by a special dividend — without ever
+ * admitting both.
+ */
+const YIELD_UNIT_TOLERANCE = 5;
+
+/** The first finite, strictly positive number among the candidates, else null. */
+function firstPositive(...values: Array<number | null | undefined>): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * Determine the unit of Yahoo's `dividendYield` and return it in the contract's
+ * convention — a FRACTION (`0.015` ≈ 1.5 %) — or null when the unit cannot be
+ * determined (#1790).
+ *
+ * Yahoo has shipped both conventions over the years, and the previous guard
+ * (accept `[0, DIVIDEND_FORWARD_YIELD_MAX]`, drop the rest) cannot tell them
+ * apart below 1.0 — worse, it INVERTS on a percent-reporting build: `0.44` (a
+ * 0.44 % payer) passes and renders "44 %", while `2.5` (a normal 2.5 % payer)
+ * exceeds the bound and disappears. A range says nothing about a unit.
+ *
+ * **The mechanism is a cross-check against the payload's own arithmetic.** The
+ * same `summaryDetail` module carries an annual dividend per share and the last
+ * close, so `perShare / price` is a reference yield in the contract's fraction
+ * convention. Both operands come from that one module, so they share a
+ * denomination (and any minor-unit scale cancels in the ratio) — no assumption
+ * that `chart.meta.currency` and `summaryDetail.currency` agree. The reported
+ * number is then read both ways — as a fraction, and as percent (÷100) — and the
+ * reading the reference confirms within {@link YIELD_UNIT_TOLERANCE} wins.
+ *
+ * Nothing is published on a guess: no per-share rate, no price, a reference that
+ * confirms neither reading, or a confirmed reading outside the contract's range
+ * all yield null. An absent block, never a wrong number. The one figure that
+ * needs no evidence is 0 — the same number in either unit.
+ */
+function determineForwardYield(detail: YahooSummaryDetail): number | null {
+  const raw = detail.dividendYield;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return null;
+  if (raw === 0) return 0;
+
+  // Prefer the forward-annualized regular rate: it is what a FORWARD yield is
+  // built from, and it is not inflated by a special the way the trailing sum is.
+  const perShare = firstPositive(detail.dividendRate, detail.trailingAnnualDividendRate);
+  const price = firstPositive(detail.previousClose, detail.regularMarketPreviousClose);
+  if (perShare === null || price === null) return null;
+  const reference = perShare / price;
+  if (!Number.isFinite(reference) || reference <= 0) return null;
+
+  const confirmed = ([raw, raw / 100] as const)
+    .filter((candidate) => candidate > 0 && candidate <= DIVIDEND_FORWARD_YIELD_MAX)
+    .map((candidate) => ({ candidate, ratio: candidate / reference }))
+    .filter(({ ratio }) => ratio >= 1 / YIELD_UNIT_TOLERANCE && ratio <= YIELD_UNIT_TOLERANCE)
+    // Both readings can never pass the same tolerance (they are 100× apart and
+    // the tolerance is below 10), but sort anyway so the result never depends on
+    // that argument holding.
+    .sort((a, b) => Math.abs(Math.log(a.ratio)) - Math.abs(Math.log(b.ratio)));
+
+  return confirmed[0]?.candidate ?? null;
+}
+
 /**
  * Map Yahoo's `chart(events:'div')` history + `quoteSummary` calendar/detail into
  * the {@link DividendEvents} contract. Per-share amounts are scaled out of any
@@ -355,19 +429,7 @@ export function mapDividendEvents(
 
   const detail = summary.summaryDetail ?? {};
 
-  // `forwardYield` is contracted as a FRACTION (0.015 ≈ 1.5 %). Yahoo has
-  // shipped both conventions for `dividendYield` over the years, and a percent
-  // value forwarded as a fraction renders 100× wrong wherever it is multiplied
-  // out. Anything outside the contract's range is therefore not a plausible
-  // yield but a unit mismatch: drop it (an absent figure, never a wrong one).
-  const yieldRaw = detail.dividendYield;
-  const forwardYield =
-    typeof yieldRaw === 'number' &&
-    Number.isFinite(yieldRaw) &&
-    yieldRaw >= 0 &&
-    yieldRaw <= DIVIDEND_FORWARD_YIELD_MAX
-      ? yieldRaw
-      : null;
+  const forwardYield = determineForwardYield(detail);
 
   // DECISION (#1741): the two annual-per-share figures Yahoo can supply are
   // DIFFERENT bases — `trailingAnnualDividendRate` is a realized TTM sum (it
@@ -397,8 +459,19 @@ export function mapDividendEvents(
 
 /**
  * Map Yahoo's `quoteSummary` calendar + earnings history into the
- * {@link EarningsEvents} contract: the earliest upcoming date (flagged
- * estimated) as `next`, and reported quarters as `recent` (ascending by date).
+ * {@link EarningsEvents} contract: the earliest calendar date (flagged
+ * estimated) as `next`, and reported quarters as `recent` (ascending).
+ *
+ * The two halves speak about different dates, and since #1790 the contract keeps
+ * them apart. `calendarEvents.earnings.earningsDate` is an ANNOUNCEMENT date, so
+ * it maps to `date` (`periodEnd` null) — and it is not filtered here for being
+ * in the past: this mapper is pure and has no clock, and the read paths that
+ * label it "next" own that guard (`marketIntelService.earningsCalendar`,
+ * `earningsReminder`, the asset page). `earningsHistory.history[].quarter` is a
+ * fiscal PERIOD END, so it maps to `periodEnd` with a null `date` — the
+ * announcement date of a past report is simply not in this payload, and
+ * inventing one by reusing the period end is what made a June-quarter report
+ * render as if it had been announced on 28 Jun.
  */
 export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEvents {
   const cal = summary.calendarEvents?.earnings ?? {};
@@ -411,6 +484,7 @@ export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEve
   const next: EarningsEvent | null = nextDate
     ? {
         date: nextDate,
+        periodEnd: null,
         epsEstimate: typeof cal.earningsAverage === 'number' ? cal.earningsAverage : null,
         epsActual: null,
         estimated,
@@ -419,13 +493,14 @@ export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEve
 
   const recent: EarningsEvent[] = (summary.earningsHistory?.history ?? [])
     .map((h) => ({
-      date: toIsoOrNull(h.quarter),
+      date: null,
+      periodEnd: toIsoOrNull(h.quarter),
       epsEstimate: typeof h.epsEstimate === 'number' ? h.epsEstimate : null,
       epsActual: typeof h.epsActual === 'number' ? h.epsActual : null,
       // History rows are reported actuals, not estimates.
       estimated: false,
     }))
-    .sort(byIsoDate);
+    .sort(byPeriodEnd);
 
   return { next, recent };
 }
