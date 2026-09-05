@@ -121,13 +121,22 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
     options?: SearchOptions,
   ): Promise<SearchResponse> {
     const query = normalizeQuery(rawQuery);
-    const matches = await assetRepo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT, {
-      includeCustomAssets,
-    });
+    const { matches, marketMatchTotal } = await assetRepo.searchCatalog(
+      userId,
+      query,
+      SEARCH_RESULT_LIMIT,
+      { includeCustomAssets },
+    );
     const results = matches.map(toResultItem);
 
-    const marketMatches = matches.filter((m) => m.ownerId === null).length;
-    const thin = options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD;
+    // Measured against the CATALOG, not the display window (#1794). The window
+    // is twenty rows in which market rows and the caller's own custom rows
+    // compete under one ranking (§6.2), so counting market rows inside it makes
+    // "the catalog is thin" mean "this caller owns a lot of custom assets
+    // matching this word": twenty custom "Gold bar #N" rows push every seeded
+    // gold row out of the window and every keystroke then charges the budget
+    // and fans out to providers for rows Postgres already holds.
+    const thin = options?.allowEnrichment !== false && marketMatchTotal < CATALOG_MISS_THRESHOLD;
     // The budget is spent per DISTINCT query per user per window (#1709). The
     // enrichment coalesces on the query itself, so distinct misses are exactly
     // the provider fan-out — and the global-catalog growth behind it — that no
