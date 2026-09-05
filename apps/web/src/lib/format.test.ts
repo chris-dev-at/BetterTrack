@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'vitest';
 
 import {
+  displayZoneDay,
+  displayZoneMonth,
   DISCREET_MASK,
   EM_DASH,
   formatDate,
@@ -445,5 +447,28 @@ describe('formatCompactMoney (#1741)', () => {
     expect(formatCompactMoney(0)).toBe(DISCREET_MASK);
     expect(formatCompactMoney(null)).toBe(EM_DASH);
     expect(formatCompactMoney(Number.NaN)).toBe(EM_DASH);
+  });
+});
+
+describe('the display zone day (#1792)', () => {
+  test('answers the day the ledger renders, not the UTC day', () => {
+    // 01:15 on 1 October 2026 in Vienna (CEST, UTC+2): formatDate already prints
+    // "1 Oct", so a date input pre-filled from the UTC day offered 30 September.
+    const firstHour = new Date('2026-09-30T23:15:00.000Z');
+    expect(displayZoneDay(firstHour)).toBe('2026-10-01');
+    expect(displayZoneMonth(firstHour)).toBe('2026-10');
+    expect(formatDate(firstHour.toISOString())).toContain('2026');
+
+    // Noon UTC — where every day the app writes is anchored — is the same
+    // calendar day in both clocks, which is what makes the anchor safe.
+    expect(displayZoneDay(new Date('2026-09-30T12:00:00.000Z'))).toBe('2026-09-30');
+    expect(displayZoneMonth(new Date('2026-09-30T12:00:00.000Z'))).toBe('2026-09');
+  });
+
+  test('is independent of the host timezone and of the active locale', () => {
+    setFormatLocale('en-US');
+    expect(displayZoneDay(new Date('2026-01-31T23:30:00.000Z'))).toBe('2026-02-01');
+    setFormatLocale('de-AT');
+    expect(displayZoneDay(new Date('2026-01-31T23:30:00.000Z'))).toBe('2026-02-01');
   });
 });
