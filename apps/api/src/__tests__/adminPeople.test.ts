@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ADMIN_USER_NOTE_MAX_LENGTH,
@@ -376,6 +376,35 @@ describe('GET /admin/users/:id/support — summaries without message bodies', ()
     expect(support.items.every((item) => item.unreadByAdmin)).toBe(true);
 
     expect(JSON.stringify(support)).not.toContain('PLEASE-DO-NOT-SHIP-THIS-BODY');
+  });
+});
+
+describe('Audit tab (§6.12) — a half-applied suspension is visible on the account', () => {
+  it('shows the interrupted suspension the operator has to finish', async () => {
+    const { agent } = await adminSession();
+    const person = await seedPerson({ email: 'halfway@test.dev', username: 'halfway' });
+
+    const revoke = vi
+      .spyOn(harness.ctx.apiKeys, 'revokeAllForUser')
+      .mockRejectedValueOnce(new Error('simulated revocation failure'));
+    expect(
+      (
+        await agent
+          .patch(`/api/v1/admin/users/${person.id}`)
+          .set(...XRW)
+          .send({ status: 'disabled' })
+      ).status,
+    ).toBe(500);
+    revoke.mockRestore();
+
+    // The operator's own 360 view is where they would look for it — an entry
+    // whose target is this account, saying it was suspended and not finished.
+    const tab = await agent.get(`/api/v1/admin/users/${person.id}/audit`);
+    expect(tab.status).toBe(200);
+    const entry = (tab.body.entries as Array<{ action: string; meta: unknown }>).find(
+      (row) => row.action === 'user.disabled',
+    );
+    expect(entry?.meta).toEqual({ cleanup: 'incomplete', step: 'api_keys' });
   });
 });
 

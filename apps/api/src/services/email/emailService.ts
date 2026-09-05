@@ -50,7 +50,13 @@ import type { MailTransport } from './transport';
 
 export interface EmailAuditTarget {
   actorId?: string | null;
-  targetType: 'user' | 'invite';
+  /**
+   * `registration_request` is a decision mail for an application that has no
+   * account: it keeps the failure audit on the request row (where the decision
+   * itself is recorded) instead of pointing a `user` target at an id no account
+   * will ever have.
+   */
+  targetType: 'user' | 'invite' | 'registration_request';
   targetId: string;
   ip?: string | null;
 }

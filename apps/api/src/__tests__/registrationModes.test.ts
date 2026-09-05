@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { publicRegistrationInfoResponseSchema } from '@bettertrack/contracts';
 
-import { registrationTokens } from '../data/schema';
+import { auditLog, emailLog, registrationTokens, users } from '../data/schema';
+import { ApiError } from '../errors';
 import { hashToken } from '../services/crypto/tokens';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import { createTestApp, type SeededAdmin, type TestHarness } from '../testing/createTestApp';
@@ -446,6 +447,159 @@ describe('approval queue — approve / reject (§13.4 V4-P4a)', () => {
     const dup = await register(harness.app, { ...applicant, username: 'other_name' });
     expect(dup.status).toBe(409);
     expect(dup.body.error.code).toBe('EMAIL_TAKEN');
+  });
+
+  // A decision is one-shot (§6.12). Two operators — or one operator in two tabs
+  // — reach the queue with the same application on screen; the loser must be
+  // refused, not allowed to mail a decision that contradicts the one that
+  // happened.
+  describe('a decision is a claim, not a read-then-write', () => {
+    async function fileApplication(): Promise<string> {
+      expect((await register(harness.app, applicant)).status).toBe(202);
+      const list = await adminAgent.get('/api/v1/admin/registration-requests');
+      return list.body.requests[0].id as string;
+    }
+
+    function decide(id: string, decision: 'approve' | 'reject') {
+      return adminAgent
+        .post(`/api/v1/admin/registration-requests/${id}/${decision}`)
+        .set(...XRW)
+        .send();
+    }
+
+    async function decisionMails(): Promise<string[]> {
+      const rows = await harness.db.select().from(emailLog);
+      return rows
+        .map((row) => row.template)
+        .filter((template) => template.startsWith('registration_'));
+    }
+
+    for (const order of [
+      ['approve', 'reject'],
+      ['reject', 'approve'],
+    ] as const) {
+      it(`refuses the loser of a concurrent ${order[0]} + ${order[1]}`, async () => {
+        const id = await fileApplication();
+
+        const [first, second] = await Promise.all([decide(id, order[0]), decide(id, order[1])]);
+        const statuses = [first.status, second.status].sort();
+        // Exactly one decision took effect; the loser is a clean refusal, never
+        // an unmapped 500.
+        expect(statuses[0]).toBe(200);
+        expect(statuses[1]).toBeGreaterThanOrEqual(400);
+        expect(statuses[1]).toBeLessThan(500);
+
+        // Exactly one decision mail, and it matches the decision that won.
+        const mails = await decisionMails();
+        expect(mails).toHaveLength(1);
+        const approved = (await login(harness.app, applicant.email, applicant.password)).status;
+        if (mails[0] === 'registration_approved') {
+          expect(approved).toBe(200);
+        } else {
+          // No account plus a rejection letter: the applicant cannot log in.
+          expect(approved).toBe(401);
+        }
+
+        // The queue is empty either way — the application was consumed once.
+        const after = await adminAgent.get('/api/v1/admin/registration-requests');
+        expect(after.body.requests).toHaveLength(0);
+      });
+    }
+
+    /**
+     * The tightest interleave there is: both callers read the application before
+     * either decides it. Driven at the service boundary because the HTTP stack's
+     * own round trips (session, limiter) can serialize two requests far enough
+     * apart that the loser never reaches the claim at all — which is exactly the
+     * window this refusal exists for.
+     */
+    function raceDecisions(id: string, decisions: ReadonlyArray<'approve' | 'reject'>) {
+      const actor = { id: admin.id };
+      return Promise.allSettled(
+        decisions.map((decision) =>
+          decision === 'approve'
+            ? harness.ctx.admin.approveRegistrationRequest(id, actor)
+            : harness.ctx.admin.rejectRegistrationRequest(id, actor),
+        ),
+      );
+    }
+
+    function refusal(results: PromiseSettledResult<unknown>[]) {
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      return (rejected[0] as PromiseRejectedResult).reason as ApiError;
+    }
+
+    it('two concurrent approvals create exactly one account and one approval mail', async () => {
+      const id = await fileApplication();
+
+      const loser = refusal(await raceDecisions(id, ['approve', 'approve']));
+      // A mapped conflict — not the raw `23505` the users uniqueness index would
+      // otherwise raise as a 500.
+      expect(loser).toBeInstanceOf(ApiError);
+      expect(loser.statusCode).toBe(409);
+      expect(loser.code).toBe('REGISTRATION_REQUEST_DECIDED');
+
+      expect(await decisionMails()).toEqual(['registration_approved']);
+      const accounts = await harness.db
+        .select()
+        .from(users)
+        .where(eq(users.email, applicant.email));
+      expect(accounts).toHaveLength(1);
+    });
+
+    it('two concurrent rejections send exactly one rejection mail', async () => {
+      const id = await fileApplication();
+
+      const loser = refusal(await raceDecisions(id, ['reject', 'reject']));
+      expect(loser.statusCode).toBe(409);
+      expect(await decisionMails()).toEqual(['registration_rejected']);
+    });
+
+    it('refuses the approval that loses to a simultaneous rejection, and vice versa', async () => {
+      for (const decisions of [
+        ['approve', 'reject'],
+        ['reject', 'approve'],
+      ] as const) {
+        const id = await fileApplication();
+        const loser = refusal(await raceDecisions(id, decisions));
+        expect(loser.statusCode).toBe(409);
+
+        // Exactly one decision, and the applicant's account state agrees with it.
+        const mails = await decisionMails();
+        expect(mails).toHaveLength(1);
+        const accounts = await harness.db
+          .select()
+          .from(users)
+          .where(eq(users.email, applicant.email));
+        expect(accounts.length).toBe(mails[0] === 'registration_approved' ? 1 : 0);
+
+        // Reset for the second ordering.
+        await harness.db.delete(emailLog);
+        await harness.db.delete(users).where(eq(users.email, applicant.email));
+      }
+    });
+
+    it('keeps the rejection mail audit on the request, not on a user id no account has', async () => {
+      const id = await fileApplication();
+      expect((await decide(id, 'reject')).status).toBe(200);
+
+      const entries = await harness.db.select().from(auditLog);
+      const rejection = entries.find((entry) => entry.action === 'registration.rejected');
+      expect(rejection?.targetType).toBe('registration_request');
+      expect(rejection?.targetId).toBe(id);
+      // Nothing about this decision is filed under a `user` target: the id
+      // belongs to a request, and a later account could otherwise claim it
+      // through the per-user audit read.
+      expect(entries.some((entry) => entry.targetType === 'user' && entry.targetId === id)).toBe(
+        false,
+      );
+      // The decision mail is logged against no account at all.
+      const [mail] = await harness.db.select().from(emailLog);
+      expect(mail?.template).toBe('registration_rejected');
+      expect(mail?.userId).toBeNull();
+    });
   });
 });
 
