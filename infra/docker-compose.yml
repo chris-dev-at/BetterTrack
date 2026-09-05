@@ -75,6 +75,12 @@ x-api-worker-environment: &api-worker-environment
   BT_PROBLEM_RETENTION_DAYS: '${BT_PROBLEM_RETENTION_DAYS:-90}'
   BT_USAGE_EVENT_RETENTION_DAYS: '${BT_USAGE_EVENT_RETENTION_DAYS:-180}'
 
+  # Account-export content ceiling (#1812). Deliberately blank by default so the
+  # built-in 128 MiB limit in the export service stays the single source of that
+  # number; set it only to lift an account whose server-resident vault documents
+  # legitimately exceed it, since the refusal is terminal.
+  BT_EXPORT_MAX_CONTENT_BYTES: '${BT_EXPORT_MAX_CONTENT_BYTES:-}'
+
   # Provider, request-budget, and feature rollout controls.
   PROVIDER_MAX_CONCURRENCY: '${PROVIDER_MAX_CONCURRENCY:-4}'
   PROVIDER_MIN_SPACING_MS: '${PROVIDER_MIN_SPACING_MS:-250}'

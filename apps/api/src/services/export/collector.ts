@@ -300,15 +300,36 @@ export async function collectUserExport(
     // The expense ledger is the expense area's analogue of `transactions`: an
     // append-only, user-scoped table this export now materializes in full
     // (V5-P9). The remaining expense/cash-fusion tables are per-user config
-    // (categories, rules, budgets, tags) or link rows whose count is the
-    // counted movements times the hand-created tags applied to each, so they
-    // stay out of the pre-flight for the same reason the other config tables
-    // do: the multiplier is a user action per row, not growth.
+    // (categories, rules, budgets, tags), so they stay out of the pre-flight:
+    // the multiplier there really is a user action per row, not growth.
     countRows(
       db
         .select({ value: count() })
         .from(expenseTransactions)
         .where(eq(expenseTransactions.userId, userId)),
+    ),
+    // `cash_movement_tags` is NOT one of those: it is machine-generated, at a
+    // multiple of the ledger. Every cash-movement INSERT gets a system tag
+    // stamped on it, and the first matching cash rule stamps its whole tag set
+    // on every noted movement — with the rule re-application explicitly
+    // uncapped over the whole back catalogue. Counting the movements alone
+    // therefore admitted an import of 900 000 movements with one 3-tag rule as
+    // 900 000 rows and then materialized ~3.6 M more, several times over
+    // (#1812). Counted through the same owner-scoped movement subquery the
+    // collection below uses.
+    countScoped(cleartextPortfolioIds, (ids) =>
+      db
+        .select({ value: count() })
+        .from(cashMovementTags)
+        .where(
+          inArray(
+            cashMovementTags.movementId,
+            db
+              .select({ id: portfolioCashMovements.id })
+              .from(portfolioCashMovements)
+              .where(inArray(portfolioCashMovements.portfolioId, ids)),
+          ),
+        ),
     ),
   ]);
   const totalGrowthRows = growthRows.reduce((sum, value) => sum + value, 0);

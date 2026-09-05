@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
+  EXPORT_PENDING_STALE_MS,
   PROFILE_ICON_IDS,
   type ExportRequestResponse,
   type ExportStatusResponse,
@@ -95,6 +96,22 @@ const TOO_LARGE_EXPORT: ExportStatusResponse = {
   error: 'EXPORT_TOO_LARGE',
 };
 
+/** A build in flight: the request form is hidden while it can still finish. */
+const PENDING_EXPORT: ExportStatusResponse = {
+  status: 'pending',
+  jobId: '00000000-0000-0000-0000-0000000000ac',
+  requestedAt: new Date(Date.now() - 5_000).toISOString(),
+  expiresAt: null,
+  sizeBytes: null,
+  error: null,
+};
+
+/** The same build, past the window in which anything could still build it. */
+const STALLED_EXPORT: ExportStatusResponse = {
+  ...PENDING_EXPORT,
+  requestedAt: new Date(Date.now() - EXPORT_PENDING_STALE_MS - 60_000).toISOString(),
+};
+
 const REQUEST_RESPONSE: ExportRequestResponse = {
   jobId: '00000000-0000-0000-0000-0000000000aa',
   status: 'pending',
@@ -172,6 +189,24 @@ describe('AccountPanel', () => {
 
     expect(await screen.findByText(/more data than a single export archive/i)).toBeInTheDocument();
     expect(screen.getByText(/daily allowance was not used/i)).toBeInTheDocument();
+  });
+
+  // #1812: a build the queue lost leaves a `pending` row nothing will finish.
+  // Hiding the request form on it made the export surface permanently dead.
+  test('offers the request form again once a pending export can no longer make progress', async () => {
+    vi.mocked(getDataExportStatus).mockResolvedValue(PENDING_EXPORT);
+    const inFlight = renderPanel();
+
+    expect(await screen.findByText(/Your export is being prepared/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm your password')).not.toBeInTheDocument();
+    inFlight.unmount();
+
+    vi.mocked(getDataExportStatus).mockResolvedValue(STALLED_EXPORT);
+    renderPanel();
+
+    expect(await screen.findByText(/never finished being prepared/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Confirm your password')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Request a new export' })).toBeInTheDocument();
   });
 
   test('renders identity rows; the base currency has its own picker (V3-P10d)', async () => {
