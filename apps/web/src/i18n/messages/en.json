@@ -3235,6 +3235,7 @@
       "one": "{{count}} member",
       "other": "{{count}} members"
     },
+    "groupsAtLimit": "This is all {{count}} of your groups — the maximum. Manage them on the People page.",
     "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
   },
   "watchlists": {
@@ -3586,6 +3587,8 @@
       "addMemberHeading": "Add a friend",
       "addMemberNone": "All your friends are already in this group.",
       "add": "Add",
+      "limitReached": "You've reached the maximum of {{count}} groups. Delete one to create another.",
+      "memberLimitReached": "This group is full — a group can hold at most {{count}} members.",
       "mutateError": "Could not update the group. Please try again.",
       "delete": "Delete group",
       "deleteTitle": "Delete “{{name}}”",

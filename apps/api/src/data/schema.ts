@@ -2623,7 +2623,12 @@ export const itemFollows = pgTable(
  * **Soft delete.** A removed comment keeps its row with `deleted_at` set and
  * `deleted_by` recording who removed it (its author, or the item owner who
  * moderates every comment). Reads filter deleted rows out; the row is retained
- * so a moderation action is auditable, and its reactions cascade away with it.
+ * so a moderation action is auditable and so a paged cursor still anchors on it.
+ * The CONTENT does not survive: the service clears `body` and deletes the
+ * comment's `item_reactions` rows in the same transaction as the tombstone
+ * stamp (#1780). The `comment_id` FK below does cascade, but only on a ROW
+ * delete — which the API performs solely in subject/account teardown — so the
+ * explicit purge, not the cascade, is what removes them here.
  */
 export const itemComments = pgTable(
   'item_comments',
