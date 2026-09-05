@@ -1163,6 +1163,94 @@ describe('rebalanceToTargets — the §14 entry-day rebalance primitive', () => 
       ),
     ).toThrow(/sum to a positive number/);
   });
+
+  it('conserves the total exactly, which is what the duplicate-key guard protects (#1811)', () => {
+    // A legal rebalance conserves the pool to the last bit…
+    const out = rebalanceToTargets(
+      [
+        { key: 'A', value: 60 },
+        { key: 'B', value: 40 },
+      ],
+      [
+        { key: 'A', weight: 30 },
+        { key: 'B', weight: 70 },
+      ],
+    );
+    expect(out.reduce((sum, h) => sum + h.value, 0)).toBeCloseTo(100, 12);
+
+    // …and the reason a duplicate key may not be tolerated is that the engine
+    // reads the result back through a Map keyed by the same key: two entries for
+    // one key would BOTH be read as the last one's value, so an 80/20 pool would
+    // come back as 2 × 80 — value created out of nothing. The guard refuses
+    // before any such holding exists.
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 100 }],
+        [
+          { key: 'A', weight: 80 },
+          { key: 'A', weight: 20 },
+        ],
+      ),
+    ).toThrow(/duplicate target key/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate positions (#1811)
+// ---------------------------------------------------------------------------
+
+describe('backtest — a duplicated position is a typed refusal, never a 500', () => {
+  /** The same asset listed twice, 60/40 — schema-valid before #1811. */
+  function duplicateInput(over: Partial<BacktestInput> = {}): BacktestInput {
+    return {
+      positions: [
+        { assetId: 'A', weight: 60 },
+        { assetId: 'A', weight: 40 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'AAA',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110, 120, 130]),
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+      ...over,
+    };
+  }
+
+  it('refuses the basket with a BacktestError naming the asset, in every mode × schedule', async () => {
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      for (const rebalance of ['none', 'monthly'] as const) {
+        await expect(backtest(duplicateInput({ mode, rebalance }))).rejects.toThrow(BacktestError);
+        await expect(backtest(duplicateInput({ mode, rebalance }))).rejects.toThrow(
+          /AAA appears more than once/,
+        );
+      }
+    }
+  });
+
+  it('refuses before the pipeline runs, so no schedule ever reaches the rebalance primitive', async () => {
+    // The pre-#1811 shape of the bug: `clip`+`none` took the buy-and-hold path
+    // and answered 200, while every other combination reached
+    // `rebalanceToTargets` with two cursors on one key and threw the plain Error
+    // a caller bug throws — a 500 from flipping a dropdown. One refusal now.
+    const converter = stubConverter();
+    await expect(
+      backtest(duplicateInput({ mode: 'clip', rebalance: 'none', converter })),
+    ).rejects.toThrow(BacktestError);
+    expect(converter.toBase).not.toHaveBeenCalled();
+  });
+
+  it('still backtests the merged weight — one position at the combined weight is fine', async () => {
+    const res = await backtest({
+      ...duplicateInput(),
+      positions: [{ assetId: 'A', weight: 100 }],
+    });
+    expect(res.series.at(-1)?.value).toBeCloseTo(130, 10);
+  });
 });
 
 // ---------------------------------------------------------------------------
