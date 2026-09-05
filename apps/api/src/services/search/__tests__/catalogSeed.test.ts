@@ -43,7 +43,7 @@ describe('seedAssetCatalog (§6.2(c) plumbing)', () => {
     expect(second).toEqual({ created: 0, existing: 2 });
 
     // Seeded rows are immediately searchable, catalog-first.
-    const matches = await repo.searchCatalog('00000000-0000-7000-8000-000000000000', 'dax', 20);
+    const { matches } = await repo.searchCatalog('00000000-0000-7000-8000-000000000000', 'dax', 20);
     expect(matches.map((m) => m.symbol)).toEqual(['^GDAXI']);
   });
 });

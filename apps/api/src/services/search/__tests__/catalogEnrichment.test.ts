@@ -18,6 +18,8 @@ import {
   ENRICH_GUARD_RUNNING,
   ENRICH_GUARD_TTL_SECONDS,
   ENRICH_MAX_HITS,
+  ENRICH_RUN_TIMEOUT_MS,
+  rankProviderHits,
 } from '../catalogEnrichment';
 
 /**
@@ -26,7 +28,10 @@ import {
  * provider failure.
  */
 
-async function makeEnrichment(controls: StubMarketDataControls = {}) {
+async function makeEnrichment(
+  controls: StubMarketDataControls = {},
+  timeouts: { runTimeoutMs?: number; settleTimeoutMs?: number } = {},
+) {
   const h = await createTestApp({ marketData: createStubMarketData() });
   const marketData = createStubMarketData(controls);
   const assetRepo = createAssetRepository(h.db);
@@ -40,6 +45,7 @@ async function makeEnrichment(controls: StubMarketDataControls = {}) {
     backfill,
     redis,
     logger: h.ctx.logger,
+    ...timeouts,
   });
   return { h, marketData, assetRepo, backfill, redis, enrichment };
 }
@@ -198,5 +204,108 @@ describe('catalogEnrichment', () => {
     expect(rows).toHaveLength(1);
     expect(await assetRepo.findGlobal('yahoo', 'AAPL')).not.toBeNull();
     expect(backfill.enqueued).toHaveLength(1);
+  });
+});
+
+describe('catalogEnrichment — hits are ranked before the cap (#1794)', () => {
+  it('orders provider hits by the catalog tiers, provider order breaking ties', () => {
+    const hits = [
+      providerHit({ providerRef: 'FUZZ', symbol: 'FUZZ', name: 'Something else' }),
+      providerHit({ providerRef: 'GOLDX', symbol: 'GOLDX', name: 'Prefix match' }),
+      providerHit({ providerRef: 'BARS', symbol: 'BARS', name: 'Gold Bars plc' }),
+      providerHit({ providerRef: 'GOLD', symbol: 'GOLD', name: 'Exact match' }),
+      providerHit({ providerRef: 'GOLDY', symbol: 'GOLDY', name: 'Second prefix' }),
+    ];
+
+    expect(rankProviderHits('gold', hits).map((hit) => hit.symbol)).toEqual([
+      'GOLD', // tier 0 — exact symbol
+      'GOLDX', // tier 1 — symbol prefix, first in provider order
+      'GOLDY', // tier 1 — symbol prefix, second in provider order
+      'BARS', // tier 2 — name substring
+      'FUZZ', // tier 3 — neither
+    ]);
+  });
+
+  it('admits an exact-symbol match that a provider returned past the cap', async () => {
+    // 40 hits in registration order with the exact match at position 25 — the
+    // scenario the raw `slice(0, ENRICH_MAX_HITS)` discarded.
+    const hits = Array.from({ length: 40 }, (_, i) =>
+      providerHit({ providerRef: `FUZZ${i}`, symbol: `FUZZ${i}`, name: `Fuzzy ${i}` }),
+    );
+    hits[24] = providerHit({ providerRef: 'GOLD', symbol: 'GOLD', name: 'Gold Corp' });
+    const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
+
+    await enrichment.request('gold');
+    await enrichment.settled();
+
+    // The one row the follow-up catalog read would rank tier 0 is in the catalog…
+    expect(await assetRepo.findGlobal('yahoo', 'GOLD')).not.toBeNull();
+    // …the cap still holds, and it now sheds the LOWEST-ranked hits.
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+    expect(await assetRepo.findGlobal('yahoo', 'FUZZ18')).not.toBeNull();
+    expect(await assetRepo.findGlobal('yahoo', 'FUZZ19')).toBeNull();
+  });
+});
+
+describe('catalogEnrichment — the guard is an owned lease (#1794)', () => {
+  it('bounds one run below the lease, so the guard cannot expire under its own holder', () => {
+    // The invariant behind "exactly one upstream fetch per key" (§5.3): a run
+    // that cannot outlive its lease cannot hand a second process the NX win.
+    expect(ENRICH_RUN_TIMEOUT_MS).toBeLessThan(ENRICH_GUARD_TTL_SECONDS * 1000);
+  });
+
+  it('a finisher whose lease expired cannot clobber the successor’s guard', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { enrichment, redis } = await makeEnrichment({
+      search: async () => {
+        await gate;
+        return [];
+      },
+    });
+
+    await expect(enrichment.request('bayn')).resolves.toBe(true);
+    // The lease expires mid-run and another process wins NX for the same query.
+    const successor = `${ENRICH_GUARD_RUNNING}:successor-process`;
+    await redis.set(enrichGuardKey('bayn'), successor, 'EX', ENRICH_GUARD_TTL_SECONDS);
+
+    release();
+    await enrichment.settled();
+
+    // The first finisher must NOT have flipped a lease it no longer owns…
+    expect(await redis.get(enrichGuardKey('bayn'))).toBe(successor);
+    // …so a third caller is still correctly told an enrichment is in flight,
+    // instead of reading `done` and reporting `enriching: false`.
+    await expect(enrichment.request('bayn')).resolves.toBe(true);
+  });
+
+  it('completes its own lease normally — the negative-cache window still applies', async () => {
+    const { enrichment, redis } = await makeEnrichment({ search: () => [] });
+
+    await expect(enrichment.request('bmw')).resolves.toBe(true);
+    await enrichment.settled();
+    expect(await redis.get(enrichGuardKey('bmw'))).toBe(ENRICH_GUARD_DONE);
+  });
+
+  it('bounds settled(), so one stuck enrichment cannot hang graceful shutdown', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { enrichment, marketData } = await makeEnrichment(
+      {
+        search: async () => {
+          await gate;
+          return [];
+        },
+      },
+      { settleTimeoutMs: 25, runTimeoutMs: 30_000 },
+    );
+
+    await enrichment.request('wedged');
+    // The provider never answers; the shutdown wait returns anyway.
+    await expect(enrichment.settled()).resolves.toBeUndefined();
+    expect(marketData.calls.search).toBe(1);
+
+    release();
+    await enrichment.settled();
   });
 });

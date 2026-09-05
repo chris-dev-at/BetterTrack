@@ -96,7 +96,7 @@ describe('seedAssetCatalog with the shipped list', () => {
       ['silver (eur)', 'XAGEUR=X'],
     ];
     for (const [query, expectedRef] of cases) {
-      const matches = await repo.searchCatalog(userId, query, 20);
+      const { matches } = await repo.searchCatalog(userId, query, 20);
       expect(matches.length, `no local results for "${query}"`).toBeGreaterThan(0);
       expect(
         matches.some((m) => m.providerRef === expectedRef),
