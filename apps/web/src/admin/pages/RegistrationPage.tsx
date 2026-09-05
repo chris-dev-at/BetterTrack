@@ -14,6 +14,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { ListPagination } from '../components/ListPagination';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
@@ -304,7 +305,12 @@ function ApprovalQueueSection({
   onDecided: () => void;
 }) {
   const t = useT();
-  const requests = useResource((signal) => api.listRegistrationRequests(signal), []);
+  // Bounded read (#1814): the queue used to arrive whole, however long it was.
+  const [offset, setOffset] = useState(0);
+  const requests = useResource(
+    (signal) => api.listRegistrationRequests({ offset }, signal),
+    [offset],
+  );
   const decide = useAdminMutation(
     (id: string, decision: 'approve' | 'reject') =>
       decision === 'approve'
@@ -324,6 +330,7 @@ function ApprovalQueueSection({
   );
   const hintKey = activityHintKey(active, 'admin.settings.approvals.inactive');
   const rows = requests.data?.requests ?? [];
+  const page = requests.data?.page ?? null;
 
   return (
     <Panel padded={false}>
@@ -405,6 +412,7 @@ function ApprovalQueueSection({
           </tbody>
         </DataTable>
       )}
+      <ListPagination page={page} rowCount={rows.length} onOffset={setOffset} />
       <div className={cx('px-4 py-2.5', EDGE_TOP)}>
         <p className={TEXT_MUTED}>{t('admin.registration.decisionEffect')}</p>
       </div>
@@ -419,7 +427,9 @@ function ApprovalQueueSection({
  */
 function RegistrationTokensSection({ active }: { active: SectionActivity }) {
   const t = useT();
-  const tokens = useResource((signal) => api.listRegistrationTokens(signal), []);
+  // Bounded read (#1814): exhausted and revoked tokens are never pruned.
+  const [offset, setOffset] = useState(0);
+  const tokens = useResource((signal) => api.listRegistrationTokens({ offset }, signal), [offset]);
 
   const [label, setLabel] = useState('');
   const [maxUses, setMaxUses] = useState('1');
@@ -437,6 +447,8 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
         ...(days !== undefined && Number.isFinite(days) ? { expiresInDays: days } : {}),
       });
       setCreatedUrl(res.registerUrl);
+      // The new token is the newest row, so page 1 is where it will be.
+      setOffset(0);
       setLabel('');
       setMaxUses('1');
       setExpiresInDays('');
@@ -464,6 +476,7 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
 
   const hintKey = activityHintKey(active, 'admin.settings.tokens.inactive');
   const rows = tokens.data?.tokens ?? [];
+  const page = tokens.data?.page ?? null;
 
   function onCreate(event: FormEvent) {
     event.preventDefault();
@@ -617,6 +630,7 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
           </tbody>
         </DataTable>
       )}
+      <ListPagination page={page} rowCount={rows.length} onOffset={setOffset} />
       <div className={cx('px-4 py-2.5', EDGE_TOP)}>
         <p className={TEXT_MUTED}>{t('admin.registration.tokenUrlOnce')}</p>
       </div>

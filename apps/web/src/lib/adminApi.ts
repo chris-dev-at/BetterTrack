@@ -122,6 +122,7 @@ import {
   type RegistrationRequestListResponse,
   type RegistrationTokenListResponse,
   type ResetPasswordResponse,
+  type AdminListQuery,
   type AdminUserListQuery,
   type AdminUserAccessResponse,
   type AdminUserSharingResponse,
@@ -333,8 +334,14 @@ export async function deleteUser(id: string, confirmUsername: string): Promise<v
 
 // --- Admin: invites -------------------------------------------------------
 
-export async function listInvites(signal?: AbortSignal): Promise<AdminInviteListResponse> {
-  const data = await apiRequest<unknown>('/admin/invites', { signal });
+export async function listInvites(
+  params: Partial<AdminListQuery> = {},
+  signal?: AbortSignal,
+): Promise<AdminInviteListResponse> {
+  const data = await apiRequest<unknown>('/admin/invites', {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
   return adminInviteListResponseSchema.parse(data);
 }
 
@@ -351,9 +358,13 @@ export async function revokeInvite(id: string): Promise<void> {
 // --- Admin: registration tokens + approval queue (§6.12, §13.4 V4-P4a) -----
 
 export async function listRegistrationTokens(
+  params: Partial<AdminListQuery> = {},
   signal?: AbortSignal,
 ): Promise<RegistrationTokenListResponse> {
-  const data = await apiRequest<unknown>('/admin/registration-tokens', { signal });
+  const data = await apiRequest<unknown>('/admin/registration-tokens', {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
   return registrationTokenListResponseSchema.parse(data);
 }
 
@@ -372,9 +383,13 @@ export async function revokeRegistrationToken(id: string): Promise<void> {
 }
 
 export async function listRegistrationRequests(
+  params: Partial<AdminListQuery> = {},
   signal?: AbortSignal,
 ): Promise<RegistrationRequestListResponse> {
-  const data = await apiRequest<unknown>('/admin/registration-requests', { signal });
+  const data = await apiRequest<unknown>('/admin/registration-requests', {
+    query: { limit: params.limit, offset: params.offset },
+    signal,
+  });
   return registrationRequestListResponseSchema.parse(data);
 }
 
@@ -919,8 +934,20 @@ export async function deleteApiKeyTier(id: string): Promise<void> {
   await apiRequest<unknown>(`/admin/api-key-tiers/${id}`, { method: 'DELETE' });
 }
 
-export async function listAdminApiKeys(signal?: AbortSignal): Promise<AdminApiKeyListResponse> {
-  const data = await apiRequest<unknown>('/admin/api-keys', { signal });
+export async function listAdminApiKeys(
+  params: { limit?: number; offset?: number; includeRevoked?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<AdminApiKeyListResponse> {
+  const data = await apiRequest<unknown>('/admin/api-keys', {
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      // Omitted unless asked for: the contract's default already excludes
+      // revoked keys, and a literal "false" must never be coerced to true.
+      includeRevoked: params.includeRevoked ? 'true' : undefined,
+    },
+    signal,
+  });
   return adminApiKeyListResponseSchema.parse(data);
 }
 

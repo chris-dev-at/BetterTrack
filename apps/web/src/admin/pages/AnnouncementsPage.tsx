@@ -9,9 +9,10 @@ import {
 } from '@bettertrack/contracts';
 
 import { useI18n, useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
 import {
@@ -43,8 +44,15 @@ const SEVERITY_TONE: Record<AnnouncementSeverity, 'neutral' | 'amber' | 'red'> =
   critical: 'red',
 };
 
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
+/**
+ * Displayable failures are catalog copy, never the server's envelope (#1814):
+ * API envelopes are authored in English and are not locale-aware, so rendering
+ * `err.message` leaked sentences like "The mail service is unavailable." into a
+ * German console. The structural outcomes (auth loss, the 2FA trap) are handled
+ * by `useAdminCallFailure` before this is reached.
+ */
+function errorMessage(t: TranslateFn): string {
+  return t('common.genericError');
 }
 
 /** ISO string → the `YYYY-MM-DDTHH:mm` value <input type=datetime-local> wants. */
@@ -105,6 +113,7 @@ function fromAnnouncement(row: Announcement): ComposerState {
 export function AnnouncementsPage() {
   const t = useT();
   const { locale } = useI18n();
+  const onFailure = useAdminCallFailure();
   const announcements = useResource((signal) => api.listAnnouncements(signal), []);
   const [composer, setComposer] = useState<ComposerState>(EMPTY_COMPOSER);
   const [formError, setFormError] = useState<string | null>(null);
@@ -162,7 +171,8 @@ export function AnnouncementsPage() {
       resetComposer();
       announcements.reload();
     } catch (err) {
-      setFormError(errorMessage(err));
+      // Create has no row id; edit addresses one a colleague may have deleted.
+      if (!onFailure(err, composer.id ? 'surface' : 'session')) setFormError(errorMessage(t));
     } finally {
       setSubmitting(false);
     }
@@ -175,7 +185,7 @@ export function AnnouncementsPage() {
       await api.updateAnnouncement(row.id, { active: !row.active });
       announcements.reload();
     } catch (err) {
-      setRowError(errorMessage(err));
+      if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
     } finally {
       setBusyId(null);
     }
@@ -192,7 +202,7 @@ export function AnnouncementsPage() {
       if (composer.id === row.id) resetComposer();
       setDeleting(null);
     } catch (err) {
-      setRowError(errorMessage(err));
+      if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
     } finally {
       setBusyId(null);
     }

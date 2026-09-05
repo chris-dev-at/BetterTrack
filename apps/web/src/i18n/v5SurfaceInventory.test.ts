@@ -66,6 +66,7 @@ function baseline(value: string): string[] {
 const EXPECTED_V5_COMPONENTS = baseline(`
 admin/AdminApp.tsx
 admin/components/AdminLayout.tsx
+admin/components/ListPagination.tsx
 admin/pages/AccountDefaultsPage.tsx
 admin/pages/AiSettingsPage.tsx
 admin/pages/ApiKeysPage.tsx
