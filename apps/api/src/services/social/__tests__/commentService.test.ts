@@ -55,6 +55,11 @@ function makeHarness(paranoid?: ParanoidModeGuard) {
   const reactions = {
     toggleItem: vi.fn<ItemReactionRepository['toggleItem']>().mockResolvedValue(undefined),
     toggleComment: vi.fn<ItemReactionRepository['toggleComment']>().mockResolvedValue(undefined),
+    removeItem: vi.fn<ItemReactionRepository['removeItem']>().mockResolvedValue(false),
+    removeComment: vi.fn<ItemReactionRepository['removeComment']>().mockResolvedValue(false),
+    deleteForComment: vi
+      .fn<ItemReactionRepository['deleteForComment']>()
+      .mockResolvedValue(undefined),
     summaryForItem: vi.fn<ItemReactionRepository['summaryForItem']>().mockResolvedValue([]),
     summaryForComment: vi.fn<ItemReactionRepository['summaryForComment']>().mockResolvedValue([]),
     summaryForComments: vi
@@ -298,7 +303,11 @@ describe('commentService — audience and moderation boundaries', () => {
     await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
 
     expectNoAudienceRead(harness);
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(
+      COMMENT_ID,
+      AUTHOR,
+      expect.any(Function),
+    );
   });
 
   it('lets an author delete their own comment while the ITEM OWNER is paranoid', async () => {
@@ -309,7 +318,11 @@ describe('commentService — audience and moderation boundaries', () => {
 
     await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(
+      COMMENT_ID,
+      AUTHOR,
+      expect.any(Function),
+    );
   });
 
   it('still refuses a paranoid viewer their own delete (their own capability is off)', async () => {
@@ -331,7 +344,11 @@ describe('commentService — audience and moderation boundaries', () => {
 
     await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(
+      COMMENT_ID,
+      AUTHOR,
+      expect.any(Function),
+    );
   });
 
   it('gives a non-author the uniform 404 on an orphaned comment', async () => {
@@ -451,7 +468,11 @@ describe('commentService — audience and moderation boundaries', () => {
 
     await expect(harness.service.deleteComment(OWNER, COMMENT_ID)).resolves.toBeUndefined();
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, OWNER);
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(
+      COMMENT_ID,
+      OWNER,
+      expect.any(Function),
+    );
   });
 
   it('does not let a third admitted viewer delete another author’s comment', async () => {
@@ -486,7 +507,11 @@ describe('commentService — audience and moderation boundaries', () => {
 
     await expectNotFound(harness.service.deleteComment(AUTHOR, COMMENT_ID), 'COMMENT_NOT_FOUND');
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(COMMENT_ID, AUTHOR);
+    expect(harness.comments.softDelete).toHaveBeenCalledWith(
+      COMMENT_ID,
+      AUTHOR,
+      expect.any(Function),
+    );
   });
 
   for (const [label, ref] of [
@@ -550,5 +575,96 @@ describe('commentService — audience and moderation boundaries', () => {
 
     expect(harness.reactions.toggleItem).toHaveBeenCalledTimes(1);
     expect(harness.reactions.summaryForItem).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The two rights that outlive the item's current visibility (#1780): the
+ * author's cleanup over their own comment already existed; a reactor's over
+ * their own reaction is its missing counterpart. Neither may become a way back
+ * into a thread the viewer is no longer admitted to.
+ */
+describe('reaction withdrawal survives losing access, adding one does not', () => {
+  it('removes the viewer’s own item reaction with no audience read admitting them', async () => {
+    const harness = makeHarness();
+    // Nobody is admitted: `resolveAccess` refuses for every kind.
+    harness.reactions.removeItem.mockResolvedValue(true);
+    harness.reactions.summaryForItem.mockResolvedValue([]);
+
+    await expect(
+      harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
+    ).resolves.toEqual({ reactions: [] });
+
+    expect(harness.reactions.removeItem).toHaveBeenCalledWith(
+      VIEWER,
+      'portfolio',
+      SUBJECT_ID,
+      '🔥',
+    );
+    // No add, and the aggregate is filtered to the viewer's own rows — a
+    // cleanup must not report activity on an item they cannot read.
+    expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
+    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(VIEWER, 'portfolio', SUBJECT_ID, [
+      VIEWER,
+    ]);
+  });
+
+  it('removes the viewer’s own comment reaction the same way', async () => {
+    const harness = makeHarness();
+    harness.comments.getById.mockResolvedValue(commentRef());
+    harness.reactions.removeComment.mockResolvedValue(true);
+    harness.reactions.summaryForComment.mockResolvedValue([]);
+
+    await expect(harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍')).resolves.toEqual({
+      reactions: [],
+    });
+
+    expect(harness.reactions.removeComment).toHaveBeenCalledWith(VIEWER, COMMENT_ID, '👍');
+    expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
+    expect(harness.reactions.summaryForComment).toHaveBeenCalledWith(VIEWER, COMMENT_ID, [VIEWER]);
+  });
+
+  it('still refuses a NEW reaction from someone the item does not admit', async () => {
+    const harness = makeHarness();
+    harness.comments.getById.mockResolvedValue(commentRef());
+
+    await expectNotFound(
+      harness.service.toggleItemReaction(OUTSIDER, 'portfolio', SUBJECT_ID, '🔥'),
+      'NOT_FOUND',
+    );
+    await expectNotFound(
+      harness.service.toggleCommentReaction(OUTSIDER, COMMENT_ID, '👍'),
+      'COMMENT_NOT_FOUND',
+    );
+
+    expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
+    expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
+  });
+
+  it('keeps the ordinary toggle intact for an admitted viewer', async () => {
+    const harness = makeHarness();
+    admit(harness, 'portfolio', [VIEWER]);
+    harness.reactions.summaryForItem.mockResolvedValue([{ emoji: '🔥', count: 2, reacted: true }]);
+
+    // `removeItem` finds nothing, so this is an ADD — through the audience gate,
+    // answering with the item's full aggregate exactly as before.
+    await expect(
+      harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
+    ).resolves.toEqual({ reactions: [{ emoji: '🔥', count: 2, reacted: true }] });
+    expect(harness.reactions.toggleItem).toHaveBeenCalledTimes(1);
+    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(VIEWER, 'portfolio', SUBJECT_ID);
+  });
+
+  it('purges the comment’s reactions in the soft-delete transaction', async () => {
+    const harness = makeHarness();
+    harness.comments.getById.mockResolvedValue(commentRef());
+
+    await harness.service.deleteComment(AUTHOR, COMMENT_ID);
+
+    const purge = harness.comments.softDelete.mock.calls[0]![2];
+    expect(purge).toBeTypeOf('function');
+    const tx = {} as never;
+    await purge!(tx);
+    expect(harness.reactions.deleteForComment).toHaveBeenCalledWith(COMMENT_ID, tx);
   });
 });

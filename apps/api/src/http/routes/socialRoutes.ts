@@ -163,7 +163,11 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // 404s (no leak). Only accepted friends can be added.
 
   // GET /social/groups — the caller's own groups, each with its live roster.
-  router.get('/groups', async (req, res) => {
+  // Cost-metered (§10 COST TABLE, #1780): one request hydrates EVERY circle of
+  // the caller together with EVERY circle's roster, and both the AudiencePicker
+  // and /people perform it. The ceilings bound how large that fan-out can get;
+  // the meter prices what is left, like `socialShared` below.
+  router.get('/groups', limiters.cost('socialGroups'), async (req, res) => {
     const result = await ctx.social.listGroups(req.authUser!.id);
     res.json(result);
   });
@@ -183,6 +187,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // PATCH /social/groups/:groupId — rename a group. 404 when not the caller's.
   router.patch(
     '/groups/:groupId',
+    limiters.social,
     validateParams(groupIdParamSchema),
     validateBody(renameFriendGroupRequestSchema),
     async (req, res) => {
@@ -195,11 +200,16 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
 
   // DELETE /social/groups/:groupId — delete a group. Shares referencing it then
   // resolve to nobody (fail-closed, §6.9). 404 when not the caller's.
-  router.delete('/groups/:groupId', validateParams(groupIdParamSchema), async (req, res) => {
-    const { groupId } = req.valid?.params as GroupIdParam;
-    await ctx.social.deleteGroup(req.authUser!.id, groupId);
-    res.status(204).send();
-  });
+  router.delete(
+    '/groups/:groupId',
+    limiters.social,
+    validateParams(groupIdParamSchema),
+    async (req, res) => {
+      const { groupId } = req.valid?.params as GroupIdParam;
+      await ctx.social.deleteGroup(req.authUser!.id, groupId);
+      res.status(204).send();
+    },
+  );
 
   // POST /social/groups/:groupId/members — add an accepted friend (idempotent).
   // 404 when the group isn't the caller's; 400 when the user isn't their friend.
@@ -219,6 +229,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // DELETE /social/groups/:groupId/members/:userId — remove a member.
   router.delete(
     '/groups/:groupId/members/:userId',
+    limiters.social,
     validateParams(groupMemberParamSchema),
     async (req, res) => {
       const { groupId, userId } = req.valid?.params as GroupMemberParam;
@@ -473,11 +484,16 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
 
   // DELETE /social/comments/:commentId — soft-delete a comment. The author, or
   // the item owner moderating any comment; nobody else (404, never 403).
-  router.delete('/comments/:commentId', validateParams(commentIdParamSchema), async (req, res) => {
-    const { commentId } = req.valid?.params as CommentIdParam;
-    await ctx.comments.deleteComment(req.authUser!.id, commentId);
-    res.status(204).send();
-  });
+  router.delete(
+    '/comments/:commentId',
+    limiters.social,
+    validateParams(commentIdParamSchema),
+    async (req, res) => {
+      const { commentId } = req.valid?.params as CommentIdParam;
+      await ctx.comments.deleteComment(req.authUser!.id, commentId);
+      res.status(204).send();
+    },
+  );
 
   // POST /social/comments/:commentId/reactions — toggle a curated emoji on a comment.
   router.post(

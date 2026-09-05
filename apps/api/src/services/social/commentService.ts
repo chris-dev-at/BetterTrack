@@ -237,6 +237,37 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
   }
 
   /**
+   * Take back the viewer's OWN reaction, if they currently hold one — the
+   * cleanup right that mirrors "the author deletes their own comment regardless
+   * of current visibility" (see `deleteComment`). Without it, an owner narrowing
+   * the audience strands the reaction forever: the toggle 404s and no other
+   * removal path exists (#1780).
+   *
+   * The delete is scoped to (viewer, target, emoji), so it can only ever reach a
+   * row the viewer authored, and its own result — not a preceding read — decides
+   * whether this call was a withdrawal. The viewer is the only principal locked:
+   * exactly like the own-comment delete, an owner's account mode must neither
+   * block nor disclose itself through someone else's cleanup.
+   */
+  async function withdrawOwnReaction(
+    viewerId: string,
+    remove: () => Promise<boolean>,
+  ): Promise<boolean> {
+    return deps.paranoid ? deps.paranoid.runAllowedMany([viewerId], 'sharing', remove) : remove();
+  }
+
+  /**
+   * The answer to a withdrawal by someone the item no longer admits: the
+   * viewer's OWN remaining reactions, through the same `actorIds` filter
+   * paranoid mode applies. Reporting the target's full aggregate would disclose
+   * activity on an item they can no longer read — the cleanup gives back a
+   * removal right, not a read.
+   */
+  function ownReactionsOnly(aggregates: ReactionAggregate[]): ReactionListResponse {
+    return { reactions: toReactionSummaries(aggregates) };
+  }
+
+  /**
    * The read side of a thread — access resolution, the portfolio boundary, and
    * (in paranoid mode) the participant discovery + lock dance — done ONCE for
    * both the page read and the collapsed summary. `allowedActorIds` is undefined
@@ -468,7 +499,14 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
             const isAuthor = comment.authorId === viewerId;
             const isOwner = ownerId !== undefined && ownerId === viewerId;
             if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
-            const removed = await comments.softDelete(commentId, viewerId);
+            // The tombstone stays (thread continuity + an auditable
+            // `deleted_by`), but the text and the comment's reactions go with
+            // it, in ONE transaction (#1780): a moderated body retained forever
+            // is not moderation, and reactions on a tombstone are unreachable
+            // through every read AND unremovable through the toggle.
+            const removed = await comments.softDelete(commentId, viewerId, (tx) =>
+              reactions.deleteForComment(commentId, tx),
+            );
             if (!removed) throw COMMENT_NOT_FOUND();
           };
           if (!deps.paranoid) return remove();
@@ -488,9 +526,17 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
 
     async toggleItemReaction(viewerId, kind, subjectId, emoji) {
       return withAllowedPortfolioSubject(viewerId, kind, subjectId, THREAD_NOT_FOUND, async () => {
+        const withdrawn = await withdrawOwnReaction(viewerId, () =>
+          reactions.removeItem(viewerId, kind, subjectId, emoji),
+        );
+        if (withdrawn && !(await resolveAccess(viewerId, kind, subjectId))) {
+          return ownReactionsOnly(
+            await reactions.summaryForItem(viewerId, kind, subjectId, [viewerId]),
+          );
+        }
         if (!deps.paranoid) {
           return withLockedAccess(viewerId, kind, subjectId, async () => {
-            await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+            if (!withdrawn) await reactions.toggleItem(viewerId, kind, subjectId, emoji);
             const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
             return { reactions: toReactionSummaries(summary) };
           });
@@ -502,7 +548,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
           subjectId,
           reactionActorIds,
           async (_access, allowedActorIds) => {
-            await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+            if (!withdrawn) await reactions.toggleItem(viewerId, kind, subjectId, emoji);
             const summary = await reactions.summaryForItem(
               viewerId,
               kind,
@@ -524,6 +570,14 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
         candidate.subjectId,
         COMMENT_NOT_FOUND,
         async () => {
+          const withdrawn = await withdrawOwnReaction(viewerId, () =>
+            reactions.removeComment(viewerId, commentId, emoji),
+          );
+          if (withdrawn && !(await resolveAccess(viewerId, candidate.kind, candidate.subjectId))) {
+            return ownReactionsOnly(
+              await reactions.summaryForComment(viewerId, commentId, [viewerId]),
+            );
+          }
           if (!deps.paranoid) {
             // Reacting needs the SAME access as reading the thread the comment lives in.
             return withLockedAccess(
@@ -531,7 +585,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
               candidate.kind,
               candidate.subjectId,
               async () => {
-                await reactions.toggleComment(viewerId, commentId, emoji);
+                if (!withdrawn) await reactions.toggleComment(viewerId, commentId, emoji);
                 const summary = await reactions.summaryForComment(viewerId, commentId);
                 return { reactions: toReactionSummaries(summary) };
               },
@@ -555,7 +609,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
               ) {
                 throw COMMENT_NOT_FOUND();
               }
-              await reactions.toggleComment(viewerId, commentId, emoji);
+              if (!withdrawn) await reactions.toggleComment(viewerId, commentId, emoji);
               const summary = await reactions.summaryForComment(
                 viewerId,
                 commentId,

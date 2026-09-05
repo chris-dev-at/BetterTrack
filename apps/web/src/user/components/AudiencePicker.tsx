@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  FRIEND_GROUPS_MAX,
   SHARE_AUDIENCES,
   audienceTransitionRequiresConfirmation,
   type ShareAudience,
@@ -50,6 +51,9 @@ export interface AudiencePickerProps {
    */
   mirrorSyncedCopy?: boolean;
 }
+
+/** Cache window for the friend-circle list — the same one `/people` uses. */
+const GROUPS_STALE_MS = 30_000;
 
 // ── Tier iconography (inline SVG, dependency-free — matches the app house style) ─
 function TierIcon({ audience, className }: { audience: ShareAudience; className?: string }) {
@@ -164,6 +168,13 @@ export function AudiencePicker({
   const groupsQuery = useQuery({
     queryKey: ['social', 'groups'],
     queryFn: ({ signal }) => listGroups(signal),
+    // The circle list is the ONE read here that is neither the item's audience
+    // nor the friend roster the audience is checked against — it only names the
+    // circles to choose from, and it is the read every picker open used to
+    // re-issue (#1780). Sharing the /people cache window keeps opening five
+    // share sheets in a minute from costing five group+roster fan-outs. The
+    // privacy-critical reads beside it stay uncached.
+    staleTime: GROUPS_STALE_MS,
   });
 
   const [selected, setSelected] = useState<ShareAudience | null>(null);
@@ -528,6 +539,15 @@ export function AudiencePicker({
                     );
                   })}
                 </ul>
+                {groups.length >= FRIEND_GROUPS_MAX ? (
+                  // One line, only at the ceiling: the list is the caller's
+                  // whole set of circles, and the bounded read cannot serve more
+                  // than the cap (#1780). Silently showing a truncated list would
+                  // let an owner share to the wrong circle.
+                  <p className="bt-meta">
+                    {t('sharing.groupsAtLimit', { count: FRIEND_GROUPS_MAX })}
+                  </p>
+                ) : null}
                 <Alert tone="info">{t('sharing.groupConfirm')}</Alert>
               </>
             )}

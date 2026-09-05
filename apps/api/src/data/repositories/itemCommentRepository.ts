@@ -203,14 +203,32 @@ export function createItemCommentRepository(db: Database) {
      * Soft-delete one LIVE comment, stamping who removed it. Returns whether a
      * row transitioned (a second delete is a no-op → false). The caller has
      * already proven the deleter may moderate (author or item owner).
+     *
+     * The tombstone keeps thread continuity — a paged cursor still anchors on
+     * the row, and `deleted_by` keeps the moderation auditable — but the CONTENT
+     * goes (#1780): the body is cleared and `purgeDependents` removes the
+     * comment's reactions, both inside ONE transaction with the tombstone stamp.
+     * Retaining the exact text an owner moderated away, with no purge and no
+     * retention sweep, is not what a tombstone is for; and the reaction rows,
+     * which every read filters out through the tombstone, would otherwise be
+     * permanently unreachable AND unremovable — the schema's promised
+     * `comment_id` FK cascade only fires on a ROW delete the API never performs.
      */
-    async softDelete(commentId: string, deletedBy: string): Promise<boolean> {
-      const rows = await db
-        .update(itemComments)
-        .set({ deletedAt: new Date(), deletedBy })
-        .where(and(eq(itemComments.id, commentId), isNull(itemComments.deletedAt)))
-        .returning({ id: itemComments.id });
-      return rows.length > 0;
+    async softDelete(
+      commentId: string,
+      deletedBy: string,
+      purgeDependents?: (tx: Database) => Promise<void>,
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .update(itemComments)
+          .set({ deletedAt: new Date(), deletedBy, body: '' })
+          .where(and(eq(itemComments.id, commentId), isNull(itemComments.deletedAt)))
+          .returning({ id: itemComments.id });
+        if (rows.length === 0) return false;
+        await purgeDependents?.(tx);
+        return true;
+      });
     },
   };
 }
