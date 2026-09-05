@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Logger } from '../../../logger';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
-import { createLiveModeService, type LiveModeService } from '../liveModeService';
+import {
+  createLiveModeService,
+  liveLoopLeaderKey,
+  liveLoopProcessesKey,
+  type LiveModeService,
+} from '../liveModeService';
 import {
   fenceRetiredLiveAssets,
   liveAssetRetirementStateKey,
@@ -285,6 +290,76 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     await new Promise((resolve) => setTimeout(resolve, 70));
     expect(firstStub.calls.poll).toBe(firstFrozen);
     expect(secondStub.calls.poll).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps one provider loop when peer clocks are skewed by seconds', async () => {
+    const behindStub = createStubMarketData({ poll: () => quoteResult(100) });
+    const aheadStub = createStubMarketData({ poll: () => quoteResult(200) });
+    const coordination = {
+      intervalMs: 20,
+      maxIntervalMs: 80,
+      coordinationIntervalMs: 10,
+      // Longer than the whole run: the owner keeps refreshing, so no honest
+      // failover is due and any second loop can only come from clock mixing.
+      leaderLeaseTtlMs: 5_000,
+    };
+    const { service: behind } = makeService(behindStub, {
+      ...coordination,
+      instanceId: 'api-process-behind',
+    });
+    // A routine container-clock offset — the peer's wall clock runs 8 s fast.
+    const { service: ahead } = makeService(aheadStub, {
+      ...coordination,
+      instanceId: 'api-process-ahead',
+      now: () => Date.now() + 8_000,
+    });
+
+    await behind.watch(ASSET_ID, REF, 20, false);
+    await vi.waitFor(() => expect(behindStub.calls.poll).toBeGreaterThanOrEqual(2));
+    await ahead.watch(ASSET_ID, REF, 20, true);
+
+    // The fast peer coordinates repeatedly (10 ms cadence). Reaping the owner's
+    // registration against its own clock would evict a lease Redis still holds
+    // and start a second upstream loop for the same asset.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(aheadStub.calls.poll).toBe(0);
+    expect(behindStub.calls.poll).toBeGreaterThanOrEqual(2);
+    expect(await redis.get(liveLoopLeaderKey(ASSET_ID))).not.toBeNull();
+  });
+
+  it('never deletes a peer leader key whose Redis lease is still live', async () => {
+    const ownerStub = createStubMarketData({ poll: () => quoteResult(100) });
+    const peerStub = createStubMarketData({ poll: () => quoteResult(200) });
+    const { service: owner } = makeService(ownerStub, {
+      intervalMs: 20,
+      maxIntervalMs: 80,
+      // No further coordination from the owner during the assertion window.
+      coordinationIntervalMs: 5_000,
+      leaderLeaseTtlMs: 5_000,
+      instanceId: 'api-process-owner',
+    });
+    const { service: peer } = makeService(peerStub, {
+      intervalMs: 20,
+      maxIntervalMs: 80,
+      coordinationIntervalMs: 10,
+      leaderLeaseTtlMs: 5_000,
+      instanceId: 'api-process-peer',
+    });
+
+    await owner.watch(ASSET_ID, REF, 20, false);
+    await vi.waitFor(() => expect(ownerStub.calls.poll).toBeGreaterThanOrEqual(1));
+    const leader = await redis.get(liveLoopLeaderKey(ASSET_ID));
+    expect(leader).not.toBeNull();
+
+    // The owner's registration is gone from the ZSET (a reap on a peer's clock,
+    // a trimmed key) while its leader lease is untouched and far from expiry.
+    await redis.zrem(liveLoopProcessesKey(ASSET_ID), leader!);
+    await peer.watch(ASSET_ID, REF, 20, true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(await redis.get(liveLoopLeaderKey(ASSET_ID))).toBe(leader);
+    expect(await redis.pttl(liveLoopLeaderKey(ASSET_ID))).toBeGreaterThan(0);
+    expect(peerStub.calls.poll).toBe(0);
   });
 
   it('fences an overdue owner tick after lease-expiry takeover', async () => {
