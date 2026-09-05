@@ -6,6 +6,7 @@ import {
   ADMIN_USER_NOTE_PAGE_LIMIT,
   type AccountDefaultsResponse,
   type AdminUserListQuery,
+  type BulkUserActionOutcome,
   type BulkUserActionRequest,
   type BulkUserActionResponse,
   type CreateInviteRequest,
@@ -34,6 +35,7 @@ import type { PortfolioRepository } from '../../data/repositories/portfolioRepos
 import type { RegistrationRequestRepository } from '../../data/repositories/registrationRequestRepository';
 import type { RegistrationTokenRepository } from '../../data/repositories/registrationTokenRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
+import { isUniqueViolation } from '../../data/driverError';
 import type { InviteRow, RegistrationTokenRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
@@ -99,6 +101,14 @@ export interface AdminActor {
 }
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The loser of a decision race on one registration application (§6.12). A 409
+ * rather than a 404: the application existed and was answered — by someone else,
+ * or by this operator's other tab — and the queue view is simply stale.
+ */
+const registrationRequestDecided = () =>
+  conflict('This registration request has already been decided.', 'REGISTRATION_REQUEST_DECIDED');
 
 export function createAdminService(deps: AdminServiceDeps) {
   const {
@@ -189,29 +199,64 @@ export function createAdminService(deps: AdminServiceDeps) {
     await oauth.revokeAllForUser(userId);
   }
 
+  /** Which post-commit cleanup step of a suspension failed, for the audit row. */
+  type DisableCleanupStep = 'api_keys' | 'oauth_grants' | 'sessions';
+  type DisableCleanup = { ok: true } | { ok: false; step: DisableCleanupStep; error: unknown };
+
   /**
-   * Finish a committed disable. Status is already the durable kill switch, so a
-   * cleanup failure remains fail-closed while a retry can repair it.
+   * Run a committed suspension's cleanup, reporting rather than throwing. The
+   * status change is already the durable kill switch, so a failure here stays
+   * fail-closed and repairable — but the caller must still be able to RECORD
+   * that it happened before it re-raises.
+   */
+  async function runDisableCleanup(userId: string): Promise<DisableCleanup> {
+    const steps: ReadonlyArray<readonly [DisableCleanupStep, () => Promise<void>]> = [
+      ['api_keys', () => apiKeys.revokeAllForUser(userId)],
+      ['oauth_grants', () => oauth.revokeAllForUser(userId)],
+      ['sessions', () => sessions.destroyAllForUser(userId)],
+    ];
+    for (const [step, run] of steps) {
+      try {
+        await run();
+      } catch (error) {
+        return { ok: false, step, error };
+      }
+    }
+    // Best-effort by design (logged, never promoted into the boundary).
+    await invalidateAllRealtimePrincipals(userId);
+    return { ok: true };
+  }
+
+  /**
+   * Finish a committed disable and ALWAYS audit it. The audit row is no longer
+   * the last await behind an unguarded cleanup chain, and no longer gated on the
+   * status having changed: a cleanup throw used to leave a durably-suspended
+   * account with no record at all, and a repeat disable that repaired stale
+   * credentials recorded nothing. The row carries what actually happened —
+   * `repair` when the account was already disabled, `cleanup: 'incomplete'` plus
+   * the failing step when the suspension is only half-applied.
    */
   async function finishDisableUser(
     target: UserRow,
     actor: AdminActor,
     changedStatus: boolean,
     via?: 'bulk',
-  ): Promise<void> {
-    await revokeBearerCredentials(target.id);
-    await sessions.destroyAllForUser(target.id);
-    await invalidateAllRealtimePrincipals(target.id);
-    if (changedStatus) {
-      await audit.record({
-        actorId: actor.id,
-        action: AuditAction.UserDisabled,
-        targetType: 'user',
-        targetId: target.id,
-        ip: actor.ip,
-        ...(via ? { meta: { via } } : {}),
-      });
-    }
+  ): Promise<DisableCleanup> {
+    const cleanup = await runDisableCleanup(target.id);
+    const meta = {
+      ...(via ? { via } : {}),
+      ...(changedStatus ? {} : { repair: true }),
+      ...(cleanup.ok ? {} : { cleanup: 'incomplete', step: cleanup.step }),
+    };
+    await audit.record({
+      actorId: actor.id,
+      action: AuditAction.UserDisabled,
+      targetType: 'user',
+      targetId: target.id,
+      ip: actor.ip,
+      ...(Object.keys(meta).length > 0 ? { meta } : {}),
+    });
+    return cleanup;
   }
 
   /**
@@ -245,45 +290,70 @@ export function createAdminService(deps: AdminServiceDeps) {
 
   /**
    * Bulk-disable (§6.12, §13.2): best-effort over a set — an id that can't be
-   * disabled (unknown, the actor themselves, already disabled, or the last
-   * active admin) is skipped rather than failing the whole batch. Each success
-   * kills the user's sessions and is audited exactly like a single disable.
+   * disabled (unknown, the actor themselves, or the last active admin) is
+   * skipped rather than failing the whole batch. An already-disabled row is NOT
+   * skipped: it gets the same repair pass a repeat single disable gets, so a
+   * batch re-run after a partial failure finishes the cleanup and records it.
+   * Each row is audited exactly like a single disable, and one row's cleanup
+   * failure never abandons the rest of the batch — it becomes that row's
+   * outcome.
    */
   async function bulkDisableUsers(
     userIds: string[],
     actor: AdminActor,
-  ): Promise<{ disabled: number; skipped: number }> {
+  ): Promise<BulkUserActionOutcome[]> {
     // Stable target order prevents two overlapping bulk requests from taking
     // ordinary user-row locks in opposite order.
     const unique = [...new Set(userIds)].sort();
-    const { toDisable, skipped } = await userRepo.withSerializedAdminMutation(async (repo) => {
-      const selected: UserRow[] = [];
-      let skippedCount = 0;
+    const { toDisable, skippedIds } = await userRepo.withSerializedAdminMutation(async (repo) => {
+      const selected: Array<{ target: UserRow; statusChanged: boolean }> = [];
+      const skipped: string[] = [];
 
       for (const id of unique) {
         const target = await repo.findByIdForUpdate(id);
-        if (!target || target.id === actor.id || target.status !== 'active') {
-          skippedCount += 1;
+        if (!target || target.id === actor.id) {
+          skipped.push(id);
+          continue;
+        }
+        if (target.status !== 'active') {
+          // Already suspended — the last-admin guard is about ACTIVE admins, so
+          // this row cannot take the count to zero. Repair it instead.
+          selected.push({ target, statusChanged: false });
           continue;
         }
         if (target.role === 'admin' && (await repo.countActiveAdmins()) <= 1) {
-          skippedCount += 1;
+          skipped.push(id);
           continue;
         }
         await repo.setStatus(target.id, 'disabled');
-        selected.push(target);
+        selected.push({ target, statusChanged: true });
       }
 
-      return { toDisable: selected, skipped: skippedCount };
+      return { toDisable: selected, skippedIds: skipped };
     });
 
     // The transaction committed every status first. Cleanup cannot reopen an
     // account if one target's credential/session revocation fails.
-    for (const target of toDisable) {
-      await finishDisableUser(target, actor, true, 'bulk');
+    const outcomes = new Map<string, BulkUserActionOutcome['outcome']>(
+      skippedIds.map((id) => [id, 'skipped'] as const),
+    );
+    for (const { target, statusChanged } of toDisable) {
+      let complete: boolean;
+      try {
+        complete = (await finishDisableUser(target, actor, statusChanged, 'bulk')).ok;
+      } catch (err) {
+        // The audit write itself failed. The suspension is already durable, so
+        // the batch continues and this row is reported as needing repair.
+        logger?.warn({ err, userId: target.id }, 'bulk disable audit record failed');
+        complete = false;
+      }
+      outcomes.set(
+        target.id,
+        complete ? (statusChanged ? 'disabled' : 'repaired') : 'cleanup_failed',
+      );
     }
 
-    return { disabled: toDisable.length, skipped };
+    return unique.map((userId) => ({ userId, outcome: outcomes.get(userId) ?? 'skipped' }));
   }
 
   return {
@@ -546,8 +616,12 @@ export function createAdminService(deps: AdminServiceDeps) {
 
       if (input.status === 'disabled') {
         // An explicit repeat disable repairs a previous fail-closed cleanup
-        // failure without ever making the account active again.
-        await finishDisableUser(mutation.target, actor, mutation.statusChanged);
+        // failure without ever making the account active again — and is audited
+        // whether or not it changed the status, so a repair is never silent.
+        const cleanup = await finishDisableUser(mutation.target, actor, mutation.statusChanged);
+        // Re-raise AFTER the audit row: the suspension stays fail-closed and the
+        // operator's request still fails, but the record of it now survives.
+        if (!cleanup.ok) throw cleanup.error;
       } else if (input.status === 'active' && mutation.statusChanged) {
         await finishEnableUser(mutation.target, actor);
       }
@@ -608,8 +682,17 @@ export function createAdminService(deps: AdminServiceDeps) {
     ): Promise<BulkUserActionResponse> {
       switch (input.action) {
         case 'disable': {
-          const { disabled, skipped } = await bulkDisableUsers(input.userIds, actor);
-          return { action: 'disable', disabled, skipped };
+          const results = await bulkDisableUsers(input.userIds, actor);
+          const tally = (outcome: BulkUserActionOutcome['outcome']) =>
+            results.filter((row) => row.outcome === outcome).length;
+          return {
+            action: 'disable',
+            disabled: tally('disabled'),
+            skipped: tally('skipped'),
+            repaired: tally('repaired'),
+            failed: tally('cleanup_failed'),
+            results,
+          };
         }
       }
     },
@@ -671,7 +754,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       // inactive row and therefore cannot take the count from one to zero. If
       // later session or MIRRORCHAIN cleanup fails, any target (including an
       // ordinary user) deliberately remains disabled and fail-closed for retry.
-      const target = await userRepo.withSerializedAdminMutation(async (repo) => {
+      const { target, statusChanged } = await userRepo.withSerializedAdminMutation(async (repo) => {
         const lockedTarget = await repo.findByIdForUpdate(id);
         if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
         if (lockedTarget.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
@@ -683,28 +766,52 @@ export function createAdminService(deps: AdminServiceDeps) {
         await ensureActiveAdminRemains(repo, lockedTarget, false);
         if (lockedTarget.status !== 'disabled') {
           await repo.setStatus(lockedTarget.id, 'disabled');
+          return { target: lockedTarget, statusChanged: true };
         }
-        return lockedTarget;
+        return { target: lockedTarget, statusChanged: false };
       });
-      await sessions.destroyAllForUser(target.id);
-      await removeRememberedDeviceBindings(redis, target.id);
-      await invalidateAllRealtimePrincipals(target.id);
-      // MIRRORCHAIN §7: hand off any group portfolios the target owns BEFORE
-      // the row delete cascades their copy away (V5-P7 M4), so the chain
-      // survives.
-      await mirror.handleAccountDeletion(target.id);
-      await userRepo.withSerializedAdminMutation(async (repo) => {
-        const reserved = await repo.findByIdForUpdate(target.id);
-        if (!reserved) throw notFound('User not found.', 'USER_NOT_FOUND');
-        // A concurrent enable between reservation and cascade must re-pass the
-        // same invariant before this transaction removes the row.
-        await ensureActiveAdminRemains(repo, reserved, false);
-        await repo.remove(reserved.id);
-      });
-      // Pair the pre-delete sweep with a full scan after durable deletion. This
-      // also catches a writer whose new reverse-index membership was erased by
-      // the first sweep's final index reset.
-      await removeRememberedDeviceBindings(redis, target.id);
+      try {
+        await sessions.destroyAllForUser(target.id);
+        await removeRememberedDeviceBindings(redis, target.id);
+        await invalidateAllRealtimePrincipals(target.id);
+        // MIRRORCHAIN §7: hand off any group portfolios the target owns BEFORE
+        // the row delete cascades their copy away (V5-P7 M4), so the chain
+        // survives.
+        await mirror.handleAccountDeletion(target.id);
+        await userRepo.withSerializedAdminMutation(async (repo) => {
+          const reserved = await repo.findByIdForUpdate(target.id);
+          if (!reserved) throw notFound('User not found.', 'USER_NOT_FOUND');
+          // A concurrent enable between reservation and cascade must re-pass the
+          // same invariant before this transaction removes the row.
+          await ensureActiveAdminRemains(repo, reserved, false);
+          await repo.remove(reserved.id);
+        });
+      } catch (error) {
+        // The reservation above is a real, durable suspension: the account is
+        // locked out and stays that way for retry. Record it before re-raising —
+        // otherwise the only trace of an interrupted delete is a user who can no
+        // longer log in and an audit log that shows nothing at all.
+        try {
+          await audit.record({
+            actorId: actor.id,
+            action: AuditAction.UserDisabled,
+            targetType: 'user',
+            targetId: target.id,
+            ip: actor.ip,
+            meta: {
+              via: 'admin',
+              reason: 'delete_incomplete',
+              cleanup: 'incomplete',
+              statusChanged,
+            },
+          });
+        } catch (auditError) {
+          logger?.warn({ err: auditError, userId: target.id }, 'incomplete delete audit failed');
+        }
+        throw error;
+      }
+      // The row is gone: record that first, so no later best-effort step can
+      // swallow the record of a delete that actually happened.
       await audit.record({
         actorId: actor.id,
         action: AuditAction.UserDeleted,
@@ -713,6 +820,10 @@ export function createAdminService(deps: AdminServiceDeps) {
         ip: actor.ip,
         meta: { via: 'admin' },
       });
+      // Pair the pre-delete sweep with a full scan after durable deletion. This
+      // also catches a writer whose new reverse-index membership was erased by
+      // the first sweep's final index reset.
+      await removeRememberedDeviceBindings(redis, target.id);
     },
 
     async createInvite(
@@ -818,19 +929,27 @@ export function createAdminService(deps: AdminServiceDeps) {
     listRegistrationRequests: () => registrationRequestRepo.listAll(),
 
     async approveRegistrationRequest(id: string, actor: AdminActor): Promise<UserRow> {
-      const request = await registrationRequestRepo.findById(id);
-      if (!request) {
+      const pending = await registrationRequestRepo.findById(id);
+      if (!pending) {
         throw notFound('Registration request not found.', 'REGISTRATION_REQUEST_NOT_FOUND');
       }
       // Re-check uniqueness at approval time — the email/username may have been
       // claimed by an admin-created account (or another approval) since the
       // application was filed.
-      if (await userRepo.findByEmail(request.email)) {
+      if (await userRepo.findByEmail(pending.email)) {
         throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
       }
-      if (await userRepo.findByUsername(request.username)) {
+      if (await userRepo.findByUsername(pending.username)) {
         throw conflict('That username is already taken.', 'USERNAME_TAKEN');
       }
+
+      // CLAIM the application before anything is created. A decision is
+      // one-shot: two operators (or one in two tabs) can otherwise approve and
+      // reject the same application, leaving the applicant with a live account
+      // AND a rejection letter. The loser of the race finds nothing to consume
+      // and is refused here, before an account exists.
+      const request = await registrationRequestRepo.claim(id);
+      if (!request) throw registrationRequestDecided();
 
       // Link a Google identity when the application carried one (§13.4 V4-P4b).
       // Whether the account gets a USABLE password is independent of that: it
@@ -843,18 +962,29 @@ export function createAdminService(deps: AdminServiceDeps) {
       const hasUsablePassword = request.passwordHash !== null;
       const passwordHash =
         request.passwordHash ?? (await passwordHasher.hash(randomBytes(24).toString('hex')));
-      const user = await userRepo.create({
-        email: request.email,
-        username: request.username,
-        passwordHash,
-        hasUsablePassword,
-        role: 'user',
-        status: 'active',
-        mustChangePassword: false,
-        // Carry the language they applied in onto the account (matches the
-        // decision-mail locale below).
-        locale: request.locale,
-      });
+      let user: UserRow;
+      try {
+        user = await userRepo.create({
+          email: request.email,
+          username: request.username,
+          passwordHash,
+          hasUsablePassword,
+          role: 'user',
+          status: 'active',
+          mustChangePassword: false,
+          // Carry the language they applied in onto the account (matches the
+          // decision-mail locale below).
+          locale: request.locale,
+        });
+      } catch (error) {
+        // Two applications for the same address, approved concurrently: both
+        // pass the pre-check above and the loser dies on the users uniqueness
+        // index. That is a conflict the operator can act on, not a 500.
+        if (!isUniqueViolation(error)) throw error;
+        throw (await userRepo.findByEmail(request.email))
+          ? conflict('An account already exists for this email.', 'EMAIL_TAKEN')
+          : conflict('That username is already taken.', 'USERNAME_TAKEN');
+      }
       if (isFederated) {
         await identityRepo.create({
           userId: user.id,
@@ -879,7 +1009,6 @@ export function createAdminService(deps: AdminServiceDeps) {
         { appSettings, userRepo, notificationRepo },
         user.id,
       );
-      await registrationRequestRepo.remove(id);
 
       await audit.record({
         actorId: actor.id,
@@ -902,11 +1031,15 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     async rejectRegistrationRequest(id: string, actor: AdminActor): Promise<void> {
-      const request = await registrationRequestRepo.findById(id);
-      if (!request) {
+      if (!(await registrationRequestRepo.findById(id))) {
         throw notFound('Registration request not found.', 'REGISTRATION_REQUEST_NOT_FOUND');
       }
-      await registrationRequestRepo.remove(id);
+      // Same one-shot claim as approve: the rejection mail is only ever sent by
+      // the caller that actually consumed the application, so a second reject —
+      // or a reject racing an approve — cannot mail the applicant twice or write
+      // to someone whose account another operator just created.
+      const request = await registrationRequestRepo.claim(id);
+      if (!request) throw registrationRequestDecided();
       await audit.record({
         actorId: actor.id,
         action: AuditAction.RegistrationRequestRejected,
@@ -916,10 +1049,19 @@ export function createAdminService(deps: AdminServiceDeps) {
         meta: { email: request.email },
       });
       // No account was ever created — the decision email carries no credential.
+      // The audit target is the REQUEST, matching the decision row above: a
+      // `user` row pointed at a request id can never surface through
+      // `listUserAudit`, and would be claimed by whatever account later takes
+      // that id.
       await email.sendRegistrationRejected({
         to: request.email,
         locale: request.locale,
-        audit: { actorId: actor.id, targetType: 'user', targetId: id, ip: actor.ip },
+        audit: {
+          actorId: actor.id,
+          targetType: 'registration_request',
+          targetId: id,
+          ip: actor.ip,
+        },
       });
     },
 

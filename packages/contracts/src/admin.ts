@@ -336,13 +336,33 @@ export const bulkUserActionRequestSchema = z
 export type BulkUserActionRequest = z.infer<typeof bulkUserActionRequestSchema>;
 
 /**
+ * What a bulk action did to ONE row. A batch never collapses into a bare 500:
+ * a suspension commits durably before its credential/session cleanup runs, so a
+ * row whose cleanup threw is reported as `cleanup_failed` (and audited as
+ * needing repair) while the rest of the batch still completes.
+ */
+export const BULK_USER_OUTCOMES = ['disabled', 'repaired', 'skipped', 'cleanup_failed'] as const;
+export const bulkUserActionOutcomeSchema = z.object({
+  userId: z.string().uuid(),
+  outcome: z.enum(BULK_USER_OUTCOMES),
+});
+export type BulkUserActionOutcome = z.infer<typeof bulkUserActionOutcomeSchema>;
+
+/**
  * Result of a bulk action: how many were actually changed vs. skipped (self,
- * last active admin, or already in the target state).
+ * last active admin, or unknown id). `repaired`, `failed` and `results` are
+ * additive detail beside those two counts — the operator list renders the
+ * tallies, so a client that only reads `disabled`/`skipped` stays valid.
  */
 export const bulkUserActionResponseSchema = z.object({
   action: bulkUserActionSchema,
   disabled: z.number().int(),
   skipped: z.number().int(),
+  /** Already-disabled rows whose credential/session cleanup was re-run. */
+  repaired: z.number().int().optional(),
+  /** Rows durably suspended whose cleanup did not complete (audited as such). */
+  failed: z.number().int().optional(),
+  results: z.array(bulkUserActionOutcomeSchema).optional(),
 });
 export type BulkUserActionResponse = z.infer<typeof bulkUserActionResponseSchema>;
 
