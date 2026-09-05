@@ -3055,6 +3055,8 @@
       "waiting": "Warte auf Live-Kurse…",
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
       "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}",
+      "unavailable": "Live nicht verfügbar – verzögerte Daten",
+      "unavailableHint": "Der Server hat Live-Aktualisierungen pausiert. Der Chart aktualisiert stattdessen alle 60 s.",
       "marketClosed": "Markt geschlossen",
       "marketClosedHint": "Zeigt die letzte Handelssitzung. Live-Updates werden fortgesetzt, sobald der Markt wieder öffnet."
     },

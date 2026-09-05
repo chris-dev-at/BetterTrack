@@ -6,8 +6,11 @@ import {
   densify,
   framesToPoints,
   liveChartStepSeconds,
+  LIVE_RETENTION_SLACK,
+  MAX_DENSIFIED_POINTS,
   MAX_LIVE_CHART_POINTS,
   mergePoints,
+  trimToWindow,
   type LivePoint,
 } from './liveSeries';
 
@@ -259,11 +262,91 @@ describe('densify — the uniform wall-clock grid (issue #690 symptom 3)', () =>
       // Uniform: every gap is exactly one grid step, every time is on the grid.
       expect(dense.every((p, i) => i === 0 || p.time - dense[i - 1]!.time === step)).toBe(true);
       expect(dense.every((p) => p.time % step === 0)).toBe(true);
-      // Honest edges: neither before the first input slot nor past the last.
-      expect(dense[0]!.time).toBe(Math.floor(points[0]!.time / step) * step);
-      expect(dense[dense.length - 1]!.time).toBe(
-        Math.floor(points[points.length - 1]!.time / step) * step,
+      // Honest edges: neither before the first input slot nor past the last —
+      // and never more than the ceiling's worth of slots behind the newest.
+      const firstSlot = Math.floor(points[0]!.time / step) * step;
+      const lastSlot = Math.floor(points[points.length - 1]!.time / step) * step;
+      expect(dense.length).toBeLessThanOrEqual(MAX_DENSIFIED_POINTS);
+      expect(dense[0]!.time).toBe(
+        Math.max(firstSlot, lastSlot - (MAX_DENSIFIED_POINTS - 1) * step),
       );
+      expect(dense[dense.length - 1]!.time).toBe(lastSlot);
     }
+  });
+});
+
+describe('trimToWindow — the retained series is bounded by the window, not the session', () => {
+  /** `count` points, one per second, ending at `end`. */
+  const perSecond = (end: number, count: number): LivePoint[] =>
+    Array.from({ length: count }, (_, i) => ({ time: end - (count - 1 - i), value: 100 + i }));
+
+  test('inside the slack it returns the SAME array — no rebuild, no copy', () => {
+    const window = 600;
+    const points = perSecond(1_700_000_000, Math.floor(window * LIVE_RETENTION_SLACK));
+    expect(trimToWindow(points, window)).toBe(points);
+    expect(trimToWindow([], window)).toEqual([]);
+    expect(trimToWindow([{ time: 1, value: 1 }], window)).toHaveLength(1);
+  });
+
+  test('past the slack it cuts back to exactly one window, keeping the newest end', () => {
+    const window = 600;
+    const end = 1_700_000_000;
+    const trimmed = trimToWindow(perSecond(end, 5_000), window);
+    expect(trimmed).toHaveLength(window + 1);
+    expect(trimmed[trimmed.length - 1]!.time).toBe(end);
+    expect(trimmed[0]!.time).toBe(end - window);
+  });
+
+  test('an 8 h generation retains a window, not a session — and its grid stays bounded', () => {
+    // 10 min window at a 1 s rate: the untrimmed series would hold 28 800 points
+    // after 8 h and densify one slot per second since the generation started.
+    const end = 1_700_000_000;
+    const session = perSecond(end, 8 * 3600);
+    expect(densify(session, 1).length).toBeLessThanOrEqual(MAX_DENSIFIED_POINTS);
+
+    const trimmed = trimToWindow(session, 600);
+    expect(trimmed.length).toBeLessThanOrEqual(Math.ceil(600 * LIVE_RETENTION_SLACK) + 1);
+    const dense = densify(trimmed, 1);
+    expect(dense).toHaveLength(601);
+    expect(dense[dense.length - 1]!.value).toBe(session[session.length - 1]!.value);
+  });
+
+  test('the cutoff is anchored on the newest point, so a lagging series keeps its window', () => {
+    // The market closed an hour ago: the newest point is old, but the pinned
+    // viewport still frames a full window ending there — trimming to wall-clock
+    // now would empty the chart.
+    const end = 1_700_000_000 - 3_600;
+    const trimmed = trimToWindow(perSecond(end, 2_000), 600);
+    expect(trimmed[trimmed.length - 1]!.time).toBe(end);
+    expect(trimmed[0]!.time).toBe(end - 600);
+  });
+});
+
+describe('densify — the ceiling on what one generation materialises', () => {
+  test('a span far past the ceiling keeps the newest slots and stays uniform', () => {
+    const end = 1_700_000_000;
+    const points: LivePoint[] = [
+      { time: end - 50_000, value: 1 },
+      { time: end - 10, value: 2 },
+      { time: end, value: 3 },
+    ];
+    const dense = densify(points, 1);
+    expect(dense).toHaveLength(MAX_DENSIFIED_POINTS);
+    expect(dense[dense.length - 1]).toEqual({ time: end, value: 3 });
+    expect(dense[0]!.time).toBe(end - (MAX_DENSIFIED_POINTS - 1));
+    // The clamp landed mid-gap: the slot carries the newest observation at or
+    // before it (1), never an invented value and never an empty leading slot.
+    expect(dense[0]!.value).toBe(1);
+    expect(dense.every((p, i) => i === 0 || p.time - dense[i - 1]!.time === 1)).toBe(true);
+  });
+
+  test('an explicit ceiling bounds the output; below it nothing changes', () => {
+    const points: LivePoint[] = [
+      { time: 1_000, value: 100 },
+      { time: 1_060, value: 105 },
+    ];
+    expect(densify(points, 1, 10)).toHaveLength(10);
+    expect(densify(points, 1, 10)[9]).toEqual({ time: 1_060, value: 105 });
+    expect(densify(points, 1, 1_000)).toHaveLength(61);
   });
 });

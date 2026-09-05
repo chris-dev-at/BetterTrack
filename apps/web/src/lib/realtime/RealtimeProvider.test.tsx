@@ -2,14 +2,23 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-vi.mock('./socket', () => ({ createRealtimeSocket: vi.fn() }));
+// Only the factory is stubbed: the reconnect ladder is real, so this suite
+// exercises the delays the app actually schedules.
+vi.mock('./socket', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./socket')>()),
+  createRealtimeSocket: vi.fn(),
+}));
 
 import { REALTIME_CLIENT_EVENTS, REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 
 import { workboardQuotesQueryKey, workboardSparklinesQueryKey } from '../assetApi';
 
 import { RealtimeProvider, useRealtime, useRealtimeEvent } from './RealtimeProvider';
-import { createRealtimeSocket } from './socket';
+import {
+  createRealtimeSocket,
+  REALTIME_RECONNECT_BASE_MS,
+  REALTIME_RECONNECT_MAX_MS,
+} from './socket';
 
 type Listener = (payload?: unknown) => void;
 
@@ -18,6 +27,15 @@ class FakeSocket {
   listeners = new Map<string, Set<Listener>>();
   emitted: Array<[string, unknown]> = [];
   disconnectCalls = 0;
+  connectCalls = 0;
+  /** Socket.IO's own "I will reconnect" flag — false once it has given up. */
+  active = true;
+  connected = false;
+
+  connect() {
+    this.connectCalls += 1;
+    return this;
+  }
 
   on(event: string, fn: Listener) {
     let set = this.listeners.get(event);
@@ -99,6 +117,111 @@ describe('RealtimeProvider', () => {
     renderProvider(true);
     expect(() => act(() => fakeSocket.fire('connect_error', new Error('down')))).not.toThrow();
     expect(screen.getByTestId('conn')).toHaveTextContent('disconnected');
+  });
+
+  test('a server-initiated disconnect is retried, not left down for the page session', () => {
+    // A Redis blip makes the gateway's admission heartbeat reject and close every
+    // socket. Socket.IO treats a server `disconnect(true)` as terminal (`active`
+    // goes false), so without a manual ladder this tab polls until a reload.
+    vi.useFakeTimers();
+    try {
+      renderProvider(true);
+      act(() => fakeSocket.fire('connect'));
+      act(() => {
+        fakeSocket.active = false;
+        fakeSocket.fire('disconnect', 'io server disconnect');
+      });
+
+      // Consumers see `connected: false` and stay on their polls meanwhile (§4.5).
+      expect(screen.getByTestId('conn')).toHaveTextContent('disconnected');
+      // Backed off, not immediate: no reconnect inside the first rung's floor.
+      act(() => void vi.advanceTimersByTime(700));
+      expect(fakeSocket.connectCalls).toBe(0);
+
+      act(() => void vi.advanceTimersByTime(REALTIME_RECONNECT_MAX_MS));
+      expect(fakeSocket.connectCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a connect_error refusal retries on a capped backoff — one attempt per rung, never a storm', () => {
+    vi.useFakeTimers();
+    try {
+      renderProvider(true);
+      // A namespace-level refusal (flag off, USER_CONNECTION_LIMIT, UNAVAILABLE):
+      // Socket.IO stops reconnecting for good.
+      act(() => {
+        fakeSocket.active = false;
+        fakeSocket.fire('connect_error', new Error('USER_CONNECTION_LIMIT'));
+      });
+      expect(screen.getByTestId('conn')).toHaveTextContent('disconnected');
+      expect(fakeSocket.connectCalls).toBe(0);
+
+      act(() => void vi.advanceTimersByTime(REALTIME_RECONNECT_MAX_MS));
+      expect(fakeSocket.connectCalls).toBe(1);
+
+      // Still refused → the next rung is further out, and only ONE attempt is
+      // ever pending, so a persistently refusing gateway cannot be stormed.
+      act(() => fakeSocket.fire('connect_error', new Error('USER_CONNECTION_LIMIT')));
+      act(() => void vi.advanceTimersByTime(REALTIME_RECONNECT_BASE_MS));
+      expect(fakeSocket.connectCalls).toBe(1);
+      act(() => void vi.advanceTimersByTime(REALTIME_RECONNECT_MAX_MS));
+      expect(fakeSocket.connectCalls).toBe(2);
+
+      // Recovery resets the ladder and unmounting cancels the pending attempt.
+      act(() => {
+        fakeSocket.active = true;
+        fakeSocket.fire('connect');
+      });
+      expect(screen.getByTestId('conn')).toHaveTextContent('connected');
+      act(() => void vi.advanceTimersByTime(5 * REALTIME_RECONNECT_MAX_MS));
+      expect(fakeSocket.connectCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('while Socket.IO is still retrying itself the provider stays out of the way', () => {
+    vi.useFakeTimers();
+    try {
+      renderProvider(true);
+      // A transport blip: `active` holds, so the manager owns the backoff.
+      act(() => fakeSocket.fire('disconnect', 'transport close'));
+      act(() => void vi.advanceTimersByTime(5 * REALTIME_RECONNECT_MAX_MS));
+      expect(fakeSocket.connectCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('feature.disabled records the shed feature; a fresh connect clears it', () => {
+    function ShedProbe() {
+      const { featureDisabled } = useRealtime();
+      return (
+        <span data-testid="shed">
+          {featureDisabled.liveMode ? 'liveMode' : ''}
+          {featureDisabled.realtime ? 'realtime' : ''}
+          {!featureDisabled.liveMode && !featureDisabled.realtime ? 'none' : ''}
+        </span>
+      );
+    }
+    renderProvider(true, <ShedProbe />);
+    act(() => fakeSocket.fire('connect'));
+    expect(screen.getByTestId('shed')).toHaveTextContent('none');
+
+    // The `liveMode` kill switch sheds this socket's watches and LEAVES IT UP —
+    // `connected` alone can never tell a consumer its pushes stopped.
+    act(() => fakeSocket.fire(REALTIME_SERVER_EVENTS.featureDisabled, { feature: 'liveMode' }));
+    expect(screen.getByTestId('shed')).toHaveTextContent('liveMode');
+    expect(screen.getByTestId('conn')).toHaveTextContent('connected');
+
+    act(() => fakeSocket.fire(REALTIME_SERVER_EVENTS.featureDisabled, { feature: 'nope' }));
+    expect(screen.getByTestId('shed')).toHaveTextContent('liveMode');
+
+    // A fresh handshake supersedes it — the next watch ack is the authority.
+    act(() => fakeSocket.fire('connect'));
+    expect(screen.getByTestId('shed')).toHaveTextContent('none');
   });
 
   test('disconnects the socket on unmount', () => {
