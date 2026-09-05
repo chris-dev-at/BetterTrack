@@ -171,19 +171,121 @@ describe('mapDividendEvents — annual-amount basis + yield convention (#1741)',
     expect(result.trailingAmountBasis).toBe('forward-annualized');
   });
 
-  it('passes an in-range forward yield through as the documented fraction', () => {
-    expect(map({ currency: 'USD', dividendYield: 0.0044 }).forwardYield).toBe(0.0044);
-    expect(map({ currency: 'USD', dividendYield: 0 }).forwardYield).toBe(0);
-    expect(map({ currency: 'USD', dividendYield: DIVIDEND_FORWARD_YIELD_MAX }).forwardYield).toBe(
-      DIVIDEND_FORWARD_YIELD_MAX,
-    );
+  it('publishes a fraction-convention yield the payload’s own arithmetic confirms', () => {
+    // $0.98/yr on a $222.73 close is 0.44 %, and the reported 0.0044 reads as
+    // exactly that when taken as a fraction. Confirmed ⇒ published.
+    expect(
+      map({
+        currency: 'USD',
+        dividendYield: 0.0044,
+        dividendRate: 0.98,
+        previousClose: 222.73,
+      }).forwardYield,
+    ).toBe(0.0044);
   });
 
-  it('drops a yield outside the fraction convention instead of rendering it 100× wrong', () => {
-    // `1.55` is Yahoo's percent convention leaking through: forwarded as a
-    // fraction the asset page would read "155 %".
-    expect(map({ currency: 'USD', dividendYield: 1.55 }).forwardYield).toBeNull();
+  it('publishes a percent-convention yield as the fraction it means (2.5 % is no longer dropped)', () => {
+    // THE INVERSION, half one (#1790). $2.50/yr on a $100 close is 2.5 %, so the
+    // reported `2.5` is percent and means 0.025. The old range filter dropped it
+    // for exceeding DIVIDEND_FORWARD_YIELD_MAX — deleting a correct answer and
+    // hiding the whole block for every normal payer on such a provider build.
+    expect(
+      map({
+        currency: 'USD',
+        dividendYield: 2.5,
+        dividendRate: 2.5,
+        previousClose: 100,
+      }).forwardYield,
+    ).toBeCloseTo(0.025, 10);
+  });
+
+  it('never renders a 0.44 % payer as 44 % on a percent-reporting build', () => {
+    // THE INVERSION, half two (#1790): `0.44` sits INSIDE [0, 1], so the old
+    // range filter passed it through as a fraction and the asset page rendered
+    // "44.00 %". The payload's own arithmetic ($0.98 on $222.73 ⇒ 0.44 %) says
+    // it is percent, so it means 0.0044.
+    const result = map({
+      currency: 'USD',
+      dividendYield: 0.44,
+      dividendRate: 0.98,
+      previousClose: 222.73,
+    });
+    expect(result.forwardYield).toBeCloseTo(0.0044, 10);
+    expect(result.forwardYield).not.toBe(0.44);
+  });
+
+  it('cross-checks inside one module, so a minor-unit quote needs no scaling', () => {
+    // Both operands come from `summaryDetail`, so the pence denomination cancels
+    // in the ratio: 98p on a 2500p close is 3.92 %, confirming the percent
+    // reading of `3.92`. No assumption that chart and summary agree on currency.
+    expect(
+      mapDividendEvents(
+        { meta: { currency: 'GBp' }, dividends: [], splits: [] },
+        {
+          summaryDetail: {
+            currency: 'GBp',
+            dividendYield: 3.92,
+            dividendRate: 98,
+            previousClose: 2500,
+          },
+        },
+      ).forwardYield,
+    ).toBeCloseTo(0.0392, 10);
+  });
+
+  it('publishes nothing when no cross-check is available — an absent figure, never a guess', () => {
+    // No per-share rate, or no price: the unit is undetermined. `0.0044` is a
+    // plausible fraction AND a plausible percent, and nothing in the payload
+    // says which — so it is not published.
+    expect(map({ currency: 'USD', dividendYield: 0.0044 }).forwardYield).toBeNull();
+    expect(
+      map({ currency: 'USD', dividendYield: 0.0044, dividendRate: 0.98 }).forwardYield,
+    ).toBeNull();
+    expect(
+      map({ currency: 'USD', dividendYield: 0.0044, previousClose: 222.73 }).forwardYield,
+    ).toBeNull();
+  });
+
+  it('drops a figure neither reading can explain', () => {
+    // 50 is neither 5000 % nor 0.5 % on a payload that implies 0.44 %.
+    expect(
+      map({ currency: 'USD', dividendYield: 50, dividendRate: 0.98, previousClose: 222.73 })
+        .forwardYield,
+    ).toBeNull();
+    // …and a confirmed reading still has to fit the contract's range.
+    expect(
+      map({ currency: 'USD', dividendYield: 150, dividendRate: 150, previousClose: 100 })
+        .forwardYield,
+    ).toBeNull();
     expect(map({ currency: 'USD', dividendYield: -0.01 }).forwardYield).toBeNull();
     expect(map({ currency: 'USD', dividendYield: Number.NaN }).forwardYield).toBeNull();
+  });
+
+  it('publishes a zero yield without a cross-check — 0 is the same in either unit', () => {
+    expect(map({ currency: 'USD', dividendYield: 0 }).forwardYield).toBe(0);
+  });
+
+  it('falls back to the trailing rate for the cross-check, and survives a special dividend', () => {
+    // Only `trailingAnnualDividendRate` is populated, and it is inflated by a
+    // special: $19.64 TTM on a $250 close implies 7.9 % where the true forward
+    // yield is 1.9 %. The two candidate readings are still 100× apart, so the
+    // cross-check picks the right one anyway — that is the whole point of the
+    // tolerance being far below 100.
+    expect(
+      map({
+        currency: 'USD',
+        dividendYield: 1.86,
+        trailingAnnualDividendRate: 19.64,
+        previousClose: 250,
+      }).forwardYield,
+    ).toBeCloseTo(0.0186, 10);
+  });
+
+  it('keeps the contract bound as the last gate', () => {
+    expect(DIVIDEND_FORWARD_YIELD_MAX).toBe(1);
+    expect(
+      map({ currency: 'USD', dividendYield: 1, dividendRate: 100, previousClose: 100 })
+        .forwardYield,
+    ).toBe(DIVIDEND_FORWARD_YIELD_MAX);
   });
 });

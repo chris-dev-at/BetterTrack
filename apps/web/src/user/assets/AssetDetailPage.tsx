@@ -324,9 +324,18 @@ function DividendsSection({ assetId }: { assetId: string }) {
     nextPayDate === null;
   if (nothingToShow) return null;
 
-  const sparkData = history
-    .map((h) => h.amount)
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  // Payouts carry their ex-date onto the chart's axis (#1790). A dividend series
+  // is genuinely irregular — a skipped quarter, a special beside the regular
+  // payout, a switch from quarterly to monthly — and drawing the amounts in
+  // array order rendered every one of those as a steady cadence, so a duplicated
+  // upstream row also shifted every later point. A payout with no usable ex-date
+  // has no place on a time axis and is not plotted.
+  const payouts: Array<{ amount: number; at: number }> = [];
+  for (const h of history) {
+    const at = h.exDate === null ? Number.NaN : Date.parse(h.exDate);
+    if (typeof h.amount !== 'number' || !Number.isFinite(h.amount) || Number.isNaN(at)) continue;
+    payouts.push({ amount: h.amount, at });
+  }
 
   return (
     <section aria-labelledby="dividends-heading" className="flex flex-col gap-3">
@@ -359,15 +368,28 @@ function DividendsSection({ assetId }: { assetId: string }) {
           />
         ) : null}
       </div>
-      {sparkData.length > 1 ? (
-        <div className="flex items-center gap-3 bt-panel bt-panel--pad">
+      {payouts.length > 1 ? (
+        // Wraps because the row cannot shrink: the chart is a fixed 140px and
+        // the two captions only shrink to their longest word, so on a 360px
+        // phone the German label plus the range pushed the page 16px wider than
+        // the viewport (mobile overflow gate, #1799). Wrapping drops the range
+        // onto its own line there and leaves the single-line desktop row as it
+        // was.
+        <div className="flex flex-wrap items-center gap-3 bt-panel bt-panel--pad">
           <span className="text-xs bt-muted">{t('assets.detail.dividends.history')}</span>
           <Sparkline
-            data={sparkData}
+            data={payouts.map((p) => p.amount)}
+            at={payouts.map((p) => p.at)}
             width={140}
             height={32}
             ariaLabel={t('assets.detail.dividends.historyAriaLabel')}
           />
+          <span className="text-xs bt-muted">
+            {t('assets.detail.dividends.historyRange', {
+              from: formatDate(new Date(payouts[0]!.at).toISOString()),
+              to: formatDate(new Date(payouts[payouts.length - 1]!.at).toISOString()),
+            })}
+          </span>
         </div>
       ) : null}
     </section>
@@ -428,7 +450,17 @@ function EarningsSection({ assetId }: { assetId: string }) {
   // Invisible when unconfigured (gate off / no capability / upstream error) or
   // when the provider knows of no earnings at all.
   if (!data || !data.available) return null;
-  if (!data.next && data.recent.length === 0) return null;
+  // A report that has already happened is not the NEXT one. The provider keeps
+  // returning the last date it knew about until the following call is scheduled,
+  // and the keystone serves that payload stale for days while a breaker is open,
+  // so without this the page announces "Next report — 31 Jul" in mid-August. The
+  // Workboard calendar and the reminder job both drop it (marketIntelService.ts,
+  // earningsReminder.ts); this surface is the one that did not (#1790). Same
+  // UTC-day boundary as those two: a report dated today is still ahead.
+  const today = utcDay();
+  const next =
+    data.next && data.next.date && data.next.date.slice(0, 10) >= today ? data.next : null;
+  if (!next && data.recent.length === 0) return null;
 
   return (
     <section aria-labelledby="earnings-heading" className="flex flex-col gap-3">
@@ -436,23 +468,23 @@ function EarningsSection({ assetId }: { assetId: string }) {
         {t('assets.detail.earnings.title')}
       </h2>
       <div className="flex flex-col gap-3 bt-panel bt-panel--pad">
-        {data.next && data.next.date ? (
+        {next ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-col">
               <span className="text-xs uppercase tracking-wide bt-muted">
                 {t('assets.detail.earnings.nextLabel')}
               </span>
-              <span className="text-sm font-medium">{formatDate(data.next.date)}</span>
+              <span className="text-sm font-medium">{formatDate(next.date)}</span>
             </div>
             <div className="flex items-center gap-2">
-              {data.next.epsEstimate != null ? (
+              {next.epsEstimate != null ? (
                 <span className="text-xs bt-muted">
                   {t('assets.detail.earnings.epsEstimate', {
-                    value: data.next.epsEstimate.toFixed(2),
+                    value: next.epsEstimate.toFixed(2),
                   })}
                 </span>
               ) : null}
-              <EstimatedBadge estimated={data.next.estimated} />
+              <EstimatedBadge estimated={next.estimated} />
             </div>
           </div>
         ) : null}
@@ -468,10 +500,22 @@ function EarningsSection({ assetId }: { assetId: string }) {
                 .reverse()
                 .map((e) => (
                   <li
-                    key={e.date ?? `${e.epsActual}-${e.epsEstimate}`}
+                    key={e.periodEnd ?? e.date ?? `${e.epsActual}-${e.epsEstimate}`}
                     className="flex items-center justify-between text-sm bt-soft"
                   >
-                    <span className="tabular-nums bt-muted">{formatDate(e.date)}</span>
+                    {/* A past report carries its fiscal PERIOD END, not the day
+                        results were announced (over a month later for a June
+                        quarter), so the row says which of the two it is rather
+                        than printing it under a heading that means the other
+                        one (#1790). A provider that ever supplies the real
+                        announcement date renders it as the date it is. */}
+                    <span className="tabular-nums bt-muted">
+                      {e.periodEnd
+                        ? t('assets.detail.earnings.periodEnded', {
+                            date: formatDate(e.periodEnd),
+                          })
+                        : formatDate(e.date)}
+                    </span>
                     <span className="tabular-nums">
                       {e.epsActual != null
                         ? t('assets.detail.earnings.epsActual', { value: e.epsActual.toFixed(2) })

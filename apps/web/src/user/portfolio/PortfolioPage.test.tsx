@@ -329,6 +329,7 @@ const UNAVAILABLE_PROJECTION: ProjectedDividendIncomeResponse = {
   currency: 'EUR',
   monthlyTotalBase: 0,
   yearlyTotalBase: 0,
+  basis: null,
   holdings: [],
 };
 
@@ -344,6 +345,7 @@ const RESOLVED_PROJECTION: ProjectedDividendIncomeResponse = {
   currency: 'EUR',
   monthlyTotalBase: 100,
   yearlyTotalBase: 1200,
+  basis: 'trailing-12m',
   holdings: [
     {
       assetId: 'a1',
@@ -1884,6 +1886,37 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
     const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
     expect(within(block).getByText('100,00 $')).toBeInTheDocument();
     expect(within(block).queryByText('100,00 €')).not.toBeInTheDocument();
+  });
+
+  test('renders what the projected total is made of, beside the total (#1790)', async () => {
+    // RESOLVED_PROJECTION is a `trailing-12m` book: the realized last twelve
+    // months, so a special dividend is inside it and the figure reads well above
+    // forward income for a year. The contract has carried the basis since #1741
+    // and no surface rendered it — the number read as a forward promise.
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue(RESOLVED_PROJECTION);
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(
+      within(block).getByText(
+        'Based on the last 12 months of payouts, so any special dividend is still counted in.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('says so when one total sums two different bases (#1790)', async () => {
+    vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+      ...RESOLVED_PROJECTION,
+      basis: 'mixed',
+    });
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: false, entries: [] });
+
+    renderPage();
+
+    const block = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(block).getByText(/^Mixed basis:/)).toBeInTheDocument();
   });
 
   test('keeps the projection when the calendar has nothing to show', async () => {

@@ -151,6 +151,7 @@ const DIVIDENDS_OFF: ProjectedDividendIncomeResponse = {
   currency: 'EUR',
   monthlyTotalBase: 0,
   yearlyTotalBase: 0,
+  basis: null,
   holdings: [],
 };
 
@@ -484,6 +485,7 @@ test('the dividend factor toggle is absent when this deployment has no market in
     currency: 'EUR',
     monthlyTotalBase: 100,
     yearlyTotalBase: 1200,
+    basis: 'forward-annualized',
     holdings: [],
   });
   renderSection();
@@ -528,6 +530,30 @@ test('an over-cap projection names the fan-out budget, not the unresolvable-hold
   expect(screen.queryByText(DIVIDENDS_UNRESOLVED_NOTE)).not.toBeInTheDocument();
 });
 
+test('a resolved dividend factor says which basis its income came from (#1790)', async () => {
+  // The Forecast adds this figure to a net-worth curve. A `trailing-12m` total
+  // is the realized last twelve months, so a special dividend is inside it and
+  // the curve promises income the schedule does not — the factor names it.
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue({
+    available: true,
+    currency: 'EUR',
+    monthlyTotalBase: 100,
+    yearlyTotalBase: 1200,
+    basis: 'trailing-12m',
+    holdings: [],
+  });
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeEnabled();
+  expect(
+    screen.getByText(
+      'Dividends come from the last 12 months of payouts, so any special dividend is still counted in.',
+    ),
+  ).toBeInTheDocument();
+});
+
 test('a disabled dividend factor contributes nothing to the projected curve', async () => {
   vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_OFF);
   renderSection();
@@ -548,6 +574,7 @@ test('the dividend factor toggle appears when the provider is configured', async
     currency: 'EUR',
     monthlyTotalBase: 100,
     yearlyTotalBase: 1200,
+    basis: 'forward-annualized',
     holdings: [],
   });
   const user = userEvent.setup();
@@ -590,6 +617,7 @@ function projectionFor(portfolioId: string): ProjectedDividendIncomeResponse {
     currency: 'EUR',
     monthlyTotalBase,
     yearlyTotalBase: monthlyTotalBase * 12,
+    basis: 'forward-annualized',
     holdings: [],
   };
 }
@@ -669,6 +697,7 @@ test('a USD-base curve spends the USD projection and renders it as USD', async (
     currency: 'USD',
     monthlyTotalBase: 100,
     yearlyTotalBase: 1200,
+    basis: 'forward-annualized',
     holdings: [],
   });
   renderSection();
@@ -694,6 +723,7 @@ test('a projection in another denomination is not summed into the curve', async 
     currency: 'EUR',
     monthlyTotalBase: 100,
     yearlyTotalBase: 1200,
+    basis: 'forward-annualized',
     holdings: [],
   });
   renderSection();
@@ -718,6 +748,7 @@ test('a stale portfolio payload does not let a fresh-base projection through', a
     currency: 'USD',
     monthlyTotalBase: 100,
     yearlyTotalBase: 1200,
+    basis: 'forward-annualized',
     holdings: [],
   });
   renderSection();
