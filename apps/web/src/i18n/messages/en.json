@@ -2130,7 +2130,12 @@
       "exOn": "ex {{date}}",
       "payOn": "paid {{date}}",
       "showMore": "Show {{count}} more",
-      "showLess": "Show less"
+      "showLess": "Show less",
+      "basis": {
+        "trailing12m": "Based on the last 12 months of payouts, so any special dividend is still counted in.",
+        "forwardAnnualized": "Based on the latest regular payout, annualised.",
+        "mixed": "Mixed basis: some holdings from the last 12 months of payouts (special dividends counted in), the rest from the annualised regular payout."
+      }
     },
     "import": {
       "title": "Broker CSV import",
@@ -2832,6 +2837,11 @@
         "returnLabel": "Return (%)",
         "returnPlaceholder": "Base",
         "remove": "Remove"
+      },
+      "dividendsBasis": {
+        "trailing12m": "Dividends come from the last 12 months of payouts, so any special dividend is still counted in.",
+        "forwardAnnualized": "Dividends come from the latest regular payout, annualised.",
+        "mixed": "Dividends mix two bases: part from the last 12 months of payouts (special dividends counted in), part from the annualised regular payout."
       }
     },
     "calculators": {
@@ -2856,7 +2866,11 @@
     "savings": {
       "title": "Savings plan",
       "summary": "What monthly contribution reaches your target — or how long it takes.",
-      "solve": { "label": "Solve for", "contribution": "Contribution", "years": "Years" },
+      "solve": {
+        "label": "Solve for",
+        "contribution": "Contribution",
+        "years": "Years"
+      },
       "target": "Target (€)",
       "principal": "Starting principal (€)",
       "ratePct": "Annual return (%)",
@@ -2884,7 +2898,11 @@
     "withdrawal": {
       "title": "Withdrawal plan",
       "summary": "How long a balance lasts, or what you can safely take each month.",
-      "solve": { "label": "Solve for", "horizon": "Horizon", "rate": "Safe withdrawal" },
+      "solve": {
+        "label": "Solve for",
+        "horizon": "Horizon",
+        "rate": "Safe withdrawal"
+      },
       "balance": "Starting balance (€)",
       "monthlyWithdrawal": "Monthly withdrawal (€)",
       "horizonYears": "Payout horizon (years)",
@@ -2997,7 +3015,8 @@
         "nextExDate": "Next ex-date",
         "nextPayDate": "Next pay date",
         "history": "Payout history",
-        "historyAriaLabel": "Dividend payout history"
+        "historyAriaLabel": "Dividend payout history",
+        "historyRange": "{{from}} – {{to}}"
       },
       "earnings": {
         "title": "Earnings",
@@ -3006,7 +3025,8 @@
         "estimated": "Estimated",
         "confirmed": "Confirmed",
         "epsEstimate": "Est. EPS {{value}}",
-        "epsActual": "EPS {{value}}"
+        "epsActual": "EPS {{value}}",
+        "periodEnded": "Period ended {{date}}"
       },
       "splits": {
         "title": "Stock splits",
@@ -3213,7 +3233,10 @@
     "friendsNoMatch": "No friends match “{{query}}”.",
     "share": "Share…",
     "groupsNone": "You have no groups yet. Create one on the Friends page to share with a circle.",
-    "groupMemberCount": { "one": "{{count}} member", "other": "{{count}} members" },
+    "groupMemberCount": {
+      "one": "{{count}} member",
+      "other": "{{count}} members"
+    },
     "groupsAtLimit": "This is all {{count}} of your groups — the maximum. Manage them on the People page.",
     "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
   },
@@ -3527,7 +3550,10 @@
       "cloneError": "Couldn't clone this idea."
     },
     "comments": {
-      "count": { "one": "{{count}} comment", "other": "{{count}} comments" },
+      "count": {
+        "one": "{{count}} comment",
+        "other": "{{count}} comments"
+      },
       "empty": "No comments yet.",
       "loadError": "Couldn't load the comments. Please try again.",
       "placeholder": "Add a comment…",
@@ -3552,7 +3578,10 @@
       "loadError": "Could not load your groups. Please try again.",
       "emptyTitle": "No groups yet",
       "emptyDescription": "Create a group to share with a specific circle of friends.",
-      "memberCount": { "one": "{{count}} member", "other": "{{count}} members" },
+      "memberCount": {
+        "one": "{{count}} member",
+        "other": "{{count}} members"
+      },
       "nameLabel": "Group name",
       "renameAction": "Rename",
       "membersHeading": "Members",

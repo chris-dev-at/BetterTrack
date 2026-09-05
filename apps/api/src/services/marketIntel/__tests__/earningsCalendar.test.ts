@@ -60,7 +60,9 @@ const BEFORE_ALL = clock('2026-07-20T09:00:00.000Z');
 function nextOn(date: string) {
   return () =>
     cachedIntel(
-      sampleEarningsEvents({ next: { date, epsEstimate: 1.4, epsActual: null, estimated: true } }),
+      sampleEarningsEvents({
+        next: { date, periodEnd: null, epsEstimate: 1.4, epsActual: null, estimated: true },
+      }),
     );
 }
 
@@ -75,6 +77,7 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
                 ref.providerRef === 'AAPL'
                   ? '2026-08-10T00:00:00.000Z'
                   : '2026-07-25T00:00:00.000Z',
+              periodEnd: null,
               epsEstimate: 1.42,
               epsActual: null,
               estimated: ref.providerRef === 'AAPL',
@@ -146,6 +149,7 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
           sampleEarningsEvents({
             next: {
               date: '2026-08-10T00:00:00.000Z',
+              periodEnd: null,
               epsEstimate: 1,
               epsActual: null,
               estimated: true,
@@ -178,6 +182,7 @@ describe('marketIntel.earningsCalendar (V5-P5)', () => {
                 ref.providerRef === 'MSFT'
                   ? '2026-07-29T00:00:00.000Z'
                   : '2026-08-20T00:00:00.000Z',
+              periodEnd: null,
               epsEstimate: 1.42,
               epsActual: null,
               estimated: true,

@@ -1,4 +1,5 @@
 import { useI18n, useT } from '../../../i18n';
+import { displayZoneMonth } from '../../../lib/format';
 
 /**
  * Which month you are looking at — as a pair of arrows and the month's NAME,
@@ -23,9 +24,14 @@ export interface MonthPickerProps {
   onChange: (next: string) => void;
 }
 
-/** The current calendar month `YYYY-MM` (UTC — matches the server's period). */
+/**
+ * The current calendar month `YYYY-MM` on the ledger's clock — the server's own
+ * period key (#1792). The UTC month it used to be is the PREVIOUS month between
+ * 00:00 and 02:00 Vienna, so this surface opened on a month the ledger had
+ * already left.
+ */
 function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
+  return displayZoneMonth();
 }
 
 /** `YYYY-MM` shifted by whole months, without tripping over year boundaries. */

@@ -2,6 +2,7 @@ import type {
   AssetRef,
   DividendCalendarEntry,
   DividendCalendarResponse,
+  DividendProjectionBasis,
   ProjectedDividendHolding,
   ProjectedDividendIncomeResponse,
 } from '@bettertrack/contracts';
@@ -32,6 +33,14 @@ import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudge
  * literal: this read used to pin EUR, which the V5-P6b Forecast then added to a
  * base-denominated net worth. The monthly view is an even `yearly / 12` spread,
  * the clean series shape the Forecast consumes.
+ *
+ * That per-holding basis is also summarised onto the response (`basis`), because
+ * a `trailing-12m` estimate includes any special dividend of the last twelve
+ * months: 1,000 shares of a name that paid a $15 special beside its $4.64
+ * regular payout project ~$19,640/yr, over four times the forward figure, and
+ * for a year the surfaces called that "projected dividend income" with no
+ * caveat. The number is not silently re-picked (that would lose the only figure
+ * some providers give); it is published with what it is (#1790).
  */
 export interface PortfolioMarketIntelService {
   /**
@@ -101,8 +110,23 @@ function unavailableProjection(currency: string): ProjectedDividendIncomeRespons
     currency,
     monthlyTotalBase: 0,
     yearlyTotalBase: 0,
+    basis: null,
     holdings: [],
   };
+}
+
+/**
+ * What the total is made of (#1790). The projection does NOT refuse a book whose
+ * holdings carry different bases — providers populate whichever annual per-share
+ * field they have, so refusing would blank the whole figure for most real books
+ * — it names the mix instead, and the surfaces render that beside the number.
+ * Null when nothing contributed: an empty total describes no basis at all.
+ */
+function projectionBasis(holdings: ProjectedDividendHolding[]): DividendProjectionBasis | null {
+  const bases = new Set(holdings.map((h) => h.annualPerShareBasis));
+  if (bases.size === 0) return null;
+  if (bases.size > 1) return 'mixed';
+  return [...bases][0]!;
 }
 
 /** Round a monetary amount to cents — the API never leaks float noise. */
@@ -338,6 +362,7 @@ export function createPortfolioMarketIntelService(
         currency: fx.baseCurrency,
         monthlyTotalBase,
         yearlyTotalBase,
+        basis: projectionBasis(holdings),
         holdings,
       };
     },

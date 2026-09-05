@@ -10,6 +10,7 @@ import {
 import type { Time } from 'lightweight-charts';
 
 import type {
+  DividendProjectionBasis,
   Holding,
   PortfolioHistoryRange,
   PortfolioTotals,
@@ -23,7 +24,7 @@ import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
 } from '../../lib/marketIntelApi';
-import { useT } from '../../i18n';
+import { type TranslateFn, useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { useDeployCapability } from '../../lib/featureFlags';
@@ -1396,6 +1397,24 @@ function RecategorizeBanner() {
  * (anti-bloat). Compact: one income line with a monthly/yearly toggle and a
  * calendar truncated to three rows with an expand toggle.
  */
+/**
+ * The one line naming what a projected dividend total is made of. Null when the
+ * projection carries no basis (nothing contributed), because then there is
+ * nothing to caveat.
+ */
+function dividendBasisNote(basis: DividendProjectionBasis | null, t: TranslateFn): string | null {
+  switch (basis) {
+    case 'trailing-12m':
+      return t('portfolio.dividends.basis.trailing12m');
+    case 'forward-annualized':
+      return t('portfolio.dividends.basis.forwardAnnualized');
+    case 'mixed':
+      return t('portfolio.dividends.basis.mixed');
+    default:
+      return null;
+  }
+}
+
 function DividendIntelSection() {
   const t = useT();
   const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
@@ -1441,6 +1460,7 @@ function DividendIntelSection() {
   // day boundary the API used when it built and ordered the calendar.
   const calendarToday = utcDay();
   const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
+  const basisNote = hasProjection ? dividendBasisNote(proj.basis, t) : null;
 
   return (
     <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
@@ -1462,19 +1482,27 @@ function DividendIntelSection() {
       </div>
 
       {hasProjection ? (
-        <p className="flex items-baseline gap-2">
-          <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
-            {/* The projection declares its own denomination (the caller's base,
-                §5.4) — rendering a hard 'EUR' beside a base-denominated net
-                worth labelled a currency the arithmetic never used. */}
-            {formatMoney(total, proj?.currency)}
-          </span>
-          <span className="bt-meta">
-            {view === 'monthly'
-              ? t('portfolio.dividends.perMonth')
-              : t('portfolio.dividends.perYear')}
-          </span>
-        </p>
+        <>
+          <p className="flex items-baseline gap-2">
+            <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
+              {/* The projection declares its own denomination (the caller's base,
+                  §5.4) — rendering a hard 'EUR' beside a base-denominated net
+                  worth labelled a currency the arithmetic never used. */}
+              {formatMoney(total, proj?.currency)}
+            </span>
+            <span className="bt-meta">
+              {view === 'monthly'
+                ? t('portfolio.dividends.perMonth')
+                : t('portfolio.dividends.perYear')}
+            </span>
+          </p>
+          {/* …and what that number is MADE of. A `trailing-12m` estimate is the
+              last twelve months' realized payouts, so a special dividend is in
+              it and the figure reads well above true forward income for a year;
+              a book can also legitimately mix the two bases. The contract has
+              carried the basis since #1741 and no surface rendered it (#1790). */}
+          {basisNote ? <p className="bt-meta">{basisNote}</p> : null}
+        </>
       ) : projectionTruncated ? (
         <p className="bt-meta">{t('portfolio.dividends.projectionTruncated')}</p>
       ) : projectionUnresolved ? (

@@ -5,6 +5,16 @@ import * as palette from './palette';
 export interface SparklineProps {
   /** Short series of values (e.g. the workboard 1M closes, PROJECTPLAN.md §6.4). */
   data: number[];
+  /**
+   * Optional time axis: one x position per `data` point, in the same order (ms
+   * since the epoch is the natural unit). Given, points are placed
+   * proportionally on it instead of evenly — so an irregularly spaced series (a
+   * dividend history with a skipped quarter, #1790) reads as the gap it is
+   * rather than as a steady cadence. Ignored when it does not describe the
+   * series: a different length, a non-finite entry, or positions that are all
+   * equal (nothing to scale against) all fall back to even spacing.
+   */
+  at?: number[];
   width?: number;
   height?: number;
   /** Override the trend colour; by default it is derived from first→last. */
@@ -36,6 +46,7 @@ const FLAT = palette.FLAT;
  */
 export function Sparkline({
   data,
+  at,
   width = 96,
   height = 28,
   positive,
@@ -43,7 +54,17 @@ export function Sparkline({
   ariaLabel,
 }: SparklineProps) {
   const t = useT();
-  const usable = data.filter((n) => Number.isFinite(n));
+  // The axis is kept only if it describes THIS series point-for-point; a partial
+  // or mismatched one would silently place values at the wrong times, which is
+  // worse than the even spacing it replaces.
+  const axis =
+    at !== undefined && at.length === data.length && at.every((n) => Number.isFinite(n))
+      ? at
+      : undefined;
+  const kept = data
+    .map((value, i) => ({ value, at: axis?.[i] }))
+    .filter((p) => Number.isFinite(p.value));
+  const usable = kept.map((p) => p.value);
 
   // Empty / single-point: nothing meaningful to draw — show a muted baseline.
   if (usable.length < 2) {
@@ -76,10 +97,18 @@ export function Sparkline({
   const innerH = height - pad * 2;
   const innerW = width - pad * 2;
   const stepX = innerW / (usable.length - 1);
+  // Time axis (when the kept points all carry one and it actually spans): x is
+  // the position in that span, so equal gaps in time render as equal gaps here.
+  const times = kept.map((p) => p.at).filter((n): n is number => n !== undefined);
+  const minAt = times.length === kept.length ? Math.min(...times) : 0;
+  const spanAt = times.length === kept.length ? Math.max(...times) - minAt : 0;
 
-  const points = usable
-    .map((value, i) => {
-      const x = pad + i * stepX;
+  const points = kept
+    .map(({ value, at: position }, i) => {
+      const x =
+        spanAt > 0 && position !== undefined
+          ? pad + ((position - minAt) / spanAt) * innerW
+          : pad + i * stepX;
       // Flat series (span 0) sits on the centre line; else normalise to height.
       const y = span === 0 ? pad + innerH / 2 : pad + innerH - ((value - min) / span) * innerH;
       return `${round(x)},${round(y)}`;

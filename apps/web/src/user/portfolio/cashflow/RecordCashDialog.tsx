@@ -13,7 +13,7 @@ import {
   setCashMovementTags,
 } from '../../../lib/cashApi';
 import { cx } from '../../../lib/cx';
-import { formatDate } from '../../../lib/format';
+import { displayZoneDay, formatDate } from '../../../lib/format';
 import {
   chargeCashFee,
   deleteCashMovement,
@@ -83,13 +83,18 @@ export interface RecordCashDialogProps {
   onClose: () => void;
 }
 
+/**
+ * Today on the LEDGER'S clock (#1792) — the day the movements list will date a
+ * row recorded right now. The UTC day it used to be is a different day between
+ * 00:00 and 02:00 Vienna, so the picker opened on yesterday.
+ */
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return displayZoneDay();
 }
 
-/** `2026-07-31T12:00:00Z` → `2026-07-31`, for the date input. */
+/** `2026-07-31T12:00:00Z` → the day the ledger displays it on, for the date input. */
 function dayOf(iso: string): string {
-  return iso.slice(0, 10);
+  return displayZoneDay(new Date(iso));
 }
 
 /**
@@ -285,7 +290,10 @@ export function RecordCashDialog({
       const body = {
         amountEur: parsedAmount,
         ...(targetSourceId ? { sourceId: targetSourceId } : {}),
-        ...(date === today() ? {} : { executedAt }),
+        // ALWAYS the picked day, anchored (#1792). Omitting it for "today" let
+        // the server stamp the real instant, which between 22:00 and 24:00 UTC
+        // is a different calendar day from the one this form is showing.
+        executedAt,
         ...(note.trim() === '' ? {} : { note: note.trim() }),
       };
       const result =

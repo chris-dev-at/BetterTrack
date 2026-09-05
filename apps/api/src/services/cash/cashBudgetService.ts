@@ -17,7 +17,11 @@ import type {
   CashBudgetRepository,
   CashBudgetWithTag,
 } from '../../data/repositories/cashBudgetRepository';
-import type { CashSummaryRepository } from '../../data/repositories/cashSummaryRepository';
+import {
+  cashMonthBounds,
+  cashPeriodKey,
+  type CashSummaryRepository,
+} from '../../data/repositories/cashSummaryRepository';
 import type { CashTagRepository } from '../../data/repositories/cashTagRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import { isDriverErrorCode } from '../../data/driverError';
@@ -89,9 +93,17 @@ function isUniqueViolation(err: unknown): boolean {
   return isDriverErrorCode(err, '23505');
 }
 
-/** `YYYY-MM` of an instant, in UTC — the bucket every cash surface uses. */
+/**
+ * `YYYY-MM` of an instant on the CASH CLOCK — the bucket every cash surface
+ * uses, and the month the aggregates window on (#1792).
+ *
+ * It was UTC, which made "the current month" flip two hours after the ledger's
+ * own displayed month did: at 01:15 Vienna on 1 October the budgets page still
+ * showed September while the movements list already dated rows into October. The
+ * clock is now the one the ledger displays in — see `CASH_MONTH_TIME_ZONE`.
+ */
 export function periodKeyFor(date: Date): string {
-  return date.toISOString().slice(0, 7);
+  return cashPeriodKey(date);
 }
 
 /** The `count` months ending at `endPeriod`, oldest first. */
@@ -453,16 +465,10 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
       await requireOwnedPortfolio(userId, portfolioId);
       const window = Math.min(months ?? 6, CASH_TREND_MONTHS_MAX);
       const periods = periodsEndingAt(periodKeyFor(now()), window);
-      const first = periods[0]!;
-      const [firstYear, firstMonth] = first.split('-').map(Number) as [number, number];
-      const from = new Date(Date.UTC(firstYear, firstMonth - 1, 1));
-      const [lastYear, lastMonth] = periods[periods.length - 1]!.split('-').map(Number) as [
-        number,
-        number,
-      ];
-      const toExclusive = new Date(
-        Date.UTC(lastMonth === 12 ? lastYear + 1 : lastYear, lastMonth === 12 ? 0 : lastMonth, 1),
-      );
+      // Same clock as the month windows and the `to_char` bucket the rows come
+      // back keyed by, so the window's edges cannot straddle a trend point.
+      const { from } = cashMonthBounds(periods[0]!);
+      const { toExclusive } = cashMonthBounds(periods[periods.length - 1]!);
 
       const rows = await summaries.trendRows(portfolioId, from, toExclusive);
       const byMonth = new Map(rows.map((row) => [row.month, row]));

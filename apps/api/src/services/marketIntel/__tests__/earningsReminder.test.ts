@@ -80,7 +80,9 @@ function marketDataWithEarnings(dateByRef: Record<string, string | null>) {
       const date = dateByRef[ref.providerRef] ?? null;
       return cachedIntel(
         sampleEarningsEvents({
-          next: date ? { date, epsEstimate: 1.4, epsActual: null, estimated: true } : null,
+          next: date
+            ? { date, periodEnd: null, epsEstimate: 1.4, epsActual: null, estimated: true }
+            : null,
         }),
       );
     },

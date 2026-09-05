@@ -47,6 +47,39 @@ describe('Sparkline', () => {
     expect(single.container.querySelector('line')).not.toBeNull();
   });
 
+  /** The x coordinate of every plotted point, in order. */
+  function xs(container: HTMLElement): number[] {
+    const points = container.querySelector('polyline')?.getAttribute('points') ?? '';
+    return points
+      .trim()
+      .split(/\s+/)
+      .map((pair) => Number(pair.split(',')[0]));
+  }
+
+  test('places points on the given time axis instead of spacing them evenly (#1790)', () => {
+    // Two steps of 1 day, then one of 3: an irregular series (a dividend history
+    // with a skipped quarter) must read as the gap it is.
+    const day = 86_400_000;
+    const { container } = render(
+      <Sparkline data={[1, 2, 3, 4]} at={[0, day, 2 * day, 5 * day]} width={102} />,
+    );
+    const [a, b, c, d] = xs(container);
+    expect(b! - a!).toBeCloseTo(c! - b!, 5);
+    expect(d! - c!).toBeCloseTo(3 * (b! - a!), 5);
+  });
+
+  test('ignores an axis that does not describe the series', () => {
+    // A mismatched length or a non-finite position would place values at the
+    // wrong times — worse than the even spacing it replaces, so it is dropped.
+    const even = xs(render(<Sparkline data={[1, 2, 3]} />).container);
+    expect(xs(render(<Sparkline data={[1, 2, 3]} at={[0, 1]} />).container)).toEqual(even);
+    expect(xs(render(<Sparkline data={[1, 2, 3]} at={[0, Number.NaN, 2]} />).container)).toEqual(
+      even,
+    );
+    // …and so is an axis with no span at all: every point at one instant.
+    expect(xs(render(<Sparkline data={[1, 2, 3]} at={[7, 7, 7]} />).container)).toEqual(even);
+  });
+
   test('localizes its expression-backed accessibility fallbacks', () => {
     render(
       <I18nProvider initialLocale="de">
