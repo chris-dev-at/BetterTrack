@@ -1047,6 +1047,211 @@ describe('cash budgets', () => {
     ).budgets;
     expect(rows[0]).toMatchObject({ spent: 100, remaining: 0, exceeded: false });
   });
+
+  // ── The budget half of the transfer exclusion (#1792) ──────────────────────
+  //
+  // #1754 excluded the legs of an internal transfer from the summary and the
+  // trends but not from `outflowByTag`, the measure a budget is judged against.
+  // Same tag, same month, same portfolio, and the two endpoints were €9,000
+  // apart. Both scenarios below assert the AGREEMENT, not just the number.
+
+  it('counts no transfer leg against a budget, so the budgets page and the summary agree', async () => {
+    const agent = await newUserAgent('xferbud@bettertrack.test', 'xferbuduser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const transferTag = (await listTags(agent)).find((tag) => tag.systemKey === 'transfer')!;
+    await deposit(agent, portfolioId, 9000, `${PERIOD}-01T00:00:00.000Z`);
+    const main = await mainSourceId(agent, portfolioId);
+    const savings = await createSource(agent, portfolioId, 'Savings');
+
+    // A budget on the `Transfer` tag is permitted — nothing refuses a system tag
+    // — and every transfer leg carries that tag by construction.
+    await createBudget(agent, portfolioId, transferTag.id, 500);
+
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/cash/transfer`)
+      .set(...XRW)
+      .send({
+        fromSourceId: main,
+        toSourceId: savings,
+        amountEur: 9000,
+        executedAt: `${PERIOD}-03T00:00:00.000Z`,
+      })
+      .expect(201);
+
+    const summary = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}`)).body,
+    );
+    const summaryRow = summary.tags.find((row) => row.tagId === transferTag.id);
+    const budgetRow = cashBudgetListResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`)).body,
+    ).budgets[0]!;
+
+    // The one figure both surfaces claim to report: the tag's outflow this month.
+    expect(budgetRow.spent).toBe(summaryRow?.outflow ?? 0);
+    expect(budgetRow).toMatchObject({ spent: 0, remaining: 500, exceeded: false });
+    // …and no alert for money that never left the book.
+    expect(await budgetAlerts(agent)).toBe(0);
+  });
+
+  it('counts no transfer leg a USER tag was put on either', async () => {
+    const agent = await newUserAgent('xferuser@bettertrack.test', 'xferusertag');
+    const portfolioId = await defaultPortfolioId(agent);
+    const savingsTag = await createTag(agent, 'Savings');
+    await deposit(agent, portfolioId, 9000, `${PERIOD}-01T00:00:00.000Z`);
+    const main = await mainSourceId(agent, portfolioId);
+    const savings = await createSource(agent, portfolioId, 'Savings account');
+    await createBudget(agent, portfolioId, savingsTag.id, 200);
+
+    const moved = await agent
+      .post(`/api/v1/portfolios/${portfolioId}/cash/transfer`)
+      .set(...XRW)
+      .send({
+        fromSourceId: main,
+        toSourceId: savings,
+        amountEur: 9000,
+        executedAt: `${PERIOD}-03T00:00:00.000Z`,
+      });
+    expect(moved.status).toBe(201);
+
+    // `PUT /cash/movements/:id/tags` has no kind restriction, so a user's own
+    // label lands on the outgoing leg — and retagging re-evaluates the budgets.
+    const outgoing = moved.body.outgoing as CashMovement;
+    await setTags(agent, outgoing.id, [...(outgoing.tags ?? []), savingsTag.id]);
+
+    const summary = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}`)).body,
+    );
+    const budgetRow = cashBudgetListResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`)).body,
+    ).budgets[0]!;
+    expect(budgetRow.spent).toBe(
+      summary.tags.find((row) => row.tagId === savingsTag.id)?.outflow ?? 0,
+    );
+    expect(budgetRow).toMatchObject({ spent: 0, exceeded: false });
+    expect(await budgetAlerts(agent)).toBe(0);
+  });
+
+  it('still measures real spend that shares a month with a transfer', async () => {
+    // The exclusion must not become "budgets never fire": one genuine €600
+    // withdrawal on the same tag, in the same month as an €8,000 internal move.
+    const agent = await newUserAgent('xfermix@bettertrack.test', 'xfermixuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const savingsTag = await createTag(agent, 'Savings');
+    await deposit(agent, portfolioId, 9000, `${PERIOD}-01T00:00:00.000Z`);
+    const main = await mainSourceId(agent, portfolioId);
+    const savings = await createSource(agent, portfolioId, 'Savings account');
+    await createBudget(agent, portfolioId, savingsTag.id, 200);
+
+    const moved = await agent
+      .post(`/api/v1/portfolios/${portfolioId}/cash/transfer`)
+      .set(...XRW)
+      .send({
+        fromSourceId: main,
+        toSourceId: savings,
+        amountEur: 8000,
+        executedAt: `${PERIOD}-03T00:00:00.000Z`,
+      });
+    expect(moved.status).toBe(201);
+    await setTags(agent, (moved.body.outgoing as CashMovement).id, [savingsTag.id]);
+
+    const spend = await withdraw(agent, portfolioId, 600, `${PERIOD}-04T00:00:00.000Z`);
+    await setTags(agent, spend.id, [savingsTag.id]);
+
+    const budgetRow = cashBudgetListResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`)).body,
+    ).budgets[0]!;
+    expect(budgetRow).toMatchObject({ spent: 600, remaining: -400, exceeded: true });
+    expect(await budgetAlerts(agent)).toBe(1);
+  });
+});
+
+/**
+ * ── ONE CLOCK FOR A CASH MONTH (#1792) ──
+ *
+ * The aggregates bucketed in UTC while the ledger displayed Europe/Vienna, so a
+ * movement stamped at 23:15 UTC on 30 September — the real instant a Vienna user
+ * records at 01:15 on 1 October — was listed as "1 Oct", missing from October's
+ * summary, and charged to SEPTEMBER's budget. The clock is now the one the
+ * ledger displays in, everywhere.
+ */
+describe('cash months follow the clock the ledger displays', () => {
+  /** 01:15 on 1 October 2026 in Vienna (CEST, UTC+2). */
+  const VIENNA_FIRST_HOUR = new Date('2026-09-30T23:15:00.000Z');
+  /** How the ledger renders an instant (`apps/web/src/lib/format.ts`, §5.5). */
+  const displayed = (iso: string) =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Vienna',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(iso));
+
+  beforeEach(async () => {
+    harness = await createTestApp({ budgetNow: () => VIENNA_FIRST_HOUR });
+  });
+
+  it('counts a first-hour movement in the month it is displayed in, and budgets it there', async () => {
+    const agent = await newUserAgent('tz@bettertrack.test', 'tzuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const rent = await createTag(agent, 'Rent');
+    await deposit(agent, portfolioId, 5000, '2026-09-02T12:00:00.000Z');
+    await createBudget(agent, portfolioId, rent.id, 300);
+
+    // Exactly what the server stamps for a Vienna user recording at 01:15 local.
+    const spend = await withdraw(agent, portfolioId, 400, VIENNA_FIRST_HOUR.toISOString());
+    await setTags(agent, spend.id, [rent.id]);
+
+    // 1. What the movements list shows.
+    const listed = (await ledger(agent, portfolioId)).find((row) => row.id === spend.id)!;
+    expect(displayed(listed.executedAt)).toBe('2026-10-01');
+
+    // 2. The summary month — the default period is the displayed month too.
+    const october = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}`)).body,
+    );
+    expect(october.month).toBe('2026-10');
+    expect(october.totalOutflow).toBe(400);
+    expect(october.tags.find((row) => row.tagId === rent.id)?.outflow).toBe(400);
+    const september = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}&month=2026-09`)).body,
+    );
+    expect(september.totalOutflow).toBe(0);
+
+    // 3. The budget period, and the alert it fired.
+    const budgets = cashBudgetListResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`)).body,
+    );
+    expect(budgets.period).toBe('2026-10');
+    expect(budgets.budgets[0]).toMatchObject({ spent: 400, exceeded: true });
+    expect(await budgetAlerts(agent)).toBe(1);
+
+    // …and the trend point the chart draws it on.
+    const trend = cashTrendResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/trends?portfolioId=${portfolioId}&months=2`)).body,
+    );
+    expect(trend.points.map((point) => point.month)).toEqual(['2026-09', '2026-10']);
+    expect(trend.points[1]).toMatchObject({ month: '2026-10', outflow: 400 });
+    expect(trend.points[0]!.outflow).toBe(0);
+  });
+
+  it('leaves a day anchored at noon UTC exactly where it was', async () => {
+    // Every day the app writes is anchored at 12:00 UTC, which is the same
+    // calendar day in Vienna — so the clock change moves nothing the UI records.
+    const agent = await newUserAgent('tznoon@bettertrack.test', 'tznoonuser');
+    const portfolioId = await defaultPortfolioId(agent);
+    await deposit(agent, portfolioId, 5000, '2026-09-02T12:00:00.000Z');
+    const spend = await withdraw(agent, portfolioId, 120, '2026-09-30T12:00:00.000Z');
+    expect(displayed(spend.executedAt)).toBe('2026-09-30');
+
+    const september = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}&month=2026-09`)).body,
+    );
+    expect(september.totalOutflow).toBe(120);
+    const october = cashMonthlySummaryResponseSchema.parse(
+      (await agent.get(`/api/v1/cash/summary?portfolioId=${portfolioId}`)).body,
+    );
+    expect(october.totalOutflow).toBe(0);
+  });
 });
 
 describe('cash summary and trends', () => {
