@@ -879,7 +879,7 @@ export const V5_SURFACE_INVENTORY = [
         'Policy is a required singleton; 2FA method absence is an actionable setup state.',
       ),
       error: covered(
-        'Both resource failures render a localized Alert with retry; every keyless write on the page (session policy, recovery-code regenerate, email-method turn-off) routes through the shared write seam, so an expired admin window signs the console out with a translated notice instead of an inline banner. Only range validation and the TOTP-disable code field stay inline — the latter because its 401 is a rejected factor, not auth loss — and that field pins the expiry path explicitly.',
+        'Both resource failures render a localized Alert with retry; the keyless writes with no factor to verify (session policy, recovery-code regenerate, email-method turn-off) route through the shared write seam, so an expired admin window signs the console out with a translated notice instead of an inline banner. The factor-verifying writes — the TOTP-disable code field and the shared enroll/confirm forms this page renders (admin/components/twoFactor.tsx: TOTP enroll + confirm, email start + confirm) — keep their own mapping, because their 401/400 is a rejected code rather than auth loss, and each pins the expiry path explicitly through admin/sessionExpiry.ts. Only range validation stays purely inline.',
       ),
     },
     tests: ['admin/pages/SecuritySettingsPage.test.tsx', 'admin/sessionExpiry.test.tsx'],

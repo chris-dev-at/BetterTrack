@@ -9,6 +9,7 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { ApiError } from '../../lib/apiClient';
+import { useAdminWindowClosedSignOut } from '../sessionExpiry';
 import { Alert, Button, Spinner, TextField } from './ui';
 
 /**
@@ -17,6 +18,16 @@ import { Alert, Button, Spinner, TextField } from './ui';
  * form, and the one-time recovery-code panel. Reused by both the forced-enrollment
  * wizard ({@link TwoFactorSetupPage}) and the Security settings page so the two
  * flows stay byte-identical.
+ *
+ * Every write here keeps its own error mapping rather than moving to
+ * `useAdminMutation`: `/admin/security/2fa/{totp,email}/{enroll,confirm,start}`
+ * answers **401** for a rejected or expired code, and the write seam reads every
+ * 401 as auth loss — which would sign a working admin out over a typo. What each
+ * catch DOES route through the shared seam is the expiry: none of these routes
+ * names a removable row, so a bare 404 is §6.12 answering a session that is no
+ * longer an admin (V5-P13c, #1779). Left inline, `twoFactorErrorMessage` would
+ * print the raw English `Not found` envelope under the code field of a console
+ * whose every next request fails identically.
  */
 
 /** Map an API failure to a user-facing message: the API's own text for < 500, else generic. */
@@ -97,6 +108,7 @@ export function TotpEnrollForm({
   onCancel: () => void;
 }) {
   const t = useT();
+  const signOutIfWindowClosed = useAdminWindowClosedSignOut();
   const [enroll, setEnroll] = useState<{ otpauthUri: string; secret: string } | null>(null);
   const [enrollError, setEnrollError] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -110,14 +122,18 @@ export function TotpEnrollForm({
       try {
         const data = await api.enrollTotp();
         if (active) setEnroll(data);
-      } catch {
-        if (active) setEnrollError(t('admin.twoFactor.totp.enrollError'));
+      } catch (err) {
+        if (!active) return;
+        // An expired admin window would otherwise sit here as "couldn't start
+        // enrollment", inviting a retry that cannot succeed.
+        if (signOutIfWindowClosed(err)) return;
+        setEnrollError(t('admin.twoFactor.totp.enrollError'));
       }
     })();
     return () => {
       active = false;
     };
-  }, [t]);
+  }, [t, signOutIfWindowClosed]);
 
   if (!enroll) {
     return enrollError ? <Alert tone="error">{enrollError}</Alert> : <Spinner />;
@@ -131,6 +147,9 @@ export function TotpEnrollForm({
       const { recoveryCodes } = await api.confirmTotp({ code });
       onEnrolled(recoveryCodes);
     } catch (err) {
+      // A 401 here is the CODE being rejected, so it stays inline; a bare 404 is
+      // the session window closing and signs the console out (#1779).
+      if (signOutIfWindowClosed(err)) return;
       setError(twoFactorErrorMessage(t, err));
     } finally {
       setSubmitting(false);
@@ -204,6 +223,7 @@ export function EmailEnrollForm({
   onCancel: () => void;
 }) {
   const t = useT();
+  const signOutIfWindowClosed = useAdminWindowClosedSignOut();
   const [phase, setPhase] = useState<'start' | 'confirm'>('start');
   const [email, setEmail] = useState(initialEmail ?? '');
   const [proof, setProof] = useState('');
@@ -222,6 +242,9 @@ export function EmailEnrollForm({
       });
       setPhase('confirm');
     } catch (err) {
+      // The proof this step verifies is refused with a 401; only the bare 404 is
+      // the admin window closing (#1779).
+      if (signOutIfWindowClosed(err)) return;
       setError(twoFactorErrorMessage(t, err));
     } finally {
       setSubmitting(false);
@@ -236,6 +259,9 @@ export function EmailEnrollForm({
       const { recoveryCodes } = await api.confirmEmailTwoFactor({ code });
       onEnrolled(recoveryCodes);
     } catch (err) {
+      // Same split as the start step: a rejected emailed code is a 401 and stays
+      // inline; a bare 404 signs the console out (#1779).
+      if (signOutIfWindowClosed(err)) return;
       setError(twoFactorErrorMessage(t, err));
     } finally {
       setSubmitting(false);

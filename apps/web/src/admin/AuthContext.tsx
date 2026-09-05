@@ -66,6 +66,19 @@ export type AdminSignOutReason = 'expired';
 /** One hour in ms — the unit the 6–24 h admin session policy is expressed in. */
 const HOUR_MS = 3_600_000;
 
+/**
+ * How far this browser's clock may disagree with the server's before the derived
+ * deadline is discarded as unusable (V5-P13c).
+ *
+ * The screen it feeds is measured against THIS session's configured window, not
+ * the 24 h policy maximum: at a configured 24 h lifetime a maximum-width band
+ * would reject any clock even slightly behind the server, silently disabling the
+ * courtesy sign-out on every such install. One hour of slack keeps a normal
+ * clock error inside the band; the only cost of tolerating it is a courtesy
+ * timer that fires up to an hour late, and the server was never waiting for it.
+ */
+const CLOCK_TOLERANCE_MS = HOUR_MS;
+
 interface AuthContextValue {
   status: AuthStatus;
   /** The current admin. Null while anonymous/loading, and while a reset admin is
@@ -367,23 +380,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSessionDeadline(null);
           return;
         }
-        const deadline =
-          new Date(current.createdAt).getTime() + policy.sessionLifetimeHours * HOUR_MS;
+        const sessionWindow = policy.sessionLifetimeHours * HOUR_MS;
+        const deadline = new Date(current.createdAt).getTime() + sessionWindow;
         if (!Number.isFinite(deadline)) {
           setSessionDeadline(null);
           return;
         }
         // Clock-disagreement screen, applied HERE because this is the one moment
         // the session is provably alive: the server just answered both reads on
-        // this very cookie. So a deadline that is further out than the widest
-        // window the policy allows, OR further in the past than that same width,
-        // cannot be the truth — it is this browser's clock disagreeing with the
-        // server's, in one direction or the other. Symmetry matters: a clock
-        // running AHEAD would otherwise make `remaining <= 0` on the first
-        // evaluation after every successful login and lock the operator out of
-        // their own console. Unknown is the safe state; the seams still sign out
-        // on the next 401/404.
-        if (Math.abs(deadline - Date.now()) > ADMIN_SESSION_LIFETIME_MAX_HOURS * HOUR_MS) {
+        // this very cookie, and it re-reads the lifetime on every resolution. So
+        // the session's true remaining time is inside `(0, sessionWindow]` — a
+        // computed value outside that band is this browser's clock disagreeing
+        // with the server's, in one direction or the other, and unknown is the
+        // safe state (the write/read seams still sign out on the next 401/404).
+        //
+        // Both directions matter, for different reasons. A clock running AHEAD
+        // lands `remaining <= 0` here, and accepting it would sign the admin out
+        // on the very first evaluation after every successful login — an endless
+        // login → "your session expired" loop. A clock running BEHIND pushes the
+        // deadline past the window, and accepting it would arm a timer later than
+        // the truth. Screening both leaves at most `skew` of premature courtesy
+        // sign-out for a clock ahead by less than the window, which is a timer of
+        // positive length, never an instant bounce.
+        const remaining = deadline - Date.now();
+        if (remaining <= 0 || remaining > sessionWindow + CLOCK_TOLERANCE_MS) {
           setSessionDeadline(null);
           return;
         }
@@ -399,16 +419,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status !== 'authenticated' || sessionDeadline === null) return;
     const remaining = sessionDeadline - Date.now();
-    // Both skew directions were screened out where the deadline was derived (see
-    // above), so a deadline that is already behind us here is a real expiry — at
-    // most one policy window old — and not a browser clock running ahead.
+    // A stored deadline was in the future when it was derived (see the screen
+    // above), so reaching zero here means time actually passed: either the
+    // console sat parked through the window, or a policy write shortened it. Both
+    // are real expiries, not a browser clock running ahead.
     if (remaining <= 0) {
       clearSession('expired');
       return;
     }
     // Defence in depth for the same screen: never arm a timer further out than
-    // the widest window the policy allows.
-    if (remaining > ADMIN_SESSION_LIFETIME_MAX_HOURS * HOUR_MS) return;
+    // the widest window the policy allows, plus the skew the screen tolerates.
+    if (remaining > ADMIN_SESSION_LIFETIME_MAX_HOURS * HOUR_MS + CLOCK_TOLERANCE_MS) return;
     const timer = setTimeout(() => clearSession('expired'), remaining);
     return () => clearTimeout(timer);
   }, [status, sessionDeadline, clearSession]);

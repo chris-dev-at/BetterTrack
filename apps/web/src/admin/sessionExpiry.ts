@@ -46,10 +46,12 @@ export function adminSignOutReason(err: unknown): AdminSignOutReason | undefined
  * whether it did — so the caller can skip its own error mapping.
  *
  * Most admin writes belong on `useAdminMutation`, which handles this internally.
- * This is for the few controls that legitimately keep their own error mapping
- * (the TOTP-disable code field, whose 401 is a rejected factor rather than auth
- * loss) and would otherwise render the raw English `Not found` envelope on a
- * console that can no longer do anything.
+ * This is for the controls that legitimately keep their own error mapping —
+ * every factor-verifying write under `/admin/security/2fa/*` (the TOTP-disable
+ * code field, and the TOTP/email enroll + confirm steps), whose **401 is a
+ * rejected code rather than auth loss**, so the seam's "401 ⇒ signed out" would
+ * log a working admin out over a typo. They would otherwise render the raw
+ * English `Not found` envelope on a console that can no longer do anything.
  */
 export function useAdminWindowClosedSignOut(): (err: unknown) => boolean {
   const { clearSession } = useAuth();

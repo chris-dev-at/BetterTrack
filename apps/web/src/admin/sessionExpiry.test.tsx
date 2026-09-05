@@ -17,6 +17,7 @@ import {
   type MeResponse,
   type NotificationMatrix,
   type SessionSummary,
+  type TwoFactorEnrollResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../lib/adminApi');
@@ -56,7 +57,9 @@ import { SettingsPage } from './pages/SettingsPage';
  *  6. the read path's 401-or-404 sign-out is unchanged, and only CLAIMS an expiry
  *     when the 404 named no domain outcome;
  *  7. a browser clock that disagrees with the server's, in EITHER direction, is
- *     never turned into a sign-out.
+ *     never turned into a sign-out — and the screen that decides this is measured
+ *     against the session's OWN window, so a normal clock error on a 24 h-wide
+ *     install does not silently disable the deadline instead.
  */
 
 /** Expected copy always comes from the catalog, so EN and DE assert the same claim. */
@@ -150,6 +153,25 @@ const accountDefaults: AccountDefaultsResponse = {
 
 /** The §6.12 answer an expired admin session gets on every `/admin/*` route. */
 const expiredAdminSession = () => new ApiError(404, 'NOT_FOUND', 'Not found');
+
+/**
+ * A console whose only factor is the email method, so the Security page offers
+ * the two shared enroll forms (`TotpEnrollForm` via "Set up", `EmailEnrollForm`
+ * via "Change") rather than the enabled-method rows.
+ */
+const emailOnlyStatus = {
+  setupRequired: false,
+  totpEnabled: false,
+  totpPending: false,
+  emailEnabled: true,
+  twoFactorEmail: 'codes@bettertrack.test',
+  recoveryCodesRemaining: 8,
+};
+
+const totpEnrollment: TwoFactorEnrollResponse = {
+  otpauthUri: 'otpauth://totp/BetterTrack:rootadmin?secret=JBSWY3DPEHPK3PXP&issuer=BetterTrack',
+  secret: 'JBSWY3DPEHPK3PXP',
+};
 
 /**
  * The console reduced to what this suite is about: the signed-in surface, the
@@ -326,6 +348,98 @@ describe('an expired admin session signs the console out from every hand-rolled 
     expect(screen.queryByText('Not found')).not.toBeInTheDocument();
   });
 
+  test('Security — starting a TOTP re-enrollment, on the shared enroll form', async () => {
+    vi.mocked(api.getTwoFactorStatus).mockResolvedValue(emailOnlyStatus);
+    vi.mocked(api.enrollTotp).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: message('en', 'admin.twoFactor.totp.setup') }),
+    );
+
+    await expectExpiryScreen();
+    // The defect this replaces: "couldn't start enrollment", inviting a retry
+    // that cannot succeed on a console that is no longer an admin.
+    expect(
+      screen.queryByText(message('en', 'admin.twoFactor.totp.enrollError')),
+    ).not.toBeInTheDocument();
+  });
+
+  test('Security — confirming the authenticator code, on the shared enroll form', async () => {
+    vi.mocked(api.getTwoFactorStatus).mockResolvedValue(emailOnlyStatus);
+    vi.mocked(api.enrollTotp).mockResolvedValue(totpEnrollment);
+    vi.mocked(api.confirmTotp).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: message('en', 'admin.twoFactor.totp.setup') }),
+    );
+    await user.type(
+      await screen.findByLabelText(message('en', 'admin.twoFactor.totp.confirmationCodeLabel')),
+      '123456',
+    );
+    await user.click(
+      screen.getByRole('button', { name: message('en', 'admin.twoFactor.confirmAndEnable') }),
+    );
+
+    await expectExpiryScreen();
+    // `twoFactorErrorMessage` used to print the raw English envelope under the
+    // code field, untranslated, on a dead console.
+    expect(screen.queryByText('Not found')).not.toBeInTheDocument();
+  });
+
+  test('Security — requesting the 2FA email code, on the shared enroll form', async () => {
+    vi.mocked(api.getTwoFactorStatus).mockResolvedValue(emailOnlyStatus);
+    vi.mocked(api.startEmailTwoFactor).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: message('en', 'admin.twoFactor.email.change') }),
+    );
+    await user.type(
+      await screen.findByLabelText(message('en', 'admin.twoFactor.email.proofLabel')),
+      '123456',
+    );
+    await user.click(
+      screen.getByRole('button', { name: message('en', 'admin.twoFactor.email.sendCode') }),
+    );
+
+    await expectExpiryScreen();
+    expect(screen.queryByText('Not found')).not.toBeInTheDocument();
+  });
+
+  test('Security — confirming the emailed code, on the shared enroll form', async () => {
+    vi.mocked(api.getTwoFactorStatus).mockResolvedValue(emailOnlyStatus);
+    vi.mocked(api.startEmailTwoFactor).mockResolvedValue(undefined);
+    vi.mocked(api.confirmEmailTwoFactor).mockRejectedValue(expiredAdminSession());
+    const user = userEvent.setup();
+    renderConsole(<SecuritySettingsPage />);
+
+    await user.click(
+      await screen.findByRole('button', { name: message('en', 'admin.twoFactor.email.change') }),
+    );
+    await user.type(
+      await screen.findByLabelText(message('en', 'admin.twoFactor.email.proofLabel')),
+      '123456',
+    );
+    await user.click(
+      screen.getByRole('button', { name: message('en', 'admin.twoFactor.email.sendCode') }),
+    );
+    await user.type(
+      await screen.findByLabelText(message('en', 'admin.twoFactor.email.codeLabel')),
+      '123456',
+    );
+    await user.click(
+      screen.getByRole('button', { name: message('en', 'admin.twoFactor.confirmAndEnable') }),
+    );
+
+    await expectExpiryScreen();
+    expect(screen.queryByText('Not found')).not.toBeInTheDocument();
+  });
+
   test('Feature flags — a kill-switch toggle', async () => {
     vi.mocked(api.getFeatureFlags).mockResolvedValue(featureFlags);
     vi.mocked(api.setFeatureFlag).mockRejectedValue(expiredAdminSession());
@@ -396,6 +510,33 @@ test('a rejected TOTP code is a rejected code, not an expired session', async ()
   );
 
   expect(await screen.findByText('That two-factor code is incorrect.')).toBeInTheDocument();
+  expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+});
+
+test('a rejected enrollment code is a rejected code, not an expired session', async () => {
+  // Same split on the shared enroll form: only the bare 404 is the window
+  // closing. The confirm step's own refusal keeps the server's own text and
+  // leaves the operator where they were, mid-enrollment.
+  vi.mocked(api.getTwoFactorStatus).mockResolvedValue(emailOnlyStatus);
+  vi.mocked(api.enrollTotp).mockResolvedValue(totpEnrollment);
+  vi.mocked(api.confirmTotp).mockRejectedValue(
+    new ApiError(400, 'TWO_FACTOR_INVALID_CODE', 'That code is incorrect or has expired.'),
+  );
+  const user = userEvent.setup();
+  renderConsole(<SecuritySettingsPage />);
+
+  await user.click(
+    await screen.findByRole('button', { name: message('en', 'admin.twoFactor.totp.setup') }),
+  );
+  await user.type(
+    await screen.findByLabelText(message('en', 'admin.twoFactor.totp.confirmationCodeLabel')),
+    '123456',
+  );
+  await user.click(
+    screen.getByRole('button', { name: message('en', 'admin.twoFactor.confirmAndEnable') }),
+  );
+
+  expect(await screen.findByText('That code is incorrect or has expired.')).toBeInTheDocument();
   expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
 });
 
@@ -567,13 +708,18 @@ describe('the client-held deadline (V5-P13c)', () => {
   });
 
   test.each([
-    // Clock BEHIND the server: the deadline lands further out than any policy
-    // window could reach. Already guarded.
-    ['behind', SESSION_CREATED_AT_MS - 40 * 60 * 60 * 1000],
+    // Clock BEHIND the server: the deadline lands further out than the session's
+    // own window could reach.
+    ['behind by more than a window', SESSION_CREATED_AT_MS - 40 * 60 * 60 * 1000],
     // Clock AHEAD of the server: the deadline is already in the past on the very
     // first evaluation after a successful login. Unguarded, this signed the admin
     // straight back out with "your session expired" and they could never get in.
-    ['ahead', SESSION_CREATED_AT_MS + 40 * 60 * 60 * 1000],
+    ['ahead by more than any window', SESSION_CREATED_AT_MS + 40 * 60 * 60 * 1000],
+    // The case a 24 h-wide screen let through: with the 12 h lifetime configured
+    // here, a clock 18 h ahead still puts the deadline in the past — but only 6 h
+    // in the past, which a band measured against the 24 h policy MAXIMUM accepted.
+    // That is the login → "your admin session expired" → login loop.
+    ['ahead by less than the widest policy window', SESSION_CREATED_AT_MS + 18 * 60 * 60 * 1000],
   ])('a browser clock %s the server never manufactures a sign-out', async (_direction, now) => {
     vi.setSystemTime(now);
     vi.mocked(api.getSettings).mockResolvedValue(settings);
@@ -586,6 +732,28 @@ describe('the client-held deadline (V5-P13c)', () => {
     // The server is the authority in both directions: an unusable deadline is
     // unknown, and the seams still sign out on the next 401/404.
     expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+  });
+
+  test('a 24 h install still arms its deadline when the clock is slightly behind', async () => {
+    // The mirror of the screen above: measuring the band against the 24 h policy
+    // MAXIMUM meant that on a 24 h-configured install any clock even a little
+    // behind the server pushed the deadline past the band, and the courtesy
+    // sign-out silently never armed. The band is the session's OWN window plus a
+    // tolerance, so a ten-minute clock error still expires the console.
+    vi.setSystemTime(SESSION_CREATED_AT_MS - 10 * 60 * 1000);
+    vi.mocked(api.getSessionPolicy).mockResolvedValue({
+      ...sessionPolicy,
+      sessionLifetimeHours: 24,
+    });
+    vi.mocked(api.getSettings).mockResolvedValue(settings);
+    renderConsole(<SettingsPage />);
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    await waitFor(() => expect(api.listOwnSessions).toHaveBeenCalled());
+
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000 + 11 * 60 * 1000);
+
+    await expectExpiryScreen();
   });
 
   test('an unreadable window never manufactures a sign-out', async () => {
