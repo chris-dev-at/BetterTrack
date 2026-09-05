@@ -31,6 +31,7 @@ import { assetTypeLabels } from './assetTypeLabels';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
+import { upcomingDividendDate, utcDay } from '../../lib/dividendDates';
 import {
   EM_DASH,
   formatDate,
@@ -1436,6 +1437,9 @@ function DividendIntelSection() {
   if (!hasProjection && entries.length === 0) return null;
 
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
+  // One "today" for the whole list so every row is labelled against the same
+  // day boundary the API used when it built and ordered the calendar.
+  const calendarToday = utcDay();
   const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
 
   return (
@@ -1485,11 +1489,14 @@ function DividendIntelSection() {
           ) : null}
           <ul className="bt-band flex flex-col">
             {visibleEntries.map((entry) => {
-              // An entry may carry only a pay date (an event already gone ex, or
-              // a provider that gave no ex-date). Label the date we actually
-              // have, like the Home widget — rendering "ex —" for it is a lie.
-              const isEx = entry.exDate !== null;
-              const date = entry.exDate ?? entry.payDate;
+              // The date this event is still upcoming on — the earliest of its
+              // ex/pay dates that has not passed, which is also the date the API
+              // ordered the list on. An event already gone ex but not yet paid
+              // shows its PAY date: printing the ex-date behind us under
+              // "upcoming" was #1758, and "ex —" for a pay-only row was #1681.
+              const upcoming = upcomingDividendDate(entry, calendarToday);
+              const isEx = upcoming?.isEx ?? false;
+              const date = upcoming?.iso ?? null;
               return (
                 <li
                   key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}

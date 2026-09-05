@@ -358,14 +358,21 @@ const RESOLVED_PROJECTION: ProjectedDividendIncomeResponse = {
   ],
 };
 
+/**
+ * Calendar dates relative to the real clock: whether a date is upcoming is now
+ * part of what the page renders (#1758), so a fixture pinned to a fixed day
+ * would start asserting the opposite of itself once that day passed.
+ */
+const calendarIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
 function calendarEntry(over: Partial<DividendCalendarEntry> = {}): DividendCalendarEntry {
   return {
     assetId: 'a1',
     symbol: 'AAPL',
     name: 'Apple Inc.',
     source: 'holding',
-    exDate: '2026-08-08T00:00:00.000Z',
-    payDate: '2026-08-15T00:00:00.000Z',
+    exDate: calendarIso(2),
+    payDate: calendarIso(9),
     amount: 0.24,
     currency: 'USD',
     ...over,
@@ -1715,15 +1722,13 @@ describe('PortfolioPage — dividend calendar dates', () => {
     // actually has.
     vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
       available: true,
-      entries: [calendarEntry({ exDate: null, payDate: '2026-08-15T00:00:00.000Z' })],
+      entries: [calendarEntry({ exDate: null, payDate: calendarIso(7) })],
     });
 
     renderPage();
 
     const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
-    expect(
-      within(calendar).getByText(`paid ${formatDate('2026-08-15T00:00:00.000Z')}`),
-    ).toBeInTheDocument();
+    expect(within(calendar).getByText(`paid ${formatDate(calendarIso(7))}`)).toBeInTheDocument();
     expect(within(calendar).queryByText(/^ex /)).not.toBeInTheDocument();
     // The em dash is what `formatDate(null)` used to render into the ex-label.
     expect(within(calendar).queryByText(/—/)).not.toBeInTheDocument();
@@ -1738,9 +1743,26 @@ describe('PortfolioPage — dividend calendar dates', () => {
     renderPage();
 
     const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(calendar).getByText(`ex ${formatDate(calendarIso(2))}`)).toBeInTheDocument();
+  });
+
+  test('labels an event already gone ex with its PAY date, never the past ex-date', async () => {
+    // The API's own fixture (portfolioMarketIntelService.test.ts): ex a week
+    // ago, paid in a week. The endpoint keeps the event and sorts it on the pay
+    // date; the page used to print the ex-date behind us under "upcoming".
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry({ exDate: calendarIso(-7), payDate: calendarIso(7) })],
+    });
+
+    renderPage();
+
+    const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(calendar).getByText(`paid ${formatDate(calendarIso(7))}`)).toBeInTheDocument();
+    expect(within(calendar).queryByText(/^ex /)).not.toBeInTheDocument();
     expect(
-      within(calendar).getByText(`ex ${formatDate('2026-08-08T00:00:00.000Z')}`),
-    ).toBeInTheDocument();
+      within(calendar).queryByText(new RegExp(formatDate(calendarIso(-7)))),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -1787,9 +1809,9 @@ describe('PortfolioPage — dividend block: unconfigured vs. unresolved', () => 
       available: true,
       entries: [
         calendarEntry(),
-        calendarEntry({ assetId: 'a2', symbol: 'MSFT', exDate: '2026-08-09T00:00:00.000Z' }),
-        calendarEntry({ assetId: 'a3', symbol: 'KO', exDate: '2026-08-10T00:00:00.000Z' }),
-        calendarEntry({ assetId: 'a4', symbol: 'JNJ', exDate: '2026-08-11T00:00:00.000Z' }),
+        calendarEntry({ assetId: 'a2', symbol: 'MSFT', exDate: calendarIso(3) }),
+        calendarEntry({ assetId: 'a3', symbol: 'KO', exDate: calendarIso(4) }),
+        calendarEntry({ assetId: 'a4', symbol: 'JNJ', exDate: calendarIso(5) }),
       ],
     });
 

@@ -230,14 +230,21 @@ function cashSource(overrides: Partial<CashSource> = {}): CashSource {
   };
 }
 
+/**
+ * Relative to the real clock: the widget now renders the earliest date that has
+ * NOT passed (#1758), so dates pinned to a fixed day would stop being upcoming.
+ */
+const dividendIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
+
 const DIVIDEND: DividendCalendarEntry = {
   assetId: APPLE.id,
   symbol: 'AAPL',
   name: 'Apple Inc.',
   source: 'holding',
-  // The ex-date is the earlier of the two, so it is the one the row must show.
-  exDate: '2026-08-05T00:00:00.000Z',
-  payDate: '2026-08-19T00:00:00.000Z',
+  // Both dates are still ahead and the ex-date is the earlier of the two, so it
+  // is the one the row must show.
+  exDate: dividendIso(5),
+  payDate: dividendIso(19),
   amount: 0.24,
   currency: 'USD',
 };
@@ -1092,7 +1099,7 @@ test('dividends show the earlier of ex/pay date, labelled', async () => {
   const widget = await screen.findByRole('region', { name: 'Dividends' });
 
   expect(await within(widget).findByRole('link', { name: 'AAPL' })).toBeInTheDocument();
-  // 05.08. is before 19.08., so the row is an ex-date row.
+  // The ex-date is the earlier of the two upcoming dates ⇒ an ex-date row.
   expect(within(widget).getByText(/Ex-date/)).toBeInTheDocument();
   expect(within(widget).queryByText(/Pay date/)).not.toBeInTheDocument();
 });

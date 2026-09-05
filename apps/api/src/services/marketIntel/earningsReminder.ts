@@ -21,13 +21,27 @@ import type { NotificationCenter } from '../notifications/notificationCenter';
  * enabled the type a day later would silently receive nothing for that report.
  * Same rule, same reason as the sibling dividend scan.
  *
- * Firing is idempotent per (user, asset, report date): a per-key Redis `SET NX`
- * lock (TTL far longer than the lead window, and the same (asset, date) never
- * recurs — the next report is a different date) keeps a daily re-scan across the
- * multi-day window from re-emitting, and the dispatcher's eventKey folds the
- * same tuple as a durable backstop. The lock is released when the enqueue itself
- * fails, so a Redis/queue hiccup can only re-attempt next scan, never strand a
- * reminder.
+ * Firing is idempotent per (user, asset, REPORT) — not per date. Yahoo's
+ * `earningsDate` is an estimated window until the company confirms it, so the
+ * date a scan sees can move by a day or two inside the lead window; keying only
+ * on the date sent a second reminder for the same report when the estimate
+ * firmed up (#1758). Two guards, in order:
+ *
+ *   1. a per-(user, asset) REPORT ANCHOR holding the date already reminded for.
+ *      A candidate within {@link EARNINGS_REPORT_MATCH_DAYS} of the anchor is
+ *      the same report under a corrected date, and stays SILENT — the DECISION
+ *      is exactly one notification per report, with no "date changed" follow-up:
+ *      the reminder is at most three days out, the correction it would announce
+ *      is a day or two, and §6.10 contracts one notification per (user, event
+ *      key). Genuine consecutive reports are ~90 days apart, far outside the
+ *      match window, so a later report is always a fresh anchor.
+ *   2. the per-(user, asset, date) `SET NX` lock that has always been here,
+ *      which makes the same-date path atomic between concurrent scans and is
+ *      backstopped durably by the dispatcher's eventKey (assetId + date).
+ *
+ * Both TTLs are far longer than the lead window. The lock is released — and the
+ * anchor never written — when the enqueue itself fails, so a Redis/queue hiccup
+ * can only re-attempt next scan, never strand a reminder.
  *
  * Gate-respecting: when `MARKET_INTEL_ENABLED` is off the scan is a no-op — no
  * reminders exist when the arc is unconfigured (invisible when unconfigured).
@@ -52,9 +66,36 @@ export const EARNINGS_REMINDER_LEAD_MS = EARNINGS_REMINDER_LEAD_DAYS * 86_400_00
  */
 export const EARNINGS_REMINDER_LOCK_TTL_SECONDS = 45 * 24 * 60 * 60;
 
+/**
+ * How far an upcoming earnings date may move and still be the SAME report.
+ * Sized between the two things it must separate: an estimated date firming up
+ * moves by days (Yahoo publishes a window of a few days), while an asset's next
+ * report is a full quarter — ~90 days — after this one. Three weeks sits well
+ * clear of both, so a corrected date is never a second reminder and a genuine
+ * next report is never swallowed.
+ */
+export const EARNINGS_REPORT_MATCH_DAYS = 21;
+
 /** Redis idempotency key for one (user, asset, report date). */
 export function earningsReminderLockKey(userId: string, assetId: string, dateKey: string): string {
   return `earnings:reminded:${userId}:${assetId}:${dateKey}`;
+}
+
+/**
+ * Redis key of the report ANCHOR for one (user, asset): the report date this
+ * recipient was last reminded about, so a date that merely moved is recognised
+ * as the same report. Distinct namespace from the per-date lock above.
+ */
+export function earningsReminderReportKey(userId: string, assetId: string): string {
+  return `earnings:report:${userId}:${assetId}`;
+}
+
+/** Whole days between two `YYYY-MM-DD` day strings, sign-independent. */
+function dayDistance(a: string, b: string): number {
+  const left = Date.parse(`${a}T00:00:00.000Z`);
+  const right = Date.parse(`${b}T00:00:00.000Z`);
+  if (Number.isNaN(left) || Number.isNaN(right)) return Number.POSITIVE_INFINITY;
+  return Math.abs(left - right) / 86_400_000;
 }
 
 /** Whether the `earnings.reminder` type is enabled on ANY channel for a user. */
@@ -171,6 +212,13 @@ export async function runEarningsReminderScan(
     // enable for this same (asset, report date).
     if (!(await optedIn(a.userId))) return;
 
+    // Same report under a corrected date ⇒ already reminded, stay silent. Read
+    // AFTER the opt-in gate for the same reason the lock is taken there: a
+    // recipient who never enabled the type leaves no state behind at all.
+    const reportKey = earningsReminderReportKey(a.userId, a.assetId);
+    const anchor = await redis.get(reportKey);
+    if (anchor !== null && dayDistance(anchor, dateKey) <= EARNINGS_REPORT_MATCH_DAYS) return;
+
     const lockKey = earningsReminderLockKey(a.userId, a.assetId, dateKey);
     const acquired = await redis.set(lockKey, '1', 'EX', EARNINGS_REMINDER_LOCK_TTL_SECONDS, 'NX');
     if (acquired !== 'OK') return;
@@ -191,6 +239,9 @@ export async function runEarningsReminderScan(
       await redis.del(lockKey);
       return;
     }
+    // Anchor this report only once it is genuinely on the queue, so a failed
+    // enqueue leaves neither guard set and the next scan retries.
+    await redis.set(reportKey, dateKey, 'EX', EARNINGS_REMINDER_LOCK_TTL_SECONDS);
     reminded += 1;
   };
 

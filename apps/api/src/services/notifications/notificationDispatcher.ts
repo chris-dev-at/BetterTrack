@@ -217,6 +217,12 @@ function eventKeyFor(event: DispatchableEvent): string {
       // Deduped per (asset, report date): one reminder per upcoming report, so a
       // daily re-scan across the multi-day lead window never re-notifies. The
       // recipient userId (repo-side) keeps every holder/watcher's row distinct.
+      // REPORT-level identity (an estimated date firming up is still one report,
+      // #1758) is resolved by the producer, which is the only layer that sees
+      // the date move: `marketIntel/earningsReminder.ts` holds a per-(user,
+      // asset) anchor and simply does not emit the second time. This key stays
+      // date-shaped because here it backstops REDELIVERY of one emit, and a
+      // redelivered emit always carries the same date.
       return `earnings.reminder:${event.assetId}:${event.earningsDate.slice(0, 10)}`;
     case 'chat.message':
       return `chat.message:${event.messageId}`;

@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { DividendCalendarEntry } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
+import { upcomingDividendDate, utcDay } from '../../../lib/dividendDates';
 import { formatDate } from '../../../lib/format';
 import {
   getPortfolioDividendCalendar,
@@ -30,21 +31,6 @@ import type { WidgetProps } from './types';
 /** Events surfaced at most — the calendar page is one click away. */
 const MAX_ROWS = 6;
 
-/**
- * The event's own date: whichever of ex-date / pay-date comes first, since either
- * may be missing. `null` when the provider gave neither, in which case the row is
- * dropped — an undated "upcoming" event is not information.
- */
-function eventDate(entry: DividendCalendarEntry): { iso: string; isEx: boolean } | null {
-  const { exDate, payDate } = entry;
-  if (exDate !== null && payDate !== null) {
-    return exDate <= payDate ? { iso: exDate, isEx: true } : { iso: payDate, isEx: false };
-  }
-  if (exDate !== null) return { iso: exDate, isEx: true };
-  if (payDate !== null) return { iso: payDate, isEx: false };
-  return null;
-}
-
 export function DividendsWidget({ size }: WidgetProps) {
   const t = useT();
   const calendarQuery = useQuery({
@@ -66,14 +52,16 @@ export function DividendsWidget({ size }: WidgetProps) {
     return <Empty title={t('home.widgets.dividends.unavailable')} />;
   }
 
+  // The endpoint already orders the calendar on the date each event is upcoming
+  // on, and `upcomingDividendDate` is that same rule — so the widget renders the
+  // API's order as it arrived. Re-sorting here on a date chosen by a different
+  // rule is exactly what reversed the list and printed a past ex-date (#1758).
+  const today = utcDay();
   const rows = calendarQuery.data.entries
-    .map((entry) => ({ entry, date: eventDate(entry) }))
+    .map((entry) => ({ entry, date: upcomingDividendDate(entry, today) }))
     .filter((row): row is { entry: DividendCalendarEntry; date: { iso: string; isEx: boolean } } =>
       Boolean(row.date),
     )
-    // The endpoint already sorts ascending by the earliest of the two dates; sort
-    // again anyway so the widget's own choice of date drives its own order.
-    .sort((a, b) => a.date.iso.localeCompare(b.date.iso))
     .slice(0, size === 's' ? 3 : MAX_ROWS);
 
   if (rows.length === 0) return <Empty title={t('home.widgets.dividends.empty')} />;

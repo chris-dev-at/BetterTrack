@@ -22,7 +22,29 @@ import type { MarketIntelRepository } from '../../data/repositories/marketIntelR
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
-import { capRollupSubjects } from './rollupBudget';
+import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
+
+/**
+ * Headlines one digest group may carry. The bound lives HERE, in the
+ * provider-abstracted service, not in whichever provider answered: the Yahoo
+ * provider happens to ask for 20 (`providers/yahooProvider.ts`), but a second
+ * news provider returning hundreds must not flow straight through to the client
+ * (#1758). With the per-request fan-out cap this states the response ceiling:
+ * at most {@link MARKET_INTEL_ROLLUP_MAX_ASSETS} groups ×
+ * {@link NEWS_DIGEST_HEADLINES_PER_GROUP} headlines — and, after the cross-group
+ * dedupe below, at most that many DISTINCT articles in total.
+ */
+export const NEWS_DIGEST_HEADLINES_PER_GROUP = 10;
+
+/** The stated ceiling on one digest response, in headlines. */
+export const NEWS_DIGEST_MAX_HEADLINES =
+  MARKET_INTEL_ROLLUP_MAX_ASSETS * NEWS_DIGEST_HEADLINES_PER_GROUP;
+
+/** Digest groups newest-first by their most recent headline, symbol as tiebreak. */
+function byNewestHeadline(x: NewsDigestGroup, y: NewsDigestGroup): number {
+  const cmp = (y.headlines[0]?.publishedAt ?? '').localeCompare(x.headlines[0]?.publishedAt ?? '');
+  return cmp !== 0 ? cmp : x.symbol.localeCompare(y.symbol);
+}
 
 /**
  * The per-asset market-intelligence read API (PROJECTPLAN.md §13.5 V5-P5). A
@@ -360,10 +382,11 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
             return;
           }
           if (headlines.length === 0) return;
-          // Newest-first within the group; a missing date sorts last.
-          const sorted = [...headlines].sort((x, y) =>
-            (y.publishedAt ?? '').localeCompare(x.publishedAt ?? ''),
-          );
+          // Newest-first within the group (a missing date sorts last), then cut
+          // to the service's own per-group bound — see the constant above.
+          const sorted = [...headlines]
+            .sort((x, y) => (y.publishedAt ?? '').localeCompare(x.publishedAt ?? ''))
+            .slice(0, NEWS_DIGEST_HEADLINES_PER_GROUP);
           groups.push({
             assetId: a.assetId,
             symbol: a.symbol,
@@ -375,15 +398,35 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         }),
       );
 
-      // Groups newest-first by their most recent headline; ties break on symbol
-      // so the order is deterministic regardless of the fan-out resolution order.
-      groups.sort((x, y) => {
-        const cmp = (y.headlines[0]?.publishedAt ?? '').localeCompare(
-          x.headlines[0]?.publishedAt ?? '',
-        );
-        return cmp !== 0 ? cmp : x.symbol.localeCompare(y.symbol);
+      // One article, one group. Provider search routinely returns the same
+      // market-wide story for every large cap in a book, and repeating it under
+      // six symbols made the Home widget one article wide (#1758). Attribution
+      // is deterministic and prefers a HELD asset, because the Home widget only
+      // renders held groups — attributing a story to a watchlist-only group
+      // would hide it there entirely.
+      const attributionOrder = [...groups].sort((x, y) => {
+        if (x.held !== y.held) return x.held ? -1 : 1;
+        return byNewestHeadline(x, y);
       });
-      return { available: true, groups, ...(truncated ? { truncated: true as const } : {}) };
+      const seen = new Set<string>();
+      const deduped: NewsDigestGroup[] = [];
+      for (const group of attributionOrder) {
+        const headlines = group.headlines.filter((h) => !seen.has(h.id));
+        for (const h of headlines) seen.add(h.id);
+        // A group whose every headline already belongs to another asset carries
+        // no information of its own and is dropped rather than rendered empty.
+        if (headlines.length > 0) deduped.push({ ...group, headlines });
+      }
+
+      // Groups newest-first by their most recent SURVIVING headline; ties break
+      // on symbol so the order is deterministic regardless of the fan-out
+      // resolution order.
+      deduped.sort(byNewestHeadline);
+      return {
+        available: true,
+        groups: deduped,
+        ...(truncated ? { truncated: true as const } : {}),
+      };
     },
   };
 }
