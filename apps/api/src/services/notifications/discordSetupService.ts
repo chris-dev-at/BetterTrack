@@ -27,9 +27,11 @@ export interface DiscordSetupService {
 
 export interface DiscordSetupServiceDeps {
   /**
-   * From `config.discord.enabled`; when false the setup routes 404 and
-   * `linkedFor` reports the channel unavailable even if the caller has a saved
-   * webhook row. The row itself is preserved so flipping the flag restores.
+   * From `config.discord.enabled` (the kill-switch — Discord needs no server
+   * credential, so `offered` and `enabled` coincide); when false the setup
+   * routes refuse, EVERY service operation refuses — `remove` included (#1795)
+   * — and `linkedFor` reports the channel unavailable even if the caller has a
+   * saved webhook row. The row itself is preserved so flipping the flag restores.
    */
   enabled: boolean;
   webhooks: DiscordWebhookRepository;
@@ -111,6 +113,11 @@ export function createDiscordSetupService(deps: DiscordSetupServiceDeps): Discor
     },
 
     async remove(userId): Promise<DiscordSettingsResponse> {
+      // Kill-switch OFF ⇒ refuse before touching the row (#1795), mirroring
+      // Telegram's `unlink`: the webhook row is state the V5-P0 directive
+      // promises to preserve, so the router guard must not be the only thing
+      // preventing its deletion.
+      if (!enabled) throw new DiscordSetupError('not_available');
       await webhooks.deleteForUser(userId);
       return toResponse(userId);
     },

@@ -8,6 +8,10 @@ import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import { claimReminderMarker } from '../../services/marketIntel/reminderMarker';
 import type { NotificationCenter } from '../../services/notifications/notificationCenter';
+import {
+  routingHasLiveChannel,
+  type OfferedChannels,
+} from '../../services/notifications/killSwitch';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -163,21 +167,18 @@ function errorMessage(err: unknown): string {
 
 /**
  * Build a per-user opt-in gate from the notification repository: enabled iff the
- * `dividend.event` type routes to at least one channel.
+ * `dividend.event` type routes to at least one channel this deployment can
+ * actually deliver on — a deactivated Telegram/Discord (V5-P0 kill-switch,
+ * #1795) is not a destination, so a user routed only there no longer costs the
+ * scan a full provider read per held asset.
  */
 export function dividendNotifyGate(
   repo: Pick<NotificationRepository, 'routingFor'>,
+  offered: OfferedChannels,
 ): DividendNotifyGate {
   return async (userId: string) => {
     const routing = await repo.routingFor(userId, 'dividend.event');
-    return (
-      routing.inapp ||
-      routing.email ||
-      routing.push ||
-      routing.webpush ||
-      routing.telegram ||
-      routing.discord
-    );
+    return routingHasLiveChannel(routing, offered);
   };
 }
 

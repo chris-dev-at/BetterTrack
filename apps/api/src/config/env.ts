@@ -296,10 +296,16 @@ const envSchema = z.object({
   // ── Telegram + Discord kill-switch (§13.5 V5-P0b, owner directive) ─────────
   // Global on/off for BOTH V4-P10 additive channels. Default OFF: the matrix
   // columns hide everywhere, `/settings/telegram/*` + `/settings/discord/*`
-  // reply 404, the dispatcher skips deliveries even for a user with a linked
-  // row, and the schema + existing rows remain intact — flipping this env back
-  // ON restores every behavior unchanged. Neither channel is deleted; the
-  // owner explicitly asked for "deactivate, not delete".
+  // reply 404 (with the standard error envelope), the settings + admin matrix
+  // writes refuse the two channels' cells, the dispatcher skips deliveries even
+  // for a user with a linked row — and, because nothing could be delivered, it
+  // writes NO dedupe row for an event that had no other live channel, so the
+  // event is still deliverable after a flip-back. The schema + existing rows
+  // remain intact; flipping this env back ON restores every behavior unchanged.
+  // Neither channel is deleted; the owner explicitly asked for "deactivate, not
+  // delete". Independent of BT_TELEGRAM_BOT_TOKEN: switch ON without a token
+  // still answers `/settings/telegram` with the documented `available: false`
+  // body rather than a 404 (#1795).
   BT_TELEGRAM_DISCORD_ENABLED: z.string().optional(),
 
   // ── Prometheus metrics endpoint (§13.5 V5-P2 arc (a), §16 2026-07-17) ───────
@@ -953,23 +959,33 @@ export interface AppConfig {
     usageEventDays: number;
   };
   /**
-   * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the
-   * global kill-switch is ON AND the bot token is set; when false the channel
-   * is invisible everywhere (matrix column hidden, link routes 404, dispatcher
-   * skips delivery). The token itself is a secret and never logged.
+   * Telegram notification channel (§13.4 V4-P10). TWO flags, deliberately kept
+   * apart (#1795):
+   *  - `offered` — the `BT_TELEGRAM_DISCORD_ENABLED` kill-switch ALONE: does
+   *    this build expose the channel at all. False ⇒ `/settings/telegram*`
+   *    refuses, no matrix cell for it is accepted, and no row is ever deleted.
+   *  - `enabled` — `offered` AND the bot token is set: the channel can actually
+   *    deliver, so the column renders and the dispatcher fans out to it.
+   * Conflating the two made the documented "bot token unset ⇒ `available:
+   * false`" branch unreachable — a token-less deployment with the switch ON
+   * answered a bare 404 instead. The token is a secret and never logged.
    */
   telegram: {
+    offered: boolean;
     enabled: boolean;
     botToken?: string;
   };
   /**
-   * Discord notification channel (§13.4 V4-P10). Deployment-scoped `enabled`
-   * mirrors the shared kill-switch — per-user webhook state is orthogonal.
-   * When false the channel is invisible everywhere (matrix column hidden,
-   * webhook routes 404, dispatcher skips delivery even for a user with a
-   * saved webhook row — the row is preserved).
+   * Discord notification channel (§13.4 V4-P10). Deployment-scoped and driven
+   * by the same shared kill-switch — per-user webhook state is orthogonal.
+   * Discord needs no server credential, so `offered` and `enabled` are the same
+   * boolean; both names exist so every call site reads the same way for both
+   * channels. When false the channel is invisible everywhere (matrix column
+   * hidden, webhook routes refuse, dispatcher skips delivery even for a user
+   * with a saved webhook row — the row is preserved).
    */
   discord: {
+    offered: boolean;
     enabled: boolean;
   };
   /**
@@ -1456,12 +1472,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // both channels are offered by this build or neither. Default OFF so an
     // upgrade quietly deactivates them without any operator action.
     telegram: {
+      // The kill-switch alone — the refusal boundary for the whole channel.
+      offered: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
+      // …and the bot token, without which the channel cannot deliver. Kept as a
+      // SECOND flag so the V4-P10 `available: false` body stays reachable on a
+      // switch-ON, token-less deployment (#1795).
       enabled:
         boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false) &&
         Boolean(e.BT_TELEGRAM_BOT_TOKEN && e.BT_TELEGRAM_BOT_TOKEN.trim() !== ''),
       botToken: e.BT_TELEGRAM_BOT_TOKEN,
     },
     discord: {
+      // No server credential exists for Discord, so the two flags coincide.
+      offered: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
       enabled: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far

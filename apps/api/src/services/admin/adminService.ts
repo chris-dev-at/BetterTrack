@@ -51,6 +51,11 @@ import { clearLoginThrottle, removeRememberedDeviceBindings } from '../auth/logi
 import { generateToken } from '../crypto/tokens';
 import type { EmailSendResult, EmailService } from '../email/emailService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import {
+  deactivatedChannelsRequested,
+  maskMatrix,
+  preserveDeactivatedCells,
+} from '../notifications/killSwitch';
 import type { MirrorService } from '../mirror/mirrorService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { generateTempPassword } from '../password/tempPassword';
@@ -1167,7 +1172,16 @@ export function createAdminService(deps: AdminServiceDeps) {
     /** Current new-account defaults, lean fallbacks filled in (§13.4 V4-P0d). */
     async getAccountDefaults(): Promise<AccountDefaultsResponse> {
       const defaults = await appSettings.getAccountDefaults();
-      return { ...defaults, channelsConfigurable: channelsConfigurableFromConfig() };
+      const channelsConfigurable = channelsConfigurableFromConfig();
+      return {
+        ...defaults,
+        // V5-P0 kill-switch (#1795): the editor hides a deactivated channel's
+        // column, so the response must not carry values for it either — the UI
+        // round-trips what it reads, and reading `true` for a dead channel is
+        // how a hidden column silently re-seeds it on the next save.
+        notificationMatrix: maskMatrix(defaults.notificationMatrix, channelsConfigurable),
+        channelsConfigurable,
+      };
     },
 
     /**
@@ -1178,16 +1192,53 @@ export function createAdminService(deps: AdminServiceDeps) {
       input: UpdateAccountDefaultsRequest,
       actor: AdminActor,
     ): Promise<AccountDefaultsResponse> {
-      const defaults = await appSettings.updateAccountDefaults(input, actor.id);
+      const channelsConfigurable = channelsConfigurableFromConfig();
+      let effective = input;
+      if (input.notificationMatrix) {
+        // V5-P0 kill-switch (#1795). Turning a deactivated channel ON is
+        // refused by name — seeding every new account with a default for a
+        // channel this build refuses to expose is an operator mistake, not a
+        // preference. An OFF cell is accepted (that is what the hidden column
+        // round-trips), but the STORED cell is kept regardless, so the admin's
+        // pre-deactivation defaults come back with the env flip.
+        const requested = deactivatedChannelsRequested(
+          input.notificationMatrix,
+          channelsConfigurable,
+        );
+        if (requested.length > 0) {
+          throw badRequest(
+            `This deployment does not offer the ${requested.join(' and ')} notification ` +
+              `channel${requested.length > 1 ? 's' : ''}, so no default can be set for ` +
+              `${requested.length > 1 ? 'them' : 'it'}.`,
+            'CHANNEL_DEACTIVATED',
+          );
+        }
+        const stored = await appSettings.getAccountDefaults();
+        effective = {
+          ...input,
+          notificationMatrix: preserveDeactivatedCells(
+            input.notificationMatrix,
+            stored.notificationMatrix,
+            channelsConfigurable,
+          ),
+        };
+      }
+      const defaults = await appSettings.updateAccountDefaults(effective, actor.id);
       await audit.record({
         actorId: actor.id,
         action: AuditAction.AccountDefaultsUpdated,
         targetType: 'app_settings',
         targetId: null,
         ip: actor.ip,
-        meta: { changed: input },
+        // The EFFECTIVE change, not the request: what was actually persisted is
+        // what an auditor needs to see.
+        meta: { changed: effective },
       });
-      return { ...defaults, channelsConfigurable: channelsConfigurableFromConfig() };
+      return {
+        ...defaults,
+        notificationMatrix: maskMatrix(defaults.notificationMatrix, channelsConfigurable),
+        channelsConfigurable,
+      };
     },
 
     /**

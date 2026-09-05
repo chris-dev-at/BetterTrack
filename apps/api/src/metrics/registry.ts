@@ -97,6 +97,24 @@ export const problemCapturesDroppedTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Notification fan-outs the dispatcher could not perform because the channel is
+ * not built in this deployment (§13.5 V5-P0 kill-switch, #1795).
+ *
+ * `channel` is `telegram`/`discord`; `outcome` is `dropped` (the event reached
+ * at least one live channel, this one was skipped) or `deferred` (the channel
+ * was the event's ONLY destination — nothing was delivered, no dedupe row was
+ * written, and the event stays deliverable after an env flip). Without this
+ * series a deployment running with the switch off has no signal at all that N
+ * notifications a day are going nowhere.
+ */
+export const notificationChannelSkippedTotal = new Counter({
+  name: 'bettertrack_notification_channel_skipped_total',
+  help: 'Notification fan-outs skipped because the channel is deactivated in this deployment.',
+  labelNames: ['channel', 'outcome'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Currently connected realtime websockets (sampled on scrape). */
 export const websocketConnections = new Gauge({
   name: 'bettertrack_websocket_connections',
