@@ -1500,12 +1500,27 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
     now: deps.portfolioNow,
   });
+  // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
+  // Composed BEFORE the custom-asset service, which routes a delete through it:
+  // the baskets that held the deleted asset lose those positions to the cascade
+  // and are re-run through the activation gate (#1776).
+  const conglomerateRepo = createConglomerateRepository(db);
+  const conglomerate = createConglomerateService({
+    repo: conglomerateRepo,
+    assetRepo,
+    marketData,
+    currencyService: currency,
+    audience,
+    paranoid: paranoidGuard,
+    logger,
+  });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({
     repo: customAssetRepo,
     portfolio,
     snapshots,
     vaultedPortfolio: vaultedPortfolioGuard,
+    conglomerates: conglomerate,
   });
 
   // MIRRORCHAIN replication core (§13.5 V5-P7 M2): built on top of the plain
@@ -1545,17 +1560,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Late-bind the §7 pre-delete succession hook now that `mirror` exists (see the
   // holder above `admin`); both delete paths route through it.
   mirrorDeletionHook.handleAccountDeletion = (userId) => mirror.handleAccountDeletion(userId);
-
-  // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
-  const conglomerateRepo = createConglomerateRepository(db);
-  const conglomerate = createConglomerateService({
-    repo: conglomerateRepo,
-    assetRepo,
-    marketData,
-    currencyService: currency,
-    audience,
-    paranoid: paranoidGuard,
-  });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
   // keystones to feed the pure engine over inline draft positions. V4-P7:

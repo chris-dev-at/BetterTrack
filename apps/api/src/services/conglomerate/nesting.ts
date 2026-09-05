@@ -192,6 +192,23 @@ export interface FlattenedConglomerate {
   unresolvedPct: number;
 }
 
+/**
+ * The basket rows a flatten has already asked for, keyed by id. Promises rather
+ * than rows: children are loaded through the bounded pool below, so two
+ * branches of a diamond that reach the same grandchild concurrently must share
+ * ONE in-flight read instead of both missing an empty slot.
+ *
+ * A caller may hand the SAME cache to several flattens — the post-write
+ * activation revalidation does (#1776), so one autosave loads each basket in
+ * the closure once instead of once per nested child and again per ancestor. A
+ * shared cache is therefore scoped to one request and one owner/visibility
+ * scope: it holds rows exactly as `load` served them, and must not outlive a
+ * write that changes what it caches.
+ */
+export type FlattenCache = Map<string, Promise<ConglomerateDetailRow | null>>;
+
+export const createFlattenCache = (): FlattenCache => new Map();
+
 export interface FlattenConglomerateOptions {
   /**
    * Optional local overrides for the ROOT basket only, keyed by an asset
@@ -201,6 +218,11 @@ export interface FlattenConglomerateOptions {
    * root's exact constituent set before flattening.
    */
   rootWeights?: ReadonlyMap<string, number>;
+  /**
+   * Load cache shared with other flattens of the same closure in the same
+   * request (see {@link FlattenCache}). Omitted, each call keeps its own.
+   */
+  cache?: FlattenCache;
 }
 
 function constituentId(position: ConglomerateConstituentRow): string {
@@ -218,7 +240,9 @@ const UNRESOLVED_EPSILON = 1e-9;
 /**
  * Flatten a conglomerate to effective asset weights (the shared resolution
  * function — see the module doc for the math). `load` is the owner-scoped
- * detail loader; each basket in the closure is loaded once. Returns null when
+ * detail loader; each basket in the closure is loaded once per call, or once
+ * per sweep when the caller supplies a shared
+ * {@link FlattenConglomerateOptions.cache}. Returns null when
  * the root does not exist (or is not the caller's). An empty child resolves to
  * nothing: the surviving assets are normalized to 100 among themselves and the
  * dropped slice is reported as {@link FlattenedConglomerate.unresolvedPct} —
@@ -235,12 +259,13 @@ export async function flattenConglomerate(
   rootId: string,
   options?: FlattenConglomerateOptions,
 ): Promise<FlattenedConglomerate | null> {
-  const cache = new Map<string, ConglomerateDetailRow | null>();
-  async function loadOnce(id: string): Promise<ConglomerateDetailRow | null> {
-    if (cache.has(id)) return cache.get(id) ?? null;
-    const row = await load(id);
-    cache.set(id, row);
-    return row;
+  const cache = options?.cache ?? createFlattenCache();
+  function loadOnce(id: string): Promise<ConglomerateDetailRow | null> {
+    const inFlight = cache.get(id);
+    if (inFlight) return inFlight;
+    const pending = load(id);
+    cache.set(id, pending);
+    return pending;
   }
 
   const root = await loadOnce(rootId);
@@ -259,6 +284,29 @@ export async function flattenConglomerate(
         : position.weightPct;
     const sum = row.positions.reduce((acc, position) => acc + weightOf(position), 0);
     if (sum <= 0) return;
+
+    // This basket's nested constituents are loaded through the module's own
+    // bounded pool — up to FLATTEN_LOAD_CONCURRENCY reads in flight — instead
+    // of one blocking round trip each, which is what the sequential `for … await`
+    // walk did (#1776). Only the LOADS move: the accumulation below still runs
+    // over the positions in order, so first-encounter output order, the summing
+    // of duplicate leaves and which of the mapped 422s throws first are all
+    // unchanged. A failing load is hoisted ahead of this basket's accumulation
+    // and is the lowest-index one, as `mapFlattened` guarantees.
+    const nested = row.positions.filter(
+      (p): p is Extract<ConglomerateConstituentRow, { kind: 'conglomerate' }> =>
+        p.kind === 'conglomerate',
+    );
+    const loaded =
+      nested.length > 0
+        ? new Map(
+            (await mapFlattened(nested, (p) => loadOnce(p.childId))).map((child, index) => [
+              nested[index]!.childId,
+              child,
+            ]),
+          )
+        : undefined;
+
     for (const pos of row.positions) {
       const share = fraction * (weightOf(pos) / sum);
       if (pos.kind === 'asset') {
@@ -269,7 +317,7 @@ export async function flattenConglomerate(
           shareByAsset.set(pos.assetId, { share, asset: pos.asset });
         }
       } else {
-        const child = await loadOnce(pos.childId);
+        const child = loaded?.get(pos.childId) ?? null;
         if (child) await walk(child, share, depth + 1);
       }
     }

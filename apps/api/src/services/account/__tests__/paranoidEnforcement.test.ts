@@ -252,6 +252,8 @@ async function ownedAssetProvenanceProbes(
     'conglomerate.resolved': () => ctx.conglomerate.resolved(userId, basket!.id),
     'conglomerate.allocate': () =>
       ctx.conglomerate.allocate(userId, basket!.id, { budgetEur: 1000, mode: 'whole' }),
+    'conglomerate.revalidateAfterAssetRemoval': () =>
+      ctx.conglomerate.revalidateAfterAssetRemoval(userId, [basket!.id]),
     'chat.getThread': () => ctx.chat.getThread(userId, conversation.id, {}),
     'chat.sendMessage': () => ctx.chat.sendMessage(userId, conversation.id, { body: 'probe' }),
   };
