@@ -162,8 +162,26 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
 
     searchWithFreshness: (userId, rawQuery) =>
       withCatalogVisibility(userId, async (includeCustomAssets) => {
-        const result = await searchCatalog(userId, rawQuery, includeCustomAssets);
+        // WATERMARK FIRST, BODY SECOND (#1810). The stamp is monotonic and
+        // instance-wide, so whichever read runs second decides the direction of
+        // the error a concurrent catalog write introduces — and only one
+        // direction is safe. Body-first advertises a `Last-Modified` the body
+        // does not contain: a background enrichment committing between the two
+        // reads stamps W1, the response ships pre-enrichment results with
+        // `enriching: true` under W1, and the client's next
+        // `If-Modified-Since: W1` is answered 304 with an empty body because
+        // nothing has moved the stamp since. The §6.2 poll loop then revalidates
+        // into 304s forever — on a quiet self-hosted instance, until some
+        // unrelated catalog write happens — while the body it keeps still says
+        // "Searching providers…". `middleware/conditional` compares the date
+        // EXACTLY, so there is no flooring left to absorb this.
+        //
+        // Reading the watermark first can only UNDER-advertise: the body may
+        // carry rows newer than the stamp, so the next conditional request
+        // revalidates once more and gets a 200. A needless 200 is the cheap
+        // failure; a 304 that hides a result the server already has is not.
         const freshness = await assetRepo.catalogWatermark(userId, { includeCustomAssets });
+        const result = await searchCatalog(userId, rawQuery, includeCustomAssets);
         return { ...result, freshness };
       }),
 

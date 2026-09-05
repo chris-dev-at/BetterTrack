@@ -408,6 +408,46 @@ describe('POST /api/v1/backtest/preview', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects a duplicated assetId with a 400 in every mode × schedule, never a 500 (#1811)', async () => {
+    // The engine keys a basket by asset id, so `[{A,60},{A,40}]` is two cursors
+    // on one key: `clip`+`none` used to answer 200 and every other combination
+    // 500ed on the rebalance primitive's duplicate-key guard — the same request
+    // failing or not depending on a dropdown. The boundary refuses all six.
+    const { h, agent } = await harnessWith(() =>
+      cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: 110 },
+      ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      for (const rebalance of ['none', 'monthly'] as const) {
+        const res = await agent
+          .post('/api/v1/backtest/preview')
+          .set(...XRW)
+          .send({
+            positions: [
+              { assetId: a.id, weight: 60 },
+              { assetId: a.id, weight: 40 },
+            ],
+            range: '1Y',
+            mode,
+            rebalance,
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      }
+    }
+
+    // The merged basket — the same weight expressed once — still works.
+    const merged = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions: [{ assetId: a.id, weight: 100 }], range: '1Y', rebalance: 'monthly' });
+    expect(merged.status).toBe(200);
+  });
+
   it('rejects a malformed body (empty positions) with a 400', async () => {
     const user = await harness.seedUser({ email: 'x@bt.test', username: 'xuser' });
     const agent = await loginAgent(harness.app, user.email, user.password);

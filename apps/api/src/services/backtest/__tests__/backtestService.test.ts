@@ -126,6 +126,25 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
     { date: '2025-06-16', close: 125 },
     { date: '2026-01-02', close: 131 },
   ],
+  // Old enough that no clip notice fires, but the provider has a GAP over the
+  // window's first four weeks: its first day INSIDE the window is 2024-01-29,
+  // 27 days after the primary's t₀ (#1811).
+  GAP_START: [
+    { date: '2022-06-01', close: 90 },
+    { date: '2024-01-29', close: 100 },
+    { date: '2024-07-01', close: 120 },
+    { date: '2025-01-02', close: 150 },
+    { date: '2026-01-05', close: 176 },
+  ],
+  // Alive throughout, but its exchange was shut on the window's FIRST day —
+  // the head-side mirror of HOLIDAY_SHY, two days and no more.
+  HOLIDAY_LATE: [
+    { date: '2023-06-01', close: 95 },
+    { date: '2024-01-04', close: 100 },
+    { date: '2024-07-01', close: 105 },
+    { date: '2025-01-02', close: 115 },
+    { date: '2026-01-05', close: 137 },
+  ],
   // Preset fallback identity (unseeded catalog): +10 % over the window.
   '^GSPC': [
     { date: '2025-12-30', close: 5000 },
@@ -474,6 +493,60 @@ describe('backtestService.runPreview — custom benchmarks (V4-P7)', () => {
     ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
   });
 
+  it('422s a benchmark whose history STOPS inside the window, exactly like one that starts late (#1811)', async () => {
+    const { service } = createHarness();
+    // The primary runs the whole 3Y window (LONG: 2024-01-02 → 2026-01-05); the
+    // benchmark was delisted 2025-06-15 after falling 100 → 5. Its START is
+    // fine, so the clip notice is silent and this used to be accepted: a stats
+    // grid claiming ~50 pp of outperformance that is mostly the half-year the
+    // benchmark did not exist for, under a series that just stops.
+    const primary = { positions: [{ assetId: 'LONG', weight: 100 }], range: '3Y' as const };
+    await expect(
+      service.runPreview('u1', { ...primary, benchmark: { assetId: 'DELISTED' } }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+    // Named and worded exactly as the comparison path already refuses (#1755).
+    await expect(
+      service.runPreview('u1', { ...primary, benchmark: { assetId: 'DELISTED' } }),
+    ).rejects.toMatchObject({
+      message:
+        'Benchmark DELISTED does not cover the backtest window — its data ends 2025-06-15, before 2026-01-05.',
+    });
+  });
+
+  it('tolerates a benchmark tail gap a trading calendar explains', async () => {
+    const { service } = createHarness();
+    // `HOLIDAY_SHY` is alive throughout; its exchange was simply closed on the
+    // window's final day. Refusing that would refuse every cross-market
+    // benchmark on any day the two calendars disagree.
+    const res = await service.runPreview('u1', {
+      positions: [{ assetId: 'LONG', weight: 100 }],
+      range: '3Y',
+      benchmark: { assetId: 'HOLIDAY_SHY' },
+    });
+    expect(() => backtestResponseSchema.parse(res)).not.toThrow();
+    expect(res.benchmark?.series.at(-1)?.date).toBe('2026-01-02');
+    expect(res.endDate).toBe('2026-01-05');
+  });
+
+  it('422s a duplicated position in every mode × schedule, instead of 500ing on the rebalance (#1811)', async () => {
+    const { service } = createHarness();
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      for (const rebalance of ['none', 'monthly'] as const) {
+        await expect(
+          service.runPreview('u1', {
+            positions: [
+              { assetId: 'A', weight: 60 },
+              { assetId: 'A', weight: 40 },
+            ],
+            range: '1Y',
+            mode,
+            rebalance,
+          }),
+        ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+      }
+    }
+  });
+
   it('every benchmark choice is its own memo-key axis', () => {
     const keys = new Set([
       backtestPreviewCacheKey('u1', { ...PREVIEW, benchmark: null }, 'EUR'),
@@ -500,6 +573,8 @@ const CPARENT = '018f0000-0000-7000-8000-0000000000c3'; // 60 % A + 40 % of the 
 const CL = '018f0000-0000-7000-8000-0000000000f1'; // 100 % LONG — the coverage primary
 const CX = '018f0000-0000-7000-8000-0000000000f2'; // 100 % DELISTED — stops mid-window
 const CH = '018f0000-0000-7000-8000-0000000000f3'; // 100 % HOLIDAY_SHY — a 3-day tail gap
+const CG = '018f0000-0000-7000-8000-0000000000f4'; // 100 % GAP_START — a 27-day head gap
+const CJ = '018f0000-0000-7000-8000-0000000000f5'; // 100 % HOLIDAY_LATE — a 2-day head gap
 
 /** An asset or nested constituent, as the repository serves it. */
 type StubConstituent =
@@ -537,6 +612,14 @@ const COMPARISON_CONGLOMERATES: Record<string, { name: string; positions: StubCo
   [CH]: {
     name: 'Shut Friday',
     positions: [{ kind: 'asset', assetId: 'HOLIDAY_SHY', weightPct: 100 }],
+  },
+  [CG]: {
+    name: 'Gap Runner',
+    positions: [{ kind: 'asset', assetId: 'GAP_START', weightPct: 100 }],
+  },
+  [CJ]: {
+    name: 'Shut Monday',
+    positions: [{ kind: 'asset', assetId: 'HOLIDAY_LATE', weightPct: 100 }],
   },
 };
 
@@ -744,6 +827,54 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
     // stops short of.
     expect(cmp.endDate).toBe('2026-01-02');
     for (const s of cmp.series) {
+      expect(s.series.at(-1)!.date >= cmp.endDate).toBe(true);
+    }
+  });
+
+  it('refuses a series that STARTS materially after the window, not only one clipped by its listing (#1811)', async () => {
+    const { service } = createComparisonHarness();
+    // `Gap Runner` has history since 2023, so no clip notice fires and it used
+    // to be accepted: its first day inside the window is 2024-01-29, 27 days
+    // after the primary's t₀, and every stat it contributed to the grid was
+    // measured over a window 27 days shorter than the one the response claimed.
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CL, CG], range: '3Y' }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CL, CG], range: '3Y' }),
+    ).rejects.toMatchObject({
+      message:
+        'Conglomerate Gap Runner does not cover the comparison window — its data starts 2024-01-29, after 2024-01-02.',
+    });
+
+    // Why no notice caught it: the clip notice only fires when a basket's
+    // common start is after the requested one, and this basket's history goes
+    // back to 2022. Asked for a window opening 2023-01-05 it silently opens on
+    // its first day after the gap — a shorter window, reported as the primary's.
+    const solo = await service.runPreview('u1', {
+      positions: [{ assetId: 'GAP_START', weight: 100 }],
+      range: '3Y',
+    });
+    expect(solo.notice).toBeNull();
+    expect(solo.startDate).toBe('2024-01-29');
+  });
+
+  it('tolerates a head gap a trading calendar explains, and never reports a start a series misses', async () => {
+    const { service } = createComparisonHarness();
+    // `Shut Monday` is alive throughout; its exchange was simply closed on the
+    // primary's first day. Two days is inside the same grace the tail side uses.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CL, CJ], range: '3Y' });
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.series.map((s) => s.conglomerateId)).toEqual([CL, CJ]);
+
+    // The reported window is the span EVERY curve reaches: it opens on the
+    // latest first day (2024-01-04, not the primary's 2024-01-02) and closes on
+    // the earliest last one — a response never claims a date a curve of its own
+    // does not have.
+    expect(cmp.startDate).toBe('2024-01-04');
+    expect(cmp.endDate).toBe('2026-01-05');
+    for (const s of cmp.series) {
+      expect(s.series[0]!.date <= cmp.startDate).toBe(true);
       expect(s.series.at(-1)!.date >= cmp.endDate).toBe(true);
     }
   });

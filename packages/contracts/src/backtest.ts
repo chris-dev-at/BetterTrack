@@ -90,7 +90,15 @@ export const backtestPreviewPositionSchema = z
   .strict();
 export type BacktestPreviewPosition = z.infer<typeof backtestPreviewPositionSchema>;
 
-/** `POST /backtest/preview` body — an inline draft basket to backtest (§6.5). */
+/**
+ * `POST /backtest/preview` body — an inline draft basket to backtest (§6.5).
+ *
+ * Each asset may appear at most ONCE, exactly as `conglomerateIds` must be
+ * unique in a comparison: the engine keys a basket by asset id (entry events,
+ * contributions, and every rebalance target), so a repeated id is not a heavier
+ * weight — it is two cursors on one key, which the rebalance primitive refuses
+ * outright to keep the invested total conserved. Merge the weights instead.
+ */
 export const backtestPreviewRequestSchema = z
   .object({
     positions: z.array(backtestPreviewPositionSchema).min(1).max(50),
@@ -102,7 +110,17 @@ export const backtestPreviewRequestSchema = z
     /** Rebalance schedule (V4-P7); omitting it keeps today's buy-and-hold. */
     rebalance: rebalanceFrequencySchema.default('none'),
   })
-  .strict();
+  .strict()
+  .superRefine((val, ctx) => {
+    const seen = new Set(val.positions.map((p) => p.assetId));
+    if (seen.size !== val.positions.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'positions must reference each asset at most once.',
+        path: ['positions'],
+      });
+    }
+  });
 export type BacktestPreviewRequest = z.infer<typeof backtestPreviewRequestSchema>;
 
 // --- Response --------------------------------------------------------------
@@ -442,9 +460,12 @@ export type ComparisonSeries = z.infer<typeof comparisonSeriesSchema>;
 
 /**
  * `POST /backtest/compare` response — every requested conglomerate as an
- * apples-to-apples series over one shared window, in request order. `startDate`
- * /`endDate` are that shared window (the first id's effective window); every
- * `series.deltas` is measured against `baselineId`.
+ * apples-to-apples series over one shared window, in request order. The window
+ * is the first id's effective window, narrowed to the span EVERY returned series
+ * actually reaches (a series may open a day late or stop a day early on a
+ * calendar its exchange does not share; one short by more than that is refused),
+ * so `startDate`/`endDate` never claim coverage a curve in the response lacks.
+ * Every `series.deltas` is measured against `baselineId`.
  */
 export const backtestComparisonResponseSchema = z
   .object({

@@ -39,9 +39,21 @@ export interface SearchEnrichmentBudget {
   admit(userId: string, query: string): Promise<boolean>;
 }
 
-/** Redis key for a user's admission set in the window containing `nowMs`. */
+/**
+ * Redis key for a user's admission set in the window containing `nowMs`.
+ *
+ * `search:enrich-budget:` and not `search:enrich:budget:` (#1810): the guard
+ * keys of `catalogEnrichment.ts` occupy `search:enrich:` and used to embed the
+ * raw, user-chosen query, so a query of the literal form
+ * `budget:<uuid>:<window>` landed exactly here and left a string where this set
+ * belongs — WRONGTYPE on the next admission, and a fail-closed refusal that
+ * silently disabled another account's provider fallback. The guard key is now
+ * hashed under `search:enrich:q:`, which alone closes the collision; the
+ * namespaces are disjoint as well so neither side has to keep the other's
+ * escaping rules in mind.
+ */
 export const enrichmentBudgetKey = (userId: string, windowSeconds: number, nowMs: number): string =>
-  `search:enrich:budget:${userId}:${Math.floor(nowMs / (windowSeconds * 1000))}`;
+  `search:enrich-budget:${userId}:${Math.floor(nowMs / (windowSeconds * 1000))}`;
 
 export interface SearchEnrichmentBudgetDeps {
   redis: Redis;

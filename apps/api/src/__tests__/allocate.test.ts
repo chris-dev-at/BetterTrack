@@ -517,6 +517,77 @@ describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
     expect((await agent.get(`/api/v1/conglomerates/${coreId}`)).body.status).toBe('draft');
   });
 
+  it('suggests a budget the CALLER can type in, not one denominated in the withheld remainder (#1811)', async () => {
+    // "Core" = 40 % Bonds (an empty nested child) + 10 % GOOGL + 50 % MSFT. The
+    // flatten normalizes the survivors, so the engine sees GOOGL at 16.667 % of
+    // the 600 € that is allocatable out of 1000 € — a 100 € slice against a
+    // 140 € share. Its "raise the budget to ≥ ~840 €" is right about the budget
+    // the ENGINE was given and wrong about the one the user has: at 840 € the
+    // calculator withholds 336 € again, and the identical note comes back.
+    const prices: Record<string, number> = { GOOGL: 140, MSFT: 100 };
+    const { h, agent } = await harnessWith((ref) => cachedQuote(prices[ref.providerRef]!));
+    const googl = await seedAsset(h, { symbol: 'GOOGL', providerRef: 'GOOGL' });
+    const msft = await seedAsset(h, { symbol: 'MSFT', providerRef: 'MSFT' });
+
+    const bonds = await seedConglomerate(agent, 'Bonds', []);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Core' });
+    const coreId = created.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${coreId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: [
+              { childId: bonds, weightPct: 40 },
+              { assetId: googl.id, weightPct: 10 },
+              { assetId: msft.id, weightPct: 50 },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+
+    const allocate = (budgetEur: number) =>
+      agent
+        .post(`/api/v1/conglomerates/${coreId}/allocate`)
+        .set(...XRW)
+        .send({ budgetEur, mode: 'whole' });
+
+    const first = await allocate(1000);
+    expect(first.status).toBe(200);
+    expect(allocateResponseSchema.safeParse(first.body).success).toBe(true);
+    const firstBody = first.body as AllocateResponse;
+    const firstGoogl = firstBody.positions.find((p) => p.assetId === googl.id)!;
+    expect(firstGoogl.qty).toBe(0);
+    // The slice figure is a whole-budget figure already (10 % of 1000 €); only
+    // the suggested budget was denominated in the allocatable remainder.
+    expect(firstGoogl.note).toContain('its 100 € slice');
+    expect(firstGoogl.note).toContain('≥ ~1400 €');
+    expect(firstGoogl.note).not.toContain('≥ ~840 €');
+    // The banner repeats the row's note — the same restated sentence.
+    expect(firstBody.warnings).toContain(firstGoogl.note);
+    // Σ cost ≤ B still holds with a share withheld: 5 × MSFT @ 100 €.
+    expect(firstBody.totalCostEur).toBeCloseTo(500, 6);
+    expect(firstBody.totalCostEur).toBeLessThanOrEqual(1000);
+    expect(firstBody.totalCostEur + firstBody.leftoverEur).toBeCloseTo(1000, 6);
+
+    // The round trip: type in what the note asked for, and it buys the share.
+    const second = await allocate(1400);
+    expect(second.status).toBe(200);
+    const secondBody = second.body as AllocateResponse;
+    const secondGoogl = secondBody.positions.find((p) => p.assetId === googl.id)!;
+    expect(secondGoogl.qty).toBeGreaterThan(0);
+    expect(secondGoogl.note).toBeUndefined();
+    expect(secondBody.warnings).not.toContain(firstGoogl.note);
+    // …without ever overshooting: 840 € allocatable buys 1 GOOGL + 7 MSFT.
+    expect(secondBody.totalCostEur).toBeLessThanOrEqual(1400);
+    expect(secondBody.totalCostEur).toBeCloseTo(840, 6);
+    expect(secondBody.totalCostEur + secondBody.leftoverEur).toBeCloseTo(1400, 6);
+  });
+
   it('leaves a fully-resolved nested basket spending the whole budget (no withholding)', async () => {
     const { h, agent } = await harnessWith(() => cachedQuote(100));
     const vwce = await seedAsset(h, { symbol: 'VWCEB', providerRef: 'VWCEB' });

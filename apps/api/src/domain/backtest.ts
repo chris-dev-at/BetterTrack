@@ -997,9 +997,10 @@ function computeStats(series: SeriesPoint[]): BacktestStats {
  *
  * See the module header for the method, purity guarantees, and the trading-day /
  * FX-coalescing decisions. Throws a plain `Error` for caller bugs (no positions,
- * unknown asset, malformed dates, bad weights) and {@link BacktestError} for data
- * states that make a backtest impossible (no overlapping history in the window,
- * a close that is not finite and positive, an invalid FX rate).
+ * unknown asset, malformed dates, bad weights) and {@link BacktestError} for
+ * states that make a backtest impossible and that a request can reach: no
+ * overlapping history in the window, a close that is not finite and positive,
+ * an invalid FX rate, or the same asset listed twice in one basket.
  */
 export async function backtest(input: BacktestInput): Promise<BacktestResult> {
   const { positions, range, converter } = input;
@@ -1035,6 +1036,7 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
     weight: number;
   }
   const prepared: Prepared[] = [];
+  const seenPositions = new Set<string>();
   let totalWeight = 0;
   for (const pos of positions) {
     if (!Number.isFinite(pos.weight) || pos.weight < 0) {
@@ -1048,6 +1050,19 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
     if (asset === undefined) {
       throw new Error(`backtest: position references asset ${pos.assetId} with no market data.`);
     }
+    // One cursor per asset: the event pipeline keys entries, contributions and
+    // every rebalance target by asset id, so a repeated id would put two cursors
+    // on one key — the rebalance primitive's duplicate-key guard is what stops
+    // that doubling the invested total, and it throws for a CALLER bug (a 500).
+    // A basket is a caller input, so the same input is refused here as the data
+    // state it is: a typed {@link BacktestError} the services answer 422 with,
+    // for every mode and schedule. Merge the weights to weight an asset higher.
+    if (seenPositions.has(pos.assetId)) {
+      throw new BacktestError(
+        `Asset ${asset.symbol} appears more than once in this basket; merge the duplicate positions into one weight.`,
+      );
+    }
+    seenPositions.add(pos.assetId);
     const prices = sortPrices(asset.prices, asset.symbol);
     const firstPoint = prices[0];
     if (firstPoint === undefined) {

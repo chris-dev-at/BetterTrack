@@ -11,6 +11,7 @@ import {
   providerHit,
   type StubMarketDataControls,
 } from '../../../testing/marketDataStubs';
+import { COMMON_SYMBOLS_SEED, isCuratedCatalogRef, seedAssetCatalog } from '../catalogSeed';
 import {
   createCatalogEnrichment,
   enrichGuardKey,
@@ -205,10 +206,167 @@ describe('catalogEnrichment', () => {
     expect(await assetRepo.findGlobal('yahoo', 'AAPL')).not.toBeNull();
     expect(backfill.enqueued).toHaveLength(1);
   });
+
+  it('a re-enrichment corrects the NAME it finds instead of leaving it frozen (#1810)', async () => {
+    // A ref the shipped list does not curate, so the provider is the only
+    // writer this row has (see the curated case below).
+    expect(isCuratedCatalogRef('yahoo', 'SRTX.DE')).toBe(false);
+    let name = 'Sartorix Vorzug';
+    const { h, assetRepo, backfill, enrichment, redis } = await makeEnrichment({
+      search: () => [
+        providerHit({ providerRef: 'SRTX.DE', symbol: 'SRTX.DE', name, exchange: 'XETRA' }),
+      ],
+    });
+
+    await enrichment.request('sartorix');
+    await enrichment.settled();
+    const first = await assetRepo.findGlobal('yahoo', 'SRTX.DE');
+    expect(first?.name).toBe('Sartorix Vorzug');
+
+    // The provider corrects the row. `name` is what the catalog read returns
+    // AND ranks on, so a stale one makes the row unfindable by its real name —
+    // and until #1810 it had no repair path at all.
+    name = 'Sartorix AG Vorzugsaktien';
+    await redis.del(enrichGuardKey('sartorix'));
+    await enrichment.request('sartorix');
+    await enrichment.settled();
+
+    const refreshed = await assetRepo.findGlobal('yahoo', 'SRTX.DE');
+    expect(refreshed?.name).toBe('Sartorix AG Vorzugsaktien');
+    // In place: same row, same id — every transaction pointing at it survives —
+    // and no second backfill, because nothing was created.
+    expect(refreshed?.id).toBe(first?.id);
+    expect(await h.db.select({ id: schema.assets.id }).from(schema.assets)).toHaveLength(1);
+    expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it('never lets the search projection rewrite a stored currency or type (#1810)', async () => {
+    // `yahooProvider.search` has no currency to read: `currencyForSearchResult`
+    // infers one from the symbol shape and answers 'USD' when nothing matches,
+    // and `mapAssetType` answers 'stock' for an unknown quote type. Both are
+    // documented as picker-badge-only guesses. `assets.currency` is money — a
+    // pay-from-cash buy books a PERSISTED cash movement converted through it —
+    // so a guess must never land on a row that already exists.
+    let hit = providerHit({
+      providerRef: '^XYZ',
+      symbol: '^XYZ',
+      name: 'Some Traded Index',
+      type: 'index',
+      currency: 'EUR',
+    });
+    const { assetRepo, enrichment, redis } = await makeEnrichment({ search: () => [hit] });
+
+    await enrichment.request('xyz');
+    await enrichment.settled();
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({
+      currency: 'EUR',
+      type: 'index',
+    });
+
+    // Second pass: the same ref comes back with the projection's fallbacks —
+    // the exact shape `^ATX` (a seeded EUR index on VIE, which matches no rule)
+    // takes. The row keeps the currency and type it was created with.
+    hit = providerHit({
+      providerRef: '^XYZ',
+      symbol: '^XYZ',
+      name: 'Some Traded Index (renamed)',
+      type: 'stock',
+      currency: 'USD',
+    });
+    await redis.del(enrichGuardKey('xyz'));
+    await enrichment.request('xyz');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({
+      currency: 'EUR',
+      type: 'index',
+      // …while the one column the projection does carry still refreshes.
+      name: 'Some Traded Index (renamed)',
+    });
+  });
+
+  it('never rewrites a CURATED row, so the seed and the provider cannot flap (#1810)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const assetRepo = createAssetRepository(h.db);
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    // One shipped entry, seeded exactly as boot seeds it.
+    const curated = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === '^GDAXI')!;
+    await seedAssetCatalog(assetRepo, [curated]);
+
+    const enrichment = createCatalogEnrichment({
+      marketData: createStubMarketData({
+        // What Yahoo would say about the same ref: its own casing, its own
+        // exchange label.
+        search: () => [
+          providerHit({
+            providerRef: '^GDAXI',
+            symbol: '^GDAXI',
+            name: 'DAX PERFORMANCE-INDEX',
+            exchange: 'GER',
+            currency: 'USD',
+            type: 'stock',
+          }),
+        ],
+      }),
+      assetRepo,
+      backfill: createRecordingBackfill(),
+      redis,
+      logger: h.ctx.logger,
+    });
+
+    await enrichment.request('dax');
+    await enrichment.settled();
+
+    // Untouched — every column still the curated one. Were the two writers to
+    // fight over this row, each flip would also be a content-changing statement,
+    // and the catalog watermark trigger would push the instance-wide search
+    // `Last-Modified` another second ahead for every client.
+    expect(await assetRepo.findGlobal('yahoo', '^GDAXI')).toMatchObject({
+      name: curated.name,
+      exchange: curated.exchange,
+      currency: curated.currency,
+      type: curated.type,
+    });
+  });
+
+  it('does not blank a stored name when the provider supplied none (#1810)', async () => {
+    // `yahooProvider.search` falls back to the bare symbol when a quote carries
+    // neither `longname` nor `shortname`. Writing that back would replace a real
+    // name with a ticker — the exact findability §6.2 ranks on.
+    const { assetRepo, enrichment } = await makeEnrichment({
+      // The nameless shape: name === symbol, and no exchange either.
+      search: () => [
+        providerHit({
+          providerRef: 'NAMELESS.DE',
+          symbol: 'NAMELESS.DE',
+          name: 'NAMELESS.DE',
+          exchange: null,
+        }),
+      ],
+    });
+    await assetRepo.upsertGlobal({
+      providerId: 'yahoo',
+      providerRef: 'NAMELESS.DE',
+      type: 'stock',
+      symbol: 'NAMELESS.DE',
+      name: 'Nameless Holding SE',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    });
+
+    await enrichment.request('nameless');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'NAMELESS.DE')).toMatchObject({
+      name: 'Nameless Holding SE',
+      exchange: 'XETRA',
+    });
+  });
 });
 
-describe('catalogEnrichment — hits are ranked before the cap (#1794)', () => {
-  it('orders provider hits by the catalog tiers, provider order breaking ties', () => {
+describe('catalogEnrichment — hits are ranked before the cap (#1794, #1810)', () => {
+  it('orders provider hits by the catalog tiers, then similarity, then name', () => {
     const hits = [
       providerHit({ providerRef: 'FUZZ', symbol: 'FUZZ', name: 'Something else' }),
       providerHit({ providerRef: 'GOLDX', symbol: 'GOLDX', name: 'Prefix match' }),
@@ -219,8 +377,8 @@ describe('catalogEnrichment — hits are ranked before the cap (#1794)', () => {
 
     expect(rankProviderHits('gold', hits).map((hit) => hit.symbol)).toEqual([
       'GOLD', // tier 0 — exact symbol
-      'GOLDX', // tier 1 — symbol prefix, first in provider order
-      'GOLDY', // tier 1 — symbol prefix, second in provider order
+      'GOLDX', // tier 1 — symbol prefix; equal similarity, so "Prefix match"…
+      'GOLDY', // tier 1 — …sorts before "Second prefix" (the read's `order by name`)
       'BARS', // tier 2 — name substring
       'FUZZ', // tier 3 — neither
     ]);
@@ -228,9 +386,16 @@ describe('catalogEnrichment — hits are ranked before the cap (#1794)', () => {
 
   it('admits an exact-symbol match that a provider returned past the cap', async () => {
     // 40 hits in registration order with the exact match at position 25 — the
-    // scenario the raw `slice(0, ENRICH_MAX_HITS)` discarded.
+    // scenario the raw `slice(0, ENRICH_MAX_HITS)` discarded. The filler names
+    // are zero-padded so that the read's last tiebreak (`order by name`, all of
+    // them scoring the same zero similarity against "gold") runs in the same
+    // order as their index, and the assertions below can name the boundary.
     const hits = Array.from({ length: 40 }, (_, i) =>
-      providerHit({ providerRef: `FUZZ${i}`, symbol: `FUZZ${i}`, name: `Fuzzy ${i}` }),
+      providerHit({
+        providerRef: `FUZZ${i}`,
+        symbol: `FUZZ${i}`,
+        name: `Fuzzy ${String(i).padStart(2, '0')}`,
+      }),
     );
     hits[24] = providerHit({ providerRef: 'GOLD', symbol: 'GOLD', name: 'Gold Corp' });
     const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
@@ -244,6 +409,47 @@ describe('catalogEnrichment — hits are ranked before the cap (#1794)', () => {
     expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
     expect(await assetRepo.findGlobal('yahoo', 'FUZZ18')).not.toBeNull();
     expect(await assetRepo.findGlobal('yahoo', 'FUZZ19')).toBeNull();
+  });
+
+  it('admits a WORD match past the cap that String.includes cannot see (#1810)', async () => {
+    // `plainto_tsquery('simple', 'ag bayer')` matches "BAYN.DE Bayer AG"
+    // order-free — the SQL grades it tier 2 — while
+    // `"bayer ag".includes("ag bayer")` is false, so the old mirror graded it
+    // tier 3 with everything else and the slice dropped it at position 22.
+    const hits = Array.from({ length: 40 }, (_, i) =>
+      providerHit({ providerRef: `FUZZ${i}`, symbol: `FUZZ${i}`, name: `Fuzzy ${i}` }),
+    );
+    hits[21] = providerHit({ providerRef: 'BAYN.DE', symbol: 'BAYN.DE', name: 'Bayer AG' });
+    const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
+
+    await enrichment.request('ag bayer');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'BAYN.DE')).not.toBeNull();
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+  });
+
+  it('admits a MISSPELLED match past the cap, ranked by similarity (#1810)', async () => {
+    // The §6.2 flagship path: "etherium" is tier 3 for every hit, so the tiers
+    // decide nothing and the ordering is the whole answer. Ordered by provider
+    // registration index — the old tiebreak — `ETH-USD` at position 22 was
+    // dropped, twenty junk rows were written and backfilled instead, and the
+    // follow-up catalog read filtered those out at the similarity floor: no
+    // results at all for a query the providers had answered.
+    const hits = Array.from({ length: 30 }, (_, i) =>
+      providerHit({ providerRef: `QQQ${i}`, symbol: `QQQ${i}`, name: `Quantum Fund ${i}` }),
+    );
+    hits[21] = providerHit({ providerRef: 'ETH-USD', symbol: 'ETH-USD', name: 'Ethereum USD' });
+    const { assetRepo, backfill, enrichment } = await makeEnrichment({ search: () => hits });
+
+    await enrichment.request('etherium');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', 'ETH-USD')).not.toBeNull();
+    expect(backfill.enqueued).toHaveLength(ENRICH_MAX_HITS);
+    // It is not merely admitted, it is admitted FIRST — the fuzzy tier is
+    // ordered by trigram similarity, exactly as the catalog read orders it.
+    expect(rankProviderHits('etherium', hits)[0]?.symbol).toBe('ETH-USD');
   });
 });
 
