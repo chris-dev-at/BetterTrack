@@ -4,6 +4,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import type { QuoteResponse, RealtimeLiveFrame } from '@bettertrack/contracts';
 
+import { LIVE_RETENTION_SLACK } from './liveSeries';
 import {
   RealtimeContext,
   type LiveWatchResult,
@@ -32,6 +33,7 @@ function makeContext(overrides: Partial<RealtimeContextValue> = {}) {
   const handlers = new Set<(payload: unknown) => void>();
   const value: RealtimeContextValue = {
     connected: true,
+    featureDisabled: { realtime: false, liveMode: false },
     on: (_event, handler) => {
       handlers.add(handler);
       return () => handlers.delete(handler);
@@ -392,5 +394,109 @@ describe('useLiveSeries — chart grid (densify, issue #690 symptom 3)', () => {
     const chart = result.current.chartPoints;
     expect(chart.length).toBeGreaterThan(1);
     expect(chart.every((p, i) => i === 0 || p.time - chart[i - 1]!.time === 12)).toBe(true);
+  });
+});
+
+describe('useLiveSeries — the server sheds the stream (feature.disabled, §13.5 V5-P2)', () => {
+  const quote: QuoteResponse = {
+    quote: { price: 99, currency: 'EUR', dayChangePct: null, asOf: '2026-07-08T10:00:30.000Z' },
+    stale: false,
+    asOf: '2026-07-08T10:00:30.000Z',
+  };
+
+  test('a liveMode kill switch drops streaming and hands the chart to the poll fallback', async () => {
+    const backfill = [
+      frame('2026-07-08T10:00:00.000Z', 100),
+      frame('2026-07-08T10:00:10.000Z', 101),
+    ];
+    const { value } = makeContext({ watchLive: vi.fn(async () => ackOf(backfill)) });
+
+    const { result, rerender } = renderHook(
+      () => useLiveSeries(ASSET_ID, '10m', '10s', true, quote),
+      { wrapper: wrapperFor(value) },
+    );
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+    expect(result.current.unavailable).toBe(false);
+    expect(result.current.points.map((p) => p.value)).toEqual([100, 101]);
+    const gen = result.current.generation;
+
+    // The admin flips `liveMode` off: the gateway emits feature.disabled,
+    // releases the watch and deliberately KEEPS THE SOCKET UP. Nothing in the
+    // watch lifecycle moves, so only this signal can end the stream.
+    value.featureDisabled = { realtime: false, liveMode: true };
+    rerender();
+
+    await waitFor(() => expect(result.current.streaming).toBe(false));
+    // The surface can now say "delayed" instead of rendering a healthy live chart.
+    expect(result.current.unavailable).toBe(true);
+    // …and the 60 s poll takes over in ONE clean rebuild, so the last streamed
+    // frame is not left on screen as the current live price.
+    await waitFor(() => expect(result.current.points.map((p) => p.value)).toEqual([99]));
+    expect(result.current.generation).toBe(gen + 1);
+  });
+
+  test('the realtime kill switch (the socket is about to close) ends the stream too', async () => {
+    const { value } = makeContext({
+      watchLive: vi.fn(async () => ackOf([frame('2026-07-08T10:00:00.000Z', 100)])),
+    });
+    const { result, rerender } = renderHook(
+      () => useLiveSeries(ASSET_ID, '10m', '10s', true, quote),
+      { wrapper: wrapperFor(value) },
+    );
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+
+    value.featureDisabled = { realtime: true, liveMode: false };
+    rerender();
+
+    await waitFor(() => expect(result.current.streaming).toBe(false));
+    expect(result.current.unavailable).toBe(true);
+  });
+
+  test('live mode off ⇒ nothing to report as unavailable', () => {
+    const { value } = makeContext({ watchLive: vi.fn(async () => ackOf([])) });
+    value.featureDisabled = { realtime: false, liveMode: true };
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '10m', '10s', false), {
+      wrapper: wrapperFor(value),
+    });
+    expect(result.current.unavailable).toBe(false);
+  });
+});
+
+describe('useLiveSeries — a long generation stays bounded by the window', () => {
+  test('1 200 frames on a 1 s grid in a 10 min window retain a window, not a session', async () => {
+    const t0 = Date.parse('2026-07-08T10:00:00.000Z');
+    const at = (second: number) => new Date(t0 + second * 1_000).toISOString();
+    const { value, push } = makeContext({
+      watchLive: vi.fn(async () => ackOf([frame(at(0), 100)])),
+    });
+
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '10m', '1s', true), {
+      wrapper: wrapperFor(value),
+    });
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+
+    // Twenty minutes of 1 s ticks inside ONE generation — the tab nobody touched.
+    act(() => {
+      for (let second = 1; second <= 1_200; second++) push(frame(at(second), 100 + second));
+    });
+    await waitFor(() =>
+      expect(result.current.points.length).toBeLessThanOrEqual(
+        Math.ceil(600 * LIVE_RETENTION_SLACK) + 1,
+      ),
+    );
+
+    // Retention and the densified grid are both bounded by the 600 s window, not
+    // by how long the generation has been running…
+    const { points, chartPoints } = result.current;
+    expect(points[points.length - 1]!.time - points[0]!.time).toBeLessThanOrEqual(
+      600 * LIVE_RETENTION_SLACK,
+    );
+    expect(chartPoints.length).toBeLessThanOrEqual(Math.ceil(600 * LIVE_RETENTION_SLACK) + 1);
+    // …and it is the NEWEST window that survives: the tail is still live.
+    expect(points[points.length - 1]!.value).toBe(1_300);
+    expect(chartPoints[chartPoints.length - 1]!.value).toBe(1_300);
+    // The trim is a sanctioned rebuild, not a per-tick redraw: one bump for the
+    // ack plus a handful for the ~20 min of overrun, nowhere near 1 200.
+    expect(result.current.generation).toBeLessThanOrEqual(5);
   });
 });

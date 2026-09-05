@@ -399,6 +399,7 @@ describe('NotificationBell', () => {
     const handlers = new Map<string, (payload: unknown) => void>();
     const realtime: RealtimeContextValue = {
       connected: true,
+      featureDisabled: { realtime: false, liveMode: false },
       on: (event, handler) => {
         handlers.set(event, handler);
         return () => handlers.delete(event);

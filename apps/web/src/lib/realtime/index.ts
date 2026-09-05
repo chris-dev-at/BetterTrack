@@ -7,7 +7,9 @@ export {
   useRealtimeEvent,
   type LiveWatchResult,
   type RealtimeContextValue,
+  type RealtimeDisabledFeatures,
   type RealtimeServerEvent,
+  type RealtimeSheddableFeature,
 } from './RealtimeProvider';
 export { createRealtimeSocket } from './socket';
 export { framesToPoints, mergePoints, bucketSeconds, type LivePoint } from './liveSeries';
