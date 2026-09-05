@@ -1,6 +1,7 @@
 import { type Request, type Router } from 'express';
 
 import {
+  adminApiKeyListQuerySchema,
   adminApiKeyListResponseSchema,
   adminApiKeySchema,
   apiKeyAuditResponseSchema,
@@ -10,6 +11,7 @@ import {
   createApiKeyTierRequestSchema,
   idParamSchema,
   updateApiKeyTierRequestSchema,
+  type AdminApiKeyListQuery,
   type AssignApiKeyTierRequest,
   type CreateApiKeyTierRequest,
   type UpdateApiKeyTierRequest,
@@ -17,7 +19,7 @@ import {
 
 import type { ApiKeyAdminActor } from '../../services/apiKeys/apiKeyService';
 import type { AppContext } from '../context';
-import { validateBody, validateParams } from '../middleware/validate';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 
 const actorOf = (req: Request): ApiKeyAdminActor => ({ id: req.authUser!.id, ip: req.ip });
 
@@ -62,8 +64,18 @@ export function registerAdminApiKeyRoutes(router: Router, ctx: AppContext): void
     res.status(204).end();
   });
 
-  router.get('/api-keys', async (_req, res) => {
-    res.json(adminApiKeyListResponseSchema.parse({ keys: await ctx.apiKeys.listAllKeys() }));
+  // Bounded since V5-P2 (#1814): an over-large `limit`/`offset` is refused by
+  // the contract exactly as the users list refuses one, and revoked keys stay
+  // out of the window unless `includeRevoked=true` asks for them.
+  router.get('/api-keys', validateQuery(adminApiKeyListQuerySchema), async (req, res) => {
+    const query = req.valid?.query as AdminApiKeyListQuery;
+    const { keys, total } = await ctx.apiKeys.listKeysPage(query);
+    res.json(
+      adminApiKeyListResponseSchema.parse({
+        keys,
+        page: { total, limit: query.limit, offset: query.offset },
+      }),
+    );
   });
 
   router.patch(

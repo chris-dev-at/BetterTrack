@@ -3,8 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { EmailLogEntry, EmailLogListResponse } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { Alert, Badge, Button, EmptyState, Spinner } from './ui';
 
 type StatusTone = 'green' | 'red' | 'neutral';
@@ -13,8 +13,6 @@ const STATUS_TONE: Record<EmailLogEntry['status'], StatusTone> = {
   failed: 'red',
   suppressed: 'neutral',
 };
-
-type EmailLogError = { kind: 'api'; message: string } | { kind: 'generic' };
 
 /** Load one page of the log; used for both the global and per-user views. */
 export type EmailLogLoader = (
@@ -27,6 +25,12 @@ export type EmailLogLoader = (
  * first; renders recipient, template, subject, status and time — never a body.
  * The parent supplies `load` (global or per-user), so the same table serves the
  * Email page and the per-user modal.
+ *
+ * Failures go through the same two rules as every sibling reader (#1814): a
+ * closed admin session window signs the console out instead of leaving the
+ * operator on a dead page, and anything displayable is catalog copy — the
+ * server's envelope is authored in English and would leak into a German
+ * console.
  */
 export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; emptyLabel?: string }) {
   const t = useT();
@@ -34,7 +38,12 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<EmailLogError | null>(null);
+  // A FLAG, not a message: the copy is looked up at render time, so switching
+  // the console's language re-translates the banner without refetching the log.
+  // Every displayable failure resolves to the same catalog line — server
+  // envelopes are English-only and never reach the DOM (#1814).
+  const [failed, setFailed] = useState(false);
+  const onFailure = useAdminCallFailure();
 
   const fetchPage = useCallback(
     async (after: string | null, signal?: AbortSignal) => {
@@ -46,18 +55,19 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
       } catch (err) {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        setError(
-          err instanceof ApiError ? { kind: 'api', message: err.message } : { kind: 'generic' },
-        );
+        // This table addresses a whole surface, not a row, so a 404 is the
+        // §6.12 "not an admin here any more" answer — the read-path rule.
+        if (onFailure(err)) return;
+        setFailed(true);
       }
     },
-    [load],
+    [load, onFailure],
   );
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
-    setError(null);
+    setFailed(false);
     void fetchPage(null, controller.signal).finally(() => {
       if (!controller.signal.aborted) setLoading(false);
     });
@@ -67,16 +77,13 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
   async function loadMore() {
     if (!cursor) return;
     setLoadingMore(true);
-    setError(null);
+    setFailed(false);
     await fetchPage(cursor);
     setLoadingMore(false);
   }
 
   if (loading) return <Spinner label={t('admin.emailLog.loading')} />;
-  if (error)
-    return (
-      <Alert tone="error">{error.kind === 'api' ? error.message : t('common.errorTitle')}</Alert>
-    );
+  if (failed) return <Alert tone="error">{t('common.genericError')}</Alert>;
   if (entries.length === 0)
     return <EmptyState>{emptyLabel ?? t('admin.emailLog.empty')}</EmptyState>;
 

@@ -2,6 +2,8 @@ import { Router, type Request } from 'express';
 
 import {
   adminHealthResponseSchema,
+  adminInviteListResponseSchema,
+  adminListQuerySchema,
   adminUserListQuerySchema,
   adminUserNoteParamSchema,
   adminUserSupportQuerySchema,
@@ -28,9 +30,12 @@ import {
   updateAccountDefaultsRequestSchema,
   updateAnnouncementRequestSchema,
   updateAppSettingsRequestSchema,
+  registrationRequestListResponseSchema,
+  registrationTokenListResponseSchema,
   updateOAuthClientRequestSchema,
   updateUserRequestSchema,
   usageAnalyticsResponseSchema,
+  type AdminListQuery,
   type AdminUserListQuery,
   type AdminUserNoteParam,
   type AdminUserSupportQuery,
@@ -292,9 +297,18 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     },
   );
 
-  router.get('/invites', async (_req, res) => {
-    const invites = await ctx.admin.listInvites();
-    res.json({ invites: invites.map(toAdminInvite) });
+  // Bounded since V5-P2 (#1814): nothing prunes invites, so the unbounded read
+  // this replaces grew without limit. The bound and its refusal live in the
+  // contract, exactly as the users list's do.
+  router.get('/invites', validateQuery(adminListQuerySchema), async (req, res) => {
+    const query = req.valid?.query as AdminListQuery;
+    const { rows, total } = await ctx.admin.listInvites(query);
+    res.json(
+      adminInviteListResponseSchema.parse({
+        invites: rows.map(toAdminInvite),
+        page: { total, limit: query.limit, offset: query.offset },
+      }),
+    );
   });
 
   router.post('/invites', validateBody(createInviteRequestSchema), async (req, res) => {
@@ -314,9 +328,15 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // ── Registration access tokens (§6.12, §13.4 V4-P4a) ────────────────────────
   // Admin-managed tokens that gate the `invite_token` registration mode. Create
   // returns the register URL (with the raw token) exactly once.
-  router.get('/registration-tokens', async (_req, res) => {
-    const tokens = await ctx.admin.listRegistrationTokens();
-    res.json({ tokens: tokens.map(toRegistrationToken) });
+  router.get('/registration-tokens', validateQuery(adminListQuerySchema), async (req, res) => {
+    const query = req.valid?.query as AdminListQuery;
+    const { rows, total } = await ctx.admin.listRegistrationTokens(query);
+    res.json(
+      registrationTokenListResponseSchema.parse({
+        tokens: rows.map(toRegistrationToken),
+        page: { total, limit: query.limit, offset: query.offset },
+      }),
+    );
   });
 
   router.post(
@@ -344,9 +364,15 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // ── Approval queue (§6.12, §13.4 V4-P4a) ────────────────────────────────────
   // Pending `approval`-mode applications; approve creates the account + emails
   // the applicant, reject drops the application + emails the applicant.
-  router.get('/registration-requests', async (_req, res) => {
-    const requests = await ctx.admin.listRegistrationRequests();
-    res.json({ requests: requests.map(toRegistrationRequest) });
+  router.get('/registration-requests', validateQuery(adminListQuerySchema), async (req, res) => {
+    const query = req.valid?.query as AdminListQuery;
+    const { rows, total } = await ctx.admin.listRegistrationRequests(query);
+    res.json(
+      registrationRequestListResponseSchema.parse({
+        requests: rows.map(toRegistrationRequest),
+        page: { total, limit: query.limit, offset: query.offset },
+      }),
+    );
   });
 
   router.post(

@@ -10,10 +10,10 @@ import {
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { ScopePicker } from '../../ui';
 import { formatDateTime } from '../../lib/format';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
 import {
@@ -27,8 +27,13 @@ import {
   TextField,
 } from '../components/ui';
 
-function errorMessage(err: unknown, t: TranslateFn): string {
-  return err instanceof ApiError ? err.message : t('common.genericError');
+/**
+ * Displayable failures are catalog copy, never the server's envelope (#1814) —
+ * API envelopes are authored in English and are not locale-aware. The
+ * structural outcomes are handled by `useAdminCallFailure` before this runs.
+ */
+function errorMessage(t: TranslateFn): string {
+  return t('common.genericError');
 }
 
 /**
@@ -40,6 +45,7 @@ function errorMessage(err: unknown, t: TranslateFn): string {
  */
 export function OAuthAppsPage() {
   const t = useT();
+  const onFailure = useAdminCallFailure();
   const [name, setName] = useState('');
   const [redirectUri, setRedirectUri] = useState('');
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(['portfolio:read']));
@@ -76,7 +82,7 @@ export function OAuthAppsPage() {
       setCreated(result);
       apps.reload();
     } catch (err) {
-      setFormError(errorMessage(err, t));
+      if (!onFailure(err, 'session')) setFormError(errorMessage(t));
     } finally {
       setSubmitting(false);
     }
@@ -91,7 +97,7 @@ export function OAuthAppsPage() {
       apps.reload();
       setDeleting(null);
     } catch (err) {
-      setRowError(errorMessage(err, t));
+      if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
     } finally {
       setBusyId(null);
     }
@@ -369,6 +375,7 @@ function EditOAuthAppModal({
   onSaved: () => void;
 }) {
   const t = useT();
+  const onFailure = useAdminCallFailure();
   const [name, setName] = useState(app.name);
   const [redirectText, setRedirectText] = useState(app.redirectUris.join('\n'));
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(app.scopes));
@@ -399,7 +406,7 @@ function EditOAuthAppModal({
       });
       onSaved();
     } catch (err) {
-      setError(errorMessage(err, t));
+      if (!onFailure(err, 'surface')) setError(errorMessage(t));
     } finally {
       setSaving(false);
     }

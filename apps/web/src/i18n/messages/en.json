@@ -4830,7 +4830,8 @@
         "revoked": "Revoked",
         "tierAria": "Tier for {{name}}",
         "defaultTier": "Default",
-        "viewAudit": "View audit"
+        "viewAudit": "View audit",
+        "showRevoked": "Show revoked keys"
       },
       "audit": {
         "title": "Request log — {{name}}",
@@ -5805,6 +5806,11 @@
         "neverValue": "No direct price-row edits, no blind duplicate merges, and no per-user data — only affected-user counts."
       },
       "why": "Editing a price by hand would put money math behind a browser session, and merging duplicates without provenance, a dry run and a rollback is a change nobody can undo. Both need a domain answer first, so this package ships the reading and stops there."
+    },
+    "pagination": {
+      "range": "{{first}}–{{last}} of {{total}}",
+      "previous": "Previous",
+      "next": "Next"
     }
   },
   "create": {

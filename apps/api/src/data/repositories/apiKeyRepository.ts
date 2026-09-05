@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, isNull } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -68,17 +68,37 @@ export function createApiKeyRepository(db: Database) {
     },
 
     /**
-     * Every key across all users for the admin governance surface, newest first,
-     * joined to its tier name. Includes revoked keys (they show a revoked
-     * badge) so the audit view can reach a recently-retired key.
+     * One bounded page of keys across all users for the admin governance
+     * surface, newest first, joined to its tier name (V5-P2, #1814 — this used
+     * to be every row the table had ever held).
+     *
+     * Revoked keys are excluded unless `includeRevoked` asks for them: nothing
+     * prunes them, so they dominate the table on a long-lived instance, and the
+     * audit view still reaches a recently-retired key through the filter.
+     *
+     * The `id` tiebreak is what makes the window correct — without it two keys
+     * minted in the same millisecond can swap places between page 1 and page 2
+     * and one of them is never shown.
      */
-    async listAllForAdmin(): Promise<(ApiKeyRow & { tierName: string | null })[]> {
+    async listPageForAdmin(params: {
+      limit: number;
+      offset: number;
+      includeRevoked: boolean;
+    }): Promise<{ rows: (ApiKeyRow & { tierName: string | null })[]; total: number }> {
+      const where = params.includeRevoked ? undefined : isNull(apiKeys.revokedAt);
       const rows = await db
         .select({ key: apiKeys, tierName: apiKeyTiers.name })
         .from(apiKeys)
         .leftJoin(apiKeyTiers, eq(apiKeys.tierId, apiKeyTiers.id))
-        .orderBy(desc(apiKeys.createdAt));
-      return rows.map((r) => ({ ...r.key, tierName: r.tierName ?? null }));
+        .where(where)
+        .orderBy(desc(apiKeys.createdAt), desc(apiKeys.id))
+        .limit(params.limit)
+        .offset(params.offset);
+      const [totalRow] = await db.select({ value: count() }).from(apiKeys).where(where);
+      return {
+        rows: rows.map((r) => ({ ...r.key, tierName: r.tierName ?? null })),
+        total: totalRow?.value ?? 0,
+      };
     },
 
     async getById(id: string): Promise<ApiKeyRow | undefined> {
@@ -88,7 +108,7 @@ export function createApiKeyRepository(db: Database) {
 
     /**
      * One admin-shaped row (key + joined tier name) — the single-row analogue of
-     * {@link listAllForAdmin}, used by `assignTier` to rehydrate the changed key
+     * {@link listPageForAdmin}, used by `assignTier` to rehydrate the changed key
      * without an O(N) scan over the full key table.
      */
     async findByIdWithTier(

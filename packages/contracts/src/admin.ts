@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
+import { adminListPageSchema } from './common';
 import { portfolioVisibilitySchema } from './portfolio';
 import { notificationChannelsConfigurableSchema, notificationMatrixSchema } from './settings';
 import { vaultMediaSetSchema } from './vault';
@@ -603,7 +604,15 @@ export const createInviteResponseSchema = z.object({
 });
 export type CreateInviteResponse = z.infer<typeof createInviteResponseSchema>;
 
-export const adminInviteListResponseSchema = z.object({ invites: z.array(adminInviteSchema) });
+/**
+ * `GET /admin/invites`. Bounded since V5-P2 (#1814): nothing prunes invites, so
+ * an instance that has been running for a year answered with every row it had
+ * ever written. `page` carries the window the same way the users list does.
+ */
+export const adminInviteListResponseSchema = z.object({
+  invites: z.array(adminInviteSchema),
+  page: adminListPageSchema,
+});
 export type AdminInviteListResponse = z.infer<typeof adminInviteListResponseSchema>;
 
 // --- Registration access tokens (§6.12, §13.4 V4-P4a) ------------------------
@@ -655,8 +664,10 @@ export const createRegistrationTokenResponseSchema = z.object({
 });
 export type CreateRegistrationTokenResponse = z.infer<typeof createRegistrationTokenResponseSchema>;
 
+/** `GET /admin/registration-tokens`. Bounded since V5-P2 (#1814). */
 export const registrationTokenListResponseSchema = z.object({
   tokens: z.array(registrationTokenSchema),
+  page: adminListPageSchema,
 });
 export type RegistrationTokenListResponse = z.infer<typeof registrationTokenListResponseSchema>;
 
@@ -681,8 +692,10 @@ export const registrationRequestSchema = z.object({
 });
 export type RegistrationRequest = z.infer<typeof registrationRequestSchema>;
 
+/** `GET /admin/registration-requests`. Bounded since V5-P2 (#1814). */
 export const registrationRequestListResponseSchema = z.object({
   requests: z.array(registrationRequestSchema),
+  page: adminListPageSchema,
 });
 export type RegistrationRequestListResponse = z.infer<typeof registrationRequestListResponseSchema>;
 

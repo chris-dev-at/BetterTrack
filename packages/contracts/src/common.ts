@@ -54,6 +54,52 @@ export const IDEMPOTENCY_ERROR_CODES = {
 export type IdempotencyErrorCode =
   (typeof IDEMPOTENCY_ERROR_CODES)[keyof typeof IDEMPOTENCY_ERROR_CODES];
 
+// --- Bounded admin lists (§6.12, V5-P2) --------------------------------------
+// The users list has carried a limit/offset bound since #1406; the secondary
+// admin lists (API keys, invites, registration tokens, registration
+// applications) shipped unbounded and fetched every row that had ever existed.
+// The bound lives here — the neutral, import-free contracts root — because
+// `admin.ts` and `apiKeys.ts` both need it and neither may import the other.
+
+export const ADMIN_LIST_PAGE_SIZE_DEFAULT = 25;
+export const ADMIN_LIST_PAGE_SIZE_MAX = 200;
+/**
+ * Deep-paging bound, mirroring the users list's. Paging past it is a symptom of
+ * a missing filter rather than a real operator need, and an unbounded offset is
+ * a cheap way to make the database sort the whole table on every request.
+ */
+export const ADMIN_LIST_PAGE_OFFSET_MAX = 100_000;
+
+/**
+ * Window parameters for a bounded admin list. Offset paging rather than a
+ * cursor, exactly as the users list argues: a total ("47 invites") is worth
+ * more to an operator than an opaque token, and these lists carry no
+ * operator-chosen ordering a cursor would have to encode.
+ */
+export const adminListQuerySchema = z
+  .object({
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ADMIN_LIST_PAGE_SIZE_MAX)
+      .default(ADMIN_LIST_PAGE_SIZE_DEFAULT),
+    offset: z.coerce.number().int().min(0).max(ADMIN_LIST_PAGE_OFFSET_MAX).default(0),
+  })
+  .strict();
+export type AdminListQuery = z.infer<typeof adminListQuerySchema>;
+
+/** Where the returned page sits in the full result set. */
+export const adminListPageSchema = z
+  .object({
+    /** Rows matching the request, ignoring the page window. */
+    total: z.number().int().nonnegative(),
+    limit: z.number().int().positive(),
+    offset: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminListPage = z.infer<typeof adminListPageSchema>;
+
 /**
  * The shareable kinds one audience model governs (V3-P5, §13.3, §13.4 V4-P9):
  * each portfolio, each conglomerate, each watchlist, and each saved **idea** (a
