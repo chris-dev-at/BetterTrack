@@ -7,8 +7,9 @@ import { describe, expect, it } from 'vitest';
 import { NEWS_TTL_SECONDS } from '../../../providers/ttl';
 
 /**
- * The server's news freshness window must stay >= every client stale window
- * that drives the news reads. When a client's `staleTime` is longer than the
+ * The server's news freshness window must stay strictly longer than every
+ * client stale window that drives the news reads. When a client's `staleTime`
+ * is as long as — or longer than — the
  * server TTL, every refetch lands on an expired cache entry, so the news digest
  * re-fans-out over the caller's whole book on essentially every load — the
  * §5.3 upstream-politeness keystone paying for a constant mismatch.
@@ -66,10 +67,14 @@ describe('NEWS_TTL_SECONDS vs the client stale windows that drive it', () => {
       const windows = staleWindowsMs(source);
       expect(windows.length, `${file} declares no staleTime`).toBeGreaterThan(0);
       for (const window of windows) {
+        // STRICTLY longer, not ">=": the two clocks start together (the client's
+        // fetch populates the cache entry), so an equal window expires exactly
+        // when the entry does and every refetch is a guaranteed miss — the
+        // outcome this pin exists to prevent, which ">=" waved through (#1758).
         expect(
           NEWS_TTL_SECONDS * 1000,
-          `${file} refetches every ${window} ms; NEWS_TTL_SECONDS must be at least that long`,
-        ).toBeGreaterThanOrEqual(window);
+          `${file} refetches every ${window} ms; NEWS_TTL_SECONDS must be strictly longer`,
+        ).toBeGreaterThan(window);
       }
     });
   }

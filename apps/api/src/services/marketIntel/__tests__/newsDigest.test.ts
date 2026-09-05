@@ -9,7 +9,11 @@ import type { UserIntelAsset } from '../../../data/repositories/marketIntelRepos
 import { createMarketDataService } from '../../../providers/marketDataService';
 import { createProviderRegistry } from '../../../providers/registry';
 import { cachedIntel, createStubMarketData } from '../../../testing/marketDataStubs';
-import { createMarketIntelService } from '../marketIntelService';
+import {
+  createMarketIntelService,
+  NEWS_DIGEST_HEADLINES_PER_GROUP,
+  NEWS_DIGEST_MAX_HEADLINES,
+} from '../marketIntelService';
 import { MARKET_INTEL_ROLLUP_MAX_ASSETS } from '../rollupBudget';
 
 // newsDigest aggregates via intelRepo (held + watched), never per-asset
@@ -144,6 +148,91 @@ describe('marketIntel.newsDigest (V5-P5)', () => {
     expect(res.groups.map((g) => g.symbol)).toEqual(['AAPL']);
   });
 
+  it('carries a market-wide article once, attributed to a held asset', async () => {
+    // One macro story is the newest headline for every large cap in the book.
+    // Repeated per group it made the Home widget (held groups, 2 headlines
+    // each) one article wide — #1758.
+    const macro = headline('macro-1', '2026-06-21T08:00:00.000Z');
+    const marketData = createStubMarketData({
+      news: (ref: AssetRef) =>
+        cachedIntel(
+          ref.providerRef === 'AAPL'
+            ? [macro, headline('aapl-own', '2026-06-19T08:00:00.000Z')]
+            : [macro, headline('msft-own', '2026-06-20T08:00:00.000Z')],
+        ),
+    });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      // MSFT is watch-only and carries the story more recently, but AAPL is
+      // HELD — attribution prefers it so the Home widget can still show it.
+      intelRepo: intelRepo([AAPL, MSFT]),
+      enabled: true,
+    });
+
+    const res = await service.newsDigest('u1');
+    const all = res.groups.flatMap((g) => g.headlines.map((h) => h.id));
+    expect(all.filter((id) => id === 'macro-1')).toHaveLength(1);
+    expect(res.groups.find((g) => g.symbol === 'AAPL')?.headlines.map((h) => h.id)).toEqual([
+      'macro-1',
+      'aapl-own',
+    ]);
+    expect(res.groups.find((g) => g.symbol === 'MSFT')?.headlines.map((h) => h.id)).toEqual([
+      'msft-own',
+    ]);
+  });
+
+  it('drops a group whose every headline already belongs to another asset', async () => {
+    const macro = headline('macro-1', '2026-06-21T08:00:00.000Z');
+    const marketData = createStubMarketData({ news: () => cachedIntel([macro]) });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL, MSFT]),
+      enabled: true,
+    });
+
+    const res = await service.newsDigest('u1');
+    expect(res.groups.map((g) => g.symbol)).toEqual(['AAPL']);
+    expect(res.groups[0]!.headlines.map((h) => h.id)).toEqual(['macro-1']);
+  });
+
+  it('bounds a group at the service, not at whichever provider answered', async () => {
+    // A stub provider returning far more than the Yahoo provider's own 20: the
+    // per-group cap must live in the provider-abstracted service (#1758).
+    const flood = Array.from({ length: NEWS_DIGEST_HEADLINES_PER_GROUP * 5 }, (_, i) =>
+      headline(
+        `n-${String(i).padStart(3, '0')}`,
+        `2026-06-${String(1 + (i % 28)).padStart(2, '0')}T08:00:00.000Z`,
+      ),
+    );
+    const marketData = createStubMarketData({
+      news: (ref: AssetRef) =>
+        cachedIntel(flood.map((h) => ({ ...h, id: `${ref.providerRef}-${h.id}` }))),
+    });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL, MSFT]),
+      enabled: true,
+    });
+
+    const res = await service.newsDigest('u1');
+    for (const group of res.groups) {
+      expect(group.headlines).toHaveLength(NEWS_DIGEST_HEADLINES_PER_GROUP);
+    }
+    // …and the kept ones are the newest, not the first the provider listed.
+    const newest = [...flood]
+      .sort((x, y) => (y.publishedAt ?? '').localeCompare(x.publishedAt ?? ''))
+      .slice(0, NEWS_DIGEST_HEADLINES_PER_GROUP)
+      .map((h) => `AAPL-${h.id}`);
+    expect(res.groups.find((g) => g.symbol === 'AAPL')?.headlines.map((h) => h.id)).toEqual(newest);
+    // The stated response ceiling holds for the whole digest.
+    expect(res.groups.flatMap((g) => g.headlines).length).toBeLessThanOrEqual(
+      NEWS_DIGEST_MAX_HEADLINES,
+    );
+  });
+
   it('is invisible (available:false, empty) when the gate is off', async () => {
     const marketData = createStubMarketData({
       news: () => cachedIntel([headline('n', '2026-06-20T08:00:00.000Z')]),
@@ -178,7 +267,9 @@ function watchBook(count: number): UserIntelAsset[] {
 describe('marketIntel.newsDigest — provider fan-out budget (§5.3)', () => {
   it('caps the provider calls at MARKET_INTEL_ROLLUP_MAX_ASSETS for a 200-asset book, and says it truncated', async () => {
     const marketData = createStubMarketData({
-      news: () => cachedIntel([headline('n', '2026-06-20T08:00:00.000Z')]),
+      // A distinct article per asset: the cross-group dedupe is exercised
+      // elsewhere, and this case is about the provider fan-out budget.
+      news: (ref: AssetRef) => cachedIntel([headline(ref.providerRef, '2026-06-20T08:00:00.000Z')]),
     });
     const service = createMarketIntelService({
       marketData,
@@ -238,9 +329,9 @@ describe('marketIntel.newsDigest — provider fan-out budget (§5.3)', () => {
       getQuote: () => Promise.reject(new Error('unused')),
       getHistory: () => Promise.reject(new Error('unused')),
       getMeta: () => Promise.reject(new Error('unused')),
-      getNewsHeadlines: () => {
+      getNewsHeadlines: (ref: AssetRef) => {
         upstreamCalls += 1;
-        return Promise.resolve([headline('n', '2026-06-20T08:00:00.000Z')]);
+        return Promise.resolve([headline(ref.providerRef, '2026-06-20T08:00:00.000Z')]);
       },
     };
     const redis = new RedisMock() as unknown as Redis;

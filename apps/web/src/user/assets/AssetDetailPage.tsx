@@ -39,6 +39,7 @@ import {
   useWatchlistMembership,
 } from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
+import { nextUpcomingDividend, utcDay } from '../../lib/dividendDates';
 import {
   formatDate,
   formatDateTime,
@@ -301,12 +302,26 @@ function DividendsSection({ assetId }: { assetId: string }) {
   if (!data?.available) return null;
 
   const { history, upcoming, forwardYield, trailingAmount, currency } = data;
-  const next = upcoming[0] ?? null;
+  // The next event that is genuinely still ahead — and its ex-date only when
+  // THAT has not passed either. A payload whose ex-date is behind us but whose
+  // payout is still to come is the normal shape upstream (#1758): showing
+  // "Next ex-date" for a day already gone is a date in the past under an
+  // upcoming label, so only the pay date survives for that event.
+  const today = utcDay();
+  const next = nextUpcomingDividend(upcoming, today);
+  const nextExDate = next?.exDate && next.exDate.slice(0, 10) >= today ? next.exDate : null;
+  const nextPayDate = next?.payDate && next.payDate.slice(0, 10) >= today ? next.payDate : null;
+  // An amount whose denomination the payload never gave would be rendered in the
+  // user's base currency by default, relabelling a $2.40 dividend as €2,40 —
+  // the same hazard the Home widget guards against, and `currency` is genuinely
+  // nullable here (the provider maps an unmappable code to null).
+  const showTrailing = trailingAmount != null && currency !== null;
   const nothingToShow =
     forwardYield == null &&
-    trailingAmount == null &&
+    !showTrailing &&
     history.length === 0 &&
-    (!next || (!next.exDate && !next.payDate));
+    nextExDate === null &&
+    nextPayDate === null;
   if (nothingToShow) return null;
 
   const sparkData = history
@@ -325,22 +340,22 @@ function DividendsSection({ assetId }: { assetId: string }) {
             value={formatPercent(forwardYield * 100)}
           />
         ) : null}
-        {trailingAmount != null ? (
+        {showTrailing ? (
           <StatCard
             label={t('assets.detail.dividends.trailing')}
-            value={formatUnitPrice(trailingAmount, currency ?? undefined)}
+            value={formatUnitPrice(trailingAmount, currency)}
           />
         ) : null}
-        {next?.exDate ? (
+        {nextExDate ? (
           <StatCard
             label={t('assets.detail.dividends.nextExDate')}
-            value={formatDate(next.exDate)}
+            value={formatDate(nextExDate)}
           />
         ) : null}
-        {next?.payDate ? (
+        {nextPayDate ? (
           <StatCard
             label={t('assets.detail.dividends.nextPayDate')}
-            value={formatDate(next.payDate)}
+            value={formatDate(nextPayDate)}
           />
         ) : null}
       </div>

@@ -62,6 +62,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ApiError } from '../../lib/apiClient';
+import { formatDate } from '../../lib/format';
 import {
   getAssetDividends,
   getAssetEarnings,
@@ -301,17 +302,23 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
 });
 
 describe('AssetDetailPage — dividends block (V5-P5)', () => {
+  /**
+   * Dates relative to the real clock: whether an ex/pay date is still ahead is
+   * now part of what the block renders (#1758), so a fixture pinned to a fixed
+   * day would flip its own meaning once that day passed.
+   */
+  const dividendIso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
   const availableDividends = {
     available: true,
     currency: 'USD',
     history: [
-      { exDate: '2026-02-07T00:00:00.000Z', payDate: null, amount: 0.24, currency: 'USD' },
-      { exDate: '2026-05-09T00:00:00.000Z', payDate: null, amount: 0.25, currency: 'USD' },
+      { exDate: dividendIso(-180), payDate: null, amount: 0.24, currency: 'USD' },
+      { exDate: dividendIso(-90), payDate: null, amount: 0.25, currency: 'USD' },
     ],
     upcoming: [
       {
-        exDate: '2026-08-08T00:00:00.000Z',
-        payDate: '2026-08-15T00:00:00.000Z',
+        exDate: dividendIso(2),
+        payDate: dividendIso(9),
         amount: null,
         currency: 'USD',
       },
@@ -331,6 +338,56 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
     expect(screen.getByText('Next ex-date')).toBeInTheDocument();
     expect(screen.getByText('Next pay date')).toBeInTheDocument();
     expect(screen.getByLabelText('Dividend payout history')).toBeInTheDocument();
+  });
+
+  test('drops a "next ex-date" that has already passed, keeping the pay date (#1758)', async () => {
+    // The normal upstream shape: gone ex, not yet paid. The event is still
+    // upcoming — but only its PAY date is, and a stat labelled "Next ex-date"
+    // must never carry a day already behind the user.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      upcoming: [
+        { exDate: dividendIso(-7), payDate: dividendIso(7), amount: null, currency: 'USD' },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(await screen.findByText('Next pay date')).toBeInTheDocument();
+    expect(screen.queryByText('Next ex-date')).not.toBeInTheDocument();
+    expect(screen.queryByText(formatDate(dividendIso(-7)))).not.toBeInTheDocument();
+  });
+
+  test('picks the earliest still-upcoming event, not whichever came first', async () => {
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      upcoming: [
+        { exDate: dividendIso(30), payDate: dividendIso(37), amount: null, currency: 'USD' },
+        { exDate: dividendIso(3), payDate: dividendIso(10), amount: null, currency: 'USD' },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(await screen.findByText(formatDate(dividendIso(3)))).toBeInTheDocument();
+    expect(screen.queryByText(formatDate(dividendIso(30)))).not.toBeInTheDocument();
+  });
+
+  test('hides the TTM per share when the payload carries no currency', async () => {
+    // `currency` is genuinely nullable (an unmappable upstream code), and
+    // `formatUnitPrice` would then fall back to the user's BASE currency —
+    // relabelling a $0.98 dividend as €0,98.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      currency: null,
+      history: [],
+      forwardYield: null,
+      upcoming: [],
+    });
+    renderPage();
+    await waitFor(() => expect(getAssetDividends).toHaveBeenCalled());
+    expect(screen.queryByText('TTM per share')).not.toBeInTheDocument();
+    // Nothing else was renderable either, so the block stays away entirely
+    // rather than showing a heading over an empty row.
+    expect(screen.queryByText('Dividends')).not.toBeInTheDocument();
   });
 
   test('is absent when the capability is unavailable (invisible when unconfigured)', async () => {

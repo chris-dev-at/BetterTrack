@@ -270,6 +270,68 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     expect(notify.emit).toHaveBeenCalledTimes(1);
   });
 
+  it('notifies once for a report whose estimated date firms up inside the lead window', async () => {
+    // Yahoo publishes an ESTIMATED window until the company confirms; the date a
+    // scan sees legitimately moves by a day or two. That is one report, and the
+    // decision (#1758) is exactly one reminder — no "date changed" follow-up.
+    const notify = stubNotify();
+    const base = {
+      intelRepo: intelRepo([asset({})]),
+      redis,
+      notify,
+      isEnabled: optedIn,
+      enabled: true,
+      runIfAllowed,
+      now: () => NOW,
+    };
+    const estimated = await runEarningsReminderScan({
+      ...base,
+      marketData: marketDataWithEarnings({ AAPL: day(3) }),
+    });
+    const confirmed = await runEarningsReminderScan({
+      ...base,
+      marketData: marketDataWithEarnings({ AAPL: day(2) }),
+    });
+
+    expect(estimated.reminded).toBe(1);
+    expect(confirmed.reminded).toBe(0);
+    expect(notify.emit).toHaveBeenCalledTimes(1);
+    expect(notify.events[0]).toMatchObject({ earningsDate: day(3) });
+  });
+
+  it('still reminds for the NEXT report, a quarter after the one already sent', async () => {
+    // The anchor recognises a corrected date, not "this asset, ever": a report
+    // ~90 days out is far outside the match window and must fire on its own.
+    const notify = stubNotify();
+    const laterNow = NOW + 90 * 86_400_000;
+    const base = {
+      intelRepo: intelRepo([asset({})]),
+      redis,
+      notify,
+      isEnabled: optedIn,
+      enabled: true,
+      runIfAllowed,
+    };
+    const first = await runEarningsReminderScan({
+      ...base,
+      marketData: marketDataWithEarnings({ AAPL: day(1) }),
+      now: () => NOW,
+    });
+    const nextQuarter = new Date(laterNow + 86_400_000).toISOString();
+    const second = await runEarningsReminderScan({
+      ...base,
+      marketData: marketDataWithEarnings({ AAPL: nextQuarter }),
+      now: () => laterNow,
+    });
+
+    expect(first.reminded).toBe(1);
+    expect(second.reminded).toBe(1);
+    expect(notify.events.map((e) => e.type === 'earnings.reminder' && e.earningsDate)).toEqual([
+      day(1),
+      nextQuarter,
+    ]);
+  });
+
   it('keeps distinct rows per user for the same asset+date', async () => {
     const notify = stubNotify();
     const res = await runEarningsReminderScan({
