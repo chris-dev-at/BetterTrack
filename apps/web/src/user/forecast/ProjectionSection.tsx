@@ -19,7 +19,11 @@ import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
-import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
+import { clientSeriesTwrCagrPct } from '../vault/engine/clientSeries';
+import {
+  STANDING_ORDER_SCHEDULE_TZ,
+  calendarDayInTimezone,
+} from '../vault/standingOrders/schedule';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 import {
@@ -40,9 +44,11 @@ const ProjectionChart = lazy(() =>
 /**
  * Forecast projection view (PROJECTPLAN.md §13.5 V5-P6b arc (b), issue #596) —
  * the deterministic client-side net-worth projection that fills the #594 slot.
- * It reads the active portfolio's value + sampled historical return, its active
- * standing orders and the projected dividend income, then draws the base
- * projection with one overlay per local what-if plan. Every factor toggles
+ * It reads the active portfolio's value + sampled historical return (the
+ * time-weighted one, #1759 — the value curve's CAGR counts the user's own
+ * deposits as return), its active standing orders and the projected dividend
+ * income, then draws the base projection with one overlay per local what-if
+ * plan. Every factor toggles
  * individually and the base line responds; what-if plans are local state only
  * (never persisted). The engine (`./projection`) is pure and hand-fixtured; this
  * surface only resolves inputs and renders — compact per the anti-bloat rule.
@@ -168,20 +174,24 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             : [{ error: historyQuery.error, refetch: () => historyQuery.refetch() }]),
         ];
 
-  // The sampled historical return over the selected window (null when the series
-  // is too short to state a CAGR); it drives the return field until edited. The
-  // paranoid branch goes through `clientSeriesCagrPct` so the window's zero
-  // edges are trimmed exactly like the analytics header trims them.
+  // The sampled historical return over the selected window (null when the
+  // window is too short to state a rate); it drives the return field until
+  // edited. Both branches sample a TIME-WEIGHTED return (#1759) — the server's
+  // `twr` block, and the vault's own performance curve — never the value curve's
+  // CAGR, which rises with every contribution the user made and would then be
+  // compounded forward on top of those same contributions. The paranoid branch
+  // trims the 5Y envelope to the exact 3Y boundary itself, then the domain
+  // rebases onto that window's first point.
   const sampledReturnPct =
     privacyMode === 'paranoid'
       ? historyQuery.data == null
         ? null
-        : clientSeriesCagrPct(
-            historyQuery.data.points.filter(
+        : clientSeriesTwrCagrPct(
+            historyQuery.data.performance.filter(
               (point) => windowFrom === undefined || point.date >= windowFrom,
             ),
           )
-      : (analyticsQuery.data?.primary.stats.cagrPct ?? null);
+      : (analyticsQuery.data?.twr?.cagrPct ?? null);
   useEffect(() => {
     setReturnPct(sampledReturnPct === null ? '' : String(round2(sampledReturnPct)));
   }, [sampledReturnPct]);
@@ -203,9 +213,6 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const enteredReturnPct = safeNumber(returnPct);
   const annualReturnPct = returnEnabled ? clampForecastReturnPct(enteredReturnPct) : 0;
   const returnPctIsClamped = returnEnabled && enteredReturnPct !== annualReturnPct;
-  const standingOrders = ordersEnabled
-    ? normalizeStandingOrders(ordersQuery.data?.orders ?? [])
-    : [];
   // Three distinct dividend-factor states (#1681). No market intel on this
   // deployment, or an account mode that never reads the endpoint (paranoid
   // vaults project locally) ⇒ `dividendProjection` stays undefined and no
@@ -241,6 +248,21 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const dividendTruncated = dividendProjection?.truncated === true;
   const monthlyDividend =
     dividendEnabled && dividendAvailable ? dividendProjection!.monthlyTotalBase : 0;
+
+  // The standing-orders factor gets the same three states (#1759). A cash
+  // order's `amount` is a EUR magnitude by contract while the balance it would
+  // join is in `netWorthCurrency`, so the engine refuses to mix them: for a
+  // non-EUR base the factor is RESOLVED-BUT-NOT-COMPARABLE — present, disabled,
+  // and named — rather than silently adding 3.000 CHF a month where the
+  // schedule will book 3.000 €. Absent (no orders loaded, or none that continue
+  // forward) stays the plain enabled toggle contributing nothing, and a
+  // base-matching set is the ordinary resolved factor.
+  const normalizedOrders = normalizeStandingOrders(
+    ordersQuery.data?.orders ?? [],
+    netWorthCurrency,
+  );
+  const ordersUnresolved = normalizedOrders.foreignCurrencies.length > 0;
+  const standingOrders = ordersEnabled && !ordersUnresolved ? normalizedOrders.orders : [];
 
   const whatIfPlans: ForecastWhatIfPlan[] = plans.map((plan, index) => ({
     id: plan.id,
@@ -397,7 +419,16 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
           <FactorToggle
             label={t('forecast.projection.factor.standingOrders')}
-            checked={ordersEnabled}
+            checked={ordersEnabled && !ordersUnresolved}
+            disabled={ordersUnresolved}
+            note={
+              ordersUnresolved
+                ? t('forecast.projection.ordersUnconvertible', {
+                    orderCurrency: normalizedOrders.foreignCurrencies.join(', '),
+                    baseCurrency: netWorthCurrency,
+                  })
+                : undefined
+            }
             onChange={setOrdersEnabled}
           />
           {dividendAvailable || dividendUnresolved ? (
@@ -580,9 +611,19 @@ function FactorToggle({
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Today as ISO `YYYY-MM-DD` — the projection's month-0 anchor. */
+/**
+ * Today as ISO `YYYY-MM-DD` — the projection's month-0 anchor, resolved in the
+ * timezone the standing-order schedule itself speaks in (#1759).
+ *
+ * It used to be `new Date().toISOString()`, i.e. UTC, while the scan, the DTO's
+ * `nextRunDate` and the vault materializer all resolve "today" in
+ * `Europe/Vienna`. For a user loading the page between 00:00 and 01:00 (02:00
+ * in summer) on the 1st, UTC still says the previous month's last day — so
+ * every emitted point AND every monthly occurrence shifted a full month earlier
+ * than the schedule that will actually fire.
+ */
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return calendarDayInTimezone(new Date(), STANDING_ORDER_SCHEDULE_TZ);
 }
 
 function returnHistoryRange(window: ReturnWindow): PortfolioHistoryRange {

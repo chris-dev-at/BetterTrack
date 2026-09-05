@@ -2787,15 +2787,16 @@
       "horizonHint": "Zwischen 1 und 30 Jahren.",
       "factorsLegend": "Faktoren",
       "factor": {
-        "return": "Durchschnittliche Rendite",
+        "return": "Durchschnittliche Rendite (ohne Einzahlungen)",
         "standingOrders": "Daueraufträge",
         "dividends": "Erwartete Dividenden"
       },
+      "ordersUnconvertible": "Deine Daueraufträge sind in {{orderCurrency}} erfasst, diese Prognose läuft aber in {{baseCurrency}}. Wir rechnen hier nicht zwischen Währungen um, deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "dividendsUnresolved": "Ein prognostizierter Dividendenbetrag lässt sich für dieses Portfolio gerade nicht ermitteln — ein Teil der benötigten Daten kam nicht zurück, deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "dividendsTruncated": "Du hältst mehr Anlagen, als wir in einem Durchlauf prognostizieren — deshalb bleibt dieser Faktor außerhalb der Prognose.",
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
-      "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
+      "returnPctHint": "Aus deiner Historie als zeitgewichtete Rendite ermittelt — eingezahltes Geld zählt also nicht als Wertzuwachs; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
       "returnPctClamped": "Der Renditesatz ist auf -100 % bis 100 % begrenzt. Für diese Prognose wird der nächstgelegene Wert verwendet.",
       "window": {
         "1Y": "1 J",

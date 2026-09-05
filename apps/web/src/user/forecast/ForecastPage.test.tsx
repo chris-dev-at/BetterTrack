@@ -104,8 +104,9 @@ const PORTFOLIO: PortfolioResponse = {
   },
 };
 
-// Net worth (holdings + cash): 100 → 150.073035 over six years is a 7,00 %/yr
-// CAGR. Only a paranoid account samples this curve.
+// Net worth (holdings + cash) over six years, with the vault's own time-weighted
+// curve beside it: +50,073035 % is a 7,00 %/yr TWR. Only a paranoid account
+// samples this curve.
 const HISTORY: PortfolioHistoryResponse = {
   range: 'MAX',
   interval: '1d',
@@ -114,12 +115,16 @@ const HISTORY: PortfolioHistoryResponse = {
     { date: '2020-01-01', valueEur: 100 },
     { date: '2026-01-01', valueEur: 150.073035 },
   ],
-  performance: [],
+  performance: [
+    { date: '2020-01-01', pct: 0 },
+    { date: '2026-01-01', pct: 50.073035 },
+  ],
 };
 
-// The server's holdings-only analytics series — what a NORMAL account prefills.
-// Deliberately a different number from the net-worth CAGR above, so a surface
-// reading the wrong source is visible in the assertion.
+// The server's analytics series — what a NORMAL account prefills. `twr` is the
+// flow-neutral return it samples (#1759); the value curve's own `cagrPct` is a
+// loud decoy, so a surface reading the wrong statistic fails the assertion.
+// Both differ from the net-worth TWR above, so does reading the wrong source.
 const ANALYTICS: AnalyticsSeriesResponse = {
   portfolioId: PORTFOLIO_ID,
   baseCurrency: 'EUR',
@@ -133,14 +138,15 @@ const ANALYTICS: AnalyticsSeriesResponse = {
     label: 'Main',
     points: [],
     stats: {
-      totalReturnPct: 60,
-      cagrPct: 9.5,
+      totalReturnPct: 600,
+      cagrPct: 99,
       maxDrawdownPct: -10,
       bestDay: null,
       worstDay: null,
     },
   },
   compare: null,
+  twr: { totalReturnPct: 60, cagrPct: 9.5 },
   contributions: [],
 };
 
@@ -411,7 +417,8 @@ test('prefill from portfolio fills current value + historical average return', a
   expect(principal.value).not.toBe('50000');
   await user.click(screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!);
   expect(principal.value).toBe('50000');
-  // The server's holdings-only CAGR, NOT the net-worth curve's 7 %.
+  // The server's time-weighted return — never the value curve's 99 % (which is
+  // mostly the user's own deposits), and never the vault-only 7 %.
   expect(rate.value).toBe('9.5');
 });
 
