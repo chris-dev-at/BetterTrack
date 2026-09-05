@@ -58,10 +58,13 @@ import { getPortfolioDividendProjectionFor } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
-import { projectNetWorth } from './projection';
+import { normalizeStandingOrders, projectNetWorth, type ForecastResult } from './projection';
 import { ProjectionSection } from './ProjectionSection';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
+/** The return factor's accessible name — it now says what it measures (#1759). */
+const RETURN_FACTOR = 'Average return (excluding deposits)';
+const RETURN_RATE = 'Return rate (%)';
 const HISTORY_END = new Date();
 const HISTORY_START = new Date(HISTORY_END);
 HISTORY_START.setUTCFullYear(HISTORY_START.getUTCFullYear() - 5);
@@ -103,11 +106,20 @@ const HISTORY: PortfolioHistoryResponse = {
     { date: HISTORY_START.toISOString().slice(0, 10), valueEur: 100 },
     { date: HISTORY_END.toISOString().slice(0, 10), valueEur: 127.628 },
   ],
-  performance: [],
+  // The vault's own time-weighted curve — what a PARANOID account samples.
+  // +27,628 % over five years is 5,00 %/yr.
+  performance: [
+    { date: HISTORY_START.toISOString().slice(0, 10), pct: 0 },
+    { date: HISTORY_END.toISOString().slice(0, 10), pct: 27.628 },
+  ],
 };
 
-/** The server's holdings-only window — what a NORMAL account samples. */
-function analytics(cagrPct: number): AnalyticsSeriesResponse {
+/**
+ * The server's window. `twr` is the flow-neutral return the section samples
+ * (#1759); `primary.stats.cagrPct` is the value curve's contribution-inflated
+ * one and is left as a loud decoy — sampling it again must fail here.
+ */
+function analytics(twrCagrPct: number, valueCagrPct = 99): AnalyticsSeriesResponse {
   return {
     portfolioId: PORTFOLIO_ID,
     baseCurrency: 'EUR',
@@ -121,14 +133,15 @@ function analytics(cagrPct: number): AnalyticsSeriesResponse {
       label: 'Main',
       points: [],
       stats: {
-        totalReturnPct: 30,
-        cagrPct,
+        totalReturnPct: 300,
+        cagrPct: valueCagrPct,
         maxDrawdownPct: -8,
         bestDay: null,
         worstDay: null,
       },
     },
     compare: null,
+    twr: { totalReturnPct: 30, cagrPct: twrCagrPct },
     contributions: [],
   };
 }
@@ -184,6 +197,11 @@ function renderSection(
   );
 }
 
+/** The final projected value of a run — the figure the headline stat shows. */
+function last(result: ForecastResult): number {
+  return result.base[result.base.length - 1]!.value;
+}
+
 /** The card whose label names the horizon, so label and value are read together. */
 function projectedStat(): HTMLElement {
   return screen.getByText(/^Projected in /).parentElement!;
@@ -223,7 +241,7 @@ test('renders the base projection series and headline stats', async () => {
   expect(screen.getByText('Starting net worth')).toBeInTheDocument();
   // The sampled historical return prefills the editable rate field.
   await waitFor(() =>
-    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
   );
 });
 
@@ -235,15 +253,16 @@ test('renders a prefill read failure without hiding the projection', async () =>
   expect(screen.getByTestId('projection-series-base')).toBeInTheDocument();
 });
 
-test('a normal account samples the holdings-only analytics window, not net worth', async () => {
-  // 9,5 % on the server's series vs 5 % on the net-worth curve: the field must
-  // show the former, and the net-worth read must not happen at all.
-  vi.mocked(getAnalyticsSeries).mockResolvedValue(analytics(9.5));
+test('a normal account samples the server’s time-weighted return, not the value CAGR', async () => {
+  // 9,5 % time-weighted against a 99 % value-curve CAGR — the number a monthly
+  // saver's own deposits produce. The field must show the former (#1759).
+  vi.mocked(getAnalyticsSeries).mockResolvedValue(analytics(9.5, 99));
   renderSection();
 
   await waitFor(() =>
-    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('9.5'),
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('9.5'),
   );
+  expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).not.toBe('99');
   expect(getAnalyticsSeries).toHaveBeenCalledWith(
     PORTFOLIO_ID,
     expect.objectContaining({ mode: 'value' }),
@@ -252,11 +271,21 @@ test('a normal account samples the holdings-only analytics window, not net worth
   expect(getPortfolioHistory).not.toHaveBeenCalled();
 });
 
-test('a paranoid account samples its decrypted net-worth curve instead', async () => {
+test('a normal account states no return when the server cannot state one', async () => {
+  vi.mocked(getAnalyticsSeries).mockResolvedValue({ ...analytics(5), twr: null });
+  renderSection();
+
+  await screen.findByTestId('projection-series-base');
+  await waitFor(() =>
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe(''),
+  );
+});
+
+test('a paranoid account samples its decrypted time-weighted curve instead', async () => {
   renderSection(PORTFOLIOS, 'paranoid');
 
   await waitFor(() =>
-    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
   );
   expect(getPortfolioHistory).toHaveBeenCalledWith(PORTFOLIO_ID, '5Y', false, expect.anything());
   expect(getAnalyticsSeries).not.toHaveBeenCalled();
@@ -364,9 +393,9 @@ test('the return factor toggle hides the sampling controls', async () => {
   renderSection();
   await screen.findByTestId('projection-series-base');
 
-  expect(screen.getByLabelText('Return rate (%)')).toBeInTheDocument();
-  await user.click(screen.getByRole('checkbox', { name: 'Average return' }));
-  expect(screen.queryByLabelText('Return rate (%)')).not.toBeInTheDocument();
+  expect(screen.getByLabelText(RETURN_RATE)).toBeInTheDocument();
+  await user.click(screen.getByRole('checkbox', { name: RETURN_FACTOR }));
+  expect(screen.queryByLabelText(RETURN_RATE)).not.toBeInTheDocument();
 });
 
 test('clamps an out-of-range return rate instead of rendering NaN', async () => {
@@ -374,7 +403,7 @@ test('clamps an out-of-range return rate instead of rendering NaN', async () => 
   renderSection();
   await screen.findByTestId('projection-series-base');
 
-  const returnRate = screen.getByLabelText('Return rate (%)');
+  const returnRate = screen.getByLabelText(RETURN_RATE);
   expect(returnRate).toHaveAttribute('min', '-100');
   expect(returnRate).toHaveAttribute('max', '100');
 
@@ -398,7 +427,7 @@ test('an integer horizon reproduces the hand-computed compounded figure', async 
   renderSection();
   await screen.findByTestId('projection-series-base');
   await waitFor(() =>
-    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
   );
 
   // 50 000 € compounded at the prefilled 5 %/yr (monthly steps at the annual
@@ -423,7 +452,7 @@ test('a fractional horizon labels the integer horizon the engine actually projec
   renderSection();
   await screen.findByTestId('projection-series-base');
   await waitFor(() =>
-    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
   );
 
   const horizon = screen.getByLabelText('Horizon (years)');
@@ -698,4 +727,130 @@ test('a stale portfolio payload does not let a fresh-base projection through', a
   expect(toggle).toBeDisabled();
   expect(screen.getByText(DIVIDENDS_UNRESOLVED_NOTE)).toBeInTheDocument();
   await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+});
+
+// ─── Standing-order denomination (#1759) ─────────────────────────────────────
+//
+// A cash standing order's `amount` is a EUR magnitude by contract — the server
+// derives its currency and books the leg into the EUR cash ledger — while the
+// balance it would join is `totals.totalValueEur` converted into the user's
+// base. The section used to add the two 1:1, so a CHF-base user with a 3.000 €
+// salary saw 3.000 CHF/month added to a CHF curve, every month, compounded for
+// up to thirty years.
+
+const ORDERS_UNCONVERTIBLE_NOTE =
+  "Your standing orders are recorded in EUR, but this projection is in CHF. We don't convert between currencies here, so this factor stays out of the projection.";
+
+test('a EUR standing order is not added 1:1 to a CHF curve', async () => {
+  setMoneyCurrency('CHF');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('CHF'));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [makeOrder({ kind: 'cash-add', amount: 3000, currency: 'EUR' })],
+  } as StandingOrderListResponse);
+  renderSection();
+  expect(await screen.findByText(ORDERS_UNCONVERTIBLE_NOTE)).toBeInTheDocument();
+
+  const toggle = screen.getByRole('checkbox', { name: 'Standing orders' });
+  expect(toggle).toBeDisabled();
+  expect(toggle).not.toBeChecked();
+
+  // The curve is the bare one — never the one 3.000 a month builds.
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+  expect(screen.getByTestId('projection-series-base')).toHaveTextContent(
+    formatMoney(engineFinalValue(20)),
+  );
+});
+
+test('a base-matching standing order is still projected, and says nothing', async () => {
+  setMoneyCurrency('CHF');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioInBase('CHF'));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [makeOrder({ kind: 'cash-add', amount: 3000, currency: 'CHF' })],
+  } as StandingOrderListResponse);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  // An open-ended monthly order books once per projected month whatever the
+  // anchor day is, so the expected curve is asOf-independent.
+  const withOrders = last(
+    projectNetWorth({
+      asOf: '2026-03-01',
+      startingNetWorth: 50000,
+      horizonYears: 20,
+      annualReturnPct: 5,
+      standingOrders: [
+        {
+          amount: 3000,
+          cadence: 'monthly',
+          anchorDay: 1,
+          startDate: '2020-01-01',
+          endDate: null,
+        },
+      ],
+      monthlyDividend: 0,
+      whatIfPlans: [],
+    }),
+  );
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(withOrders)));
+
+  const toggle = screen.getByRole('checkbox', { name: 'Standing orders' });
+  expect(toggle).toBeEnabled();
+  expect(toggle).toBeChecked();
+  expect(screen.queryByText(ORDERS_UNCONVERTIBLE_NOTE)).not.toBeInTheDocument();
+});
+
+// ─── Month-0 anchor (#1759) ──────────────────────────────────────────────────
+//
+// The anchor was `new Date().toISOString()` — UTC — while the scan, the DTO's
+// `nextRunDate` and the vault materializer all resolve "today" in Europe/Vienna.
+// Loaded at 00:30 Vienna on the 1st, UTC still said the previous month's last
+// day, so the engine re-projected an occurrence the scheduler books TODAY.
+
+test('resolves month 0 in the schedule’s timezone, not UTC', async () => {
+  // 2026-03-01, 00:30 in Vienna (UTC+1) — 2026-02-28, 23:30 in UTC.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date('2026-02-28T23:30:00.000Z'));
+  try {
+    // One 500 € occurrence left in the order's window: 2026-03-01, which the
+    // scan books today and which the starting net worth therefore already
+    // contains. A March anchor projects nothing more; the February one books it
+    // a second time.
+    const order = makeOrder({
+      kind: 'cash-add',
+      amount: 500,
+      anchorDay: 1,
+      startDate: '2020-01-01',
+      endDate: '2026-03-31',
+    });
+    vi.mocked(listStandingOrders).mockResolvedValue({
+      orders: [order],
+    } as StandingOrderListResponse);
+    renderSection();
+    await screen.findByTestId('projection-series-base');
+    await waitFor(() =>
+      expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
+    );
+
+    const normalized = normalizeStandingOrders([order], 'EUR').orders;
+    const factors = {
+      startingNetWorth: 50000,
+      horizonYears: 20,
+      annualReturnPct: 5,
+      standingOrders: normalized,
+      monthlyDividend: 0,
+      whatIfPlans: [],
+    };
+    const vienna = projectNetWorth({ asOf: '2026-03-01', ...factors });
+    const utc = projectNetWorth({ asOf: '2026-02-28', ...factors });
+    // The two really do disagree — one extra 500 € booking, compounded.
+    expect(last(vienna)).not.toBeCloseTo(last(utc), 2);
+    expect(last(utc) - last(vienna)).toBeGreaterThan(500);
+
+    // Month 0 is the Vienna day, and so is the first emitted point.
+    expect(vienna.base[0]!.date).toBe('2026-03-01');
+    await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(last(vienna))));
+    expect(projectedStat()).not.toHaveTextContent(formatMoney(last(utc)));
+  } finally {
+    vi.useRealTimers();
+  }
 });

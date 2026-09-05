@@ -2787,15 +2787,16 @@
       "horizonHint": "Between 1 and 30 years.",
       "factorsLegend": "Factors",
       "factor": {
-        "return": "Average return",
+        "return": "Average return (excluding deposits)",
         "standingOrders": "Standing orders",
         "dividends": "Projected dividends"
       },
+      "ordersUnconvertible": "Your standing orders are recorded in {{orderCurrency}}, but this projection is in {{baseCurrency}}. We don't convert between currencies here, so this factor stays out of the projection.",
       "dividendsUnresolved": "We couldn't work out a projected dividend total for this portfolio just now — part of the data it needs didn't come back, so this factor stays out of the projection.",
       "dividendsTruncated": "You hold more assets than we project in one pass, so this factor stays out of the projection.",
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
-      "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",
+      "returnPctHint": "Sampled from your history as a time-weighted return, so money you paid in doesn't count as growth; edit to explore. Between -100% and 100%.",
       "returnPctClamped": "The return rate is limited to -100% to 100%. The nearest value is used for this projection.",
       "window": {
         "1Y": "1Y",

@@ -14,7 +14,7 @@ import {
   type PortfolioHistoryRange,
   type PortfolioResponse,
 } from '@bettertrack/contracts';
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
+import { computeSeriesStats, computeTwrStats } from '@bettertrack/domain/seriesStats';
 
 import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
@@ -104,7 +104,9 @@ function analyticsHistoryRange(preset: RangePreset): PortfolioHistoryRange {
  *   stats and perf rebase all anchor to the first day the portfolio held value.
  * - `perf` mode rebases the window's values exactly like the server's
  *   `toPerformanceSeries` (value-normalized), NOT the TWR curve the history
- *   response also carries; those are two different curves.
+ *   response also carries; those are two different curves. The TWR curve does
+ *   answer the response's `twr` block, which is a rate of return rather than a
+ *   rendered series (#1759).
  * - `contributionPct` is `null`: measuring an asset's share of the window's
  *   change needs the same per-asset history. The table drops the column
  *   instead (docs/paranoid-design.md §8 item 12; PROJECTPLAN §16 2026-07-31,
@@ -160,6 +162,14 @@ function clientAnalyticsResponse(
       ),
     },
     compare: null,
+    // The vault's own time-weighted return over the same window (#1759) — the
+    // flow-neutral statistic the server states beside the value curve's stats.
+    // The history response already carries that curve (server-parity TWR), so
+    // this slices it to the window and lets the domain rebase; it is the one
+    // number here the client can state exactly as the server would.
+    twr: computeTwrStats(
+      history.performance.filter((point) => point.date >= from && point.date <= to),
+    ),
     contributions: visible.map((holding) => ({
       asset: holding.asset,
       value: holding.marketValueEur ?? 0,

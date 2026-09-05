@@ -1,4 +1,4 @@
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
+import { computeTwrStats } from '@bettertrack/domain/seriesStats';
 
 /**
  * Shared shaping for the client-derived value series (docs/paranoid-design.md
@@ -24,17 +24,20 @@ export function trimZeroValueEdges<T extends { valueEur: number }>(points: reado
 }
 
 /**
- * The annualised return of a client-derived value series, or `null` when it
- * cannot be stated (empty/one-point window, or a window that never held value).
- * The zero-edge trim is applied here so the forecast prefill and the analytics
- * header cannot disagree about the same curve — the trim is what makes the
- * first sampled point the first day the portfolio actually held value.
+ * The annualised **time-weighted** return of a client-derived performance
+ * curve, or `null` when the window cannot state one (#1759).
+ *
+ * This replaced a `clientSeriesCagrPct` that annualised the vault's own VALUE
+ * curve: that number rises with every deposit the user made, so a saver read
+ * their own contributions back as return and the forecast then compounded them
+ * on top of the contributions themselves. The vault engine computes the same
+ * TWR the server does (`clientMoney`'s server-parity vectors), so a paranoid
+ * account can sample a real rate of return instead. No zero-edge trim is needed
+ * here: a performance curve carries no value scale to be zeroed, and the domain
+ * rebases onto the window's own first point.
  */
-export function clientSeriesCagrPct(
-  points: readonly { date: string; valueEur: number }[],
+export function clientSeriesTwrCagrPct(
+  performance: readonly { date: string; pct: number }[],
 ): number | null {
-  const trimmed = trimZeroValueEdges(points);
-  if (trimmed.length === 0) return null;
-  return computeSeriesStats(trimmed.map((point) => ({ date: point.date, value: point.valueEur })))
-    .cagrPct;
+  return computeTwrStats(performance)?.cagrPct ?? null;
 }
