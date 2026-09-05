@@ -6,7 +6,10 @@ import { searchResponseSchema } from '@bettertrack/contracts';
 
 import { eq } from 'drizzle-orm';
 
+import { createAssetRepository } from '../data/repositories/assetRepository';
 import * as schema from '../data/schema';
+import { COMMON_SYMBOLS_SEED, seedAssetCatalog } from '../services/search/catalogSeed';
+import { CATALOG_MISS_THRESHOLD, SEARCH_RESULT_LIMIT } from '../services/search/searchService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import {
   createRecordingBackfill,
@@ -335,6 +338,56 @@ describe('GET /api/v1/search', () => {
     expect(res.body.results).toHaveLength(3);
     expect(res.body.enriching).toBe(false);
 
+    await h.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(0);
+  });
+
+  it('a caller’s own custom assets cannot make a well-stocked catalog look thin (#1794)', async () => {
+    const marketData = createStubMarketData({
+      search: () => {
+        throw new Error('must not be called');
+      },
+    });
+    const h = await createTestApp({ marketData, backfill });
+
+    // The shipped seed (§6.2(c)) already answers "gold" — three market rows.
+    const goldSeed = COMMON_SYMBOLS_SEED.filter(
+      (e) => e.name.toLowerCase().includes('gold') || e.symbol.toLowerCase().includes('gold'),
+    );
+    expect(goldSeed.length).toBeGreaterThanOrEqual(CATALOG_MISS_THRESHOLD);
+    await seedAssetCatalog(createAssetRepository(h.db), goldSeed);
+
+    // …and this caller owns twenty custom assets matching the same word, which
+    // merge into the SAME ranking (§6.2) and fill the twenty-row window.
+    const user = await h.seedUser();
+    await h.db.insert(schema.assets).values(
+      Array.from({ length: SEARCH_RESULT_LIMIT }, (_, i) => ({
+        providerId: 'manual',
+        providerRef: `gold-bar-${i + 1}`,
+        ownerId: user.id,
+        type: 'custom' as const,
+        symbol: `GOLDBAR${i + 1}`,
+        name: `Gold bar #${i + 1}`,
+        exchange: null,
+        currency: 'EUR',
+      })),
+    );
+
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const res = await agent.get('/api/v1/search?q=gold');
+    expect(res.status).toBe(200);
+
+    // The premise: measured on the DISPLAY WINDOW, this catalog reads as thin…
+    expect(res.body.results).toHaveLength(SEARCH_RESULT_LIMIT);
+    const marketInWindow = res.body.results.filter(
+      (r: { isCustom: boolean }) => !r.isCustom,
+    ).length;
+    expect(marketInWindow).toBeLessThan(CATALOG_MISS_THRESHOLD);
+
+    // …but the CATALOG holds the answer, so no provider fallback runs, no
+    // enrichment budget is spent, and the user is not shown "Searching
+    // providers…" forever against rows Postgres already has.
+    expect(res.body.enriching).toBe(false);
     await h.ctx.search.enrichmentSettled();
     expect(marketData.calls.search).toBe(0);
   });

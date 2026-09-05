@@ -67,6 +67,30 @@ export interface CatalogSearchMatch {
   ownerId: string | null;
 }
 
+/**
+ * One page of the ranked catalog read (§6.2): the display window, plus the size
+ * of the market slice it was cut from.
+ *
+ * The two are separate answers to separate questions and MUST NOT be conflated
+ * (#1794). `matches` is what the user sees — at most `limit` rows, market rows
+ * and the caller's own custom rows competing in one ranking, exactly as §6.2
+ * requires. `marketMatchTotal` is what the provider-fallback threshold is
+ * measured against: counting market rows *inside the window* answers "how many
+ * market rows fit next to this caller's custom rows", which twenty custom
+ * assets can drive to zero against a catalog that holds the answer.
+ */
+export interface CatalogSearchPage {
+  /** The ranked display window — at most `limit` rows (§6.2). */
+  matches: CatalogSearchMatch[];
+  /**
+   * How many MARKET rows (`owner_id IS NULL`) qualified across the whole
+   * visible catalog, counted BEFORE the limit. Custom rows are excluded — a
+   * provider can never enrich one, so they can neither prove nor disprove a
+   * catalog miss.
+   */
+  marketMatchTotal: number;
+}
+
 /** The shape a first-touch upsert needs from a provider search result (§6.2). */
 export interface GlobalAssetUpsert {
   providerId: string;
@@ -148,6 +172,12 @@ export function createAssetRepository(db: Database) {
      * is the fence: without it the planner pulls the subquery up and re-inlines
      * the expression into both places, undoing exactly that.
      *
+     * The market-match total (#1794) rides on the SAME pass: an `over ()`
+     * window aggregate is evaluated after the qualifying filter and BEFORE the
+     * `ORDER BY … LIMIT`, so it counts every market row the catalog holds for
+     * this query while costing no second scan, no second round-trip and no
+     * duplicated predicate. Ranking, ordering and the limit are untouched.
+     *
      * Plan note (#1709): this is, deliberately, a full pass over the caller's
      * visible rows — the planner reaches them through `assets_owner_id_idx`,
      * then filters and sorts every one of them. No index can narrow the MATCH
@@ -170,14 +200,15 @@ export function createAssetRepository(db: Database) {
       query: string,
       limit: number,
       options?: { includeCustomAssets?: boolean },
-    ): Promise<CatalogSearchMatch[]> {
+    ): Promise<CatalogSearchPage> {
       const prefix = `${escapeLike(query)}%`;
       const substring = `%${escapeLike(query)}%`;
       const visibility = visibleTo(userId, options?.includeCustomAssets !== false);
 
       const result = await db.execute(sql`
         select "id", "providerId", "providerRef", "symbol", "name", "exchange", "currency",
-               "type", "ownerId"
+               "type", "ownerId",
+               (count(*) filter (where "ownerId" is null) over ())::int as "marketTotal"
         from (
           select
             ${assets.id} as "id",
@@ -209,17 +240,23 @@ export function createAssetRepository(db: Database) {
         limit ${limit}
       `);
 
-      return resultRows<CatalogSearchMatch>(result).map((r) => ({
-        id: r.id,
-        providerId: r.providerId,
-        providerRef: r.providerRef,
-        symbol: r.symbol,
-        name: r.name,
-        exchange: r.exchange ?? null,
-        currency: r.currency,
-        type: r.type,
-        ownerId: r.ownerId ?? null,
-      }));
+      const rows = resultRows<CatalogSearchMatch & { marketTotal: number | string }>(result);
+      return {
+        matches: rows.map((r) => ({
+          id: r.id,
+          providerId: r.providerId,
+          providerRef: r.providerRef,
+          symbol: r.symbol,
+          name: r.name,
+          exchange: r.exchange ?? null,
+          currency: r.currency,
+          type: r.type,
+          ownerId: r.ownerId ?? null,
+        })),
+        // Every row of one result set carries the same window aggregate; an
+        // empty page qualified nothing at all, market rows included.
+        marketMatchTotal: rows.length === 0 ? 0 : Number(rows[0]!.marketTotal),
+      };
     },
 
     /**
