@@ -283,6 +283,33 @@ export const WEBHOOK_URL_BLOCKED_CODE = 'WEBHOOK_URL_BLOCKED';
 export const WEBHOOK_DELIVERY_REFUSED_ERROR = 'destination not allowed';
 
 /**
+ * The delivery-log `error` recorded when the destination could not be resolved
+ * for this attempt (DNS failure or an empty answer). A network condition, not a
+ * policy refusal — it is retried like any other transport failure.
+ */
+export const WEBHOOK_DELIVERY_UNRESOLVED_ERROR = 'destination unresolved';
+
+/** The delivery-log `error` recorded when the receiver did not answer in time. */
+export const WEBHOOK_DELIVERY_TIMEOUT_ERROR = 'timeout';
+
+/**
+ * The delivery-log `error` recorded when the subscription's signing secret would
+ * not decrypt (rotated or corrupt key) — nothing was sent, and retrying cannot
+ * help.
+ */
+export const WEBHOOK_DELIVERY_SECRET_ERROR = 'secret unavailable';
+
+/**
+ * The delivery-log `error` recorded when the subscription no longer lists the
+ * queued event type at SEND time. The queue is not instantaneous, so a user who
+ * removes an event type must have that revocation bind the deliveries already in
+ * flight — exactly as `enabled` and the destination URL are re-checked per
+ * attempt. It is the user's own change, so it never advances the auto-disable
+ * streak.
+ */
+export const WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR = 'event no longer subscribed';
+
+/**
  * A target URL: a valid absolute http(s) URL. Plain http is accepted (a
  * self-hosted LAN receiver is a first-class use case); the payload is signed
  * either way so the receiver can still authenticate it.
@@ -397,6 +424,54 @@ export const webhookDeliveryListResponseSchema = z
   .object({ deliveries: z.array(webhookDeliverySchema) })
   .strict();
 export type WebhookDeliveryListResponse = z.infer<typeof webhookDeliveryListResponseSchema>;
+
+/**
+ * Why a logged delivery failed, as ONE discriminated value the UI can explain.
+ *
+ * The stored `error` stays a short scrubbed string (never receiver-provided
+ * text), so the four causes that record no `responseStatus` — a guard refusal, a
+ * timeout, an unresolvable host and an unavailable signing secret — would
+ * otherwise be one indistinguishable red badge. Deriving the reason here rather
+ * than in the SPA keeps the writer (the dispatcher) and the reader on the same
+ * constants.
+ */
+export const WEBHOOK_DELIVERY_FAILURE_REASONS = [
+  /** The receiver answered, with a status it refused the delivery on. */
+  'http',
+  /** The outbound (SSRF) guard refused the destination for this attempt. */
+  'refused',
+  /** The destination hostname did not resolve. */
+  'unresolved',
+  /** The receiver did not answer within the transport deadline. */
+  'timeout',
+  /** The signing secret would not decrypt, so nothing was signed or sent. */
+  'secret',
+  /** The subscription no longer listed this event type when the job ran. */
+  'unsubscribed',
+  /** Any other transport-level failure (connection refused, TLS, reset …). */
+  'network',
+] as const;
+export const webhookDeliveryFailureReasonSchema = z.enum(WEBHOOK_DELIVERY_FAILURE_REASONS);
+export type WebhookDeliveryFailureReason = (typeof WEBHOOK_DELIVERY_FAILURE_REASONS)[number];
+
+/** The canonical `error` strings the dispatcher writes, mapped to their reason. */
+const FAILURE_REASON_BY_ERROR: Readonly<Record<string, WebhookDeliveryFailureReason>> = {
+  [WEBHOOK_DELIVERY_REFUSED_ERROR]: 'refused',
+  [WEBHOOK_DELIVERY_UNRESOLVED_ERROR]: 'unresolved',
+  [WEBHOOK_DELIVERY_TIMEOUT_ERROR]: 'timeout',
+  [WEBHOOK_DELIVERY_SECRET_ERROR]: 'secret',
+  [WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR]: 'unsubscribed',
+};
+
+/** The failure reason of one logged delivery; `null` for a delivered one. */
+export function webhookDeliveryFailureReason(
+  delivery: Pick<WebhookDelivery, 'status' | 'responseStatus' | 'error'>,
+): WebhookDeliveryFailureReason | null {
+  if (delivery.status === 'success') return null;
+  if (delivery.responseStatus !== null) return 'http';
+  const mapped = delivery.error === null ? undefined : FAILURE_REASON_BY_ERROR[delivery.error];
+  return mapped ?? 'network';
+}
 
 /**
  * The `data` allowlist: what each catalog event may disclose on the wire.

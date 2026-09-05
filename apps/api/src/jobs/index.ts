@@ -20,6 +20,7 @@ export {
   DEFAULT_JOB_OPTIONS,
   BACKOFF_BASE_MS,
   QUEUE_JOB_OPTIONS,
+  WEBHOOK_BACKOFF_JITTER,
   jobOptionsForQueue,
 } from './options';
 export {

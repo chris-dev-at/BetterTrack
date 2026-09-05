@@ -11,6 +11,8 @@ import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_DELIVERY_REFUSED_ERROR,
+  WEBHOOK_DELIVERY_SECRET_ERROR,
+  WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
   WEBHOOK_EVENT_HEADER,
   WEBHOOK_EVENT_PAYLOAD_SCHEMAS,
   WEBHOOK_EVENT_TYPES,
@@ -46,6 +48,7 @@ import type {
 import {
   BACKOFF_BASE_MS,
   QUEUE_NAMES,
+  WEBHOOK_BACKOFF_JITTER,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
   WEBHOOK_DELIVER_ATTEMPTS,
   WEBHOOK_DELIVER_CONCURRENCY,
@@ -66,8 +69,10 @@ import type {
   ResolvedOutboundUrl,
 } from '../services/security/outboundUrlGuard';
 import {
+  WEBHOOK_PERMANENT_RESPONSE_STATUSES,
   createWebhookBridge,
   createWebhookDispatcher,
+  isPermanentWebhookStatus,
   verifyWebhookSignature,
   type WebhookDeliveryJob,
   type WebhookTransport,
@@ -884,7 +889,15 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     // queue seeding, not the constant the handler falls back to.
     const opts = jobOptionsForQueue(QUEUE_NAMES.webhooksDeliver);
     expect(opts.attempts).toBe(WEBHOOK_DELIVER_ATTEMPTS);
-    expect(opts.backoff).toEqual({ type: 'exponential', delay: BACKOFF_BASE_MS });
+    // The ladder carries jitter: BullMQ's exponential backoff is otherwise
+    // exactly `(2^n - 1) * delay`, so 20 subscriptions pointed at one struggling
+    // receiver would retry in perfect lockstep, four synchronised bursts deep.
+    expect(WEBHOOK_BACKOFF_JITTER).toBeGreaterThan(0);
+    expect(opts.backoff).toEqual({
+      type: 'exponential',
+      delay: BACKOFF_BASE_MS,
+      jitter: WEBHOOK_BACKOFF_JITTER,
+    });
 
     const data = {
       subscriptionId: subId,
@@ -1010,7 +1023,189 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
 
     const log = await deliveries.listForSubscription(id, WEBHOOK_AUTO_DISABLE_THRESHOLD);
     expect(log).toHaveLength(WEBHOOK_AUTO_DISABLE_THRESHOLD);
-    expect(log.every((delivery) => delivery.error === 'secret unavailable')).toBe(true);
+    expect(log.every((delivery) => delivery.error === WEBHOOK_DELIVERY_SECRET_ERROR)).toBe(true);
+  });
+
+  it('classifies which receiver answers are worth retrying', () => {
+    // An allowlist, not "every 4xx": the answer must be one that cannot change.
+    for (const status of [400, 401, 403, 404, 410, 422]) {
+      expect(isPermanentWebhookStatus(status)).toBe(true);
+      expect(WEBHOOK_PERMANENT_RESPONSE_STATUSES).toContain(status);
+    }
+    // A throttled, timed-out or broken receiver is exactly what backoff is for.
+    for (const status of [408, 425, 429, 500, 502, 503, 504, null]) {
+      expect(isPermanentWebhookStatus(status)).toBe(false);
+    }
+  });
+
+  it('spends one attempt on a permanently-refused delivery and the full ladder on a 429', async () => {
+    const gone = recordingTransport(410);
+    const h = await createTestApp({ webhookTransport: gone.transport });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({ url: 'https://gone.test/hook', eventTypes: ['alert.triggered'] });
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    const deliveries = createWebhookDeliveryRepository(h.db);
+    const dispatcherFor = (transport: WebhookTransport) =>
+      createWebhookDispatcher({
+        subscriptions: createWebhookSubscriptionRepository(h.db),
+        deliveries,
+        transport,
+        encryptionKey: h.ctx.config.twoFactor.encryptionKey,
+        audit: noopAudit,
+        logger: h.ctx.logger,
+        dnsResolver: publicTestResolver,
+      });
+
+    // Attempt 1 of 5. A deleted receiver route answers the same thing every
+    // time, so the ladder ends here: ONE signed POST, not five per event.
+    const refused = await dispatcherFor(gone.transport).deliver(
+      { subscriptionId: subId, deliveryId: DELIVERY_A, event: alertEvent(user.id) },
+      { attempt: 1, maxAttempts: WEBHOOK_DELIVER_ATTEMPTS },
+    );
+    expect(refused.outcome).toBe('failed');
+    expect(gone.requests).toHaveLength(1);
+
+    // Still recorded as a failure WITH its status: the early stop must not
+    // weaken the auto-disable streak.
+    const log = await deliveries.listForSubscription(subId, 10);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.status).toBe('failed');
+    expect(log[0]!.attempts).toBe(1);
+    expect(log[0]!.responseStatus).toBe(410);
+    expect(log[0]!.error).toBe('HTTP 410');
+    const afterRefusal = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(afterRefusal.subscriptions[0]!.consecutiveFailures).toBe(1);
+    expect(afterRefusal.subscriptions[0]!.enabled).toBe(true);
+
+    // A 429 says "later", not "never" — it still consumes the ladder.
+    const throttled = recordingTransport(429);
+    const retry = await dispatcherFor(throttled.transport).deliver(
+      { subscriptionId: subId, deliveryId: DELIVERY_B, event: alertEvent(user.id) },
+      { attempt: 1, maxAttempts: WEBHOOK_DELIVER_ATTEMPTS },
+    );
+    expect(retry.outcome).toBe('retry');
+    expect(retry.status).toBe(429);
+    // Nothing terminal recorded while retries remain.
+    expect(await deliveries.listForSubscription(subId, 10)).toHaveLength(1);
+  });
+
+  it('drops a queued delivery whose event type the subscription no longer lists', async () => {
+    const sending = recordingTransport(200);
+    const h = await createTestApp({ webhookTransport: sending.transport });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({
+        url: 'https://receiver.test/hook',
+        eventTypes: ['alert.triggered', 'friend.request'],
+      });
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    const deliveries = createWebhookDeliveryRepository(h.db);
+    const job = createWebhookDeliverJob({
+      dispatcher: createWebhookDispatcher({
+        subscriptions: createWebhookSubscriptionRepository(h.db),
+        deliveries,
+        transport: sending.transport,
+        encryptionKey: h.ctx.config.twoFactor.encryptionKey,
+        audit: noopAudit,
+        logger: h.ctx.logger,
+        dnsResolver: publicTestResolver,
+      }),
+    });
+
+    // The delivery was queued while the subscription still carried the type…
+    const data = { subscriptionId: subId, deliveryId: DELIVERY_A, event: alertEvent(user.id) };
+    // …and the owner revokes that type before the queue gets to it.
+    const patched = await agent
+      .patch(`/api/v1/settings/webhooks/${subId}`)
+      .set(...XRW)
+      .send({ eventTypes: ['friend.request'] });
+    expect(patched.status).toBe(200);
+
+    await job.handler(
+      {
+        data,
+        opts: jobOptionsForQueue(QUEUE_NAMES.webhooksDeliver),
+        attemptsMade: 0,
+      } as never,
+      {} as never,
+    );
+
+    // The revoked endpoint never sees the event…
+    expect(sending.requests).toHaveLength(0);
+    // …and the log says why, rather than leaving the delivery unaccounted for.
+    const log = await deliveries.listForSubscription(subId, 10);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.status).toBe('failed');
+    expect(log[0]!.responseStatus).toBeNull();
+    expect(log[0]!.error).toBe(WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR);
+
+    // The owner's own change is not a receiver failure: the streak stays put.
+    const after = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(after.subscriptions[0]!.consecutiveFailures).toBe(0);
+    expect(after.subscriptions[0]!.enabled).toBe(true);
+  });
+
+  it('flips a failed row to success when the replayed delivery finally lands', async () => {
+    // The bridge derives the delivery id from the logical event, so replaying
+    // the same event re-uses the row an earlier attempt already failed.
+    let status = 500;
+    const requests: RecordedRequest[] = [];
+    const flaky: WebhookTransport = {
+      async send(req) {
+        requests.push(req);
+        return { ok: status >= 200 && status < 300, status };
+      },
+    };
+    const h = await createTestApp({ webhookTransport: flaky });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({ url: 'https://flaky.test/hook', eventTypes: ['alert.triggered'] });
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    const event = alertEvent(user.id);
+    await h.ctx.webhookBridge.handleEvent(event);
+
+    const deliveries = createWebhookDeliveryRepository(h.db);
+    const failedLog = await deliveries.listForSubscription(subId, 10);
+    expect(failedLog).toHaveLength(1);
+    expect(failedLog[0]!.status).toBe('failed');
+    const deliveryId = failedLog[0]!.id;
+
+    // Same logical event, re-enqueued (the notifications job retries the whole
+    // fan-out when one subscription's enqueue failed) — and this time it lands.
+    status = 200;
+    await h.ctx.webhookBridge.handleEvent(event);
+
+    const healedLog = await deliveries.listForSubscription(subId, 10);
+    expect(healedLog).toHaveLength(1);
+    expect(healedLog[0]!.id).toBe(deliveryId);
+    expect(healedLog[0]!.status).toBe('success');
+    expect(healedLog[0]!.responseStatus).toBe(200);
+    expect(healedLog[0]!.error).toBeNull();
+
+    // …and the subscription is stamped as delivered, not left looking dead.
+    const after = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(after.subscriptions[0]!.consecutiveFailures).toBe(0);
+    expect(after.subscriptions[0]!.lastSuccessAt).not.toBeNull();
+    expect(after.subscriptions[0]!.lastDeliveryAt).not.toBeNull();
   });
 });
 

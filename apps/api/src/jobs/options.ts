@@ -36,6 +36,18 @@ export const DEFAULT_JOB_OPTIONS: DefaultJobOptions = {
  *
  * Keep this list short: a queue with no entry keeps the §9 defaults.
  */
+/**
+ * Fraction of each webhook retry delay BullMQ randomizes away (0…1; its
+ * `backoff.jitter`, default `0`).
+ *
+ * The exponential ladder is otherwise fully deterministic — `(2^n - 1) * delay`
+ * — so one event matching the maximum 20 subscriptions that all point at the
+ * same self-hosted receiver would retry in perfect lockstep: four synchronised
+ * 20-request bursts at a receiver that is already struggling. Half the delay
+ * spreads them without meaningfully changing how long the ladder takes.
+ */
+export const WEBHOOK_BACKOFF_JITTER = 0.5;
+
 export const QUEUE_JOB_OPTIONS = {
   // §13.5 V5-P10: an outbound delivery is retried five times before the
   // dispatcher calls it terminal and advances the auto-disable streak, so a
@@ -43,7 +55,7 @@ export const QUEUE_JOB_OPTIONS = {
   // budget. The 3-attempt default would make that budget ~3s wide.
   [QUEUE_NAMES.webhooksDeliver]: {
     attempts: 5,
-    backoff: { type: 'exponential', delay: BACKOFF_BASE_MS },
+    backoff: { type: 'exponential', delay: BACKOFF_BASE_MS, jitter: WEBHOOK_BACKOFF_JITTER },
   },
 } as const satisfies Partial<Record<QueueName, JobsOptions>>;
 
