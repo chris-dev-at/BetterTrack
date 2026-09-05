@@ -26,8 +26,10 @@ import type {
 } from '../../events';
 import type { Logger } from '../../logger';
 import type { CashMovementRepository } from '../../data/repositories/cashMovementRepository';
+import { calendarDayInTimezone } from '../../services/standingOrders/schedule';
 import {
   createStandingOrderService,
+  STANDING_ORDERS_SCAN_TZ,
   type ProcessDueResult,
 } from '../../services/standingOrders/standingOrderService';
 import { createStubMarketData } from '../../testing/marketDataStubs';
@@ -227,11 +229,41 @@ describe('standingOrders.process job — schedule', () => {
       },
     });
     expect(job.name).toBe('standingOrders.process');
+    // Pinned to the zone the SCAN resolves "today" in, not merely to itself
+    // (#1793). Asserting `tz: STANDING_ORDERS_TZ` compared the constant with
+    // itself and would have passed while the two drifted apart.
     expect(job.schedule).toEqual({
       id: STANDING_ORDERS_SCHEDULER_ID,
       pattern: STANDING_ORDERS_CRON,
-      tz: STANDING_ORDERS_TZ,
+      tz: STANDING_ORDERS_SCAN_TZ,
     });
+    expect(STANDING_ORDERS_TZ).toBe(STANDING_ORDERS_SCAN_TZ);
+  });
+
+  it('fires and books in one zone, so a late-evening cron cannot skip a month', () => {
+    const job = createStandingOrdersJob({
+      standingOrders: {
+        async processDueOrders() {
+          return {
+            scanned: 0,
+            booked: 0,
+            bookingFailed: 0,
+            skippedDuplicate: 0,
+            deferred: 0,
+            skippedArchived: 0,
+            failed: 0,
+          };
+        },
+      },
+    });
+    // The concrete drift the pinning prevents: firing at 23:30 UTC on Mar 31
+    // while resolving the calendar day in Vienna lands on Apr 1, so a monthly
+    // order anchored on the 31st skips March and books April a day early. With
+    // one constant behind both, the fire instant and the booked day agree.
+    const fireInstant = Date.parse('2026-03-31T23:30:00Z');
+    expect(calendarDayInTimezone(fireInstant, job.schedule!.tz!)).toBe(
+      calendarDayInTimezone(fireInstant, STANDING_ORDERS_SCAN_TZ),
+    );
   });
 });
 

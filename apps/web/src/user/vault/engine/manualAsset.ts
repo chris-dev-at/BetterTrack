@@ -6,6 +6,12 @@ import { storedPrices, type ClientAssetRecord } from './model';
 export interface LocalManualAssetMarket {
   prices: PricePoint[];
   quote: HoldingAssetInput['quote'];
+  /**
+   * Calendar day of the value point behind {@link LocalManualAssetMarket.quote}
+   * — this valuation's `asOf`, the local twin of a provider quote's market
+   * stamp. Null exactly when there is no value point (and so no quote).
+   */
+  asOf: string | null;
   watermark: string;
 }
 
@@ -28,6 +34,7 @@ export function localManualAssetMarket(
   return {
     prices,
     quote: latest === undefined ? null : { price: latest.close, prevClose: null },
+    asOf: latest?.date ?? null,
     watermark: `manual:${smoothing ? 'smooth' : 'step'}:${stored
       .map((point) => `${point.date}:${point.close}`)
       .join(',')}`,
