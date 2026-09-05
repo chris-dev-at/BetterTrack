@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ConglomerateDetailRow } from '../../../data/repositories/conglomerateRepository';
 import {
+  createFlattenCache,
   createsCycle,
   FLATTEN_LOAD_CONCURRENCY,
   flattenConglomerate,
@@ -275,6 +276,62 @@ describe('flattenConglomerate', () => {
     ]);
     const flat = await flattenConglomerate(atCap, 'root');
     expect(flat!.positions).toHaveLength(MAX_FLATTENED_POSITIONS);
+  });
+
+  it('loads a basket’s nested children through the bounded pool, not one at a time', async () => {
+    // The walk used to `await` each child load before starting the next, so a
+    // basket of twelve children cost twelve serial round trips (#1776).
+    const rows = [
+      row(
+        'root',
+        Array.from({ length: 12 }, (_, i) => childPos(`c${i}`, 1)),
+      ),
+      ...Array.from({ length: 12 }, (_, i) => row(`c${i}`, [assetPos(`x${i}`, 100)])),
+    ];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    let inFlight = 0;
+    let peak = 0;
+    const load = async (id: string) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      return byId.get(id) ?? null;
+    };
+
+    const flat = await flattenConglomerate(load, 'root');
+    expect(peak).toBeGreaterThan(1); // genuinely concurrent…
+    expect(peak).toBeLessThanOrEqual(FLATTEN_LOAD_CONCURRENCY); // …but still bounded.
+    // Only the loads moved: first-encounter order and the weights are exactly
+    // what the sequential walk produced.
+    expect(flat!.positions.map((p) => p.assetId)).toEqual(
+      Array.from({ length: 12 }, (_, i) => `x${i}`),
+    );
+    for (const position of flat!.positions) expect(position.weightPct).toBeCloseTo(100 / 12, 12);
+  });
+
+  it('loads a shared basket once across flattens that share a cache', async () => {
+    const rows = [
+      row('p1', [childPos('shared', 100)]),
+      row('p2', [childPos('shared', 100)]),
+      row('shared', [assetPos('x', 100)]),
+    ];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const loads: string[] = [];
+    const load = (id: string) => {
+      loads.push(id);
+      return Promise.resolve(byId.get(id) ?? null);
+    };
+
+    const cache = createFlattenCache();
+    const first = await flattenConglomerate(load, 'p1', { cache });
+    const second = await flattenConglomerate(load, 'p2', { cache });
+
+    expect(first!.positions[0]!.weightPct).toBeCloseTo(100, 12);
+    expect(second!.positions[0]!.weightPct).toBeCloseTo(100, 12);
+    // The revalidation sweep flattens once per child and once per ancestor; with
+    // a per-call cache the shared basket was re-read every time (#1776).
+    expect(loads).toEqual(['p1', 'shared', 'p2']);
   });
 });
 

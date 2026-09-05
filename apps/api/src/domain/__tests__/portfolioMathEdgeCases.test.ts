@@ -295,4 +295,29 @@ describe('allocateBudget — deviation edge cases', () => {
     expect(result.totalCostEur).toBe(1000);
     expect(result.leftoverEur).toBe(0); // no greedy fill can afford a 6th share
   });
+
+  it('atLeastOneShare never turns the dominant leg into a −90 pp hole (#1778)', () => {
+    // A's 900 € slice buys its share outright; B's 100 € slice cannot reach its
+    // 150 € share. Before #1778, granting B re-targeted A off the 850 €
+    // remainder, A floored to 0 and the buy list read: A 0 % actual vs 90 %
+    // target (Δ −90 pp), 150 € invested, 850 € left. Deviation math is only
+    // honest if the plan behind it is.
+    const positions = [
+      { assetId: 'A', symbol: 'AAA', weight: 0.9, priceEur: 900 },
+      { assetId: 'B', symbol: 'BBB', weight: 0.1, priceEur: 150 },
+    ];
+    const on = allocateBudget({
+      budgetEur: 1000,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions,
+    });
+    const off = allocateBudget({ budgetEur: 1000, mode: 'whole', positions });
+
+    expect(on.positions.map((p) => p.qty)).toEqual([1, 0]);
+    expect(on.positions.map((p) => p.deltaPp)).toEqual([0, -10]);
+    expect(on.totalCostEur).toBe(900);
+    expect(on.totalCostEur).toBeGreaterThanOrEqual(off.totalCostEur);
+    expect(on.leftoverEur).toBe(100);
+  });
 });

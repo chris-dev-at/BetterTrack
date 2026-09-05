@@ -23,6 +23,13 @@ function line(result: ReturnType<typeof allocateBudget>, assetId: string): Alloc
   return found;
 }
 
+/** The "raise the budget to ≥ ~X €" figure an unreachable-weight note promises. */
+function suggestedMin(note: string): number {
+  const match = /≥ ~([\d.]+) €/.exec(note);
+  if (match?.[1] === undefined) throw new Error(`no suggested minimum in note: ${note}`);
+  return Number(match[1]);
+}
+
 /** The §6.7 worked example: B = 1000 €, BAYN 30 % @ 25 €, NVDA 60 % @ 150 €, GOOGL 10 % @ 140 €. */
 function workedExample(mode: 'whole' | 'fractional'): AllocationInput {
   return {
@@ -327,7 +334,9 @@ describe('allocateBudget — output consistency', () => {
     const res = allocateBudget({
       budgetEur: 1000,
       mode: 'fractional',
-      positions: [pos('x', 0.5, 10), pos('y', 0.4995, 10)],
+      // 99.995 % — inside §6.5's ±0.01 pp write contract, which the engine now
+      // mirrors exactly (#1778); anything looser is refused up front.
+      positions: [pos('x', 0.5, 10), pos('y', 0.49995, 10)],
     });
 
     const sumTargetPct = res.positions.reduce((s, l) => s + l.targetPct, 0);
@@ -417,7 +426,10 @@ describe('allocateBudget — validation', () => {
   });
 
   it('accepts weight sums within the documented tolerance (numeric(6,3) rounding)', () => {
-    expect(WEIGHT_SUM_TOLERANCE).toBe(1e-3);
+    // §6.5: "status `active` requires Σ weights = 100 ± 0.01" ⇒ ±0.0001 as a
+    // fraction. Before #1778 the engine allowed 1e-3 — ±0.1 pp, 10× looser than
+    // the contract `conglomerateService` enforces on write.
+    expect(WEIGHT_SUM_TOLERANCE).toBe(1e-4);
     const third = 0.33333; // 33.333 % at numeric(6,3) precision; ×3 = 0.99999
     const res = allocateBudget({
       budgetEur: 300,
@@ -425,6 +437,24 @@ describe('allocateBudget — validation', () => {
       positions: [pos('x', third, 10), pos('y', third, 10), pos('z', third, 10)],
     });
     expect(res.totalCostEur).toBeLessThanOrEqual(300);
+  });
+
+  it('refuses a basket 0.1 pp off 100 % instead of silently scaling it up (§6.5)', () => {
+    // 99.9 % — accepted and normalised up by the pre-#1778 ±0.1 pp tolerance.
+    expect(() =>
+      allocateBudget({
+        budgetEur: 1000,
+        mode: 'whole',
+        positions: [pos('x', 0.5, 10), pos('y', 0.499, 10)],
+      }),
+    ).toThrowError(AllocationError);
+    expect(() =>
+      allocateBudget({
+        budgetEur: 1000,
+        mode: 'whole',
+        positions: [pos('x', 0.5, 10), pos('y', 0.499, 10)],
+      }),
+    ).toThrowError(/must sum to ~1/);
   });
 });
 
@@ -478,17 +508,36 @@ describe('allocateBudget — atLeastOneShare (opt-in force-single mode)', () => 
     );
   });
 
-  it('ON: §6.7 worked example — GOOGL gets its single share, BAYN/NVDA refloor on the remainder', () => {
+  it('ON: §6.7 worked example — GOOGL costs more deployment than it adds, so it is refused and flagged at a reachable 1040 €', () => {
+    // Before #1778 this granted GOOGL its share: BAYN refloored to 11 × 25 €
+    // and NVDA to 3 × 150 €, so 140 € bought in cost 175 € of BAYN + NVDA —
+    // 865 € invested against the flag-off plan's 900 €, i.e. 35 € pulled back
+    // out of the market by turning the flag on. The retreat keeps the flag-off
+    // plan and says what budget would actually reach GOOGL.
     const res = allocateBudget({ ...workedExample('whole'), atLeastOneShare: true });
+    const off = allocateBudget(workedExample('whole'));
 
-    expect(line(res, 'googl').qty).toBe(1);
-    expect(line(res, 'googl').costEur).toBe(140);
-    // Remainder 860 € rebalances 30:60 → BAYN ~286.67 € (11 × 25 €), NVDA ~573.33 € (3 × 150 €).
-    expect(line(res, 'bayn').qty).toBe(11);
-    expect(line(res, 'nvda').qty).toBe(3);
-    expect(res.totalCostEur).toBe(865);
-    expect(res.leftoverEur).toBe(135);
-    expect(res.warnings).toEqual([]); // every position reached — nothing left to flag
+    expect(line(res, 'bayn').qty).toBe(12);
+    expect(line(res, 'nvda').qty).toBe(4);
+    expect(line(res, 'googl').qty).toBe(0);
+    expect(res.totalCostEur).toBe(900);
+    expect(res.totalCostEur).toBeGreaterThanOrEqual(off.totalCostEur);
+    expect(res.leftoverEur).toBe(100);
+
+    // Flagged with a budget the FORCE path actually reaches — 1040 €, not the
+    // flag-off 1400 € — and re-running there does buy the share.
+    expect(line(res, 'googl').note).toBe(
+      'GOOGL share price (140 €) exceeds its 100 € slice; raise the budget to ≥ ~1040 € or use fractional mode.',
+    );
+    const raised = allocateBudget({
+      ...workedExample('whole'),
+      atLeastOneShare: true,
+      budgetEur: 1040,
+    });
+    expect(line(raised, 'googl').qty).toBe(1);
+    expect(line(raised, 'bayn').qty).toBe(12);
+    expect(line(raised, 'nvda').qty).toBe(4);
+    expect(raised.totalCostEur).toBe(1040);
   });
 
   it('ON: unaffordable candidates are dropped, never forced past the budget (overshoot guard)', () => {
@@ -562,17 +611,19 @@ describe('allocateBudget — atLeastOneShare (opt-in force-single mode)', () => 
   });
 
   it('ON: a forced position gets exactly one share, even with plenty of leftover', () => {
+    // exp's 50 € slice cannot afford its 60 € share; x floors to 2 × 400 € both
+    // with and without the grant, so forcing costs no deployment and stands.
     const res = allocateBudget({
       budgetEur: 1000,
       mode: 'whole',
       atLeastOneShare: true,
-      positions: [pos('exp', 0.05, 60), pos('x', 0.95, 500)],
+      positions: [pos('exp', 0.05, 60), pos('x', 0.95, 400)],
     });
 
-    expect(line(res, 'exp').qty).toBe(1); // never topped up from the 440 € leftover
-    expect(line(res, 'x').qty).toBe(1);
-    expect(res.totalCostEur).toBe(560);
-    expect(res.leftoverEur).toBe(440);
+    expect(line(res, 'exp').qty).toBe(1); // never topped up from the 140 € leftover
+    expect(line(res, 'x').qty).toBe(2);
+    expect(res.totalCostEur).toBe(860);
+    expect(res.leftoverEur).toBe(140);
   });
 
   it('ON: a zero-weight position is never forced', () => {
@@ -586,6 +637,189 @@ describe('allocateBudget — atLeastOneShare (opt-in force-single mode)', () => 
     expect(line(res, 'x').qty).toBe(3);
     expect(line(res, 'z').qty).toBe(0);
     expect(line(res, 'z').note).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1778 — the force pass never deploys less capital than the flag-off plan,
+// and every unreachable-weight note names a budget that actually reaches it
+// ---------------------------------------------------------------------------
+
+describe('allocateBudget — atLeastOneShare never deploys less than the flag-off plan (#1778)', () => {
+  /**
+   * The defect-1 basket: A's 900 € slice buys its 900 € share outright, B's
+   * 100 € slice cannot afford its 150 € share. Forcing B re-targets A off the
+   * 850 € remainder — below A's own 900 € price — so A floored to 0 and the
+   * greedy fill could not put it back (900 + 150 > 1000).
+   */
+  const dominant = (atLeastOneShare: boolean): AllocationInput => ({
+    budgetEur: 1000,
+    mode: 'whole',
+    atLeastOneShare,
+    positions: [pos('a', 0.9, 900), pos('b', 0.1, 150)],
+  });
+
+  it('keeps the dominant leg it used to zero: 900 € invested, not 150 €', () => {
+    // Before #1778, ON returned: a qty 0 (0 % actual vs 90 % target, Δ −90 pp),
+    // b qty 1, total 150 €, leftover 850 € — 750 € of a 1000 € budget moved out
+    // of the market by turning the flag on.
+    const on = allocateBudget(dominant(true));
+    const off = allocateBudget(dominant(false));
+
+    expect(line(on, 'a').qty).toBeGreaterThanOrEqual(1);
+    expect(line(on, 'a').qty).toBe(1);
+    expect(line(on, 'a').costEur).toBe(900);
+    expect(line(on, 'a').deltaPp).toBeCloseTo(0, 9);
+    expect(line(on, 'b').qty).toBe(0);
+    expect(on.totalCostEur).toBe(900);
+    expect(on.leftoverEur).toBe(100);
+
+    // The rule, stated: the flag is never worse than not setting it.
+    expect(on.totalCostEur).toBeGreaterThanOrEqual(off.totalCostEur);
+    expect(on.totalCostEur).toBeLessThanOrEqual(1000);
+  });
+
+  it('suggests 1050 € for the refused single — not the 1000 € the user is already at', () => {
+    // Before #1778 the note printed pᵢ/wᵢ against the REBALANCED slice: "a share
+    // price (900 €) exceeds its 850 € slice; raise the budget to ≥ ~1000 €" —
+    // the budget already in force, which reproduces the same qty 0.
+    const on = allocateBudget(dominant(true));
+
+    expect(line(on, 'a').note).toBeUndefined(); // a is bought; nothing to flag
+    expect(line(on, 'b').note).toBe(
+      'b share price (150 €) exceeds its 100 € slice; raise the budget to ≥ ~1050 € or use fractional mode.',
+    );
+
+    // Round trip: the promised budget really does buy the share.
+    const raised = allocateBudget({ ...dominant(true), budgetEur: 1050 });
+    expect(line(raised, 'b').qty).toBe(1);
+    expect(line(raised, 'a').qty).toBe(1);
+    expect(raised.totalCostEur).toBe(1050);
+
+    // And 1050 € is the honest figure: 1049.99 € still cannot seat both.
+    const short = allocateBudget({ ...dominant(true), budgetEur: 1049.99 });
+    expect(line(short, 'b').qty).toBe(0);
+  });
+
+  it('OFF is unchanged by the rule: the same basket still floors a to one share', () => {
+    const off = allocateBudget(dominant(false));
+
+    expect(line(off, 'a').qty).toBe(1);
+    expect(line(off, 'b').qty).toBe(0);
+    expect(off.totalCostEur).toBe(900);
+    // With the flag off the reachable budget is the plain slice threshold.
+    expect(line(off, 'b').note).toContain('~1500 €');
+  });
+
+  it('still grants singles wherever they cost no deployment (the flag is not disabled)', () => {
+    // The owner's €240-on-€1000 case: forcing exp re-floors cheap from 80 to 76
+    // shares, spending the whole budget instead of 800 € — strictly better.
+    const res = allocateBudget({
+      budgetEur: 1000,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('exp', 0.2, 240), pos('cheap', 0.8, 10)],
+    });
+
+    expect(line(res, 'exp').qty).toBe(1);
+    expect(line(res, 'cheap').qty).toBe(76);
+    expect(res.totalCostEur).toBe(1000);
+    expect(res.totalCostEur).toBeGreaterThan(
+      allocateBudget({
+        budgetEur: 1000,
+        mode: 'whole',
+        positions: [pos('exp', 0.2, 240), pos('cheap', 0.8, 10)],
+      }).totalCostEur,
+    );
+  });
+
+  it('retreats one single at a time, keeping the larger-weight grant (§6.7 priority)', () => {
+    // b (w .15 @ 400 €) and c (w .05 @ 300 €) are both under-slice candidates
+    // and both would be admitted together (400 + 300 ≤ 1250), but granting both
+    // leaves too little for a and d to refloor. The smaller-weight single (c) is
+    // dropped first and b keeps its share — a partial retreat that still beats
+    // the flag-off plan by 44 €.
+    const basket = [pos('a', 0.43, 356), pos('b', 0.15, 400), pos('c', 0.05, 300), pos('d', 0.37, 240)]; // prettier-ignore
+    const res = allocateBudget({
+      budgetEur: 1250,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: basket,
+    });
+    const off = allocateBudget({ budgetEur: 1250, mode: 'whole', positions: basket });
+
+    expect(line(res, 'b').qty).toBe(1);
+    expect(line(res, 'c').qty).toBe(0);
+    expect(line(res, 'a').qty).toBe(1);
+    expect(line(res, 'd').qty).toBe(2);
+    expect(res.totalCostEur).toBe(1236);
+    expect(off.totalCostEur).toBe(1192);
+    expect(res.totalCostEur).toBeGreaterThan(off.totalCostEur);
+    expect(res.totalCostEur).toBeLessThanOrEqual(1250);
+
+    // c's note prices in the single b keeps: pᵢ·Σ_rest w/wᵢ + Σ forced, verified.
+    expect(line(res, 'c').note).toContain('~5500 €');
+    const raised = allocateBudget({
+      budgetEur: 5500,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: basket,
+    });
+    expect(line(raised, 'c').qty).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1778 — the quantity floor is a floor (relative epsilon only), and the FP
+// backstop shaves the position that actually over-floored
+// ---------------------------------------------------------------------------
+
+describe('allocateBudget — floor precision', () => {
+  it('does not floor a ratio upward past its mathematical floor', () => {
+    // 500 / 250.0000000625 = 1.9999999995 — mathematically one share. The old
+    // absolute 1e-9 epsilon floored it to 2 (cost 500.000000125), pushing the
+    // total to 1000.000000125 and making the backstop strip a share from b:
+    // a = 2, b = 499. §6.7's floor gives a = 1, b = 500.
+    const res = allocateBudget({
+      budgetEur: 1000,
+      mode: 'whole',
+      positions: [pos('a', 0.5, 250.0000000625), pos('b', 0.5, 1)],
+    });
+
+    expect(line(res, 'a').qty).toBe(1);
+    expect(line(res, 'b').qty).toBe(500);
+    expect(res.totalCostEur).toBeLessThanOrEqual(1000);
+    expect(res.leftoverEur).toBeGreaterThanOrEqual(0);
+  });
+
+  it('still snaps a quantity that FP division drops a hair below its boundary', () => {
+    // 5 € / 0.0001 steps at 1 € = 50 000 steps; the division lands just under.
+    const res = allocateBudget({
+      budgetEur: 5,
+      mode: 'fractional',
+      positions: [pos('x', 1, 1)],
+    });
+
+    expect(line(res, 'x').qty).toBeCloseTo(5, 9);
+    expect(res.totalCostEur).toBeLessThanOrEqual(5);
+    expect(res.leftoverEur).toBeCloseTo(0, 9);
+  });
+
+  it('shaves the over-floored position, not the cheapest one', () => {
+    // a's ratio sits 1e-12 relative below 2, inside the snap tolerance, so its
+    // floor costs a hair more than its 500 € slice and the exact Σ ≤ B check
+    // trips. The shave must land on a (over its own target), not on b, which is
+    // exactly on target — the pre-#1778 backstop took b down to 499 shares.
+    const price = 500 / (2 - 1e-12);
+    const res = allocateBudget({
+      budgetEur: 1000,
+      mode: 'whole',
+      positions: [pos('a', 0.5, price), pos('b', 0.5, 1)],
+    });
+
+    expect(line(res, 'a').qty).toBe(1);
+    expect(line(res, 'b').qty).toBe(500);
+    expect(res.totalCostEur).toBeLessThanOrEqual(1000);
   });
 });
 
@@ -658,28 +892,63 @@ describe('allocateBudget — never-overshoot property', () => {
       const budgetEur = rnd() * 2000;
 
       const res = allocateBudget({ budgetEur, mode: 'whole', atLeastOneShare: true, positions });
+      const off = allocateBudget({ budgetEur, mode: 'whole', positions });
 
       // The hard invariant survives the force pass — never overshoot.
       expect(res.totalCostEur).toBeLessThanOrEqual(budgetEur);
       expect(res.leftoverEur).toBeGreaterThanOrEqual(0);
       expect(res.totalCostEur + res.leftoverEur).toBeCloseTo(budgetEur, 6);
+      // …and so does the second one (#1778): turning the flag ON never deploys
+      // less capital than leaving it off. Exact, not approximate: two plans with
+      // identical per-position costs sum bit-identically.
+      expect(res.totalCostEur).toBeGreaterThanOrEqual(off.totalCostEur);
 
       let sumCost = 0;
       for (const [j, l] of res.positions.entries()) {
         const p = positions[j]!;
         expect(Number.isInteger(l.qty)).toBe(true);
         expect(l.costEur).toBeCloseTo(l.qty * p.priceEur, 8);
-        // A clearly under-slice position left at 0 must have been unaffordable
-        // at its turn — otherwise the force pass would have granted its share
-        // (the total only grows after it, so "affordable at the end" implies
-        // "affordable then").
+        // A clearly under-slice position left at 0 was either unaffordable at
+        // its turn — the total only grows after it, so "affordable at the end"
+        // implies "affordable then" — or granting it would have deployed less
+        // than the flag-off plan and the engine retreated to it (#1778).
         const sliceShares = (budgetEur * p.weight) / p.priceEur;
         if (l.qty === 0 && p.weight > 0 && sliceShares < 0.999) {
-          expect(p.priceEur).toBeGreaterThan(res.leftoverEur - 1e-6);
+          const unaffordable = p.priceEur > res.leftoverEur - 1e-6;
+          expect(unaffordable || res.totalCostEur === off.totalCostEur).toBe(true);
         }
         sumCost += l.costEur;
       }
       expect(sumCost).toBeCloseTo(res.totalCostEur, 8);
+    }
+  });
+
+  it('every unreachable-weight note names a budget that really buys the position (300 baskets)', () => {
+    // The round trip the note promises, as a property: re-run the SAME call at
+    // the suggested figure and the flagged position must come back with at
+    // least one increment — off the force path and on it (#1778).
+    const rnd = lcg(2024);
+
+    for (let i = 0; i < 300; i += 1) {
+      const n = 1 + Math.floor(rnd() * 5);
+      const raw = Array.from({ length: n }, () => 0.05 + rnd());
+      const rawSum = raw.reduce((a, b) => a + b, 0);
+      const positions = raw.map((w, j) => pos(`a${j}`, w / rawSum, 0.5 + rnd() * 400));
+      const budgetEur = rnd() * 1500;
+      const mode = i % 3 === 0 ? ('fractional' as const) : ('whole' as const);
+      const atLeastOneShare = i % 2 === 0;
+      const input: AllocationInput = { budgetEur, mode, atLeastOneShare, positions };
+
+      const res = allocateBudget(input);
+      for (const l of res.positions) {
+        if (l.note === undefined) continue;
+        const suggested = suggestedMin(l.note);
+        expect(suggested).toBeGreaterThan(budgetEur);
+        const raised = allocateBudget({ ...input, budgetEur: suggested });
+        const reached = raised.positions.find((p) => p.assetId === l.assetId)!;
+        expect(reached.qty).toBeGreaterThan(0);
+        expect(raised.totalCostEur).toBeLessThanOrEqual(suggested);
+      }
     }
   });
 });
