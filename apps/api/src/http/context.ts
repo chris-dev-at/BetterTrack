@@ -626,6 +626,13 @@ export interface BuildContextDeps {
   marketData?: MarketDataService;
   /** Test seam: controlled portfolio-service clock for UTC-window boundary tests. */
   portfolioNow?: () => number;
+  /**
+   * Test seam (#1709): the interactive enrichment budget's clock. Its window is
+   * epoch-aligned, so a test whose requests straddle a boundary is handed a
+   * second budget and stops proving the ceiling it asserts. Defaults to the
+   * real time.
+   */
+  searchEnrichmentNow?: () => number;
   /** Test seam: controlled destructive portfolio-vault transition clock. */
   portfolioVaultTransitionNow?: () => Date;
   /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
@@ -1369,6 +1376,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       logger,
       budget: config.search.enrichmentBudget,
       windowSeconds: config.search.enrichmentWindowSec,
+      now: deps.searchEnrichmentNow,
     }),
   });
 

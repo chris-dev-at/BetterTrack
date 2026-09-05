@@ -22,7 +22,17 @@ import { createSearchService } from '../searchService';
  * only the background work, never the catalog read.
  */
 
+/**
+ * The budget's window is epoch-aligned, so on the real clock a slow run can
+ * cross a boundary mid-test and hand the caller a second budget — the ceiling
+ * these tests assert then silently stops being the ceiling under test. Every
+ * budget below therefore runs on a clock the test owns: pinned by default, and
+ * advanced explicitly by the one test that is *about* the rollover.
+ */
+const WINDOW_SECONDS = 60;
+
 async function makeSearch(budget: number) {
+  const clock = { ms: Date.UTC(2026, 0, 2, 3, 4, 5) };
   const h = await createTestApp({ marketData: createStubMarketData() });
   const marketData = createStubMarketData();
   const assetRepo = createAssetRepository(h.db);
@@ -43,7 +53,8 @@ async function makeSearch(budget: number) {
       redis,
       logger: h.ctx.logger,
       budget,
-      windowSeconds: 60,
+      windowSeconds: WINDOW_SECONDS,
+      now: () => clock.ms,
     }),
   });
   const user = await h.seedUser({ email: 'budget@s.test', username: 'budget' });
@@ -60,7 +71,7 @@ async function makeSearch(budget: number) {
     currency: 'EUR',
     exchange: 'XETRA',
   });
-  return { h, service, marketData, userId: user.id };
+  return { h, service, marketData, userId: user.id, clock };
 }
 
 describe('interactive enrichment budget', () => {
@@ -149,15 +160,45 @@ describe('interactive enrichment budget', () => {
     expect(marketData.calls.search).toBe(4);
   });
 
+  it('starts a fresh budget in the next window, and not before it', async () => {
+    const { service, marketData, userId, clock } = await makeSearch(2);
+    const windowMs = WINDOW_SECONDS * 1000;
+    // Land inside a window rather than on its edge, so "later, same window"
+    // below is a genuine advance and not a boundary in disguise.
+    clock.ms = Math.floor(clock.ms / windowMs) * windowMs + 1_000;
+
+    for (const q of ['zet', 'zeta']) {
+      const res = await service.search(userId, q);
+      await service.enrichmentSettled();
+      expect(res.enriching).toBe(true);
+    }
+    // Later in the SAME window the budget is still spent — the ceiling is per
+    // window, not per request instant.
+    clock.ms += windowMs - 2_000;
+    const refused = await service.search(userId, 'zetaf');
+    await service.enrichmentSettled();
+    expect(refused.enriching).toBe(false);
+    expect(marketData.calls.search).toBe(2);
+
+    // One second later the window rolls and the next one is the caller's to
+    // spend: the fixed window's accounting period, not a leaked slot.
+    clock.ms += 1_000;
+    const nextWindow = await service.search(userId, 'zetaf');
+    await service.enrichmentSettled();
+    expect(nextWindow.enriching).toBe(true);
+    expect(marketData.calls.search).toBe(3);
+  });
+
   it('admits exactly the budget when distinct queries arrive concurrently', async () => {
-    const { h, userId } = await makeSearch(3);
+    const { h, userId, clock } = await makeSearch(3);
     const redis = new RedisMock() as unknown as Redis;
     await redis.flushall();
     const budget = createSearchEnrichmentBudget({
       redis,
       logger: h.ctx.logger,
       budget: 3,
-      windowSeconds: 60,
+      windowSeconds: WINDOW_SECONDS,
+      now: () => clock.ms,
     });
 
     // Five distinct misses in flight at once — a debounced prefix burst. The
@@ -176,7 +217,7 @@ describe('interactive enrichment budget', () => {
   });
 
   it('fails closed when Redis is unavailable — the catalog still answers', async () => {
-    const { h, service, marketData, userId } = await makeSearch(5);
+    const { h, service, marketData, userId, clock } = await makeSearch(5);
     const deadChain = {
       scard: () => deadChain,
       sadd: () => deadChain,
@@ -188,7 +229,8 @@ describe('interactive enrichment budget', () => {
       } as unknown as Redis,
       logger: h.ctx.logger,
       budget: 5,
-      windowSeconds: 60,
+      windowSeconds: WINDOW_SECONDS,
+      now: () => clock.ms,
     });
 
     await expect(budget.admit(userId, 'zeta')).resolves.toBe(false);

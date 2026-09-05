@@ -241,6 +241,15 @@ export interface CreateTestAppOptions {
   /** Controlled process-local realtime command-bucket clock. */
   realtimeCommandNow?: () => number;
   /**
+   * Clock for the interactive enrichment budget (#1709). Defaults to an instant
+   * frozen when the harness is built: the budget's window is epoch-aligned, so
+   * a test that happens to straddle a minute boundary silently gets a second
+   * budget and its ceiling assertions stop holding. Freezing it makes every
+   * request a harness serves land in one window, whatever the suite's load;
+   * a test that wants a rollover injects an advancing clock of its own.
+   */
+  searchEnrichmentNow?: () => number;
+  /**
    * Notification-center transport override (#368): e.g. a recording queue that
    * nothing consumes, to model a dispatcher outage. Defaults to synchronous
    * direct dispatch under test.
@@ -339,6 +348,11 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     config.rateLimits.enabled = true;
   }
   const logger = createLogger(config);
+  // Read once, here: every enrichment admission this harness makes then shares
+  // one window id, so a slow run cannot roll the budget out from under the test
+  // holding it (see `searchEnrichmentNow`).
+  const builtAtMs = Date.now();
+  const frozenEnrichmentClock = (): number => builtAtMs;
   const ctx = buildContext({
     config,
     db,
@@ -354,6 +368,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     passkeyEngine: options.passkeyEngine,
     liveModeOptions: options.liveModeOptions,
     realtimeCommandNow: options.realtimeCommandNow,
+    searchEnrichmentNow: options.searchEnrichmentNow ?? frozenEnrichmentClock,
     notificationEnqueue: options.notificationEnqueue,
     exportEnqueue: options.exportEnqueue,
     exportAfterCollect: options.exportAfterCollect,
