@@ -22,6 +22,7 @@ import {
   SURFACE_HEADER,
   SURFACE_PANEL,
   SURFACE_WELL,
+  TAP_TARGET,
   TEXT_MICRO,
   TEXT_MUTED,
   TEXT_NUM,
@@ -83,6 +84,9 @@ export function Button({
         size === 'sm'
           ? 'min-h-[30px] px-2.5 py-1 text-[12px]'
           : 'min-h-[36px] px-3 py-1.5 text-[13px]',
+        // Both sizes keep their desktop density and gain the 44px floor below
+        // 480px, where a 30px-tall button is not a touch target.
+        TAP_TARGET,
         'disabled:cursor-not-allowed',
         FOCUS,
         BUTTON_VARIANTS[variant],
@@ -418,7 +422,16 @@ export function PanelHeader({
   );
 }
 
-/** Page title block. The eyebrow names the workspace so a deep link orients. */
+/**
+ * Page title block. The eyebrow names the workspace so a deep link orients.
+ *
+ * Title and description are DATA on half the console — `/admin/users/:userId`
+ * heads its page with the username and the email — so both carry
+ * `wrap-anywhere`: a 39-character username has no break opportunity in it, and
+ * without one it renders past the text column instead of wrapping inside it
+ * (526px of `h1` in a 328px column on a 360px phone, #1756). `min-w-0` above
+ * only lets the column shrink; it cannot break a word that refuses to break.
+ */
 export function PageHeader({
   title,
   description,
@@ -434,8 +447,10 @@ export function PageHeader({
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">
         {eyebrow ? <span className={TEXT_MICRO}>{eyebrow}</span> : null}
-        <h1 className={TEXT_TITLE}>{title}</h1>
-        {description ? <p className="text-[13px] text-neutral-400">{description}</p> : null}
+        <h1 className={cx(TEXT_TITLE, 'wrap-anywhere')}>{title}</h1>
+        {description ? (
+          <p className="wrap-anywhere text-[13px] text-neutral-400">{description}</p>
+        ) : null}
       </div>
       {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
     </header>
@@ -476,9 +491,15 @@ export interface TabDefinition {
   disabledReason?: string;
 }
 
-/** Shared geometry, so a route strip and an in-page strip read as one control. */
-const TAB_BASE =
-  'flex min-h-[38px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 border-b-2 text-[13px] font-medium transition-colors';
+/**
+ * Shared geometry, so a route strip and an in-page strip read as one control.
+ * Both strips already scroll horizontally, so the phone floor grows the cells
+ * rather than the row.
+ */
+const TAB_BASE = cx(
+  'flex min-h-[38px] shrink-0 items-center gap-1.5 whitespace-nowrap px-3 border-b-2 text-[13px] font-medium transition-colors',
+  TAP_TARGET,
+);
 
 function tabSkin(active: boolean): string {
   return active
@@ -672,6 +693,16 @@ export function StatTile({
  * A definition list drawn as rows with hard rules — the console's answer to
  * "show me everything the server knows about this". Values are tabular so a
  * column of timestamps lines up.
+ *
+ * `wrap-anywhere` on the value, not just `min-w-0`: these rows hold server data
+ * — emails, ids, vault media strings — and an unbreakable one both paints past
+ * its cell AND raises the min-content width of the panel around it. A `Panel`
+ * is usually a grid item with the default `min-width: auto`, so that
+ * min-content width becomes the column's floor and the whole page scrolls
+ * sideways on a phone (413px of panel in a 328px column, #1756).
+ * `overflow-wrap: anywhere` is the one that also lowers min-content — plain
+ * `break-word` would wrap the text and still size the panel to the longest
+ * token.
  */
 export function KeyValueList({ rows }: { rows: readonly { label: string; value: ReactNode }[] }) {
   return (
@@ -679,7 +710,12 @@ export function KeyValueList({ rows }: { rows: readonly { label: string; value: 
       {rows.map((row) => (
         <div key={row.label} className="flex items-baseline justify-between gap-4 py-1.5">
           <dt className={TEXT_MICRO}>{row.label}</dt>
-          <dd className={cx('min-w-0 text-right text-[13px] text-neutral-200', TEXT_NUM)}>
+          <dd
+            className={cx(
+              'min-w-0 wrap-anywhere text-right text-[13px] text-neutral-200',
+              TEXT_NUM,
+            )}
+          >
             {row.value}
           </dd>
         </div>

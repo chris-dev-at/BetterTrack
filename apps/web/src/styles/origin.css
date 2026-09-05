@@ -2714,6 +2714,36 @@
   border-top: 1px solid var(--bt-border);
 }
 
+/* The admin console's counterpart to the `.bt-btn--icon, .bt-iconbtn, .bt-tab`
+   floor in the phone block above (§13.5 V5-P13b). The console is
+   Tailwind-utility-only on purpose (`admin/components/tokens.ts`), so none of
+   the `.bt-*` language reaches it and that rule cannot either — its controls
+   carry Tailwind density utilities (`min-h-[30px]`, `min-h-[34px]`, `h-9 w-9`)
+   that are all below 44px on a touch screen.
+
+   Its own breakpoint, and deliberately NOT the 480px phone block: the console's
+   sidebar is `md:block` and its drawer `md:hidden`
+   (`admin/components/AdminLayout.tsx`), so below 768px the burger and the
+   drawer rows are the ONLY way to navigate the console — keyed to 480px, a
+   landscape phone at 700px kept a 36px burger while a portrait one at 390px got
+   a 44px one. 767.98px rather than 767px so the handoff is exact against
+   Tailwind's `min-width: 48rem` whatever the root font size, matching the
+   `759.98px`-style breakpoints already in this file.
+
+   Keyed on a single marker class that ONLY the console emits (`TAP_TARGET` in
+   tokens.ts), so this cannot reach an Origin surface, and the console imports
+   no design language from here — just a reach floor. It sits unlayered while
+   Tailwind's utilities live in its `utilities` layer, so it wins wherever it
+   applies; at 768px and up it does not exist and the console keeps its
+   deliberate desktop density. `e2e/mobile-overflow.spec.ts` measures the
+   rendered boxes, this declares the rule. */
+@media (max-width: 767.98px) {
+  .admin-tap-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 /* Visibility helpers. Origin.css loads after Tailwind, so Tailwind's display
    utilities (`hidden`, `sm:flex`, …) lose the cascade against bt-* component
    display rules — bt-* markup uses these hide-only helpers instead. */
