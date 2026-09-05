@@ -30,6 +30,19 @@ export function isDriverErrorCode(error: unknown, code: string): boolean {
   return (driverError(error) as { code?: unknown } | null)?.code === code;
 }
 
+/** Postgres unique-constraint violation — both postgres-js and PGlite set `.code`. */
+export const UNIQUE_VIOLATION = '23505';
+
+/**
+ * True when the failure is a unique-constraint violation. A caller that
+ * pre-checks uniqueness and then inserts still races every other writer, so the
+ * insert itself is the only authority; mapping the SQLSTATE here is what turns
+ * that lost race into a deliberate 409 instead of an unmapped 500.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  return isDriverErrorCode(error, UNIQUE_VIOLATION);
+}
+
 /**
  * Ceiling on an error message copied into a durable sink — a `problems` row the
  * admin page renders, a log line. Unwrapping the drizzle wrapper is what keeps
