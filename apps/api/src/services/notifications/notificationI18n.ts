@@ -1,8 +1,9 @@
-import type {
-  ChannelSetupMessageKey,
-  NotificationMessage,
-  NotificationMessageKey,
-  NotificationMessageParams,
+import {
+  NOTIFICATION_MESSAGE_MONEY_PARAMS,
+  type ChannelSetupMessageKey,
+  type NotificationMessage,
+  type NotificationMessageKey,
+  type NotificationMessageParams,
 } from '@bettertrack/contracts';
 
 import { resolveEmailLocale, type EmailLocale } from '../email/emailI18n';
@@ -587,15 +588,40 @@ export function channelSetupText(
   return CHANNEL_SETUP_COPY[resolveEmailLocale(locale)][key];
 }
 
-/** Build the wire descriptor attached to a notification payload. */
+/**
+ * Build the wire descriptor attached to a notification payload.
+ *
+ * The money markers (§6.16) are attached here from the shared table rather than
+ * at each call site: a new money-bearing message key cannot ship half-marked,
+ * and no emitter has to remember the rule. Only params the descriptor actually
+ * carries are marked, so an optional amount that was omitted leaves no marker
+ * pointing at nothing.
+ */
 export function notificationMessage(
   key: NotificationMessageKey,
   params: NotificationMessageParams = {},
 ): NotificationMessage {
-  return { key, params };
+  const declared = NOTIFICATION_MESSAGE_MONEY_PARAMS[key];
+  if (!declared) return { key, params };
+  const money: Record<string, string> = {};
+  for (const [amountParam, currencyParam] of Object.entries(declared)) {
+    if (params[amountParam] !== undefined) money[amountParam] = currencyParam;
+  }
+  return Object.keys(money).length > 0 ? { key, params, money } : { key, params };
 }
 
-/** Render one descriptor for persisted fallback strings and outbound channels. */
+/**
+ * Render one descriptor for persisted fallback strings and outbound channels.
+ *
+ * **Deliberately unmasked, and this is the boundary.** Discreet mode (§6.16) is
+ * a render-layer rule for the app's OWN surfaces — the surfaces a bystander
+ * looking over the user's shoulder can see. E-mail, push, Telegram and Discord
+ * are the user's own channels, they predate the toggle, and a "•••" delivered
+ * there would destroy the message rather than protect it (the recipient cannot
+ * toggle it back). So `message.money` is metadata this renderer ignores;
+ * masking happens only in the SPA, in `apps/web/src/lib/notificationText.ts`.
+ * `__tests__/notificationLocalization.test.ts` pins that boundary.
+ */
 export function renderNotificationMessage(
   message: NotificationMessage,
   locale: string | null | undefined,

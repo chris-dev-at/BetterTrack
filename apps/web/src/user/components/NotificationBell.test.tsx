@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
@@ -13,6 +13,7 @@ import type { Notification, NotificationListResponse } from '@bettertrack/contra
 import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 
 import { I18nProvider } from '../../i18n';
+import { setDiscreetMode } from '../../lib/format';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { RealtimeContext, type RealtimeContextValue } from '../../lib/realtime';
 import { NotificationBell } from './NotificationBell';
@@ -55,6 +56,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(markNotificationsRead).mockResolvedValue(undefined);
 });
+
+afterEach(() => setDiscreetMode(false));
 
 describe('NotificationBell', () => {
   test('shows no badge when there are no unread notifications', async () => {
@@ -173,6 +176,69 @@ describe('NotificationBell', () => {
 
     expect(screen.queryByRole('group', { name: 'Notifications' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  test('masks the amounts inside inbox copy under discreet mode (§6.16)', async () => {
+    // The bell lives in OriginShell, i.e. on EVERY authenticated route, so a
+    // leak here defeats discreet mode everywhere at once: `/workbench/alerts`
+    // masked the same threshold while the bell printed it (#1757).
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [
+        notification({
+          id: '00000000-0000-0000-0000-00000000000a',
+          type: 'alert.triggered',
+          title: 'Price alert triggered',
+          body: 'AAPL rose above 150 USD.',
+          payload: {
+            eventKey: 'alert.triggered:a1',
+            message: {
+              key: 'alertTriggeredPriceAbove',
+              params: { symbol: 'AAPL', threshold: 150, currency: 'USD' },
+              money: { threshold: 'currency' },
+            },
+          },
+        }),
+        notification({
+          id: '00000000-0000-0000-0000-00000000000b',
+          type: 'dividend.event',
+          payload: {
+            eventKey: 'dividend.event:d1',
+            message: {
+              key: 'dividendEventWithAmount',
+              params: { symbol: 'MSFT', date: '2026-03-04', amount: 0.75, currency: 'USD' },
+              money: { amount: 'currency' },
+            },
+          },
+        }),
+        notification({
+          id: '00000000-0000-0000-0000-00000000000c',
+          type: 'follow.alert.fired',
+          payload: {
+            eventKey: 'follow.alert.fired:f1',
+            message: {
+              key: 'followAlertFiredPriceBelow',
+              params: { actor: 'anna', symbol: 'TSLA', threshold: 220.5, currency: 'USD' },
+              money: { threshold: 'currency' },
+            },
+          },
+        }),
+      ],
+      nextCursor: null,
+      unreadCount: 3,
+    });
+    setDiscreetMode(true);
+    renderBell();
+
+    await user.click(await screen.findByRole('button', { name: /Notifications/ }));
+    const dropdown = await screen.findByRole('group', { name: 'Notifications' });
+
+    // Every absolute amount is masked; the symbol, the date, the follower's
+    // name and the currency the amount was denominated in all stay legible.
+    expect(dropdown).toHaveTextContent('AAPL rose above ••• USD.');
+    expect(dropdown).toHaveTextContent('MSFT goes ex-dividend on 2026-03-04 (••• USD per share).');
+    expect(dropdown).toHaveTextContent("anna's price alert fired: TSLA below ••• USD.");
+    expect(dropdown.textContent ?? '').not.toMatch(/150|0\.75|220/);
   });
 
   test('renders an empty state when there are no notifications', async () => {

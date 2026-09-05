@@ -295,7 +295,11 @@ function mirrorMessage(event: MirrorNotificationEvent): NotificationMessage {
   }
 }
 
-/** Localizable budget-overrun descriptor; amounts stay raw interpolation data. */
+/**
+ * Localizable budget-overrun descriptor; amounts stay raw interpolation data so
+ * every channel renders them in its own locale. `notificationMessage()` marks
+ * `spent`/`target` as money (§6.16) for the in-app renderer.
+ */
 function budgetExceededMessage(event: BudgetExceededEvent): NotificationMessage {
   return notificationMessage('budgetExceeded', {
     category: event.categoryName,

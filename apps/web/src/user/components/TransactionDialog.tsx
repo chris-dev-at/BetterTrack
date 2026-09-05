@@ -17,7 +17,7 @@ import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
-import { formatMoney, formatQuantity } from '../../lib/format';
+import { formatMoney, formatQuantity, formatSignedMoney } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
@@ -1907,10 +1907,10 @@ function RowFields({
               </span>
               {Math.abs(derived.residual) >= 0.005
                 ? t('portfolio.transaction.derivedResidual', {
-                    delta: `${derived.residual > 0 ? '+' : '−'}${formatMoney(
-                      Math.abs(derived.residual),
-                      row.asset.currency,
-                    )}`,
+                    // Signed through the seam: a call-site `+`/`−` around the
+                    // amount survives discreet mode and leaks the direction of
+                    // a residual the mask is hiding (§6.16, MoneyText).
+                    delta: formatSignedMoney(derived.residual, row.asset.currency),
                   })
                 : ''}
             </>

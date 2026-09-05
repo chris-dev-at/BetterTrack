@@ -363,6 +363,24 @@ export function formatPercent(value: number | null | undefined): string {
 export const formatWeight = formatPercent;
 
 /**
+ * A signed money delta — `formatSignedMoney(12.5, 'USD')` → `"+12,50 $"`,
+ * `-12.5` → `"−12,50 $"` (U+2212 minus, matching the app's delta typography).
+ * Returns {@link EM_DASH} for absent/non-finite values.
+ *
+ * The sign lives INSIDE the helper on purpose. Prepending it at the call site
+ * — `${x > 0 ? '+' : '−'}${formatMoney(Math.abs(x))}` — renders `+•••` / `−•••`
+ * under discreet mode, which leaks the direction of an amount the mode is
+ * hiding. Same rule `MoneyText` follows for its `signed` prop (§6.16); the
+ * discreet-mode gate fails a sign literal next to a money helper anywhere else.
+ */
+export function formatSignedMoney(value: number | null | undefined, currency?: string): string {
+  if (!isFiniteNumber(value)) return EM_DASH;
+  if (discreetMode) return DISCREET_MASK;
+  const magnitude = formatMoney(Math.abs(value), currency);
+  return `${withoutNegativeZero(value) < 0 ? '−' : '+'}${magnitude}`;
+}
+
+/**
  * A signed percentage delta (0–100 magnitude), 2 dp, explicit `+` for gains:
  * `formatSignedPercent(2.5)` → `"+2,50 %"`, `-1.5` → `"-1,50 %"`, `0` → `"0,00 %"`.
  * Returns {@link EM_DASH} for absent/non-finite values.
