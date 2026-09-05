@@ -246,8 +246,14 @@ describe('an expired admin session signs the console out from every hand-rolled 
 
   test('Registration — the mode save, the same PATCH /admin/settings route', async () => {
     vi.mocked(api.getSettings).mockResolvedValue(settings);
-    vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [] });
-    vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [] });
+    vi.mocked(api.listRegistrationTokens).mockResolvedValue({
+      tokens: [],
+      page: { total: 0, limit: 25, offset: 0 },
+    });
+    vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+      requests: [],
+      page: { total: 0, limit: 25, offset: 0 },
+    });
     vi.mocked(api.updateSettings).mockRejectedValue(expiredAdminSession());
     const user = userEvent.setup();
     renderConsole(<RegistrationPage />);

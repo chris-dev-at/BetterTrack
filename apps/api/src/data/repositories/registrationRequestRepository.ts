@@ -1,4 +1,4 @@
-import { desc, eq, sql } from 'drizzle-orm';
+import { count, desc, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { registrationRequests, type RegistrationRequestRow } from '../schema';
@@ -65,8 +65,23 @@ export function createRegistrationRequestRepository(db: Database) {
       return row;
     },
 
-    async listAll(): Promise<RegistrationRequestRow[]> {
-      return db.select().from(registrationRequests).orderBy(desc(registrationRequests.createdAt));
+    /**
+     * One bounded page of pending applications, newest first (V5-P2, #1814 —
+     * this used to return the whole queue). The `id` tiebreak keeps the window
+     * stable across pages.
+     */
+    async listPage(params: {
+      limit: number;
+      offset: number;
+    }): Promise<{ rows: RegistrationRequestRow[]; total: number }> {
+      const rows = await db
+        .select()
+        .from(registrationRequests)
+        .orderBy(desc(registrationRequests.createdAt), desc(registrationRequests.id))
+        .limit(params.limit)
+        .offset(params.offset);
+      const [totalRow] = await db.select({ value: count() }).from(registrationRequests);
+      return { rows, total: totalRow?.value ?? 0 };
     },
 
     /**

@@ -304,6 +304,29 @@ export const V5_SURFACE_INVENTORY = [
     tests: ['admin/AdminApp.test.tsx', 'admin/components/AdminLayout.test.tsx'],
   },
   {
+    id: 'p2-admin-list-paging',
+    phases: ['P2'],
+    // Owns no route: it is the footer three P2-bounded admin lists render, and
+    // each of those routes is claimed by the phase surface that ships the page.
+    routes: [],
+    components: ['admin/components/ListPagination.tsx'],
+    copyRoots: ['admin.pagination'],
+    copyReview:
+      'The page footer #1814 gives the API-keys, invites and registration lists when V5-P2 bounded them: a range line and Previous/Next, in EN + DE. One component so the three surfaces cannot drift apart.',
+    states: {
+      loading: notAsync('Renders from the window its parent already loaded; it fetches nothing.'),
+      empty: notAsync(
+        'Renders nothing at all when one page holds everything — an operator with four invites sees no paging chrome.',
+      ),
+      error: notAsync('It owns no read, so it has no failure of its own to report.'),
+    },
+    tests: [
+      'admin/pages/ApiKeysPage.test.tsx',
+      'admin/pages/InvitesPage.test.tsx',
+      'admin/pages/RegistrationPage.test.tsx',
+    ],
+  },
+  {
     id: 'p2-admin-operations',
     phases: ['P2', 'P13b'],
     routes: [

@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import {
   API_KEY_TOKEN_PREFIX,
   type AdminApiKey,
+  type AdminApiKeyListQuery,
   type ApiKeyAuditResponse,
   type ApiKeyScope,
   type ApiKeySummary,
@@ -116,7 +117,7 @@ export interface ApiKeyService {
     actor: ApiKeyAdminActor,
   ): Promise<ApiKeyTier>;
   deleteTier(id: string, actor: ApiKeyAdminActor): Promise<void>;
-  listAllKeys(): Promise<AdminApiKey[]>;
+  listKeysPage(params: AdminApiKeyListQuery): Promise<{ keys: AdminApiKey[]; total: number }>;
   assignTier(id: string, tierId: string | null, actor: ApiKeyAdminActor): Promise<AdminApiKey>;
   keyAudit(id: string): Promise<ApiKeyAuditResponse>;
 }
@@ -489,8 +490,9 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
-    async listAllKeys() {
-      return (await repo.listAllForAdmin()).map(toAdminKey);
+    async listKeysPage(params) {
+      const { rows, total } = await repo.listPageForAdmin(params);
+      return { keys: rows.map(toAdminKey), total };
     },
 
     async assignTier(id, tierId, actor) {

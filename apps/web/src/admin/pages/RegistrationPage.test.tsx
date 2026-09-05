@@ -102,8 +102,14 @@ beforeEach(() => {
   });
   vi.mocked(api.getSettings).mockResolvedValue(settings);
   vi.mocked(api.getStats).mockResolvedValue(stats);
-  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [] });
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [] });
+  vi.mocked(api.listRegistrationTokens).mockResolvedValue({
+    tokens: [],
+    page: { total: 0, limit: 25, offset: 0 },
+  });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [],
+    page: { total: 0, limit: 25, offset: 0 },
+  });
 });
 
 // The Chief's ruling of 2026-08-29 moved the mode selector OFF /admin/settings
@@ -170,6 +176,7 @@ test('shows how each applicant applied, so Google and password are distinguishab
       { ...pendingRequest, provider: 'google' },
       { ...pendingRequest, id: 'req-2', username: 'pw_user', provider: null },
     ],
+    page: { total: 2, limit: 25, offset: 0 },
   });
 
   renderPage();
@@ -181,7 +188,10 @@ test('shows how each applicant applied, so Google and password are distinguishab
 });
 
 test('approves a pending registration from the queue', async () => {
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [pendingRequest],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.approveRegistrationRequest).mockResolvedValue({
     ...admin,
     id: 'new-user',
@@ -199,7 +209,10 @@ test('approves a pending registration from the queue', async () => {
 });
 
 test('rejects a pending registration from the queue', async () => {
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [pendingRequest],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.rejectRegistrationRequest).mockResolvedValue(undefined);
 
   renderPage();
@@ -214,7 +227,10 @@ test('rejects a pending registration from the queue', async () => {
 // the row was simply already handled in another tab.
 test('a 404 on a row-scoped write shows a banner and keeps the admin signed in', async () => {
   const { ApiError } = await import('../../lib/apiClient');
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [pendingRequest],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.approveRegistrationRequest).mockRejectedValueOnce(
     new ApiError(404, 'not_found', 'Registration request not found.'),
   );
@@ -235,7 +251,10 @@ test('a 404 on a row-scoped write shows a banner and keeps the admin signed in',
 
 test('a 404 when revoking a token is a banner too, not a sign-out', async () => {
   const { ApiError } = await import('../../lib/apiClient');
-  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [registrationToken] });
+  vi.mocked(api.listRegistrationTokens).mockResolvedValue({
+    tokens: [registrationToken],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.revokeRegistrationToken).mockRejectedValueOnce(
     new ApiError(404, 'not_found', 'Token not found.'),
   );
@@ -257,6 +276,7 @@ test('two rows acted on at once keep their own progress state', async () => {
   const second = { ...pendingRequest, id: 'req-2', username: 'second_user' };
   vi.mocked(api.listRegistrationRequests).mockResolvedValue({
     requests: [pendingRequest, second],
+    page: { total: 2, limit: 25, offset: 0 },
   });
 
   // Row A settles first; row B is still in flight and must stay disabled.
@@ -293,7 +313,10 @@ test('two rows acted on at once keep their own progress state', async () => {
 
 test('surfaces a localized banner when a decision fails, and never reloads the queue', async () => {
   const { ApiError } = await import('../../lib/apiClient');
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [pendingRequest],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.approveRegistrationRequest).mockRejectedValueOnce(
     new ApiError(409, 'conflict', 'Server-authored English envelope.'),
   );
@@ -325,7 +348,10 @@ test('creates a registration token and shows the register URL once', async () =>
 });
 
 test('requires confirmation before revoking a registration token', async () => {
-  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [registrationToken] });
+  vi.mocked(api.listRegistrationTokens).mockResolvedValue({
+    tokens: [registrationToken],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.revokeRegistrationToken).mockResolvedValue(undefined);
   const user = userEvent.setup();
 
@@ -357,7 +383,10 @@ test('offers a retry after the queue read fails', async () => {
   const alerts = await screen.findAllByRole('alert');
   expect(alerts.some((alert) => /Something went wrong/i.test(alert.textContent ?? ''))).toBe(true);
 
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [pendingRequest],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   await userEvent.click(screen.getAllByRole('button', { name: 'Try again' })[0]!);
 
   expect(await screen.findByText('queue_user')).toBeInTheDocument();
@@ -384,4 +413,54 @@ test('renders the registration surface in German', async () => {
   expect(await screen.findByRole('heading', { name: 'Registrierung' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Freigabewarteschlange' })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Registrierungstoken' })).toBeInTheDocument();
+});
+
+test('the approval queue and the token list each render one bounded page', async () => {
+  // #1814: both lists used to arrive whole. Neither table is pruned — exhausted
+  // and revoked tokens stay forever, and a busy approval mode can queue
+  // thousands of applications.
+  vi.mocked(api.listRegistrationRequests).mockImplementation(async (params = {}) => {
+    const offset = params.offset ?? 0;
+    return {
+      requests: Array.from({ length: 25 }, (_, i) => ({
+        ...pendingRequest,
+        id: `req-${offset + i}`,
+        username: `applicant_${offset + i}`,
+        email: `applicant-${offset + i}@test.dev`,
+      })),
+      page: { total: 60, limit: 25, offset },
+    };
+  });
+  vi.mocked(api.listRegistrationTokens).mockImplementation(async (params = {}) => {
+    const offset = params.offset ?? 0;
+    return {
+      tokens: Array.from({ length: 25 }, (_, i) => ({
+        ...registrationToken,
+        id: `tok-${offset + i}`,
+        label: `wave_${offset + i}`,
+      })),
+      page: { total: 60, limit: 25, offset },
+    };
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  // 25 of 60 in each list, not 60.
+  expect(await screen.findByText('applicant_0')).toBeInTheDocument();
+  expect(await screen.findByText('wave_0')).toBeInTheDocument();
+  expect(screen.queryByText('applicant_25')).not.toBeInTheDocument();
+  expect(screen.queryByText('wave_25')).not.toBeInTheDocument();
+
+  const [queueNext, tokensNext] = screen.getAllByRole('button', { name: 'Next' });
+  await user.click(queueNext!);
+  await waitFor(() =>
+    expect(api.listRegistrationRequests).toHaveBeenCalledWith({ offset: 25 }, expect.anything()),
+  );
+  expect(await screen.findByText('applicant_25')).toBeInTheDocument();
+
+  await user.click(tokensNext!);
+  await waitFor(() =>
+    expect(api.listRegistrationTokens).toHaveBeenCalledWith({ offset: 25 }, expect.anything()),
+  );
+  expect(await screen.findByText('wave_25')).toBeInTheDocument();
 });

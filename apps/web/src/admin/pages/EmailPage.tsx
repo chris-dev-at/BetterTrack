@@ -3,17 +3,13 @@ import type { FormEvent } from 'react';
 
 import type { TestEmailResponse } from '@bettertrack/contracts';
 
-import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
 import { useT } from '../../i18n';
 import { EmailLogTable } from '../components/EmailLogTable';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
-
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
-}
 
 /**
  * Email channel diagnostics (PROJECTPLAN.md §6.12, §6.11). Shows whether the
@@ -23,6 +19,7 @@ function errorMessage(err: unknown): string {
  */
 export function EmailPage() {
   const t = useT();
+  const onFailure = useAdminCallFailure();
   const status = useResource((signal) => api.getEmailStatus(signal), []);
   const loadLog = useCallback(
     (params: { cursor?: string }, signal?: AbortSignal) => api.listEmails(params, signal),
@@ -42,7 +39,9 @@ export function EmailPage() {
       const res = await api.sendTestEmail({ to: to.trim() || undefined });
       setResult(res);
     } catch (err) {
-      setFormError(errorMessage(err));
+      // No row id on `POST /admin/email/test`, so a 404 is auth loss; and the
+      // banner is catalog copy — the server's envelope is English-only (#1814).
+      if (!onFailure(err, 'session')) setFormError(t('common.genericError'));
     } finally {
       setSubmitting(false);
     }
