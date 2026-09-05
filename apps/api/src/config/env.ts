@@ -240,6 +240,19 @@ const envSchema = z.object({
   // so a stock deploy works without configuration; set an explicit durable path
   // in production so a mid-download restart never loses a ready file.
   BT_EXPORT_DIR: z.string().optional(),
+  // Ceiling on the packaged (uncompressed) bytes of ONE export archive. Unset ⇒
+  // the built-in 128 MiB default, which is orders of magnitude past a decade of
+  // ordinary use — but an account holding many server-resident vault ciphertext
+  // documents can legitimately exceed it, and the refusal is terminal, so this
+  // knob is what keeps such an account exportable without a redeploy of new
+  // code (#1812). Bounded by the archive ceiling so `export_jobs.file_size`
+  // (an `integer` column) provably cannot overflow.
+  BT_EXPORT_MAX_CONTENT_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(1024 * 1024 * 1024)
+    .optional(),
 
   // ── Backup readiness surface (#1406 W1) ────────────────────────────────────
   // Path to the backup scheduler's machine-readable status file, mounted
@@ -936,6 +949,8 @@ export interface AppConfig {
    */
   dataExport: {
     dir: string;
+    /** Packaged-bytes ceiling override; `undefined` ⇒ the built-in default. */
+    maxContentBytes?: number;
   };
   /**
    * Backup readiness (#1406 W1). `statusFile` is the read-only path to the
@@ -1458,6 +1473,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
+      ...(e.BT_EXPORT_MAX_CONTENT_BYTES !== undefined
+        ? { maxContentBytes: e.BT_EXPORT_MAX_CONTENT_BYTES }
+        : {}),
     },
     backup: {
       statusFile: e.BT_BACKUP_STATUS_FILE,

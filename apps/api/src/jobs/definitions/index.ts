@@ -114,6 +114,7 @@ export {
 } from './digestJobs';
 
 export {
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   EXPORT_CLEANUP_SCHEDULER_ID,

@@ -134,6 +134,7 @@ export {
   DEFERRED_DELIVERY_SCHEDULER_ID,
   DEFERRED_DELIVERY_INTERVAL_MS,
   type DigestJobDeps,
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   EXPORT_CLEANUP_SCHEDULER_ID,

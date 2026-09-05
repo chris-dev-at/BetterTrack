@@ -1,4 +1,5 @@
-import type { ExportService } from '../../services/export';
+import type { ExportService, ExportServiceDeps } from '../../services/export';
+import type { QueueRegistry } from '../queues';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -20,6 +21,30 @@ export const EXPORT_CLEANUP_TZ = 'Europe/Vienna';
 
 export interface ExportJobDeps {
   exportService: ExportService;
+}
+
+/**
+ * The one mapping from {@link ExportServiceDeps.enqueueBuild} onto the durable
+ * `data.export` queue, shared by BOTH composition roots (the API's `context.ts`
+ * and the worker bootstrap). The worker is the process that actually defers a
+ * build, so a second hand-written closure there would silently drop `delayMs`
+ * — TypeScript accepts a shorter-arity function — and turn the deferral into an
+ * unthrottled self-re-enqueue loop (#1812). One mapping, no drift.
+ *
+ * `delayMs` is how a build deferred by a portfolio-vault finalization waits for
+ * the sweep that clears it; the queue's own retry ladder is far too short to
+ * reach one.
+ */
+export function createExportBuildEnqueuer(
+  queues: QueueRegistry,
+): ExportServiceDeps['enqueueBuild'] {
+  return async (jobId: string, opts?: { delayMs?: number }): Promise<void> => {
+    await queues.enqueue(
+      QUEUE_NAMES.dataExport,
+      { jobId },
+      ...(opts?.delayMs !== undefined ? [{ delay: opts.delayMs }] : []),
+    );
+  };
 }
 
 export function createExportBuildJob(deps: ExportJobDeps): JobDefinition<'data.export'> {
