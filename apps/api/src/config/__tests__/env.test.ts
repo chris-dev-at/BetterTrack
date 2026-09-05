@@ -543,3 +543,38 @@ describe('empty variables', () => {
     expect(() => config({ SESSION_SECRET: '' })).toThrow(/SESSION_SECRET/);
   });
 });
+
+/**
+ * V5-P0 kill-switch vs. bot token (#1795). Two independent facts that used to be
+ * ANDed into one flag: "does this build offer the channel" and "can it deliver".
+ * The conflation made the documented `available: false` branch unreachable, and
+ * made Telegram and Discord behave differently for the same operator mistake.
+ */
+describe('Telegram/Discord kill-switch is independent of the bot token', () => {
+  it('defaults OFF for both channels, on both flags', () => {
+    const cfg = config({ BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
+    expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+
+  it('switch ON without a token: the channel is OFFERED but cannot deliver', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'true' });
+    // `offered` is what the setup routes refuse on, so they stay reachable and
+    // answer `available: false` rather than a bare 404.
+    expect(cfg.telegram).toMatchObject({ offered: true, enabled: false });
+    // Discord needs no server credential, so the same env offers AND enables it.
+    expect(cfg.discord).toMatchObject({ offered: true, enabled: true });
+  });
+
+  it('switch ON with a token: both flags live for both channels', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'true', BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: true, enabled: true, botToken: 'token' });
+    expect(cfg.discord).toMatchObject({ offered: true, enabled: true });
+  });
+
+  it('an explicit OFF deactivates the channel even with a token present', () => {
+    const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'false', BT_TELEGRAM_BOT_TOKEN: 'token' });
+    expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
+    expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+});

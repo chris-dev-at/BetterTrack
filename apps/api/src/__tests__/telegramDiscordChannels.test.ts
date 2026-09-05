@@ -15,11 +15,23 @@ import { createNotificationRepository } from '../data/repositories/notificationR
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
 import { createNotificationChannelSet } from '../services/notifications/channelSet';
-import { createTelegramSetupService } from '../services/notifications/telegramSetupService';
-import { createDiscordSetupService } from '../services/notifications/discordSetupService';
+import {
+  createTelegramSetupService,
+  TelegramSetupError,
+} from '../services/notifications/telegramSetupService';
+import {
+  createDiscordSetupService,
+  DiscordSetupError,
+} from '../services/notifications/discordSetupService';
 import { CHANNEL_SETUP_COPY } from '../services/notifications/notificationI18n';
 import type { FriendRequestEvent } from '../events';
-import { telegramLinks, discordWebhooks, users } from '../data/schema';
+import {
+  telegramLinks,
+  discordWebhooks,
+  notifications,
+  notificationSettings,
+  users,
+} from '../data/schema';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -325,6 +337,11 @@ describe('V5-P0 kill-switch — Telegram + Discord deactivated by default', () =
         // Every disabled endpoint 404s — code, schema and any existing linked
         // rows are preserved; a probe cannot leak whether a user is linked.
         expect(res.status).toBe(404);
+        // …and it 404s the way every other 404 in this API does (#1795): the
+        // standard envelope, not an empty body a client cannot read.
+        expect(res.body).toEqual({
+          error: { code: 'CHANNEL_DEACTIVATED', message: expect.any(String) },
+        });
       } finally {
         await off.ctx.events.close();
       }
@@ -637,6 +654,7 @@ describe('channel setup messages render in the recipient locale (#1723)', () => 
   function telegramSetupFor(fetchFn: typeof fetch) {
     const links = createTelegramLinkRepository(harness.db);
     return createTelegramSetupService({
+      offered: true,
       enabled: true,
       botToken: 'TEST-BOT-TOKEN',
       links,
@@ -732,5 +750,257 @@ describe('channel setup messages render in the recipient locale (#1723)', () => 
 
     expect(JSON.parse(calls[0]!.body).content).toContain(CHANNEL_SETUP_COPY.en.discordConfigured);
     expect(JSON.parse(calls[1]!.body).content).toContain(CHANNEL_SETUP_COPY.en.discordTest);
+  });
+});
+
+// ─── #1795: the kill-switch stops CONSUMING what it cannot deliver ────────────
+//
+// The switch was honest about channels and routes, but not about the matrix, the
+// dedupe row or its own refusal boundary. These tests pin the four halves that
+// were missing: the matrix writes refuse, the dispatcher leaves an undeliverable
+// event re-deliverable, the services refuse deletion themselves, and a missing
+// bot token is no longer mistaken for a deactivated deployment.
+describe('V5-P0 kill-switch — refusal boundary + no silent consumption (#1795)', () => {
+  const OFF_ENV = { BT_TELEGRAM_BOT_TOKEN: 'TEST-BOT-TOKEN' };
+
+  it('PATCH /settings/notifications cannot persist a deactivated channel’s override', async () => {
+    const off = await createTestApp({ env: OFF_ENV });
+    try {
+      const alice = await off.seedUser({ email: 'alice@bt.test', username: 'alice' });
+      const agent = await loginAgent(off.app, alice.email, alice.password);
+      // A pre-deactivation preference the switch promises to preserve.
+      const repo = createNotificationRepository(off.db);
+      await repo.upsertChannelConfig(alice.id, 'telegram', { 'friend.request': true });
+
+      const res = await agent
+        .patch('/api/v1/settings/notifications')
+        .set(...XRW)
+        .send({
+          matrix: {
+            'friend.request': {
+              inapp: false,
+              email: false,
+              telegram: true,
+              discord: true,
+              push: false,
+              webpush: false,
+            },
+          },
+        });
+      expect(res.status).toBe(200);
+      const settings = notificationSettingsResponseSchema.parse(res.body);
+      // GET reports exactly what the deployment will honour — and what a PATCH
+      // is willing to accept: the dead channels read off, in-app took the write.
+      expect(settings.matrix['friend.request'].telegram).toBe(false);
+      expect(settings.matrix['friend.request'].discord).toBe(false);
+      expect(settings.matrix['friend.request'].inapp).toBe(false);
+
+      const rows = await off.db
+        .select()
+        .from(notificationSettings)
+        .where(eq(notificationSettings.userId, alice.id));
+      // No Discord override was created for a channel this build refuses…
+      expect(rows.find((row) => row.channel === 'discord')).toBeUndefined();
+      // …and the pre-existing Telegram override survived the write untouched,
+      // so the env flip restores the user's own routing.
+      expect(rows.find((row) => row.channel === 'telegram')?.config).toEqual({
+        'friend.request': true,
+      });
+    } finally {
+      await off.ctx.events.close();
+    }
+  });
+
+  it('PATCH /admin/account-defaults refuses a default for a channel the build hides, but round-trips its own values', async () => {
+    const off = await createTestApp({ env: OFF_ENV });
+    try {
+      const admin = await off.seedAdmin();
+      const adminAgent = await off.loginAdmin(admin);
+
+      const initial = await adminAgent.get('/api/v1/admin/account-defaults');
+      expect(initial.status).toBe(200);
+      expect(initial.body.channelsConfigurable).toEqual({ telegram: false, discord: false });
+      // The hidden columns report off, so what the editor round-trips is honest.
+      expect(initial.body.notificationMatrix['friend.request'].telegram).toBe(false);
+      expect(initial.body.notificationMatrix['friend.request'].discord).toBe(false);
+
+      // The admin UI's round-trip of the server's own values still works.
+      const roundTrip = await adminAgent
+        .patch('/api/v1/admin/account-defaults')
+        .set(...XRW)
+        .send({ notificationMatrix: initial.body.notificationMatrix });
+      expect(roundTrip.status).toBe(200);
+
+      // A hand-crafted enable for a dead channel is refused by name.
+      const forced = {
+        ...initial.body.notificationMatrix,
+        'friend.request': {
+          ...initial.body.notificationMatrix['friend.request'],
+          telegram: true,
+        },
+      };
+      const refused = await adminAgent
+        .patch('/api/v1/admin/account-defaults')
+        .set(...XRW)
+        .send({ notificationMatrix: forced });
+      expect(refused.status).toBe(400);
+      expect(refused.body.error.code).toBe('CHANNEL_DEACTIVATED');
+    } finally {
+      await off.ctx.events.close();
+    }
+  });
+
+  it('unlink/remove refuse at the SERVICE level, so the router guard is not the only thing preserving rows', async () => {
+    const off = await createTestApp({ env: OFF_ENV });
+    try {
+      const alice = await off.seedUser({ email: 'alice@bt.test', username: 'alice' });
+      const links = createTelegramLinkRepository(off.db);
+      await links.putPendingCode(alice.id, {
+        code: 'x',
+        expiresAt: new Date(Date.now() + 60_000),
+        botUsername: 'bt_bot',
+      });
+      await links.confirmLink(alice.id, '4321', new Date());
+      const webhooks = createDiscordWebhookRepository(off.db);
+      await webhooks.upsert(alice.id, {
+        encryptedUrl: encryptSecret(
+          'https://discord.com/api/webhooks/1/abcd',
+          off.ctx.config.recordEncryption,
+        ),
+        webhookIdMasked: '…abcd',
+      });
+
+      // Services built exactly as `context.ts` builds them with the switch off.
+      const telegramSetup = createTelegramSetupService({
+        offered: off.ctx.config.telegram.offered,
+        enabled: off.ctx.config.telegram.enabled,
+        botToken: off.ctx.config.telegram.botToken,
+        links,
+        users: createUserRepository(off.db),
+        channel: null,
+        logger: off.ctx.logger,
+      });
+      const discordSetup = createDiscordSetupService({
+        enabled: off.ctx.config.discord.enabled,
+        webhooks,
+        users: createUserRepository(off.db),
+        channel: null,
+        encryptionKey: off.ctx.config.recordEncryption,
+        logger: off.ctx.logger,
+      });
+
+      await expect(telegramSetup.unlink(alice.id)).rejects.toBeInstanceOf(TelegramSetupError);
+      await expect(discordSetup.remove(alice.id)).rejects.toBeInstanceOf(DiscordSetupError);
+      // "Deactivate, not delete": both rows are exactly where they were.
+      expect(await off.db.select().from(telegramLinks)).toHaveLength(1);
+      expect(await off.db.select().from(discordWebhooks)).toHaveLength(1);
+    } finally {
+      await off.ctx.events.close();
+    }
+  });
+
+  it('a linked user’s Telegram-only event survives the deactivation and delivers once after the flip', async () => {
+    const off = await createTestApp({ env: OFF_ENV });
+    try {
+      const alice = await off.seedUser({ email: 'alice@bt.test', username: 'alice' });
+      const links = createTelegramLinkRepository(off.db);
+      await links.putPendingCode(alice.id, {
+        code: 'x',
+        expiresAt: new Date(Date.now() + 60_000),
+        botUsername: 'bt_bot',
+      });
+      await links.confirmLink(alice.id, '4321', new Date());
+      // Telegram-only routing: the legitimate matrix state the switch inherited.
+      const repo = createNotificationRepository(off.db);
+      await repo.upsertChannelConfig(alice.id, 'inapp', { 'friend.request': false });
+      await repo.upsertChannelConfig(alice.id, 'telegram', { 'friend.request': true });
+
+      const calls: string[] = [];
+      const fetchFn = vi.fn(async (url: Parameters<typeof fetch>[0]) => {
+        calls.push(String(url));
+        return new Response('{"ok":true}', { status: 200 });
+      });
+      const deactivatedLinks = {
+        telegram: async (userId: string) => Boolean((await links.findForUser(userId))?.chatId),
+        discord: async () => false,
+      };
+      const dispatcherWith = (telegram: ReturnType<typeof createTelegramChannel>) =>
+        createNotificationDispatcher({
+          bus: off.ctx.events,
+          repo,
+          users: createUserRepository(off.db),
+          telegram,
+          discord: null,
+          deactivatedLinks,
+          logger: off.ctx.logger,
+        });
+      const event: FriendRequestEvent = {
+        type: 'friend.request',
+        userId: alice.id,
+        actorId: 'bob',
+        actorUsername: 'bob',
+        requestId: 'flip-req',
+        occurredAt: new Date().toISOString(),
+      };
+
+      // Switch OFF: nothing is sent AND nothing is recorded as delivered.
+      await dispatcherWith(null).dispatch(event);
+      expect(calls).toHaveLength(0);
+      expect(await off.db.select().from(notifications)).toHaveLength(0);
+      // The link row the directive preserves is still there, and the routes
+      // still refuse while the switch is off.
+      expect(await off.db.select().from(telegramLinks)).toHaveLength(1);
+      const agent = await loginAgent(off.app, alice.email, alice.password);
+      expect((await agent.get('/api/v1/settings/telegram')).status).toBe(404);
+
+      // Operator flips BT_TELEGRAM_DISCORD_ENABLED back on — the same event now
+      // delivers, exactly once, through the link that was never destroyed.
+      const on = dispatcherWith(
+        createTelegramChannel({
+          botToken: 'TEST-BOT-TOKEN',
+          links,
+          logger: off.ctx.logger,
+          fetchFn: fetchFn as unknown as typeof fetch,
+          minSpacingMs: 0,
+        }),
+      );
+      await on.dispatch(event);
+      await on.dispatch(event);
+      expect(calls.filter((url) => url.includes('/sendMessage'))).toHaveLength(1);
+      expect(await off.db.select().from(notifications)).toHaveLength(1);
+    } finally {
+      await off.ctx.events.close();
+    }
+  });
+
+  it('switch ON without a bot token answers the documented body instead of a bare 404', async () => {
+    // The V4-P10 contract: a missing bot token makes Telegram *unavailable*, not
+    // *deactivated*. Conflating the two made this branch unreachable (#1795).
+    const barren = await createTestApp({ env: { BT_TELEGRAM_DISCORD_ENABLED: 'true' } });
+    try {
+      const alice = await barren.seedUser({ email: 'alice@bt.test', username: 'alice' });
+      const agent = await loginAgent(barren.app, alice.email, alice.password);
+
+      const res = await agent.get('/api/v1/settings/telegram');
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        available: false,
+        linked: false,
+        pending: false,
+        botUsername: null,
+      });
+      // The writes still refuse — as the documented 400 `not_available`.
+      const link = await agent.post('/api/v1/settings/telegram/link').set(...XRW);
+      expect(link.status).toBe(400);
+      expect(link.body.error.code).toBe('not_available');
+
+      // Discord, for the same operator state, is reachable too: with the switch
+      // ON neither channel answers a bare 404 — they answer their own body.
+      const discord = await agent.get('/api/v1/settings/discord');
+      expect(discord.status).toBe(200);
+      expect(discord.body).toMatchObject({ available: true, linked: false });
+    } finally {
+      await barren.ctx.events.close();
+    }
   });
 });

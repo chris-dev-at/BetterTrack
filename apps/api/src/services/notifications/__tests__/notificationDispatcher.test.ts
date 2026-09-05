@@ -1,15 +1,23 @@
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '../../../data/db';
+import { createNotificationRepository } from '../../../data/repositories/notificationRepository';
+import { createUserRepository } from '../../../data/repositories/userRepository';
 import { friendships, notifications, notificationSettings, users } from '../../../data/schema';
 import type {
   FriendAcceptedEvent,
   FriendRequestEvent,
   PortfolioSharedEvent,
 } from '../../../events';
+import type { Logger } from '../../../logger';
+import { notificationChannelSkippedTotal, readCounter } from '../../../metrics';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import type { NotificationDispatcher } from '../notificationDispatcher';
+import type { TelegramChannel } from '../telegramChannel';
+import {
+  createNotificationDispatcher,
+  type NotificationDispatcher,
+} from '../notificationDispatcher';
 
 const OCCURRED_AT = '2026-07-04T00:00:00.000Z';
 
@@ -337,5 +345,156 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
     });
 
     expect(await allRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
+  });
+});
+
+// ─── V5-P0 kill-switch: a deactivated channel never consumes an event (#1795) ──
+//
+// THE RULE under test (documented at the dispatcher): an event whose only routed
+// destinations are deactivated channels is left undelivered AND re-deliverable —
+// no inbox row, no dedupe marker — so the same event dispatched after the env
+// flip delivers exactly once instead of being swallowed forever.
+describe('deactivated Telegram/Discord (V5-P0 kill-switch, #1795)', () => {
+  /** Route `friend.request` to Telegram only: in-app off, telegram on. */
+  async function routeToTelegramOnly(userId: string) {
+    await db.insert(notificationSettings).values({
+      userId,
+      channel: 'inapp',
+      enabled: true,
+      config: { 'friend.request': false },
+    });
+    await db.insert(notificationSettings).values({
+      userId,
+      channel: 'telegram',
+      enabled: true,
+      config: { 'friend.request': true },
+    });
+  }
+
+  async function skipped(channel: string, outcome: string): Promise<number> {
+    const samples = await readCounter(notificationChannelSkippedTotal);
+    return (
+      samples.find((s) => s.labels.channel === channel && s.labels.outcome === outcome)?.value ?? 0
+    );
+  }
+
+  function capturingLogger() {
+    const warns: Array<{ payload: Record<string, unknown>; msg: string }> = [];
+    const logger = {
+      warn: (payload: Record<string, unknown>, msg: string) => warns.push({ payload, msg }),
+      info: () => undefined,
+      error: () => undefined,
+      debug: () => undefined,
+    } as unknown as Logger;
+    return { warns, logger };
+  }
+
+  /**
+   * A dispatcher wired the way `context.ts` wires it for a given switch state.
+   * `linked` stands in for the preserved Telegram link row the kill-switch
+   * keeps — the thing that makes a skipped fan-out a real lost delivery.
+   */
+  function dispatcherWith(
+    telegram: TelegramChannel | null,
+    logger?: Logger,
+    linked: { telegram?: boolean; discord?: boolean } = { telegram: true },
+  ) {
+    return createNotificationDispatcher({
+      bus: harness.ctx.events,
+      repo: createNotificationRepository(db),
+      users: createUserRepository(db),
+      telegram,
+      discord: null,
+      deactivatedLinks: {
+        telegram: async () => linked.telegram ?? false,
+        discord: async () => linked.discord ?? false,
+      },
+      logger,
+    });
+  }
+
+  it('writes NO row for an event whose only channel is deactivated, and delivers it once after the flip', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+    await routeToTelegramOnly(recipient.id);
+
+    // Switch OFF — the channel set builds no Telegram channel.
+    const off = dispatcherWith(null);
+    await off.dispatch(friendRequestEvent({ userId: recipient.id }));
+    // Not even the hidden dedupe marker: writing one here is what used to
+    // consume the event permanently and invisibly.
+    expect(await allRowsFor(recipient.id)).toHaveLength(0);
+
+    // Re-dispatching while still off stays a no-op (nothing delivered twice).
+    await off.dispatch(friendRequestEvent({ userId: recipient.id }));
+    expect(await allRowsFor(recipient.id)).toHaveLength(0);
+
+    // Operator flips BT_TELEGRAM_DISCORD_ENABLED back on: same event, same
+    // routing — now it delivers, exactly once.
+    const deliver = vi.fn(async () => undefined);
+    const on = dispatcherWith({ deliver } as unknown as TelegramChannel);
+    await on.dispatch(friendRequestEvent({ userId: recipient.id }));
+    expect(deliver).toHaveBeenCalledTimes(1);
+    // The marker exists now (in-app is routed off for this type, so it is the
+    // hidden variety) and a redelivery is deduped against it.
+    const rows = await allRowsFor(recipient.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.hidden).toBe(true);
+    await on.dispatch(friendRequestEvent({ userId: recipient.id }));
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(await allRowsFor(recipient.id)).toHaveLength(1);
+  });
+
+  it('gives the operator a counter and one log line for the skipped fan-out', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+    await routeToTelegramOnly(recipient.id);
+
+    const before = await skipped('telegram', 'deferred');
+    const { warns, logger } = capturingLogger();
+    const off = dispatcherWith(null, logger);
+    await off.dispatch(friendRequestEvent({ userId: recipient.id, requestId: 'req-a' }));
+    await off.dispatch(friendRequestEvent({ userId: recipient.id, requestId: 'req-b' }));
+
+    // Every skip is counted…
+    expect(await skipped('telegram', 'deferred')).toBe(before + 2);
+    // …and the discovery is logged once per (channel, outcome), not per event.
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.payload).toMatchObject({ channel: 'telegram', outcome: 'deferred' });
+    expect(warns[0]!.msg).toContain('BT_TELEGRAM_DISCORD_ENABLED');
+  });
+
+  it('still delivers — and counts the skip as dropped — when another channel is live', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+    // In-app stays on (default) and Telegram is routed on as well.
+    await db.insert(notificationSettings).values({
+      userId: recipient.id,
+      channel: 'telegram',
+      enabled: true,
+      config: { 'friend.request': true },
+    });
+
+    const before = await skipped('telegram', 'dropped');
+    const { warns, logger } = capturingLogger();
+    await dispatcherWith(null, logger).dispatch(friendRequestEvent({ userId: recipient.id }));
+
+    // The bell still gets it — only the dead channel's copy is lost…
+    expect(await visibleRowsFor(recipient.id)).toHaveLength(1);
+    // …and that loss is visible to the operator rather than silent.
+    expect(await skipped('telegram', 'dropped')).toBe(before + 1);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.payload).toMatchObject({ channel: 'telegram', outcome: 'dropped' });
+  });
+
+  it('leaves a globally muted recipient on the existing hidden-marker path', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+    await routeToTelegramOnly(recipient.id);
+    await db.update(users).set({ notificationsMuted: true }).where(eq(users.id, recipient.id));
+
+    await dispatcherWith(null).dispatch(friendRequestEvent({ userId: recipient.id }));
+
+    // Mute is the user's own decision, not a deployment failure: the marker is
+    // still written, so a redelivery cannot resurrect a muted notification.
+    const rows = await allRowsFor(recipient.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.hidden).toBe(true);
   });
 });

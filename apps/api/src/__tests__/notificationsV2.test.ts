@@ -28,7 +28,14 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 let harness: TestHarness;
 
 beforeEach(async () => {
-  harness = await createTestApp();
+  // The V4-P10 matrix contract under test here (Telegram + Discord default ON
+  // per type) only exists on a deployment that OFFERS those channels, so this
+  // harness opts into the V5-P0 kill-switch. With the switch off their cells
+  // read `false` by design (#1795) — that behaviour is covered in
+  // `telegramDiscordChannels.test.ts`.
+  harness = await createTestApp({
+    env: { BT_TELEGRAM_DISCORD_ENABLED: 'true', BT_TELEGRAM_BOT_TOKEN: 'TEST-BOT-TOKEN' },
+  });
 });
 
 async function loginAgent(app: Application, identifier: string, password: string) {

@@ -211,16 +211,46 @@ describe('earningsNotifyGate', () => {
   });
 
   it('is false when the type routes to no channel at all', async () => {
-    const gate = earningsNotifyGate({ routingFor: async () => routing() });
+    const gate = earningsNotifyGate(
+      { routingFor: async () => routing() },
+      {
+        telegram: true,
+        discord: true,
+      },
+    );
     await expect(gate('u1')).resolves.toBe(false);
   });
 
   it('is true as soon as one channel carries the type, and asks for that type', async () => {
     const routingFor = vi.fn(async () => routing({ email: true }));
-    const gate = earningsNotifyGate({ routingFor });
+    const gate = earningsNotifyGate({ routingFor }, { telegram: true, discord: true });
 
     await expect(gate('u1')).resolves.toBe(true);
     expect(routingFor).toHaveBeenCalledWith('u1', 'earnings.reminder');
+  });
+
+  // V5-P0 kill-switch (#1795): a deactivated channel is not a destination, so
+  // the scan must not spend a provider read per asset on a user routed only there.
+  it('is false when the only routed channel is deactivated in this deployment', async () => {
+    const gate = earningsNotifyGate(
+      { routingFor: async () => routing({ telegram: true }) },
+      {
+        telegram: false,
+        discord: false,
+      },
+    );
+    await expect(gate('u1')).resolves.toBe(false);
+  });
+
+  it('is true again for the same routing once the kill-switch is flipped back on', async () => {
+    const gate = earningsNotifyGate(
+      { routingFor: async () => routing({ discord: true }) },
+      {
+        telegram: true,
+        discord: true,
+      },
+    );
+    await expect(gate('u1')).resolves.toBe(true);
   });
 });
 

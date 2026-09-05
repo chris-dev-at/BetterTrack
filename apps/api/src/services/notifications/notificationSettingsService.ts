@@ -19,6 +19,8 @@ import type {
 import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 
+import { channelIsOffered, maskMatrix } from './killSwitch';
+
 /**
  * User-facing notification settings (PROJECTPLAN.md §6.10, §6.11; #368
  * Notifications v2). Reads and writes the per-user **per-type × channel**
@@ -38,6 +40,11 @@ import type { UserRepository } from '../../data/repositories/userRepository';
  *  - **Channel availability is deployment truth**, not user state: the response
  *    reports which channels the server can actually deliver on (SMTP / FCM key /
  *    VAPID keys) so the UI renders only live columns; cells persist regardless.
+ *  - **A deactivated channel is not part of the matrix** (V5-P0 kill-switch,
+ *    #1795): with `BT_TELEGRAM_DISCORD_ENABLED` off, Telegram/Discord cells read
+ *    `false` and a `PATCH` for them is dropped instead of persisted — see
+ *    {@link ./killSwitch} for the one rule both matrix surfaces apply. Stored
+ *    overrides survive untouched, so the env flip restores the user's routing.
  *
  * Every read/write is `user_id`-scoped through the repositories (§10).
  */
@@ -140,6 +147,11 @@ export function createNotificationSettingsService(
         },
       ]),
     ) as NotificationMatrix;
+    // V5-P0 kill-switch (#1795): a deactivated channel's cells report `false`,
+    // so the response is exactly what the deployment will do — and matches what
+    // `update` below is willing to accept. The stored override is NOT touched:
+    // flipping the env back ON republishes the user's original routing.
+    const offeredMatrix = maskMatrix(matrix, channelsConfigurable);
     // The full cadence map: every type present, stored override or the default
     // (`instant`) — mirrors how the matrix always ships every type.
     const cadenceMap = Object.fromEntries(
@@ -160,7 +172,7 @@ export function createNotificationSettingsService(
         }
       : DEFAULT_QUIET_HOURS;
     return {
-      matrix,
+      matrix: offeredMatrix,
       cadence: cadenceMap,
       quietHours,
       muted: user?.notificationsMuted ?? false,
@@ -188,6 +200,11 @@ export function createNotificationSettingsService(
       for (const [type, routing] of Object.entries(body.matrix ?? {})) {
         if (!routing) continue;
         for (const channel of MATRIX_CHANNELS) {
+          // V5-P0 kill-switch (#1795): a deactivated channel's cell never
+          // reaches storage. Dropped rather than 4xx'd because the SPA
+          // round-trips the whole routing object on every toggle — and dropping
+          // preserves the stored override, so the env flip restores it.
+          if (!channelIsOffered(channel, channelsConfigurable)) continue;
           (overridesByChannel[channel] ??= {})[type] = routing[channel];
         }
       }

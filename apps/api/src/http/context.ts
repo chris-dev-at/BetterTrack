@@ -966,6 +966,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     webPush: webPushChannel,
     telegram: telegramChannel,
     discord: discordChannel,
+    // V5-P0 kill-switch (#1795): while a channel is deactivated the dispatcher
+    // asks whether the recipient still holds the link the switch preserves — a
+    // linked user's event is left undelivered and re-deliverable instead of
+    // being marked delivered and lost. Never queried while the channel is live.
+    deactivatedLinks: {
+      telegram: async (userId) => Boolean((await telegramLinkRepo.findForUser(userId))?.chatId),
+      discord: async (userId) => Boolean(await discordWebhookRepo.findForUser(userId)),
+    },
     presence,
     // Digest cadence + queue (V5-P3): defers a daily/weekly type's outbound
     // channels into the digest queue; the in-app row still lands instantly.
@@ -1790,6 +1798,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // env-gated at the channel level; Discord is always available (per-user
   // webhook, no server env). Both are strictly user-scoped by construction.
   const telegramSetup = createTelegramSetupService({
+    // The kill-switch alone gates the service's refusals; `enabled` additionally
+    // requires the bot token and drives `available` (#1795).
+    offered: config.telegram.offered,
     enabled: config.telegram.enabled,
     botToken: config.telegram.botToken,
     links: telegramLinkRepo,
