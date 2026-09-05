@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CatalogSearchMatch } from '../../../data/repositories/assetRepository';
+import {
+  createAssetRepository,
+  type CatalogSearchMatch,
+} from '../../../data/repositories/assetRepository';
+import * as schema from '../../../data/schema';
+import { createTestApp } from '../../../testing/createTestApp';
+import { createStubMarketData } from '../../../testing/marketDataStubs';
 import type { CatalogEnrichment } from '../catalogEnrichment';
 import { createSearchService } from '../searchService';
 
@@ -116,5 +122,71 @@ describe('searchService — "thin" is a catalog property, not a window one (#179
 
     await expect(service.search(USER, 'gold')).resolves.toMatchObject({ enriching: true });
     expect(enrichment.request).toHaveBeenCalledWith('gold');
+  });
+});
+
+describe('searchService — the freshness stamp never runs ahead of the body (#1810)', () => {
+  it('reads the watermark BEFORE the body, so an interleaved write cannot 304 it away', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const real = createAssetRepository(h.db);
+    const user = await h.seedUser({ email: 'freshness@s.test', username: 'freshness' });
+    const insert = (symbol: string) =>
+      h.db.insert(schema.assets).values({
+        providerId: 'yahoo',
+        providerRef: symbol,
+        ownerId: null,
+        type: 'stock' as const,
+        symbol,
+        name: `${symbol} Corp`,
+        exchange: 'XETRA',
+        currency: 'EUR',
+      });
+    for (const symbol of ['CONDA', 'CONDB', 'CONDC']) await insert(symbol);
+
+    // A catalog write commits between the two reads — a background enrichment
+    // landing its rows, or any other account's catalog write, since the stamp
+    // is instance-wide. It fires after whichever read runs FIRST, so it lands
+    // in the gap whatever the order is.
+    const order: string[] = [];
+    let interleaved = false;
+    const afterFirstRead = async () => {
+      if (interleaved) return;
+      interleaved = true;
+      await insert('CONDX');
+    };
+    const assetRepo = {
+      searchCatalog: async (...args: Parameters<typeof real.searchCatalog>) => {
+        order.push('searchCatalog');
+        const page = await real.searchCatalog(...args);
+        await afterFirstRead();
+        return page;
+      },
+      catalogWatermark: async (...args: Parameters<typeof real.catalogWatermark>) => {
+        order.push('catalogWatermark');
+        const stamp = await real.catalogWatermark(...args);
+        await afterFirstRead();
+        return stamp;
+      },
+    } as unknown as Parameters<typeof createSearchService>[0]['assetRepo'];
+    const service = createSearchService({
+      assetRepo,
+      enrichment: { request: vi.fn(async () => false), settled: vi.fn(async () => {}) },
+    });
+
+    const response = await service.searchWithFreshness(user.id, 'COND');
+
+    expect(interleaved).toBe(true);
+    expect(order).toEqual(['catalogWatermark', 'searchCatalog']);
+    // The body carries the interleaved row…
+    expect(response.results.map((r) => r.symbol)).toContain('CONDX');
+    // …so the stamp it ships must be OLDER than the catalog state it describes.
+    // Body-first would ship the pre-write body under the post-write stamp, and
+    // the client's next `If-Modified-Since` — the rail with no ETag to fall back
+    // on — would be answered 304 with an empty body while its cached copy still
+    // said `enriching: true`, until some unrelated catalog write moved the
+    // stamp again.
+    const current = await real.catalogWatermark(user.id);
+    expect(response.freshness).not.toBeNull();
+    expect(response.freshness!.getTime()).toBeLessThan(current!.getTime());
   });
 });

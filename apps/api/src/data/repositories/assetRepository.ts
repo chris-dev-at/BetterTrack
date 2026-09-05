@@ -102,11 +102,58 @@ export interface GlobalAssetUpsert {
   currency: string;
 }
 
-/** Result of {@link AssetRepository.upsertGlobal}: the row plus whether it was just created. */
+/** Result of {@link AssetRepository.upsertGlobal}: the row plus what this call did to it. */
 export interface UpsertGlobalResult {
   row: AssetRow;
   /** True only when this call inserted the row — the first touch (§6.2). */
   created: boolean;
+  /**
+   * True when the row already existed and this call CORRECTED at least one of
+   * its provider-owned descriptive columns (#1810). Always false on a create,
+   * and false when the incoming values matched what was stored — the unchanged
+   * re-seed / re-enrichment writes nothing at all.
+   */
+  refreshed: boolean;
+}
+
+/**
+ * The catalog read's ranking TIER for one row (§6.2), as SQL: exact symbol (0)
+ * → symbol prefix (1) → name substring **or** simple-config word match (2) →
+ * everything else (3).
+ *
+ * Exported because {@link searchCatalog} is not its only consumer: the provider
+ * fallback ranks a provider's hits by these same tiers before capping how many
+ * it may write (`services/search/catalogEnrichment.ts` — a JS mirror, since
+ * those hits are not rows yet). The two ranking rules drifted apart once
+ * already (#1810: the mirror had only the ILIKE half of tier 2 and no
+ * similarity ordering, so the cap shed exactly the hits the follow-up read
+ * ranks highest), and a mirror can only be held to an expression it can be
+ * tested against. `__tests__/rankParity.test.ts` runs this builder over a
+ * fixture set and asserts the JS ranker agrees.
+ */
+export function catalogTierSql(query: string): SQL {
+  const prefix = `${escapeLike(query)}%`;
+  const substring = `%${escapeLike(query)}%`;
+  return sql`case
+    when upper(${assets.symbol}) = upper(${query}) then 0
+    when upper(${assets.symbol}) like upper(${prefix}) then 1
+    when ${assets.name} ilike ${substring}
+      or ${assets.searchText} @@ plainto_tsquery('simple', ${query}) then 2
+    else 3
+  end`;
+}
+
+/**
+ * The catalog read's trigram score for one row (§6.2): the better of the symbol
+ * and name similarities, which orders every tier and gates the fuzzy one at
+ * {@link FUZZY_SIMILARITY_THRESHOLD}. Exported for the same reason as
+ * {@link catalogTierSql}.
+ */
+export function catalogSimilaritySql(query: string): SQL {
+  return sql`greatest(
+    similarity(${assets.symbol}, ${query}),
+    similarity(${assets.name}, ${query})
+  )`;
 }
 
 export function createAssetRepository(db: Database) {
@@ -201,8 +248,6 @@ export function createAssetRepository(db: Database) {
       limit: number,
       options?: { includeCustomAssets?: boolean },
     ): Promise<CatalogSearchPage> {
-      const prefix = `${escapeLike(query)}%`;
-      const substring = `%${escapeLike(query)}%`;
       const visibility = visibleTo(userId, options?.includeCustomAssets !== false);
 
       const result = await db.execute(sql`
@@ -220,17 +265,8 @@ export function createAssetRepository(db: Database) {
             ${assets.currency} as "currency",
             ${assets.type} as "type",
             ${assets.ownerId} as "ownerId",
-            case
-              when upper(${assets.symbol}) = upper(${query}) then 0
-              when upper(${assets.symbol}) like upper(${prefix}) then 1
-              when ${assets.name} ilike ${substring}
-                or ${assets.searchText} @@ plainto_tsquery('simple', ${query}) then 2
-              else 3
-            end as "tier",
-            greatest(
-              similarity(${assets.symbol}, ${query}),
-              similarity(${assets.name}, ${query})
-            ) as "sim"
+            ${catalogTierSql(query)} as "tier",
+            ${catalogSimilaritySql(query)} as "sim"
           from ${assets}
           where ${visibility}
           offset 0
@@ -335,17 +371,44 @@ export function createAssetRepository(db: Database) {
     },
 
     /**
-     * First-touch upsert of a global market asset (§6.2), idempotent on the
-     * partial unique index `assets_global_provider_ref_unique`.
+     * Upsert of a global market asset (§6.2), idempotent on the partial unique
+     * index `assets_global_provider_ref_unique`: first touch INSERTs, a later
+     * touch REFRESHES the provider-owned descriptive columns.
      *
      * `ON CONFLICT DO NOTHING ... RETURNING` returns the row only when this call
-     * inserted it; an empty return means a concurrent caller won the race, so we
-     * re-select the existing global row. Either way the caller learns whether the
-     * insert happened, so a backfill is enqueued exactly once.
+     * inserted it; an empty return means the row already exists (or a concurrent
+     * caller won the race), so the caller learns whether the insert happened and
+     * a backfill is enqueued exactly once.
+     *
+     * The refresh arm (#1810) is the second half. Until it existed a global row
+     * was WRITE-ONCE — nothing in the repo could correct one, because the custom
+     * -asset update is gated on `owner_id = user AND provider_id = 'manual'` and
+     * there is no admin asset editor. So a provider's own correction (a renamed
+     * issuer, a re-listed exchange, a wrong `currency` — which
+     * `assetService.getDetail` reads to decide base-currency conversion) was
+     * frozen at first touch, and a corrected `catalogSeedData` entry was a no-op
+     * on every existing install. `name` is the sharpest case: it is what
+     * `searchCatalog` both returns AND ranks on, so a stale one makes the row
+     * unfindable by its real name, permanently.
+     *
+     * Three properties keep the arm narrow:
+     *  - it is scoped to `owner_id IS NULL`, so a user's custom asset can never
+     *    be overwritten by a global refresh — same boundary as §10 everywhere
+     *    else, restated in the WHERE rather than assumed from the unique index;
+     *  - it writes only the columns a provider owns. `id` (every transaction,
+     *    holding and watchlist row points at it), `owner_id` and `meta` are
+     *    never touched, so a correction is an in-place edit, not a re-identify;
+     *  - it is guarded by an `IS DISTINCT FROM` over exactly those columns, so
+     *    an unchanged re-seed or re-enrichment issues no write at all. That is
+     *    not just I/O: the statement-level catalog-watermark trigger
+     *    (migrations 0110/0112) stamps once per content-changing STATEMENT, so
+     *    600 unconditional no-op updates at boot would push the search
+     *    `Last-Modified` 600 seconds into the future for every client.
      *
      * The database's assets AFTER INSERT trigger owns the opaque identity
      * insert. Because AFTER triggers do not run for an ON CONFLICT candidate
-     * that was skipped, this path can never strand a key for a losing upsert.
+     * that was skipped, this path can never strand a key for a losing upsert;
+     * the refresh is an UPDATE, so it does not run that trigger at all.
      */
     async upsertGlobal(input: GlobalAssetUpsert): Promise<UpsertGlobalResult> {
       const inserted = await db
@@ -363,14 +426,44 @@ export function createAssetRepository(db: Database) {
         .onConflictDoNothing()
         .returning();
 
-      if (inserted[0]) return { row: inserted[0], created: true };
+      if (inserted[0]) return { row: inserted[0], created: true, refreshed: false };
+
+      const refreshed = await db
+        .update(assets)
+        .set({
+          type: input.type,
+          symbol: input.symbol,
+          name: input.name,
+          exchange: input.exchange,
+          currency: input.currency,
+        })
+        .where(
+          and(
+            eq(assets.providerId, input.providerId),
+            eq(assets.providerRef, input.providerRef),
+            isNull(assets.ownerId),
+            // Only when something actually differs (see above). `type` is an
+            // enum and `currency` a char(3); both are compared as text so no
+            // parameter-type inference rides on this predicate.
+            sql`(
+              ${assets.type}::text is distinct from ${input.type}
+              or ${assets.symbol} is distinct from ${input.symbol}
+              or ${assets.name} is distinct from ${input.name}
+              or ${assets.exchange} is distinct from ${input.exchange}
+              or ${assets.currency}::text is distinct from ${input.currency}
+            )`,
+          ),
+        )
+        .returning();
+
+      if (refreshed[0]) return { row: refreshed[0], created: false, refreshed: true };
 
       const existing = await this.findGlobal(input.providerId, input.providerRef);
       if (!existing) {
         // Unreachable in practice: the conflict implies a global row exists.
         throw new Error('Global asset upsert found no row after conflict');
       }
-      return { row: existing, created: false };
+      return { row: existing, created: false, refreshed: false };
     },
 
     /**

@@ -1,7 +1,10 @@
-import { ASSET_TYPES } from '@bettertrack/contracts';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
+import { ASSET_TYPES } from '@bettertrack/contracts';
+
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
+import * as schema from '../../../data/schema';
 import { createTestApp } from '../../../testing/createTestApp';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { CATALOG_SEED_ENTRIES } from '../catalogSeedData';
@@ -104,8 +107,29 @@ describe('seedAssetCatalog with the shipped list', () => {
       ).toBe(true);
     }
 
-    // Re-seeding every boot is a pure no-op (idempotent upsert, no backfill).
+    // Re-seeding every boot writes nothing when nothing changed (idempotent
+    // upsert, no backfill, and — because the catalog-watermark trigger stamps
+    // per content-changing statement — no conditional-read invalidation either).
     const second = await seedAssetCatalog(repo, COMMON_SYMBOLS_SEED);
-    expect(second).toEqual({ created: 0, existing: COMMON_SYMBOLS_SEED.length });
+    expect(second).toEqual({ created: 0, existing: COMMON_SYMBOLS_SEED.length, refreshed: 0 });
+
+    // But it is not "nothing happens" (#1810): a row whose provider-owned
+    // fields have gone stale is CORRECTED by the next boot, without the catalog
+    // growing a duplicate. Rewriting the row behind the seed's back is how an
+    // install that predates a shipped correction looks.
+    const drifted = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === 'AAPL')!;
+    await h.db
+      .update(schema.assets)
+      .set({ name: 'Apple Computer, Inc.', currency: 'GBP' })
+      .where(eq(schema.assets.providerRef, drifted.providerRef));
+
+    const third = await seedAssetCatalog(repo, COMMON_SYMBOLS_SEED);
+    expect(third).toEqual({ created: 0, existing: COMMON_SYMBOLS_SEED.length, refreshed: 1 });
+    expect(await repo.findGlobal(drifted.providerId, drifted.providerRef)).toMatchObject({
+      name: drifted.name,
+      currency: drifted.currency,
+    });
+    const rows = await h.db.select({ id: schema.assets.id }).from(schema.assets);
+    expect(rows).toHaveLength(COMMON_SYMBOLS_SEED.length);
   });
 });
