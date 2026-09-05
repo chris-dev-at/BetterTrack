@@ -35,6 +35,7 @@ import {
   bindParanoidJob,
   createBackfillScheduler,
   createDeadLetter,
+  createExportBuildEnqueuer,
   createExportBuildJob,
   createExportCleanupJob,
   createJobWorkers,
@@ -334,9 +335,11 @@ const notify = createNotificationCenter({
 
 // Account data export (§13.4 V4-P6a, #494): the build + daily cleanup jobs close
 // over the export service. Only buildExport/cleanupExpired/sweepOrphanedArtifacts
-// run here (the re-auth
-// deps below back the HTTP request path and are inert on the worker); enqueue is
-// wired to the durable queue for completeness though the worker never requests.
+// run here (the re-auth deps below back the HTTP request path and are inert on
+// the worker) — but this process IS the one that re-enqueues: a build deferred
+// by a portfolio-vault finalization re-drives itself from here, so the enqueue
+// must carry the deferral delay. It shares the API's single queue mapping
+// (`createExportBuildEnqueuer`) precisely so it cannot lose it (#1812).
 const exportUserRepo = createUserRepository(db);
 const dataExportService = createExportService({
   config,
@@ -355,9 +358,7 @@ const dataExportService = createExportService({
   }),
   audit,
   notify,
-  enqueueBuild: async (jobId) => {
-    await registry.enqueue('data.export', { jobId });
-  },
+  enqueueBuild: createExportBuildEnqueuer(registry),
   withAccountTransitionLock: (userId, run) =>
     withFreshLockedPrivacyModes(lockDb, [userId], () => run()),
   logger,
