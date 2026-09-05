@@ -1,15 +1,16 @@
 import { access, chmod, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join as joinPath } from 'node:path';
 
-import { and, arrayContains, eq } from 'drizzle-orm';
+import { and, arrayContains, eq, inArray } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
-import type {
-  ExportRequest,
-  ExportStatus,
-  VaultDocKind,
-  VaultMediaList,
-  VaultMediaSet,
+import {
+  EXPORT_PENDING_STALE_MS,
+  type ExportRequest,
+  type ExportStatus,
+  type VaultDocKind,
+  type VaultMediaList,
+  type VaultMediaSet,
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
@@ -35,7 +36,7 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 
 import { collectUserExport } from './collector';
-import { EXPORT_TOO_LARGE, ExportTooLargeError } from './limits';
+import { EXPORT_MAX_CONTENT_BYTES, EXPORT_TOO_LARGE, ExportTooLargeError } from './limits';
 import { buildExportZip, type VaultCiphertextExport } from './zip';
 
 /** One request per this window per user (§13.4 V4-P6a "rate-limited 1/day"). */
@@ -54,6 +55,35 @@ export const EXPORT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
 
 /** Files one sweep may examine; the rest are deferred to the next run. */
 export const EXPORT_SWEEP_MAX_ENTRIES = 5_000;
+
+/**
+ * Delay on each re-drive of a build deferred by a portfolio-vault finalization
+ * (#1812). Matched to the finalize sweep's interval
+ * (`PORTFOLIO_VAULT_FINALIZE_INTERVAL_MS`, 60 s) — that sweep is the only thing
+ * that clears the marker being waited on, and the queue's own retry ladder (3
+ * attempts, exponential backoff from 1 s) is spent inside ~3 s, i.e. long
+ * before the first sweep tick. A deferral must therefore run on the sweep's
+ * clock, not on BullMQ's.
+ */
+export const EXPORT_DEFERRAL_RETRY_DELAY_MS = 60_000;
+
+/**
+ * How long a build may keep being deferred before it gives up. Far past the
+ * few sweep ticks a finalization needs; a marker still set after this means the
+ * finalization itself is stuck, and a job that waits forever would hold the
+ * export surface (which hides the request form while `pending`) hostage.
+ */
+export const EXPORT_DEFERRAL_MAX_MS = 15 * 60 * 1000;
+
+/** The coarse reason persisted when a deferred build ran out of patience. */
+export const EXPORT_DEFERRED = 'EXPORT_DEFERRED';
+
+/**
+ * Server-resident vault documents read per statement while packaging. The
+ * pre-flight byte sum already bounds the total, and the ciphertext is buffered
+ * whole either way; this keeps ONE result set from being the whole budget.
+ */
+export const EXPORT_VAULT_BLOB_READ_CHUNK = 25;
 
 /**
  * Absolute ceiling on how long ONE download may hold the account transition
@@ -75,6 +105,16 @@ export class ExportDownloadDeadlineError extends Error {
   }
 }
 
+/**
+ * What one pass under the account transition lock achieved: the build ran (or
+ * had nothing left to do), or it must wait for a portfolio-vault finalization
+ * and be re-driven from outside the lock.
+ */
+type BuildOutcome = 'built' | 'deferred';
+
+/** Map key for one server-resident vault document (`vault_blobs` PK). */
+const vaultBlobAddress = (vaultId: string, docId: string): string => `${vaultId}:${docId}`;
+
 export interface ExportServiceDeps {
   config: AppConfig;
   db: Database;
@@ -88,10 +128,12 @@ export interface ExportServiceDeps {
   /**
    * Hand the created job to the async builder: production enqueues onto the
    * `data.export` BullMQ queue; tests run {@link ExportService.buildExport}
-   * synchronously (BullMQ can't run on ioredis-mock). Failures here never fail
-   * the request — the row exists and the job (or a manual re-drive) builds it.
+   * synchronously (BullMQ can't run on ioredis-mock). `delayMs` re-drives the
+   * same job later — how a build deferred by a vault finalization waits for the
+   * sweep that clears it. A failure here is recorded on the row (never a silent
+   * `pending` nothing will ever build), not raised at the requester.
    */
-  enqueueBuild(jobId: string): Promise<void>;
+  enqueueBuild(jobId: string, opts?: { delayMs?: number }): Promise<void>;
   /**
    * Hold the same account-row lock paranoid enable takes exclusively. Builders,
    * downloads, and cleanup keep this lock for their complete file lifetime.
@@ -131,7 +173,7 @@ export interface ExportDownload {
 }
 
 export interface ExportService {
-  /** Re-auth + 1/day gate → create the job, enqueue the build, return the raw token once. */
+  /** 1/day gate + re-auth → create the job, enqueue the build, return the raw token once. */
   requestExport(input: {
     userId: string;
     body: ExportRequest;
@@ -141,12 +183,17 @@ export interface ExportService {
   getStatus(userId: string): Promise<ExportStatusView>;
   /** Build the zip for a job (the async worker body); idempotent on a ready job. */
   buildExport(jobId: string): Promise<void>;
-  /** Resolve a download for `(user, token)`; throws 404 when it fails closed. */
+  /**
+   * Resolve (without consuming) a download for `(user, token)`; throws 404 when
+   * it fails closed.
+   */
   resolveDownload(input: { userId: string; token: string }): Promise<ExportDownload>;
   /**
-   * Consume and stream a download while holding the transition lock. The signal
-   * aborts when the absolute {@link EXPORT_DOWNLOAD_MAX_MS} bound elapses — the
-   * caller must stop streaming; the lock is released at that point regardless.
+   * Stream a download while holding the transition lock, and spend its one-time
+   * token only once the transfer completes — an interrupted transfer leaves the
+   * token usable for a retry inside the download window. The signal aborts when
+   * the absolute {@link EXPORT_DOWNLOAD_MAX_MS} bound elapses — the caller must
+   * stop streaming; the lock is released at that point regardless.
    */
   withDownload(
     input: { userId: string; token: string },
@@ -186,6 +233,12 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   const now = deps.now ?? (() => new Date());
   const dir = config.dataExport.dir;
   const downloadMaxMs = deps.downloadMaxMs ?? EXPORT_DOWNLOAD_MAX_MS;
+  // Deployment-configurable (BT_EXPORT_MAX_CONTENT_BYTES) so an account whose
+  // legitimate ciphertext outgrows the built-in default stays exportable — the
+  // over-ceiling refusal is terminal, so without a knob such an account could
+  // never obtain its §6.1 archive (#1812).
+  const maxContentBytes =
+    deps.limits?.maxContentBytes ?? config.dataExport.maxContentBytes ?? EXPORT_MAX_CONTENT_BYTES;
 
   const throttle = createProgressiveLimiter(
     redis,
@@ -218,6 +271,113 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     }
   };
 
+  /**
+   * Read the current server-resident vault documents in bounded batches, keyed
+   * by their `(vaultId, docId)` address. Owner-scoped in SQL exactly like the
+   * manifest projection it follows.
+   */
+  const readVaultBlobs = async (
+    userId: string,
+    addresses: { vaultId: string; docId: string }[],
+  ): Promise<Map<string, Uint8Array>> => {
+    const byAddress = new Map<string, Uint8Array>();
+    for (let i = 0; i < addresses.length; i += EXPORT_VAULT_BLOB_READ_CHUNK) {
+      const chunk = addresses.slice(i, i + EXPORT_VAULT_BLOB_READ_CHUNK);
+      const rows = await db
+        .select({
+          vaultId: vaultBlobs.vaultId,
+          docId: vaultBlobs.docId,
+          blob: vaultBlobs.blob,
+        })
+        .from(vaultBlobs)
+        .innerJoin(vaultConfigs, eq(vaultConfigs.id, vaultBlobs.vaultId))
+        .where(
+          and(
+            eq(vaultConfigs.userId, userId),
+            inArray(
+              vaultBlobs.docId,
+              chunk.map((address) => address.docId),
+            ),
+          ),
+        );
+      for (const row of rows) byAddress.set(vaultBlobAddress(row.vaultId, row.docId), row.blob);
+    }
+    return byAddress;
+  };
+
+  /**
+   * Record a coarse terminal failure on a row, never raising. Used on the paths
+   * whose whole point is that the row must not be left `pending` — a throw here
+   * would put back exactly the state being avoided.
+   */
+  const markFailedSafely = async (jobId: string, error: string): Promise<boolean> => {
+    try {
+      await exportRepo.markFailed(jobId, error);
+      return true;
+    } catch (err) {
+      logger?.error({ err, jobId, error }, 'export: recording the job failure failed');
+      return false;
+    }
+  };
+
+  /**
+   * Whether an existing job still holds the caller's 1/day slot. Mirrors
+   * `reserveWithinRateLimit`'s condition exactly (a failed row never holds it,
+   * and neither does a `pending` one that can no longer make progress) so the
+   * cheap pre-check and the authoritative reservation can never disagree.
+   */
+  const holdsDailySlot = (row: ExportJobRow, requestedAt: Date): boolean => {
+    if (row.status === 'failed') return false;
+    if (
+      row.status === 'pending' &&
+      row.createdAt.getTime() <= requestedAt.getTime() - EXPORT_PENDING_STALE_MS
+    ) {
+      return false;
+    }
+    return row.createdAt.getTime() > requestedAt.getTime() - EXPORT_RATE_LIMIT_MS;
+  };
+
+  const rateLimited = (requestedAt: Date, latest: ExportJobRow): ApiError => {
+    const elapsed = requestedAt.getTime() - latest.createdAt.getTime();
+    const retryAfter = Math.ceil((EXPORT_RATE_LIMIT_MS - elapsed) / 1000);
+    return new ApiError(
+      429,
+      'EXPORT_RATE_LIMITED',
+      'You can request a data export once per day. Please try again later.',
+      { retryAfter },
+    );
+  };
+
+  /**
+   * Re-drive a build the portfolio-vault finalization deferred, on the sweep's
+   * clock rather than the queue's spent retry ladder. Runs OUTSIDE the account
+   * transition lock (the re-drive must not re-enter it), and gives up into a
+   * terminal — but immediately re-requestable — `failed` row once the deferral
+   * window is exhausted, so `getStatus` can never stay `pending` forever.
+   */
+  const deferBuild = async (job: ExportJobRow): Promise<void> => {
+    const waitedMs = now().getTime() - job.createdAt.getTime();
+    if (waitedMs >= EXPORT_DEFERRAL_MAX_MS) {
+      logger?.error(
+        { jobId: job.id, waitedMs },
+        'export build: portfolio vault finalization never cleared; failing the job',
+      );
+      await markFailedSafely(job.id, EXPORT_DEFERRED);
+      return;
+    }
+    try {
+      await enqueueBuild(job.id, { delayMs: EXPORT_DEFERRAL_RETRY_DELAY_MS });
+      logger?.warn(
+        { jobId: job.id, waitedMs, delayMs: EXPORT_DEFERRAL_RETRY_DELAY_MS },
+        'export build deferred by portfolio vault finalization; re-driven after the finalize interval',
+      );
+    } catch (err) {
+      // Nothing else will ever come back for this row.
+      logger?.error({ err, jobId: job.id }, 'export build: deferred re-drive could not be queued');
+      await markFailedSafely(job.id, EXPORT_DEFERRED);
+    }
+  };
+
   async function resolveDownloadUnlocked(input: {
     userId: string;
     token: string;
@@ -229,13 +389,16 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
     }
     if (!input.token) throw badRequest('A download token is required.', 'EXPORT_TOKEN_REQUIRED');
-    const row = await exportRepo.consumeDownloadable({
+    const row = await exportRepo.findDownloadable({
       userId: input.userId,
       downloadTokenHash: hashToken(input.token),
       now: now(),
     });
-    // The conditional update both validates and consumes the token. A foreign,
-    // expired, replayed, unknown or not-yet-ready token is one indistinguishable
+    // Resolution validates the token but does NOT spend it: the token is
+    // consumed only once the transfer completes, so a socket dropped at 90 %
+    // leaves a retry possible inside the TTL instead of stranding a valid
+    // archive behind a 429 for the rest of the day (#1812). A foreign, expired,
+    // already-consumed, unknown or not-yet-ready token is one indistinguishable
     // 404 — never a distinct signal to a probing caller.
     if (!row || !row.filePath) {
       throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
@@ -344,24 +507,30 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
 
   return {
     async requestExport({ userId, body, ip }) {
+      const requestedAt = now();
+      // The 1/day gate is consulted BEFORE the re-auth, because verifying the
+      // credential can destroy it: a matching recovery code is spent by the
+      // very act of checking it (`used_at` is set on success), so a request the
+      // allowance was always going to refuse must never reach that check and
+      // burn a single-use code for a 429 (#1812). The reservation below stays
+      // the authoritative, atomic gate — this is only the cheap non-destructive
+      // pre-check, and it uses exactly the same condition.
+      const latest = await exportRepo.findLatestForUser(userId);
+      if (latest && holdsDailySlot(latest, requestedAt)) {
+        throw rateLimited(requestedAt, latest);
+      }
+
       await verifyReauth(userId, body, ip);
 
       const { token, tokenHash } = generateToken();
-      const requestedAt = now();
       const reservation = await exportRepo.reserveWithinRateLimit({
         userId,
         downloadTokenHash: tokenHash,
         since: new Date(requestedAt.getTime() - EXPORT_RATE_LIMIT_MS),
+        stalePendingBefore: new Date(requestedAt.getTime() - EXPORT_PENDING_STALE_MS),
       });
       if (reservation.kind === 'rate_limited') {
-        const elapsed = requestedAt.getTime() - reservation.latest.createdAt.getTime();
-        const retryAfter = Math.ceil((EXPORT_RATE_LIMIT_MS - elapsed) / 1000);
-        throw new ApiError(
-          429,
-          'EXPORT_RATE_LIMITED',
-          'You can request a data export once per day. Please try again later.',
-          { retryAfter },
-        );
+        throw rateLimited(requestedAt, reservation.latest);
       }
       const { job } = reservation;
       await audit.record({
@@ -376,8 +545,18 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
         await enqueueBuild(job.id);
       } catch (err) {
         // The row exists; a failed enqueue is an incident to log, not a request
-        // failure (the user already re-authed and holds their token).
+        // failure (the user already re-authed and holds their token). It must
+        // NOT be swallowed silently though: nothing will ever build this job, so
+        // a row left `pending` would hide the request form and hold the daily
+        // allowance for 24 h. Recorded as a failure the user can retry from — a
+        // `failed` row consumes no allowance (#1812).
         logger?.error({ err, jobId: job.id }, 'export build enqueue failed');
+        const recorded = await markFailedSafely(job.id, 'BUILD_FAILED');
+        return {
+          jobId: job.id,
+          status: recorded ? 'failed' : job.status,
+          downloadToken: token,
+        };
       }
 
       return { jobId: job.id, status: job.status, downloadToken: token };
@@ -397,197 +576,243 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       // file on disk is a no-op (a retry after a successful build).
       if (job.status === 'ready' && job.filePath) return;
 
-      await withAccountTransitionLock(job.userId, async () => {
-        const lockedJob = await exportRepo.findById(jobId);
-        if (!lockedJob || (lockedJob.status === 'ready' && lockedJob.filePath)) return;
-        // Deliberately outside the BUILD_FAILED catch: BullMQ must retry this
-        // same queued job after E4 clears its durable pending marker. Building
-        // now could capture restored cleartext before all derived rows converge,
-        // depending on which finalizer phase won the lock.
-        if (await hasPendingPortfolioMoveOut(job.userId)) {
-          throw new Error('account export deferred by portfolio vault finalization');
-        }
-        const filePath = filePathFor(jobId);
-        const buildingPath = `${filePath}.building`;
-        // Where the completion sequence got to, so the catch can tell an
-        // unreferenced finished archive (must be removed) from one the row now
-        // points at (must be kept).
-        let renamed = false;
-        let ready = false;
-        try {
-          const [accountRows, vaultDocRows] = await Promise.all([
-            db
-              .select({
-                privacyMode: users.privacyMode,
-                mediaSet: users.paranoidMediaSet,
-              })
-              .from(users)
-              .where(eq(users.id, job.userId))
-              .limit(1),
-            // E1 per-vault ciphertext is independent of the legacy account-wide
-            // privacy flag. Select only the safe manifest projection plus the
-            // current opaque bytes, owner-scoped in SQL; the LEFT JOIN keeps an
-            // empty server-backed vault visible in the manifest.
-            db
-              .select({
-                vaultId: vaultConfigs.id,
-                media: vaultConfigs.media,
-                docId: vaultBlobs.docId,
-                docKind: vaultBlobs.docKind,
-                version: vaultBlobs.version,
-                formatVersion: vaultBlobs.formatVersion,
-                sizeBytes: vaultBlobs.sizeBytes,
-                updatedAt: vaultBlobs.updatedAt,
-                blob: vaultBlobs.blob,
-              })
-              .from(vaultConfigs)
-              .leftJoin(vaultBlobs, eq(vaultBlobs.vaultId, vaultConfigs.id))
-              .where(
-                and(
-                  eq(vaultConfigs.userId, job.userId),
-                  arrayContains(vaultConfigs.media, ['server']),
+      const outcome = await withAccountTransitionLock(
+        job.userId,
+        async (): Promise<BuildOutcome> => {
+          const lockedJob = await exportRepo.findById(jobId);
+          if (!lockedJob || (lockedJob.status === 'ready' && lockedJob.filePath)) return 'built';
+          // Building now could capture restored cleartext before all derived rows
+          // converge, depending on which finalizer phase won the lock. Reported
+          // out of the lock (rather than thrown) so the re-drive is scheduled on
+          // the finalize sweep's clock: the queue's own retry ladder is spent
+          // inside ~3 s, i.e. before the sweep that clears the marker has run
+          // once, which used to dead-letter the job and wedge the row (#1812).
+          if (await hasPendingPortfolioMoveOut(job.userId)) return 'deferred';
+          const filePath = filePathFor(jobId);
+          const buildingPath = `${filePath}.building`;
+          // Where the completion sequence got to, so the catch can tell an
+          // unreferenced finished archive (must be removed) from one the row now
+          // points at (must be kept).
+          let renamed = false;
+          let ready = false;
+          try {
+            const [accountRows, vaultDocRows] = await Promise.all([
+              db
+                .select({
+                  privacyMode: users.privacyMode,
+                  mediaSet: users.paranoidMediaSet,
+                })
+                .from(users)
+                .where(eq(users.id, job.userId))
+                .limit(1),
+              // E1 per-vault ciphertext is independent of the legacy account-wide
+              // privacy flag. Select only the safe manifest projection — WITHOUT
+              // the opaque bytes — owner-scoped in SQL; the LEFT JOIN keeps an
+              // empty server-backed vault visible in the manifest. The bytes are
+              // read below, once the declared sizes have been checked against the
+              // packaging ceiling: a per-doc cap times an uncapped number of
+              // vaulted portfolios is otherwise gigabytes resident in the worker
+              // before any limit is consulted (#1812).
+              db
+                .select({
+                  vaultId: vaultConfigs.id,
+                  media: vaultConfigs.media,
+                  docId: vaultBlobs.docId,
+                  docKind: vaultBlobs.docKind,
+                  version: vaultBlobs.version,
+                  formatVersion: vaultBlobs.formatVersion,
+                  sizeBytes: vaultBlobs.sizeBytes,
+                  updatedAt: vaultBlobs.updatedAt,
+                })
+                .from(vaultConfigs)
+                .leftJoin(vaultBlobs, eq(vaultBlobs.vaultId, vaultConfigs.id))
+                .where(
+                  and(
+                    eq(vaultConfigs.userId, job.userId),
+                    arrayContains(vaultConfigs.media, ['server']),
+                  ),
                 ),
-              ),
-          ]);
-          const [account] = accountRows;
-          if (!account) return;
+            ]);
+            const [account] = accountRows;
+            if (!account) return 'built';
 
-          const vaultsById = new Map<string, VaultCiphertextExport>();
-          for (const row of vaultDocRows) {
-            let vault = vaultsById.get(row.vaultId);
-            if (!vault) {
-              vault = {
-                vaultId: row.vaultId,
-                media: row.media as VaultMediaList,
-                docs: [],
-              };
-              vaultsById.set(row.vaultId, vault);
+            const paranoid = account.privacyMode === 'paranoid';
+            // Same treatment for the legacy account-wide vault: its declared size
+            // joins the pre-flight sum, its bytes are read afterwards.
+            const [paranoidVaultMeta] =
+              paranoid && (account.mediaSet as VaultMediaSet | null)?.includes('server')
+                ? await db
+                    .select({
+                      version: paranoidVaults.version,
+                      formatVersion: paranoidVaults.formatVersion,
+                      sizeBytes: paranoidVaults.sizeBytes,
+                      updatedAt: paranoidVaults.updatedAt,
+                    })
+                    .from(paranoidVaults)
+                    .where(eq(paranoidVaults.userId, job.userId))
+                    .limit(1)
+                : [];
+
+            // Pre-flight packaging budget, applied to the DECLARED ciphertext
+            // sizes before a single byte is materialized. Same contract the row
+            // ceiling states for itself: refuse the runaway account without ever
+            // allocating it. `addFile` remains the authoritative accounting of
+            // everything the archive actually carries.
+            const ciphertextBytes =
+              vaultDocRows.reduce((sum, row) => sum + (row.sizeBytes ?? 0), 0) +
+              (paranoidVaultMeta?.sizeBytes ?? 0);
+            if (ciphertextBytes > maxContentBytes) {
+              throw new ExportTooLargeError('content_bytes', ciphertextBytes, maxContentBytes);
             }
-            if (row.docId === null) continue;
-            // Every selected doc column is NOT NULL; only the LEFT JOIN can make
-            // it nullable, and a non-null PK means the complete row is present.
-            if (
-              row.docKind === null ||
-              row.version === null ||
-              row.formatVersion === null ||
-              row.sizeBytes === null ||
-              row.updatedAt === null ||
-              row.blob === null
-            ) {
-              throw new Error('incomplete current vault document row');
+
+            const blobsByAddress = await readVaultBlobs(
+              job.userId,
+              vaultDocRows
+                .filter((row) => row.docId !== null)
+                .map((row) => ({ vaultId: row.vaultId, docId: row.docId! })),
+            );
+
+            const vaultsById = new Map<string, VaultCiphertextExport>();
+            for (const row of vaultDocRows) {
+              let vault = vaultsById.get(row.vaultId);
+              if (!vault) {
+                vault = {
+                  vaultId: row.vaultId,
+                  media: row.media as VaultMediaList,
+                  docs: [],
+                };
+                vaultsById.set(row.vaultId, vault);
+              }
+              if (row.docId === null) continue;
+              // Every selected doc column is NOT NULL; only the LEFT JOIN can make
+              // it nullable, and a non-null PK means the complete row is present.
+              if (
+                row.docKind === null ||
+                row.version === null ||
+                row.formatVersion === null ||
+                row.sizeBytes === null ||
+                row.updatedAt === null
+              ) {
+                throw new Error('incomplete current vault document row');
+              }
+              const blob = blobsByAddress.get(vaultBlobAddress(row.vaultId, row.docId));
+              // The doc was written or removed between the manifest read and the
+              // byte read. Not packageable as read; a plain build failure the
+              // queue retries, never a half-truthful archive.
+              if (!blob) throw new Error('current vault document vanished mid-build');
+              vault.docs.push({
+                docId: row.docId,
+                docKind: row.docKind as VaultDocKind,
+                version: row.version,
+                formatVersion: row.formatVersion,
+                sizeBytes: row.sizeBytes,
+                updatedAt: row.updatedAt,
+                blob,
+              });
             }
-            vault.docs.push({
-              docId: row.docId,
-              docKind: row.docKind as VaultDocKind,
-              version: row.version,
-              formatVersion: row.formatVersion,
-              sizeBytes: row.sizeBytes,
-              updatedAt: row.updatedAt,
-              blob: row.blob,
+
+            const collected = await collectUserExport(db, job.userId, {
+              serverOnly: paranoid,
+              ...(deps.limits?.maxRows !== undefined ? { maxRows: deps.limits.maxRows } : {}),
             });
-          }
-
-          const paranoid = account.privacyMode === 'paranoid';
-          const collected = await collectUserExport(db, job.userId, {
-            serverOnly: paranoid,
-            ...(deps.limits?.maxRows !== undefined ? { maxRows: deps.limits.maxRows } : {}),
-          });
-          await deps.afterCollect?.(job.userId);
-          const [vault] =
-            paranoid && (account.mediaSet as VaultMediaSet | null)?.includes('server')
+            await deps.afterCollect?.(job.userId);
+            const [paranoidBlobRow] = paranoidVaultMeta
               ? await db
-                  .select({
-                    version: paranoidVaults.version,
-                    formatVersion: paranoidVaults.formatVersion,
-                    sizeBytes: paranoidVaults.sizeBytes,
-                    updatedAt: paranoidVaults.updatedAt,
-                    blob: paranoidVaults.blob,
-                  })
+                  .select({ blob: paranoidVaults.blob })
                   .from(paranoidVaults)
                   .where(eq(paranoidVaults.userId, job.userId))
                   .limit(1)
               : [];
-          const generatedAt = now();
-          const zip = buildExportZip({
-            userId: job.userId,
-            collected,
-            generatedAt,
-            vaults: [...vaultsById.values()],
-            ...(deps.limits?.maxContentBytes !== undefined
-              ? { maxContentBytes: deps.limits.maxContentBytes }
-              : {}),
-            ...(paranoid
-              ? {
-                  paranoid: {
-                    mediaSet: account.mediaSet as VaultMediaSet,
-                    vault: vault ?? null,
-                  },
-                }
-              : {}),
-          });
-          await mkdir(dir, { recursive: true, mode: 0o700 });
-          await chmod(dir, 0o700);
-          await writeFile(buildingPath, zip, { mode: 0o600 });
-          await chmod(buildingPath, 0o600);
-          await rename(buildingPath, filePath);
-          renamed = true;
-          await exportRepo.markReady({
-            id: jobId,
-            filePath,
-            fileSize: zip.byteLength,
-            expiresAt: new Date(generatedAt.getTime() + EXPORT_DOWNLOAD_TTL_MS),
-            readyAt: generatedAt,
-          });
-          ready = true;
-        } catch (err) {
-          await rm(buildingPath, { force: true }).catch((rmErr) => {
-            logger?.warn({ err: rmErr, jobId }, 'export build: temp file unlink failed');
-          });
-          // The renamed archive is a complete cleartext copy of the account that
-          // no row points at — nothing would ever reap it (the cleanup sweep
-          // only unlinks paths recorded on a row). Remove it here. If `markReady`
-          // failed outcome-ambiguously and the row did commit, the row now points
-          // at a missing file, which `resolveDownloadUnlocked` already fails
-          // closed on, and the `failed` status below matches that reality.
-          if (renamed && !ready) {
-            await rm(filePath, { force: true }).catch((rmErr) => {
-              logger?.warn({ err: rmErr, jobId }, 'export build: orphan archive unlink failed');
+            // A vault written away between the two reads simply is not packaged;
+            // the manifest then reports `included: false` rather than claiming a
+            // file the archive does not carry.
+            const vault =
+              paranoidVaultMeta && paranoidBlobRow
+                ? { ...paranoidVaultMeta, blob: paranoidBlobRow.blob }
+                : undefined;
+            const generatedAt = now();
+            const zip = buildExportZip({
+              userId: job.userId,
+              collected,
+              generatedAt,
+              vaults: [...vaultsById.values()],
+              maxContentBytes,
+              ...(paranoid
+                ? {
+                    paranoid: {
+                      mediaSet: account.mediaSet as VaultMediaSet,
+                      vault: vault ?? null,
+                    },
+                  }
+                : {}),
             });
+            await mkdir(dir, { recursive: true, mode: 0o700 });
+            await chmod(dir, 0o700);
+            await writeFile(buildingPath, zip, { mode: 0o600 });
+            await chmod(buildingPath, 0o600);
+            await rename(buildingPath, filePath);
+            renamed = true;
+            await exportRepo.markReady({
+              id: jobId,
+              filePath,
+              fileSize: zip.byteLength,
+              expiresAt: new Date(generatedAt.getTime() + EXPORT_DOWNLOAD_TTL_MS),
+              readyAt: generatedAt,
+            });
+            ready = true;
+          } catch (err) {
+            await rm(buildingPath, { force: true }).catch((rmErr) => {
+              logger?.warn({ err: rmErr, jobId }, 'export build: temp file unlink failed');
+            });
+            // The renamed archive is a complete cleartext copy of the account that
+            // no row points at — nothing would ever reap it (the cleanup sweep
+            // only unlinks paths recorded on a row). Remove it here. If `markReady`
+            // failed outcome-ambiguously and the row did commit, the row now points
+            // at a missing file, which `resolveDownloadUnlocked` already fails
+            // closed on, and the `failed` status below matches that reality.
+            if (renamed && !ready) {
+              await rm(filePath, { force: true }).catch((rmErr) => {
+                logger?.warn({ err: rmErr, jobId }, 'export build: orphan archive unlink failed');
+              });
+            }
+            logger?.error({ err, jobId }, 'export build failed');
+            if (err instanceof ExportTooLargeError) {
+              // Deterministic: the same account exceeds the same ceiling on every
+              // attempt, so this is a terminal, typed failure rather than work to
+              // re-queue. A `failed` row does not consume the 1/day allowance
+              // (`reserveWithinRateLimit` ignores failed jobs), so the user can
+              // act and retry immediately.
+              await exportRepo.markFailed(jobId, EXPORT_TOO_LARGE);
+              logger?.error(
+                { jobId, dimension: err.dimension, measured: err.measured, limit: err.limit },
+                'export build refused: account exceeds the export ceiling',
+              );
+              return 'built';
+            }
+            await exportRepo.markFailed(jobId, 'BUILD_FAILED');
+            throw err;
           }
-          logger?.error({ err, jobId }, 'export build failed');
-          if (err instanceof ExportTooLargeError) {
-            // Deterministic: the same account exceeds the same ceiling on every
-            // attempt, so this is a terminal, typed failure rather than work to
-            // re-queue. A `failed` row does not consume the 1/day allowance
-            // (`reserveWithinRateLimit` ignores failed jobs), so the user can
-            // act and retry immediately.
-            await exportRepo.markFailed(jobId, EXPORT_TOO_LARGE);
-            logger?.error(
-              { jobId, dimension: err.dimension, measured: err.measured, limit: err.limit },
-              'export build refused: account exceeds the export ceiling',
-            );
-            return;
+          // Outside the failure path on purpose: the archive is on disk, the row is
+          // `ready`, and the token is live. A failed notice must not roll that back
+          // to `failed` — the old ordering left a valid token whose download could
+          // then only 404 forever. The build is complete either way; the user still
+          // sees `ready` when they poll.
+          try {
+            // Inform the owner (inbox / push): the notice deep-links to the export
+            // block in Settings → Account. It carries NO token.
+            await notify.emit({
+              type: 'account.data_export',
+              userId: job.userId,
+              occurredAt: now().toISOString(),
+            });
+          } catch (err) {
+            logger?.warn({ err, jobId }, 'export build: ready notification failed');
           }
-          await exportRepo.markFailed(jobId, 'BUILD_FAILED');
-          throw err;
-        }
-        // Outside the failure path on purpose: the archive is on disk, the row is
-        // `ready`, and the token is live. A failed notice must not roll that back
-        // to `failed` — the old ordering left a valid token whose download could
-        // then only 404 forever. The build is complete either way; the user still
-        // sees `ready` when they poll.
-        try {
-          // Inform the owner (inbox / push): the notice deep-links to the export
-          // block in Settings → Account. It carries NO token.
-          await notify.emit({
-            type: 'account.data_export',
-            userId: job.userId,
-            occurredAt: now().toISOString(),
-          });
-        } catch (err) {
-          logger?.warn({ err, jobId }, 'export build: ready notification failed');
-        }
-      });
+          return 'built';
+        },
+      );
+      // Scheduled outside the lock: the re-drive must not re-enter it.
+      if (outcome === 'deferred') await deferBuild(job);
     },
 
     resolveDownload({ userId, token }) {
@@ -619,6 +844,21 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
               );
             }),
           ]);
+          // Only a COMPLETED transfer spends the one-time token — a dropped
+          // socket, a stall or the absolute deadline leaves it live for a retry
+          // inside the download window. Still inside the account transition
+          // lock, so no concurrent download can slip between the two.
+          const consumed = await exportRepo.consumeDownloadable({
+            userId: input.userId,
+            downloadTokenHash: hashToken(input.token),
+            now: now(),
+          });
+          if (!consumed) {
+            logger?.warn(
+              { userId: input.userId },
+              'export download: the token was already gone when the transfer completed',
+            );
+          }
         } finally {
           clearTimeout(timer);
         }

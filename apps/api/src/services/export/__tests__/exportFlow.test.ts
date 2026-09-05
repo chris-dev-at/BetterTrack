@@ -9,11 +9,23 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { exportRequestResponseSchema, exportStatusResponseSchema } from '@bettertrack/contracts';
+import {
+  EXPORT_PENDING_STALE_MS,
+  exportRequestResponseSchema,
+  exportStatusResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
+import { EXPORT_BUILD_STALLED } from '../../../data/repositories/exportRepository';
+import { PORTFOLIO_VAULT_FINALIZE_INTERVAL_MS } from '../../../jobs/definitions/portfolioVaultJobs';
+import { generateTotpCode } from '../../auth/totp';
 import { hashToken } from '../../crypto/tokens';
 import { collectUserExport } from '../collector';
+import {
+  EXPORT_DEFERRAL_MAX_MS,
+  EXPORT_DEFERRAL_RETRY_DELAY_MS,
+  EXPORT_DEFERRED,
+} from '../exportService';
 import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from '../manifest';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
@@ -851,8 +863,12 @@ describe('account data export', () => {
     expect(gone.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
-  it('defers a pending build without poisoning the job, then builds that same job after E4 clears', async () => {
-    const enqueueBuild = vi.fn(async (_jobId: string) => undefined);
+  it('defers a pending build onto the finalize sweep clock, then builds that same job after E4 clears', async () => {
+    // The deferral must NOT ride the queue's own retry ladder: 3 attempts with
+    // exponential backoff from 1 s are all spent inside ~3 s, while the sweep
+    // that clears the marker only runs every 60 s — so the old throw-and-retry
+    // dead-lettered the job and left the row `pending` forever (#1812).
+    const enqueueBuild = vi.fn(async (_jobId: string, _opts?: { delayMs?: number }) => undefined);
     harness = await createTestApp({
       env: { BT_EXPORT_DIR: EXPORT_DIR },
       exportEnqueue: enqueueBuild,
@@ -871,9 +887,7 @@ describe('account data export', () => {
     const { jobId } = exportRequestResponseSchema.parse(requested.body);
     await seedPendingPortfolioMoveOut(user.id, portfolioId);
 
-    await expect(harness.ctx.dataExport.buildExport(jobId)).rejects.toThrow(
-      'account export deferred by portfolio vault finalization',
-    );
+    await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
     const [deferred] = await harness.db
       .select()
       .from(schema.exportJobs)
@@ -884,8 +898,16 @@ describe('account data export', () => {
       filePath: null,
       fileSize: null,
     });
-    expect(enqueueBuild).toHaveBeenCalledOnce();
-    expect(enqueueBuild).toHaveBeenCalledWith(jobId);
+    // The request's own enqueue, then the deferred re-drive — the second one
+    // delayed by at least one finalize interval.
+    expect(enqueueBuild).toHaveBeenCalledTimes(2);
+    expect(enqueueBuild).toHaveBeenNthCalledWith(1, jobId);
+    expect(enqueueBuild).toHaveBeenNthCalledWith(2, jobId, {
+      delayMs: EXPORT_DEFERRAL_RETRY_DELAY_MS,
+    });
+    expect(EXPORT_DEFERRAL_RETRY_DELAY_MS).toBeGreaterThanOrEqual(
+      PORTFOLIO_VAULT_FINALIZE_INTERVAL_MS,
+    );
 
     await clearPendingPortfolioMoveOut(portfolioId);
     await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
@@ -896,6 +918,243 @@ describe('account data export', () => {
     expect(ready).toMatchObject({ status: 'ready', error: null });
     expect(ready!.filePath).toBeTruthy();
     expect(existsSync(ready!.filePath!)).toBe(true);
+  });
+
+  it('fails a deferred build into a retryable terminal state once the deferral window is spent', async () => {
+    // The other side of the deferral contract: `getStatus` must never stay
+    // `pending` forever. A finalization that never clears exhausts the window
+    // and the row becomes `failed` — which costs no daily allowance, so the
+    // user can request again immediately (#1812).
+    const enqueueBuild = vi.fn(async (_jobId: string, _opts?: { delayMs?: number }) => undefined);
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: enqueueBuild,
+    });
+    const user = await harness.seedUser({
+      email: 'stuck-export-build@bettertrack.test',
+      username: 'stuck_export_build',
+    });
+    const portfolioId = await seedPortfolio(user.id, 'TEST VECTOR stuck build portfolio');
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    await seedPendingPortfolioMoveOut(user.id, portfolioId);
+
+    // Every re-drive lands while the marker is still set, and the last one
+    // arrives past the deferral window (aged on the row, exactly as the real
+    // re-drives would arrive minutes apart).
+    await harness.ctx.dataExport.buildExport(jobId);
+    await harness.db
+      .update(schema.exportJobs)
+      .set({ createdAt: new Date(Date.now() - EXPORT_DEFERRAL_MAX_MS - 1000) })
+      .where(eq(schema.exportJobs.id, jobId));
+    await expect(harness.ctx.dataExport.buildExport(jobId)).resolves.toBeUndefined();
+
+    const status = await harness.ctx.dataExport.getStatus(user.id);
+    expect(status).toMatchObject({ status: 'failed', error: EXPORT_DEFERRED });
+    // Retryable: the failed row holds no allowance, so a fresh request is
+    // accepted (this one clears the marker first so it can actually build).
+    await clearPendingPortfolioMoveOut(portfolioId);
+    const again = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+  });
+
+  it('does not leave a permanently pending row when the build enqueue fails', async () => {
+    // The row exists and the user holds a token, but nothing will ever build
+    // it: left `pending`, the panel hides the request form and the reservation
+    // blocks a fresh request for 24 h (#1812).
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: async () => {
+        throw new Error('TEST VECTOR export queue is down');
+      },
+    });
+    const user = await harness.seedUser({
+      email: 'enqueue-down@bettertrack.test',
+      username: 'enqueue_down',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+    const created = exportRequestResponseSchema.parse(requested.body);
+    expect(created.status).toBe('failed');
+
+    const status = await agent.get('/api/v1/account/export').set(...XRW);
+    expect(exportStatusResponseSchema.parse(status.body)).toMatchObject({
+      status: 'failed',
+      error: 'BUILD_FAILED',
+    });
+    // And the daily allowance was not spent on a job that never existed.
+    const again = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+  });
+
+  it('lets a fresh request supersede a pending row that can no longer make progress', async () => {
+    // A build the queue lost leaves a `pending` row nothing will ever finish.
+    // Past the shared staleness window it must stop holding the 1/day slot,
+    // and it must stop reading as `pending` (#1812).
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: async () => undefined,
+    });
+    const user = await harness.seedUser({
+      email: 'stalled-export@bettertrack.test',
+      username: 'stalled_export',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+
+    // Inside the window the reservation still stands: one export per day.
+    const tooSoon = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(tooSoon.status).toBe(429);
+    expect(tooSoon.body.error.code).toBe('EXPORT_RATE_LIMITED');
+
+    await harness.db
+      .update(schema.exportJobs)
+      .set({ createdAt: new Date(Date.now() - EXPORT_PENDING_STALE_MS - 1000) })
+      .where(eq(schema.exportJobs.id, jobId));
+
+    const again = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    const superseded = exportRequestResponseSchema.parse(again.body);
+    expect(superseded.jobId).not.toBe(jobId);
+    // The abandoned row is retired rather than left reading as in-flight.
+    const [old] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(old).toMatchObject({ status: 'failed', error: EXPORT_BUILD_STALLED });
+  });
+
+  it('keeps the download token alive through a failed transfer and spends it only on success', async () => {
+    // The token used to be nulled and COMMITTED before a byte was streamed, on
+    // a different connection from the lock — so a socket dropped at 90 % left a
+    // complete archive on disk reachable by nobody, and "request again" was a
+    // 429 for the rest of the day (#1812).
+    const user = await harness.seedUser({
+      email: 'interrupted-download@bettertrack.test',
+      username: 'interrupted_download',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(requested.body);
+
+    await expect(
+      harness.ctx.dataExport.withDownload({ userId: user.id, token: downloadToken }, async () => {
+        throw new Error('TEST VECTOR socket closed mid-stream');
+      }),
+    ).rejects.toThrow('TEST VECTOR socket closed mid-stream');
+
+    const [afterFailure] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(afterFailure).toMatchObject({
+      status: 'ready',
+      downloadTokenHash: hashToken(downloadToken),
+    });
+
+    // Retried inside the download window — no new request, so no 1/day refusal.
+    const retried = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+
+    // A completed transfer is what spends the one-time token…
+    const [afterSuccess] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(afterSuccess!.downloadTokenHash).toBeNull();
+    // …so the replay after it still fails closed.
+    const replay = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(replay.status).toBe(404);
+    expect(replay.body.error.code).toBe('EXPORT_NOT_FOUND');
+  });
+
+  it('refuses a rate-limited request before the re-auth, leaving the recovery code unspent', async () => {
+    // Verifying a recovery code DESTROYS it (`used_at` is set on the matching
+    // update), so the cheap non-destructive 1/day gate has to run first —
+    // otherwise a 429 costs the user a single-use credential and returns
+    // nothing (#1812).
+    const user = await harness.seedUser({
+      email: 'recovery-export@bettertrack.test',
+      username: 'recovery_export',
+    });
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(user.id);
+    const { recoveryCodes } = (
+      await harness.ctx.twoFactor.confirmTotp(user.id, generateTotpCode(secret))
+    ).response;
+    if (!recoveryCodes) throw new Error('TEST VECTOR TOTP enrollment returned no recovery codes');
+    const recoveryCode = recoveryCodes[0]!;
+
+    // Enrolled accounts sign in through the challenge, not the plain password.
+    const agent = request.agent(harness.app);
+    const challenge = await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(challenge.body.twoFactorRequired).toBe(true);
+    const verified = await agent
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({
+        pendingToken: challenge.body.pendingToken as string,
+        code: generateTotpCode(secret),
+      });
+    expect(verified.status, JSON.stringify(verified.body)).toBe(200);
+
+    const first = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+
+    const limited = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ recoveryCode });
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe('EXPORT_RATE_LIMITED');
+
+    // The code is untouched: it still verifies (and only now is consumed).
+    expect(await harness.ctx.twoFactor.consumeRecoveryCode(user.id, recoveryCode)).toBe(true);
   });
 
   it('does not consume a ready download token while E4 is pending, then accepts the same token', async () => {

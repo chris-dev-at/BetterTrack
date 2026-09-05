@@ -9,12 +9,18 @@
  * background job in the process, and each attempt leaves a partial cleartext
  * artifact behind. Two ceilings make that failure a clean, typed one instead:
  *
- *  - {@link EXPORT_MAX_ROWS} caps the append-only tables BEFORE any row is
- *    materialized (a counting pre-flight in the collector), so the runaway case
- *    never allocates.
+ *  - {@link EXPORT_MAX_ROWS} caps the append-only tables — and the
+ *    machine-generated link rows that grow at a multiple of them, such as the
+ *    auto-stamped `cash_movement_tags` — BEFORE any row is materialized (a
+ *    counting pre-flight in the collector), so the runaway case never
+ *    allocates.
  *  - {@link EXPORT_MAX_CONTENT_BYTES} caps the packaged bytes as the archive is
  *    assembled, which is the dimension a few very large rows blow through
- *    without tripping the row count.
+ *    without tripping the row count. The server-resident vault ciphertext is
+ *    additionally summed from its declared sizes before any blob is read, so
+ *    that dimension is refused pre-flight too (#1812), and the ceiling is
+ *    deployment-configurable (`BT_EXPORT_MAX_CONTENT_BYTES`) because a
+ *    legitimately larger account must still be able to obtain its archive.
  *
  * Both are deliberately far above any real single-owner account: 1,000,000
  * ledger/notification rows and 128 MiB of packaged content are several orders of

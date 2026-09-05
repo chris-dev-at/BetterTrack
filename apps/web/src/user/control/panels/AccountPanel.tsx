@@ -3,7 +3,13 @@ import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { BASE_CURRENCIES, type BaseCurrency, type ProfileIconId } from '@bettertrack/contracts';
+import {
+  BASE_CURRENCIES,
+  EXPORT_PENDING_STALE_MS,
+  type BaseCurrency,
+  type ExportStatusResponse,
+  type ProfileIconId,
+} from '@bettertrack/contracts';
 
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
@@ -39,6 +45,19 @@ const ParanoidAccountExport = lazy(() =>
 // #951 removes the old durable token cache. Clear it synchronously on mount so
 // upgrades cannot leave a previously persisted credential behind.
 const LEGACY_EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
+
+/**
+ * A `pending` job old enough that nothing will build it any more (#1812) — the
+ * queue lost the work. The server applies the same shared window when a fresh
+ * request arrives (it retires the row instead of 429-ing on it), so offering
+ * the form here can never hand the user a refusal.
+ */
+function isStalledPending(status: ExportStatusResponse): boolean {
+  if (status.status !== 'pending' || !status.requestedAt) return false;
+  const requestedAt = Date.parse(status.requestedAt);
+  if (!Number.isFinite(requestedAt)) return false;
+  return Date.now() - requestedAt >= EXPORT_PENDING_STALE_MS;
+}
 
 function clearLegacyExportToken(): void {
   try {
@@ -217,8 +236,11 @@ function ExportRow() {
   const status = useQuery({
     queryKey: EXPORT_STATUS_KEY,
     queryFn: ({ signal }) => getDataExportStatus(signal),
-    // Poll while a build is in flight; idle otherwise.
-    refetchInterval: (query) => (query.state.data?.status === 'pending' ? 3000 : false),
+    // Poll while a build is in flight; idle otherwise — and never past the
+    // point where the job can no longer make progress (#1812), or a lost build
+    // would leave this panel polling a dead row forever.
+    refetchInterval: (query) =>
+      query.state.data?.status === 'pending' && !isStalledPending(query.state.data) ? 3000 : false,
   });
 
   const mutation = useMutation({
@@ -236,7 +258,11 @@ function ExportRow() {
   // The in-memory token only unlocks the CURRENT ready job (job ids must match).
   const tokenForJob = current?.jobId && held?.jobId === current.jobId ? held.token : null;
   const isReady = current?.status === 'ready';
-  const isPending = current?.status === 'pending';
+  // A build that stopped making progress is not "in flight" any more: the form
+  // comes back, and the server lets that request supersede the dead row rather
+  // than counting it against the daily allowance (#1812).
+  const isStalled = current ? isStalledPending(current) : false;
+  const isPending = current?.status === 'pending' && !isStalled;
 
   const downloadMutation = useMutation({
     mutationFn: async () => {
@@ -314,6 +340,8 @@ function ExportRow() {
         <PanelNote>{t('settings.export.readyNoToken')}</PanelNote>
       ) : isPending ? (
         <PanelNote>{t('settings.export.pending')}</PanelNote>
+      ) : isStalled ? (
+        <PanelNote>{t('settings.export.stalled')}</PanelNote>
       ) : current?.status === 'expired' ? (
         <PanelNote>{t('settings.export.expired')}</PanelNote>
       ) : current?.status === 'failed' ? (
@@ -342,7 +370,10 @@ function ExportRow() {
           <Button className="self-start" disabled={mutation.isPending} size="sm" type="submit">
             {mutation.isPending
               ? t('settings.export.submitting')
-              : isReady || current?.status === 'expired' || current?.status === 'failed'
+              : isReady ||
+                  isStalled ||
+                  current?.status === 'expired' ||
+                  current?.status === 'failed'
                 ? t('settings.export.requestAgain')
                 : t('settings.export.request')}
           </Button>

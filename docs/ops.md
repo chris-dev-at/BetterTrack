@@ -39,6 +39,14 @@ user. Ready exports still expire through the existing 24-hour cleanup job; the
 volume only makes their short lifetime survive process/container boundaries.
 As with every named volume, `docker compose down -v` deletes it.
 
+One archive's packaged (uncompressed) bytes are capped at 128 MiB by default,
+and a build over the cap fails terminally — retrying it unchanged cannot help.
+An account holding a lot of server-resident vault ciphertext can legitimately
+exceed that, so the cap is a knob: set `BT_EXPORT_MAX_CONTENT_BYTES` (bytes, at
+most 1 GiB) on both `api` and `worker` to raise it, and the same account exports
+without a code change. The refusal happens pre-flight — the ciphertext sizes are
+summed before any blob is read — so an over-cap account never allocates.
+
 Render both effective production topologies after editing Compose. The
 committed example supplies inert interpolation values; substitute `infra/.env`
 to validate one deployment's configured values:
