@@ -5,10 +5,10 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { Announcement, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
-import { I18nProvider } from '../../i18n';
+import { I18nProvider, localizedMessage } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
-import { AuthProvider } from '../AuthContext';
+import { AuthProvider, useAuth } from '../AuthContext';
 import { AnnouncementsPage } from './AnnouncementsPage';
 
 const admin: MeResponse = {
@@ -55,10 +55,17 @@ beforeEach(() => {
   vi.mocked(api.listAnnouncements).mockResolvedValue({ announcements: [announcement] });
 });
 
+/** The console's auth status, so a sign-out on auth loss is observable. */
+function AuthStatus() {
+  const { status } = useAuth();
+  return <span data-testid="status">{status}</span>;
+}
+
 function renderPage(locale = 'en') {
   return render(
     <I18nProvider initialLocale={locale}>
       <AuthProvider>
+        <AuthStatus />
         <AnnouncementsPage />
       </AuthProvider>
     </I18nProvider>,
@@ -114,9 +121,12 @@ test('keeps a deletion failure visible in its confirmation dialog', async () => 
 
   await user.click(confirm);
 
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-    'Could not delete the announcement.',
-  );
+  // Catalog copy, not the server's envelope (#1814): API envelopes are authored
+  // in English and are not locale-aware, so the raw message would leak into a
+  // German console.
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert).toHaveTextContent(localizedMessage('en', 'common.genericError'));
+  expect(alert).not.toHaveTextContent('Could not delete the announcement.');
   expect(confirm).toBeEnabled();
 
   await user.click(confirm);
@@ -144,4 +154,23 @@ test('keeps required announcement body markers out of accessible labels', async 
   )!;
   expect(marker).toHaveAttribute('aria-hidden', 'true');
   expect(marker).toHaveTextContent('*');
+});
+
+test('a closed admin session window signs the console out instead of a save banner', async () => {
+  const envelope = 'Not found';
+  vi.mocked(api.createAnnouncement).mockRejectedValue(new ApiError(404, 'NOT_FOUND', envelope));
+  const user = userEvent.setup();
+  renderPage();
+
+  await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+  await user.type(screen.getByLabelText(/English title/), 'Planned downtime');
+  await user.type(screen.getByLabelText(/English body/), 'We will be brief.');
+  await user.type(screen.getByLabelText(/German title/), 'Geplante Wartung');
+  await user.type(screen.getByLabelText(/German body/), 'Wir fassen uns kurz.');
+  await user.click(screen.getByRole('button', { name: 'Create announcement' }));
+
+  // The defect this replaces: a red "could not save" on a console whose every
+  // next request would also fail (#1814).
+  await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('anonymous'));
+  expect(screen.queryByText(envelope)).not.toBeInTheDocument();
 });

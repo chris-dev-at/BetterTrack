@@ -7,7 +7,9 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
+import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
+import { ListPagination, type ListPage } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import {
   Alert,
@@ -21,8 +23,12 @@ import {
 } from '../components/ui';
 import { TAP_TARGET } from '../components/tokens';
 
-function errorMessage(err: unknown, t: TranslateFn): string {
-  void err;
+/**
+ * Displayable failures are catalog copy, never the server's envelope — the same
+ * rule `useResource`/`useAdminMutation` follow. The structural outcomes (auth
+ * loss, the 2FA trap) are handled by `useAdminCallFailure` first (#1814).
+ */
+function errorMessage(t: TranslateFn): string {
   return t('common.genericError');
 }
 
@@ -34,8 +40,17 @@ function errorMessage(err: unknown, t: TranslateFn): string {
  */
 export function ApiKeysPage() {
   const t = useT();
+  // Bounded read (#1814): every user's keys used to arrive in one body, one
+  // tier `<select>` per row. Revoked keys — which nothing prunes — are out of
+  // the default window; the toggle puts them back so a retired key's audit
+  // trail stays reachable.
+  const [offset, setOffset] = useState(0);
+  const [includeRevoked, setIncludeRevoked] = useState(false);
   const tiers = useResource((signal) => api.listApiKeyTiers(signal), []);
-  const keys = useResource((signal) => api.listAdminApiKeys(signal), []);
+  const keys = useResource(
+    (signal) => api.listAdminApiKeys({ offset, includeRevoked }, signal),
+    [offset, includeRevoked],
+  );
 
   return (
     <div className="space-y-8">
@@ -52,9 +67,17 @@ export function ApiKeysPage() {
       />
       <KeysPanel
         keys={keys.data?.keys ?? []}
+        page={keys.data?.page ?? null}
         tiers={tiers.data?.tiers ?? []}
         loading={keys.loading}
         error={keys.error}
+        includeRevoked={includeRevoked}
+        onIncludeRevoked={(next) => {
+          // A different filter is a different result set — start at its first page.
+          setOffset(0);
+          setIncludeRevoked(next);
+        }}
+        onOffset={setOffset}
         onRetry={keys.reload}
         onChanged={() => keys.reload()}
       />
@@ -76,6 +99,7 @@ function TiersPanel({
   onChanged: () => void;
 }) {
   const t = useT();
+  const onFailure = useAdminCallFailure();
   const [name, setName] = useState('');
   const [requestLimit, setRequestLimit] = useState('120');
   const [windowSec, setWindowSec] = useState('60');
@@ -107,7 +131,7 @@ function TiersPanel({
       setIsDefault(false);
       onChanged();
     } catch (err) {
-      setFormError(errorMessage(err, t));
+      if (!onFailure(err, 'session')) setFormError(errorMessage(t));
     } finally {
       setBusy(false);
     }
@@ -119,7 +143,7 @@ function TiersPanel({
       await api.updateApiKeyTier(tier.id, { isDefault: true });
       onChanged();
     } catch (err) {
-      setRowError(errorMessage(err, t));
+      if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
     }
   }
 
@@ -129,7 +153,7 @@ function TiersPanel({
       await api.deleteApiKeyTier(tier.id);
       onChanged();
     } catch (err) {
-      setRowError(errorMessage(err, t));
+      if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
     }
   }
 
@@ -234,20 +258,29 @@ function TiersPanel({
 
 function KeysPanel({
   keys,
+  page,
   tiers,
   loading,
   error,
+  includeRevoked,
+  onIncludeRevoked,
+  onOffset,
   onRetry,
   onChanged,
 }: {
   keys: AdminApiKey[];
+  page: ListPage | null;
   tiers: ApiKeyTier[];
   loading: boolean;
   error: string | null;
+  includeRevoked: boolean;
+  onIncludeRevoked: (next: boolean) => void;
+  onOffset: (offset: number) => void;
   onRetry: () => void;
   onChanged: () => void;
 }) {
   const t = useT();
+  const onFailure = useAdminCallFailure();
   const [rowError, setRowError] = useState<string | null>(null);
   const [auditKey, setAuditKey] = useState<AdminApiKey | null>(null);
 
@@ -257,13 +290,23 @@ function KeysPanel({
       await api.assignApiKeyTier(key.id, tierId === '' ? null : tierId);
       onChanged();
     } catch (err) {
-      setRowError(errorMessage(err, t));
+      if (!onFailure(err, 'surface')) setRowError(errorMessage(t));
     }
   }
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">{t('admin.apiKeys.keys.title')}</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">{t('admin.apiKeys.keys.title')}</h2>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={includeRevoked}
+            onChange={(e) => onIncludeRevoked(e.target.checked)}
+          />
+          {t('admin.apiKeys.keys.showRevoked')}
+        </label>
+      </div>
       {rowError ? <Alert tone="error">{rowError}</Alert> : null}
       {loading ? (
         <Spinner label={t('admin.apiKeys.keys.loading')} />
@@ -332,6 +375,7 @@ function KeysPanel({
               ))}
             </tbody>
           </table>
+          <ListPagination page={page} rowCount={keys.length} onOffset={onOffset} />
         </div>
       )}
 

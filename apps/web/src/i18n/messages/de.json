@@ -4829,7 +4829,8 @@
         "revoked": "Widerrufen",
         "tierAria": "Limitstufe für {{name}}",
         "defaultTier": "Standard",
-        "viewAudit": "Protokoll ansehen"
+        "viewAudit": "Protokoll ansehen",
+        "showRevoked": "Widerrufene Schlüssel anzeigen"
       },
       "audit": {
         "title": "Anfrageprotokoll — {{name}}",
@@ -5804,6 +5805,11 @@
         "neverValue": "Keine direkte Bearbeitung von Kurszeilen, kein blindes Zusammenführen von Dubletten und keine personenbezogenen Daten – nur Anzahlen betroffener Konten."
       },
       "why": "Einen Kurs von Hand zu ändern würde Geldrechnung hinter eine Browser-Sitzung stellen, und Dubletten ohne Herkunft, Probelauf und Rücknahme zusammenzuführen ist eine Änderung, die niemand rückgängig machen kann. Beides braucht zuerst eine Antwort in der Domäne – deshalb liefert dieses Paket das Lesen und hört dort auf."
+    },
+    "pagination": {
+      "range": "{{first}}–{{last}} von {{total}}",
+      "previous": "Zurück",
+      "next": "Weiter"
     }
   },
   "create": {

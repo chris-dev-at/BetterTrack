@@ -73,7 +73,10 @@ beforeEach(() => {
   vi.mocked(api.listApiKeyTiers).mockResolvedValue({
     tiers: [tier(), tier({ id: 't-pro', name: 'Pro', requestLimit: 600, isDefault: false })],
   });
-  vi.mocked(api.listAdminApiKeys).mockResolvedValue({ keys: [key()] });
+  vi.mocked(api.listAdminApiKeys).mockResolvedValue({
+    keys: [key()],
+    page: { total: 1, limit: 25, offset: 0 },
+  });
   vi.mocked(api.getApiKeyAudit).mockResolvedValue({
     keyId: 'k-1',
     lastUsedAt: '2026-07-20T00:00:00.000Z',
@@ -184,7 +187,7 @@ test('retries a failed tier-list read without hiding the key list', async () => 
 test('retries a failed key-list read without hiding the tier list', async () => {
   vi.mocked(api.listAdminApiKeys)
     .mockRejectedValueOnce(new Error('offline'))
-    .mockResolvedValueOnce({ keys: [key()] });
+    .mockResolvedValueOnce({ keys: [key()], page: { total: 1, limit: 25, offset: 0 } });
   const user = userEvent.setup();
   renderPage();
 
@@ -228,4 +231,59 @@ test('localizes an API mutation failure instead of rendering the server message'
     'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
   );
   expect(screen.queryByText(/tier could not be created/i)).not.toBeInTheDocument();
+});
+
+test('renders one bounded page of keys and reaches the rest through the footer', async () => {
+  // #1814: every key ever minted used to arrive in one body, each row carrying a
+  // tier <select> populated with every tier.
+  const pageOf = (offset: number) =>
+    Array.from({ length: 25 }, (_, i) => key({ id: `k-${offset + i}`, name: `bot-${offset + i}` }));
+  vi.mocked(api.listAdminApiKeys).mockImplementation(async (params = {}) => ({
+    keys: pageOf(params.offset ?? 0),
+    page: { total: 60, limit: 25, offset: params.offset ?? 0 },
+  }));
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(await screen.findByText('bot-0')).toBeInTheDocument();
+  const keysSection = screen.getByRole('heading', { level: 2, name: 'Keys' }).closest('section')!;
+  // 25 rows of a 60-key table, not 60.
+  expect(within(keysSection).getAllByRole('row')).toHaveLength(26); // + header
+
+  await user.click(within(keysSection).getByRole('button', { name: 'Next' }));
+
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+      { offset: 25, includeRevoked: false },
+      expect.anything(),
+    ),
+  );
+  expect(await within(keysSection).findByText('bot-25')).toBeInTheDocument();
+});
+
+test('leaves revoked keys out of the default view until the filter asks for them', async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('CI bot')).toBeInTheDocument());
+  // The default read carries no `includeRevoked` — the contract's default keeps
+  // them out, so a table nothing prunes cannot fill up with dead rows (#1814).
+  expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+    { offset: 0, includeRevoked: false },
+    expect.anything(),
+  );
+
+  vi.mocked(api.listAdminApiKeys).mockResolvedValue({
+    keys: [key(), key({ id: 'k-2', name: 'retired', revokedAt: '2026-07-25T00:00:00.000Z' })],
+    page: { total: 2, limit: 25, offset: 0 },
+  });
+  await user.click(screen.getByLabelText('Show revoked keys'));
+
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+      { offset: 0, includeRevoked: true },
+      expect.anything(),
+    ),
+  );
+  expect(await screen.findByText('retired')).toBeInTheDocument();
 });

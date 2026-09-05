@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import {
   ADMIN_USER_NOTE_PAGE_LIMIT,
   type AccountDefaultsResponse,
+  type AdminListQuery,
   type AdminUserListQuery,
   type BulkUserActionOutcome,
   type BulkUserActionRequest,
@@ -861,7 +862,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       return { invite, inviteUrl };
     },
 
-    listInvites: () => inviteRepo.listAll(),
+    listInvites: (params: AdminListQuery) => inviteRepo.listPage(params),
 
     async revokeInvite(id: string, actor: AdminActor): Promise<void> {
       const invite = await inviteRepo.findById(id);
@@ -910,7 +911,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       return { token: row, registerUrl };
     },
 
-    listRegistrationTokens: () => registrationTokenRepo.listAll(),
+    listRegistrationTokens: (params: AdminListQuery) => registrationTokenRepo.listPage(params),
 
     async revokeRegistrationToken(id: string, actor: AdminActor): Promise<void> {
       const row = await registrationTokenRepo.findById(id);
@@ -931,7 +932,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     // the applicant's chosen password) and sends a localized decision email;
     // reject drops the application and sends its own decision email. Either way the
     // row is removed so it leaves the queue.
-    listRegistrationRequests: () => registrationRequestRepo.listAll(),
+    listRegistrationRequests: (params: AdminListQuery) => registrationRequestRepo.listPage(params),
 
     async approveRegistrationRequest(id: string, actor: AdminActor): Promise<UserRow> {
       const pending = await registrationRequestRepo.findById(id);

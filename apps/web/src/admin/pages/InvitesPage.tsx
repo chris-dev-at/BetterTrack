@@ -13,6 +13,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
+import { ListPagination } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
@@ -54,8 +55,11 @@ export function InvitesPage() {
   const [email, setEmail] = useState('');
   const [created, setCreated] = useState<CreateInviteResponse | null>(null);
   const [revoking, setRevoking] = useState<AdminInvite | null>(null);
+  // Bounded read (#1814): nothing prunes invites, so this list used to grow
+  // without limit. One page at a time, with a footer to reach the rest.
+  const [offset, setOffset] = useState(0);
 
-  const invites = useResource((signal) => api.listInvites(signal), []);
+  const invites = useResource((signal) => api.listInvites({ offset }, signal), [offset]);
   const stats = useResource((signal) => api.getStats(signal), []);
 
   const create = useAdminMutation(
@@ -70,6 +74,8 @@ export function InvitesPage() {
       // 404 means this console is no longer an admin (V5-P13c).
       notFound: 'session',
       onSuccess: () => {
+        // A new invite is the newest row, so page 1 is where it will be.
+        setOffset(0);
         invites.reload();
         stats.reload();
       },
@@ -90,6 +96,7 @@ export function InvitesPage() {
   });
 
   const rows = invites.data?.invites ?? [];
+  const page = invites.data?.page ?? null;
   // Decorative counts: absent while the stats read is loading or failed, so a
   // missing number never reads as a confident zero.
   const counts = stats.loading || stats.error !== null ? undefined : tabCounts(stats.data);
@@ -237,6 +244,7 @@ export function InvitesPage() {
             </tbody>
           </DataTable>
         )}
+        <ListPagination page={page} rowCount={rows.length} onOffset={setOffset} />
         <div className={cx('px-4 py-2.5', EDGE_TOP)}>
           <p className={TEXT_MUTED}>{t('admin.invites.ttlNote')}</p>
         </div>
