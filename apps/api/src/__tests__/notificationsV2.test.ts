@@ -413,6 +413,50 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     expect(settings.matrix['account.invite'].email).toBe(true);
   });
 
+  it('ignores an email routing write for a type that ships no email template (#1816)', async () => {
+    // The settings grid renders `budget.exceeded`'s email cell as locked, but
+    // the lock was client-only: the write persisted and the digest / quiet-hours
+    // paths then e-mailed a type the instant path never e-mails.
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+    const allOn = {
+      inapp: true,
+      email: true,
+      telegram: true,
+      discord: true,
+      push: true,
+      webpush: true,
+    };
+
+    const res = await agent
+      .patch('/api/v1/settings/notifications')
+      .set(...XRW)
+      .send({ matrix: { 'budget.exceeded': allOn, 'friend.request': allOn } });
+    expect(res.status).toBe(200);
+
+    const settings = notificationSettingsResponseSchema.parse(res.body);
+    // The locked cell is dropped…
+    expect(settings.matrix['budget.exceeded'].email).toBe(false);
+    // …while the rest of the same write lands, so it is the cell that is
+    // refused, not the request.
+    expect(settings.matrix['budget.exceeded'].push).toBe(true);
+    expect(settings.matrix['friend.request'].email).toBe(true);
+
+    // Nothing was persisted in the EMAIL row either — no override to resurrect
+    // later; the other channels stored their (legitimate) cell.
+    const rows = await harness.db
+      .select()
+      .from(schema.notificationSettings)
+      .where(eq(schema.notificationSettings.userId, alice.id));
+    const emailRow = rows.find((row) => row.channel === 'email');
+    expect(emailRow?.config).not.toHaveProperty('budget.exceeded');
+    expect(emailRow?.config).toHaveProperty('friend.request', true);
+    expect(rows.find((row) => row.channel === 'push')?.config).toHaveProperty(
+      'budget.exceeded',
+      true,
+    );
+  });
+
   it('global mute persists via PATCH and suppresses delivery end-to-end', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
