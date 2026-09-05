@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { timeWeightedReturn } from '../holdings';
 import {
   compareSeriesStats,
   computeContributions,
   computeSeriesStats,
+  computeTwrStats,
   deflateSeries,
   indexAveragePctPerYear,
   toPerformanceSeries,
@@ -518,5 +520,124 @@ describe('compareSeriesStats — N-series deltas vs a chosen baseline (V5-P6)', 
       /not among the series/,
     );
     expect(() => compareSeriesStats([input('a'), input('a')], 'a')).toThrow(/duplicate series id/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTwrStats — the contribution-neutral return (#1759)
+//
+// The Forecast used to sample `computeSeriesStats(valueSeries).cagrPct` as "the
+// historical average return". That is the growth rate of the portfolio's market
+// VALUE, which rises with every buy the user funds themselves — so a monthly
+// saver read their own deposits back as performance, and the projection then
+// compounded that rate forward on top of the very same deposits.
+// ---------------------------------------------------------------------------
+
+/** Geometric monthly equivalent of an annual rate (%/yr). */
+function monthlyRate(annualPct: number): number {
+  return Math.pow(1 + annualPct / 100, 1 / 12) - 1;
+}
+
+/** First-of-month ISO day, `months` after 2021-01. */
+function monthStart(months: number): string {
+  const zeroBased = 2021 * 12 + months;
+  const year = Math.floor(zeroBased / 12);
+  const month = (zeroBased % 12) + 1;
+  return `${year}-${String(month).padStart(2, '0')}-01`;
+}
+
+/**
+ * The issue's fixture: five years of month-end points from €10,000, earning a
+ * TRUE 6 %/yr, with a €500/month contribution paid in at the start of each
+ * month (€30,000 of the user's own money). `contribution: 0` gives the same
+ * market path with no flows at all — the control case.
+ */
+function savingsFixture(contribution: number): {
+  values: { date: string; valueEur: number }[];
+  flows: { date: string; flowEur: number }[];
+} {
+  const m = monthlyRate(6);
+  const values = [{ date: monthStart(0), valueEur: 10_000 }];
+  const flows: { date: string; flowEur: number }[] = [];
+  for (let step = 1; step <= 60; step += 1) {
+    const previous = values[step - 1]!.valueEur;
+    values.push({ date: monthStart(step), valueEur: (previous + contribution) * (1 + m) });
+    if (contribution !== 0) flows.push({ date: monthStart(step), flowEur: contribution });
+  }
+  return { values, flows };
+}
+
+describe('computeTwrStats — a return, not value growth (#1759)', () => {
+  it('reads the market return out of a portfolio the user kept paying into', () => {
+    const { values, flows } = savingsFixture(500);
+    // €10,000 → ≈ €48,000 over five years, €30,000 of it contributed.
+    expect(flows.reduce((sum, f) => sum + f.flowEur, 0)).toBe(30_000);
+    expect(values[60]!.valueEur).toBeCloseTo(48_294.26, 2);
+
+    // The OLD statistic: the value curve's CAGR — ≈ 37 %/yr, which is mostly
+    // the user's own salary. Compounded over the Forecast's default 20-year
+    // horizon it turns €48k into tens of millions.
+    const valueCagrPct = computeSeriesStats(
+      values.map((p) => ({ date: p.date, value: p.valueEur })),
+    ).cagrPct!;
+    expect(valueCagrPct).toBeCloseTo(37.02, 1);
+
+    // The NEW one: the time-weighted return of the same portfolio — the 6 %/yr
+    // the market actually delivered, with the deposits linked out.
+    const twr = computeTwrStats(timeWeightedReturn(values, flows))!;
+    expect(twr.cagrPct).toBeCloseTo(6, 2);
+    expect(twr.totalReturnPct).toBeCloseTo(33.82, 2); // 1.06^5 − 1
+    expect(twr.cagrPct!).toBeLessThan(valueCagrPct / 5);
+  });
+
+  it('agrees with the value CAGR exactly when the portfolio has no flows', () => {
+    // The no-flows case must not regress: with nothing paid in, the TWR index IS
+    // V/V₀ point for point, so both statistics are the same number — the fix
+    // changes what a SAVER reads, not what a buy-and-hold investor reads.
+    const { values, flows } = savingsFixture(0);
+    expect(flows).toEqual([]);
+
+    const valueCagrPct = computeSeriesStats(
+      values.map((p) => ({ date: p.date, value: p.valueEur })),
+    ).cagrPct!;
+    const twr = computeTwrStats(timeWeightedReturn(values, flows))!;
+
+    expect(twr.cagrPct).toBeCloseTo(valueCagrPct, 12);
+    expect(twr.cagrPct).toBeCloseTo(6, 2);
+  });
+
+  it('rebases a since-inception curve onto the window it is handed', () => {
+    // A 1Y slice of a curve already standing at +100 % reads as its own +10 %,
+    // not +120 %: percentages compound across time, they do not subtract.
+    const sinceInception = [
+      { date: '2023-01-01', pct: 0 },
+      { date: '2024-01-01', pct: 100 },
+      { date: '2025-01-01', pct: 120 },
+    ];
+    const window = computeTwrStats(sinceInception.slice(1))!;
+    expect(window.totalReturnPct).toBeCloseTo(10, 12); // 2.2 / 2.0 − 1
+    expect(window.cagrPct).toBeCloseTo(9.9785, 3); // annualised over 366 days
+    expect(computeTwrStats(sinceInception)!.totalReturnPct).toBeCloseTo(120, 12);
+  });
+
+  it('states real terms when a deflator is applied, like the value series does', () => {
+    // 6 %/yr nominal against 6 %/yr inflation is ~0 % real.
+    const { values, flows } = savingsFixture(500);
+    const real = computeTwrStats(timeWeightedReturn(values, flows), {
+      kind: 'flat',
+      pctPerYear: 6,
+    })!;
+    expect(real.cagrPct).toBeCloseTo(0, 2);
+  });
+
+  it('is null when the window cannot state a return at all', () => {
+    expect(computeTwrStats([])).toBeNull();
+    // A base at −100 % is a zero index: nothing to divide by.
+    expect(computeTwrStats([{ date: '2024-01-01', pct: -100 }])).toBeNull();
+    // One point is a real window with no elapsed time: a total, but no rate.
+    expect(computeTwrStats([{ date: '2024-01-01', pct: 0 }])).toEqual({
+      totalReturnPct: 0,
+      cagrPct: null,
+    });
   });
 });

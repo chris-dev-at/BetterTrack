@@ -31,7 +31,11 @@ import {
 } from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
-import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
+import {
+  STANDING_ORDER_SCHEDULE_TZ,
+  calendarDayInTimezone,
+  dueStandingOrderOccurrence,
+} from './schedule';
 
 /**
  * Client mirror of the server's automatic-buy quote age ceiling in
@@ -94,7 +98,7 @@ export async function materializeDueStandingOrders(
     const signal = options.signal;
     signal?.throwIfAborted();
     const now = (options.now ?? (() => new Date()))();
-    const timezone = options.timezone ?? 'Europe/Vienna';
+    const timezone = options.timezone ?? STANDING_ORDER_SCHEDULE_TZ;
     const today = calendarDayInTimezone(now, timezone);
     let snapshot = validatedStandingOrderSnapshot(sync);
     let validateOrderForScan = createStandingOrderScanValidator(snapshot.document);

@@ -333,8 +333,13 @@ describe('normalizeStandingOrders', () => {
     };
   }
 
+  /** The orders the projection would actually carry, in a EUR-base run. */
+  function normalizedEur(orders: StandingOrder[]) {
+    return normalizeStandingOrders(orders, 'EUR').orders;
+  }
+
   test('maps cash-add to a positive flow and cash-deduct to a negative flow', () => {
-    const normalized = normalizeStandingOrders([
+    const normalized = normalizedEur([
       order({ kind: 'cash-add', amount: 200 }),
       order({ kind: 'cash-deduct', amount: 30 }),
     ]);
@@ -342,7 +347,7 @@ describe('normalizeStandingOrders', () => {
   });
 
   test('excludes paused orders', () => {
-    const normalized = normalizeStandingOrders([
+    const normalized = normalizedEur([
       order({ kind: 'cash-add', status: 'paused' }),
       order({ kind: 'cash-add', status: 'active', amount: 40 }),
     ]);
@@ -353,19 +358,19 @@ describe('normalizeStandingOrders', () => {
   test('excludes archive-suspended orders while leaving unflagged active orders unchanged', () => {
     const active = order({ kind: 'cash-add', amount: 40 });
 
-    expect(normalizeStandingOrders([active])).toMatchObject([{ amount: 40 }]);
-    expect(normalizeStandingOrders([{ ...active, suspendedByArchive: true }])).toEqual([]);
+    expect(normalizedEur([active])).toMatchObject([{ amount: 40 }]);
+    expect(normalizedEur([{ ...active, suspendedByArchive: true }])).toEqual([]);
   });
 
   test('excludes buy-asset orders (net-worth-neutral reallocations)', () => {
-    const normalized = normalizeStandingOrders([
+    const normalized = normalizedEur([
       order({ kind: 'buy-asset', assetId: '22222222-2222-2222-2222-222222222222', amount: 5 }),
     ]);
     expect(normalized).toHaveLength(0);
   });
 
   test('carries cadence, anchor and the date window through', () => {
-    const [normalized] = normalizeStandingOrders([
+    const [normalized] = normalizedEur([
       order({ cadence: 'monthly', anchorDay: 15, startDate: '2026-03-01', endDate: '2027-03-01' }),
     ]);
     expect(normalized).toMatchObject({
@@ -374,6 +379,68 @@ describe('normalizeStandingOrders', () => {
       startDate: '2026-03-01',
       endDate: '2027-03-01',
     });
+  });
+
+  // ── Denomination (#1759) ──────────────────────────────────────────────────
+  //
+  // A cash order's `amount` is a EUR magnitude by contract, while the balance it
+  // would join is in the user's base. The engine converts nothing, so the
+  // mismatch has to be refused here — not summed 1:1 into a CHF curve.
+
+  test('refuses an order denominated in anything but the run’s base', () => {
+    const result = normalizeStandingOrders([order({ kind: 'cash-add', amount: 3000 })], 'CHF');
+
+    expect(result.orders).toEqual([]);
+    expect(result.foreignCurrencies).toEqual(['EUR']);
+  });
+
+  test('a single foreign order takes the whole factor with it, deduped and sorted', () => {
+    // All-or-nothing, like the dividend total (#1616): projecting the matching
+    // subset would draw a quietly smaller curve with nothing to explain it.
+    const result = normalizeStandingOrders(
+      [
+        order({ kind: 'cash-add', amount: 100, currency: 'USD' }),
+        order({ kind: 'cash-add', amount: 3000 }),
+        order({ kind: 'cash-deduct', amount: 20, currency: 'USD' }),
+      ],
+      'EUR',
+    );
+
+    expect(result.orders).toEqual([]);
+    expect(result.foreignCurrencies).toEqual(['USD']);
+  });
+
+  test('a foreign buy-asset order is dropped before it can block the factor', () => {
+    // Buys are excluded as net-worth-neutral either way, and their currency is
+    // the asset's — never the base. They must not make the factor unresolvable.
+    const result = normalizeStandingOrders(
+      [
+        order({
+          kind: 'buy-asset',
+          assetId: '22222222-2222-2222-2222-222222222222',
+          amount: 5,
+          currency: 'USD',
+        }),
+        order({ kind: 'cash-add', amount: 250 }),
+      ],
+      'EUR',
+    );
+
+    expect(result.foreignCurrencies).toEqual([]);
+    expect(result.orders).toMatchObject([{ amount: 250 }]);
+  });
+
+  test('a paused foreign order does not block the factor either', () => {
+    const result = normalizeStandingOrders(
+      [
+        order({ kind: 'cash-add', amount: 3000, status: 'paused' }),
+        order({ kind: 'cash-add', amount: 250, currency: 'CHF' }),
+      ],
+      'CHF',
+    );
+
+    expect(result.foreignCurrencies).toEqual([]);
+    expect(result.orders).toMatchObject([{ amount: 250 }]);
   });
 });
 
@@ -407,5 +474,58 @@ describe('projectNetWorth — denomination (#1741)', () => {
     const asUsd = projectNetWorth(makeInput(shape));
     const asEur = projectNetWorth(makeInput(shape));
     expect(asUsd.base).toEqual(asEur.base);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The return factor is a return (#1759)
+//
+// The section used to sample the CAGR of the portfolio's VALUE series, which
+// rises with every contribution the user made — and then handed it to this
+// engine, which compounds it on top of the standing orders that made those same
+// contributions. The module note argues the engine avoids exactly that
+// double-count by excluding `buy-asset` orders; the return factor let it back in.
+// ---------------------------------------------------------------------------
+
+describe('projectNetWorth — a contribution-inflated rate is not a return (#1759)', () => {
+  // The issue's saver, five years on: €10,000 grown to ≈ €48,294 at a true
+  // 6 %/yr while paying in €500/month (€30,000 of their own money). The value
+  // curve reads that as ≈ 37 %/yr — see packages/domain's seriesStats fixture.
+  const SAVER_NET_WORTH = 48_294.26;
+  const TRUE_RETURN_PCT = 6;
+  const VALUE_CURVE_CAGR_PCT = 37.02;
+
+  function saverProjection(annualReturnPct: number) {
+    return projectNetWorth({
+      asOf: '2026-01-01',
+      startingNetWorth: SAVER_NET_WORTH,
+      horizonYears: 20, // the Forecast's default horizon
+      annualReturnPct,
+      standingOrders: [
+        {
+          amount: 500,
+          cadence: 'monthly',
+          anchorDay: 1,
+          startDate: '2021-01-01',
+          endDate: null,
+        },
+      ],
+      monthlyDividend: 0,
+      whatIfPlans: [],
+    });
+  }
+
+  test('the combined default factors project a number a person could reach', () => {
+    // €48,294 plus €500/month for twenty years at 6 %/yr.
+    expect(last(saverProjection(TRUE_RETURN_PCT).base)).toBeCloseTo(381_605.55, 2);
+  });
+
+  test('the old sampled rate compounded the contributions a second time', () => {
+    // Same orders, same horizon, only the rate differs: the value curve's CAGR
+    // turns the same portfolio into tens of millions, because the €30,000 the
+    // user paid in is inside the rate AND inside the orders.
+    const inflated = last(saverProjection(VALUE_CURVE_CAGR_PCT).base);
+    expect(inflated).toBeGreaterThan(20_000_000);
+    expect(last(saverProjection(TRUE_RETURN_PCT).base)).toBeLessThan(inflated / 50);
   });
 });

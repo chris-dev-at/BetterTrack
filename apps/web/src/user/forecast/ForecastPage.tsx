@@ -32,7 +32,7 @@ import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
-import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
+import { clientSeriesTwrCagrPct } from '../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
@@ -61,10 +61,11 @@ interface Prefill {
   /** The active portfolio's total value in EUR, headline `totalValueEur`. */
   portfolioValueEur: number | null;
   /**
-   * Historical CAGR of the active portfolio (%/yr) — inception-window, `perf`
-   * mode. Normal accounts read the server's analytics `primary` series (the
-   * holdings-only sum); see {@link usePortfolioPrefill} for the paranoid
-   * substitute and why it is a different series.
+   * Historical annualised TIME-WEIGHTED return of the active portfolio (%/yr)
+   * over its inception window (#1759). Not the value curve's CAGR: that number
+   * counts every deposit the user made as performance, and a calculator
+   * prefilled with it compounds their own contributions forward as if they were
+   * market growth. See {@link usePortfolioPrefill} for the per-mode source.
    */
   averageReturnPctPerYear: number | null;
 }
@@ -75,24 +76,25 @@ function round2(value: number): number {
 
 /**
  * Resolve the active portfolio (default one, or first available), then fetch
- * its headline value + inception CAGR. The tab never blocks on this — cards
+ * its headline value + inception return. The tab never blocks on this — cards
  * degrade to their standalone inputs when the fetch is missing or a field is
  * `null`.
  *
- * The prefilled return has ONE source per account mode, and they are not the
- * same series:
+ * The prefilled return is the portfolio's TIME-WEIGHTED return in both account
+ * modes (#1759) — the same net-worth curve the projection starts from, measured
+ * so that the user's own deposits are not read back as performance. It has one
+ * source per mode:
  *
- * - **normal** — `analytics/…/series` `primary.stats.cagrPct`, i.e. the
- *   server's `getAssetValueSeries` summed over the visible assets: HOLDINGS
- *   only. This is the number the tab has always prefilled, so it stays exactly
- *   that (same endpoint, same query key, unrounded) rather than becoming a
- *   net-worth CAGR because the store happens to expose history.
- * - **paranoid** — there is no analytics endpoint (and the client engine
- *   derives no per-asset series), so the only value curve a decrypted vault can
- *   state is its NET-WORTH series (`getPortfolioHistory` = holdings + cash).
- *   Idle cash therefore damps this figure relative to the normal one; it is a
- *   starting point the user edits, and the projection's starting value is a
- *   net-worth figure too (see docs/paranoid-design.md §8).
+ * - **normal** — `analytics/…/series` `twr`, which the server derives from the
+ *   §6.9 overview curve. It replaced `primary.stats.cagrPct`, the CAGR of the
+ *   holdings VALUE series: every buy lifted that curve, so a monthly saver was
+ *   prefilled with a rate made mostly of their own money.
+ * - **paranoid** — there is no analytics endpoint, so the decrypted vault's own
+ *   performance curve (`getPortfolioHistory().performance`, server-parity TWR)
+ *   answers the same question locally.
+ *
+ * Both are net-worth figures, so idle cash damps them; that matches the
+ * projection, whose starting value is net worth too (docs/paranoid-design.md §8).
  */
 function usePortfolioPrefill(): {
   prefill: Prefill;
@@ -138,20 +140,20 @@ function usePortfolioPrefill(): {
     enabled: portfolioId !== null && paranoid,
     staleTime: 60_000,
   });
-  // Same shaping as the analytics header (`clientSeriesCagrPct` trims the zero
-  // edges first), so the prefill and the curve it samples never disagree.
-  const historyCagr =
-    historyQuery.data == null ? null : clientSeriesCagrPct(historyQuery.data.points);
+  // The vault's own since-inception TWR — the local answer to the question the
+  // server's `twr` block answers for a normal account.
+  const historyTwr =
+    historyQuery.data == null ? null : clientSeriesTwrCagrPct(historyQuery.data.performance);
 
   const modeQuery = paranoid ? historyQuery : analyticsQuery;
   return {
     prefill: {
       portfolioValueEur: portfolioQuery.data?.totals.totalValueEur ?? null,
       averageReturnPctPerYear: paranoid
-        ? historyCagr == null
+        ? historyTwr == null
           ? null
-          : round2(historyCagr)
-        : (analyticsQuery.data?.primary.stats.cagrPct ?? null),
+          : round2(historyTwr)
+        : (analyticsQuery.data?.twr?.cagrPct ?? null),
     },
     isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || modeQuery.isLoading,
     isError: portfoliosQuery.isError || portfolioQuery.isError || modeQuery.isError,

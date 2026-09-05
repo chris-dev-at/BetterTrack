@@ -199,6 +199,14 @@ function isCalendarDay(value: string): boolean {
   );
 }
 
+/**
+ * The one timezone the standing-order schedule speaks in — the server scan's
+ * `STANDING_ORDERS_SCAN_TZ` (`services/standingOrders/standingOrderService.ts`),
+ * mirrored here so the vault twin and every surface that has to agree with the
+ * schedule ("which day is it?") resolve the same calendar day.
+ */
+export const STANDING_ORDER_SCHEDULE_TZ = 'Europe/Vienna';
+
 /** Resolve an instant to the same calendar day the user-facing schedule uses. */
 export function calendarDayInTimezone(now: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
