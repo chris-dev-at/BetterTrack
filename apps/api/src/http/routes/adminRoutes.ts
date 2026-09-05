@@ -97,12 +97,16 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   const router = Router();
   // Single-resource responses: the account was read (or just mutated) a moment
   // ago, so a vanished row is a benign delete race — 404 that one resource
-  // instead of raising an unexpected 500.
+  // instead of raising an unexpected 500. It carries the same `USER_NOT_FOUND`
+  // code the service uses, so the console can tell this row-gone 404 apart from
+  // the bare §6.12 "you are not an admin" 404 that means the session window
+  // closed (V5-P13c, #1779) — otherwise the login screen claims an expiry that
+  // did not happen.
   const serializeAdminUser = async (
     row: Parameters<typeof toAdminUser>[0],
   ): Promise<ReturnType<typeof toAdminUser>> => {
     const metadata = await ctx.paranoidTransitions.adminMetadata(row.id);
-    if (!metadata) throw notFound('This account no longer exists.');
+    if (!metadata) throw notFound('This account no longer exists.', 'USER_NOT_FOUND');
     return toAdminUser(row, metadata);
   };
 

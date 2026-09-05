@@ -144,12 +144,17 @@ export function ProblemsPage() {
     setRows((current) => current.map((row) => (row.id === updated.id ? updated : row)));
   }, []);
 
+  // Both actions address one problem row, which the retention sweep or a second
+  // operator can retire between the list read and the click — a banner, not a
+  // forced sign-out (V5-P13c audit of every `useAdminMutation` call site).
   const resolve = useAdminMutation(async (id: string) => patchRow(await api.resolveProblem(id)), {
     errorKey: 'admin.problems.actionError',
+    notFound: 'surface',
     onSuccess: reload,
   });
   const reopen = useAdminMutation(async (id: string) => patchRow(await api.reopenProblem(id)), {
     errorKey: 'admin.problems.actionError',
+    notFound: 'surface',
     onSuccess: reload,
   });
 

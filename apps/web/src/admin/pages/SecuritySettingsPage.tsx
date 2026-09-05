@@ -8,6 +8,9 @@ import {
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { useAuth } from '../AuthContext';
+import { useAdminWindowClosedSignOut } from '../sessionExpiry';
+import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { Alert, Button, PageHeader, Spinner, TextField } from '../components/ui';
 import {
@@ -47,6 +50,7 @@ function TotpDisableForm({
   onCancel: () => void;
 }) {
   const t = useT();
+  const signOutIfWindowClosed = useAdminWindowClosedSignOut();
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -59,6 +63,15 @@ function TotpDisableForm({
       await api.disableTotp({ code: code.trim() });
       onDisabled();
     } catch (err) {
+      // This is the one control on the page that keeps its own error mapping
+      // rather than moving to `useAdminMutation`: the route answers **401**
+      // `TWO_FACTOR_INVALID_CODE` for a mistyped code and 429 while the attempt
+      // throttle cools, and the seam reads every 401 as auth loss — which would
+      // sign a working admin out over a typo. So the expiry path is pinned here
+      // instead: a bare 404 is §6.12 saying this session is no longer an admin
+      // (V5-P13c), and rendering it as "Not found" under the code field would be
+      // both wrong and untranslated.
+      if (signOutIfWindowClosed(err)) return;
       setError(twoFactorErrorMessage(t, err));
     } finally {
       setSubmitting(false);
@@ -181,8 +194,6 @@ function EmailMethodCard({
   const t = useT();
   const [view, setView] = useState<EmailView>('status');
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [disabling, setDisabling] = useState(false);
 
   function afterEnroll(codes: string[] | null) {
     setView('status');
@@ -191,20 +202,18 @@ function EmailMethodCard({
     reload();
   }
 
-  async function onDisable() {
-    setError(null);
-    setNotice(null);
-    setDisabling(true);
-    try {
+  // `POST /admin/security/2fa/email/disable` takes no row id and raises no domain
+  // 404, so its 404 is §6.12 answering a session that is no longer an admin — the
+  // V5-P13c window closing. On the shared seam that signs the console out instead
+  // of printing the raw English envelope under the card (#1779).
+  const disable = useAdminMutation(
+    async () => {
       await api.disableEmailTwoFactor();
       setNotice(t('admin.twoFactor.email.disabledNotice'));
       reload();
-    } catch (err) {
-      setError(twoFactorErrorMessage(t, err));
-    } finally {
-      setDisabling(false);
-    }
-  }
+    },
+    { errorKey: 'admin.twoFactor.email.disableError', notFound: 'session' },
+  );
 
   return (
     <MethodCard
@@ -212,7 +221,7 @@ function EmailMethodCard({
       description={t('admin.twoFactor.email.cardDescription')}
     >
       {notice ? <Alert tone="success">{notice}</Alert> : null}
-      {error ? <Alert tone="error">{error}</Alert> : null}
+      {disable.error ? <Alert tone="error">{disable.error}</Alert> : null}
       <p className="text-sm text-neutral-400">
         {twoFactorEmail
           ? t('admin.twoFactor.email.currentEmail', { email: twoFactorEmail })
@@ -234,7 +243,7 @@ function EmailMethodCard({
             variant={enabled ? 'secondary' : 'primary'}
             onClick={() => {
               setNotice(null);
-              setError(null);
+              disable.clearError();
               setView('editing');
             }}
           >
@@ -247,10 +256,13 @@ function EmailMethodCard({
             <Button
               type="button"
               variant="ghost"
-              disabled={disabling}
-              onClick={() => void onDisable()}
+              disabled={disable.pending}
+              onClick={() => {
+                setNotice(null);
+                void disable.run();
+              }}
             >
-              {disabling
+              {disable.pending
                 ? t('admin.twoFactor.email.turningOff')
                 : t('admin.twoFactor.email.turnOff')}
             </Button>
@@ -270,21 +282,17 @@ function RecoveryCodesControl({
   onRegenerated: (codes: string[]) => void;
 }) {
   const t = useT();
-  const [error, setError] = useState<string | null>(null);
-  const [regenerating, setRegenerating] = useState(false);
-
-  async function onRegenerate() {
-    setError(null);
-    setRegenerating(true);
-    try {
+  // Same reasoning as the email disable above: `POST /admin/security/2fa/recovery-codes`
+  // names no row, so its 404 is the §6.12 answer to a session that is no longer
+  // an admin. The bare catch used to swallow that into "couldn't regenerate" on a
+  // console whose every next request would fail the same way (#1779).
+  const regenerate = useAdminMutation(
+    async () => {
       const { recoveryCodes } = await api.regenerateRecoveryCodes();
       onRegenerated(recoveryCodes);
-    } catch {
-      setError(t('admin.twoFactor.recoveryCodes.regenerateError'));
-    } finally {
-      setRegenerating(false);
-    }
-  }
+    },
+    { errorKey: 'admin.twoFactor.recoveryCodes.regenerateError', notFound: 'session' },
+  );
 
   return (
     <MethodCard
@@ -299,15 +307,15 @@ function RecoveryCodesControl({
           { count: remaining },
         )}
       </p>
-      {error ? <Alert tone="error">{error}</Alert> : null}
+      {regenerate.error ? <Alert tone="error">{regenerate.error}</Alert> : null}
       <div>
         <Button
           type="button"
           variant="secondary"
-          disabled={regenerating}
-          onClick={() => void onRegenerate()}
+          disabled={regenerate.pending}
+          onClick={() => void regenerate.run()}
         >
-          {regenerating
+          {regenerate.pending
             ? t('admin.twoFactor.recoveryCodes.regenerating')
             : t('admin.twoFactor.recoveryCodes.regenerate')}
         </Button>
@@ -325,11 +333,15 @@ function RecoveryCodesControl({
  */
 function SessionPolicyCard() {
   const t = useT();
+  const { refreshSessionDeadline } = useAuth();
   const policy = useResource((signal) => api.getSessionPolicy(signal), []);
   const [hours, setHours] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  // Client-side range validation only. The transport failure lives on the shared
+  // write seam below, so an expired admin session signs the console out instead
+  // of being rendered as "couldn't update the session lifetime" — the P13c card
+  // was the worst instance of that bug.
+  const [rangeError, setRangeError] = useState<string | null>(null);
 
   // Seed the editable field from the loaded value exactly once (keeps the input
   // controlled without clobbering the admin's in-progress edit on re-render).
@@ -342,25 +354,35 @@ function SessionPolicyCard() {
   const min = policy.data?.minHours ?? ADMIN_SESSION_LIFETIME_MIN_HOURS;
   const max = policy.data?.maxHours ?? ADMIN_SESSION_LIFETIME_MAX_HOURS;
 
+  const save = useAdminMutation(
+    async (nextHours: number) => {
+      const next = await api.updateSessionPolicy({ sessionLifetimeHours: nextHours });
+      setHours(String(next.sessionLifetimeHours));
+      setNotice(t('admin.security.sessionPolicy.saved'));
+      // Lowering the lifetime shortens sessions that are already live server-side,
+      // so re-read the window here too — otherwise this console would keep the
+      // deadline it computed from the old, longer policy.
+      refreshSessionDeadline();
+    },
+    {
+      errorKey: 'admin.security.sessionPolicy.saveError',
+      // `PATCH /admin/security/session-policy` is a singleton with no row id: a
+      // 404 is the §6.12 "not an admin" answer, i.e. this very window closed.
+      notFound: 'session',
+    },
+  );
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setNotice(null);
-    setError(null);
+    setRangeError(null);
+    save.clearError();
     const parsed = Number(hours);
     if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-      setError(t('admin.security.sessionPolicy.rangeError', { min, max }));
+      setRangeError(t('admin.security.sessionPolicy.rangeError', { min, max }));
       return;
     }
-    setSaving(true);
-    try {
-      const next = await api.updateSessionPolicy({ sessionLifetimeHours: parsed });
-      setHours(String(next.sessionLifetimeHours));
-      setNotice(t('admin.security.sessionPolicy.saved'));
-    } catch {
-      setError(t('admin.security.sessionPolicy.saveError'));
-    } finally {
-      setSaving(false);
-    }
+    await save.run(parsed);
   }
 
   return (
@@ -380,7 +402,9 @@ function SessionPolicyCard() {
       ) : (
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
           {notice ? <Alert tone="success">{notice}</Alert> : null}
-          {error ? <Alert tone="error">{error}</Alert> : null}
+          {(rangeError ?? save.error) ? (
+            <Alert tone="error">{rangeError ?? save.error}</Alert>
+          ) : null}
           <TextField
             type="number"
             min={min}
@@ -395,8 +419,8 @@ function SessionPolicyCard() {
             {t('admin.security.sessionPolicy.hint', { min, max })}
           </p>
           <div>
-            <Button type="submit" variant="secondary" disabled={saving}>
-              {saving
+            <Button type="submit" variant="secondary" disabled={save.pending}>
+              {save.pending
                 ? t('admin.security.sessionPolicy.saving')
                 : t('admin.security.sessionPolicy.save')}
             </Button>

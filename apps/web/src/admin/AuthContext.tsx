@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 
 import {
   ADMIN_2FA_SETUP_REQUIRED,
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
   type ChangePasswordRequest,
   type LoginRequest,
   type MeResponse,
@@ -49,6 +50,35 @@ export class NotAdminError extends Error {
 export const isAdminTwoFactorSetupRequired = (err: unknown): boolean =>
   err instanceof ApiError && err.status === 403 && err.code === ADMIN_2FA_SETUP_REQUIRED;
 
+/**
+ * Why the console dropped a live session by itself (V5-P13c, §6.12).
+ *
+ * `expired` — the admin's absolute session window closed. Either the deadline
+ * this provider holds passed while the console sat idle, or a request came back
+ * 401/404 because the server had already retired the session. The login screen
+ * says so, instead of leaving the operator with a save that "failed".
+ *
+ * An operator-initiated `logout()` and the 2FA challenge's own cancel carry no
+ * reason — nothing expired there, so nothing is announced.
+ */
+export type AdminSignOutReason = 'expired';
+
+/** One hour in ms — the unit the 6–24 h admin session policy is expressed in. */
+const HOUR_MS = 3_600_000;
+
+/**
+ * How far this browser's clock may disagree with the server's before the derived
+ * deadline is discarded as unusable (V5-P13c).
+ *
+ * The screen it feeds is measured against THIS session's configured window, not
+ * the 24 h policy maximum: at a configured 24 h lifetime a maximum-width band
+ * would reject any clock even slightly behind the server, silently disabling the
+ * courtesy sign-out on every such install. One hour of slack keeps a normal
+ * clock error inside the band; the only cost of tolerating it is a courtesy
+ * timer that fires up to an hour late, and the server was never waiting for it.
+ */
+const CLOCK_TOLERANCE_MS = HOUR_MS;
+
 interface AuthContextValue {
   status: AuthStatus;
   /** The current admin. Null while anonymous/loading, and while a reset admin is
@@ -85,9 +115,22 @@ interface AuthContextValue {
   /**
    * Drop the in-memory session without an API round-trip. Pages call this when
    * a request comes back 401/404 mid-use (expired cookie, account disabled) so
-   * the guard bounces back to the login screen.
+   * the guard bounces back to the login screen. Pass `'expired'` when the cause
+   * is the V5-P13c session window, so the login screen can say what happened.
    */
-  clearSession: () => void;
+  clearSession: (reason?: AdminSignOutReason) => void;
+  /**
+   * Why the console signed itself out, for the login screen's notice. Null for
+   * a plain anonymous bootstrap and for an operator-initiated sign-out.
+   */
+  signedOutReason: AdminSignOutReason | null;
+  /**
+   * Re-read the admin session window and recompute the local deadline. The
+   * session-policy card calls this after a successful write so lowering the
+   * lifetime shortens THIS console's deadline immediately, matching the
+   * server's already-absolute, always-re-read enforcement.
+   */
+  refreshSessionDeadline: () => void;
   /**
    * Trap into the forced-enrollment wizard. The resource/error paths call this when
    * an admin request comes back 403 `ADMIN_2FA_SETUP_REQUIRED` mid-use (e.g. a
@@ -106,6 +149,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [twoFactorChallenge, setTwoFactorChallenge] = useState<TwoFactorChallengeResponse | null>(
     null,
   );
+  const [signedOutReason, setSignedOutReason] = useState<AdminSignOutReason | null>(null);
+  // Epoch ms at which this admin session's absolute window closes, or null while
+  // it is unknown (not signed in, or the two reads behind it have not answered).
+  const [sessionDeadline, setSessionDeadline] = useState<number | null>(null);
+  const [sessionPolicyAttempt, setSessionPolicyAttempt] = useState(0);
 
   // Resolve an authenticated admin into the right screen: the forced-change trap,
   // the mandatory-2FA enrollment wizard, or the open console. The 2FA status
@@ -189,6 +237,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (credentials: LoginRequest) => {
+      // A fresh sign-in answers the expiry notice — clear it before the attempt
+      // so a failed one does not leave a stale "your session expired" beside a
+      // credentials error.
+      setSignedOutReason(null);
       const result = await api.login(credentials);
       // Enrolled admin: the password verified but no session was minted — hand
       // the challenge to the verify screen to collect a second factor (#400).
@@ -274,11 +326,113 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const clearSession = useCallback(() => {
+  const clearSession = useCallback((reason?: AdminSignOutReason) => {
     setUser(null);
     setTwoFactorChallenge(null);
+    setSessionDeadline(null);
+    setSignedOutReason(reason ?? null);
     setStatus('anonymous');
   }, []);
+
+  const refreshSessionDeadline = useCallback(
+    () => setSessionPolicyAttempt((attempt) => attempt + 1),
+    [],
+  );
+
+  /**
+   * Hold the admin session's absolute deadline client-side (§13.5 V5-P13c).
+   *
+   * The server enforces the window on its own — it re-reads the configured
+   * lifetime out of `app_settings` on every `resolveSession` and measures it from
+   * the session's `createdAt`, so this provider is a courtesy, never the
+   * authority. The courtesy matters because expiry is otherwise LAZY: a console
+   * parked on a page with no live refresh keeps rendering fully-populated admin
+   * data long after the session is dead, and the operator only discovers it by
+   * clicking.
+   *
+   * Both halves of the deadline have to come off the wire. The lifetime is the
+   * policy read; the anchor is this session's own `createdAt`, which
+   * `GET /auth/sessions` marks as `current` — deriving it from "when this tab
+   * loaded" instead would hand a console reloaded 11 h into a 12 h window a
+   * fresh 12 h. A failure in either read leaves the deadline unknown rather than
+   * guessed: the write and read seams still sign out on the next 401/404.
+   */
+  useEffect(() => {
+    if (status !== 'authenticated') {
+      setSessionDeadline(null);
+      return;
+    }
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const [policy, sessions] = await Promise.all([
+          api.getSessionPolicy(controller.signal),
+          api.listOwnSessions(controller.signal),
+        ]);
+        if (controller.signal.aborted) return;
+        const current = sessions.find((session) => session.current);
+        // No `current` row, or a malformed timestamp (NaN would arm a zero-delay
+        // timer and sign a working admin out instantly): the derivation produced
+        // nothing usable, so drop any deadline it produced before. "Unknown stays
+        // unknown" has to include forgetting a previous answer, or a re-read that
+        // came back empty would leave the older, differently-derived deadline armed.
+        if (!current) {
+          setSessionDeadline(null);
+          return;
+        }
+        const sessionWindow = policy.sessionLifetimeHours * HOUR_MS;
+        const deadline = new Date(current.createdAt).getTime() + sessionWindow;
+        if (!Number.isFinite(deadline)) {
+          setSessionDeadline(null);
+          return;
+        }
+        // Clock-disagreement screen, applied HERE because this is the one moment
+        // the session is provably alive: the server just answered both reads on
+        // this very cookie, and it re-reads the lifetime on every resolution. So
+        // the session's true remaining time is inside `(0, sessionWindow]` — a
+        // computed value outside that band is this browser's clock disagreeing
+        // with the server's, in one direction or the other, and unknown is the
+        // safe state (the write/read seams still sign out on the next 401/404).
+        //
+        // Both directions matter, for different reasons. A clock running AHEAD
+        // lands `remaining <= 0` here, and accepting it would sign the admin out
+        // on the very first evaluation after every successful login — an endless
+        // login → "your session expired" loop. A clock running BEHIND pushes the
+        // deadline past the window, and accepting it would arm a timer later than
+        // the truth. Screening both leaves at most `skew` of premature courtesy
+        // sign-out for a clock ahead by less than the window, which is a timer of
+        // positive length, never an instant bounce.
+        const remaining = deadline - Date.now();
+        if (remaining <= 0 || remaining > sessionWindow + CLOCK_TOLERANCE_MS) {
+          setSessionDeadline(null);
+          return;
+        }
+        setSessionDeadline(deadline);
+      } catch {
+        // Unreadable window — see above. Never manufacture a sign-out from it.
+      }
+    })();
+    return () => controller.abort();
+  }, [status, sessionPolicyAttempt]);
+
+  // Sign out the moment the window closes, without waiting for a click.
+  useEffect(() => {
+    if (status !== 'authenticated' || sessionDeadline === null) return;
+    const remaining = sessionDeadline - Date.now();
+    // A stored deadline was in the future when it was derived (see the screen
+    // above), so reaching zero here means time actually passed: either the
+    // console sat parked through the window, or a policy write shortened it. Both
+    // are real expiries, not a browser clock running ahead.
+    if (remaining <= 0) {
+      clearSession('expired');
+      return;
+    }
+    // Defence in depth for the same screen: never arm a timer further out than
+    // the widest window the policy allows, plus the skew the screen tolerates.
+    if (remaining > ADMIN_SESSION_LIFETIME_MAX_HOURS * HOUR_MS + CLOCK_TOLERANCE_MS) return;
+    const timer = setTimeout(() => clearSession('expired'), remaining);
+    return () => clearTimeout(timer);
+  }, [status, sessionDeadline, clearSession]);
 
   const requireTwoFactorSetup = useCallback(() => {
     setUser(null);
@@ -299,6 +453,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       completeTwoFactorSetup,
       logout,
       clearSession,
+      signedOutReason,
+      refreshSessionDeadline,
       requireTwoFactorSetup,
     }),
     [
@@ -313,6 +469,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       completeTwoFactorSetup,
       logout,
       clearSession,
+      signedOutReason,
+      refreshSessionDeadline,
       requireTwoFactorSetup,
     ],
   );

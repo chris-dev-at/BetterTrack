@@ -66,6 +66,9 @@ export function InvitesPage() {
     },
     {
       errorKey: 'admin.invites.createError',
+      // `POST /admin/invites` creates a row; there is none to have vanished, so a
+      // 404 means this console is no longer an admin (V5-P13c).
+      notFound: 'session',
       onSuccess: () => {
         invites.reload();
         stats.reload();

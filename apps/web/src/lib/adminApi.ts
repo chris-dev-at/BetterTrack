@@ -28,6 +28,7 @@ import {
   auditLogListResponseSchema,
   bulkUserActionResponseSchema,
   createInviteResponseSchema,
+  sessionListResponseSchema,
   createOAuthClientResponseSchema,
   createUserResponseSchema,
   emailLogListResponseSchema,
@@ -69,6 +70,7 @@ import {
   type AdminTwoFactorEmailStartRequest,
   type AdminTwoFactorStatusResponse,
   type AdminSessionPolicyResponse,
+  type SessionSummary,
   type AdminUser,
   type AdminUserListResponse,
   type AccountDefaultsResponse,
@@ -667,6 +669,18 @@ export async function updateSessionPolicy(
     body,
   });
   return adminSessionPolicyResponseSchema.parse(data);
+}
+
+/**
+ * `GET /auth/sessions` — the caller's own sessions. Not an `/admin/*` route: it
+ * is the same self-service read the user app's session manager uses, and the
+ * console needs exactly one field off it, the current session's `createdAt`.
+ * That is the anchor the V5-P13c absolute window is measured from server-side,
+ * so it is the only honest anchor for the client-held deadline too.
+ */
+export async function listOwnSessions(signal?: AbortSignal): Promise<SessionSummary[]> {
+  const data = await apiRequest<unknown>('/auth/sessions', { signal });
+  return sessionListResponseSchema.parse(data).sessions;
 }
 
 // --- Admin: runtime feature kill-switches (§13.5 V5-P2 arc (c)) ------------

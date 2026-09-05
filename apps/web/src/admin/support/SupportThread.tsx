@@ -194,6 +194,9 @@ function ThreadHeader({
     (archived: boolean) => api.setAdminFeedbackArchived(row.id, archived),
     {
       errorKey: 'admin.support.thread.archiveError',
+      // Addressed by the submission id, which another operator can delete — a
+      // banner, not a sign-out.
+      notFound: 'surface',
       onSuccess: () => {
         onReloadRow();
         onChanged();
@@ -345,6 +348,8 @@ function StatusControl({
       }),
     {
       errorKey: 'admin.support.thread.statusError',
+      // Same submission id as the archive toggle above — row-scoped.
+      notFound: 'surface',
       onSuccess: () => {
         onReloadRow();
         onChanged();
@@ -548,6 +553,8 @@ function ReplyComposer({
 
   const send = useAdminMutation(() => api.sendAdminFeedbackReply(row.id, { body: body.trim() }), {
     errorKey: 'admin.support.thread.replyError',
+    // The reply hangs off the submission id: a 404 is a deleted thread.
+    notFound: 'surface',
     onSuccess: onSent,
   });
 

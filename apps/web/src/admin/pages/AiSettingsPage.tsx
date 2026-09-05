@@ -8,12 +8,15 @@ import {
 import type {
   AiSettingsResponse,
   AiTestConnectionResponse,
+  AiTestRequest,
   AiTestRequestResponse,
+  UpdateAiSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
+import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
 
@@ -51,12 +54,8 @@ export function AiSettingsPage() {
   const [form, setForm] = useState<FormState | null>(null);
   const [settings, setSettings] = useState<AiSettingsResponse | null>(null);
   const [testResult, setTestResult] = useState<AiTestConnectionResponse | null>(null);
-  const [testing, setTesting] = useState(false);
   const [prompt, setPrompt] = useState(AI_TEST_REQUEST_DEFAULT_PROMPT);
   const [promptResult, setPromptResult] = useState<AiTestRequestResponse | null>(null);
-  const [sending, setSending] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   // Seed the form once from the first successful load; re-seeding after a save is
@@ -77,65 +76,75 @@ export function AiSettingsPage() {
   const capValid =
     Number.isInteger(capNumber) && capNumber >= AI_DAILY_CAP_MIN && capNumber <= AI_DAILY_CAP_MAX;
 
-  const test = useCallback(async () => {
-    if (!form) return;
-    setTesting(true);
-    setActionError(null);
-    setTestResult(null);
-    try {
+  // All three writes go through the shared seam. None of `/admin/ai/test-connection`,
+  // `/admin/ai/test-request` or `/admin/ai/settings` addresses a row, so a 404 on
+  // any of them is §6.12's "you are not an admin" — the V5-P13c window closed —
+  // and must sign the console out rather than render as a probe that failed.
+  const test = useAdminMutation(
+    async (endpoint: string | undefined) => {
       // Probe the endpoint currently in the form (before saving), so the admin can
       // verify + pick a model. An empty endpoint tests the stored/effective one.
-      const endpoint = form.endpoint.trim() === '' ? undefined : form.endpoint.trim();
       setTestResult(await api.testAiConnection({ endpoint }));
-    } catch {
-      setActionError(t('admin.ai.testError'));
-    } finally {
-      setTesting(false);
-    }
-  }, [form, t]);
+    },
+    { errorKey: 'admin.ai.testError', notFound: 'session' },
+  );
 
-  const sendTestRequest = useCallback(async () => {
-    if (!form || prompt.trim() === '') return;
-    setSending(true);
-    setActionError(null);
-    setPromptResult(null);
-    try {
-      // Same candidate semantics as the connection probe: whatever sits in the
-      // form right now, saved or not, so a model can be trialled before saving.
-      setPromptResult(
-        await api.sendAiTestRequest({
-          endpoint: form.endpoint.trim() === '' ? undefined : form.endpoint.trim(),
-          model: form.model.trim() === '' ? undefined : form.model.trim(),
-          prompt: prompt.trim(),
-        }),
-      );
-    } catch {
-      setActionError(t('admin.ai.testRequestError'));
-    } finally {
-      setSending(false);
-    }
-  }, [form, prompt, t]);
+  const sendTestRequest = useAdminMutation(
+    async (body: AiTestRequest) => {
+      setPromptResult(await api.sendAiTestRequest(body));
+    },
+    { errorKey: 'admin.ai.testRequestError', notFound: 'session' },
+  );
 
-  const save = useCallback(async () => {
-    if (!form || !capValid) return;
-    setSaving(true);
-    setActionError(null);
-    setSaved(false);
-    try {
-      const updated = await api.updateAiSettings({
-        endpoint: form.endpoint.trim() === '' ? null : form.endpoint.trim(),
-        model: form.model.trim() === '' ? null : form.model.trim(),
-        dailyCap: capNumber,
-      });
+  const save = useAdminMutation(
+    async (body: UpdateAiSettingsRequest) => {
+      const updated = await api.updateAiSettings(body);
       setSettings(updated);
       setForm(fromSettings(updated));
       setSaved(true);
-    } catch {
-      setActionError(t('admin.ai.saveError'));
-    } finally {
-      setSaving(false);
-    }
-  }, [form, capValid, capNumber, t]);
+    },
+    { errorKey: 'admin.ai.saveError', notFound: 'session' },
+  );
+
+  // One banner, three writes: clear the other two so a stale failure never sits
+  // beside a fresh result.
+  const clearActionErrors = useCallback(() => {
+    test.clearError();
+    sendTestRequest.clearError();
+    save.clearError();
+  }, [test, sendTestRequest, save]);
+  const actionError = test.error ?? sendTestRequest.error ?? save.error;
+
+  const runTest = useCallback(async () => {
+    if (!form) return;
+    clearActionErrors();
+    setTestResult(null);
+    await test.run(form.endpoint.trim() === '' ? undefined : form.endpoint.trim());
+  }, [form, clearActionErrors, test]);
+
+  const runTestRequest = useCallback(async () => {
+    if (!form || prompt.trim() === '') return;
+    clearActionErrors();
+    setPromptResult(null);
+    // Same candidate semantics as the connection probe: whatever sits in the
+    // form right now, saved or not, so a model can be trialled before saving.
+    await sendTestRequest.run({
+      endpoint: form.endpoint.trim() === '' ? undefined : form.endpoint.trim(),
+      model: form.model.trim() === '' ? undefined : form.model.trim(),
+      prompt: prompt.trim(),
+    });
+  }, [form, prompt, clearActionErrors, sendTestRequest]);
+
+  const runSave = useCallback(async () => {
+    if (!form || !capValid) return;
+    clearActionErrors();
+    setSaved(false);
+    await save.run({
+      endpoint: form.endpoint.trim() === '' ? null : form.endpoint.trim(),
+      model: form.model.trim() === '' ? null : form.model.trim(),
+      dailyCap: capNumber,
+    });
+  }, [form, capValid, capNumber, clearActionErrors, save]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -221,11 +230,11 @@ export function AiSettingsPage() {
             ) : null}
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
-              <Button variant="secondary" disabled={testing} onClick={test}>
-                {testing ? t('admin.ai.testing') : t('admin.ai.testButton')}
+              <Button variant="secondary" disabled={test.pending} onClick={() => void runTest()}>
+                {test.pending ? t('admin.ai.testing') : t('admin.ai.testButton')}
               </Button>
-              <Button disabled={saving || !capValid} onClick={save}>
-                {saving ? t('admin.ai.saving') : t('admin.ai.saveButton')}
+              <Button disabled={save.pending || !capValid} onClick={() => void runSave()}>
+                {save.pending ? t('admin.ai.saving') : t('admin.ai.saveButton')}
               </Button>
             </div>
 
@@ -273,12 +282,14 @@ export function AiSettingsPage() {
             <div className="flex flex-wrap items-center gap-3">
               <Button
                 variant="secondary"
-                disabled={sending || prompt.trim() === ''}
-                onClick={sendTestRequest}
+                disabled={sendTestRequest.pending || prompt.trim() === ''}
+                onClick={() => void runTestRequest()}
               >
-                {sending ? t('admin.ai.testRequestSending') : t('admin.ai.testRequestButton')}
+                {sendTestRequest.pending
+                  ? t('admin.ai.testRequestSending')
+                  : t('admin.ai.testRequestButton')}
               </Button>
-              {sending ? (
+              {sendTestRequest.pending ? (
                 <span className="text-xs text-neutral-400">{t('admin.ai.testRequestWait')}</span>
               ) : null}
             </div>
