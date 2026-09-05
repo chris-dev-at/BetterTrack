@@ -1276,13 +1276,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         }
         const current = await profile.getProfileSettings(userId);
         if (!current) throw PROFILE_NOT_FOUND();
-        // `isPublic: undefined` (omitted) leaves the opt-in exactly where it is,
-        // the same rule the bio follows. An icon-only write therefore performs no
-        // profile-visibility write at all.
-        await profile.updateProfileSettings(userId, {
-          isPublic: input.isPublic ?? current.isPublic,
-          bio: bio === undefined ? current.bio : bio,
-        });
+        // Both fields pass through as sent: `undefined` (omitted) is NOT resolved
+        // to the stored value here, it is dropped from the UPDATE's SET list by
+        // the repository. An icon-only write therefore issues no
+        // profile-visibility write at all — not even one that happens to
+        // round-trip the current value, which would republish a profile a
+        // concurrent paranoid-enable had just taken private (the lock below is
+        // only taken when the request actually carries `isPublic`).
+        await profile.updateProfileSettings(userId, { isPublic: input.isPublic, bio });
         // Profile-icon picker (§13.5 V5-P0 (c)). `undefined` = untouched; `null` clears
         // the choice; a valid id from the finite allow-list persists. The service
         // re-validates the id against {@link profileIconIdSchema} — the request

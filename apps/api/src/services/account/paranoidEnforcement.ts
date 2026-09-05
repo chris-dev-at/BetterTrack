@@ -637,7 +637,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     'social',
     ['updateProfileSettings'],
     'internallyFiltered',
-    'A public opt-in holds the caller own account transition lock through the final write, so an update started before enable cannot republish after it commits.',
+    'A public opt-in holds the caller own account transition lock through the final write, so an update started before enable cannot republish after it commits; a request that omits the opt-in never writes profile_public at all, so it needs no lock.',
     ['accountMode'],
   ),
   serviceExemption(

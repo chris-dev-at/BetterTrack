@@ -238,9 +238,8 @@ export function defaultProfileIconIdFor(seed: string): ProfileIconId {
 
 /**
  * Render one curated avatar's SVG contents for the given id. `data-icon-id` is
- * an inert marker: the SVG
- * is decorative (`aria-hidden`), so it is the only handle a test has on WHICH
- * icon a surface actually painted.
+ * an inert marker: the SVG is decorative (`aria-hidden`), so it is the only
+ * handle a test has on WHICH icon a surface actually painted.
  */
 export function ProfileIconSvg({ id, className }: { id: ProfileIconId; className?: string }) {
   const paint = PALETTES[id];
