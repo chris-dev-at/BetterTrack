@@ -13,7 +13,8 @@ import type { BrokerMapper, MappedLine, NormalizedImportRow } from '../types';
  * ticker symbol; resolution against the local catalog is the framework's job.
  * `Betrag` is the signed EUR cash effect (buys negative, sells/dividends/
  * deposits positive) — trades re-derive their economics from Anzahl×Kurs+Gebühr,
- * so `Betrag` is not trusted for them; cash rows take its magnitude.
+ * so `Betrag` is not trusted for them; cash rows take its magnitude once the
+ * sign has had its say about the DIRECTION (see {@link cashDirection}).
  */
 
 const HEADER = {
@@ -30,7 +31,13 @@ const HEADER = {
 
 type ColumnKey = keyof typeof HEADER;
 
-/** TR `Typ` values → normalized kinds. `Sparplan` is a savings-plan buy; `Zinsen` is the cash-interest payout (booked as an external deposit — no instrument). */
+/**
+ * TR `Typ` values → normalized kinds. `Sparplan` is a savings-plan buy;
+ * `Zinsen` is the cash-interest booking, which names NO direction — TR writes
+ * a credit and a Verwahrentgelt/negative interest under the same word — so it
+ * is mapped provisionally and its direction comes from the sign
+ * ({@link cashDirection}), exactly as `flatex.ts` derives its own `Zinsen`.
+ */
 const TYPE_MAP: Record<string, NormalizedImportRow['kind']> = {
   kauf: 'buy',
   sparplan: 'buy',
@@ -40,6 +47,48 @@ const TYPE_MAP: Record<string, NormalizedImportRow['kind']> = {
   auszahlung: 'withdrawal',
   zinsen: 'deposit',
 };
+
+/**
+ * The cash kind a `Typ` + signed `Betrag` actually state, or a refusal.
+ *
+ * The rule is the ASYMMETRY `kindDerivation.ts` states and `flatex.ts` applies:
+ * a MINUS sign speaks on its own — nothing writes money coming in as a negative
+ * — so a negative `Betrag` under `Zinsen` is money out, and under `Einzahlung`
+ * or `Dividende` it is a reversal (Storno) whose magnitude must not be booked as
+ * income. A PLUS is not the mirror image: TR prints some Auszahlungen positive
+ * (the golden fixture does), so a positive `Betrag` is a magnitude and never a
+ * claim that the row is money in.
+ */
+function cashDirection(
+  mapped: NormalizedImportRow['kind'],
+  amount: number,
+  typeRaw: string,
+  amountRaw: string,
+): { ok: true; kind: NormalizedImportRow['kind'] } | { ok: false; error: string } {
+  if (mapped !== 'dividend' && mapped !== 'deposit' && mapped !== 'withdrawal') {
+    return { ok: true, kind: mapped };
+  }
+  if (typeRaw.toLowerCase() === 'zinsen') {
+    return { ok: true, kind: amount > 0 ? 'deposit' : 'withdrawal' };
+  }
+  if (amount < 0 && mapped === 'dividend') {
+    return {
+      ok: false,
+      error:
+        `Negative dividend amount "${amountRaw}" — likely a reversal; adjust the original ` +
+        'transaction manually.',
+    };
+  }
+  if (amount < 0 && mapped === 'deposit') {
+    return {
+      ok: false,
+      error:
+        `Amount "${amountRaw}" contradicts the row type "${typeRaw}", which is money in — ` +
+        'likely a reversal (Storno); adjust the original transaction manually.',
+    };
+  }
+  return { ok: true, kind: mapped };
+}
 
 /** Resolve each known column to its index in this file's header (missing → -1). */
 function columnIndexes(header: CsvRecord | null): Record<ColumnKey, number> {
@@ -84,8 +133,8 @@ export const tradeRepublicMapper: BrokerMapper = {
       });
 
       const typeRaw = cell(record, 'type');
-      const kind = TYPE_MAP[typeRaw.toLowerCase()];
-      if (!kind) return fail(`Unsupported row type "${typeRaw || '(empty)'}".`);
+      const mappedKind = TYPE_MAP[typeRaw.toLowerCase()];
+      if (!mappedKind) return fail(`Unsupported row type "${typeRaw || '(empty)'}".`);
 
       const executedAt = parseDay(cell(record, 'date'));
       if (!executedAt) return fail(`Unparseable date "${cell(record, 'date')}".`);
@@ -108,7 +157,8 @@ export const tradeRepublicMapper: BrokerMapper = {
         note: isInterest ? 'Interest payment (Trade Republic)' : null,
       };
 
-      if (kind === 'buy' || kind === 'sell') {
+      if (mappedKind === 'buy' || mappedKind === 'sell') {
+        const kind = mappedKind;
         const quantity = parseDecimal(cell(record, 'quantity'));
         const price = parseDecimal(cell(record, 'price'));
         const fee = parseDecimal(cell(record, 'fee')) ?? 0;
@@ -126,21 +176,15 @@ export const tradeRepublicMapper: BrokerMapper = {
         };
       }
 
-      // Dividend / deposit / withdrawal: the signed Betrag's magnitude in EUR.
+      // Dividend / deposit / withdrawal: the signed Betrag decides the
+      // direction, then its magnitude is what the ledger stores.
       const amount = parseDecimal(cell(record, 'amount'));
       if (amount === null || amount === 0) {
         return fail(`Invalid amount "${cell(record, 'amount')}".`);
       }
-      // Dividend income is cash-IN: a negative Betrag under a dividend Typ is a
-      // reversal — booking its magnitude would double-count the income (and,
-      // under the AT tax mode, withhold KESt on it). George/Flatex refuse the
-      // same shape; deposits/withdrawals keep the magnitude (Typ names their
-      // direction, and TR prints Auszahlungen negative by design).
-      if (kind === 'dividend' && amount < 0) {
-        return fail(
-          `Negative dividend amount "${cell(record, 'amount')}" — likely a reversal; adjust the original transaction manually.`,
-        );
-      }
+      const direction = cashDirection(mappedKind, amount, typeRaw, cell(record, 'amount'));
+      if (!direction.ok) return fail(direction.error);
+      const kind = direction.kind;
       if (currency !== 'EUR') {
         return fail(`Cash rows must be EUR — got "${currency}" (the cash ledger is EUR-only).`);
       }

@@ -45,7 +45,21 @@ const EXPECTED_DIRECTION: Record<ImportRowKind, 1 | -1> = {
   withdrawal: -1,
 };
 
-export type KindDerivation = { ok: true; row: NormalizedImportRow } | { ok: false; error: string };
+/**
+ * WHY a kind could not be derived — the difference between "this row is not
+ * that" and "this row's units are not ones the cash ledger holds".
+ *
+ * `currency` is separated because it is not a statement about the KIND at all:
+ * the same row may still be derivable as a trade, which keeps its native
+ * currency exactly as the broker mappers do. Staging therefore keeps such a row
+ * confirmable instead of ending it, so a person can still say what it is —
+ * see `genericStaging`.
+ */
+export type KindDerivationRefusal = 'currency' | 'fields';
+
+export type KindDerivation =
+  | { ok: true; row: NormalizedImportRow }
+  | { ok: false; error: string; refusal: KindDerivationRefusal };
 
 /**
  * What the FILE the row came from is known to do, as opposed to what the row
@@ -64,7 +78,11 @@ export interface DerivationContext {
   amountsSigned: boolean;
 }
 
-const fail = (error: string): KindDerivation => ({ ok: false, error });
+const fail = (error: string, refusal: KindDerivationRefusal = 'fields'): KindDerivation => ({
+  ok: false,
+  error,
+  refusal,
+});
 
 /** Any evidence of WHICH instrument a row is about. */
 function namesInstrument(fields: PendingKindFields): boolean {
@@ -168,6 +186,7 @@ export function deriveRowForKind(
     return fail(
       `This row is stated in ${fields.currency}, and cash and dividends are recorded in EUR — ` +
         'convert the export, or import this file through its broker mapper.',
+      'currency',
     );
   }
   if (kind === 'dividend' && !namesInstrument(fields)) {
