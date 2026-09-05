@@ -18,6 +18,8 @@ import {
   expenseTransactions,
   portfolioCashMovements,
   portfolioCashSources,
+  portfolioDailySnapshots,
+  portfolioSnapshotState,
   portfolios,
 } from '../schema';
 import {
@@ -42,7 +44,9 @@ import {
  * re-derives the reconciliation inside it, throwing — and therefore rolling the
  * owner back — when the count or the signed sum disagrees. That is 0076's final
  * `DO` block applied per owner: an owner either lands completely and reconciles
- * to the cent, or is left exactly as it was and reported as failed.
+ * to the cent, or is left exactly as it was and reported as failed. The daily
+ * snapshots those backdated movements invalidate are marked dirty inside that
+ * same transaction, so a caught-up ledger and a stale series cannot coexist.
  */
 
 /**
@@ -73,8 +77,17 @@ export interface CashFusionCatchUpRepository {
     spendingPortfolioId: string,
     spendingSourceId: string,
   ): Promise<OwnerSnapshot>;
-  /** Apply one owner's plan atomically; throws on a reconciliation mismatch. */
-  applyOwnerPlan(plan: OwnerPlan, fusionAppliedAt: Date): Promise<void>;
+  /**
+   * Apply one owner's plan atomically; throws on a reconciliation mismatch.
+   * Returns the UTC day of the earliest movement it actually inserted — the day
+   * the owner's snapshots were invalidated from — or `null` when it wrote none.
+   */
+  applyOwnerPlan(plan: OwnerPlan, fusionAppliedAt: Date): Promise<ApplyOwnerPlanResult>;
+}
+
+export interface ApplyOwnerPlanResult {
+  /** ISO `YYYY-MM-DD` the snapshots were invalidated from; null = nothing written. */
+  invalidatedFrom: string | null;
 }
 
 /** `db.execute` hands back `{ rows }`; narrow it once here. */
@@ -326,8 +339,8 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
       };
     },
 
-    async applyOwnerPlan(plan: OwnerPlan, fusionAppliedAt: Date): Promise<void> {
-      await db.transaction(async (tx) => {
+    async applyOwnerPlan(plan: OwnerPlan, fusionAppliedAt: Date): Promise<ApplyOwnerPlanResult> {
+      return db.transaction(async (tx) => {
         if (plan.createPortfolio !== null) {
           await tx
             .insert(portfolios)
@@ -374,8 +387,13 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
             .onConflictDoNothing();
         }
 
+        // The day the earliest movement this transaction actually WROTE lands
+        // on. Taken from the returned rows, not from the plan: a row the insert
+        // skipped was already in the ledger, and re-invalidating for it would
+        // make every re-run of a caught-up owner throw the series away again.
+        let invalidatedFrom: string | null = null;
         if (plan.movements.length > 0) {
-          await tx
+          const inserted = await tx
             .insert(portfolioCashMovements)
             .values(
               plan.movements.map((movement) => ({
@@ -392,7 +410,12 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
                 createdAt: movement.createdAt,
               })),
             )
-            .onConflictDoNothing();
+            .onConflictDoNothing()
+            .returning({ executedAt: portfolioCashMovements.executedAt });
+          for (const row of inserted) {
+            const day = row.executedAt.toISOString().slice(0, 10);
+            if (invalidatedFrom === null || day < invalidatedFrom) invalidatedFrom = day;
+          }
         }
 
         if (plan.movementTags.length > 0) {
@@ -519,6 +542,57 @@ export function createCashFusionCatchUpRepository(db: Database): CashFusionCatch
               `${expectedMicros} (micros). Rolled back; nothing written for this owner.`,
           );
         }
+
+        // ── Snapshot invalidation (§16 2026-07-17) ────────────────────────────
+        // These movements are backdated EXTERNAL flows, so every precomputed
+        // daily snapshot from the earliest of them is now wrong — in value and
+        // in TWR flow alike. The nightly roll only overwrites its trailing heal
+        // window, so a marker not written here is never written at all and an
+        // older day stays wrong forever. Same two statements
+        // `portfolioSnapshotRepository`'s markDirty/deleteFrom run, issued in
+        // THIS transaction so the ledger rows and their invalidation land or
+        // roll back together.
+        //
+        // Three conscious deviations, so a reader does not take them for misses:
+        //  - The statements are hand-copied rather than called: neither
+        //    `markDirty` nor `deleteFrom` accepts a `tx`, and atomicity with the
+        //    ledger write is the whole point. The `least(coalesce(…))` marker
+        //    expression therefore lives in two files and must change in both.
+        //  - Lock order here is state row → snapshot rows, the reverse of
+        //    `saveComputation`'s absent-state-row path, so a concurrent
+        //    recompute can deadlock. Safe by construction: Postgres aborts one
+        //    side, this owner rolls back whole and the script is documented
+        //    re-runnable, and the recompute is retried by BullMQ. Not worth a
+        //    redesign for an operator-run one-off.
+        //  - No `isParanoidPortfolio` fence (which `snapshots.invalidate()`
+        //    applies). A vaulted portfolio would collect a stray state row that
+        //    nothing reads (`listSnapshotTargets` filters `vault_id IS NULL`,
+        //    `getSeries` returns empty), and this script is already writing
+        //    cleartext ledger rows for every owner it finds — the fence would be
+        //    the smaller half of that question, not an answer to it.
+        if (invalidatedFrom !== null) {
+          await tx
+            .insert(portfolioSnapshotState)
+            .values({
+              portfolioId: plan.portfolioId,
+              computedThrough: invalidatedFrom,
+              dirtyFrom: invalidatedFrom,
+            })
+            .onConflictDoUpdate({
+              target: portfolioSnapshotState.portfolioId,
+              set: {
+                dirtyFrom: sql`least(coalesce(${portfolioSnapshotState.dirtyFrom}, excluded.dirty_from), excluded.dirty_from)`,
+                updatedAt: sql`now()`,
+              },
+            });
+          await tx
+            .delete(portfolioDailySnapshots)
+            .where(
+              sql`${portfolioDailySnapshots.portfolioId} = ${plan.portfolioId} and ${portfolioDailySnapshots.date} >= ${invalidatedFrom}`,
+            );
+        }
+
+        return { invalidatedFrom };
       });
     },
   };

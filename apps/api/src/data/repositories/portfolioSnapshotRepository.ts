@@ -8,7 +8,7 @@ import {
   portfolios,
   transactions,
 } from '../schema';
-import type { PortfolioDailySnapshotRow, PortfolioSnapshotStateRow } from '../schema';
+import type { PortfolioDailySnapshotRow } from '../schema';
 
 /**
  * Persistence for the V5-P1 per-portfolio daily snapshots (issue #553,
@@ -62,6 +62,13 @@ export interface SnapshotStateRecord {
   /** Earliest invalidated day, or null when clean. */
   dirtyFrom: string | null;
   updatedAt: Date;
+  /**
+   * `updated_at` at the precision the column stores — the compare-and-set
+   * fencing token (see {@link stateVersionSql}). Hand it back to
+   * {@link createPortfolioSnapshotRepository.saveComputation} as `seenVersion`;
+   * never parse it, only compare it.
+   */
+  version: string;
 }
 
 /** A portfolio the backfill job must cover, i.e. one with any history at all. */
@@ -97,13 +104,42 @@ function toRowRecord(row: PortfolioDailySnapshotRow): SnapshotRowRecord {
   };
 }
 
-function toStateRecord(row: PortfolioSnapshotStateRow): SnapshotStateRecord {
-  return {
-    portfolioId: row.portfolioId,
-    computedThrough: row.computedThrough,
-    dirtyFrom: row.dirtyFrom ?? null,
-    updatedAt: row.updatedAt,
-  };
+/**
+ * The state row's `updated_at` rendered at the precision the column actually
+ * stores (microseconds) — the compare-and-set fencing token.
+ *
+ * `timestamptz` keeps microseconds; a JS `Date` keeps milliseconds. Reading the
+ * column into a `Date` and comparing `getTime()` therefore reads two DISTINCT
+ * state writes landing inside one millisecond as the same write, and a
+ * computation that raced the second of them would be accepted and would clear
+ * its dirty marker. Both sides of the comparison are this same text, so nothing
+ * is rounded on the way in or out.
+ */
+function stateVersionSql() {
+  return sql<string>`to_char(${portfolioSnapshotState.updatedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
+/** The state-row columns every read of {@link SnapshotStateRecord} selects. */
+const stateSelection = {
+  portfolioId: portfolioSnapshotState.portfolioId,
+  computedThrough: portfolioSnapshotState.computedThrough,
+  dirtyFrom: portfolioSnapshotState.dirtyFrom,
+  updatedAt: portfolioSnapshotState.updatedAt,
+  version: stateVersionSql(),
+};
+
+/**
+ * Thrown INSIDE {@link createPortfolioSnapshotRepository.saveComputation}'s
+ * transaction when the guarded state write matches no row — an invalidation
+ * created or moved the state row after the compare-and-set read it. Rolling the
+ * whole transaction back is the point: the rows this computation had already
+ * inserted are as unseen as the marker it did not see.
+ */
+class SnapshotComputationRaced extends Error {
+  constructor() {
+    super('snapshot computation raced an invalidation');
+    this.name = 'SnapshotComputationRaced';
+  }
 }
 
 function toInsertValues(portfolioId: string, row: NewSnapshotRow) {
@@ -138,12 +174,12 @@ export function createPortfolioSnapshotRepository(db: Database) {
 
     async getState(portfolioId: string): Promise<SnapshotStateRecord | null> {
       const rows = await db
-        .select()
+        .select(stateSelection)
         .from(portfolioSnapshotState)
         .where(eq(portfolioSnapshotState.portfolioId, portfolioId))
         .limit(1);
       const row = rows[0];
-      return row ? toStateRecord(row) : null;
+      return row ? { ...row, dirtyFrom: row.dirtyFrom ?? null } : null;
     },
 
     /**
@@ -188,9 +224,9 @@ export function createPortfolioSnapshotRepository(db: Database) {
     /**
      * Persist one computation atomically. Under the state row's lock:
      *
-     *  1. Freshness compare-and-set — if the state's `updated_at` moved since
-     *     the computation read it (`seenUpdatedAt`), a concurrent invalidation
-     *     landed mid-compute and these rows may be stale: nothing is written
+     *  1. Freshness compare-and-set — if the state's version moved since the
+     *     computation read it (`seenVersion`), a concurrent invalidation landed
+     *     mid-compute and these rows may be stale: nothing is written
      *     (`applied: false`) and the invalidator's own recompute takes over.
      *  2. Rows from `seenDirtyFrom` on are deleted (normally a no-op — the
      *     invalidation already deleted them synchronously).
@@ -198,82 +234,103 @@ export function createPortfolioSnapshotRepository(db: Database) {
      *     days are never rewritten — except rows on/after `healFrom` (the
      *     nightly roll's trailing self-heal window for provider close
      *     revisions), which overwrite.
-     *  4. The state row records `computed_through` and clears `dirty_from`.
+     *  4. The state row records `computed_through` and clears `dirty_from` —
+     *     but only if it STILL matches `seenVersion` at that moment.
+     *
+     * Step 4's re-check is what makes step 1 safe for a portfolio that has no
+     * state row yet: `SELECT … FOR UPDATE` over zero rows locks nothing, so a
+     * {@link createPortfolioSnapshotRepository.markDirty} (a plain INSERT for an
+     * absent row, blocking on nothing) can land between the two and would then
+     * be cleared by an upsert that never saw it. Guarding the upsert closes that
+     * window: an unmatched guard rolls the whole computation back.
      */
     async saveComputation(input: {
       portfolioId: string;
       rows: readonly NewSnapshotRow[];
       computedThrough: string;
-      /** The state's `updated_at` when the computation started; null = no row. */
-      seenUpdatedAt: Date | null;
+      /** The state's {@link SnapshotStateRecord.version} when the computation started; null = no row. */
+      seenVersion: string | null;
       /** The dirty marker the computation saw; its range is re-deleted. */
       seenDirtyFrom: string | null;
       /** Rows on/after this day overwrite instead of DO NOTHING (nightly heal). */
       healFrom?: string | null;
     }): Promise<{ applied: boolean }> {
-      const { portfolioId, rows, computedThrough, seenUpdatedAt, seenDirtyFrom } = input;
+      const { portfolioId, rows, computedThrough, seenVersion, seenDirtyFrom } = input;
       const healFrom = input.healFrom ?? null;
 
-      return db.transaction(async (tx) => {
-        const current = await tx
-          .select()
-          .from(portfolioSnapshotState)
-          .where(eq(portfolioSnapshotState.portfolioId, portfolioId))
-          .for('update');
-        const currentUpdatedAt = current[0]?.updatedAt ?? null;
-        // Compare-and-set: a state row that appeared, vanished or was bumped
-        // since the computation read its inputs means an invalidation raced us.
-        if ((currentUpdatedAt?.getTime() ?? null) !== (seenUpdatedAt?.getTime() ?? null)) {
-          return { applied: false };
-        }
+      try {
+        return await db.transaction(async (tx) => {
+          const current = await tx
+            .select({ version: stateVersionSql() })
+            .from(portfolioSnapshotState)
+            .where(eq(portfolioSnapshotState.portfolioId, portfolioId))
+            .for('update');
+          const currentVersion = current[0]?.version ?? null;
+          // Compare-and-set: a state row that appeared, vanished or was bumped
+          // since the computation read its inputs means an invalidation raced us.
+          if (currentVersion !== seenVersion) {
+            return { applied: false };
+          }
 
-        if (seenDirtyFrom !== null) {
-          await tx
-            .delete(portfolioDailySnapshots)
-            .where(
-              sql`${portfolioDailySnapshots.portfolioId} = ${portfolioId} and ${portfolioDailySnapshots.date} >= ${seenDirtyFrom}`,
-            );
-        }
+          if (seenDirtyFrom !== null) {
+            await tx
+              .delete(portfolioDailySnapshots)
+              .where(
+                sql`${portfolioDailySnapshots.portfolioId} = ${portfolioId} and ${portfolioDailySnapshots.date} >= ${seenDirtyFrom}`,
+              );
+          }
 
-        const fill = rows.filter((r) => healFrom === null || r.date < healFrom);
-        const heal = healFrom === null ? [] : rows.filter((r) => r.date >= healFrom);
-        for (let i = 0; i < fill.length; i += INSERT_CHUNK) {
-          await tx
-            .insert(portfolioDailySnapshots)
-            .values(fill.slice(i, i + INSERT_CHUNK).map((r) => toInsertValues(portfolioId, r)))
-            .onConflictDoNothing();
-        }
-        for (let i = 0; i < heal.length; i += INSERT_CHUNK) {
-          await tx
-            .insert(portfolioDailySnapshots)
-            .values(heal.slice(i, i + INSERT_CHUNK).map((r) => toInsertValues(portfolioId, r)))
+          const fill = rows.filter((r) => healFrom === null || r.date < healFrom);
+          const heal = healFrom === null ? [] : rows.filter((r) => r.date >= healFrom);
+          for (let i = 0; i < fill.length; i += INSERT_CHUNK) {
+            await tx
+              .insert(portfolioDailySnapshots)
+              .values(fill.slice(i, i + INSERT_CHUNK).map((r) => toInsertValues(portfolioId, r)))
+              .onConflictDoNothing();
+          }
+          for (let i = 0; i < heal.length; i += INSERT_CHUNK) {
+            await tx
+              .insert(portfolioDailySnapshots)
+              .values(heal.slice(i, i + INSERT_CHUNK).map((r) => toInsertValues(portfolioId, r)))
+              .onConflictDoUpdate({
+                target: [portfolioDailySnapshots.portfolioId, portfolioDailySnapshots.date],
+                set: {
+                  valueEur: sql`excluded.value_eur`,
+                  costBasisEur: sql`excluded.cost_basis_eur`,
+                  plEur: sql`excluded.pl_eur`,
+                  flowEur: sql`excluded.flow_eur`,
+                  cashBySource: sql`excluded.cash_by_source`,
+                  assetValues: sql`excluded.asset_values`,
+                  computedAt: sql`now()`,
+                },
+              });
+          }
+
+          const saved = await tx
+            .insert(portfolioSnapshotState)
+            .values({ portfolioId, computedThrough, dirtyFrom: null })
             .onConflictDoUpdate({
-              target: [portfolioDailySnapshots.portfolioId, portfolioDailySnapshots.date],
+              target: portfolioSnapshotState.portfolioId,
               set: {
-                valueEur: sql`excluded.value_eur`,
-                costBasisEur: sql`excluded.cost_basis_eur`,
-                plEur: sql`excluded.pl_eur`,
-                flowEur: sql`excluded.flow_eur`,
-                cashBySource: sql`excluded.cash_by_source`,
-                assetValues: sql`excluded.asset_values`,
-                computedAt: sql`now()`,
+                computedThrough: sql`excluded.computed_through`,
+                dirtyFrom: sql`null`,
+                updatedAt: sql`now()`,
               },
-            });
-        }
-
-        await tx
-          .insert(portfolioSnapshotState)
-          .values({ portfolioId, computedThrough, dirtyFrom: null })
-          .onConflictDoUpdate({
-            target: portfolioSnapshotState.portfolioId,
-            set: {
-              computedThrough: sql`excluded.computed_through`,
-              dirtyFrom: sql`null`,
-              updatedAt: sql`now()`,
-            },
-          });
-        return { applied: true };
-      });
+              // Re-check under the write itself. Having seen NO row, ANY row
+              // here was created after the compare-and-set — by an invalidation
+              // this computation cannot have accounted for — so the conflict
+              // itself is the rejection.
+              setWhere:
+                seenVersion === null ? sql`false` : sql`${stateVersionSql()} = ${seenVersion}`,
+            })
+            .returning({ portfolioId: portfolioSnapshotState.portfolioId });
+          if (saved.length === 0) throw new SnapshotComputationRaced();
+          return { applied: true };
+        });
+      } catch (err) {
+        if (err instanceof SnapshotComputationRaced) return { applied: false };
+        throw err;
+      }
     },
 
     /**
