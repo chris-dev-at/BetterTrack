@@ -19,6 +19,7 @@ import type {
 import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 
+import { notificationTypeShipsEmail } from './emailTypeRules';
 import { channelIsOffered, maskMatrix } from './killSwitch';
 
 /**
@@ -205,6 +206,12 @@ export function createNotificationSettingsService(
           // round-trips the whole routing object on every toggle — and dropping
           // preserves the stored override, so the env flip restores it.
           if (!channelIsOffered(channel, channelsConfigurable)) continue;
+          // Locked cells, enforced HERE and not only in the browser (#1816): a
+          // type with no e-mail template never sends one on any path, so its
+          // e-mail cell must not reach storage either. Dropped rather than
+          // 4xx'd for the same reason as the kill-switch above — the SPA
+          // round-trips the whole routing object on every toggle.
+          if (channel === 'email' && !notificationTypeShipsEmail(type)) continue;
           (overridesByChannel[channel] ??= {})[type] = routing[channel];
         }
       }

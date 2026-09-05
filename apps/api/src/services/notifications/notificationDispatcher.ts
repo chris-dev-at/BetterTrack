@@ -48,6 +48,7 @@ import { notificationChannelSkippedTotal } from '../../metrics';
 
 import type { DiscordChannel } from './discordChannel';
 import { digestPeriodKey } from './digestService';
+import { notificationTypeShipsEmail } from './emailTypeRules';
 import type { DeactivatableChannel } from './killSwitch';
 import type { FcmChannel, PushMessage } from './fcm';
 import type { PresenceStore } from './presence';
@@ -188,6 +189,36 @@ interface RenderedNotification {
 }
 
 type LocalizedNotification = RenderedNotification & { title: string; body: string };
+
+/**
+ * What a DEFERRED e-mail (a digest row or a quiet-hours deferral) may carry for
+ * this event, or `null` when the type ships no e-mail at all (#1816).
+ *
+ * The instant path applies both rules inside `sendEmail`: a type with no e-mail
+ * template returns without sending, and `chat.message` sends a template that
+ * deliberately omits the message preview. A deferral is rendered from the queue
+ * row instead of from the event, so the same rules have to be applied HERE, at
+ * enqueue time — otherwise quiet hours and the digest deliver an e-mail the
+ * instant path would never have sent, with content it deliberately withholds.
+ */
+function deferredEmailContent(
+  event: DispatchableEvent,
+  localized: LocalizedNotification,
+  locale: string | null | undefined,
+): { title: string; body: string } | null {
+  if (!notificationTypeShipsEmail(event.type)) return null;
+  if (event.type === 'chat.message' && event.bodyPreview) {
+    // Carries no message content, exactly like the instant chat e-mail: the
+    // no-preview bell copy is the same statement ("a message is waiting"),
+    // already EN+DE, so no new copy key is involved. Withholding it here also
+    // keeps it out of the digest summary line, which is built from this body.
+    return renderNotificationMessage(
+      notificationMessage('chatMessagePlain', { sender: event.senderUsername }),
+      locale,
+    );
+  }
+  return { title: localized.title, body: localized.body };
+}
 
 /**
  * The dedupe key per event: type + what makes the *logical* event unique.
@@ -1211,32 +1242,44 @@ export function createNotificationDispatcher(
     // the others — and never re-throws into the queue (the marker exists; a
     // retry would no-op anyway).
     if (routing.email && email && recipient.email) {
+      // The per-type e-mail rules the instant path applies below, resolved BEFORE
+      // either deferral branch enqueues (#1816): `null` = this type ships no
+      // e-mail, so it ships none deferred either. `data` rides along so the
+      // deferred send can deep-link to the notification's own target instead of
+      // the app root.
+      const deferrable = deferredEmailContent(event, localized, recipient.locale);
       if (digest && deferredCadence && period) {
-        try {
-          await digest.enqueue({
-            userId: event.userId,
-            type: event.type,
-            channel: 'email',
-            cadence: deferredCadence,
-            period,
-            title: localized.title,
-            body: localized.body,
-          });
-        } catch (err) {
-          logger?.warn({ err, type: event.type }, 'digest email enqueue failed');
+        if (deferrable) {
+          try {
+            await digest.enqueue({
+              userId: event.userId,
+              type: event.type,
+              channel: 'email',
+              cadence: deferredCadence,
+              period,
+              title: deferrable.title,
+              body: deferrable.body,
+              data: rendered.data,
+            });
+          } catch (err) {
+            logger?.warn({ err, type: event.type }, 'digest email enqueue failed');
+          }
         }
       } else if (quietHours && quietDeferUntil) {
-        try {
-          await quietHours.enqueueDeferred({
-            userId: event.userId,
-            type: event.type,
-            channel: 'email',
-            title: localized.title,
-            body: localized.body,
-            deliverAfter: quietDeferUntil,
-          });
-        } catch (err) {
-          logger?.warn({ err, type: event.type }, 'quiet-hours email defer failed');
+        if (deferrable) {
+          try {
+            await quietHours.enqueueDeferred({
+              userId: event.userId,
+              type: event.type,
+              channel: 'email',
+              title: deferrable.title,
+              body: deferrable.body,
+              data: rendered.data,
+              deliverAfter: quietDeferUntil,
+            });
+          } catch (err) {
+            logger?.warn({ err, type: event.type }, 'quiet-hours email defer failed');
+          }
         }
       } else {
         try {
