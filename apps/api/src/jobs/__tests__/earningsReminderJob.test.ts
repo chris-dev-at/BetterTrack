@@ -223,3 +223,63 @@ describe('earningsNotifyGate', () => {
     expect(routingFor).toHaveBeenCalledWith('u1', 'earnings.reminder');
   });
 });
+
+describe('notifications.earningsRemind — completion log (#1791)', () => {
+  interface LogLine {
+    payload: Record<string, unknown>;
+    msg: string;
+  }
+
+  /** A logger double that keeps the completion line the handler wrote. */
+  function capturingLogger() {
+    const info: LogLine[] = [];
+    const warn: LogLine[] = [];
+    const push = (sink: LogLine[]) => (payload: Record<string, unknown>, msg?: string) => {
+      sink.push({ payload, msg: msg ?? '' });
+    };
+    const noop = () => {};
+    const captured = {
+      info: push(info),
+      warn: push(warn),
+      error: noop,
+      debug: noop,
+      trace: noop,
+      fatal: noop,
+      child: () => captured,
+    };
+    return { logger: captured as unknown as Logger, info, warn };
+  }
+
+  it('logs a clean run as complete', async () => {
+    const captured = capturingLogger();
+    await jobFor('2026-09-04T20:00:00.000Z', recordingCenter()).handler(makeJob(), {
+      ...ctx,
+      logger: captured.logger,
+    });
+
+    expect(captured.warn).toEqual([]);
+    expect(captured.info).toHaveLength(1);
+    expect(captured.info[0]!.msg).toBe('notifications.earningsRemind complete');
+    expect(captured.info[0]!.payload).toMatchObject({ reminded: 1, skipped: 0 });
+  });
+
+  it('refuses to log a run with any skip as complete', async () => {
+    const captured = capturingLogger();
+    const job = createEarningsReminderJob({
+      intelRepo,
+      marketData: marketDataWithReport('2026-09-04T20:00:00.000Z'),
+      notify: recordingCenter(),
+      isEnabled: async () => true,
+      enabled: true,
+      // The paranoid transition guard wins for this account: its book is never
+      // read, so the run is degraded, not complete.
+      runIfAllowed: async () => false,
+    });
+    await job.handler(makeJob(), { ...ctx, logger: captured.logger });
+
+    expect(captured.info).toEqual([]);
+    expect(captured.warn).toHaveLength(1);
+    expect(captured.warn[0]!.msg).toBe('notifications.earningsRemind completed with skips');
+    expect(captured.warn[0]!.payload).toMatchObject({ skipped: 1, usersDeferred: 1 });
+  });
+});
