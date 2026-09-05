@@ -1,4 +1,7 @@
-import type { StandingOrderService } from '../../services/standingOrders/standingOrderService';
+import {
+  STANDING_ORDERS_SCAN_TZ,
+  type StandingOrderService,
+} from '../../services/standingOrders/standingOrderService';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -34,7 +37,15 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
 export const STANDING_ORDERS_SCHEDULER_ID = 'standingOrders.process';
 /** Daily at 07:00 in the deploy timezone (after prices.refreshDaily / dividend scan). */
 export const STANDING_ORDERS_CRON = '0 7 * * *';
-export const STANDING_ORDERS_TZ = 'Europe/Vienna';
+/**
+ * WHEN the scan fires and WHICH calendar day it books are one decision, so they
+ * are one constant (#1793). Kept apart, a plausible containerisation edit
+ * (`tz: 'UTC'` with a late-evening cron) resolved the fire instant in one zone
+ * and `today` in another: a monthly order anchored on the 31st then skipped
+ * March entirely and booked April a day early. Re-point
+ * {@link STANDING_ORDERS_SCAN_TZ} to move both together, never one alone.
+ */
+export const STANDING_ORDERS_TZ = STANDING_ORDERS_SCAN_TZ;
 
 export interface StandingOrdersJobDeps {
   standingOrders: Pick<StandingOrderService, 'processDueOrders'>;
