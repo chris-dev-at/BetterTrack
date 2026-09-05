@@ -5,7 +5,7 @@ import type { CashBudgetProgress } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { cx } from '../../../lib/cx';
-import { formatMoney } from '../../../lib/format';
+import { displayZoneMonth, formatMoney } from '../../../lib/format';
 import {
   CASH_TAGS_QUERY_KEY,
   cashBudgetsQueryKey,
@@ -22,9 +22,14 @@ import { DisabledActionHint } from './DisabledActionHint';
 import { TagChip } from './TagChip';
 import { useActivePortfolio } from './useActivePortfolio';
 
-/** The current calendar month `YYYY-MM` (UTC — matches the server's period). */
+/**
+ * The current calendar month `YYYY-MM` on the ledger's clock — the server's own
+ * period key (#1792). The UTC month it used to be is the PREVIOUS month between
+ * 00:00 and 02:00 Vienna, so this surface opened on a month the ledger had
+ * already left.
+ */
 function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
+  return displayZoneMonth();
 }
 
 /** Progress-bar fill: analytical blue on track, negative red once exceeded. */

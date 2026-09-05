@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -10,6 +10,7 @@ import {
   portfolios,
   type CashBudgetRow,
 } from '../schema';
+import { cashFlowScope, cashMonthBounds } from './cashSummaryRepository';
 
 /**
  * Cash-budget persistence (V5 cash fusion). A budget is a monthly spend target
@@ -67,15 +68,6 @@ function toBudget(row: CashBudgetRow): CashBudgetRecord {
     currency: row.currency,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
-}
-
-/** First day of the month after `period` — the exclusive upper bound. */
-function monthBounds(period: string): { from: Date; toExclusive: Date } {
-  const [year, month] = period.split('-').map(Number) as [number, number];
-  return {
-    from: new Date(Date.UTC(year, month - 1, 1)),
-    toExclusive: new Date(Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1)),
   };
 }
 
@@ -228,9 +220,16 @@ export function createCashBudgetRepository(db: Database) {
      * rows. That is deliberate and it is why these totals do not sum to the
      * portfolio's outflow — "how much went on Food" cannot depend on what else
      * the row was labelled.
+     *
+     * THE ROW SET IS THE SUMMARY'S (#1792): `cashFlowScope` — so the €9,000 leg
+     * of an internal transfer, which carries the `Transfer` system tag by
+     * construction and can carry a user tag too, is no more "spend" here than it
+     * is in `GET /cash/summary`. Before that, a budget on either tag reported
+     * €9,000 spent and fired `budget.exceeded` for money that never left the
+     * book, while the summary reported €0 for the same tag, month and portfolio.
      */
     async outflowByTag(portfolioId: string, period: string): Promise<Map<string, number>> {
-      const { from, toExclusive } = monthBounds(period);
+      const { from, toExclusive } = cashMonthBounds(period);
       const rows = await db
         .select({
           tagId: cashMovementTags.tagId,
@@ -242,10 +241,10 @@ export function createCashBudgetRepository(db: Database) {
           eq(portfolioCashMovements.id, cashMovementTags.movementId),
         )
         .where(
-          and(
-            eq(portfolioCashMovements.portfolioId, portfolioId),
-            gte(portfolioCashMovements.executedAt, from),
-            lt(portfolioCashMovements.executedAt, toExclusive),
+          cashFlowScope(
+            portfolioId,
+            from,
+            toExclusive,
             sql`${portfolioCashMovements.amountEur} < 0`,
           ),
         )

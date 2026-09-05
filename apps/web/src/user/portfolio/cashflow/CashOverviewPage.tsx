@@ -12,7 +12,7 @@ import {
   getCashTrends,
 } from '../../../lib/cashApi';
 import { getCashMovements, listCashSources } from '../../../lib/portfolioApi';
-import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
+import { EM_DASH, displayZoneMonth, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
@@ -32,9 +32,14 @@ const TREND_MONTHS = 6;
 /** Enough recent rows to recognise the last few days without becoming the ledger. */
 const RECENT_LIMIT = 5;
 
-/** The current calendar month `YYYY-MM` (UTC — matches the server's period). */
+/**
+ * The current calendar month `YYYY-MM` on the ledger's clock — the server's own
+ * period key (#1792). The UTC month it used to be is the PREVIOUS month between
+ * 00:00 and 02:00 Vienna, so this surface opened on a month the ledger had
+ * already left.
+ */
 function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
+  return displayZoneMonth();
 }
 
 /** A short localized month label for a `YYYY-MM` key (e.g. "Jul"). */

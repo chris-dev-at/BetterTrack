@@ -419,6 +419,39 @@ export function formatDateTimeSeconds(iso: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? EM_DASH : formatters().dateTimeSeconds.format(date);
 }
 
+/** `YYYY-MM-DD` in the display zone — `en-CA` renders exactly that, in any locale. */
+const DISPLAY_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/**
+ * The calendar day an instant falls on IN THE DISPLAY ZONE, as `YYYY-MM-DD`
+ * (#1792).
+ *
+ * `new Date().toISOString().slice(0, 10)` is the UTC day, which is a DIFFERENT
+ * day between 00:00 and 02:00 Vienna — so a form pre-filled from it offered
+ * yesterday's date while every list on the screen already showed today's, and a
+ * movement recorded then was counted in a month the ledger did not display it
+ * in. Any `<input type="date">` whose value the ledger will render back has to
+ * come from here.
+ */
+export function displayZoneDay(at: Date = new Date()): string {
+  return DISPLAY_DAY.format(at);
+}
+
+/**
+ * The calendar month an instant falls in, in the display zone, as `YYYY-MM` —
+ * the key the cash surfaces ask the server for. It is the server's own period
+ * key (`cashBudgetService.periodKeyFor`), so the month a page opens on is the
+ * month the ledger dates its newest row into.
+ */
+export function displayZoneMonth(at: Date = new Date()): string {
+  return displayZoneDay(at).slice(0, 7);
+}
+
 /** ISO timestamp → localised date (Vienna), or {@link EM_DASH} when absent/invalid. */
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return EM_DASH;
