@@ -45,6 +45,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../lib/socialApi';
 import { ApiError } from '../../lib/apiClient';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { SharedConglomeratePage } from './SharedConglomeratePage';
 
 const CONGLOMERATE_ID = '00000000-0000-0000-0000-000000000010';
@@ -258,5 +259,36 @@ describe('SharedConglomeratePage — what-if sandbox (V5-P6 arc c)', () => {
     );
     expect(nestedDetail).toEqual(untouchedSharedDetail);
     expect(getSharedConglomerate).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** The curated icon a rendered avatar actually painted (inert `data-icon-id`). */
+function avatarIconId(container: HTMLElement): string | null | undefined {
+  return container.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id');
+}
+
+describe('SharedConglomeratePage — the owner has a face (§6.9)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (previewSharedConglomerateSandbox as unknown as Mock).mockResolvedValue(previewResponse);
+  });
+
+  test('renders the owner’s curated icon beside the title', async () => {
+    (getSharedConglomerate as unknown as Mock).mockResolvedValue({
+      ...detail,
+      owner: { ...detail.owner, profileIcon: 'crown' as const },
+    });
+    const { container } = renderPage();
+
+    expect(await screen.findByText(detail.name)).toBeInTheDocument();
+    expect(avatarIconId(container)).toBe('crown');
+  });
+
+  test('falls back to the deterministic default when the owner never picked one', async () => {
+    (getSharedConglomerate as unknown as Mock).mockResolvedValue(detail);
+    const { container } = renderPage();
+
+    expect(await screen.findByText(detail.name)).toBeInTheDocument();
+    expect(avatarIconId(container)).toBe(defaultProfileIconIdFor('alice'));
   });
 });

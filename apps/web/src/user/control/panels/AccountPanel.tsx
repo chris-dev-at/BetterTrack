@@ -3,12 +3,7 @@ import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import {
-  BASE_CURRENCIES,
-  PROFILE_ICON_IDS,
-  type BaseCurrency,
-  type ProfileIconId,
-} from '@bettertrack/contracts';
+import { BASE_CURRENCIES, type BaseCurrency, type ProfileIconId } from '@bettertrack/contracts';
 
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
@@ -23,13 +18,12 @@ import {
   requestDataExport,
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
-import { Button, Field, Icon, Input, Select } from '../../../ui/origin';
-import { Avatar } from '../../components/Avatar';
+import { Button, Field, Input, Select } from '../../../ui/origin';
 import { AsyncReadState } from '../../components/AsyncReadState';
-import { ProfileIconSvg } from '../../components/profileIcons';
 import { Alert } from '../../components/ui';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
+import { ProfileIconPicker } from './ProfileIconPicker';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
@@ -373,14 +367,16 @@ function ParanoidProfileIconRow() {
   const t = useT();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<ProfileIconId | null | undefined>(undefined);
-  const [open, setOpen] = useState(false);
   const query = useQuery({
     queryKey: PROFILE_KEY,
     queryFn: ({ signal }) => getProfileSettings(signal),
   });
   const mutation = useMutation({
-    mutationFn: (profileIcon: ProfileIconId | null) =>
-      updateProfileSettings({ isPublic: false, profileIcon }),
+    // Icon only. The public-profile opt-in is NOT this row's business: sending
+    // `isPublic` here would ride a profile-visibility write along with every
+    // icon change, harmless today only because the paranoid transition already
+    // forced it off. Omitting the field leaves the column untouched server-side.
+    mutationFn: (profileIcon: ProfileIconId | null) => updateProfileSettings({ profileIcon }),
     onSuccess: (result) => {
       queryClient.setQueryData(PROFILE_KEY, result);
       void queryClient.invalidateQueries({ queryKey: ME_KEY });
@@ -406,79 +402,12 @@ function ParanoidProfileIconRow() {
   return (
     <>
       <Row stack>
-        <button
-          aria-controls="paranoid-profile-icon-grid"
-          aria-expanded={open}
-          className="flex items-center gap-3 text-left"
-          onClick={() => setOpen((value) => !value)}
-          style={{
-            background: 'none',
-            border: 0,
-            color: 'inherit',
-            cursor: 'pointer',
-            font: 'inherit',
-            padding: 0,
-          }}
-          type="button"
-        >
-          <Avatar iconId={current} name={query.data.username} size="sm" />
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span className="bt-cc-row__label">{t('profile.icon.title')}</span>
-            <span className="bt-cc-row__hint">
-              {current
-                ? t('profile.icon.picked', { name: t(`profile.icon.name.${current}`) })
-                : t('profile.icon.defaultHint')}
-            </span>
-          </span>
-          <Icon
-            name="chevron-right"
-            size={15}
-            style={{
-              color: 'var(--bt-faint)',
-              flex: 'none',
-              transform: open ? 'rotate(90deg)' : undefined,
-              transition: 'transform var(--bt-t-fast)',
-            }}
-          />
-        </button>
-        {open ? (
-          <div
-            aria-label={t('profile.icon.title')}
-            id="paranoid-profile-icon-grid"
-            role="radiogroup"
-          >
-            <div className="grid grid-cols-8 gap-1.5 sm:grid-cols-10">
-              {PROFILE_ICON_IDS.map((id) => (
-                <button
-                  aria-checked={current === id}
-                  aria-label={t(`profile.icon.name.${id}`)}
-                  className="flex aspect-square items-center justify-center"
-                  data-icon-id={id}
-                  key={id}
-                  onClick={() => setDraft(id)}
-                  role="radio"
-                  style={{
-                    background: current === id ? 'var(--bt-gold-soft)' : 'none',
-                    border: `1px solid ${
-                      current === id ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'
-                    }`,
-                    borderRadius: 5,
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                  type="button"
-                >
-                  <ProfileIconSvg className="h-full w-full" id={id} />
-                </button>
-              ))}
-            </div>
-            {current !== null ? (
-              <button className="bt-link mt-2 text-xs" onClick={() => setDraft(null)} type="button">
-                {t('profile.icon.clear')}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+        <ProfileIconPicker
+          gridId="paranoid-profile-icon-grid"
+          onChange={setDraft}
+          username={query.data.username}
+          value={current}
+        />
       </Row>
       {dirty || mutation.isError ? (
         <Row>

@@ -119,6 +119,7 @@ user/control/panels/OAuthAppsPanel.tsx
 user/control/panels/ParanoidAccountExport.tsx
 user/control/panels/PrivacyPanel.tsx
 user/control/panels/PrivacyVaultSection.tsx
+user/control/panels/ProfileIconPicker.tsx
 user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
 user/control/panels/VaultTransferActions.tsx

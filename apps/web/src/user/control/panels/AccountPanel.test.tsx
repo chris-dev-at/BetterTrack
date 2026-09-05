@@ -4,10 +4,11 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type {
-  ExportRequestResponse,
-  ExportStatusResponse,
-  MeResponse,
+import {
+  PROFILE_ICON_IDS,
+  type ExportRequestResponse,
+  type ExportStatusResponse,
+  type MeResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../../lib/userApi', () => ({
@@ -321,15 +322,18 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
     renderPanel('paranoid');
 
     await user.click(await screen.findByRole('button', { name: /Profile icon/i }));
+    // The paranoid row offers the SAME finite set as the general picker — both
+    // render one shared component over `PROFILE_ICON_IDS`.
     const choices = screen.getAllByRole('radio');
+    expect(choices.map((el) => el.getAttribute('data-icon-id'))).toEqual([...PROFILE_ICON_IDS]);
     await user.click(choices[0]!);
     await user.click(screen.getByRole('button', { name: 'Save profile' }));
 
+    // ICON ONLY. `isPublic` used to ride along as a hardcoded `false`, a write
+    // that was a no-op purely because the paranoid transition forces the column
+    // off; sending it kept that safety hostage to an unrelated rule.
     await waitFor(() =>
-      expect(updateProfileSettings).toHaveBeenCalledWith({
-        isPublic: false,
-        profileIcon: expect.any(String),
-      }),
+      expect(updateProfileSettings).toHaveBeenCalledWith({ profileIcon: PROFILE_ICON_IDS[0] }),
     );
     expect(screen.queryByRole('switch', { name: /public profile/i })).not.toBeInTheDocument();
   });

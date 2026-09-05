@@ -93,6 +93,17 @@ function FollowedItemRow({ item }: { item: FollowedItem }) {
 
   const identity = (
     <>
+      {/* The item's owner carries the same face here as in the followed-PEOPLE
+          row above — leading the row, so both row types scan face → name and
+          neither gains height. */}
+      {available !== null ? (
+        <Avatar
+          className="shrink-0"
+          iconId={available.owner.profileIcon}
+          name={available.owner.username}
+          size="sm"
+        />
+      ) : null}
       <Badge className="shrink-0" outline>
         {t(`social.itemFollow.kind.${item.kind}`)}
       </Badge>

@@ -385,6 +385,61 @@ describe('profile icons (§13.5 V5-P0 (c), #549)', () => {
     expect(profileSettingsResponseSchema.parse(cleared.body).profileIcon).toBeNull();
   });
 
+  // #1798: the paranoid Account row writes the icon alone. Omitting `isPublic`
+  // must leave the opt-in exactly where it is, so an icon change can never carry
+  // a public-profile write — not even a no-op one.
+  it('an icon-only write leaves the public-profile opt-in untouched, in both directions', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+
+    // Public ON, then an icon-only write: still public.
+    const on = await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: true, acknowledgePublic: true });
+    expect(on.status).toBe(200);
+
+    const iconOnly = await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ profileIcon: 'fox' });
+    expect(iconOnly.status).toBe(200);
+    const afterOn = profileSettingsResponseSchema.parse(iconOnly.body);
+    expect(afterOn.profileIcon).toBe('fox');
+    expect(afterOn.isPublic).toBe(true);
+    // …and it does NOT double as an enable path either: turning the page off,
+    // then writing the icon alone, keeps it off (the slug stays 404).
+    await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: false });
+    const iconAgain = await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ profileIcon: 'panda' });
+    const afterOff = profileSettingsResponseSchema.parse(iconAgain.body);
+    expect(afterOff.profileIcon).toBe('panda');
+    expect(afterOff.isPublic).toBe(false);
+    expect((await request(harness.app).get('/api/v1/social/profiles/alice')).status).toBe(404);
+  });
+
+  it('an icon-only write still refuses an unknown id or an unknown field (.strict)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+
+    for (const body of [
+      { profileIcon: 'not-a-real-avatar' },
+      { profileIcon: 'fox', avatarUrl: 'https://evil.example/pic.png' },
+      { profileIcon: 'https://evil.example/pic.png' },
+    ]) {
+      const res = await aliceAgent
+        .put('/api/v1/social/profile')
+        .set(...XRW)
+        .send(body);
+      expect(res.status).toBe(400);
+    }
+  });
+
   it('friend endpoints emit the picked icon on the other party (surfaces per §549)', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });

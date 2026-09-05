@@ -4,6 +4,13 @@ import { createElement } from 'react';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+// Privacy mode drives which panel owns the profile-icon picker: the `profile`
+// panel is hidden for paranoid accounts, which carry their copy in `account`.
+const privacy = vi.hoisted(() => ({ mode: 'normal' as 'normal' | 'paranoid' }));
+vi.mock('../vault/usePrivacyMode', () => ({
+  useResolvedPrivacyMode: () => privacy.mode,
+}));
+
 // This suite is about the overlay itself (taxonomy, nav, filter, focus, Escape),
 // so every panel is stubbed to a bare marker. Their real behaviour stays covered
 // by their own suites under `./panels/`.
@@ -461,5 +468,46 @@ describe('ControlCenterOverlay', () => {
     await user.selectOptions(selector, 'notifications');
     expect(await within(popup()).findByText('notifications-panel')).toBeInTheDocument();
     expect(selector).toHaveValue('notifications');
+  });
+});
+
+describe('Control Center — "profile icon" lands on the panel that owns the picker', () => {
+  beforeEach(() => {
+    privacy.mode = 'normal';
+  });
+
+  test('routes to Public profile, where the general picker lives', async () => {
+    const user = userEvent.setup();
+    renderAt('/control/account');
+
+    await user.type(
+      within(popup()).getByRole('searchbox', { name: 'Filter panels' }),
+      'profile icon',
+    );
+
+    expect(within(popup()).getByRole('link', { name: 'Public profile' })).toHaveAttribute(
+      'href',
+      '/control/profile',
+    );
+    // Account carries only the paranoid-only copy — a normal user routed there
+    // would find nothing.
+    expect(within(popup()).queryByRole('link', { name: 'Account' })).not.toBeInTheDocument();
+  });
+
+  test('routes a paranoid account to Account, whose Public profile panel is hidden', async () => {
+    privacy.mode = 'paranoid';
+    const user = userEvent.setup();
+    renderAt('/control/account');
+
+    await user.type(
+      within(popup()).getByRole('searchbox', { name: 'Filter panels' }),
+      'profile icon',
+    );
+
+    expect(within(popup()).getByRole('link', { name: 'Account' })).toHaveAttribute(
+      'href',
+      '/control/account',
+    );
+    expect(within(popup()).queryByRole('link', { name: 'Public profile' })).not.toBeInTheDocument();
   });
 });
