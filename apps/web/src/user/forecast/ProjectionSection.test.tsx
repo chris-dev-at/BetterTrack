@@ -57,6 +57,10 @@ import { formatMoney, setMoneyCurrency } from '../../lib/format';
 import { getPortfolioDividendProjectionFor } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
+import {
+  STANDING_ORDER_SCHEDULE_TZ,
+  calendarDayInTimezone,
+} from '../vault/standingOrders/schedule';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { normalizeStandingOrders, projectNetWorth, type ForecastResult } from './projection';
 import { ProjectionSection } from './ProjectionSection';
@@ -65,9 +69,18 @@ const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
 /** The return factor's accessible name — it now says what it measures (#1759). */
 const RETURN_FACTOR = 'Average return (excluding deposits)';
 const RETURN_RATE = 'Return rate (%)';
-const HISTORY_END = new Date();
-const HISTORY_START = new Date(HISTORY_END);
+// The section anchors its sampling window on "today" in the schedule's timezone
+// (`todayIso()`), not in UTC, and the paranoid branch trims the history envelope
+// to `today − 5Y` itself. Anchoring this fixture in UTC instead put its first
+// point one day OUTSIDE that window whenever Vienna had already rolled over and
+// UTC had not — between 22:00 and 24:00 UTC in summer — which left the curve
+// with a single point, no statable CAGR and an empty rate field. Resolve the
+// fixture's "today" the same way the component does so the window holds at
+// every hour of the day.
+const HISTORY_END_ISO = calendarDayInTimezone(new Date(), STANDING_ORDER_SCHEDULE_TZ);
+const HISTORY_START = new Date(`${HISTORY_END_ISO}T00:00:00Z`);
 HISTORY_START.setUTCFullYear(HISTORY_START.getUTCFullYear() - 5);
+const HISTORY_START_ISO = HISTORY_START.toISOString().slice(0, 10);
 
 const PORTFOLIOS: PortfolioSummary[] = [
   {
@@ -103,14 +116,14 @@ const HISTORY: PortfolioHistoryResponse = {
   interval: '1d',
   baseCurrency: 'EUR',
   points: [
-    { date: HISTORY_START.toISOString().slice(0, 10), valueEur: 100 },
-    { date: HISTORY_END.toISOString().slice(0, 10), valueEur: 127.628 },
+    { date: HISTORY_START_ISO, valueEur: 100 },
+    { date: HISTORY_END_ISO, valueEur: 127.628 },
   ],
   // The vault's own time-weighted curve — what a PARANOID account samples.
   // +27,628 % over five years is 5,00 %/yr.
   performance: [
-    { date: HISTORY_START.toISOString().slice(0, 10), pct: 0 },
-    { date: HISTORY_END.toISOString().slice(0, 10), pct: 27.628 },
+    { date: HISTORY_START_ISO, pct: 0 },
+    { date: HISTORY_END_ISO, pct: 27.628 },
   ],
 };
 
@@ -124,8 +137,8 @@ function analytics(twrCagrPct: number, valueCagrPct = 99): AnalyticsSeriesRespon
     portfolioId: PORTFOLIO_ID,
     baseCurrency: 'EUR',
     mode: 'value',
-    from: HISTORY_START.toISOString().slice(0, 10),
-    to: HISTORY_END.toISOString().slice(0, 10),
+    from: HISTORY_START_ISO,
+    to: HISTORY_END_ISO,
     inflation: null,
     inflationPresets: [],
     primary: {
