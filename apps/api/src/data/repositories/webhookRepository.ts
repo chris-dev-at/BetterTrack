@@ -211,6 +211,41 @@ export function createWebhookDeliveryRepository(db: Database) {
       return rows.length > 0;
     },
 
+    /**
+     * Record a DELIVERED outcome, upserting on the delivery id. The failure
+     * path above is insert-only because its streak side-effect is not
+     * idempotent; a success has no such side-effect, and a delivery id is
+     * deterministic across replays — so a 200 that lands after an earlier
+     * attempt already wrote a `failed` row must flip that row to `success`
+     * instead of being dropped by the conflict. `attempts` keeps the highest
+     * count seen, so the flipped row still shows what the delivery cost.
+     */
+    async recordDelivered(
+      input: Omit<RecordWebhookDeliveryInput, 'status' | 'error'>,
+    ): Promise<void> {
+      await db
+        .insert(webhookDeliveries)
+        .values({
+          id: input.id,
+          subscriptionId: input.subscriptionId,
+          eventType: input.eventType,
+          status: 'success',
+          responseStatus: input.responseStatus,
+          attempts: input.attempts,
+          error: null,
+          ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+        })
+        .onConflictDoUpdate({
+          target: webhookDeliveries.id,
+          set: {
+            status: 'success',
+            responseStatus: input.responseStatus,
+            error: null,
+            attempts: sql`greatest(${webhookDeliveries.attempts}, ${input.attempts})`,
+          },
+        });
+    },
+
     /** The subscription's delivery log, newest first, capped at `limit`. */
     async listForSubscription(
       subscriptionId: string,

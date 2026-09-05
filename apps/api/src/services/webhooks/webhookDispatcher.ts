@@ -5,6 +5,10 @@ import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_DELIVERY_REFUSED_ERROR,
+  WEBHOOK_DELIVERY_SECRET_ERROR,
+  WEBHOOK_DELIVERY_TIMEOUT_ERROR,
+  WEBHOOK_DELIVERY_UNRESOLVED_ERROR,
+  WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
   WEBHOOK_EVENT_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
@@ -51,6 +55,14 @@ import { buildWebhookPayload, signWebhookPayload } from './webhookSigner';
  * streak; crossing {@link WEBHOOK_AUTO_DISABLE_THRESHOLD} auto-disables. All log
  * bookkeeping is idempotent on the delivery id, so a redelivered terminal job
  * never double-counts.
+ *
+ * A receiver-side status that says "never send me this again"
+ * ({@link WEBHOOK_PERMANENT_RESPONSE_STATUSES}) short-circuits that ladder: it
+ * is terminal on the attempt it arrives, because five signed POSTs per event ×
+ * up to the 20 subscriptions a user may hold is a lot of noise for an
+ * answer that cannot change, and the operator's "my endpoint is gone" signal
+ * should surface on the first event rather than the fifth. It is still recorded
+ * as a failure with its status, so the auto-disable streak is unaffected.
  */
 
 export interface WebhookTransportResult {
@@ -125,8 +137,33 @@ export interface WebhookDispatcher {
 
 const DELIVERY_USER_AGENT = 'BetterTrack-Webhooks/1';
 const MAX_ERROR_LEN = 200;
-/** Pre-send failure: the destination could not be resolved for this attempt. */
-const UNRESOLVED_DESTINATION_ERROR = 'destination unresolved';
+
+/**
+ * Receiver answers that mean "this delivery will never be accepted": a malformed
+ * or unauthorized request, a route that is gone, an entity the receiver rejects.
+ * Retrying them changes nothing, so they end the ladder on the attempt they
+ * arrive.
+ *
+ * Deliberately an allowlist, not "every 4xx": `408 Request Timeout`, `429 Too
+ * Many Requests` and anything unlisted (incl. every 5xx) stay retryable, because
+ * those DO change with time — a rate-limited or overloaded receiver is exactly
+ * what the backoff ladder exists for.
+ */
+export const WEBHOOK_PERMANENT_RESPONSE_STATUSES: readonly number[] = [
+  400, // Bad Request — the body will be identical on every retry
+  401, // Unauthorized — the signature scheme is not going to change mid-ladder
+  403, // Forbidden
+  404, // Not Found — the receiver route does not exist
+  410, // Gone — the receiver route was deleted
+  422, // Unprocessable Entity — the receiver rejects this payload
+];
+
+const PERMANENT_STATUSES = new Set(WEBHOOK_PERMANENT_RESPONSE_STATUSES);
+
+/** True when `status` is a receiver refusal that retrying cannot fix. */
+export function isPermanentWebhookStatus(status: number | null): boolean {
+  return status !== null && PERMANENT_STATUSES.has(status);
+}
 
 /** Never persist receiver-provided text — keep failure reasons short + structural. */
 function shortReason(status: number | null, error: string | undefined): string {
@@ -198,8 +235,10 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     status: number | null;
     error?: string;
   }): Promise<WebhookDeliveryResult> {
-    // A failed attempt that still has retries left → let BullMQ back off.
-    if (input.attempt < input.maxAttempts) {
+    // A failed attempt that still has retries left → let BullMQ back off. A
+    // permanent receiver refusal has nothing to wait for, so it skips straight
+    // to the terminal branch and spends ONE attempt instead of the full ladder.
+    if (input.attempt < input.maxAttempts && !isPermanentWebhookStatus(input.status)) {
       return { outcome: 'retry', status: input.status, error: input.error };
     }
     // Terminal failure: record it and advance the auto-disable streak once.
@@ -221,6 +260,34 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
       const sub = await subscriptions.findById(job.subscriptionId);
       // Deleted or disabled (incl. auto-disabled by a prior delivery) → drop.
       if (!sub || !sub.enabled) return { outcome: 'skipped', status: null };
+
+      // The subscribed set is authoritative at SEND, not only at fan-out. The
+      // queue is not instantaneous — which is precisely why `enabled` and the
+      // destination URL are re-checked here — so a user who PATCHes an event
+      // type off must not have queued deliveries POST it to the endpoint they
+      // just revoked it from. Recorded so the drop is explainable in the log,
+      // but never counted against the auto-disable streak: the receiver did
+      // nothing wrong, the owner changed their mind.
+      if (!sub.eventTypes.includes(job.event.type)) {
+        logger.info(
+          { subscriptionId: sub.id, type: job.event.type },
+          'webhook delivery dropped: event type no longer subscribed',
+        );
+        await deliveries.record({
+          id: job.deliveryId,
+          subscriptionId: sub.id,
+          eventType: job.event.type,
+          status: 'failed',
+          responseStatus: null,
+          attempts: attempt,
+          error: WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
+        });
+        return {
+          outcome: 'skipped',
+          status: null,
+          error: WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
+        };
+      }
 
       // SSRF guard (§8 "Outbound safety", §13.5 V5-P10). The destination is
       // user-supplied, so it is re-resolved and re-checked on EVERY attempt: a
@@ -270,7 +337,7 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
           attempt,
           maxAttempts,
           status: null,
-          error: UNRESOLVED_DESTINATION_ERROR,
+          error: WEBHOOK_DELIVERY_UNRESOLVED_ERROR,
         });
       }
 
@@ -303,12 +370,12 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
           eventType: job.event.type,
           attempts: attempt,
           responseStatus: null,
-          error: 'secret unavailable',
+          error: WEBHOOK_DELIVERY_SECRET_ERROR,
         });
         return {
           outcome: disabled ? 'disabled' : 'failed',
           status: null,
-          error: 'secret unavailable',
+          error: WEBHOOK_DELIVERY_SECRET_ERROR,
         };
       }
 
@@ -330,16 +397,20 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
       }
 
       if (result.ok) {
-        const inserted = await deliveries.record({
+        // Upsert, not insert-or-drop: a replayed delivery reuses its
+        // deterministic id, so a 200 that arrives after a `failed` row was
+        // written must flip that row rather than vanish — otherwise the log
+        // permanently reports a delivered event as failed. Unlike the failure
+        // path (whose `incrementFailure` is not idempotent) both writes here
+        // are, so neither is gated on "did we insert".
+        await deliveries.recordDelivered({
           id: job.deliveryId,
           subscriptionId: sub.id,
           eventType: job.event.type,
-          status: 'success',
           responseStatus: result.status,
           attempts: attempt,
-          error: null,
         });
-        if (inserted) await subscriptions.recordSuccess(sub.id, new Date(now()));
+        await subscriptions.recordSuccess(sub.id, new Date(now()));
         return { outcome: 'delivered', status: result.status };
       }
 
@@ -397,8 +468,8 @@ export function createPinnedWebhookTransport(timeoutMs = 10_000): WebhookTranspo
             headers: { ...headers, 'content-length': String(payload.byteLength) },
           });
           attempt.timer = setTimeout(() => {
-            req.destroy(new Error('timeout'));
-            finish({ ok: false, status: null, error: 'timeout' });
+            req.destroy(new Error(WEBHOOK_DELIVERY_TIMEOUT_ERROR));
+            finish({ ok: false, status: null, error: WEBHOOK_DELIVERY_TIMEOUT_ERROR });
           }, timeoutMs);
 
           req.on('response', (res) => {

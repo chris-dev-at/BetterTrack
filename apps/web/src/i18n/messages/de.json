@@ -1042,7 +1042,19 @@
           "empty": "Noch keine Zustellungen aufgezeichnet.",
           "loadError": "Zustellungen konnten nicht geladen werden.",
           "success": "Zugestellt",
-          "failed": "Fehlgeschlagen"
+          "failed": "Fehlgeschlagen",
+          "showDetail": "Warum?",
+          "hideDetail": "Ausblenden",
+          "attempts": "Versuche: {{count}}",
+          "reason": {
+            "http": "Der Empfänger hat die Zustellung mit HTTP {{status}} abgelehnt.",
+            "refused": "Das Ziel wurde blockiert — es zeigt auf einen Netzbereich, den Webhooks nicht erreichen dürfen.",
+            "unresolved": "Der Zielhost konnte nicht aufgelöst werden.",
+            "timeout": "Der Empfänger hat nicht rechtzeitig geantwortet.",
+            "secret": "Der Signaturschlüssel konnte nicht gelesen werden, daher wurde nichts gesendet.",
+            "unsubscribed": "Dieser Ereignistyp wurde vor der Zustellung aus dem Webhook entfernt.",
+            "network": "Die Verbindung zum Empfänger ist fehlgeschlagen."
+          }
         },
         "secretModal": {
           "title": "Dein Webhook-Signaturschlüssel",
