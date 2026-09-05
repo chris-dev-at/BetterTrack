@@ -56,12 +56,14 @@ import {
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
-import type {
-  AppendOpInput,
-  MirrorChainDisplayRow,
-  MirrorInviteDetailRow,
-  MirrorMemberDetailRow,
-  MirrorchainRepository,
+import {
+  TERMINAL_OP_KINDS,
+  type AppendOpInput,
+  type MirrorRowCursor,
+  type MirrorChainDisplayRow,
+  type MirrorInviteDetailRow,
+  type MirrorMemberDetailRow,
+  type MirrorchainRepository,
 } from '../../data/repositories/mirrorchainRepository';
 import type { CashMovementRepository } from '../../data/repositories/cashMovementRepository';
 import type { CashSourceRepository } from '../../data/repositories/cashSourceRepository';
@@ -144,8 +146,12 @@ const LOCK_RELEASE_SCRIPT =
 const LOCK_RENEW_SCRIPT =
   "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], tonumber(ARGV[2])) else return 0 end";
 
-/** Ops whose presence as an entity's latest op make it terminally deleted (§3). */
-const TERMINAL_KINDS = new Set<string>(['tx.delete', 'dividend.delete']);
+/**
+ * Ops whose presence as an entity's latest op make it terminally deleted (§3).
+ * The repository owns the list (derived from the op kinds, so every `*.delete`
+ * is terminal); this door guard reads it so the two can never disagree.
+ */
+const TERMINAL_KINDS = new Set<string>(TERMINAL_OP_KINDS);
 const CHAIN_OP_KINDS = new Set<string>(MIRROR_CHAIN_OP_KINDS);
 
 /** Suffix attempts for §1's collision rule (`Name (2)` …) on replicated names. */
@@ -233,10 +239,30 @@ export interface MirrorConsistencySweepResult {
   }>;
   /** (b) Copy-local transactions in an active synced copy with no mirror link. */
   orphanedLocalRows: Array<{ portfolioId: string; localId: string }>;
+  /**
+   * Residuals this run did NOT itemise because the per-run page bound stopped
+   * short of them. Nothing is lost — the scan resumes past this page on the next
+   * run — but the number is reported so "the sweep found 500" can be told apart
+   * from "the sweep found 500 of 900".
+   */
+  deferred: { danglingOriginRows: number; orphanedLocalRows: number };
 }
 
 /** Bound on rows surfaced per crash-residual category in one sweep run. */
 export const MIRROR_SWEEP_ROW_LIMIT = 500;
+
+/**
+ * Where each residual scan resumes. The scans are DETECTION surfaces — nothing
+ * is repaired — so an unpaged `LIMIT n` would re-report the same arbitrary page
+ * forever and hide everything behind it (and let one big chain starve the rest).
+ * A cursor lost to a Redis eviction only means the next run restarts the walk.
+ */
+const SWEEP_CURSOR_KEYS = {
+  danglingOriginRows: 'bt:mirror:sweep:cursor:danglingOriginRows',
+  orphanedLocalRows: 'bt:mirror:sweep:cursor:orphanedLocalRows',
+} as const;
+/** A resume hint, not durable state: it outlives a daily cadence comfortably. */
+const SWEEP_CURSOR_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 export interface MirrorService {
   /**
@@ -356,7 +382,7 @@ export interface MirrorService {
   transferOwnership(actorId: string, chainId: string, toUserId: string): Promise<void>;
   /** Kick a member → fork (§6): tombstone under the lock, copy freezes at its watermark. */
   removeMember(actorId: string, chainId: string, targetUserId: string): Promise<void>;
-  /** Leave → fork (§6). Owner leave is refused with the §7 stopgap 409 until M4. */
+  /** Leave → fork (§6). An owner's leave runs §7 succession first, then departs. */
   leaveChain(userId: string, chainId: string): Promise<void>;
   /** Rename the chain (owner + managers, §5) → the refreshed summary. */
   renameChain(actorId: string, chainId: string, name: string): Promise<MirrorChainSummary>;
@@ -613,6 +639,45 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     members: readonly MirrorChainMemberRow[],
   ): Promise<boolean> {
     return (await activeMemberPortfolioFailure(members)) !== null;
+  }
+
+  /**
+   * One page of a crash-residual scan (design §2 (a)/(b)). The scan resumes at
+   * the cursor the previous run left, and — when the tail it finds is shorter
+   * than the page bound — wraps to the start of the order so a run near the end
+   * of the set still reports a full page. The cursor then advances to the last
+   * row REPORTED, or is cleared when the page covered the whole set. That is
+   * what makes the bound fair: every residual is reported within a bounded
+   * number of runs, whatever chain it belongs to, instead of one chain's first
+   * `LIMIT n` rows monopolising the surface forever.
+   */
+  async function pageResiduals<T, C>(scan: {
+    key: string;
+    list: (limit: number, after: C | null) => Promise<T[]>;
+    cursorOf: (row: T) => C;
+    encode: (cursor: C) => string;
+    decode: (raw: string) => C | null;
+    /** Stable row identity — the wrap must not report a row twice in one run. */
+    identity: (row: T) => string;
+  }): Promise<T[]> {
+    const limit = MIRROR_SWEEP_ROW_LIMIT;
+    const raw = await redis.get(scan.key);
+    const after = raw === null ? null : scan.decode(raw);
+    const rows = await scan.list(limit, after);
+    if (after !== null && rows.length < limit) {
+      const seen = new Set(rows.map(scan.identity));
+      for (const row of await scan.list(limit - rows.length, null)) {
+        if (seen.has(scan.identity(row))) continue;
+        seen.add(scan.identity(row));
+        rows.push(row);
+      }
+    }
+    const last = rows.length >= limit ? rows[rows.length - 1] : undefined;
+    if (last === undefined) await redis.del(scan.key);
+    else {
+      await redis.set(scan.key, scan.encode(scan.cursorOf(last)), 'EX', SWEEP_CURSOR_TTL_SECONDS);
+    }
+    return rows;
   }
 
   /**
@@ -1509,9 +1574,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
   /**
    * The §5 authority matrix, encoded once. Kick splits by the TARGET's role
-   * (`kick_member` vs `kick_manager`), which the caller resolves. `leave`
-   * excludes the owner (the §7 succession stopgap refuses owner leave until M4);
-   * ledger writes are every member's right and are checked in the submit paths.
+   * (`kick_member` vs `kick_manager`), which the caller resolves. Leaving is not
+   * a capability at all — every role may leave, and an owner's departure routes
+   * through §7 succession before the tombstone (`leaveChain`); ledger writes are
+   * every member's right and are checked in the submit paths.
    */
   type MembershipCapability =
     | 'invite'
@@ -3632,20 +3698,53 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         }
       }
       // (a) origin-commit-then-append residual: an origin link with no op.
-      const danglingOriginRows = (await repo.listDanglingOriginRows(MIRROR_SWEEP_ROW_LIMIT)).map(
-        (r) => ({
-          chainId: r.chainId,
-          portfolioId: r.portfolioId,
-          mirrorId: r.mirrorId,
-          kind: r.kind,
-        }),
-      );
+      const danglingPage = await pageResiduals({
+        key: SWEEP_CURSOR_KEYS.danglingOriginRows,
+        list: (limit: number, after: MirrorRowCursor | null) =>
+          repo.listDanglingOriginRows(limit, after),
+        cursorOf: (r) => ({ mirrorId: r.mirrorId, portfolioId: r.portfolioId, kind: r.kind }),
+        encode: (c) => `${c.mirrorId}|${c.portfolioId}|${c.kind}`,
+        decode: (raw) => {
+          const [mirrorId, portfolioId, kind] = raw.split('|');
+          if (!mirrorId || !portfolioId || !kind) return null;
+          return { mirrorId, portfolioId, kind: kind as MirrorRowKind };
+        },
+        identity: (r) => `${r.kind}|${r.mirrorId}|${r.portfolioId}`,
+      });
+      const danglingOriginRows = danglingPage.map((r) => ({
+        chainId: r.chainId,
+        portfolioId: r.portfolioId,
+        mirrorId: r.mirrorId,
+        kind: r.kind,
+      }));
       // (b) correction re-create-then-re-point residual: a synced-copy tx with
       // no mirror link (a safe-to-delete local duplicate) — surfaced, not deleted.
-      const orphanedLocalRows = (
-        await repo.listOrphanedSyncedTransactions(MIRROR_SWEEP_ROW_LIMIT)
-      ).map((r) => ({ portfolioId: r.portfolioId, localId: r.id }));
-      return { ownerlessRepaired, danglingOriginRows, orphanedLocalRows };
+      const orphanedPage = await pageResiduals({
+        key: SWEEP_CURSOR_KEYS.orphanedLocalRows,
+        list: (limit: number, after: string | null) =>
+          repo.listOrphanedSyncedTransactions(limit, after),
+        cursorOf: (r) => r.id,
+        encode: (c) => c,
+        decode: (raw) => raw,
+        identity: (r) => r.id,
+      });
+      const orphanedLocalRows = orphanedPage.map((r) => ({
+        portfolioId: r.portfolioId,
+        localId: r.id,
+      }));
+      // What this run did not itemise. Counted AFTER the pages so a residual
+      // created mid-run cannot make the deferred number negative.
+      const deferred = {
+        danglingOriginRows: Math.max(
+          0,
+          (await repo.countDanglingOriginRows()) - danglingOriginRows.length,
+        ),
+        orphanedLocalRows: Math.max(
+          0,
+          (await repo.countOrphanedSyncedTransactions()) - orphanedLocalRows.length,
+        ),
+      };
+      return { ownerlessRepaired, danglingOriginRows, orphanedLocalRows, deferred };
     },
 
     // ── Submits ──────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   MIRROR_CONFLICT,
   MIRROR_OP_VERSION,
+  MIRROR_ROW_DELETED,
   MIRROR_SYNC_STALLED,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   type MirrorOpPayload,
@@ -480,6 +481,71 @@ describe('mirrorchain M2 — replication core', () => {
     expect(
       aCash.movements.some((m) => m.kind === 'tax_withholding' || m.kind === 'tax_refund'),
     ).toBe(false);
+  });
+
+  it('refuses an edit to a cash movement whose delete is already the latest op (§3 terminality)', async () => {
+    const { alice, bob, aPid, bPid, chain } = await setupChain();
+    const movementRepo = createCashMovementRepository(harness.db);
+    const deposit = await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 100 });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // (1) Alice deletes the movement — op N, appended chain-wide. (2) Bob's copy
+    // never applied it: his watermark reads the chain head (so the submit path's
+    // origin catch-up is a no-op) while his row and its mirror link still exist
+    // and are still displayed. That is the copy-diverged-from-the-oplog state
+    // the §2 residual scans exist to detect — and the one state in which the §3
+    // door guard, not the catch-up, is what stands between a member and a write
+    // against a deleted row.
+    await harness.ctx.mirror.submitCashDelete(alice.id, aPid, deposit.movement.id);
+    const bobMovement = (await movementRepo.listForPortfolio(bPid)).find(
+      (movement) => movement.kind === 'deposit' && movement.amountEur === 100,
+    );
+    if (!bobMovement) throw new Error('Replica funding movement was not applied');
+    const head = (await mirrorRepo.getChain(chain.id))!.lastSeq;
+    await harness.db
+      .update(schema.mirrorChainMembers)
+      .set({ appliedSeq: head })
+      .where(eq(schema.mirrorChainMembers.portfolioId, bPid));
+    const balanceBefore = (await sourceBalances(bob.id, bPid)).find((s) => s.isMain)!.balanceEur;
+
+    // (3) The `version` Bob's UI carries into the editor is chain-wide MAX(seq)
+    // for the mirror id — which the delete already advanced, so the stale-edit
+    // guard alone would let this through. Terminality is what must refuse it.
+    const info = (await mirrorRepo.listMirrorRowInfoForPortfolio(bPid)).find(
+      (row) => row.kind === 'cash_movement' && row.localId === bobMovement.id,
+    );
+    if (!info) throw new Error('Replica movement has no mirror link');
+
+    await expect(
+      harness.ctx.mirror.submitCashUpdate(
+        bob.id,
+        bPid,
+        bobMovement.id,
+        { amountEur: 999 },
+        { baseSeq: info.latestSeq },
+      ),
+    ).rejects.toMatchObject({ statusCode: 409, code: MIRROR_ROW_DELETED });
+
+    // (4) The refusal is at the door: no local apply, no op, no moved balance —
+    // the acknowledged-then-silently-discarded write never happens.
+    const after = (await movementRepo.listForPortfolio(bPid)).find((m) => m.id === bobMovement.id);
+    expect(after?.amountEur).toBe(100);
+    expect((await sourceBalances(bob.id, bPid)).find((s) => s.isMain)!.balanceEur).toBe(
+      balanceBefore,
+    );
+    expect(
+      (await mirrorRepo.listOpsSince(chain.id, 0)).filter((o) => o.kind === 'cash.update'),
+    ).toHaveLength(0);
+
+    // A duplicate delete is refused identically — the tx/dividend behaviour.
+    await expect(
+      harness.ctx.mirror.submitCashDelete(bob.id, bPid, bobMovement.id, {
+        baseSeq: info.latestSeq,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: MIRROR_ROW_DELETED });
+    expect((await movementRepo.listForPortfolio(bPid)).some((m) => m.id === bobMovement.id)).toBe(
+      true,
+    );
   });
 
   it('set-balance replicates the origin-computed delta; force mode lets a skewed copy go honestly negative (§2/§8)', async () => {
