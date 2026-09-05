@@ -61,6 +61,10 @@ describe('yahooProvider.getDividendEvents (§13.5 V5-P5)', () => {
             currency: 'GBp',
             dividendYield: 0.0044,
             trailingAnnualDividendRate: 98,
+            // The close the yield's unit is determined against (#1790): 98p on
+            // 22,273p IS 0.44 %, confirming the fraction reading of `0.0044`.
+            // Both are pence, so the denomination cancels in the ratio.
+            previousClose: 22273,
           },
         }),
     });
@@ -139,15 +143,22 @@ describe('yahooProvider.getEarningsEvents (§13.5 V5-P5)', () => {
     const provider = createYahooProvider({ client, now: () => FIXED_NOW });
 
     const result = await provider.getEarningsEvents!(REF);
+    // The calendar date is an ANNOUNCEMENT date…
     expect(result.next).toEqual({
       date: '2026-07-30T00:00:00.000Z',
+      periodEnd: null,
       epsEstimate: 1.42,
       epsActual: null,
       estimated: true,
     });
+    // …while a history row's `quarter` is a fiscal PERIOD END, and since #1790
+    // it travels in the field that means that. The announcement date of a past
+    // report is not in this payload, so it stays null rather than being invented
+    // from the period end.
     expect(result.recent).toEqual([
       {
-        date: '2026-04-30T00:00:00.000Z',
+        date: null,
+        periodEnd: '2026-04-30T00:00:00.000Z',
         epsEstimate: 1.5,
         epsActual: 1.53,
         estimated: false,

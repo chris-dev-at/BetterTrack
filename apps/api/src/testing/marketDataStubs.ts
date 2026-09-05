@@ -273,13 +273,17 @@ export function sampleEarningsEvents(overrides: Partial<EarningsEvents> = {}): E
   return {
     next: {
       date: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      periodEnd: null,
       epsEstimate: 1.42,
       epsActual: null,
       estimated: true,
     },
     recent: [
       {
-        date: '2026-04-30T00:00:00.000Z',
+        // A reported quarter carries its fiscal PERIOD END, not an announcement
+        // date — the two are separate contract fields since #1790.
+        date: null,
+        periodEnd: '2026-04-30T00:00:00.000Z',
         epsEstimate: 1.5,
         epsActual: 1.53,
         estimated: false,

@@ -106,7 +106,9 @@ function marketDataWithReport(date: string | null) {
     earnings: (_ref: AssetRef) =>
       cachedIntel(
         sampleEarningsEvents({
-          next: date ? { date, epsEstimate: 1.4, epsActual: null, estimated: true } : null,
+          next: date
+            ? { date, periodEnd: null, epsEstimate: 1.4, epsActual: null, estimated: true }
+            : null,
         }),
       ),
   });

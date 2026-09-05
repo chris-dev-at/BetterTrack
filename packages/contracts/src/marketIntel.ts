@@ -89,12 +89,35 @@ export const dividendAmountBasisSchema = z.enum(DIVIDEND_AMOUNT_BASES);
 export type DividendAmountBasis = z.infer<typeof dividendAmountBasisSchema>;
 
 /**
- * Upper bound `forwardYield` is validated against. The field's convention is a
- * **fraction** (`0.015` ≈ 1.5 %); a provider that reports percent instead
- * (`1.5`) would render 100× wrong wherever the value is multiplied out. A figure
- * above this bound is therefore not a plausible yield but a unit mismatch, and
- * the provider mappers drop it to `null` rather than publish it — an absent
- * block, never a wrong number. 1 = 100 %/yr, far above any real forward yield.
+ * The basis a whole-book projection carries: one of the two per-holding bases
+ * when every contributing holding shared it, or `mixed` when they did not —
+ * which is a real state, not an error. Providers populate whichever field they
+ * have per asset, so one total legitimately sums a `trailing-12m` holding and a
+ * `forward-annualized` one; the projection says so instead of presenting the sum
+ * as a single kind of number (#1790).
+ */
+export const DIVIDEND_PROJECTION_BASES = [...DIVIDEND_AMOUNT_BASES, 'mixed'] as const;
+export const dividendProjectionBasisSchema = z.enum(DIVIDEND_PROJECTION_BASES);
+export type DividendProjectionBasis = z.infer<typeof dividendProjectionBasisSchema>;
+
+/**
+ * Upper bound `forwardYield` is validated against: 1 = 100 %/yr, above any
+ * forward yield a real payer carries.
+ *
+ * It is a **plausibility ceiling only — it cannot determine the field's unit**,
+ * and it used to be documented as if it could. The convention is a fraction
+ * (`0.015` ≈ 1.5 %) and a provider reporting percent renders 100× wrong, but no
+ * bound at 1 separates the two conventions below 1.0: on a percent-reporting
+ * build a 0.44 %-yielding name arrives as `0.44`, passes this bound, and reads
+ * "44 %" — while every correct payer on that same build (`2.5`) is above the
+ * bound and vanishes. Filtering on the bound alone therefore deletes the right
+ * answers and keeps the wrong ones (#1790).
+ *
+ * Determining the unit is the provider mapper's job and needs evidence, not a
+ * range: see `mapDividendEvents` in `apps/api/src/providers/yahooMapping.ts`,
+ * which cross-checks the reported figure against the payload's own annual
+ * dividend per share ÷ price and publishes only the reading that check confirms.
+ * This bound stays as the schema's last sanity gate on the result.
  */
 export const DIVIDEND_FORWARD_YIELD_MAX = 1;
 
@@ -103,15 +126,21 @@ export const dividendEventsSchema = z
   .object({
     /** Canonical currency of the payouts, or null when the provider omitted it. */
     currency: currencyCodeSchema.nullable(),
-    /** Past payouts, ascending by ex-date. */
+    /**
+     * Past payouts, ascending by ex-date. The read service dedupes and bounds
+     * this list before it reaches a client (`DIVIDEND_HISTORY_MAX_EVENTS` in
+     * `services/marketIntel/marketIntelService.ts`, where the news digest's
+     * bound also lives) — a provider is not a trust boundary.
+     */
     history: z.array(dividendEventSchema),
     /** Known upcoming ex/pay dates (forward calendar). */
     upcoming: z.array(dividendEventSchema),
     /**
      * Forward annual dividend yield as a **fraction** — `0.015` ≈ 1.5 % — where
-     * cheaply available (arc e). Null when absent, and null (not passed through)
-     * when the provider's figure falls outside `[0, DIVIDEND_FORWARD_YIELD_MAX]`,
-     * which means it is not in this convention at all.
+     * cheaply available (arc e). Null when absent, and null whenever the
+     * provider mapper could not *determine* that the upstream figure is in this
+     * convention (see {@link DIVIDEND_FORWARD_YIELD_MAX}): an unpublished yield,
+     * never a 100×-wrong one.
      */
     forwardYield: z.number().min(0).max(DIVIDEND_FORWARD_YIELD_MAX).nullable(),
     /**
@@ -234,6 +263,13 @@ export type ProjectedDividendHolding = z.infer<typeof projectedDividendHoldingSc
  * series shape the Forecast consumes). `available: false` (gate off, an
  * unresolvable holding, or a book over the fan-out cap) ⇒ zeros/empty and
  * hidden, with `currency` still naming the base those zeros are in.
+ *
+ * `basis` names what the totals are made of ({@link DIVIDEND_PROJECTION_BASES}),
+ * and is null exactly when no holding contributed — an unavailable or all-zero
+ * projection describes nothing. A `trailing-12m` total includes any special
+ * dividend paid in the last twelve months and so reads well above true forward
+ * income for a year afterwards: every surface that renders the total must render
+ * this beside it, so the figure is not read as a forward promise (#1790).
  */
 export const projectedDividendIncomeResponseSchema = z
   .object({
@@ -241,6 +277,7 @@ export const projectedDividendIncomeResponseSchema = z
     currency: currencyCodeSchema,
     monthlyTotalBase: z.number().nonnegative(),
     yearlyTotalBase: z.number().nonnegative(),
+    basis: dividendProjectionBasisSchema.nullable(),
     holdings: z.array(projectedDividendHoldingSchema),
     truncated: rollupTruncatedSchema,
   })
@@ -268,10 +305,20 @@ export type ProjectedDividendIncomeQuery = z.infer<typeof projectedDividendIncom
  * figures are still an estimate (an unconfirmed upcoming report); a past report
  * carries the actual EPS. EPS values are informational and left in the
  * provider's reporting unit (not converted to the portfolio base).
+ *
+ * The two dates are DIFFERENT things and each has its own field (#1790): `date`
+ * is when the results are/were **announced** — the date a "next report" label
+ * may show — and `periodEnd` is the end of the fiscal period being reported on,
+ * which for a June quarter announced on 31 Jul is 28 Jun, over a month earlier.
+ * They used to share one field, so a reported quarter's period end rendered
+ * under a heading that meant announcement date. Either may be null: a provider
+ * that supplies only period ends for its history leaves `date` null there, and
+ * an upcoming report has no period end of its own to give.
  */
 export const earningsEventSchema = z
   .object({
     date: z.string().datetime().nullable(),
+    periodEnd: z.string().datetime().nullable(),
     epsEstimate: z.number().nullable(),
     epsActual: z.number().nullable(),
     estimated: z.boolean(),
@@ -282,9 +329,18 @@ export type EarningsEvent = z.infer<typeof earningsEventSchema>;
 /** The provider payload for the earnings capability. */
 export const earningsEventsSchema = z
   .object({
-    /** The next (upcoming) earnings report, or null when none is known. */
+    /**
+     * The next (upcoming) earnings report, or null when none is known. `date` is
+     * its announcement date — note that a provider keeps returning the last one
+     * it knew about, so a consumer that labels this "next" MUST drop a date that
+     * has already passed (the read path's cache is served stale for days).
+     */
     next: earningsEventSchema.nullable(),
-    /** Recent past reports, ascending by date. */
+    /**
+     * Recent past reports, ascending by the date they carry. Yahoo's history
+     * gives only the fiscal period end, so these rows carry `periodEnd` and a
+     * null `date`; a surface renders them as the period they are.
+     */
     recent: z.array(earningsEventSchema),
   })
   .strict();
