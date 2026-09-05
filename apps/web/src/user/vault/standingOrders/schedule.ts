@@ -48,8 +48,25 @@ function monthlyOccurrence(year: number, month: number, anchorDay: number): stri
 }
 
 /**
+ * The most recent occurrence on or before `day`, ignoring start/end bounds —
+ * the twin of the server's `mostRecentOnOrBefore`. Null only for a monthly
+ * schedule with no anchor, which {@link assertSchedule} already refuses.
+ */
+function mostRecentOnOrBefore(schedule: StandingOrderSchedule, day: string): string | null {
+  if (schedule.cadence === 'daily') return day;
+  if (schedule.anchorDay === null) return null;
+  const anchorDay = schedule.anchorDay;
+  const { year, month } = parseDay(day);
+  const current = monthlyOccurrence(year, month, anchorDay);
+  if (current <= day) return current;
+  const previous = previousMonth(year, month);
+  return monthlyOccurrence(previous.year, previous.month, anchorDay);
+}
+
+/**
  * Matches the server scheduler's most-recent-only catch-up rule: one newest
- * occurrence is returned after downtime, never an accumulated backlog.
+ * occurrence is returned after downtime, never an accumulated backlog. What that
+ * rule discarded is reported by {@link skippedStandingOrderPeriods}.
  */
 export function dueStandingOrderOccurrence(
   schedule: StandingOrderSchedule,
@@ -58,20 +75,43 @@ export function dueStandingOrderOccurrence(
   assertSchedule(schedule, today);
   const horizon = schedule.endDate !== null && schedule.endDate < today ? schedule.endDate : today;
   if (horizon < schedule.startDate) return null;
-  if (schedule.cadence === 'daily') return horizon;
-
-  if (schedule.anchorDay === null) return null;
-  const anchorDay = schedule.anchorDay;
-  const { year, month } = parseDay(horizon);
-  const current = monthlyOccurrence(year, month, anchorDay);
-  const occurrence =
-    current <= horizon
-      ? current
-      : (() => {
-          const previous = previousMonth(year, month);
-          return monthlyOccurrence(previous.year, previous.month, anchorDay);
-        })();
+  const occurrence = mostRecentOnOrBefore(schedule, horizon);
+  if (occurrence === null) return null;
   return occurrence >= schedule.startDate ? occurrence : null;
+}
+
+/**
+ * The occurrences the newest-only catch-up rule discarded: every scheduled day
+ * strictly between `afterExclusive` (the booking watermark; null means "since
+ * the start date") and `throughInclusive` (the period actually being booked).
+ *
+ * This is the mirror of the server's `skippedPeriods`
+ * (`apps/api/src/services/standingOrders/schedule.ts`), walk for walk, so the
+ * vault twin can report the same drop the server notifies about instead of
+ * losing those periods in silence (#1793). Returning them changes nothing about
+ * which occurrence is booked. Bounded by `cap` so a pathological span cannot
+ * loop unbounded; the window kept is the newest one, so the last element is
+ * always the newest dropped occurrence.
+ */
+export function skippedStandingOrderPeriods(
+  schedule: StandingOrderSchedule,
+  afterExclusive: string | null,
+  throughInclusive: string,
+  cap = 400,
+): string[] {
+  assertSchedule(schedule, throughInclusive, afterExclusive);
+  const lower =
+    afterExclusive !== null && afterExclusive >= schedule.startDate ? afterExclusive : null;
+  let cursor = throughInclusive;
+  const newestFirst: string[] = [];
+  while (newestFirst.length < cap) {
+    const previous = mostRecentOnOrBefore(schedule, previousCalendarDay(cursor));
+    if (previous === null) break;
+    if (previous < schedule.startDate || (lower !== null && previous <= lower)) break;
+    cursor = previous;
+    newestFirst.push(previous);
+  }
+  return newestFirst.reverse();
 }
 
 /**
@@ -86,6 +126,9 @@ export function nextStandingOrderRunDate(
   active: boolean,
 ): string | null {
   if (!active) return null;
+  // The watermark decides which occurrence is still owed, so it is held to the
+  // same calendar-day standard as the schedule itself (the server mirrors this).
+  assertSchedule(schedule, today, lastPeriodKey);
   const due = dueStandingOrderOccurrence(schedule, today);
   if (due !== null && (lastPeriodKey === null || lastPeriodKey < due)) return due;
 
@@ -150,6 +193,13 @@ function nextCalendarDay(day: string): string {
   return formatDay(following.year, following.month, 1);
 }
 
+function previousCalendarDay(day: string): string {
+  const { year, month, day: date } = parseDay(day);
+  if (date > 1) return formatDay(year, month, date - 1);
+  const previous = previousMonth(year, month);
+  return formatDay(previous.year, previous.month, daysInMonth(previous.year, previous.month));
+}
+
 /**
  * Membership of `day` in the order's cadence/anchor/startDate lattice,
  * ignoring the CURRENT endDate. The server lets `endDate` shrink after
@@ -161,14 +211,18 @@ export function isStandingOrderScheduleDay(schedule: StandingOrderSchedule, day:
   return dueStandingOrderOccurrence({ ...schedule, endDate: null }, day) === day;
 }
 
-function assertSchedule(schedule: StandingOrderSchedule, today: string): void {
-  for (const [label, day] of [
-    ['today', today],
-    ['startDate', schedule.startDate],
-    ['endDate', schedule.endDate],
-  ] as const) {
+/**
+ * Refuse a schedule this math cannot honestly speak for. Mirrored on the server
+ * (`apps/api/src/services/standingOrders/schedule.ts`), so a row that one engine
+ * refuses is not silently computed against by the other (#1793).
+ */
+function assertSchedule(
+  schedule: StandingOrderSchedule,
+  ...days: readonly (string | null)[]
+): void {
+  for (const day of [...days, schedule.startDate, schedule.endDate]) {
     if (day !== null && !isCalendarDay(day)) {
-      throw new RangeError(`${label} must be a real ISO calendar day.`);
+      throw new RangeError(`Standing-order schedule day ${day} is not a real ISO calendar day.`);
     }
   }
   if (schedule.endDate !== null && schedule.endDate < schedule.startDate) {

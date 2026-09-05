@@ -180,7 +180,14 @@ describe('StandingOrdersSection', () => {
       retryCount: 0,
       materialize: async () => ({
         ok: true,
-        value: { today: '2026-07-27', booked: [], deferred: [], failed: [], skipped: [] },
+        value: {
+          today: '2026-07-27',
+          booked: [],
+          deferred: [],
+          failed: [],
+          skipped: [],
+          dropped: [],
+        },
       }),
     });
     const observerError = new Error('observer failed');
@@ -460,6 +467,71 @@ describe('StandingOrdersSection', () => {
     ).toBeInTheDocument();
   });
 
+  // The other side of the same coin: a dropped period and a stale-priced
+  // booking are facts about what the scan DID, so they are stated even when the
+  // order booked — the suppression that hid them is what #1793 is about.
+
+  test('names the catch-up periods the vault scan dropped, though the newest booked', async () => {
+    const row = await renderRetainedScan({
+      booked: { day: '2026-07-27', at: VAULT_SCAN_AT },
+      scan: {
+        today: '2026-07-27',
+        deferred: [],
+        failed: [],
+        booked: [
+          {
+            orderId: VAULT_INSUFFICIENT_ID,
+            occurrenceId: '018f0000-0000-7000-8000-0000000003a1',
+            dueDate: '2026-07-27',
+            kind: 'cash-deduct',
+            status: 'created',
+          },
+        ],
+        dropped: [
+          {
+            orderId: VAULT_INSUFFICIENT_ID,
+            periods: ['2026-07-25', '2026-07-26'],
+            newestPeriod: '2026-07-26',
+            droppedCount: 2,
+          },
+        ],
+      },
+    });
+
+    expect(
+      within(row).getByText(
+        '2 missed period(s) skipped, up to 26.07.2026 — only the newest one is caught up, the rest are not booked',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('names the valuation day a local-asset booking was priced from', async () => {
+    const row = await renderRetainedScan({
+      booked: { day: '2026-07-27', at: VAULT_SCAN_AT },
+      scan: {
+        today: '2026-07-27',
+        deferred: [],
+        failed: [],
+        booked: [
+          {
+            orderId: VAULT_INSUFFICIENT_ID,
+            occurrenceId: '018f0000-0000-7000-8000-0000000003a2',
+            dueDate: '2026-07-27',
+            kind: 'buy-asset',
+            status: 'created',
+            stalePriceAsOf: '2025-01-15',
+          },
+        ],
+      },
+    });
+
+    expect(
+      within(row).getByText(
+        'Booked at your own valuation from 15.01.2025 — no newer value point exists',
+      ),
+    ).toBeInTheDocument();
+  });
+
   test('scrolls to a notification-linked row after the async list loads', async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -665,7 +737,8 @@ describe('StandingOrdersSection', () => {
 async function renderRetainedScan(options: {
   order?: Partial<Record<string, unknown>>;
   booked?: { day: string; at: string };
-  scan: Pick<StandingOrderMaterializationResult, 'today' | 'deferred' | 'failed'>;
+  scan: Pick<StandingOrderMaterializationResult, 'today' | 'deferred' | 'failed'> &
+    Partial<Pick<StandingOrderMaterializationResult, 'booked' | 'dropped'>>;
 }): Promise<HTMLElement> {
   const fixture = await decryptClientMoneyFixture();
   const document = structuredClone(fixture.document);
@@ -700,7 +773,7 @@ async function renderRetainedScan(options: {
     retryCount: 0,
     materialize: async () => ({
       ok: true,
-      value: { booked: [], skipped: [], ...options.scan },
+      value: { booked: [], skipped: [], dropped: [], ...options.scan },
     }),
   });
   const engine = createVaultMoneyEngine(sync, market, {

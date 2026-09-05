@@ -2932,6 +2932,8 @@
         "notBookedQuoteUnavailable": "Not booked — quote unavailable — oldest missed booking due since {{date}}",
         "notBookedInsufficientCash": "Not booked — insufficient cash — oldest missed booking due since {{date}}",
         "notBookedFailed": "Not booked — booking error — oldest missed booking due since {{date}}",
+        "droppedPeriods": "{{count}} missed period(s) skipped, up to {{date}} — only the newest one is caught up, the rest are not booked",
+        "bookedStalePrice": "Booked at your own valuation from {{date}} — no newer value point exists",
         "pause": "Pause",
         "pausing": "Pausing…",
         "resume": "Resume",

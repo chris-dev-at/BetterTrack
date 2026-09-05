@@ -21,8 +21,11 @@ const NO_VAULT_MATERIALIZATION = () => null;
 const NO_VAULT_SUBSCRIPTION = () => () => undefined;
 
 interface StandingOrderNotice {
-  kind: 'quote-unavailable' | 'insufficient-cash' | 'failed';
+  kind: 'quote-unavailable' | 'insufficient-cash' | 'failed' | 'dropped' | 'stale-price';
+  /** The day the copy names: the outstanding period, the newest dropped one, or the valuation. */
   dueDate: string;
+  /** How many periods the newest-only catch-up rule discarded (`dropped` only). */
+  count?: number;
 }
 
 /**
@@ -110,7 +113,7 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
             <StandingOrderRow
               key={order.id}
               order={order}
-              notice={standingOrderNotice(order, materialization)}
+              notices={standingOrderNotices(order, materialization)}
               onEdit={setEditing}
             />
           ))}
@@ -135,11 +138,11 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
 
 function StandingOrderRow({
   order,
-  notice,
+  notices,
   onEdit,
 }: {
   order: StandingOrder;
-  notice: StandingOrderNotice | null;
+  notices: StandingOrderNotice[];
   onEdit: (order: StandingOrder) => void;
 }) {
   const t = useT();
@@ -197,7 +200,9 @@ function StandingOrderRow({
                 })
               : t('forecast.standingOrders.list.noNextRun')}
           </span>
-          {notice ? <StandingOrderNoticeText notice={notice} /> : null}
+          {notices.map((notice) => (
+            <StandingOrderNoticeText key={`${notice.kind}-${notice.dueDate}`} notice={notice} />
+          ))}
         </div>
       </div>
 
@@ -285,18 +290,25 @@ function StandingOrderRow({
   );
 }
 
+const NOTICE_KEYS: Record<StandingOrderNotice['kind'], string> = {
+  'quote-unavailable': 'forecast.standingOrders.list.notBookedQuoteUnavailable',
+  'insufficient-cash': 'forecast.standingOrders.list.notBookedInsufficientCash',
+  failed: 'forecast.standingOrders.list.notBookedFailed',
+  dropped: 'forecast.standingOrders.list.droppedPeriods',
+  'stale-price': 'forecast.standingOrders.list.bookedStalePrice',
+};
+
 function StandingOrderNoticeText({ notice }: { notice: StandingOrderNotice }) {
   const t = useT();
-  const date = formatDate(notice.dueDate);
-  const key =
-    notice.kind === 'quote-unavailable'
-      ? 'forecast.standingOrders.list.notBookedQuoteUnavailable'
-      : notice.kind === 'insufficient-cash'
-        ? 'forecast.standingOrders.list.notBookedInsufficientCash'
-        : 'forecast.standingOrders.list.notBookedFailed';
   return (
-    <span className={cx('text-xs', notice.kind === 'failed' ? 'bt-neg' : 'bt-gold-note')}>
-      {t(key, { date })}
+    <span
+      data-testid={`standing-order-notice-${notice.kind}`}
+      className={cx('text-xs', notice.kind === 'failed' ? 'bt-neg' : 'bt-gold-note')}
+    >
+      {t(NOTICE_KEYS[notice.kind], {
+        date: formatDate(notice.dueDate),
+        ...(notice.count === undefined ? {} : { count: notice.count }),
+      })}
     </span>
   );
 }
@@ -310,18 +322,34 @@ function useVaultStandingOrderMaterialization(): StandingOrderMaterializationRes
   );
 }
 
-function standingOrderNotice(
+/**
+ * Everything the last vault catch-up scan has to say about this row. Dropped
+ * periods and a stale-valuation booking are facts about what the scan DID, so
+ * unlike the outstanding-period copy they survive a successful booking — that
+ * suppression is exactly what made the vault twin's lost catch-up periods
+ * invisible (#1793).
+ */
+function standingOrderNotices(
   order: StandingOrder,
   result: StandingOrderMaterializationResult | null,
-): StandingOrderNotice | null {
-  if (
-    result === null ||
-    order.status !== 'active' ||
-    order.suspendedByArchive === true ||
-    result.booked.some((booked) => booked.orderId === order.id)
-  ) {
-    return null;
+): StandingOrderNotice[] {
+  if (result === null || order.status !== 'active' || order.suspendedByArchive === true) {
+    return [];
   }
+  const notices: StandingOrderNotice[] = [];
+  const dropped = result.dropped.find((entry) => entry.orderId === order.id);
+  if (dropped !== undefined) {
+    notices.push({
+      kind: 'dropped',
+      dueDate: dropped.newestPeriod,
+      count: dropped.droppedCount,
+    });
+  }
+  const booked = result.booked.find((entry) => entry.orderId === order.id);
+  if (booked?.stalePriceAsOf !== undefined) {
+    notices.push({ kind: 'stale-price', dueDate: booked.stalePriceAsOf });
+  }
+  if (booked !== undefined) return notices;
 
   // The document decides *whether* anything is owed and *since when*; the
   // retained scan entry only supplies the reason. Its own `dueDate` ages out the
@@ -332,20 +360,22 @@ function standingOrderNotice(
   // watermark after a scan; that cache seam is knowingly tolerated because this
   // is scan-bound copy, and entries booked in the published scan are suppressed.
   const dueDate = outstandingDueDate(order, result.today);
-  if (dueDate === null) return null;
+  if (dueDate === null) return notices;
 
   if (result.failed.some((failure) => failure.orderId === order.id)) {
-    return { kind: 'failed', dueDate };
+    notices.push({ kind: 'failed', dueDate });
+    return notices;
   }
 
   const deferrals = result.deferred.filter((deferred) => deferred.orderId === order.id);
-  if (deferrals.length === 0) return null;
-  return {
+  if (deferrals.length === 0) return notices;
+  notices.push({
     kind: deferrals.some((deferred) => deferred.reason === 'quote-unavailable')
       ? 'quote-unavailable'
       : 'insufficient-cash',
     dueDate,
-  };
+  });
+  return notices;
 }
 
 /**

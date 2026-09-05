@@ -29,7 +29,10 @@ import {
   createProviderRegistry,
 } from '../../../providers';
 import type { DispatchableEvent } from '../../notifications/notificationDispatcher';
-import { createStandingOrderService } from '../standingOrderService';
+import {
+  createStandingOrderService,
+  STANDING_ORDER_MAX_QUOTE_AGE_MS,
+} from '../standingOrderService';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
@@ -902,7 +905,7 @@ describe('standing orders — source tag round-trips through the P0c filter', ()
 });
 
 describe('standing orders — provider failure on a buy', () => {
-  it('notifies only after a quote failure remains deferred past its anchor', async () => {
+  it('notifies on the anchor day itself, then dedupes the later retry (#1793)', async () => {
     const { agent, pid } = await setup();
     const assetId = await seedAsset('BBB');
     const created = await createOrder(agent, {
@@ -921,11 +924,57 @@ describe('standing orders — provider failure on a buy', () => {
     expect(failed.deferred).toBe(1);
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await runPeriodKeys()).toHaveLength(0); // no claim was made
-    expect(await standingOrderNotifications(agent)).toEqual([]);
+    // The period is named on the day it was owed, not a day later (#1793) —
+    // the old `due < today` gate never opened at all for a daily cadence.
+    const anchorDayNotice = [
+      expect.objectContaining({
+        type: 'standing_order.skipped',
+        payload: expect.objectContaining({
+          standingOrderId: created.body.id,
+          periodKey: '2026-04-01',
+          outcome: 'deferred',
+        }),
+      }),
+    ];
+    expect(await standingOrderNotifications(agent)).toEqual(anchorDayNotice);
 
-    // Still unbooked on Apr 2: it is now past the Apr 1 anchor, so one stable
-    // deferred notice lands. Repeated later-day failures dedupe by period.
+    // Still unbooked on Apr 2: the same (period, outcome) key, so the repeat
+    // failure dedupes into the one stable notice rather than nagging daily.
     expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual(anchorDayNotice);
+
+    quote.mode = 'ok';
+    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(1);
+    expect(await txnRows(pid)).toHaveLength(1);
+    // A further run does not double-book the recovered period.
+    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(0);
+    expect(await txnRows(pid)).toHaveLength(1);
+  });
+
+  it('announces a daily buy’s deferral on the only day it is ever due (#1793)', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('DLY');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 1,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    // A daily order's due occurrence IS today on every scan, so the old
+    // `due < today` gate never opened: the provider could be down for a week
+    // and not one deferred notice would ever be sent.
+    quote.mode = 'fail';
+    expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+      booked: 0,
+      deferred: 1,
+      failed: 0,
+    });
+    expect(await txnRows(pid)).toEqual([]);
+    expect(await runPeriodKeys()).toEqual([]);
     expect(await standingOrderNotifications(agent)).toEqual([
       expect.objectContaining({
         type: 'standing_order.skipped',
@@ -936,13 +985,6 @@ describe('standing orders — provider failure on a buy', () => {
         }),
       }),
     ]);
-
-    quote.mode = 'ok';
-    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(1);
-    expect(await txnRows(pid)).toHaveLength(1);
-    // A further run does not double-book the recovered period.
-    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(0);
-    expect(await txnRows(pid)).toHaveLength(1);
   });
 
   it('polls a definitive quote and defers one past the four-day age ceiling', async () => {
@@ -973,11 +1015,9 @@ describe('standing orders — provider failure on a buy', () => {
     // reachable staleness guard is `pollQuote` + the age ceiling, not the
     // never-set-on-poll `stale` flag.
     expect(marketData.calls).toMatchObject({ quote: 0, poll: 1 });
-    expect(await standingOrderNotifications(agent)).toEqual([]);
-
-    // Still frozen past the anchor: the standard SO3 deferred notice lands.
-    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
-    expect(await standingOrderNotifications(agent)).toEqual([
+    // The SO3 deferred notice lands on the anchor day (#1793) and dedupes when
+    // the symbol is still frozen the next day.
+    const frozenNotice = [
       expect.objectContaining({
         type: 'standing_order.skipped',
         payload: expect.objectContaining({
@@ -986,7 +1026,11 @@ describe('standing orders — provider failure on a buy', () => {
           outcome: 'deferred',
         }),
       }),
-    ]);
+    ];
+    expect(await standingOrderNotifications(agent)).toEqual(frozenNotice);
+
+    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual(frozenNotice);
 
     // The market reopens: a current close books — dated at the scan instant,
     // with the quote's own timestamp recorded on `lastRunAt` (AC 4).
@@ -1055,7 +1099,7 @@ describe('standing orders — provider failure on a buy', () => {
     expect(order.body.lastRunAt).toBe('2026-12-31T21:00:00.000Z');
   });
 
-  it('dates a manual-asset buy at the scan instant, not its historic value-point day', async () => {
+  it('dates a manual-asset buy at the scan instant while recording its valuation day', async () => {
     const { agent, pid } = await setup();
     const createdAsset = await agent
       .post('/api/v1/custom-assets')
@@ -1121,7 +1165,16 @@ describe('standing orders — provider failure on a buy', () => {
     expect(transaction?.executedAt.toISOString()).toBe(scanAt);
     expect(invalidatedDays).toEqual(['2026-04-01']);
     const order = await agent.get(`/api/v1/standing-orders/${createdOrder.body.id as string}`);
-    expect(order.body.lastRunAt).toBe(scanAt);
+    // The exemption from the age ceiling is not an exemption from stating the
+    // age (#1793): `lastRunAt` is the market stamp for every other buy, so here
+    // it is the owner's own value-point day — 14 months before this booking.
+    // Recording `scanAt` made a 2025 valuation indistinguishable from a fresh
+    // quote, on the one surface that reports when a buy was priced.
+    expect(order.body.lastRunAt).toBe('2025-01-15T00:00:00.000Z');
+    expect(order.body.lastRunAt).not.toBe(scanAt);
+    expect(Date.parse(scanAt) - Date.parse(order.body.lastRunAt as string)).toBeGreaterThan(
+      STANDING_ORDER_MAX_QUOTE_AGE_MS,
+    );
     redis.disconnect();
   });
 });
@@ -1202,12 +1255,10 @@ describe('standing orders — unbookable quotes (#1712)', () => {
     expect(await run('2026-04-01T12:00:00Z')).toMatchObject({ booked: 0, deferred: 1, failed: 0 });
     expect(await txnRows(pid)).toEqual([]);
     expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
-    expect(await standingOrderNotifications(agent)).toEqual([]);
 
-    // Past the anchor the standard SO3 deferred notice lands, exactly like a
+    // The standard SO3 deferred notice lands on the anchor day, exactly like a
     // provider outage: the period is still owed, never silently booked wrong.
-    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
-    expect(await standingOrderNotifications(agent)).toEqual([
+    const refusalNotice = [
       expect.objectContaining({
         type: 'standing_order.skipped',
         payload: expect.objectContaining({
@@ -1216,7 +1267,11 @@ describe('standing orders — unbookable quotes (#1712)', () => {
           outcome: 'deferred',
         }),
       }),
-    ]);
+    ];
+    expect(await standingOrderNotifications(agent)).toEqual(refusalNotice);
+
+    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
+    expect(await standingOrderNotifications(agent)).toEqual(refusalNotice);
     expect(await txnRows(pid)).toEqual([]);
   });
 });
@@ -1439,7 +1494,20 @@ describe('standing orders — catch-up after downtime', () => {
       orderLabel: 'Daily bill',
       occurredAt: '2026-04-03T00:00:00.000Z',
     } as const;
-    expect(emitted).toEqual([aggregate, aggregate]);
+    // The Apr 4 period itself deferred (no cash), and a daily cadence is due on
+    // its own day — so the deferred notice rides along with the aggregate on
+    // every scan instead of being suppressed forever (#1793). Both are keyed by
+    // order+period+outcome, so the same pair repeats byte-identically.
+    const deferredToday = {
+      type: 'standing_order.skipped',
+      userId: user.id,
+      standingOrderId: created.body.id,
+      periodKey: '2026-04-04',
+      outcome: 'deferred',
+      orderLabel: 'Daily bill',
+      occurredAt: '2026-04-04T00:00:00.000Z',
+    } as const;
+    expect(emitted).toEqual([aggregate, deferredToday, aggregate, deferredToday]);
   });
 });
 

@@ -146,6 +146,54 @@ describe('standing-order schedule: skippedPeriodCount', () => {
   });
 });
 
+describe('standing-order schedule: a schedule the math refuses (#1793)', () => {
+  /**
+   * These rows cannot reach the server today — the create contract, the
+   * `standing_orders_anchor_for_monthly` CHECK and the `date` columns all
+   * refuse them — but the SAME math runs in the vault twin over an unconstrained
+   * document. Refusing here is what keeps the two engines from disagreeing, and
+   * what stops a missing anchor becoming `Math.min(undefined, 31)` = NaN and a
+   * fabricated `2026-03-NaN` day in the DTO.
+   */
+  const monthlyWithoutAnchor: ScheduleSpec = {
+    cadence: 'monthly',
+    anchorDay: null,
+    startDate: '2026-01-01',
+    endDate: null,
+  };
+
+  it('never computes a NaN day for a monthly spec with no anchor', () => {
+    expect(() => dueOccurrence(monthlyWithoutAnchor, '2026-03-15')).toThrow(RangeError);
+    expect(() => nextRunDate(monthlyWithoutAnchor, '2026-03-15', null, true)).toThrow(RangeError);
+    // A paused order is never asked when it runs next, on either engine.
+    expect(nextRunDate(monthlyWithoutAnchor, '2026-03-15', null, false)).toBeNull();
+  });
+
+  it('refuses a non-calendar day, an inverted end date and a cadence/anchor mismatch', () => {
+    expect(() => dueOccurrence(daily('2026-02-30'), '2026-03-01')).toThrow(RangeError);
+    expect(() => dueOccurrence(daily('2026-03-01'), '2026-02-30')).toThrow(RangeError);
+    expect(() => dueOccurrence(daily('2026-03-10', '2026-03-01'), '2026-03-11')).toThrow(
+      RangeError,
+    );
+    expect(() => dueOccurrence({ ...daily('2026-03-01'), anchorDay: 5 }, '2026-03-11')).toThrow(
+      RangeError,
+    );
+    expect(() => dueOccurrence(monthly(0, '2026-03-01'), '2026-03-11')).toThrow(RangeError);
+    expect(() => dueOccurrence(monthly(32, '2026-03-01'), '2026-03-11')).toThrow(RangeError);
+  });
+
+  it('refuses a non-calendar watermark instead of computing which periods it covers', () => {
+    expect(() => nextRunDate(daily('2026-03-01'), '2026-03-11', '2026-02-30', true)).toThrow(
+      RangeError,
+    );
+    expect(() => skippedPeriods(daily('2026-03-01'), '2026-02-30', '2026-03-11')).toThrow(
+      RangeError,
+    );
+    // The real shape stays computable — the guard rejects only impossible days.
+    expect(nextRunDate(daily('2026-03-01'), '2026-03-11', '2026-02-28', true)).toBe('2026-03-11');
+  });
+});
+
 describe('standing-order schedule: calendarDayInTimezone', () => {
   it('maps an instant to its calendar day in the given zone', () => {
     const noon = Date.parse('2026-03-15T12:00:00Z');
