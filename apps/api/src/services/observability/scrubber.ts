@@ -89,9 +89,12 @@ const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\
 const QUERY_SECRET_RE =
   /([?&][^?&=\s]*(?:key|token|secret|password|passwd|pwd|auth|credential|signature|sig)[^?&=\s]*=)([^&\s"'<>]*)/gi;
 
-// BetterTrack token shapes: personal API keys and every OAuth token/secret/id
-// prefix (§6.13). base64url body, so `[A-Za-z0-9._-]`.
-const BT_TOKEN_RE = /\b(?:btk|bto|btr|bts|btc)_[A-Za-z0-9._-]+/g;
+// BetterTrack token shapes: personal API keys, every OAuth token/secret/id
+// prefix (§6.13) and the outbound-webhook signing secret (`whsec_…`, §6.13
+// V5-P10) — the one credential shape the scrubber did not know, so it reached
+// problem titles and the per-key request log verbatim. base64url body, so
+// `[A-Za-z0-9._-]`.
+const BT_TOKEN_RE = /\b(?:btk|bto|btr|bts|btc|whsec)_[A-Za-z0-9._-]+/g;
 
 // `Authorization: Bearer <token>` / `Basic <creds>` embedded in a free string.
 const BEARER_RE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
