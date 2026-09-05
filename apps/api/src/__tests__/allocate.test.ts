@@ -458,6 +458,65 @@ describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
     expect(resolved.body.unresolvedPct).toBeCloseTo((body.leftoverEur / 10000) * 100, 9);
   });
 
+  it('withholds — and stops claiming `active` — after a custom asset empties the child (#1776)', async () => {
+    // Same shape as above, but the child is emptied by deleting the custom asset
+    // that was its only constituent (§6.8.5 keeps that a hard delete). The
+    // calculator has always withheld the 40 %; what used to disagree was the
+    // basket's own status, which stayed `active` with nothing backing the slice.
+    const { h, agent } = await harnessWith(() => cachedQuote(100));
+    const vwce = await seedAsset(h, { symbol: 'VWCE', providerRef: 'VWCE' });
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Lakeside Cabin', category: 'other', currency: 'EUR' });
+    expect(created.status).toBe(201);
+    const cabin = created.body.asset.id as string;
+
+    const property = await seedConglomerate(agent, 'Property', [
+      { assetId: cabin, weightPct: 100 },
+    ]);
+    const coreCreated = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Core' });
+    const coreId = coreCreated.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${coreId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: [
+              { assetId: vwce.id, weightPct: 60 },
+              { childId: property, weightPct: 40 },
+            ],
+          })
+      ).status,
+    ).toBe(200);
+    for (const id of [property, coreId]) {
+      expect((await agent.post(`/api/v1/conglomerates/${id}/activate`).set(...XRW)).status).toBe(
+        200,
+      );
+    }
+
+    expect((await agent.delete(`/api/v1/custom-assets/${cabin}`).set(...XRW)).status).toBe(204);
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${coreId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 10000, mode: 'whole' });
+    expect(res.status).toBe(200);
+    const body = res.body as AllocateResponse;
+    expect(body.positions).toHaveLength(1);
+    expect(body.totalCostEur).toBeCloseTo(6000, 6);
+    expect(body.leftoverEur).toBeCloseTo(4000, 6);
+
+    const resolved = await agent.get(`/api/v1/conglomerates/${coreId}/resolved`);
+    expect(resolved.body.unresolvedPct).toBeCloseTo((body.leftoverEur / 10000) * 100, 9);
+    // The third view of the same basket now agrees with the other two.
+    expect((await agent.get(`/api/v1/conglomerates/${coreId}`)).body.status).toBe('draft');
+  });
+
   it('leaves a fully-resolved nested basket spending the whole budget (no withholding)', async () => {
     const { h, agent } = await harnessWith(() => cachedQuote(100));
     const vwce = await seedAsset(h, { symbol: 'VWCEB', providerRef: 'VWCEB' });

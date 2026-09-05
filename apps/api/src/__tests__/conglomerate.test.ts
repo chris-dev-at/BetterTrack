@@ -882,6 +882,56 @@ describe('nested conglomerates', () => {
     );
   });
 
+  it('deleting a custom asset that empties a nested child demotes it and its parent (#1776)', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    // The caller's OWN custom asset (§6.8.5) — usable in a blueprint like any
+    // other asset, and its position row cascades away when it is deleted.
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Lakeside Cabin', category: 'other', currency: 'EUR' });
+    expect(created.status).toBe(201);
+    const customAssetId = created.body.asset.id as string;
+
+    const child = await createId(agent, 'Property');
+    const parent = await createId(agent, 'Core');
+    await putPositions(agent, child, [{ assetId: customAssetId, weightPct: 100 }]);
+    await putPositions(agent, parent, [
+      { assetId: a1.id, weightPct: 60 },
+      { childId: child, weightPct: 40 },
+    ]);
+    for (const id of [child, parent]) {
+      expect((await agent.post(`/api/v1/conglomerates/${id}/activate`).set(...XRW)).status).toBe(
+        200,
+      );
+    }
+
+    // §6.8.5 keeps this a hard delete — deleting a custom asset already discards
+    // its transactions — so the basket it guts is relabelled, not spared.
+    const del = await agent.delete(`/api/v1/custom-assets/${customAssetId}`).set(...XRW);
+    expect(del.status).toBe(204);
+
+    // Neither the emptied child nor the parent activated for it may still claim
+    // `active` while 40 % of the parent resolves to nothing.
+    expect((await agent.get(`/api/v1/conglomerates/${child}`)).body.status).toBe('draft');
+    expect((await agent.get(`/api/v1/conglomerates/${parent}`)).body.status).toBe('draft');
+
+    // …and the resolved view says exactly what the Invest Calculator withholds.
+    const res = await agent.get(`/api/v1/conglomerates/${parent}/resolved`);
+    const parsed = conglomerateResolvedResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.positions).toHaveLength(1);
+    expect(parsed.data.positions[0]!.assetId).toBe(a1.id);
+    expect(parsed.data.unresolvedPct).toBeCloseTo(40, 9);
+
+    // Re-activating is refused for the child, which is the honest reason.
+    const refused = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error.code).toBe('ACTIVATION_INVALID');
+  });
+
   it('leaves an unaffected active parent alone when a child edit still resolves', async () => {
     const { agent } = await login();
     const a1 = await seedAsset(harness);

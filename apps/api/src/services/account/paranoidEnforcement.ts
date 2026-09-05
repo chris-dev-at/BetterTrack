@@ -545,13 +545,22 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
 export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
   serviceExemption(
     'conglomerate',
-    ['create', 'remove'],
+    ['create', 'remove', 'basketsHoldingAsset'],
     'kept',
-    'A fresh basket has no constituents and delete surfaces no asset row, so neither can carry the owner custom-asset provenance.',
+    'A fresh basket has no constituents, delete surfaces no asset row, and the pre-delete lookup answers with basket ids alone — no asset row, name or valuation — so none can carry the owner custom-asset provenance.',
   ),
   serviceExemption(
     'conglomerate',
-    ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
+    [
+      'list',
+      'get',
+      'update',
+      'replacePositions',
+      'activate',
+      'resolved',
+      'allocate',
+      'revalidateAfterAssetRemoval',
+    ],
     'internallyFiltered',
     'Private baskets stay usable, but a CONSTITUENT may be the account own custom asset; every branch that would surface, embed or price one is scoped to global market assets under the caller transition lock.',
     ['accountMode', 'ownedAssetProvenance'],

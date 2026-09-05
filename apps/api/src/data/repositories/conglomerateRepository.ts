@@ -380,6 +380,23 @@ export function createConglomerateRepository(db: Database) {
     },
 
     /**
+     * The owner's conglomerates that hold `assetId` as a DIRECT constituent —
+     * the pre-delete lookup (#1776). `conglomerate_positions.asset_id` cascades
+     * with the asset identity, so these ids must be taken before the delete;
+     * afterwards the rows that name them are gone. Identity only, ordered for a
+     * stable sweep.
+     */
+    async conglomerateIdsHoldingAsset(ownerId: string, assetId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ id: conglomeratePositions.conglomerateId })
+        .from(conglomeratePositions)
+        .innerJoin(conglomerates, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+        .where(and(eq(conglomerates.ownerId, ownerId), eq(conglomeratePositions.assetId, assetId)))
+        .orderBy(asc(conglomeratePositions.conglomerateId));
+      return rows.map((r) => r.id);
+    },
+
+    /**
      * The subset of the given conglomerate ids OWNED by `ownerId` — only own
      * conglomerates are nestable (V5-P6), so a foreign/unknown id is simply
      * absent from the result and the service 404s without leaking existence.

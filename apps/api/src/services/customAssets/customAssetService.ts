@@ -16,6 +16,7 @@ import {
 import type { CustomAssetRepository } from '../../data/repositories/customAssetRepository';
 import type { AssetRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
+import type { ConglomerateService } from '../conglomerate/conglomerateService';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import type { VaultedPortfolioGuard } from '../account/vaultedPortfolioEnforcement';
@@ -44,6 +45,12 @@ export interface CustomAssetServiceDeps {
   snapshots: PortfolioSnapshotService;
   /** E2 portfolio boundary for the optional server-side initial purchase. */
   vaultedPortfolio?: Pick<VaultedPortfolioGuard, 'runOwnedPortfolioAllowed'>;
+  /**
+   * The blueprint side of a delete (#1776): a custom asset is usable in
+   * blueprints (§6.8.5), and its position rows cascade away with it, so the
+   * baskets that held it are re-run through the §6.5 activation gate.
+   */
+  conglomerates: Pick<ConglomerateService, 'basketsHoldingAsset' | 'revalidateAfterAssetRemoval'>;
 }
 
 export interface CustomAssetService {
@@ -231,11 +238,23 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       // it commits, so a fast recompute can never persist pre-delete data and
       // then be trusted (§16 rule 7).
       const refs = await snapshots.resolveAssetReferences(id);
+      // Same reason, blueprint side (#1776): `conglomerate_positions.asset_id`
+      // is ON DELETE CASCADE, so the baskets holding this asset must be named
+      // now — after the delete nothing records that they ever did.
+      const baskets = await deps.conglomerates.basketsHoldingAsset(userId, id);
       const deleted = await repo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
       for (const ref of refs) {
         await snapshots.invalidate(ref.portfolioId, ref.fromDay);
       }
+      // §6.8.5 keeps this a hard delete — a custom asset is an asset like any
+      // other and deleting one already discards its transactions. So the
+      // blueprints it silently gutted are relabelled instead: every basket that
+      // held it, and every ancestor above them, is re-run through the §6.5
+      // activation gate, because a basket left `active` while part of it
+      // resolves to nothing is the state #1755 ruled invalid — the donut claims
+      // fully invested while the Invest Calculator withholds the missing slice.
+      await deps.conglomerates.revalidateAfterAssetRemoval(userId, baskets);
     },
 
     async vaultSnapshots(userId, ids) {
