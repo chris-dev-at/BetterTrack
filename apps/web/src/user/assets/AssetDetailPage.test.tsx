@@ -415,6 +415,18 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
     expect(xs[2]! - xs[1]!).toBeCloseTo(2 * (xs[1]! - xs[0]!), 1);
   });
 
+  test('lets the history caption row wrap, so a 360px phone does not scroll sideways (#1799)', async () => {
+    // Nothing in this row can shrink: the sparkline is a fixed 140px and the two
+    // captions bottom out at their longest word, so on a German 360px phone the
+    // three of them together were 16px wider than the viewport and the whole
+    // page scrolled horizontally. The mobile gate that catches that takes ~17
+    // minutes and is not a required check, so the wrap is pinned here too.
+    vi.mocked(getAssetDividends).mockResolvedValue(availableDividends);
+    renderPage();
+    const chart = await screen.findByLabelText('Dividend payout history');
+    expect(chart.closest('.bt-panel--pad')).toHaveClass('flex-wrap');
+  });
+
   test('drops a "next ex-date" that has already passed, keeping the pay date (#1758)', async () => {
     // The normal upstream shape: gone ex, not yet paid. The event is still
     // upcoming — but only its PAY date is, and a stat labelled "Next ex-date"

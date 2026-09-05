@@ -369,7 +369,13 @@ function DividendsSection({ assetId }: { assetId: string }) {
         ) : null}
       </div>
       {payouts.length > 1 ? (
-        <div className="flex items-center gap-3 bt-panel bt-panel--pad">
+        // Wraps because the row cannot shrink: the chart is a fixed 140px and
+        // the two captions only shrink to their longest word, so on a 360px
+        // phone the German label plus the range pushed the page 16px wider than
+        // the viewport (mobile overflow gate, #1799). Wrapping drops the range
+        // onto its own line there and leaves the single-line desktop row as it
+        // was.
+        <div className="flex flex-wrap items-center gap-3 bt-panel bt-panel--pad">
           <span className="text-xs bt-muted">{t('assets.detail.dividends.history')}</span>
           <Sparkline
             data={payouts.map((p) => p.amount)}
