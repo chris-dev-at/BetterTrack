@@ -7,6 +7,7 @@ import { auditLog } from '../data/schema';
 import { eq } from 'drizzle-orm';
 import { createProblemRepository } from '../data/repositories/problemRepository';
 import { createProblemService } from '../services/observability/problemService';
+import { createProblemDropTally } from '../services/observability/problemDropTally';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -193,6 +194,39 @@ describe('admin problems', () => {
     expect(body.problems).toHaveLength(2);
     expect(body.droppedCaptures).toBe(3);
     expect(body.droppedCapturesTotal).toBe(3);
+  });
+
+  it('includes the worker process’s refused captures, never reporting them as zero', async () => {
+    // Every `kind: 'job'` capture happens in the WORKER, against ITS budget and
+    // ITS in-memory counters — which the API process cannot see. Publishing only
+    // the local tally reported a worker drop storm as `droppedCaptures: 0`,
+    // i.e. exactly the silent drop the capture contract rules out.
+    const redis = harness.ctx.redis;
+    // Start from a known tally: the shared keys outlive a single harness (and,
+    // on real Redis, a single test run).
+    await redis.del('problems:drops:worker:recent', 'problems:drops:worker:total');
+
+    const workerTally = createProblemDropTally(redis, 'worker');
+    const workerProblems = createProblemService({
+      repo: createProblemRepository(harness.db),
+      maxWritesPerWindow: 1,
+      onDrop: (kind, reason) => workerTally.record(kind, reason),
+    });
+    workerProblems.captureJobFailure(new Error('handler threw'), { queue: 'market.refresh' });
+    workerProblems.captureJobFailure(new Error('handler threw'), { queue: 'alerts.evaluate' });
+    await workerProblems.flush();
+    await workerTally.settled();
+    expect(workerProblems.droppedCaptures()).toBe(1);
+
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent.get('/api/v1/admin/problems');
+    const body = problemListResponseSchema.parse(res.body);
+
+    // The API itself refused nothing — every drop in this number is the worker's.
+    expect(harness.ctx.problems.droppedCaptures()).toBe(0);
+    expect(body.droppedCaptures).toBe(1);
+    expect(body.droppedCapturesTotal).toBe(1);
   });
 
   it('404s an unknown problem id', async () => {

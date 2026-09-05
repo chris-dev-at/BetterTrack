@@ -15,6 +15,17 @@ describe('redactString', () => {
     );
   });
 
+  it('redacts a webhook signing secret exactly like an API key', () => {
+    // §6.13 V5-P10: `whsec_…` is the one credential shape the scrubber did not
+    // know, so it reached problem titles and the per-key request log verbatim.
+    expect(redactString('signed with whsec_AbC123._-xyz')).toBe(`signed with ${REDACTED_TOKEN}`);
+    expect(redactString('rotate whsec_oldsecret to whsec_newsecret')).toBe(
+      `rotate ${REDACTED_TOKEN} to ${REDACTED_TOKEN}`,
+    );
+    // Redacted the same way a `btk_` key is — same replacement, same fold key.
+    expect(redactString('whsec_abc')).toBe(redactString('btk_abc'));
+  });
+
   it('redacts inline Bearer/Basic credentials but keeps the scheme', () => {
     expect(redactString('Authorization is Bearer eyJhbGciOi.J9.sig')).toBe(
       `Authorization is Bearer ${REDACTED_TOKEN}`,

@@ -33,8 +33,10 @@ import { redactString, scrubEvent, type ScrubbableValue } from './scrubber';
  * unbounded-write to the DB. The cap is charged per KIND and only for a
  * fingerprint's first write in a window, so a flapping provider cannot starve a
  * genuinely new unhandled error; throttled repeats defer their occurrences into
- * the next write rather than losing them, and an actual drop is logged and
- * counted ({@link ProblemService.droppedCaptures}), never silent.
+ * the fingerprint's next write — or, when it never recurs, into the drain the
+ * window roll and {@link ProblemService.flush} perform — rather than losing
+ * them, and an actual drop is logged and counted
+ * ({@link ProblemService.droppedCaptures}), never silent.
  *
  * The same object exposes the admin read/resolve side (list/get/resolve/reopen,
  * audit-logged) behind `/admin/problems`.
@@ -64,10 +66,21 @@ export interface ListProblemsResult {
   total: number;
   /** Whether a further page exists past this one. */
   hasMore: boolean;
-  /** Captures the rate cap refused in the CURRENT window (0 when none). */
+  /**
+   * Captures the rate cap refused in the CURRENT window (0 when none) — this
+   * process PLUS the peer process (the worker), when a peer tally is wired.
+   */
   droppedCaptures: number;
-  /** Captures the rate cap refused since boot. */
+  /** Captures the rate cap refused since boot, this process plus the peer. */
   droppedCapturesTotal: number;
+}
+
+/** A cross-process drop tally, as read by the process that publishes it. */
+export interface ProblemDropCounters {
+  /** Drops the peer refused in its trailing window. */
+  inWindow: number;
+  /** Drops the peer refused over the tally's retention. */
+  total: number;
 }
 
 export interface ProblemCaptureOptions {
@@ -105,15 +118,15 @@ export interface ProblemService {
   /** Await any in-flight capture writes (tests / graceful shutdown). */
   flush(): Promise<void>;
   /**
-   * Captures the rate cap refused to write, since boot. A drop is never silent:
-   * it lands here AND in the log, so "the page shows nothing" can always be told
-   * apart from "nothing happened".
+   * Captures the rate cap refused to write in THIS process, since boot. A drop
+   * is never silent: it lands here AND in the log, so "the page shows nothing"
+   * can always be told apart from "nothing happened". The admin list adds the
+   * peer process's tally on top (see {@link ProblemServiceDeps.peerDrops}) —
+   * these two accessors stay process-local because they are synchronous.
    */
   droppedCaptures(): number;
   /**
-   * The same counter for the CURRENT cap window — what the admin list
-   * publishes, because "60 rows, 140 refused" and "60 rows" are different
-   * incidents and only this tells them apart. Rolls the window lazily, so a
+   * The same counter for the CURRENT cap window. Rolls the window lazily, so a
    * quiet period reports 0 rather than the last storm's tally forever.
    */
   droppedCapturesInWindow(): number;
@@ -141,21 +154,52 @@ export interface ProblemServiceDeps {
   windowMs?: number;
   /**
    * Extra writes one fingerprint may spend per window on occurrence bumps.
-   * Defaults to 1 (so a storm of one error costs 2 writes a window, not N).
+   * Defaults to 1 (so a storm of one error costs 2 writes a window, not N —
+   * plus at most one drain write when the window closes).
    */
   maxRepeatWritesPerFingerprint?: number;
+  /**
+   * Notified for every refused capture. The WORKER passes the shared drop tally
+   * here so its refusals reach the admin surface: every `kind: 'job'` capture
+   * happens in the worker process, whose in-memory counters the admin API can
+   * never see, and a page reporting `droppedCaptures: 0` during a worker drop
+   * storm is exactly the silent drop {@link ProblemService.droppedCaptures}
+   * promises cannot happen.
+   */
+  onDrop?: (kind: ProblemRow['kind'], reason: DropReason) => void;
+  /**
+   * Reads the PEER process's drop tally, merged into {@link ProblemService.list}.
+   * The API passes the shared tally's reader; the worker leaves it unset (it
+   * publishes nothing). Never throws through: a tally read failure degrades to
+   * this process's own counters.
+   */
+  peerDrops?: () => Promise<ProblemDropCounters>;
 }
+
+/** Why a capture was refused — a bounded metric/label vocabulary. */
+export type DropReason = 'kind-budget' | 'tracking-capacity';
 
 const DEFAULT_MAX_WRITES_PER_WINDOW = 60;
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REPEAT_WRITES = 1;
 
 /**
- * Ceiling on fingerprints tracked at once. Only entries carrying deferred
- * occurrences survive a window roll, so this is reached solely by a
- * high-cardinality storm — and then it is a bound, not a leak.
+ * Ceiling on fingerprints tracked at once, WITHIN one window: the roll drains
+ * every deferred occurrence and then empties the map, so nothing an old window
+ * learnt can occupy the next one's capacity. Without that, one burst per
+ * fingerprint was enough to retain an entry forever, and a long-lived process
+ * eventually refused every genuinely new error with `tracking-capacity`.
  */
-const MAX_TRACKED_FINGERPRINTS = 5_000;
+export const MAX_TRACKED_FINGERPRINTS = 5_000;
+
+/** What a drain needs to write the occurrences a fingerprint deferred. */
+interface DeferredWrite {
+  kind: ProblemRow['kind'];
+  title: string;
+  message: string;
+  /** Already scrubbed AND bounded — captured once, on the first throttle. */
+  context: unknown;
+}
 
 /** Per-fingerprint budget state inside the current window. */
 interface FingerprintState {
@@ -163,10 +207,13 @@ interface FingerprintState {
   writes: number;
   /**
    * Occurrences observed while throttled. They are NOT lost: the next allowed
-   * write for this fingerprint folds them in, so `occurrence_count` still
-   * converges on the truth (a window late at worst).
+   * write for this fingerprint folds them in, and if there is no next one they
+   * are drained when the window closes (or on {@link ProblemService.flush}), so
+   * `occurrence_count` converges on the truth even for an error that stops.
    */
   pending: number;
+  /** The row those pending occurrences belong to; null until first throttled. */
+  deferred: DeferredWrite | null;
 }
 
 /**
@@ -262,16 +309,61 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   let loggedDropInWindow = false;
   const inflight = new Set<Promise<unknown>>();
 
+  /** Issue one upsert, tracked so {@link ProblemService.flush} can await it. */
+  const enqueueWrite = (
+    fingerprint: string,
+    kind: ProblemRow['kind'],
+    title: string,
+    message: string,
+    context: unknown,
+    occurrences: number,
+  ): void => {
+    const write = repo
+      .upsert({ fingerprint, kind, title, message, context, seenAt: new Date(now()), occurrences })
+      .catch((writeErr: unknown) => {
+        logger?.error({ err: writeErr, kind }, 'failed to persist captured problem');
+      });
+    // Track so `flush()` can await; self-remove on settle to bound the set.
+    inflight.add(write);
+    void write.finally(() => inflight.delete(write));
+  };
+
+  /**
+   * Write out every deferred occurrence. Deferral is a promise that the count
+   * arrives late, not that it arrives only if the error happens again: a burst
+   * that stops (a one-off storm, a provider that was fixed) would otherwise
+   * leave its occurrences in memory forever, so the stored `occurrence_count`
+   * silently under-reported the incident. Costs at most one write per
+   * fingerprint that was actually throttled.
+   */
+  const drainPending = (): void => {
+    for (const [fingerprint, state] of tracked) {
+      const deferred = state.deferred;
+      if (state.pending > 0 && deferred !== null) {
+        enqueueWrite(
+          fingerprint,
+          deferred.kind,
+          deferred.title,
+          deferred.message,
+          deferred.context,
+          state.pending,
+        );
+      }
+      state.pending = 0;
+      state.deferred = null;
+    }
+  };
+
   const rollWindow = (t: number): void => {
     if (t - windowStart < windowMs) return;
     windowStart = t;
     writesByKind.clear();
-    for (const [fingerprint, state] of tracked) {
-      // Keep only what still owes occurrences; everything else is re-learnt on
-      // its next sighting, which is what bounds the map over a long uptime.
-      if (state.pending === 0) tracked.delete(fingerprint);
-      else state.writes = 0;
-    }
+    // Drain first, then forget everything: an entry is a WINDOW's budget state,
+    // so carrying it (which is what keeping `pending > 0` entries did) let one
+    // burst per fingerprint fill the tracking map for the life of the process
+    // and turn the cap into a permanent mute for new errors.
+    drainPending();
+    tracked.clear();
     if (droppedInWindow > 0) {
       logger?.warn(
         { dropped: droppedInWindow, droppedTotal },
@@ -282,10 +374,14 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     loggedDropInWindow = false;
   };
 
-  const drop = (kind: ProblemRow['kind'], reason: 'kind-budget' | 'tracking-capacity'): void => {
+  const drop = (kind: ProblemRow['kind'], reason: DropReason): void => {
     droppedTotal += 1;
     droppedInWindow += 1;
     problemCapturesDroppedTotal.inc({ kind, reason });
+    // Publish to the cross-process tally BEFORE the log line's once-a-window
+    // guard: the admin surface is the only management surface, so a worker drop
+    // that only reaches this process's log has still gone unreported.
+    deps.onDrop?.(kind, reason);
     // One line per window, not one per drop: a storm must stay visible without
     // becoming the next flood. The rest is carried by the window summary above
     // and by `droppedCaptures()`.
@@ -331,37 +427,33 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
         return;
       }
       writesByKind.set(kind, spent + 1);
-      tracked.set(fingerprint, { writes: 1, pending: 0 });
+      tracked.set(fingerprint, { writes: 1, pending: 0, deferred: null });
     } else if (state.writes <= maxRepeatWrites) {
       state.writes += 1;
       occurrences = observed + state.pending;
       state.pending = 0;
+      state.deferred = null;
     } else {
       // Throttled, not dropped: the occurrences ride along with this
-      // fingerprint's next write, so no count is lost.
+      // fingerprint's next write, or with the drain that closes the window if
+      // there is no next one — so no count is lost either way. The row those
+      // occurrences belong to is remembered ONCE (the storm's remaining
+      // captures stay a counter bump), because the drain has to name a row and
+      // `upsert` refreshes title/message/context from what it is handed.
       state.pending += observed;
+      state.deferred ??= {
+        kind,
+        title,
+        message,
+        context: context ? boundProblemContext(scrubEvent(context) as unknown) : null,
+      };
       return;
     }
 
     // Scrub first (the whole tree, so no half-token survives), bound second.
     const scrubbedContext = context ? boundProblemContext(scrubEvent(context) as unknown) : null;
 
-    const write = repo
-      .upsert({
-        fingerprint,
-        kind,
-        title,
-        message,
-        context: scrubbedContext,
-        seenAt: new Date(now()),
-        occurrences,
-      })
-      .catch((writeErr: unknown) => {
-        logger?.error({ err: writeErr, kind }, 'failed to persist captured problem');
-      });
-    // Track so `flush()` can await; self-remove on settle to bound the set.
-    inflight.add(write);
-    void write.finally(() => inflight.delete(write));
+    enqueueWrite(fingerprint, kind, title, message, scrubbedContext, occurrences);
   };
 
   const record = async (
@@ -423,6 +515,10 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     },
 
     async flush() {
+      // Deferred occurrences are part of "everything captured so far", so the
+      // shutdown drain (and a test's flush) must write them out rather than
+      // await only the writes that already happened.
+      drainPending();
       await Promise.allSettled([...inflight]);
     },
 
@@ -439,6 +535,13 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       const offset = params.offset ?? 0;
       const filter = { kind: params.kind, status: params.status };
       rollWindow(now());
+      // The peer (worker) process holds its own in-memory counters, and every
+      // `kind: 'job'` capture is refused THERE — so publishing only this
+      // process's tally reported a worker drop storm as `droppedCaptures: 0`.
+      const peer = await (deps.peerDrops?.().catch((err: unknown) => {
+        logger?.warn({ err }, 'failed to read the peer problem-drop tally');
+        return null;
+      }) ?? Promise.resolve(null));
       const [problems, total, openCount] = await Promise.all([
         repo.list({ ...filter, limit: params.limit, offset }),
         repo.countMatching(filter),
@@ -449,8 +552,8 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
         openCount,
         total,
         hasMore: offset + problems.length < total,
-        droppedCaptures: droppedInWindow,
-        droppedCapturesTotal: droppedTotal,
+        droppedCaptures: droppedInWindow + (peer?.inWindow ?? 0),
+        droppedCapturesTotal: droppedTotal + (peer?.total ?? 0),
       };
     },
 
