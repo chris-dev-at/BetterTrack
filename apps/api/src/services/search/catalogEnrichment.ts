@@ -4,10 +4,15 @@ import type { Redis } from 'ioredis';
 
 import type { AssetSearchResult } from '@bettertrack/contracts';
 
-import type { AssetRepository } from '../../data/repositories/assetRepository';
+import type {
+  AssetRepository,
+  RefreshableAssetField,
+} from '../../data/repositories/assetRepository';
 import type { BackfillScheduler } from '../../jobs';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
+import { sha256Base64Url } from '../crypto/tokens';
+import { isCuratedCatalogRef } from './catalogSeed';
 
 /**
  * Provider-fallback orchestration for the local-first search (PROJECTPLAN.md
@@ -70,8 +75,27 @@ export interface CatalogEnrichment {
  */
 export const ENRICH_GUARD_TTL_SECONDS = 60;
 
-/** Redis guard key per normalized query; lowercased so "BAYN" and "bayn" coalesce. */
-export const enrichGuardKey = (query: string): string => `search:enrich:${query.toLowerCase()}`;
+/**
+ * Redis guard key per normalized query; lowercased so "BAYN" and "bayn"
+ * coalesce onto one lease (and onto one budget slot, `enrichmentBudget.ts`).
+ *
+ * The query is HASHED and lives under its own `q:` namespace (#1810). Both
+ * halves matter, because the query is attacker-chosen: `searchQuerySchema`
+ * accepts 64 arbitrary characters, and the raw query used to be pasted straight
+ * into `search:enrich:<query>` — the same namespace the per-user admission
+ * budget wrote `search:enrich:budget:<uuid>:<window>` into. Searching for the
+ * literal string `budget:<someone-else's-uuid>:<window>` therefore planted a
+ * guard STRING on that user's budget key, whose next `SCARD`/`SADD` failed
+ * WRONGTYPE and, through the deliberate fail-closed catch, silently killed
+ * their provider fallback for the window — repeatable once a minute.
+ *
+ * A hash is what makes that structural rather than a matter of escaping: no
+ * input can shape the key at all, and key length stops depending on query
+ * length. The cost is that a Redis key no longer shows which query it guards;
+ * the query is in every log line this module writes.
+ */
+export const enrichGuardKey = (query: string): string =>
+  `search:enrich:q:${sha256Base64Url(query.toLowerCase())}`;
 
 /**
  * How many provider hits ONE enrichment may write into the catalog (#1709).
@@ -146,6 +170,97 @@ const ENRICH_GUARD_COMPLETE_SCRIPT =
   "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3])) return 1 else return 0 end";
 
 /**
+ * Word tokens of `text` under the catalog's text-search configuration — the JS
+ * side of `to_tsvector('simple', …)` / `plainto_tsquery('simple', …)` (#1810).
+ *
+ * The `simple` configuration does no stemming and drops no stop words, so a
+ * lexeme is just a lowercased token, and what is left to mirror is the default
+ * parser's tokenisation. Four rules cover everything a ticker catalog holds:
+ *  - a token runs over letters/digits and may be joined by `.`, `-` or `/`
+ *    (`^GDAXI` → `gdaxi`, `GC=F` → `gc` + `f`, `Inc.` → `inc`);
+ *  - a run of the `asciihword` shape — hyphens, and NO `.` or `/` — also yields
+ *    its parts (`BTC-USD` → `btc-usd`, `btc`, `usd`; `All-World` → `all-world`,
+ *    `all`, `world`). A run that mixes them does not: `BRK-B.US` is the single
+ *    `host` token `brk-b.us`, and splitting it would invent a lexeme `brk` that
+ *    the row's own tsvector has not got (#1810 review);
+ *  - a purely dotted or slashed run is likewise one token — `BAYN.DE` the `host`
+ *    `bayn.de`, `EUR/USD` the `file` `eur/usd` — which is exactly why a query of
+ *    `de` must not, and here does not, match `BAYN.DE`;
+ *  - a `float` (digits `.` digits) that runs straight into a letter ends there:
+ *    `1.5x` is `1.5` + `x` to the parser, not one token (a leveraged-fund name
+ *    is where that shows up).
+ *
+ * Exotic token classes the parser knows and this does not — e-mail addresses,
+ * URLs, versions like `v1.2.3` — would tokenise differently; none can occur in
+ * a symbol or an instrument name, and `__tests__/rankParity.test.ts` holds the
+ * result against the real `plainto_tsquery` for the shapes that do.
+ */
+export function simpleLexemes(text: string): Set<string> {
+  const lexemes = new Set<string>();
+  for (const [run] of text.toLowerCase().matchAll(/[\p{L}\p{N}]+(?:[.\-/][\p{L}\p{N}]+)*/gu)) {
+    for (const token of splitFloatPrefixes(run)) {
+      lexemes.add(token);
+      // `asciihword` only: the parser reads a run carrying a `.` or `/` as one
+      // host/file token, parts and all.
+      if (token.includes('-') && !/[./]/.test(token)) {
+        for (const part of token.split('-')) lexemes.add(part);
+      }
+    }
+  }
+  return lexemes;
+}
+
+/**
+ * Split the leading `float`s off a run, the one place the parser stops inside
+ * what this tokenizer would otherwise read as one word: `1.5x` → `1.5`, `x`.
+ * A run whose float is followed by `.` or another digit (`1.5.2`, `v1.2.3`) is
+ * a version/file token and is left whole.
+ */
+function splitFloatPrefixes(run: string): string[] {
+  const tokens: string[] = [];
+  let rest = run;
+  for (;;) {
+    const float = /^[0-9]+\.[0-9]+(?=\p{L})/u.exec(rest);
+    if (!float) {
+      tokens.push(rest);
+      return tokens;
+    }
+    tokens.push(float[0]);
+    rest = rest.slice(float[0].length);
+  }
+}
+
+/**
+ * pg_trgm's `similarity(a, b)` in JS (#1810) — the score the catalog read
+ * orders every tier by and gates its fuzzy tier at 0.3.
+ *
+ * The definition is exactly the extension's: lowercase, split on non-alphanumeric
+ * characters, pad each word with two leading and one trailing space, take the
+ * DISTINCT set of 3-character windows, and return |A ∩ B| / |A ∪ B|. It is
+ * reproduced rather than approximated because the ordering it drives is what
+ * decides which fuzzy hits survive the cap: `similarity('BAYN.DE', 'bayr')` is
+ * 0.3 here for the same reason it is 0.3 in Postgres.
+ */
+export function trigramSimilarity(a: string, b: string): number {
+  const left = trigrams(a);
+  const right = trigrams(b);
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const gram of left) if (right.has(gram)) shared += 1;
+  return shared / (left.size + right.size - shared);
+}
+
+/** The distinct trigram set pg_trgm would build for `text`. */
+function trigrams(text: string): Set<string> {
+  const grams = new Set<string>();
+  for (const [word] of text.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)) {
+    const padded = `  ${word} `;
+    for (let i = 0; i + 3 <= padded.length; i += 1) grams.add(padded.slice(i, i + 3));
+  }
+  return grams;
+}
+
+/**
  * Rank provider hits the way the catalog read ranks rows (§6.2) before the
  * {@link ENRICH_MAX_HITS} slice decides what one enrichment may write (#1794).
  *
@@ -154,30 +269,152 @@ const ENRICH_GUARD_COMPLETE_SCRIPT =
  * exact-symbol match sat at provider position 25 wrote twenty fuzzy rows and
  * dropped the one row the follow-up catalog read would have ranked tier 0; the
  * 60 s guard then suppressed the re-run, so the user's refetch showed junk and
- * no exact match. Tiers mirror the SQL exactly — exact symbol → symbol prefix →
- * name substring → the rest — and the sort is stable, so provider order still
- * decides ties within a tier.
+ * no exact match.
+ *
+ * This is a MIRROR of `assetRepository.catalogTierSql` /
+ * `catalogSimilaritySql`, and the first version of it was not (#1810). It
+ * carried only the ILIKE half of tier 2 and broke ties on provider registration
+ * index, which left the whole fuzzy tier unsorted — so the §6.2 flagship
+ * misspelling path failed on its own promise: `etherium` graded all 30 hits
+ * tier 3, the sort was a no-op, and `ETH-USD / "Ethereum USD"` at provider
+ * position 22 was dropped in favour of twenty junk rows. The follow-up catalog
+ * read then filtered that junk out at the similarity floor and returned
+ * nothing, with the guard sitting at `done` for a full minute. Both halves are
+ * restored here:
+ *  - tier 2 carries the word arm (`search_text @@ plainto_tsquery('simple', q)`)
+ *    beside the substring arm, so `"ag bayer"` or `"apple, inc"` — order-free
+ *    and punctuation-free in Postgres, invisible to `String.includes` — grade
+ *    tier 2 as they will once written;
+ *  - the sort is `tier, sim desc, name`, the read's own `ORDER BY`, with
+ *    provider order as the last tiebreak only.
+ *
+ * `__tests__/rankParity.test.ts` runs the exported SQL builders over a fixture
+ * set and asserts this function agrees, so the two cannot drift silently again.
  */
 export function rankProviderHits(
   query: string,
   hits: readonly AssetSearchResult[],
 ): AssetSearchResult[] {
-  const needle = query.trim().toLowerCase();
-  const tier = (hit: AssetSearchResult): number => {
-    const symbol = hit.symbol.toLowerCase();
-    if (symbol === needle) return 0;
-    if (symbol.startsWith(needle)) return 1;
-    if (hit.name.toLowerCase().includes(needle)) return 2;
-    return 3;
-  };
+  const needle = query.trim();
+  const lowered = needle.toLowerCase();
+  const queryLexemes = simpleLexemes(needle);
   return hits
-    .map((hit, index) => ({ hit, index, tier: tier(hit) }))
+    .map((hit, index) => ({ hit, index, ...rankAgainst(needle, lowered, queryLexemes, hit) }))
     .sort(
-      // Array#sort is stable in V8, but the index tiebreak states the intent
-      // rather than relying on it: within a tier, provider order is preserved.
-      (a, b) => a.tier - b.tier || a.index - b.index,
+      (a, b) =>
+        a.tier - b.tier ||
+        b.sim - a.sim ||
+        // `order by "name"`. CODEPOINT order, where the database applies its
+        // own collation: on a `C`/`POSIX` database (and on the PGlite the tests
+        // run) these are the same order, on a glibc `en_US.UTF-8` one they part
+        // company wherever case or punctuation is the only difference
+        // (`'EUR/USD'` vs `'Ethereum USD'`). That residue is deliberate — the
+        // mirror can only implement one collation, and it is the third term of
+        // three, so it moves a hit only among hits the first two terms have
+        // already declared equally relevant. `__tests__/rankParity.test.ts`
+        // pins the parity under `collate "C"` for that reason.
+        (a.hit.name < b.hit.name ? -1 : a.hit.name > b.hit.name ? 1 : 0) ||
+        // Array#sort is stable in V8, but the index tiebreak states the intent
+        // rather than relying on it: all else equal, provider order is kept.
+        a.index - b.index,
     )
     .map((entry) => entry.hit);
+}
+
+/** What one row is worth to the catalog read: its tier, and the score that orders within it. */
+export interface ProviderHitRank {
+  /** `catalogTierSql`: 0 exact symbol, 1 symbol prefix, 2 name/word match, 3 the rest. */
+  tier: number;
+  /** `catalogSimilaritySql`: the better of the symbol and name trigram scores. */
+  sim: number;
+}
+
+/** Rank ONE hit as the catalog read would — the unit `__tests__/rankParity.test.ts` compares. */
+export function providerHitRank(
+  query: string,
+  hit: Pick<AssetSearchResult, 'symbol' | 'name'>,
+): ProviderHitRank {
+  const needle = query.trim();
+  return rankAgainst(needle, needle.toLowerCase(), simpleLexemes(needle), hit);
+}
+
+/** {@link providerHitRank} with the query's derived forms hoisted out of the loop. */
+function rankAgainst(
+  needle: string,
+  lowered: string,
+  queryLexemes: ReadonlySet<string>,
+  hit: Pick<AssetSearchResult, 'symbol' | 'name'>,
+): ProviderHitRank {
+  return {
+    tier: tierOf(lowered, queryLexemes, hit),
+    sim: Math.max(trigramSimilarity(hit.symbol, needle), trigramSimilarity(hit.name, needle)),
+  };
+}
+
+/** The read's `case` expression: exact symbol → symbol prefix → name/word → the rest. */
+function tierOf(
+  lowered: string,
+  queryLexemes: ReadonlySet<string>,
+  hit: Pick<AssetSearchResult, 'symbol' | 'name'>,
+): number {
+  const symbol = hit.symbol.toLowerCase();
+  if (symbol === lowered) return 0;
+  if (symbol.startsWith(lowered)) return 1;
+  if (hit.name.toLowerCase().includes(lowered)) return 2;
+  // `search_text` is `to_tsvector('simple', symbol || ' ' || name)`, and
+  // plainto_tsquery ANDs the query's lexemes: every one must be present. An
+  // empty query has no lexemes, and an empty tsquery matches nothing.
+  if (queryLexemes.size > 0) {
+    const document = simpleLexemes(`${hit.symbol} ${hit.name}`);
+    let all = true;
+    for (const lexeme of queryLexemes) {
+      if (!document.has(lexeme)) {
+        all = false;
+        break;
+      }
+    }
+    if (all) return 2;
+  }
+  return 3;
+}
+
+/**
+ * Which columns of an ALREADY EXISTING catalog row this provider search hit is
+ * allowed to correct (#1810 review). Empty is the common answer, and empty means
+ * the upsert writes nothing at all.
+ *
+ * A hit is not a description of an instrument, it is the projection
+ * `AssetProvider.search` can build from a picker payload — and two of its fields
+ * are openly guesses. Yahoo's search returns no currency, so
+ * `currencyForSearchResult` infers one from the symbol shape and otherwise
+ * answers `'USD'`; `mapAssetType` answers `'stock'` for a quote type it does not
+ * know. Both are documented as safe because they only tint a badge, which was
+ * true while an existing row was write-once. It stopped being true the moment
+ * this upsert could UPDATE: `^ATX` is a seeded EUR index whose currency the
+ * search projection would guess as USD (no `=X`, no `-`, no venue suffix, no
+ * `VIE` in the exchange table), and `assets.currency` is money — a pay-from-cash
+ * buy books a PERSISTED cash movement converted through it
+ * (`portfolioService`), tax, snapshots and the asset page value through it, the
+ * CSV import rejects rows that disagree with it, and paranoid rehydration
+ * refuses on it. So `currency` and `type` are never refreshed here; they stay
+ * with the curated seed list and the authoritative `getMeta`/`getQuote` +
+ * `normalizeCurrency` path.
+ *
+ * What is left is what the projection genuinely carries:
+ *  - `name`, but only when the provider actually supplied one. `yahooProvider`
+ *    falls back to the bare symbol when a quote has neither `longname` nor
+ *    `shortname`, and writing that would replace `'DAX Performance Index'` with
+ *    `'^GDAXI'` — destroying exactly the findability-by-name §6.2 ranks on;
+ *  - `exchange`, when non-blank, for the same reason.
+ * A curated row is refreshed by neither: {@link isCuratedCatalogRef}.
+ */
+export function providerRefreshFields(hit: AssetSearchResult): RefreshableAssetField[] {
+  if (isCuratedCatalogRef(hit.providerId, hit.providerRef)) return [];
+  const fields: RefreshableAssetField[] = [];
+  const name = hit.name.trim();
+  if (name !== '' && name !== hit.symbol.trim()) fields.push('name');
+  if (hit.exchange != null && hit.exchange.trim() !== '') fields.push('exchange');
+  return fields;
 }
 
 export interface CatalogEnrichmentDeps {
@@ -241,15 +478,21 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
         // backfill right away, exactly once. Rows that already existed —
         // seeded (§6.2(c)) or created by an earlier search — are warmed on
         // first *reference* instead (services/assets/referenceBackfill.ts).
-        const { row, created } = await assetRepo.upsertGlobal({
-          providerId: hit.providerId,
-          providerRef: hit.providerRef,
-          type: hit.type,
-          symbol: hit.symbol,
-          name: hit.name,
-          exchange: hit.exchange ?? null,
-          currency: hit.currency,
-        });
+        // A create writes the whole projection (there is nothing to destroy and
+        // the badge has to say something); an existing row is corrected only in
+        // the columns this hit is authoritative for.
+        const { row, created } = await assetRepo.upsertGlobal(
+          {
+            providerId: hit.providerId,
+            providerRef: hit.providerRef,
+            type: hit.type,
+            symbol: hit.symbol,
+            name: hit.name,
+            exchange: hit.exchange ?? null,
+            currency: hit.currency,
+          },
+          { refresh: providerRefreshFields(hit) },
+        );
         if (created) await backfill.enqueue(row.id);
       }
     } catch (err) {

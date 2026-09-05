@@ -3,6 +3,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  createAssetRepository,
+  REFRESHABLE_ASSET_FIELDS,
+  type GlobalAssetUpsert,
+} from '../data/repositories/assetRepository';
 import * as schema from '../data/schema';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -501,6 +506,46 @@ describe('conditional reads — catalog search (GET /api/v1/search)', () => {
       ).toBeGreaterThan(Date.parse(watermark));
       watermark = next;
     }
+  });
+
+  it('answers 200 with the corrected name after a global catalog refresh (#1810)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const repo = createAssetRepository(harness.db);
+    const seeded: GlobalAssetUpsert = {
+      providerId: 'yahoo',
+      providerRef: 'COND-REFRESH',
+      type: 'stock',
+      symbol: 'CONDG',
+      name: 'CONDG Computer Inc',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    };
+    await repo.upsertGlobal(seeded);
+
+    const first = await agent.get('/api/v1/search?q=COND');
+    expect(first.status).toBe(200);
+    expect(first.body.results.map((r: { name: string }) => r.name)).toContain('CONDG Computer Inc');
+    const watermark = first.headers['last-modified'] as string;
+
+    // A global row was write-once before #1810, so this is a new write path on
+    // the same rail as the custom-asset rename above: the seed (or a provider
+    // re-enrichment) correcting a stale name keeps the row's id, so only the
+    // catalog write stamp can carry it to a client holding the old validator.
+    const { created, refreshed } = await repo.upsertGlobal(
+      { ...seeded, name: 'CONDG Corp' },
+      { refresh: REFRESHABLE_ASSET_FIELDS },
+    );
+    expect({ created, refreshed }).toEqual({ created: false, refreshed: true });
+
+    const after = await agent.get('/api/v1/search?q=COND').set('If-Modified-Since', watermark);
+    expect(after.status).toBe(200);
+    const names = after.body.results.map((r: { name: string }) => r.name);
+    expect(names).toContain('CONDG Corp');
+    expect(names).not.toContain('CONDG Computer Inc');
+    expect(Date.parse(after.headers['last-modified'] as string)).toBeGreaterThan(
+      Date.parse(watermark),
+    );
   });
 
   it('answers 200 for a catalog insert inside the current watermark second (#1762)', async () => {
