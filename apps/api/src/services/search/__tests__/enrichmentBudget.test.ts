@@ -6,8 +6,8 @@ import { createAssetRepository } from '../../../data/repositories/assetRepositor
 import * as schema from '../../../data/schema';
 import { createTestApp } from '../../../testing/createTestApp';
 import { createRecordingBackfill, createStubMarketData } from '../../../testing/marketDataStubs';
-import { createCatalogEnrichment } from '../catalogEnrichment';
-import { createSearchEnrichmentBudget } from '../enrichmentBudget';
+import { createCatalogEnrichment, enrichGuardKey } from '../catalogEnrichment';
+import { createSearchEnrichmentBudget, enrichmentBudgetKey } from '../enrichmentBudget';
 import { createSearchService } from '../searchService';
 
 /**
@@ -197,5 +197,80 @@ describe('interactive enrichment budget', () => {
     await service.enrichmentSettled();
     expect(answered.results.map((r) => r.symbol)).toEqual(['ZETAFUND']);
     expect(marketData.calls.search).toBe(1);
+  });
+});
+
+describe('the budget key is out of reach of a crafted query (#1810)', () => {
+  const VICTIM = '018f6f00-0000-7000-8000-0000000000bb';
+
+  async function makeBudget(redis: Redis) {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    return {
+      h,
+      redis,
+      budget: createSearchEnrichmentBudget({
+        redis,
+        logger: h.ctx.logger,
+        budget: 30,
+        windowSeconds: 60,
+      }),
+      enrichment: createCatalogEnrichment({
+        marketData: createStubMarketData(),
+        assetRepo: createAssetRepository(h.db),
+        backfill: createRecordingBackfill(),
+        redis,
+        logger: h.ctx.logger,
+      }),
+    };
+  }
+
+  it('cannot be planted on by another user’s search text', async () => {
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    const { budget, enrichment } = await makeBudget(redis);
+
+    const window = Math.floor(Date.now() / 60_000);
+    const victimKey = enrichmentBudgetKey(VICTIM, 60, Date.now());
+    // `searchQuerySchema` takes 64 arbitrary characters and a user's id is on
+    // their public profile, so this string is constructible — and it used to be
+    // pasted straight into the guard key, landing on the victim's budget SET as
+    // a STRING. Their next SCARD/SADD then failed WRONGTYPE and the deliberate
+    // fail-closed catch turned that into a silent, minute-by-minute kill of
+    // their provider fallback.
+    const crafted = [
+      `budget:${VICTIM}:${window}`,
+      `budget:${VICTIM}:${window + 1}`,
+      `${VICTIM}:${window}`,
+      victimKey,
+    ];
+
+    for (const query of crafted) {
+      expect(enrichGuardKey(query)).not.toBe(victimKey);
+      expect(enrichGuardKey(query).startsWith('search:enrich-budget:')).toBe(false);
+      await enrichment.request(query);
+      await enrichment.settled();
+    }
+
+    // Nothing the attacker wrote is the victim's key, and the victim's own
+    // budget still behaves like a budget.
+    expect(await redis.keys('*')).not.toContain(victimKey);
+    await expect(budget.admit(VICTIM, 'gold')).resolves.toBe(true);
+    expect(await redis.type(victimKey)).toBe('set');
+  });
+
+  it('a WRONGTYPE fault on one user’s key cannot disable another user’s fallback', async () => {
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    const { budget } = await makeBudget(redis);
+    const other = '018f6f00-0000-7000-8000-0000000000cc';
+
+    // The fault itself, planted directly: whatever puts a string where a set
+    // belongs (this bug, an operator, a future key reuse), the blast radius has
+    // to stop at the one account whose key it is.
+    await redis.set(enrichmentBudgetKey(VICTIM, 60, Date.now()), 'running:not-a-set', 'EX', 60);
+
+    await expect(budget.admit(VICTIM, 'gold')).resolves.toBe(false); // fails closed, as designed
+    await expect(budget.admit(other, 'gold')).resolves.toBe(true); // and only there
+    await expect(budget.admit(other, 'silver')).resolves.toBe(true);
   });
 });
