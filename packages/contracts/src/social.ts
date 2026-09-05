@@ -769,7 +769,13 @@ export const PROFILE_BIO_MAX = 280;
  */
 export const updateProfileSettingsRequestSchema = z
   .object({
-    isPublic: z.boolean(),
+    /**
+     * The public-profile opt-in. OMITTING it leaves the current opt-in exactly
+     * as it is — an icon-only write (the paranoid Account row) must not carry a
+     * profile-visibility write it never meant to make. Enabling still requires
+     * an explicit `true` plus `acknowledgePublic: true`.
+     */
+    isPublic: z.boolean().optional(),
     bio: z.string().max(PROFILE_BIO_MAX).nullable().optional(),
     acknowledgePublic: z.boolean().optional(),
     /**

@@ -20,6 +20,7 @@ vi.mock('../AuthContext', () => ({
 
 import { listFollowing, listItemFollows, unfollowItem } from '../../lib/socialApi';
 import { setViewportWidth } from '../../test/viewport';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { FollowingPage } from './FollowingPage';
 
 const ALICE_ID = '00000000-0000-4000-8000-000000000001';
@@ -163,5 +164,37 @@ describe('FollowingPage', () => {
       await screen.findByText("Couldn't unfollow this item. Please try again."),
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Growth/ })).toBeInTheDocument();
+  });
+});
+
+describe('FollowingPage — the followed ITEM carries its owner’s face too (§6.9)', () => {
+  test('renders the item owner’s curated icon, and the deterministic default for an owner without one', async () => {
+    vi.mocked(listItemFollows).mockResolvedValue({
+      items: [
+        FOLLOWED_ITEMS.items[0]!,
+        {
+          ...FOLLOWED_ITEMS.items[1]!,
+          name: 'Bare owner',
+          owner: { id: '00000000-0000-4000-8000-000000000002', username: 'bob', profileIcon: null },
+        },
+        FOLLOWED_ITEMS.items[2]!,
+      ],
+    });
+    renderPage();
+
+    const growth = await screen.findByRole('link', { name: /Growth/ });
+    expect(growth.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id')).toBe(
+      'fox',
+    );
+
+    const bare = screen.getByRole('link', { name: /Bare owner/ });
+    expect(bare.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id')).toBe(
+      defaultProfileIconIdFor('bob'),
+    );
+
+    // An item whose owner is no longer visible stays faceless — there is nobody
+    // to render, and the row must not invent one.
+    const gone = screen.getByText('No longer available').closest('li');
+    expect(gone?.querySelector('.bt-avatar')).toBeNull();
   });
 });

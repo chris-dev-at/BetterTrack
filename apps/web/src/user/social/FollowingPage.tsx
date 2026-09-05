@@ -96,6 +96,16 @@ function FollowedItemRow({ item }: { item: FollowedItem }) {
       <Badge className="shrink-0" outline>
         {t(`social.itemFollow.kind.${item.kind}`)}
       </Badge>
+      {/* The item's owner carries the same face here as in the followed-PEOPLE
+          row above — inline before the name, so the row gains no height. */}
+      {available !== null ? (
+        <Avatar
+          className="shrink-0"
+          iconId={available.owner.profileIcon}
+          name={available.owner.username}
+          size="sm"
+        />
+      ) : null}
       <span className="flex min-w-0 flex-1 flex-col">
         {available !== null ? (
           <>

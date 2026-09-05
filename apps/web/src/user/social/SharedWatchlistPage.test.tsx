@@ -14,6 +14,7 @@ vi.mock('./ItemFollowButton', () => ({ ItemFollowButton: () => null }));
 
 import { ApiError } from '../../lib/apiClient';
 import { getSharedWatchlist } from '../../lib/socialApi';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { SharedWatchlistPage } from './SharedWatchlistPage';
 
 const WATCHLIST_ID = '00000000-0000-0000-0000-000000000001';
@@ -78,5 +79,30 @@ describe('SharedWatchlistPage recovery and privacy states', () => {
     expect(screen.queryByText('ada’s Long term')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(getSharedWatchlist).toHaveBeenCalledTimes(2);
+  });
+});
+
+/** The curated icon a rendered avatar actually painted (inert `data-icon-id`). */
+function avatarIconId(container: HTMLElement): string | null | undefined {
+  return container.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id');
+}
+
+describe('SharedWatchlistPage — the owner has a face (§6.9)', () => {
+  test('renders the owner’s curated icon beside the title', async () => {
+    vi.mocked(getSharedWatchlist).mockResolvedValue({
+      ...DETAIL,
+      owner: { ...DETAIL.owner, profileIcon: 'panda' as const },
+    });
+    const { container } = renderPage();
+
+    expect(await screen.findByText('ada’s Long term')).toBeInTheDocument();
+    expect(avatarIconId(container)).toBe('panda');
+  });
+
+  test('falls back to the deterministic default when the owner never picked one', async () => {
+    const { container } = renderPage();
+
+    expect(await screen.findByText('ada’s Long term')).toBeInTheDocument();
+    expect(avatarIconId(container)).toBe(defaultProfileIconIdFor('ada'));
   });
 });

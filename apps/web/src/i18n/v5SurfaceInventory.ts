@@ -124,6 +124,7 @@ export const V5_SURFACE_INVENTORY = [
       'admin/pages/AccountDefaultsPage.tsx',
       'user/components/Avatar.tsx',
       'user/components/profileIcons.tsx',
+      'user/control/panels/ProfileIconPicker.tsx',
       'user/control/panels/ProfilePanel.tsx',
     ],
     copyRoots: ['admin.accountDefaults', 'profile.icon'],

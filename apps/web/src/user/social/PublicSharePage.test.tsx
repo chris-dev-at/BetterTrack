@@ -38,6 +38,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { resolveShareLink } from '../../lib/socialApi';
 import { ApiError } from '../../lib/apiClient';
+import { defaultProfileIconIdFor } from '../components/profileIcons';
 import { PublicSharePage } from './PublicSharePage';
 
 const PID = '00000000-0000-0000-0000-000000000001';
@@ -162,4 +163,76 @@ describe('PublicSharePage (/s/:token)', () => {
       expect(resolveShareLink).toHaveBeenCalledTimes(2);
     },
   );
+});
+
+/** The curated icon a rendered avatar actually painted (inert `data-icon-id`). */
+function avatarIconId(container: HTMLElement): string | null | undefined {
+  return container.querySelector('.bt-avatar svg[data-icon-id]')?.getAttribute('data-icon-id');
+}
+
+const OWNER_ID = '00000000-0000-0000-0000-000000000003';
+
+const conglomerateLink: SharedLinkResponse = {
+  kind: 'conglomerate',
+  conglomerate: {
+    conglomerateId: '00000000-0000-0000-0000-000000000004',
+    name: 'Dividend core',
+    description: null,
+    status: 'active',
+    owner: { id: OWNER_ID, username: 'jane', profileIcon: 'crown' },
+    positions: [
+      {
+        kind: 'asset',
+        assetId: ASSET_ID,
+        weightPct: 100,
+        sortOrder: 0,
+        asset: { symbol: 'BAYN.DE', name: 'Bayer AG', currency: 'EUR', type: 'stock' },
+      },
+    ],
+  },
+};
+
+const watchlistLink: SharedLinkResponse = {
+  kind: 'watchlist',
+  watchlist: {
+    watchlistId: '00000000-0000-0000-0000-000000000005',
+    name: 'Watching',
+    owner: { id: OWNER_ID, username: 'jane', profileIcon: 'panda' },
+    items: [],
+  },
+};
+
+describe('PublicSharePage — the owner has a face, logged out (§6.9)', () => {
+  test.each([
+    [
+      'portfolio',
+      {
+        ...portfolioLink,
+        portfolio: {
+          ...portfolioLink.portfolio,
+          owner: { ...portfolioLink.portfolio.owner, profileIcon: 'fox' as const },
+        },
+      } as SharedLinkResponse,
+      'fox',
+    ],
+    ['conglomerate', conglomerateLink, 'crown'],
+    ['watchlist', watchlistLink, 'panda'],
+  ])('renders the owner’s curated icon on a %s link', async (_kind, link, expected) => {
+    vi.mocked(resolveShareLink).mockResolvedValue(link);
+    const { container } = renderPage();
+
+    await waitFor(() => expect(avatarIconId(container)).toBe(expected));
+    // The page still asks the token endpoint for exactly what it always did —
+    // the icon rides along on the payload the link already returned.
+    expect(resolveShareLink).toHaveBeenCalledTimes(1);
+    expect(resolveShareLink).toHaveBeenCalledWith('tok_abc', expect.any(AbortSignal));
+  });
+
+  test('falls back to the deterministic default when the owner never picked one', async () => {
+    vi.mocked(resolveShareLink).mockResolvedValue(portfolioLink);
+    const { container } = renderPage();
+
+    await waitFor(() => expect(screen.getByText("Jane's Main")).toBeInTheDocument());
+    expect(avatarIconId(container)).toBe(defaultProfileIconIdFor('jane'));
+  });
 });

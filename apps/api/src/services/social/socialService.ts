@@ -1276,8 +1276,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         }
         const current = await profile.getProfileSettings(userId);
         if (!current) throw PROFILE_NOT_FOUND();
+        // `isPublic: undefined` (omitted) leaves the opt-in exactly where it is,
+        // the same rule the bio follows. An icon-only write therefore performs no
+        // profile-visibility write at all.
         await profile.updateProfileSettings(userId, {
-          isPublic: input.isPublic,
+          isPublic: input.isPublic ?? current.isPublic,
           bio: bio === undefined ? current.bio : bio,
         });
         // Profile-icon picker (§13.5 V5-P0 (c)). `undefined` = untouched; `null` clears
