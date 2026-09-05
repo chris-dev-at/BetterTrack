@@ -675,6 +675,7 @@ export function deriveOrigins(e: {
  */
 export const REQUEST_COST_KEYS = [
   'socialShared',
+  'socialGroups',
   'backtestPreview',
   'backtestCompare',
   'backtestSharedSandbox',
@@ -1172,6 +1173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | endpoint                                  | key             | units | why |
   // |-------------------------------------------|-----------------|-------|-----|
   // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
+  // | GET  /social/groups                       | socialGroups    |    6  | every circle of the caller WITH every circle's roster + share counts — three grouped reads, ceiling-bounded since #1780 |
   // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
   // | POST /backtest/compare                    | backtestCompare |   20  | **per series** — the route multiplies by the body's id count (2–6 ⇒ 40–120): the same history walk as a preview, once per basket, over baskets that each flatten to up to 250 assets |
   // | POST /backtest/shared/:id/preview         | backtestSharedSandbox | 25 | a preview's engine run over a friend's basket, deliberately with NO Redis memo — every request computes |
@@ -1507,6 +1509,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // modelled bar the budget above clears by 3.0× — is in the §10 COST TABLE.
       requestCosts: {
         socialShared: 10,
+        // Three grouped reads (groups, rosters, share counts) rather than one,
+        // over a set bounded by FRIEND_GROUPS_MAX × FRIEND_GROUP_MEMBERS_MAX
+        // since #1780 — so it is cheaper than `socialShared`'s open fan-out. Six
+        // is also the FLOOR at which the weight means anything: below it the
+        // unit budget would allow more requests per minute than `general`'s
+        // count limiter already does, and the cost dimension would be
+        // decorative.
+        socialGroups: 6,
         backtestPreview: 25,
         // PER SERIES, not per request (#1755): the route multiplies this by the
         // number of conglomerates the body asks to overlay, because that is what

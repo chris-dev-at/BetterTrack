@@ -972,6 +972,13 @@ export function createShareAudienceRepository(db: Database) {
      * /social/groups` and this summary can never report different sizes for one
      * circle.
      *
+     * That includes the friendship join (#1780): the `group` rung used to be the
+     * ONE rung whose reported reach trusted a roster row instead of deriving
+     * friendship, inside the very select that derives it for named friends. Only
+     * the share's own owner can point an audience at a circle, so the friendship
+     * is between `share_audiences.owner_id` and the member — exactly the pair
+     * `friendGroupRepository.rostersOf` joins.
+     *
      * `group` is `null` for a non-`group` audience AND for a `group` share whose
      * group was deleted (`group_id` nulls out; the share then resolves to
      * nobody). With the audience beside it, the owner surface distinguishes
@@ -1010,6 +1017,12 @@ export function createShareAudienceRepository(db: Database) {
             from ${friendGroupMembers}
             join ${users} on ${users.id} = ${friendGroupMembers.memberId}
               and ${users.status} = 'active'
+            join ${friendships} on (
+              (${friendships.userA} = ${shareAudiences.ownerId}
+                and ${friendships.userB} = ${friendGroupMembers.memberId})
+              or (${friendships.userB} = ${shareAudiences.ownerId}
+                and ${friendships.userA} = ${friendGroupMembers.memberId})
+            )
             where ${friendGroupMembers.groupId} = ${friendGroups.id}
           )`.mapWith(Number),
         })

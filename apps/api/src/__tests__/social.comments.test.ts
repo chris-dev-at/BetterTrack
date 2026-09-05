@@ -14,6 +14,8 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { limiterKeyForUser } from '../http/middleware/rateLimit';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -717,5 +719,180 @@ describe('public links stay read-only (§13.5 V5-P8 regression)', () => {
           .send({ emoji: '🔥' })
       ).status,
     ).toBe(401);
+  });
+});
+
+/**
+ * The lifecycle edges around the audience model (#1780). Two rights that must
+ * outlive the item's current visibility — the author's cleanup over their own
+ * text, and a reactor's over their own reaction — and one that must not survive
+ * the moderation at all: the moderated text itself.
+ */
+describe('moderation removes the content, not just the row (§13.5 V5-P8, #1780)', () => {
+  function reactComment(agent: Agent, commentId: string, emoji: string): Promise<request.Response> {
+    return agent
+      .post(`/api/v1/social/comments/${commentId}/reactions`)
+      .set(...XRW)
+      .send({ emoji });
+  }
+
+  async function commentRow(commentId: string) {
+    const [row] = await harness.db
+      .select()
+      .from(schema.itemComments)
+      .where(eq(schema.itemComments.id, commentId));
+    return row;
+  }
+
+  async function commentReactions(commentId: string) {
+    return harness.db
+      .select()
+      .from(schema.itemReactions)
+      .where(eq(schema.itemReactions.commentId, commentId));
+  }
+
+  it('clears a moderated body and removes its reactions, keeping the tombstone', async () => {
+    const { aliceAgent, bobAgent, carolAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+
+    const moderated = (await postComment(bobAgent, pid, 'the text alice removes')).body
+      .id as string;
+    expect((await reactComment(carolAgent, moderated, '👍')).status).toBe(200);
+    expect((await reactComment(aliceAgent, moderated, '🔥')).status).toBe(200);
+    // A second comment and an item reaction prove the purge is scoped to the
+    // moderated comment and does not sweep the thread.
+    const kept = (await postComment(carolAgent, pid, 'still here')).body.id as string;
+    expect((await reactComment(bobAgent, kept, '❤️')).status).toBe(200);
+    expect((await reactItem(bobAgent, pid, '🎉')).status).toBe(200);
+
+    expect(
+      (
+        await aliceAgent
+          .delete(`/api/v1/social/comments/${moderated}`)
+          .set(...XRW)
+          .send()
+      ).status,
+    ).toBe(204);
+
+    // The tombstone survives (moderation stays auditable, cursors still anchor)…
+    const row = await commentRow(moderated);
+    expect(row?.deletedAt).not.toBeNull();
+    expect(row?.deletedBy).toBeTruthy();
+    // …but neither the text nor the reactions do.
+    expect(row?.body).toBe('');
+    expect(await commentReactions(moderated)).toHaveLength(0);
+
+    // The thread still renders everything else, untouched.
+    const thread = commentThreadResponseSchema.parse((await getThread(aliceAgent, pid)).body);
+    expect(thread.commentCount).toBe(1);
+    expect(thread.comments.map((c) => c.id)).toEqual([kept]);
+    expect(thread.comments[0]!.reactions).toEqual([{ emoji: '❤️', count: 1, reacted: false }]);
+    expect(thread.reactions).toEqual([{ emoji: '🎉', count: 1, reacted: false }]);
+    expect(await commentReactions(kept)).toHaveLength(1);
+  });
+
+  it('does the same when the AUTHOR removes their own comment', async () => {
+    const { aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const own = (await postComment(bobAgent, pid, 'bob deletes this himself')).body.id as string;
+    expect((await reactComment(aliceAgent, own, '👍')).status).toBe(200);
+
+    expect(
+      (
+        await bobAgent
+          .delete(`/api/v1/social/comments/${own}`)
+          .set(...XRW)
+          .send()
+      ).status,
+    ).toBe(204);
+
+    const row = await commentRow(own);
+    expect(row?.deletedAt).not.toBeNull();
+    expect(row?.body).toBe('');
+    expect(await commentReactions(own)).toHaveLength(0);
+  });
+
+  it('lets a reactor take their own reaction back after the audience narrows', async () => {
+    const { aliceAgent, bobAgent, bob, carol, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+
+    expect((await reactItem(bobAgent, pid, '🔥')).status).toBe(200);
+    const commentId = (await postComment(bobAgent, pid, 'bob was here')).body.id as string;
+    expect((await reactComment(bobAgent, commentId, '👍')).status).toBe(200);
+
+    // alice narrows to carol only — bob keeps neither read nor write.
+    await putAudience(aliceAgent, pid, {
+      audience: 'specific_friends',
+      friendIds: [carol.id],
+    });
+    expect((await getThread(bobAgent, pid)).status).toBe(404);
+
+    // The withdrawal succeeds, exactly like deleting one's own comment does…
+    const offItem = await reactItem(bobAgent, pid, '🔥');
+    expect(offItem.status).toBe(200);
+    // …and answers with bob's OWN remaining reactions only — never the item's
+    // aggregate, which would report activity on an item he can no longer read.
+    expect(reactionListResponseSchema.parse(offItem.body).reactions).toEqual([]);
+    const offComment = await reactComment(bobAgent, commentId, '👍');
+    expect(offComment.status).toBe(200);
+    expect(reactionListResponseSchema.parse(offComment.body).reactions).toEqual([]);
+
+    // A NEW reaction is still refused — the cleanup is a removal right, not a
+    // way back into the thread.
+    expect((await reactItem(bobAgent, pid, '❤️')).status).toBe(404);
+    expect((await reactComment(bobAgent, commentId, '❤️')).status).toBe(404);
+
+    // The owner's view confirms both rows are actually gone.
+    const thread = commentThreadResponseSchema.parse((await getThread(aliceAgent, pid)).body);
+    expect(thread.reactions).toEqual([]);
+    expect(thread.comments[0]!.reactions).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(schema.itemReactions)
+        .where(eq(schema.itemReactions.userId, bob.id)),
+    ).toHaveLength(0);
+  });
+
+  it('gives a caller who never had access 404 on every reaction path', async () => {
+    const { aliceAgent, bobAgent, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const commentId = (await postComment(bobAgent, pid, 'friends only')).body.id as string;
+
+    const dave = await harness.seedUser({ email: 'dave@bt.test', username: 'dave' });
+    const daveAgent = await loginAgent(harness.app, dave.email, dave.password);
+
+    // The withdrawal path must not become a probe: a stranger's un-react is the
+    // same uniform 404 as their read, never a 403 and never a silent 200.
+    expect((await getThread(daveAgent, pid)).status).toBe(404);
+    expect((await reactItem(daveAgent, pid, '🔥')).status).toBe(404);
+    expect((await reactComment(daveAgent, commentId, '👍')).status).toBe(404);
+    expect(
+      (
+        await daveAgent
+          .delete(`/api/v1/social/comments/${commentId}`)
+          .set(...XRW)
+          .send()
+      ).status,
+    ).toBe(404);
+  });
+
+  it('spends the social write allowance on DELETE /social/comments/:id', async () => {
+    harness = await createTestApp({ marketData: stubMarketData(), rateLimitsEnabled: true });
+    const { aliceAgent, bobAgent, bob, pid } = await scenario();
+    await putAudience(aliceAgent, pid, { audience: 'all_friends' });
+    const commentId = (await postComment(bobAgent, pid, 'metered')).body.id as string;
+
+    const keys = progressiveKeys('social', limiterKeyForUser(bob.id));
+    const before = Number((await harness.ctx.redis.get(keys.count)) ?? 0);
+    expect(
+      (
+        await bobAgent
+          .delete(`/api/v1/social/comments/${commentId}`)
+          .set(...XRW)
+          .send()
+      ).status,
+    ).toBe(204);
+    expect(Number((await harness.ctx.redis.get(keys.count)) ?? 0)).toBe(before + 1);
   });
 });

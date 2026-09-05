@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useId, useMemo, useState, type FormEvent } from 'react';
 
-import type { FriendGroup } from '@bettertrack/contracts';
+import {
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
+  type FriendGroup,
+} from '@bettertrack/contracts';
 
 import {
   addGroupMember,
@@ -124,6 +128,9 @@ function GroupCard({ group }: { group: FriendGroup }) {
 
   const trimmed = name.trim();
   const canRename = trimmed.length > 0 && trimmed !== group.name && !renameMutation.isPending;
+  // The server refuses an add past the roster ceiling; say so before the click
+  // rather than turning the ceiling into an opaque "could not update" (#1780).
+  const rosterFull = group.memberCount >= FRIEND_GROUP_MEMBERS_MAX;
 
   return (
     <li className="bt-panel overflow-hidden">
@@ -218,7 +225,11 @@ function GroupCard({ group }: { group: FriendGroup }) {
               errorLabel={t('social.groups.loadError')}
               onRetry={() => void friendsQuery.refetch()}
             />
-            {!friendsQuery.isLoading && !friendsQuery.error && candidates.length === 0 ? (
+            {rosterFull ? (
+              <p className="bt-meta">
+                {t('social.groups.memberLimitReached', { count: FRIEND_GROUP_MEMBERS_MAX })}
+              </p>
+            ) : !friendsQuery.isLoading && !friendsQuery.error && candidates.length === 0 ? (
               <p className="bt-meta">{t('social.groups.addMemberNone')}</p>
             ) : !friendsQuery.isLoading && !friendsQuery.error ? (
               <ul className="bt-band flex max-h-48 flex-col overflow-y-auto pr-1">
@@ -289,10 +300,15 @@ export function FriendGroupsSection() {
     },
   });
 
+  // Same ceiling the server enforces (#1780), read from the contract so the two
+  // can't drift: at the cap the inline creator is closed with the reason, not
+  // left open to produce a refusal.
+  const atGroupLimit = (data?.groups.length ?? 0) >= FRIEND_GROUPS_MAX;
+
   function handleCreate(e: FormEvent) {
     e.preventDefault();
     const trimmed = newName.trim();
-    if (!trimmed) return;
+    if (!trimmed || atGroupLimit) return;
     createMutation.mutate(trimmed);
   }
 
@@ -311,6 +327,7 @@ export function FriendGroupsSection() {
       >
         <Field className="flex-1" htmlFor="newGroupName" label={t('social.groups.newLabel')}>
           <Input
+            disabled={atGroupLimit}
             id="newGroupName"
             maxLength={60}
             name="newGroupName"
@@ -319,10 +336,16 @@ export function FriendGroupsSection() {
             value={newName}
           />
         </Field>
-        <Button disabled={createMutation.isPending || !newName.trim()} type="submit">
+        <Button
+          disabled={createMutation.isPending || !newName.trim() || atGroupLimit}
+          type="submit"
+        >
           {createMutation.isPending ? t('social.groups.creating') : t('social.groups.create')}
         </Button>
       </form>
+      {atGroupLimit ? (
+        <p className="bt-meta">{t('social.groups.limitReached', { count: FRIEND_GROUPS_MAX })}</p>
+      ) : null}
       {createMutation.isError ? <Alert tone="error">{t('social.groups.createError')}</Alert> : null}
 
       {isLoading ? (

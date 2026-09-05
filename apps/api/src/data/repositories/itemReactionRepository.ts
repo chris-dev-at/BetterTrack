@@ -141,6 +141,69 @@ export function createItemReactionRepository(db: Database) {
         .onConflictDoNothing();
     },
 
+    /**
+     * Remove — never add — the viewer's OWN reaction on an item. The withdrawal
+     * half of {@link toggleItem}, split out because taking a reaction back is a
+     * cleanup right that survives the item's audience narrowing, exactly like
+     * deleting your own comment (§13.5 V5-P8, #1780). Returns whether a row went,
+     * which is also what tells the caller this was a withdrawal rather than a new
+     * reaction — decided by the delete itself, so there is no check-then-act
+     * window in which the toggle could flip.
+     */
+    async removeItem(
+      userId: string,
+      kind: ShareKind,
+      subjectId: string,
+      emoji: string,
+    ): Promise<boolean> {
+      const removed = await db
+        .delete(itemReactions)
+        .where(
+          and(
+            eq(itemReactions.userId, userId),
+            eq(itemReactions.targetType, 'item'),
+            eq(itemReactions.kind, kind),
+            eq(itemReactions.subjectId, subjectId),
+            eq(itemReactions.emoji, emoji),
+          ),
+        )
+        .returning({ id: itemReactions.id });
+      return removed.length > 0;
+    },
+
+    /** @see removeItem — the same withdrawal-only path for a COMMENT reaction. */
+    async removeComment(userId: string, commentId: string, emoji: string): Promise<boolean> {
+      const removed = await db
+        .delete(itemReactions)
+        .where(
+          and(
+            eq(itemReactions.userId, userId),
+            eq(itemReactions.targetType, 'comment'),
+            eq(itemReactions.commentId, commentId),
+            eq(itemReactions.emoji, emoji),
+          ),
+        )
+        .returning({ id: itemReactions.id });
+      return removed.length > 0;
+    },
+
+    /**
+     * Drop every reaction hanging off ONE comment. Runs when that comment is
+     * moderated away (§13.5 V5-P8, #1780): the tombstone keeps the row for
+     * auditability, but every read filters tombstoned comments out, so their
+     * reactions become unreachable AND unremovable — the toggle 404s on a
+     * tombstone and no sweep exists. `exec` lets the caller run this inside the
+     * soft-delete transaction, so the cleared body and the removed reactions
+     * commit together.
+     */
+    async deleteForComment(commentId: string, exec: Database = db): Promise<void> {
+      await exec
+        .delete(itemReactions)
+        .where(
+          and(eq(itemReactions.targetType, 'comment'), eq(itemReactions.commentId, commentId)),
+        );
+    },
+
     /** Aggregate an item's reactions from the viewer's perspective. */
     async summaryForItem(
       viewerId: string,

@@ -27,7 +27,12 @@ import type {
   SharedWithMeResponse,
   UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
-import { PROFILE_BIO_MAX, profileIconIdSchema } from '@bettertrack/contracts';
+import {
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
+  PROFILE_BIO_MAX,
+  profileIconIdSchema,
+} from '@bettertrack/contracts';
 
 import { coerceProfileIcon } from '../../http/serializers';
 import type {
@@ -215,6 +220,24 @@ const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOU
 const GROUP_NOT_FOUND = () => notFound('Group not found.', 'FRIEND_GROUP_NOT_FOUND');
 const NOT_A_FRIEND = () =>
   badRequest('Only your accepted friends can be added to a group.', 'GROUP_MEMBER_NOT_FRIEND');
+/**
+ * The two friend-group ceilings (§13.5 V5-P8, #1780). They exist because `GET
+ * /social/groups` — the read every `AudiencePicker` open performs — hydrates
+ * every circle of the caller WITH every circle's roster: without a cap the cost
+ * of that request is chosen by the caller. Both numbers come from the contract,
+ * so the SPA can name the ceiling it is about to hit instead of discovering it
+ * as an opaque refusal.
+ */
+const GROUP_LIMIT_REACHED = () =>
+  badRequest(
+    `You can have at most ${FRIEND_GROUPS_MAX} groups. Delete one to create another.`,
+    'FRIEND_GROUP_LIMIT_REACHED',
+  );
+const GROUP_MEMBER_LIMIT_REACHED = () =>
+  badRequest(
+    `A group can have at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
+    'FRIEND_GROUP_MEMBER_LIMIT_REACHED',
+  );
 /**
  * The unfriend transaction rolled back, so NOTHING changed — the friendship and
  * every group roster / grant it owns are exactly as they were. Typed and 503 so
@@ -727,6 +750,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async createGroup(userId, name) {
+      // The per-user ceiling, checked before the insert (#1780). The count and
+      // the insert are two statements, so two simultaneous creates at the
+      // boundary can both pass — that costs one circle over the line, not an
+      // unbounded surface, and `listGroups` carries the same `LIMIT` regardless.
+      if ((await groups.countGroups(userId)) >= FRIEND_GROUPS_MAX) throw GROUP_LIMIT_REACHED();
       const groupId = await groups.createGroup(userId, name);
       // A fresh circle has no members and nothing shared to it yet.
       return { id: groupId, name, memberCount: 0, members: [], shareCount: 0 };
@@ -750,6 +778,16 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
       if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
       const add = async () => {
+        // The roster ceiling (#1780), inside the lock so a paranoid-mode add
+        // cannot slip past it. An add that is a no-op (the member is already in
+        // the circle) must still succeed at the cap: refusing it would make the
+        // idempotent repeat the one call a full circle cannot answer.
+        if (
+          (await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX &&
+          !(await groups.isMember(groupId, memberId))
+        ) {
+          throw GROUP_MEMBER_LIMIT_REACHED();
+        }
         await groups.addMember(groupId, memberId);
         return groupOrThrow(userId, groupId);
       };

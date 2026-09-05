@@ -147,6 +147,12 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     analyticsSeriesPerMinute: 12,
     /** Shared-with-me list on tab focus + reconnect refetch. */
     socialSharedPerMinute: 6,
+    /**
+     * Friend circles. Both surfaces that read them — /people and every
+     * AudiencePicker open — share one 30 s-stale query key, so a minute of
+     * hopping between them issues the request about twice.
+     */
+    socialGroupsPerMinute: 2,
     /** Two CSV uploads. */
     importCreatePerMinute: 2,
     /** One bulk kind sweep over a statement's undecided rows (one PATCH each). */
@@ -161,6 +167,11 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     expect(requestCosts).toEqual({
       // Unbounded `Promise.all` fan-out over friends × shared items.
       socialShared: 10,
+      // Groups + rosters + share counts in three grouped reads, bounded by the
+      // friend-group ceilings (#1780) — cheaper than `socialShared`'s open
+      // fan-out, and at the floor where the unit budget still binds before the
+      // request COUNT limiter would.
+      socialGroups: 6,
       // A perturbed weight vector is a cache MISS by construction; a miss walks
       // the positions' history sequentially through the provider layer.
       backtestPreview: 25,
@@ -189,11 +200,12 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       COST_BAR.backtestSharedSandboxPerMinute * requestCosts.backtestSharedSandbox +
       COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
       COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
+      COST_BAR.socialGroupsPerMinute * requestCosts.socialGroups +
       COST_BAR.importCreatePerMinute * requestCosts.importCreate +
       COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(1150);
+    expect(worstMinute).toBe(1162);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
   });

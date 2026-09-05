@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -8,9 +8,13 @@ import {
   friendGroupSchema,
   friendGroupListResponseSchema,
   mySharedResponseSchema,
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { limiterKeyForUser } from '../http/middleware/rateLimit';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -617,5 +621,145 @@ describe('a group audience scopes the comment thread (§13.5 V5-P8)', () => {
           .send({ body: 'still here?' })
       ).status,
     ).toBe(404);
+  });
+});
+
+/**
+ * The bounding and derivation edges of the group surface (#1780). `GET
+ * /social/groups` is the read every `AudiencePicker` open performs, so what a
+ * user can accumulate is what that read costs; and the `group` rung's reported
+ * reach has to be derived from friendship like every other rung, not read off a
+ * roster table.
+ */
+describe('the friend-group surface is bounded (§13.5 V5-P8, #1780)', () => {
+  it('refuses a circle past the per-user ceiling, with a mapped code', async () => {
+    const { alice, aliceAgent } = await scenario();
+    // Filled directly to one below the ceiling: the boundary is the subject
+    // here, not FRIEND_GROUPS_MAX HTTP round trips.
+    await harness.db.insert(schema.friendGroups).values(
+      Array.from({ length: FRIEND_GROUPS_MAX - 1 }, (_, i) => ({
+        ownerId: alice.id,
+        name: `Circle ${String(i).padStart(2, '0')}`,
+      })),
+    );
+
+    expect(
+      (
+        await aliceAgent
+          .post('/api/v1/social/groups')
+          .set(...XRW)
+          .send({ name: 'The last one' })
+      ).status,
+    ).toBe(201);
+
+    const over = await aliceAgent
+      .post('/api/v1/social/groups')
+      .set(...XRW)
+      .send({ name: 'One too many' });
+    expect(over.status).toBe(400);
+    expect(over.body.error.code).toBe('FRIEND_GROUP_LIMIT_REACHED');
+
+    // The bounded read answers with exactly the ceiling — never more.
+    const list = await aliceAgent.get('/api/v1/social/groups');
+    expect(friendGroupListResponseSchema.safeParse(list.body).success).toBe(true);
+    expect(list.body.groups).toHaveLength(FRIEND_GROUPS_MAX);
+  });
+
+  it('refuses a member past the roster ceiling, but still accepts an idempotent repeat', async () => {
+    const { aliceAgent, bob, carol } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+
+    // Fill the rest of the roster directly (the ceiling counts stored rows).
+    const filler = await harness.db
+      .insert(schema.users)
+      .values(
+        Array.from({ length: FRIEND_GROUP_MEMBERS_MAX - 1 }, (_, i) => ({
+          email: `filler${i}@bt.test`,
+          username: `filler${i}`,
+          passwordHash: 'x',
+        })),
+      )
+      .returning({ id: schema.users.id });
+    await harness.db
+      .insert(schema.friendGroupMembers)
+      .values(filler.map((u) => ({ groupId, memberId: u.id })));
+
+    const over = await addMember(aliceAgent, groupId, carol.id);
+    expect(over.status).toBe(400);
+    expect(over.body.error.code).toBe('FRIEND_GROUP_MEMBER_LIMIT_REACHED');
+
+    // A repeat add of someone already in the full circle adds nobody, so the
+    // ceiling has nothing to refuse — the endpoint stays idempotent.
+    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+  });
+
+  it('meters the moderation and roster-churn writes like their POST siblings', async () => {
+    harness = await createTestApp({ marketData: stubMarketData(), rateLimitsEnabled: true });
+    const { aliceAgent, alice, bob } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+
+    const keys = progressiveKeys('social', limiterKeyForUser(alice.id));
+    const spent = async () => Number((await harness.ctx.redis.get(keys.count)) ?? 0);
+
+    let before = await spent();
+    expect(
+      (
+        await aliceAgent
+          .patch(`/api/v1/social/groups/${groupId}`)
+          .set(...XRW)
+          .send({ name: 'Inner circle' })
+      ).status,
+    ).toBe(200);
+    expect(await spent()).toBe(before + 1);
+
+    before = await spent();
+    expect(
+      (await aliceAgent.delete(`/api/v1/social/groups/${groupId}/members/${bob.id}`).set(...XRW))
+        .status,
+    ).toBe(200);
+    expect(await spent()).toBe(before + 1);
+
+    before = await spent();
+    expect((await aliceAgent.delete(`/api/v1/social/groups/${groupId}`).set(...XRW)).status).toBe(
+      204,
+    );
+    expect(await spent()).toBe(before + 1);
+  });
+});
+
+describe("the group rung's reported reach is derived from friendship (#1780)", () => {
+  it('excludes a member whose friendship vanished from the count, the roster and the fan-out', async () => {
+    const { aliceAgent, bobAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+    expect(await sharedNotifications(bob.id)).toHaveLength(1);
+
+    const myPortfolio = async () => {
+      const res = await aliceAgent.get('/api/v1/social/my-shared');
+      return mySharedResponseSchema.parse(res.body).portfolios.find((p) => p.portfolioId === pid);
+    };
+    expect((await myPortfolio())?.group?.memberCount).toBe(1);
+
+    // Drop the friendship row alone. The unfriend endpoint prunes rosters inside
+    // its own transaction (#1710), so this is the state that survives every path
+    // that does NOT — a restore, a repair, a future writer — and enforcement
+    // already refuses it. What is under test is that the owner is told the same.
+    await harness.db
+      .delete(schema.friendships)
+      .where(or(eq(schema.friendships.userA, bob.id), eq(schema.friendships.userB, bob.id)));
+
+    expect((await myPortfolio())?.group).toEqual({ id: groupId, name: 'Family', memberCount: 0 });
+    const list = await aliceAgent.get('/api/v1/social/groups');
+    expect(friendGroupListResponseSchema.safeParse(list.body).success).toBe(true);
+    expect(list.body.groups[0]).toMatchObject({ id: groupId, memberCount: 0, members: [] });
+
+    // Enforcement agrees, and re-sharing the circle emits nothing to the
+    // ex-friend — no `*.shared` notice pointing at an item they now 404 on.
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+    expect(await sharedNotifications(bob.id)).toHaveLength(1);
   });
 });

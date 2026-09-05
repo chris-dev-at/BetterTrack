@@ -620,6 +620,24 @@ export const FRIEND_GROUP_NAME_MAX = 60;
 export const friendGroupNameSchema = z.string().trim().min(1).max(FRIEND_GROUP_NAME_MAX);
 
 /**
+ * How many circles ONE user may own, and how many members ONE circle may hold
+ * (§13.5 V5-P8). Both are contract constants because they bound a READ every
+ * `AudiencePicker` open performs: `GET /social/groups` hydrates every group of
+ * the caller together with every group's roster, so without a ceiling the cost
+ * of that one request is chosen by the caller (#1780). The server refuses the
+ * write that would cross either line, the repository reads carry the matching
+ * `LIMIT`, and the SPA reads the same numbers so it can say WHICH ceiling was
+ * hit before the request is made.
+ *
+ * The numbers are product ceilings, not storage limits: a named circle is a
+ * hand-curated audience ("Family", "Work"), so dozens is generous and hundreds
+ * is a different feature. 30 × 200 bounds the worst-case picker read at 6 000
+ * roster rows.
+ */
+export const FRIEND_GROUPS_MAX = 30;
+export const FRIEND_GROUP_MEMBERS_MAX = 200;
+
+/**
  * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
  * one user, its members are a subset of the owner's accepted friends, and it is
  * private to the owner — nobody else can see or use it. `members` is the current
