@@ -2950,6 +2950,8 @@
         "notBookedQuoteUnavailable": "Nicht gebucht — Kurs nicht verfügbar — älteste verpasste Buchung fällig seit {{date}}",
         "notBookedInsufficientCash": "Nicht gebucht — nicht genügend Cash — älteste verpasste Buchung fällig seit {{date}}",
         "notBookedFailed": "Nicht gebucht — Buchungsfehler — älteste verpasste Buchung fällig seit {{date}}",
+        "droppedPeriods": "{{count}} verpasste Periode(n) übersprungen, bis {{date}} — nur die neueste wird nachgeholt, die übrigen werden nicht gebucht",
+        "bookedStalePrice": "Gebucht mit deiner eigenen Bewertung vom {{date}} — es gibt keinen neueren Wertpunkt",
         "pause": "Pausieren",
         "pausing": "Pausiere…",
         "resume": "Fortsetzen",
