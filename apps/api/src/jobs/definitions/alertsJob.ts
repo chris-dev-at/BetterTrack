@@ -1,6 +1,7 @@
 import type { Database } from '../../data/db';
 import { createAlertRepository } from '../../data/repositories/alertRepository';
 import { createUserFollowsRepository } from '../../data/repositories/userFollowsRepository';
+import { createUserRepository } from '../../data/repositories/userRepository';
 import type { MarketDataService } from '../../providers';
 import type { ParanoidModeGuard } from '../../services/account/paranoidEnforcement';
 import { runAlertsEvaluation } from '../../services/alerts/alertEvaluator';
@@ -58,6 +59,9 @@ export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'ale
   // Alert-follow fire fan-out (#455): opted-in followers of a sharing owner
   // receive `follow.alert.fired` in addition to the owner's own delivery.
   const followsRepo = createUserFollowsRepository(deps.db);
+  // The owner's sharing opt-in, read before any privacy lock: an owner who does
+  // not publish alert activity costs no lock round-trip per fire.
+  const userRepo = createUserRepository(deps.db);
   // `internallyFiltered` (registry): the queue as a whole stays alive for
   // global market alerts, and the evaluator itself scopes every account-owned
   // read/side effect under that account's transition lock. The binding is what
@@ -84,6 +88,7 @@ export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'ale
           paranoid: deps.paranoid,
           followFanout: {
             follows: followsRepo,
+            users: userRepo,
             paranoid: deps.paranoid,
           },
           logger: ctx.logger,

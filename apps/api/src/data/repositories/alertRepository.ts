@@ -10,7 +10,7 @@ import type { AssetRow } from '../schema';
  * Price-alert persistence (PROJECTPLAN.md §14, V3-P10 arc b). The CRUD reads are
  * always scoped by `user_id` so a foreign alert id is indistinguishable from a
  * missing one (no IDOR, §10). The evaluator reads (`listActiveWithAsset`,
- * `recordTriggered`, `findNotificationContext`) run system-wide — the minute job
+ * `claimTrigger`, `findNotificationContext`) run system-wide — the minute job
  * is not acting on behalf of a logged-in user.
  *
  * `threshold`/`ref_price` are stored in the existing `numeric` columns (§14
@@ -237,7 +237,17 @@ export function createAlertRepository(db: Database) {
       return this.findByIdForUser(userId, id, options);
     },
 
-    /** Re-arm an owned alert: reset it to `active`. Returns null if not the caller's. */
+    /**
+     * Re-arm an owned alert: reset it to `active` AND clear `last_triggered_at`.
+     * Returns null if not the caller's.
+     *
+     * Clearing the stamp is what makes the re-arm real: `last_triggered_at` is
+     * the evaluator's 24 h cooldown marker (§14), so leaving it standing meant a
+     * re-armed alert whose condition is still met stayed silent for the rest of
+     * the cooldown — the user asked for it to be armed again and got a `200`
+     * saying it was. The stamp is a cooldown anchor, not an audit trail (the
+     * fire's notification row is that), so a re-arm resets it to "never fired".
+     */
     async rearm(
       userId: string,
       id: string,
@@ -246,7 +256,7 @@ export function createAlertRepository(db: Database) {
       if (!(await this.findByIdForUser(userId, id, options))) return null;
       const updated = await db
         .update(alerts)
-        .set({ status: 'active' })
+        .set({ status: 'active', lastTriggeredAt: null })
         .where(and(eq(alerts.id, id), eq(alerts.userId, userId)))
         .returning({ id: alerts.id });
       if (updated.length === 0) return null;
@@ -374,15 +384,70 @@ export function createAlertRepository(db: Database) {
     },
 
     /**
-     * Record a fire: stamp `last_triggered_at` and set the resulting status
-     * (`triggered` for one-shot, `active` for repeat). System-wide by id — the
-     * caller (evaluator) has already authorized the fire.
+     * Claim a fire ATOMICALLY: stamp `last_triggered_at` and set the resulting
+     * status (`triggered` for one-shot, `active` for repeat) — but only while
+     * the row still carries the exact pre-fire snapshot the caller read.
+     *
+     * This is the evaluator's real idempotency guard. Its snapshot always comes
+     * from a `status = 'active'` read, so the witness is that status plus the
+     * observed `last_triggered_at` (null-safe: a never-fired alert must still be
+     * never-fired). Two evaluator runs that both loaded the same pre-fire row —
+     * a BullMQ re-delivery of a stalled run, a second worker replica, a raised
+     * concurrency — therefore compete for one claim and exactly one wins,
+     * whether or not they share a minute window. Returns true for the winner.
+     *
+     * System-wide by id: the caller (evaluator) has already authorized the fire.
      */
-    async recordTriggered(id: string, status: AlertStatus, triggeredAt: Date): Promise<void> {
-      await db
+    async claimTrigger(input: {
+      id: string;
+      /** The `last_triggered_at` the caller observed (the CAS witness). */
+      expectedLastTriggeredAt: Date | null;
+      status: AlertStatus;
+      triggeredAt: Date;
+    }): Promise<boolean> {
+      const claimed = await db
         .update(alerts)
-        .set({ status, lastTriggeredAt: triggeredAt })
-        .where(eq(alerts.id, id));
+        .set({ status: input.status, lastTriggeredAt: input.triggeredAt })
+        .where(
+          and(
+            eq(alerts.id, input.id),
+            eq(alerts.status, 'active'),
+            input.expectedLastTriggeredAt === null
+              ? isNull(alerts.lastTriggeredAt)
+              : eq(alerts.lastTriggeredAt, input.expectedLastTriggeredAt),
+          ),
+        )
+        .returning({ id: alerts.id });
+      return claimed.length > 0;
+    },
+
+    /**
+     * Undo a claim this run took but could not deliver (the notification
+     * enqueue failed): restore the pre-fire snapshot so the next run retries the
+     * alert instead of leaving it `triggered`/on cooldown with nothing sent
+     * (#367). Conditional on the claim still being exactly as written, so a
+     * concurrent re-arm or edit is never clobbered. Returns true when restored.
+     */
+    async releaseTriggerClaim(input: {
+      id: string;
+      /** What this run wrote when it claimed. */
+      claimedStatus: AlertStatus;
+      claimedAt: Date;
+      /** The `last_triggered_at` to put back. */
+      lastTriggeredAt: Date | null;
+    }): Promise<boolean> {
+      const released = await db
+        .update(alerts)
+        .set({ status: 'active', lastTriggeredAt: input.lastTriggeredAt })
+        .where(
+          and(
+            eq(alerts.id, input.id),
+            eq(alerts.status, input.claimedStatus),
+            eq(alerts.lastTriggeredAt, input.claimedAt),
+          ),
+        )
+        .returning({ id: alerts.id });
+      return released.length > 0;
     },
 
     /** The dispatcher's render context for one alert, or null if it is gone. */

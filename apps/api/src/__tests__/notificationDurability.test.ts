@@ -132,10 +132,44 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
     expect(await visibleNotifications(user.id)).toHaveLength(1);
   });
 
-  it('the evaluator emits BEFORE flipping alert state — a crash between the two can only re-fire, never lose', async () => {
+  it('the evaluator CLAIMS the fire before emitting — a re-delivered run holding the pre-fire snapshot cannot emit', async () => {
     const user = await harness.seedUser({ email: 'bo@bt.test', username: 'bo' });
     const { alertId } = await seedAlert(user.id);
     const alertRepo = createAlertRepository(harness.db);
+
+    // A run that loaded the pre-fire snapshot and then stalled past its BullMQ
+    // lock: BullMQ re-delivers it, so it finishes in a LATER minute — a
+    // different (alert, window) Redis key — still believing the alert is armed.
+    let parked!: () => void;
+    let open!: () => void;
+    const loadedSnapshot = new Promise<void>((resolve) => {
+      parked = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const staleEmits: string[] = [];
+    const stale = runAlertsEvaluation({
+      alertRepo: createAlertRepository(harness.db),
+      marketData: createStubMarketData({
+        quote: async () => {
+          parked();
+          await gate;
+          return quoteResult(150);
+        },
+      }),
+      redis: harness.ctx.redis,
+      paranoid: harness.ctx.paranoidGuard,
+      notify: {
+        emit: async (event) => {
+          staleEmits.push(event.type);
+          return true;
+        },
+      },
+      logger: harness.ctx.logger,
+      now: () => Date.parse('2026-07-10T12:00:00.000Z'),
+    });
+    await loadedSnapshot;
 
     // Capture the alert's persisted status AT EMIT TIME.
     const statusAtEmit: string[] = [];
@@ -155,13 +189,23 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
         },
       },
       logger: harness.ctx.logger,
-      now: () => Date.parse('2026-07-10T12:00:00.000Z'),
+      now: () => Date.parse('2026-07-10T12:01:00.000Z'),
     });
 
-    // The emit ran while the alert was still 'active' (not yet recorded): had
-    // the process died right there, the alert would re-fire next window and
-    // re-emit — delayed, deduped downstream, never silently lost (#367).
-    expect(statusAtEmit).toEqual(['active']);
+    // The claim is already in place when the emit runs (#1807): claiming FIRST
+    // is what makes one run's emit exclusive, and it is the only guard that
+    // spans minutes — the Redis window key does not, and the dispatcher's
+    // eventKey folds in the fire's minute, so it would dedupe neither.
+    expect(statusAtEmit).toEqual(['triggered']);
+
+    // The re-delivered run now finishes and emits NOTHING: it lost the claim.
+    open();
+    expect((await stale).fired).toBe(0);
+    expect(staleEmits).toEqual([]);
+
+    // What claim-first costs is a process death in the one-enqueue-wide window
+    // between claim and emit (documented on `runAlertsEvaluation`); a FAILED
+    // enqueue is still fully recovered — the next test.
     const [after] = await harness.db
       .select({ status: schema.alerts.status })
       .from(schema.alerts)
