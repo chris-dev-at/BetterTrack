@@ -8,6 +8,9 @@ import {
   REALTIME_MAX_CONNECTIONS_PER_BEARER,
   REALTIME_MAX_CONNECTIONS_PER_USER,
   REALTIME_MAX_GLOBAL_LIVE_ASSETS,
+  REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_USER,
   REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_MAX_WATCHED_ASSETS_PER_USER,
   REALTIME_SOCKET_COMMAND_BURST,
@@ -40,6 +43,9 @@ describe('realtime contracts', () => {
       watchedPerSocket: REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
       watchedPerUser: REALTIME_MAX_WATCHED_ASSETS_PER_USER,
       globalLiveAssets: REALTIME_MAX_GLOBAL_LIVE_ASSETS,
+      roomsPerSocket: REALTIME_MAX_ROOMS_PER_SOCKET,
+      roomsPerUser: REALTIME_MAX_ROOMS_PER_USER,
+      presencePerSocket: REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET,
     }).toEqual({
       connectionsPerUser: 5,
       connectionsPerBearer: 3,
@@ -48,6 +54,9 @@ describe('realtime contracts', () => {
       watchedPerSocket: 8,
       watchedPerUser: 16,
       globalLiveAssets: 250,
+      roomsPerSocket: 32,
+      roomsPerUser: 64,
+      presencePerSocket: 64,
     });
   });
 
@@ -58,6 +67,9 @@ describe('realtime contracts', () => {
       'RATE_LIMITED',
       'SOCKET_WATCH_LIMIT',
       'USER_WATCH_LIMIT',
+      'SOCKET_ROOM_LIMIT',
+      'USER_ROOM_LIMIT',
+      'SOCKET_PRESENCE_LIMIT',
       'GLOBAL_LIVE_LIMIT',
       'LIVE_WORK_BUSY',
     ] as const) {

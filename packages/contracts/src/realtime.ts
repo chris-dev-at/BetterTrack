@@ -66,6 +66,21 @@ export const REALTIME_USER_COMMAND_BURST = 100;
 export const REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET = 8;
 export const REALTIME_MAX_WATCHED_ASSETS_PER_USER = 16;
 export const REALTIME_MAX_GLOBAL_LIVE_ASSETS = 250;
+/**
+ * Client-joinable room budget (§4.5, V5-P1). `room.join` is otherwise unbounded:
+ * the adapter holds every membership until the socket disconnects, so a client
+ * that only respects the command rate limit can accumulate rooms without end.
+ * The cap is enforced per socket AND per user, so extra connections cannot
+ * multiply one user's budget. Live-watch asset rooms are NOT counted here —
+ * they carry {@link REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET} as their own bound.
+ */
+export const REALTIME_MAX_ROOMS_PER_SOCKET = 32;
+export const REALTIME_MAX_ROOMS_PER_USER = 64;
+/**
+ * Distinct active-view subjects one socket may declare at once (#368). Bounds
+ * both the per-socket set and the disconnect cleanup that clears it.
+ */
+export const REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET = 64;
 /** A bounded global semaphore; excess watch-start/backfill work is rejected. */
 export const REALTIME_MAX_CONCURRENT_WATCH_STARTS = 16;
 /** Keep at most two serialized watch starts pending on one socket. */
@@ -96,6 +111,9 @@ export const REALTIME_ACK_ERRORS = [
   'RATE_LIMITED',
   'SOCKET_WATCH_LIMIT',
   'USER_WATCH_LIMIT',
+  'SOCKET_ROOM_LIMIT',
+  'USER_ROOM_LIMIT',
+  'SOCKET_PRESENCE_LIMIT',
   'GLOBAL_LIVE_LIMIT',
   'LIVE_WORK_BUSY',
   'LIVE_START_FAILED',

@@ -192,9 +192,9 @@ interface AssetLoop {
   leaderLeaseExpiresAt: number;
 }
 
-const liveLoopLeaderKey = (assetId: string): string =>
+export const liveLoopLeaderKey = (assetId: string): string =>
   `bt:live:leader:${encodeURIComponent(assetId)}`;
-const liveLoopProcessesKey = (assetId: string): string =>
+export const liveLoopProcessesKey = (assetId: string): string =>
   `bt:live:processes:${encodeURIComponent(assetId)}`;
 const liveLoopRatesKey = (assetId: string): string =>
   `bt:live:rates:${encodeURIComponent(assetId)}`;
@@ -203,16 +203,26 @@ const liveLoopRatesKey = (assetId: string): string =>
  * Register this process's local demand, reap crashed peers, and atomically elect
  * at most one provider-loop owner. Followers still refresh their rate lease so
  * the owner can poll at the finest rate requested anywhere in the cluster.
+ *
+ * Every CROSS-PROCESS comparison here is on Redis's own clock: the registration
+ * scores are stamped from `TIME` inside this script and reaped against the same
+ * source, so a peer whose container clock runs minutes fast can neither reap a
+ * live registration early nor keep a stale one alive (§13.5 V5-P1). Each
+ * process still fences its OWN provider work with its own clock — but as an
+ * elapsed-duration measurement from the instant this election was requested,
+ * never as a comparison against a timestamp another process wrote.
  */
 const COORDINATE_LOOP_SCRIPT = `
-local now = tonumber(ARGV[1])
-local expiresAt = tonumber(ARGV[2])
-local instanceId = ARGV[3]
-local rateMs = tonumber(ARGV[4])
-local leaseTtlMs = tonumber(ARGV[5])
-local keyTtlMs = tonumber(ARGV[6])
-local allowAcquire = tonumber(ARGV[7])
-local expectedEpoch = tonumber(ARGV[8])
+local instanceId = ARGV[1]
+local rateMs = tonumber(ARGV[2])
+local leaseTtlMs = tonumber(ARGV[3])
+local keyTtlMs = tonumber(ARGV[4])
+local allowAcquire = tonumber(ARGV[5])
+local expectedEpoch = tonumber(ARGV[6])
+
+local redisTime = redis.call('TIME')
+local now = tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+local expiresAt = now + leaseTtlMs
 
 -- E4's durable fence wins over every stale local watcher and lease. Remove this
 -- process's demand atomically so deleting/recreating an API process cannot
@@ -239,11 +249,11 @@ redis.call('HSET', KEYS[3], instanceId, rateMs)
 redis.call('PEXPIRE', KEYS[2], keyTtlMs)
 redis.call('PEXPIRE', KEYS[3], keyTtlMs)
 
+-- The leader key carries its own PX lease, refreshed by its owner on every
+-- coordination pass. That TTL is the single authority on whether an owner is
+-- still live: a peer must never force-delete a key whose lease Redis still
+-- honours, however the registration ZSET looks from here.
 local owner = redis.call('GET', KEYS[1])
-if owner and not redis.call('ZSCORE', KEYS[2], owner) then
-  redis.call('DEL', KEYS[1])
-  owner = false
-end
 if not owner and allowAcquire == 1 then
   redis.call('SET', KEYS[1], instanceId, 'PX', leaseTtlMs)
   owner = instanceId
@@ -397,6 +407,10 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         loop.coordinationQueued = false;
         loop.coordinationAllowAcquire = false;
         loop.coordinationNotifyPeers = false;
+        // The local fence is an elapsed-duration budget anchored BEFORE the
+        // round trip: whatever Redis's clock says, this process may only work
+        // for `leaderLeaseTtlMs` measured on its own clock from here, so the
+        // election's cost is charged against the lease rather than added to it.
         const coordinatedAt = now();
         const leaseExpiresAt = coordinatedAt + leaderLeaseTtlMs;
         const result = (await deps.redis.eval(
@@ -406,8 +420,6 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
           liveLoopProcessesKey(assetId),
           liveLoopRatesKey(assetId),
           liveAssetRetirementStateKey(assetId),
-          coordinatedAt,
-          leaseExpiresAt,
           loop.coordinationId,
           finestLocalRateMs(loop),
           leaderLeaseTtlMs,
