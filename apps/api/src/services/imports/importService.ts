@@ -1981,9 +1981,6 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
         try {
           await applyRow(row);
-          if (row.contentHash) appliedThisRun.add(row.contentHash);
-          claimCash(row);
-          await settle(row, 'applied', null);
         } catch (err) {
           if (err instanceof ApiError) {
             await settle(row, 'failed', err.message);
@@ -2032,6 +2029,41 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             row,
             'failed',
             'This row hit an unexpected error, reported to the team. Nothing was booked for it.',
+          );
+          continue;
+        }
+
+        // ── PAST THIS LINE THE MONEY IS BOOKED ───────────────────────────────
+        //
+        // `settle` is a plain UPDATE of the row's result, and it used to sit
+        // inside the try above. A failing UPDATE was therefore caught by the
+        // handler that assumes `applyRow` threw, and the row was reported
+        // `failed` with "Nothing was booked for it." — the exact opposite of the
+        // truth about a movement already in the ledger, on top of which the
+        // staged `contentHash` makes a re-import dedupe it away.
+        //
+        // Recording the outcome may still fail; what may not happen is the
+        // report denying the booking. The in-memory outcome is written first and
+        // is what the response counts, so the user is told `applied` either way;
+        // the durable row result is best-effort and its loss is an OPERATOR
+        // problem, captured as one.
+        if (row.contentHash) appliedThisRun.add(row.contentHash);
+        claimCash(row);
+        try {
+          await settle(row, 'applied', null);
+        } catch (err) {
+          const unexpected = err instanceof Error ? err : new Error('Unknown import row failure');
+          deps.problems?.captureError(unexpected, {
+            batchId: batch.id,
+            rowId: row.id,
+            rowIndex: row.rowIndex,
+            brokerId: batch.brokerId,
+            kind: row.kind,
+            stage: 'settle-applied',
+          });
+          deps.logger?.error?.(
+            { err, batchId: batch.id, rowId: row.id, rowIndex: row.rowIndex },
+            'import: row booked but recording its result failed; reported as applied',
           );
         }
       }

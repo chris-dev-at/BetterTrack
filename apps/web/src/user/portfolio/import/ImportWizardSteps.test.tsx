@@ -592,6 +592,51 @@ describe('a row nobody has decided is a question, not a dead end', () => {
   });
 });
 
+describe('Review and Confirm state the same money', () => {
+  /**
+   * An UNDECIDED row still carries the file's raw amount in the file's OWN
+   * currency — the server has not shaped it by a kind yet, and a non-EUR cash
+   * row is refused at confirmation naming that currency. The review step got
+   * this right and the confirm table hard-coded `€`, so one wizard showed
+   * `-1.500,00 $` on one screen and `-1.500,00 €` on the next, immediately
+   * before money is booked.
+   */
+  const USD_ROW = STATEMENT_ROW({
+    id: 'r-usd',
+    rowIndex: 2,
+    note: 'WIRE TRANSFER',
+    amountEur: -1500,
+    currency: 'USD',
+  });
+  const USD_PREVIEW: ImportPreviewResponse = {
+    ...UNDECIDED,
+    rows: [USD_ROW],
+    batch: {
+      ...UNDECIDED.batch,
+      counts: { total: 1, mapped: 0, unmapped: 0, duplicate: 0, error: 1 },
+    },
+  };
+
+  test('renders an undecided USD row in USD on BOTH steps', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue(USD_PREVIEW);
+    renderPage();
+    const user = await upload();
+
+    // Step 2 — the review step, which already used the row's own currency.
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await screen.findByText('What still needs you');
+    const reviewed = screen.getByText(/1[.,]500/);
+    expect(reviewed.textContent).not.toContain('€');
+
+    // Step 3 — the confirm table, which used to restate it as EUR.
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText('Preview: statement.csv');
+    const confirmed = screen.getByText(/1[.,]500/);
+    expect(confirmed.textContent).toBe(reviewed.textContent);
+    expect(confirmed.textContent).not.toContain('€');
+  });
+});
+
 describe('the staged facts are rendered, not recomputed', () => {
   test('names the cash-rule tags the row was pre-tagged with, and badges a human pin', async () => {
     vi.mocked(importsApi.uploadImportBatch).mockResolvedValue({

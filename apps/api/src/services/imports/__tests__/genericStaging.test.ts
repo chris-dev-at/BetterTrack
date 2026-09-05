@@ -282,6 +282,74 @@ describe('what it could not work out is reported, never guessed (point 3)', () =
     const eurRow = preview.rows.find((r) => r.raw.endsWith('EUR'));
     expect(eurRow?.flag).toBe('mapped');
     expect(eurRow?.amountEur).toBe(900);
+
+    // REPORTED IS NOT FINAL: the currency refusal says nothing about the kind,
+    // so the row keeps everything it parsed instead of being persisted all-null.
+    // Ending it there is what made the refusal unrecoverable — nothing the
+    // wizard offers could reach a row with no fields.
+    expect(usdRow?.executedAt).toBe('2024-01-05T12:00:00.000Z');
+    expect(usdRow?.currency).toBe('USD');
+    expect(usdRow?.amountEur).toBe(1500);
+  });
+
+  it('keeps a non-EUR row confirmable as the kind its currency does not block', async () => {
+    const { agent, pid } = await setup();
+    // A trade keeps its native currency exactly as the broker mappers do, so a
+    // USD row the classifier read as cash is still a buy a person can confirm.
+    const USD_TRADE = [
+      'Date,Description,Type,Amount,Currency,ISIN,Quantity,Price',
+      '2024-01-05,Muster Tech AG,Credit,-500.00,USD,DE0001234567,10,50.00',
+    ].join('\n');
+    const preview = await upload(agent, pid, USD_TRADE, { filename: 'usd-trade.csv' });
+
+    const row = preview.rows[0];
+    expect(row?.flag).toBe('error');
+    expect(row?.currency).toBe('USD');
+    expect(row?.confirmableKinds).toContain('buy');
+  });
+
+  it('does not let an ignored FX column restate the whole file as non-EUR', async () => {
+    const { agent, pid } = await setup();
+    // `Type Foreign Currency` is aliased to `ignore` at 0.9 — an informational
+    // column no value is read from. It used to set the file's default currency
+    // all the same, so every row was refused as non-EUR and deleting just that
+    // column imported the identical file cleanly.
+    const FX_NOISE = [
+      'Buchungsdatum;Buchungsart;Buchungstext;Betrag;Type Foreign Currency',
+      '03.01.2024;Auszahlung;HOFER DANKT KARTE;-52,30;USD',
+      '31.01.2024;Einzahlung;GEHALT ARBEITGEBER AG;2.100,00;USD',
+    ].join('\n');
+    const preview = await upload(agent, pid, FX_NOISE, { filename: 'fx-noise.csv' });
+
+    expect(preview.rows).toHaveLength(2);
+    expect(preview.rows.map((r) => [r.kind, r.amountEur, r.currency])).toEqual([
+      ['withdrawal', 52.3, 'EUR'],
+      ['deposit', 2100, 'EUR'],
+    ]);
+    expect(preview.batch.counts.error).toBe(0);
+  });
+
+  it('does not send a row to manual review over an ignored column’s ambiguous number', async () => {
+    // `1.092` in an `ignore`-mapped `Exchange Rate` column is an unreadable
+    // grouping under `en` — and it used to force `needsReview` on the row,
+    // which the staging path turns into a per-row error. On a real month that
+    // is 100 % of the file demoted, citing a column nothing reads.
+    const NETFLIX = [
+      'Date,Payee,Transaction type,Amount,Exchange Rate',
+      '2024-01-10,Netflix,Direct Debit,-12.99,1.092',
+    ].join('\n');
+    const CONTROL = ['Date,Payee,Transaction type,Amount', '2024-01-10,Netflix,Direct Debit,-12.99']
+      .join('\n')
+      .concat('\n');
+
+    // The control — the identical file with only that column deleted — is what
+    // the row must go back to reading as.
+    const control = (await stageGenericFile(Buffer.from(CONTROL), 'control.csv'))!.lines[0]!;
+    expect(control.ok).toBe(true);
+
+    const withFx = (await stageGenericFile(Buffer.from(NETFLIX), 'fx.csv'))!.lines[0]!;
+    expect(withFx.ok).toBe(true);
+    expect(withFx.ok && withFx.row).toMatchObject({ kind: 'withdrawal', amountEur: 12.99 });
   });
 });
 
