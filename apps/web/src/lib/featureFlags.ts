@@ -18,21 +18,39 @@ import { apiRequest } from './apiClient';
  * deployment's fixed capabilities (§13.5 V5-P5), both read from the one
  * `/feature-flags` bootstrap. The SPA hides any killed or unconfigured surface —
  * the client mirror of the server-side `requireFeature` guard and of the intel
- * reads' `available: false`. Defaults to everything ON (matching the server
- * defaults), so a slow/failed fetch never blanks the app; the server stays the
- * real boundary.
+ * reads' `available: false`. The server stays the real boundary.
  */
 export const ALL_FEATURES_ON: FeatureFlagsPublic = Object.fromEntries(
   FEATURE_FLAG_KEYS.map((key) => [key, true]),
 ) as FeatureFlagsPublic;
 
-export const ALL_CAPABILITIES_ON: DeployCapabilities = Object.fromEntries(
-  DEPLOY_CAPABILITY_KEYS.map((key) => [key, true]),
+/**
+ * What an *unresolved* capability means: not present. A capability is a
+ * statement about what this deployment physically HAS (deploy-time env, never
+ * admin-toggled), so "no answer yet" is no evidence of presence — asserting one
+ * on no evidence advertises destinations the server will refuse, and once
+ * react-query has exhausted its retries that advertisement is permanent, not a
+ * blink. Absent-until-known also removes the flash: a gated rail tab, ⌘K entry
+ * or catalog widget appears when the bootstrap says so and never before, so a
+ * healthy load reveals it once instead of showing then retracting it.
+ */
+export const NO_CAPABILITIES: DeployCapabilities = Object.fromEntries(
+  DEPLOY_CAPABILITY_KEYS.map((key) => [key, false]),
 ) as DeployCapabilities;
 
+/**
+ * The two halves deliberately fall back in opposite directions.
+ *
+ * `flags` fail OPEN: they are admin-toggled runtime kill-switches over features
+ * the deployment does have, defaulting to on server-side, so hiding them during
+ * a fetch blip would blank working surfaces for no gain — and the server refuses
+ * anything actually killed.
+ *
+ * `capabilities` fail CLOSED, per `NO_CAPABILITIES` above.
+ */
 const BOOTSTRAP_FALLBACK: FeatureFlagsResponse = {
   flags: ALL_FEATURES_ON,
-  capabilities: ALL_CAPABILITIES_ON,
+  capabilities: NO_CAPABILITIES,
 };
 
 export async function getFeatureFlags(signal?: AbortSignal): Promise<FeatureFlagsResponse> {
@@ -60,12 +78,15 @@ export function useFeatureEnabled(key: FeatureFlagKey): boolean {
   return useFeatureFlags()[key];
 }
 
-/** This deployment's fixed capabilities (env-set, never admin-toggled). */
+/**
+ * This deployment's fixed capabilities (env-set, never admin-toggled). All
+ * false until the bootstrap resolves — see `NO_CAPABILITIES`.
+ */
 export function useDeployCapabilities(): DeployCapabilities {
   return useFeatureFlagsBootstrap().capabilities;
 }
 
-/** True when this deployment has the given capability (or it is not yet known). */
+/** True when this deployment is KNOWN to have the given capability. */
 export function useDeployCapability(key: DeployCapabilityKey): boolean {
   return useDeployCapabilities()[key];
 }

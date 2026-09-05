@@ -16,9 +16,16 @@ import { useDebounce } from '../hooks/useDebounce';
 const DEBOUNCE_MS = 300;
 /** Owner directive (#248 §3 / §13.2 V2-P1): search works from a single character. */
 export const ASSET_SEARCH_MIN_CHARS = 1;
-/** Mirror the server-side quote/search cache TTL (PROJECTPLAN.md §6.2, 60 req/min/user). */
+/** Mirror the server-side quote/search cache TTL (PROJECTPLAN.md §6.2, 300 req/min/user). */
 const SEARCH_STALE_MS = 30_000;
-/** When the API answers `enriching: true` (§6.2), poll for the enriched catalog rows. */
+/**
+ * When the API answers `enriching: true` (§6.2), poll for the enriched catalog
+ * rows. This is a POLL, not §6.2's original "refetch once": the server cannot
+ * tell the client when a background enrichment lands, and a single fixed-delay
+ * retry either fires early (empty results, the user reads it as "nothing found")
+ * or late (a stall the user reads as broken). Kept and written into the plan
+ * (§16 2026-09-05); the 300/min search rail is sized for it.
+ */
 const ENRICH_POLL_MS = 1_500;
 const ENRICH_TIMEOUT_MS = 10_000;
 

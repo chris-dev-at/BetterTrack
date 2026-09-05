@@ -94,10 +94,16 @@ export function createEarningsReminderJob(
         logger: ctx.logger,
         now: () => (deps.now ? deps.now() : now),
       });
-      ctx.logger.info(
-        { scanned: result.scanned, reminded: result.reminded },
-        'notifications.earningsRemind complete',
-      );
+      // A run that skipped anything is NOT complete: it logs as degraded, at
+      // warn, naming the skipped total and its decomposition. A silent
+      // "complete" over a 3-day sustained failure is how a lost reminder window
+      // goes unnoticed.
+      const { degraded, ...counts } = result;
+      if (degraded) {
+        ctx.logger.warn(counts, 'notifications.earningsRemind completed with skips');
+      } else {
+        ctx.logger.info(counts, 'notifications.earningsRemind complete');
+      }
     },
   };
 }

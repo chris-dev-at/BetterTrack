@@ -129,7 +129,7 @@ describe('assetRepository.catalogWatermark — steps forward on deletion', () =>
     const theirCustom = await seedAsset(h, 'THEIRHOUSE', theirs.id);
     const afterTheirInsert = await repo.catalogWatermark(mine.id);
     expectLaterSecond(afterTheirInsert, mineOnly);
-    expect(await repo.searchCatalog(mine.id, 'THEIRHOUSE', 20)).toEqual([]);
+    expect((await repo.searchCatalog(mine.id, 'THEIRHOUSE', 20)).matches).toEqual([]);
 
     // Their deletion likewise puts the stamp ahead of my rows — the state any
     // second user finds the instance in. My own deletion still has to step it.

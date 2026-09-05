@@ -89,6 +89,20 @@ function marketDataWithEarnings(dateByRef: Record<string, string | null>) {
   });
 }
 
+/** The all-zero scan result — what a run that did nothing returns. */
+const NOTHING = {
+  scanned: 0,
+  reminded: 0,
+  suppressed: 0,
+  failed: 0,
+  errored: 0,
+  assetsFailed: 0,
+  usersFailed: 0,
+  usersDeferred: 0,
+  skipped: 0,
+  degraded: false,
+};
+
 let redis: Redis;
 beforeEach(async () => {
   redis = new RedisMock() as unknown as Redis;
@@ -393,7 +407,7 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       runIfAllowed,
       now: () => NOW,
     });
-    expect(res).toEqual({ scanned: 0, reminded: 0 });
+    expect(res).toEqual(NOTHING);
     expect(notify.emit).not.toHaveBeenCalled();
   });
 
@@ -419,7 +433,16 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       now: () => NOW,
     });
 
-    expect(res).toEqual({ scanned: 1, reminded: 1 });
+    // The refused account is a DEFERRAL, not "nothing to do": it is counted, so
+    // the run reports degraded rather than complete.
+    expect(res).toEqual({
+      ...NOTHING,
+      scanned: 1,
+      reminded: 1,
+      usersDeferred: 1,
+      skipped: 1,
+      degraded: true,
+    });
     expect(notify.events).toHaveLength(1);
     expect(notify.events[0]).toMatchObject({ assetId: 'watched', symbol: 'WATCH' });
   });
@@ -480,5 +503,142 @@ describe('runEarningsReminderScan (V5-P5)', () => {
       'GLOBAL',
     ]);
     expect(res.reminded).toBe(2);
+  });
+});
+
+/**
+ * Crash-safety and per-user isolation (#1791). The report anchor used to be
+ * written AFTER the emit, so a worker killed between the enqueue ack and that
+ * write left the per-date lock without its anchor — and a firmed-up date then
+ * produced a second reminder for one report, re-arming the defect #1758 closed.
+ * The claim is now taken in full before the emit.
+ */
+describe('runEarningsReminderScan — crash window and isolation (#1791)', () => {
+  const base = {
+    redis: undefined as unknown as Redis,
+    isEnabled: optedIn,
+    enabled: true,
+    runIfAllowed,
+    now: () => NOW,
+  };
+
+  it('does not re-remind a firmed-up date after an abort at the emit', async () => {
+    // The abort: the enqueue reaches the queue and the process then dies, so
+    // nothing after `emit` in the scan runs. Modelled by a throwing emit — the
+    // scan may not assume the event was NOT accepted.
+    const events: DispatchableEvent[] = [];
+    const aborting = {
+      emit: vi.fn(async (e: DispatchableEvent) => {
+        events.push(e);
+        throw new Error('worker killed after the enqueue ack');
+      }),
+    };
+    const crashed = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(3) }),
+      notify: aborting,
+    });
+    expect(crashed).toMatchObject({ reminded: 0, errored: 1, skipped: 1, degraded: true });
+    expect(events).toHaveLength(1);
+
+    // The provider firms the estimate one day forward, still inside the lead
+    // window — the exact drift that used to slip past a lock-only guard.
+    const after = stubNotify();
+    const next = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(2) }),
+      notify: after,
+    });
+
+    expect(next).toMatchObject({ reminded: 0, suppressed: 1 });
+    expect(after.emit).not.toHaveBeenCalled();
+  });
+
+  it('counts a refused enqueue as failed, not reminded, and retries it', async () => {
+    const refused = stubNotify(false);
+    const first = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(1) }),
+      notify: refused,
+    });
+    expect(first).toMatchObject({ reminded: 0, failed: 1, skipped: 1, degraded: true });
+
+    const ok = stubNotify(true);
+    const second = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(1) }),
+      notify: ok,
+    });
+    expect(second).toMatchObject({ reminded: 1, failed: 0, degraded: false });
+  });
+
+  it('isolates a repository throw at one user so the users after it still run', async () => {
+    const notify = stubNotify();
+    const rows = [asset({ userId: 'u1' }), asset({ userId: 'u2' }), asset({ userId: 'u3' })];
+    const repo = intelRepo(rows);
+    const res = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: {
+        ...repo,
+        listUserWatchAndHoldAssets: async (userId: string) => {
+          if (userId === 'u2') throw new Error('db hiccup');
+          return repo.listUserWatchAndHoldAssets(userId);
+        },
+      },
+      marketData: marketDataWithEarnings({ AAPL: day(1) }),
+      notify,
+    });
+
+    expect(notify.events.map((e) => e.userId)).toEqual(['u1', 'u3']);
+    expect(res).toMatchObject({ reminded: 2, usersFailed: 1, skipped: 1, degraded: true });
+  });
+
+  it('records a provider failure so the run cannot report clean', async () => {
+    const notify = stubNotify();
+    const res = await runEarningsReminderScan({
+      ...base,
+      redis,
+      intelRepo: intelRepo([asset({})]),
+      marketData: createStubMarketData({
+        earnings: () => {
+          throw new Error('provider down');
+        },
+      }),
+      notify,
+    });
+
+    expect(res).toMatchObject({ reminded: 0, assetsFailed: 1, skipped: 1, degraded: true });
+    expect(notify.emit).not.toHaveBeenCalled();
+  });
+
+  it('skips the row — never notifies — when the marker store is unreachable', async () => {
+    const notify = stubNotify();
+    const broken = {
+      get: async () => {
+        throw new Error('redis down');
+      },
+      set: async () => 'OK',
+      del: async () => 1,
+    } as unknown as Redis;
+
+    const res = await runEarningsReminderScan({
+      ...base,
+      redis: broken,
+      intelRepo: intelRepo([asset({})]),
+      marketData: marketDataWithEarnings({ AAPL: day(1) }),
+      notify,
+    });
+
+    expect(res).toMatchObject({ reminded: 0, failed: 1, skipped: 1, degraded: true });
+    expect(notify.emit).not.toHaveBeenCalled();
   });
 });
