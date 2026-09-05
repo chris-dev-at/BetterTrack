@@ -791,7 +791,18 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
   });
 
   it('retains renewing watch-start capacity until disconnected backfill work settles', async () => {
-    const leaseTtlMs = 180;
+    // Unlike the fail-closed cases above, this test asserts that renewal keeps
+    // SUCCEEDING, so it needs the renewal to actually win its race against the
+    // lease deadline. The gateway derives both ends of that race from the TTL:
+    // it renews every `ttl/3` and refuses to issue a renewal that lands inside
+    // the final `ttl/10` of slack, leaving `ttl - ttl/10 - ttl/3` (~0.57 * ttl)
+    // for the acquire round-trip plus event-loop scheduling. A missed first
+    // tick is unrecoverable — `renewBeforeDeadline` throws before it ever calls
+    // `renewWatchStart`, and the work lease is released for good — so at the
+    // old 180 ms this budget was ~100 ms and a loaded CI runner's stall flaked
+    // the whole test. 900 ms buys ~510 ms of tolerance while keeping the test
+    // sub-second in its waits. Do not tighten without redoing this arithmetic.
+    const leaseTtlMs = 900;
     const admission = createRealtimeAdmission(harness.ctx.redis, {
       leaseTtlMs,
       limits: { concurrentWatchStarts: 1 },
