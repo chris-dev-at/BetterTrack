@@ -70,7 +70,7 @@ function harness(existing: readonly SeedAccount[] = []): SeedHarness {
     },
     async seedCatalog() {
       state.catalogCalls += 1;
-      return { created: 2, existing: 3 };
+      return { created: 2, existing: 3, refreshed: 1 };
     },
     async seedOAuthClients() {
       state.oauthCalls += 1;
