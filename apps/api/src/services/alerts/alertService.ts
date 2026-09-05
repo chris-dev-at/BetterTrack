@@ -140,7 +140,7 @@ export function createAlertService(deps: AlertServiceDeps): AlertService {
         if (includeCustomAssets) {
           try {
             await withAlertFollowRecipients(
-              { follows, paranoid: deps.paranoid },
+              { follows, users, paranoid: deps.paranoid },
               userId,
               'create',
               async (recipients) => {
