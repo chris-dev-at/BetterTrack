@@ -71,6 +71,15 @@ vi.mock('../AuthContext', () => ({
 // The board now lives on the account (`homeSync.ts`); these tests are about the
 // builder, so the transport is stubbed and the assertions stay on the cache.
 vi.mock('../../lib/settingsApi');
+// This board describes a deployment that HAS market intelligence. The
+// `/feature-flags` bootstrap is not stubbed in this harness, and an unresolved
+// capability now reads as absent rather than present (§13.5 V5-P5), so the
+// deployment's answer is stated here instead of inherited from a fallback.
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapabilities: () => ({ marketIntel: true }),
+  useDeployCapability: () => true,
+}));
 
 // Canvas-backed chart lib — jsdom cannot draw it (mirrors the portfolio/asset
 // page tests). `setData` is captured so the summed net-worth curve can be
