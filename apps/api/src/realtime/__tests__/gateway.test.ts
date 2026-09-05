@@ -10,6 +10,9 @@ import {
   REALTIME_CLIENT_EVENTS,
   REALTIME_MAX_CONNECTIONS_PER_BEARER,
   REALTIME_MAX_CONNECTIONS_PER_USER,
+  REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_SOCKET,
+  REALTIME_MAX_ROOMS_PER_USER,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
   REALTIME_SOCKET_COMMAND_BURST,
@@ -346,6 +349,9 @@ async function mintFirstPartyOAuthToken(
 }
 
 const SOME_UUID = '018f6f00-0000-7000-8000-000000000001';
+/** Distinct, deterministic room/presence subjects for the budget tests. */
+const budgetUuid = (index: number): string =>
+  `018f6f00-0000-7000-8000-${String(index).padStart(12, '0')}`;
 const CONTROLLED_USER_ID = '018f6f00-0000-7000-8000-000000000099';
 
 function controlledAdmission(overrides: Partial<RealtimeAdmission> = {}): RealtimeAdmission {
@@ -1542,6 +1548,209 @@ describe('realtime gateway — rooms (§4.5)', () => {
       }),
     ).toEqual({ ok: false, error: 'BAD_REQUEST' });
     expect(socket.connected).toBe(true);
+  });
+});
+
+describe('realtime gateway — room and presence budgets (§13.5 V5-P1)', () => {
+  it('refuses the room past the per-socket cap and frees the slot again on leave', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const socket = await connect((await login(user.email, user.password)).cookie);
+
+    const acks: RealtimeRoomAck[] = [];
+    for (let index = 0; index <= REALTIME_MAX_ROOMS_PER_SOCKET; index += 1) {
+      acks.push(await joinRoom(socket, 'asset', budgetUuid(index)));
+    }
+    expect(acks.slice(0, REALTIME_MAX_ROOMS_PER_SOCKET)).toEqual(
+      Array.from({ length: REALTIME_MAX_ROOMS_PER_SOCKET }, () => ({ ok: true })),
+    );
+    expect(acks.at(-1)).toEqual({ ok: false, error: 'SOCKET_ROOM_LIMIT' });
+
+    // A room the socket already holds re-joins idempotently — never a refusal.
+    await expect(joinRoom(socket, 'asset', budgetUuid(0))).resolves.toEqual({ ok: true });
+    // Leaving returns exactly one slot, and the refused room now fits.
+    await expect(
+      emitRoom(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: budgetUuid(0) },
+      }),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      joinRoom(socket, 'asset', budgetUuid(REALTIME_MAX_ROOMS_PER_SOCKET)),
+    ).resolves.toEqual({ ok: true });
+    expect(socket.connected).toBe(true);
+  });
+
+  it('caps rooms per USER across sockets and gives the budget back on disconnect', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const first = await connect(cookie);
+    const second = await connect(cookie);
+    const third = await connect(cookie);
+
+    // Two sockets fill the user's whole distinct-room budget between them.
+    for (let index = 0; index < REALTIME_MAX_ROOMS_PER_SOCKET; index += 1) {
+      await expect(joinRoom(first, 'asset', budgetUuid(index))).resolves.toEqual({ ok: true });
+    }
+    for (
+      let index = 0;
+      index < REALTIME_MAX_ROOMS_PER_USER - REALTIME_MAX_ROOMS_PER_SOCKET;
+      index += 1
+    ) {
+      await expect(joinRoom(second, 'asset', budgetUuid(100 + index))).resolves.toEqual({
+        ok: true,
+      });
+    }
+
+    // A THIRD, entirely empty socket cannot multiply that budget…
+    await expect(joinRoom(third, 'asset', budgetUuid(900))).resolves.toEqual({
+      ok: false,
+      error: 'USER_ROOM_LIMIT',
+    });
+    // …but a room the user already holds elsewhere costs no new user slot.
+    await expect(joinRoom(third, 'asset', budgetUuid(0))).resolves.toEqual({ ok: true });
+
+    // Disconnecting the first socket releases the rooms only it held.
+    first.disconnect();
+    await vi.waitFor(async () => {
+      await expect(joinRoom(third, 'asset', budgetUuid(900))).resolves.toEqual({ ok: true });
+    });
+  });
+
+  it('gives back a room reserved after its socket had already disconnected', async () => {
+    // `room.join` crosses an awaited admission round trip before the handler
+    // reserves anything, and the disconnect handler releases the room budget
+    // synchronously — so a socket that dies inside that await used to leave its
+    // reservation in the gateway-lifetime user map with nothing left to free it.
+    let releaseAdmission: (() => void) | undefined;
+    const heldAdmission = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    let userCommands = 0;
+    const releaseConnection = vi.fn(async () => undefined);
+    const admission = controlledAdmission({
+      releaseConnection,
+      consumeUserCommand: vi.fn(async () => {
+        userCommands += 1;
+        // Park only the racing join; every later command is admitted at once.
+        if (userCommands === 1) await heldAdmission;
+        return true;
+      }),
+    });
+    // One refill quantum per command, so the 64 honest joins below exercise the
+    // room budget rather than the socket command bucket.
+    let controlledClockMs = Date.now();
+    const controlled = await listenControlledGateway({
+      admission,
+      leaseTtlMs: 60_000,
+      commandNow: () => (controlledClockMs += 60),
+    });
+    const clientSockets: ClientSocket[] = [];
+    const connectControlled = async (): Promise<ClientSocket> => {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+      return client;
+    };
+    try {
+      const racing = await connectControlled();
+      racing.emit(REALTIME_CLIENT_EVENTS.roomJoin, {
+        room: { kind: 'asset', id: budgetUuid(900) },
+      });
+      await vi.waitFor(() => expect(userCommands).toBe(1));
+      racing.disconnect();
+      // The disconnect handler frees the room budget BEFORE it releases the
+      // connection lease, so this is the point where the cleanup provably ran.
+      await vi.waitFor(() => expect(releaseConnection).toHaveBeenCalledTimes(1));
+      releaseAdmission?.();
+
+      // The user's whole distinct-room budget must still be spendable: the
+      // racing join reserved a room nothing below re-joins, so a leaked slot
+      // costs exactly the last of these 64 joins.
+      const first = await connectControlled();
+      const second = await connectControlled();
+      for (let index = 0; index < REALTIME_MAX_ROOMS_PER_SOCKET; index += 1) {
+        await expect(joinRoom(first, 'asset', budgetUuid(index))).resolves.toEqual({ ok: true });
+      }
+      for (
+        let index = 0;
+        index < REALTIME_MAX_ROOMS_PER_USER - REALTIME_MAX_ROOMS_PER_SOCKET;
+        index += 1
+      ) {
+        await expect(joinRoom(second, 'asset', budgetUuid(100 + index))).resolves.toEqual({
+          ok: true,
+        });
+      }
+      // …and the cap itself still bites one room later, on a socket with its
+      // own budget untouched.
+      const third = await connectControlled();
+      await expect(joinRoom(third, 'asset', budgetUuid(901))).resolves.toEqual({
+        ok: false,
+        error: 'USER_ROOM_LIMIT',
+      });
+    } finally {
+      releaseAdmission?.();
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
+  it('caps presence claims per socket and clears them in bounded round trips', async () => {
+    commandClockMs = Date.now();
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const socket = await connect((await login(user.email, user.password)).cookie);
+    const leaveMany = vi.spyOn(harness.ctx.presence, 'leaveMany');
+    const leave = vi.spyOn(harness.ctx.presence, 'leave');
+
+    const enter = async (index: number): Promise<RealtimeRoomAck> => {
+      // One refill quantum per command: this exercises the presence budget,
+      // not the command bucket.
+      commandClockMs = (commandClockMs ?? Date.now()) + 60;
+      return emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
+        surface: 'chat',
+        id: budgetUuid(index),
+      });
+    };
+    for (let index = 0; index < REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET; index += 1) {
+      await expect(enter(index)).resolves.toEqual({ ok: true });
+    }
+    await expect(enter(REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET)).resolves.toEqual({
+      ok: false,
+      error: 'SOCKET_PRESENCE_LIMIT',
+    });
+    await expect(harness.ctx.presence.isPresent(user.id, 'chat', budgetUuid(0))).resolves.toBe(
+      true,
+    );
+
+    // 64 claims held: the disconnect drops them in ONE batched round trip, not
+    // one awaited round trip per claim.
+    socket.disconnect();
+    await vi.waitFor(() => expect(leaveMany).toHaveBeenCalledTimes(1));
+    expect(leaveMany.mock.calls[0]?.[1]).toHaveLength(REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET);
+    expect(leave).not.toHaveBeenCalled();
+    await vi.waitFor(async () => {
+      await expect(harness.ctx.presence.isPresent(user.id, 'chat', budgetUuid(0))).resolves.toBe(
+        false,
+      );
+      await expect(
+        harness.ctx.presence.isPresent(
+          user.id,
+          'chat',
+          // The LAST subject the socket actually entered — indexing this by the
+          // room cap would pass vacuously the moment the two caps diverge.
+          budgetUuid(REALTIME_MAX_PRESENCE_SUBJECTS_PER_SOCKET - 1),
+        ),
+      ).resolves.toBe(false);
+    });
   });
 });
 
