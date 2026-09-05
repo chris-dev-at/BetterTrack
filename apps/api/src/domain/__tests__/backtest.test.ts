@@ -903,6 +903,111 @@ describe('backtest — validation', () => {
       ),
     ).rejects.toThrow(/finite close/);
   });
+
+  // --- #1778: a non-positive close never reaches the arithmetic. Before the
+  // fix, positivity was checked at t₀ and on entry days only, so a 0 or
+  // negative close mid-window divided into Infinity/NaN — or, through the
+  // rebalance primitive, threw a bare Error and answered 500 instead of 422.
+
+  it('rejects a zero close mid-window instead of indexing it into Infinity (rebalance: none)', async () => {
+    // Before: series 100, 0, 50 ⇒ bestDay.returnPct Infinity (50/0 − 1),
+    // volatilityPct NaN, and every comparison built on them poisoned.
+    const input = singleAssetInput([100, 0, 50]);
+
+    await expect(backtest(input)).rejects.toThrow(BacktestError);
+    await expect(backtest(input)).rejects.toThrow(/positive close/);
+  });
+
+  it('rejects a zero close landing on a rebalance period boundary (NaN for the whole series)', async () => {
+    // Before: the boundary day set the segment base to 0, so `segBaseValue ·
+    // (eur / segBaseEur)` returned NaN from there on — series and every stat.
+    const prices = [
+      { date: '2026-01-30', close: 100 },
+      { date: '2026-02-02', close: 0 },
+      { date: '2026-02-03', close: 50 },
+    ];
+
+    await expect(
+      backtest({
+        positions: [{ assetId: 'A', weight: 100 }],
+        assets: [{ assetId: 'A', symbol: 'A', currency: 'EUR', prices }],
+        range: { start: '2026-01-30', end: '2026-02-03' },
+        converter: stubConverter(),
+        rebalance: 'monthly',
+      }),
+    ).rejects.toThrow(BacktestError);
+  });
+
+  it('rejects a negative close with a schedule as a mapped error, not a bare Error', async () => {
+    // Before: the negative value flowed into rebalanceToTargets, whose plain
+    // `Error` the module header reserves for caller bugs ⇒ a 500, not a 422.
+    const prices = [
+      { date: '2026-01-30', close: 100 },
+      { date: '2026-02-02', close: -50 },
+      { date: '2026-02-03', close: 50 },
+    ];
+    const input: BacktestInput = {
+      positions: [
+        { assetId: 'A', weight: 60 },
+        { assetId: 'B', weight: 40 },
+      ],
+      assets: [
+        { assetId: 'A', symbol: 'A', currency: 'EUR', prices },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-30', [10, 11, 12]),
+        },
+      ],
+      range: { start: '2026-01-30', end: '2026-02-03' },
+      converter: stubConverter(),
+      rebalance: 'monthly',
+    };
+
+    await expect(backtest(input)).rejects.toThrow(BacktestError);
+    await expect(backtest(input)).rejects.toThrow(/positive close/);
+  });
+
+  it('refuses a zero close outside the window too — the whole handed-in series is validated', async () => {
+    await expect(
+      backtest({
+        positions: [{ assetId: 'A', weight: 100 }],
+        assets: [
+          {
+            assetId: 'A',
+            symbol: 'A',
+            currency: 'EUR',
+            prices: [
+              { date: '2026-01-01', close: 0 },
+              { date: '2026-02-02', close: 100 },
+              { date: '2026-02-03', close: 110 },
+            ],
+          },
+        ],
+        range: { start: '2026-02-02', end: '2026-02-03' },
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/positive close/);
+  });
+
+  it('never reports a non-finite statistic for a series it accepts', async () => {
+    const res = await backtest(singleAssetInput([100, 1, 250, 3, 180]));
+    const stats = [
+      res.stats.totalReturnPct,
+      res.stats.cagrPct,
+      res.stats.maxDrawdownPct,
+      res.stats.volatilityPct,
+      res.stats.bestDay?.returnPct,
+      res.stats.worstDay?.returnPct,
+    ];
+
+    for (const value of stats) {
+      if (value === null || value === undefined) continue;
+      expect(Number.isFinite(value)).toBe(true);
+    }
+    for (const point of res.series) expect(point.value).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1018,6 +1123,21 @@ describe('rebalanceToTargets — the §14 entry-day rebalance primitive', () => 
     expect(() =>
       rebalanceToTargets([{ key: 'A', value: Number.NaN }], [{ key: 'A', weight: 1 }]),
     ).toThrow(/finite non-negative value/);
+    // A bad holding VALUE is a data state the engine can only reach from a
+    // pathological price series, so it is a mapped BacktestError (422 at the
+    // route) — not the bare Error the caller-bug checks throw (#1778).
+    expect(() => rebalanceToTargets([{ key: 'A', value: -1 }], [{ key: 'A', weight: 1 }])).toThrow(
+      BacktestError,
+    );
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 1 }],
+        [
+          { key: 'A', weight: 1 },
+          { key: 'A', weight: 2 },
+        ],
+      ),
+    ).not.toThrow(BacktestError);
   });
 
   it('rejects negative, non-finite, empty, or all-zero target weights', () => {

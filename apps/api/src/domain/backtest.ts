@@ -383,20 +383,32 @@ function periodKey(date: string, frequency: Exclude<RebalanceFrequency, 'none'>)
 }
 
 /**
- * Validate a price series up front — every date ISO, every close finite — then
- * return a stable ascending copy. Validation must not live in the sort
- * comparator: a comparator never runs for 0/1-element arrays, so a lone
- * malformed point would slip through and silently mis-value the series (the
- * same fail-loud contract as `holdings.valueOverTime`). Finiteness is checked
- * for *every* close, not just t₀ — a NaN or Infinity mid-series would otherwise
- * flow straight into the index and every statistic derived from it.
+ * Validate a price series up front — every date ISO, every close finite and
+ * **positive** — then return a stable ascending copy. Validation must not live
+ * in the sort comparator: a comparator never runs for 0/1-element arrays, so a
+ * lone malformed point would slip through and silently mis-value the series
+ * (the same fail-loud contract as `holdings.valueOverTime`). Both checks cover
+ * *every* close, not just t₀: a NaN or Infinity mid-series flows straight into
+ * the index and every statistic derived from it, and a zero or negative close
+ * is worse still — it divides into `Infinity`/`NaN` at the next price ratio,
+ * poisons the whole series through a rebalance segment base, and can drive the
+ * value-space rebalance primitive negative (#1778).
+ *
+ * A malformed close is a **data** state, not a caller bug, so both throw
+ * {@link BacktestError}: the API answers 422 ("this history cannot be
+ * backtested"), never a 500.
  */
 function sortPrices(prices: readonly PricePoint[], symbol: string): PricePoint[] {
   for (const point of prices) {
     assertIsoDate(point.date, `price date for ${symbol}`);
     if (!Number.isFinite(point.close)) {
-      throw new Error(
+      throw new BacktestError(
         `Price point for ${symbol} on ${point.date} must be a finite close, got ${point.close}`,
+      );
+    }
+    if (point.close <= 0) {
+      throw new BacktestError(
+        `Price point for ${symbol} on ${point.date} must be a positive close, got ${point.close}`,
       );
     }
   }
@@ -444,9 +456,11 @@ export interface RebalanceTarget {
  *    association (Σ out ≡ Σ in · Σᵢ wᵢ/Σw); there is no rounding.
  *
  * Throws a plain `Error` for caller bugs: duplicate keys, non-finite or
- * negative values (shorts are not modelled), non-finite or negative weights, or
- * targets that do not sum to a positive weight. A zero **total value** is legal
- * and yields all-zero holdings.
+ * negative weights, or targets that do not sum to a positive weight. A
+ * non-finite or negative **holding value** (shorts are not modelled) throws
+ * {@link BacktestError} instead: the engine only ever reaches it from a
+ * pathological price series, and a data state must answer 422, not 500
+ * (#1778). A zero total value is legal and yields all-zero holdings.
  */
 export function rebalanceToTargets(
   holdings: readonly RebalanceHolding[],
@@ -460,7 +474,7 @@ export function rebalanceToTargets(
     }
     seenHoldings.add(h.key);
     if (!Number.isFinite(h.value) || h.value < 0) {
-      throw new Error(
+      throw new BacktestError(
         `rebalanceToTargets: holding ${JSON.stringify(h.key)} must have a finite non-negative value, got ${h.value}.`,
       );
     }
@@ -521,14 +535,31 @@ interface PipelineResult {
 type RateResolver = (currency: string, date: string) => Promise<number>;
 
 /**
+ * Every base-currency valuation the engine indexes off, divides by, or feeds to
+ * the rebalance primitive must be strictly positive. {@link sortPrices} already
+ * refuses a non-positive close and {@link backtest}'s resolver refuses a
+ * non-positive FX rate, so this is the standing invariant restated where it is
+ * *used* — on **every** axis day, not only at t₀ and on entry days (#1778):
+ * silently producing `Infinity`/`NaN` on the money path is the one outcome that
+ * must be impossible.
+ */
+function assertPositiveValue(symbol: string, day: string, eur: number): void {
+  if (!(eur > 0)) {
+    throw new BacktestError(
+      `${symbol} has a non-positive base value (${eur}) on ${day}; cannot index.`,
+    );
+  }
+}
+
+/**
  * Walk the date `axis` once, valuing every asset in the base currency (FX at the
  * day, last close carried forward) and accumulating the base-100 index. Returns
  * the series and each asset's end/start ratio for attribution.
  *
  * Throws {@link BacktestError} if an asset has no price on or before t₀ (its base
- * value is undefined) or if a base value is non-positive (the ratio is undefined)
- * — the latter cannot arise from real adjusted closes but is guarded rather than
- * silently producing `Infinity`/`NaN` on the money path.
+ * value is undefined) or if a base-currency value is non-positive on **any** axis
+ * day, not merely t₀ (#1778) — that cannot arise from real adjusted closes, but
+ * it is guarded rather than silently producing `Infinity`/`NaN` on the money path.
  */
 async function runPipeline(
   assets: PreparedAsset[],
@@ -574,13 +605,9 @@ async function runPipeline(
 
       const rate = await getRate(c.asset.currency, day);
       const eur = c.lastClose * rate;
+      assertPositiveValue(c.asset.symbol, day, eur);
 
       if (i === 0) {
-        if (!(eur > 0)) {
-          throw new BacktestError(
-            `${c.asset.symbol} has a non-positive base value (${eur}) on ${day}; cannot index.`,
-          );
-        }
         c.baseEur = eur;
       }
       c.lastEur = eur;
@@ -642,8 +669,10 @@ interface EventPipelineResult {
  * between events, so per-asset money-weighted gains sum exactly to the index
  * return.
  *
- * Throws {@link BacktestError} when an asset's entry close is non-positive (its
- * ratio would be undefined) — the same guard {@link runPipeline} applies at t₀.
+ * Throws {@link BacktestError} when an asset's base-currency value is
+ * non-positive on any axis day — its entry ratio, its running segment base and
+ * the values handed to {@link rebalanceToTargets} all divide by it (#1778) —
+ * the same guard {@link runPipeline} applies.
  */
 async function runEventPipeline(
   assets: LateModeAsset[],
@@ -776,6 +805,9 @@ async function runEventPipeline(
       if (c.lastClose === null) continue; // not yet listed — waits as cash / stays redistributed
       const rate = await getRate(c.asset.currency, day);
       c.eur = c.lastClose * rate;
+      // Guards the entry ratio, the running segment's base, and every value
+      // the rebalance primitive is handed — all of them divide by this.
+      assertPositiveValue(c.asset.symbol, day, c.eur);
       if (c.entered) {
         // Carry the segment: revalue the held position at today's price.
         c.value = c.segBaseValue * (c.eur / c.segBaseEur);
@@ -788,11 +820,7 @@ async function runEventPipeline(
     //    entry event, one per late asset independently.
     if (entering.length > 0) {
       for (const c of entering) {
-        if (!(c.eur > 0)) {
-          throw new BacktestError(
-            `${c.asset.symbol} has a non-positive base value (${c.eur}) on ${day}; cannot index.`,
-          );
-        }
+        // Positivity was asserted above, on this and every other axis day.
         c.entered = true;
         c.entryEur = c.eur;
         c.segBaseEur = c.eur;
@@ -886,6 +914,12 @@ async function runEventPipeline(
  * are handled explicitly: a single-day series has no return (`totalReturn 0`,
  * everything annualised `null`), and volatility needs ≥ 2 daily returns for the
  * sample (n−1) standard deviation to be defined.
+ *
+ * **No statistic is ever non-finite** (#1778). Every figure below divides by an
+ * index level, so a zero level would hand back `Infinity`/`NaN` returns and a
+ * `NaN` volatility. The engine's positivity guards make that unreachable; the
+ * check is restated here — the last thing between a poisoned series and every
+ * comparison built on it.
  */
 function computeStats(series: SeriesPoint[]): BacktestStats {
   const first = series[0];
@@ -893,6 +927,13 @@ function computeStats(series: SeriesPoint[]): BacktestStats {
   if (first === undefined || last === undefined) {
     // Unreachable: the axis is non-empty by the time stats run.
     throw new BacktestError('Cannot compute statistics for an empty series.');
+  }
+  for (const pt of series) {
+    if (!Number.isFinite(pt.value) || pt.value <= 0) {
+      throw new BacktestError(
+        `Index level on ${pt.date} is ${pt.value}; cannot compute statistics.`,
+      );
+    }
   }
 
   const totalReturnPct = (last.value / first.value - 1) * 100;
@@ -957,7 +998,8 @@ function computeStats(series: SeriesPoint[]): BacktestStats {
  * See the module header for the method, purity guarantees, and the trading-day /
  * FX-coalescing decisions. Throws a plain `Error` for caller bugs (no positions,
  * unknown asset, malformed dates, bad weights) and {@link BacktestError} for data
- * states that make a backtest impossible (no overlapping history in the window).
+ * states that make a backtest impossible (no overlapping history in the window,
+ * a close that is not finite and positive, an invalid FX rate).
  */
 export async function backtest(input: BacktestInput): Promise<BacktestResult> {
   const { positions, range, converter } = input;
