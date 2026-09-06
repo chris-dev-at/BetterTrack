@@ -3,11 +3,16 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, test } from 'vitest';
 
-import { API_KEY_SCOPES, OAUTH_SCOPE_LABELS, type ApiKeyScope } from '@bettertrack/contracts';
+import {
+  API_KEY_SCOPES,
+  OAUTH_SCOPE_CAPABILITY_CLAIMS,
+  OAUTH_SCOPE_LABELS,
+  type ApiKeyScope,
+} from '@bettertrack/contracts';
 
 import { I18nProvider, localizedMessage } from '../i18n';
 import { oauthScopeDescriptionKey } from '../lib/oauthScopeCopy';
-import { isParanoidBlockedScope, ScopePicker, ScopeSummary } from './ScopePicker';
+import { isParanoidBlockedScope, ScopePicker, ScopeSummary, scopeModuleKey } from './ScopePicker';
 
 /**
  * V5-P0b — the shared scope picker must:
@@ -252,8 +257,55 @@ describe('ScopePicker', () => {
   });
 });
 
-describe('ScopeSummary', () => {
-  test('ships distinct EN and DE descriptions for every stable scope id', () => {
+/**
+ * #1860 — the German half of the consent-copy guard. `apps/api` binds each
+ * {@link OAUTH_SCOPE_CAPABILITY_CLAIMS} entry to the routes that grant it and to
+ * the English phrase; this map is the DE counterpart, and the test below fails
+ * if a claim has no entry here. A new capability therefore cannot ship in one
+ * locale only.
+ */
+const GERMAN_CAPABILITY_PHRASES: Readonly<Record<string, string>> = {
+  'mirrorchain.delete-chain': 'ein Gruppenportfolio löschen',
+  'mirrorchain.transfer-ownership': 'die Eigentümerschaft übertragen',
+  'mirrorchain.manage-members': 'Mitglieder einladen, befördern und entfernen',
+  'account-security.delete-vault': 'einen Tresor endgültig löschen',
+  'account-security.portfolio-vault-move': 'Portfolios in einen Tresor verschieben',
+  'account-security.delete-passkey': 'einen Passkey löschen',
+  'account-security.revoke-grant': 'den Zugriff einer anderen App widerrufen',
+  'portfolio.tax-regime': 'Steuerregime',
+};
+
+describe('consent copy names what the scope really grants (#1860)', () => {
+  test('every capability the API binds to a scope is named in EN and DE, on the scope line and in its module info-point', () => {
+    for (const claim of OAUTH_SCOPE_CAPABILITY_CLAIMS) {
+      const german = GERMAN_CAPABILITY_PHRASES[claim.id];
+      // A claim without German copy is a half-shipped widening — EN + DE move
+      // together or neither moves.
+      expect(german, `missing German phrase for ${claim.id}`).toBeTruthy();
+
+      const moduleKey = scopeModuleKey(claim.scope);
+      for (const [locale, phrase] of [
+        ['en', claim.enPhrase],
+        ['de', german!],
+      ] as const) {
+        const scopeLine = localizedMessage(locale, oauthScopeDescriptionKey(claim.scope));
+        const moduleInfo = localizedMessage(
+          locale,
+          `ui.scopePicker.module.${moduleKey}.description`,
+        );
+        expect(scopeLine.toLowerCase(), `${locale} scope line: ${claim.id}`).toContain(
+          phrase.toLowerCase(),
+        );
+        expect(moduleInfo.toLowerCase(), `${locale} module info: ${claim.id}`).toContain(
+          phrase.toLowerCase(),
+        );
+      }
+    }
+  });
+
+  test('the picker bundle stays in step with the server-rendered English label', () => {
+    // Kept as a DRIFT check only — on its own it proves nothing about what a
+    // scope grants, which is exactly how the three #1860 defects survived.
     for (const scope of API_KEY_SCOPES) {
       const key = oauthScopeDescriptionKey(scope);
       const english = localizedMessage('en', key);
@@ -262,6 +314,25 @@ describe('ScopeSummary', () => {
       expect(english, `en: ${scope}`).toBe(OAUTH_SCOPE_LABELS[scope]);
       expect(german, `de: ${scope}`).not.toBe(english);
     }
+  });
+});
+
+describe('ScopeSummary', () => {
+  test('renders the corrected destructive-capability copy on the consent-side summary', () => {
+    render(
+      <ScopeSummary
+        items={[
+          { scope: 'mirrorchain:write', label: OAUTH_SCOPE_LABELS['mirrorchain:write'] },
+          { scope: 'account:security', label: OAUTH_SCOPE_LABELS['account:security'] },
+        ]}
+      />,
+    );
+
+    const chain = screen.getByText('Group portfolios').closest('li')!;
+    expect(within(chain).getByText(/delete a group portfolio/i)).toBeInTheDocument();
+    expect(within(chain).getByText(/transfer ownership/i)).toBeInTheDocument();
+    const security = screen.getByText('Account security').closest('li')!;
+    expect(within(security).getByText(/permanently deleting a vault/i)).toBeInTheDocument();
   });
 
   test('localizes feedback consent copy from its scope id instead of the server English label', () => {
@@ -287,7 +358,7 @@ describe('ScopeSummary', () => {
           { scope: 'social:read', label: 'See your friends and the items shared with you' },
           {
             scope: 'portfolio:write',
-            label: 'Create and edit portfolios, transactions, custom assets and cash',
+            label: OAUTH_SCOPE_LABELS['portfolio:write'],
           },
           {
             scope: 'portfolio:read',
@@ -306,11 +377,7 @@ describe('ScopeSummary', () => {
         'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
       ),
     ).toBeInTheDocument();
-    expect(
-      within(portfolio).getByText(
-        'Create and edit portfolios, transactions, custom assets and cash',
-      ),
-    ).toBeInTheDocument();
+    expect(within(portfolio).getByText(OAUTH_SCOPE_LABELS['portfolio:write'])).toBeInTheDocument();
 
     const market = screen.getByText('Market').closest('li')!;
     expect(within(market).getByText('Search assets and read market data')).toBeInTheDocument();
