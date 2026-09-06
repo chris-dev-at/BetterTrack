@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { ShareKind } from '@bettertrack/contracts';
 
@@ -135,8 +135,19 @@ export function createItemCommentRepository(db: Database) {
      * author/reaction locks before loading a body or profile identity. Distinct
      * by author, so it is bounded by the item's audience rather than by how many
      * comments the thread has accumulated.
+     *
+     * `limit` is a HARD ceiling on that id list, because the caller turns it
+     * into a lock set: a list this scan cannot bound would become a transaction
+     * holding one `users` row lock per entry (#1829). A caller that receives
+     * `limit` rows must treat the answer as truncated and fail closed — see
+     * `commentService.withLockedActors`. Since #1829 this runs ONLY when the
+     * bounded probe below has already found a participant that needs filtering.
      */
-    async listParticipantsForItem(kind: ShareKind, subjectId: string): Promise<string[]> {
+    async listParticipantsForItem(
+      kind: ShareKind,
+      subjectId: string,
+      limit: number,
+    ): Promise<string[]> {
       const rows = await db
         .selectDistinct({ authorId: itemComments.authorId })
         .from(itemComments)
@@ -146,8 +157,52 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
           ),
-        );
+        )
+        .limit(limit);
       return rows.map((row) => row.authorId);
+    },
+
+    /**
+     * Does ANY live comment on this item come from an account that is not in the
+     * `normal` privacy mode? The one question a thread read has to answer before
+     * it can skip the participant enumeration above and the per-participant
+     * privacy locks that follow it (#1829).
+     *
+     * Driven from `users`, not from the thread: `users_privacy_mode_restricted_idx`
+     * (migration 0113) is partial on exactly this predicate, so it holds one
+     * entry per paranoid account — normally none — and the probe stops at an
+     * empty index scan without touching `item_comments` at all. Asking the same
+     * question from the comment side would mean walking the thread's rows on
+     * every 30 s poll, which is the cost this replaces.
+     *
+     * `privacy_mode` is `NOT NULL` and both participant columns cascade from
+     * `users`, so "not normal" here is exactly the guard's own rule (an id whose
+     * account row is gone cannot appear in a thread).
+     */
+    async hasRestrictedParticipant(kind: ShareKind, subjectId: string): Promise<boolean> {
+      const rows = await db
+        .select({ one: sql<number>`1` })
+        .from(users)
+        .where(
+          and(
+            ne(users.privacyMode, 'normal'),
+            exists(
+              db
+                .select({ one: sql<number>`1` })
+                .from(itemComments)
+                .where(
+                  and(
+                    eq(itemComments.authorId, users.id),
+                    eq(itemComments.kind, kind),
+                    eq(itemComments.subjectId, subjectId),
+                    isNull(itemComments.deletedAt),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
     },
 
     /**

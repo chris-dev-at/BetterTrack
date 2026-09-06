@@ -81,12 +81,13 @@ describe('§10 limiter table — capacity limiters', () => {
     expect(shape(rateLimits.vaultRead)).toEqual({ windowSec: 60, limit: 600, ...GENERAL_LADDER });
     expect(shape(rateLimits.apiKey)).toEqual({ windowSec: 60, limit: 120, ...GENERAL_LADDER });
 
-    // The COST dimension (#1643): 3500 WORK UNITS / min, per user, on the same
+    // The COST dimension (#1643): 3550 WORK UNITS / min, per user, on the same
     // escalation ladder as `general` so the 429 envelope never differs. Raised
-    // from 3000 in #1755 with the two V5-P6 reads that joined the table.
+    // from 3000 in #1755 with the two V5-P6 reads that joined the table, and
+    // from 3500 in #1829 with the comment thread.
     expect(shape(rateLimits.expensive)).toEqual({
       windowSec: 60,
-      limit: 3500,
+      limit: 3550,
       ...GENERAL_LADDER,
     });
   });
@@ -153,6 +154,12 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
      * hopping between them issues the request about twice.
      */
     socialGroupsPerMinute: 2,
+    /**
+     * Comment threads. The one social read that repeats on its own: an expanded
+     * thread refetches every 30 s (`CommentThread.tsx`), so a minute with one
+     * thread open and a second one expanded issues it about three times.
+     */
+    socialThreadPerMinute: 3,
     /** Two CSV uploads. */
     importCreatePerMinute: 2,
     /** One bulk kind sweep over a statement's undecided rows (one PATCH each). */
@@ -172,6 +179,10 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       // fan-out, and at the floor where the unit budget still binds before the
       // request COUNT limiter would.
       socialGroups: 6,
+      // Two access resolutions, one bounded participant probe, an index-served
+      // page and two grouped reaction aggregates — bounded work, but polled
+      // every 30 s per open thread (#1829). At the same floor as `socialGroups`.
+      socialThread: 6,
       // A perturbed weight vector is a cache MISS by construction; a miss walks
       // the positions' history sequentially through the provider layer.
       backtestPreview: 25,
@@ -201,11 +212,12 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
       COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
       COST_BAR.socialGroupsPerMinute * requestCosts.socialGroups +
+      COST_BAR.socialThreadPerMinute * requestCosts.socialThread +
       COST_BAR.importCreatePerMinute * requestCosts.importCreate +
       COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(1162);
+    expect(worstMinute).toBe(1180);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
   });

@@ -424,8 +424,15 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // GET /social/items/:kind/:subjectId/thread — ONE bounded page of the item's
   // comment thread + item-level reactions (newest page by default; `?cursor=`
   // walks older). 404 when the caller can't currently read the item.
+  // Cost-metered (§10 COST TABLE, #1829) like `/groups` and `/shared` above:
+  // one request resolves access twice, probes the thread's participants, reads a
+  // page and aggregates its comment AND item reactions — and `CommentThread.tsx`
+  // polls it every 30 s for as long as a thread stays expanded, which is the one
+  // social read that repeats by itself. `general`'s request counter cannot see
+  // any of that.
   router.get(
     '/items/:kind/:subjectId/thread',
+    limiters.cost('socialThread'),
     validateParams(audienceParamSchema),
     validateQuery(commentThreadQuerySchema),
     async (req, res) => {
