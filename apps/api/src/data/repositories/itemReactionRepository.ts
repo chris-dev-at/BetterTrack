@@ -1,9 +1,9 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, exists, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 
 import type { ReactionEmoji, ShareKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { itemComments, itemReactions } from '../schema';
+import { itemComments, itemReactions, users } from '../schema';
 
 /**
  * Reaction SQL (§13.5 V5-P8). The ONE `item_reactions` table serves reactions on
@@ -32,9 +32,34 @@ function toAggregates(
 }
 
 export function createItemReactionRepository(db: Database) {
+  /**
+   * "Is any NOT-normal account a reactor here?" — driven from `users` so the
+   * partial `users_privacy_mode_restricted_idx` (migration 0113) answers it out
+   * of an index that is empty on a deployment with no paranoid account. The
+   * caller supplies the participation test as a correlated `EXISTS` on
+   * `users.id`; nothing but that one boolean leaves this query (#1829).
+   */
+  async function restrictedActorExists(participates: SQL): Promise<boolean> {
+    const rows = await db
+      .select({ one: sql<number>`1` })
+      .from(users)
+      .where(and(ne(users.privacyMode, 'normal'), participates))
+      .limit(1);
+    return rows.length > 0;
+  }
+
   return {
-    /** Identity-only discovery for actors contributing to one item aggregate. */
-    async listActorIdsForItem(kind: ShareKind, subjectId: string): Promise<string[]> {
+    /**
+     * Identity-only discovery for actors contributing to one item aggregate.
+     * `limit` is a hard ceiling: the caller locks one `users` row per id it gets
+     * back, so an unbounded list would be an unbounded transaction (#1829). A
+     * full `limit` rows means "truncated" — the caller must fail closed.
+     */
+    async listActorIdsForItem(
+      kind: ShareKind,
+      subjectId: string,
+      limit: number,
+    ): Promise<string[]> {
       const rows = await db
         .selectDistinct({ userId: itemReactions.userId })
         .from(itemReactions)
@@ -44,27 +69,33 @@ export function createItemReactionRepository(db: Database) {
             eq(itemReactions.kind, kind),
             eq(itemReactions.subjectId, subjectId),
           ),
-        );
+        )
+        .limit(limit);
       return rows.map((row) => row.userId);
     },
 
-    /** Identity-only discovery for actors contributing to one comment aggregate. */
-    async listActorIdsForComment(commentId: string): Promise<string[]> {
+    /** @see listActorIdsForItem — the same bounded discovery for one comment. */
+    async listActorIdsForComment(commentId: string, limit: number): Promise<string[]> {
       const rows = await db
         .selectDistinct({ userId: itemReactions.userId })
         .from(itemReactions)
-        .where(
-          and(eq(itemReactions.targetType, 'comment'), eq(itemReactions.commentId, commentId)),
-        );
+        .where(and(eq(itemReactions.targetType, 'comment'), eq(itemReactions.commentId, commentId)))
+        .limit(limit);
       return rows.map((row) => row.userId);
     },
 
     /**
      * Identity-only discovery for every live participant whose reaction could
      * contribute to an item thread. No emoji, body, profile, or aggregate is
-     * selected before the service holds the participant privacy locks.
+     * selected before the service holds the participant privacy locks. Each half
+     * carries the caller's ceiling, so the union can exceed `limit` by at most
+     * one entry — enough for the caller to SEE the truncation and fail closed.
      */
-    async listActorIdsForThread(kind: ShareKind, subjectId: string): Promise<string[]> {
+    async listActorIdsForThread(
+      kind: ShareKind,
+      subjectId: string,
+      limit: number,
+    ): Promise<string[]> {
       const [itemActors, commentActors] = await Promise.all([
         db
           .selectDistinct({ userId: itemReactions.userId })
@@ -75,7 +106,8 @@ export function createItemReactionRepository(db: Database) {
               eq(itemReactions.kind, kind),
               eq(itemReactions.subjectId, subjectId),
             ),
-          ),
+          )
+          .limit(limit),
         db
           .selectDistinct({ userId: itemReactions.userId })
           .from(itemReactions)
@@ -87,9 +119,80 @@ export function createItemReactionRepository(db: Database) {
               eq(itemComments.subjectId, subjectId),
               isNull(itemComments.deletedAt),
             ),
-          ),
+          )
+          .limit(limit),
       ]);
       return [...new Set([...itemActors, ...commentActors].map((row) => row.userId))];
+    },
+
+    /**
+     * Does ANY reaction on this item come from an account that is not in the
+     * `normal` privacy mode? The reaction half of the probe that lets a thread
+     * read skip participant enumeration and per-participant locks entirely
+     * (#1829, see `itemCommentRepository.hasRestrictedParticipant`).
+     */
+    async hasRestrictedItemActor(kind: ShareKind, subjectId: string): Promise<boolean> {
+      return restrictedActorExists(
+        exists(
+          db
+            .select({ one: sql<number>`1` })
+            .from(itemReactions)
+            .where(
+              and(
+                eq(itemReactions.userId, users.id),
+                eq(itemReactions.targetType, 'item'),
+                eq(itemReactions.kind, kind),
+                eq(itemReactions.subjectId, subjectId),
+              ),
+            ),
+        ),
+      );
+    },
+
+    /** @see hasRestrictedItemActor — the same probe over ONE comment's reactions. */
+    async hasRestrictedCommentActor(commentId: string): Promise<boolean> {
+      return restrictedActorExists(
+        exists(
+          db
+            .select({ one: sql<number>`1` })
+            .from(itemReactions)
+            .where(
+              and(
+                eq(itemReactions.userId, users.id),
+                eq(itemReactions.targetType, 'comment'),
+                eq(itemReactions.commentId, commentId),
+              ),
+            ),
+        ),
+      );
+    },
+
+    /**
+     * @see hasRestrictedItemActor — the same probe over the WHOLE thread: the
+     * item's own reactions and the reactions on its live comments.
+     */
+    async hasRestrictedThreadActor(kind: ShareKind, subjectId: string): Promise<boolean> {
+      const [onItem, onComments] = await Promise.all([
+        this.hasRestrictedItemActor(kind, subjectId),
+        restrictedActorExists(
+          exists(
+            db
+              .select({ one: sql<number>`1` })
+              .from(itemReactions)
+              .innerJoin(itemComments, eq(itemComments.id, itemReactions.commentId))
+              .where(
+                and(
+                  eq(itemReactions.userId, users.id),
+                  eq(itemReactions.targetType, 'comment'),
+                  eq(itemComments.kind, kind),
+                  eq(itemComments.subjectId, subjectId),
+                  isNull(itemComments.deletedAt),
+                ),
+              ),
+          ),
+        ),
+      ]);
+      return onItem || onComments;
     },
 
     /**
@@ -139,6 +242,57 @@ export function createItemReactionRepository(db: Database) {
         .insert(itemReactions)
         .values({ userId, targetType: 'comment', commentId, emoji })
         .onConflictDoNothing();
+    },
+
+    /**
+     * Does the viewer currently hold exactly this reaction on this item? The
+     * question the withdrawal path asks BEFORE it deletes anything, so a caller
+     * the item no longer admits — or never did — cannot drive a write against a
+     * subject id they merely named (#1829). It reads one row through the same
+     * `item_reactions_item_unique` index the delete uses, and it answers about
+     * the CALLER's own row only: nothing here can describe anybody else.
+     */
+    async hasOwnItemReaction(
+      userId: string,
+      kind: ShareKind,
+      subjectId: string,
+      emoji: string,
+    ): Promise<boolean> {
+      const rows = await db
+        .select({ one: sql<number>`1` })
+        .from(itemReactions)
+        .where(
+          and(
+            eq(itemReactions.userId, userId),
+            eq(itemReactions.targetType, 'item'),
+            eq(itemReactions.kind, kind),
+            eq(itemReactions.subjectId, subjectId),
+            eq(itemReactions.emoji, emoji),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    },
+
+    /** @see hasOwnItemReaction — the same own-row question for a COMMENT reaction. */
+    async hasOwnCommentReaction(
+      userId: string,
+      commentId: string,
+      emoji: string,
+    ): Promise<boolean> {
+      const rows = await db
+        .select({ one: sql<number>`1` })
+        .from(itemReactions)
+        .where(
+          and(
+            eq(itemReactions.userId, userId),
+            eq(itemReactions.targetType, 'comment'),
+            eq(itemReactions.commentId, commentId),
+            eq(itemReactions.emoji, emoji),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
     },
 
     /**
