@@ -323,7 +323,7 @@
       "selectedOne": "1 selected",
       "selectedOther": "{{count}} selected",
       "scopeDescription": {
-        "portfolio:read": "View your portfolios, holdings, transactions and cash balances",
+        "portfolio:read": "View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them",
         "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash",
         "workboard:read": "View your watchlist, conglomerates and backtests",
         "workboard:write": "Create and edit your watchlist and conglomerates",
@@ -348,7 +348,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Read your portfolios, holdings and cash balances, or create and edit portfolios, transactions, custom assets and cash movements."
+          "description": "Read your portfolios, holdings, cash balances and the dividend, earnings and news feeds derived from them, or create and edit portfolios, transactions, custom assets and cash movements."
         },
         "workboard": {
           "label": "Workbench",

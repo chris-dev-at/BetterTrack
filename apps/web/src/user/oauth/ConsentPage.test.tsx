@@ -80,7 +80,8 @@ const DETAILS: OAuthAuthorizationDetailsResponse = {
   scopes: [
     {
       scope: 'portfolio:read',
-      label: 'View your portfolios, holdings, transactions and cash balances',
+      label:
+        'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
     },
     { scope: 'market:read', label: 'Search assets and read market data' },
   ],
@@ -177,7 +178,9 @@ test('third-party card shows the signed-in account plus Use another account, and
   // App name + plain-language scopes (not the raw scope tokens).
   expect(await screen.findByText('Third-party app')).toBeInTheDocument();
   expect(
-    screen.getByText('View your portfolios, holdings, transactions and cash balances'),
+    screen.getByText(
+      'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
+    ),
   ).toBeInTheDocument();
   expect(screen.getByText('Search assets and read market data')).toBeInTheDocument();
   // V4-P2b: the signed-in identity and switch-account escape hatch are always
