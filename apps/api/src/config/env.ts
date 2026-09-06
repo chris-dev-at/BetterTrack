@@ -4,7 +4,12 @@ import { join as joinPath } from 'node:path';
 
 import { z } from 'zod';
 
-import { USAGE_ANALYTICS_WINDOW_DAYS } from '@bettertrack/contracts';
+import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
+  DEFAULT_ADMIN_SESSION_LIFETIME_HOURS,
+  USAGE_ANALYTICS_WINDOW_DAYS,
+} from '@bettertrack/contracts';
 
 import {
   createSecretBoxKeyring,
@@ -94,7 +99,17 @@ const envSchema = z.object({
   // session, clamped to the plan's 6–24 h window (default 12 h). This is the
   // env fallback only — an admin can override it at runtime (audit-logged),
   // which takes effect on the next request with no redeploy.
-  ADMIN_SESSION_LIFETIME_HOURS: z.coerce.number().int().min(6).max(24).default(12),
+  //
+  // The window comes from contracts, which is where the same three numbers gate
+  // the runtime write, the response payload and the SPA's own range check.
+  // Hardcoding them again here would let a widened window be rejected at boot
+  // by the one copy nothing pins to the others.
+  ADMIN_SESSION_LIFETIME_HOURS: z.coerce
+    .number()
+    .int()
+    .min(ADMIN_SESSION_LIFETIME_MIN_HOURS)
+    .max(ADMIN_SESSION_LIFETIME_MAX_HOURS)
+    .default(DEFAULT_ADMIN_SESSION_LIFETIME_HOURS),
   // Per-provider request budget (§5.3): bounded concurrency + minimum spacing
   // between upstream call starts. Defaults match PROJECTPLAN §5.2/§5.3.
   // NOTE: the budget is per *process* — the API and the BullMQ worker each run

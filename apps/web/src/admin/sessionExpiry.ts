@@ -1,45 +1,20 @@
 import { useCallback } from 'react';
 
 import { ApiError } from '../lib/apiClient';
-import { isAdminTwoFactorSetupRequired, useAuth, type AdminSignOutReason } from './AuthContext';
+import {
+  adminSignOutReason,
+  isAdminTwoFactorSetupRequired,
+  isAdminWindowClosed,
+  useAuth,
+} from './AuthContext';
 
 /**
- * Reading an admin-API failure as "this console's session window closed"
- * (§13.5 V5-P13c, #1779).
- *
- * §6.12 makes every `/admin/*` route answer **404** to anyone who is not an
- * admin, and `requireAdmin` raises that 404 with the generic `NOT_FOUND` code.
- * So a bare 404 on the admin origin means the caller lost admin authority — on a
- * live console, that the session expired.
- *
- * A 404 that names a DOMAIN outcome is a different animal: `GET /admin/users/:id`
- * answers `USER_NOT_FOUND` for an account a colleague just deleted. That row is
- * gone; the session is not. Both still end the surface (the caller decides how),
- * but only the first may claim "your admin session expired".
+ * The two pure readings of an admin failure — "the window closed" and "what the
+ * login screen may claim" — are defined in `AuthContext`, because the deadline
+ * machinery there reads them too, and re-exported here where their consumers
+ * already look for them (see the doc comments at the definitions).
  */
-const DOMAINLESS_NOT_FOUND_CODES = new Set(['', 'NOT_FOUND']);
-
-/**
- * The §6.12 "you are not an admin here any more" answer — a 404 that names no
- * domain outcome. Deliberately does NOT include 401: on routes that verify a
- * factor (`POST /admin/security/2fa/totp/disable`), a 401 is the *code* being
- * wrong, not the session being gone.
- */
-export function isAdminWindowClosed(err: unknown): boolean {
-  return err instanceof ApiError && err.status === 404 && DOMAINLESS_NOT_FOUND_CODES.has(err.code);
-}
-
-/**
- * Why a 401/404 read failure should sign the console out. `'expired'` when the
- * failure really is the window closing, `undefined` when the route answered a
- * domain 404 — the session ends either way (the read path has always treated
- * `isNotAuthorized` structurally), but the login screen only claims an expiry
- * when that is what happened.
- */
-export function adminSignOutReason(err: unknown): AdminSignOutReason | undefined {
-  if (err instanceof ApiError && err.status === 401) return 'expired';
-  return isAdminWindowClosed(err) ? 'expired' : undefined;
-}
+export { adminSignOutReason, isAdminWindowClosed };
 
 /**
  * Sign the console out when a bespoke `catch` sees the window close, and report

@@ -361,7 +361,10 @@ function SessionPolicyCard() {
       setNotice(t('admin.security.sessionPolicy.saved'));
       // Lowering the lifetime shortens sessions that are already live server-side,
       // so re-read the window here too — otherwise this console would keep the
-      // deadline it computed from the old, longer policy.
+      // deadline it computed from the old, longer policy. When the new window is
+      // already behind THIS session's age, that re-read is the §6.12 404: the
+      // provider signs the console out from it, so this success notice is never
+      // left standing over a session the write itself just killed (V5-P13c).
       refreshSessionDeadline();
     },
     {

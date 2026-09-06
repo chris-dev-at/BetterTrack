@@ -1991,7 +1991,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       const resolved = await auth.resolveSession(sessionId, userAgent);
       if (!resolved) return null;
       // Carry the absolute session deadline as part of socket state, so an idle
-      // connection cannot outlive the cookie that originally authenticated it.
+      // connection cannot outlive the session that originally authenticated it.
+      // `getSessionInfo` reports the EARLIEST bound that applies: the §6.1
+      // persistence window, and for an admin principal its absolute 6–24 h
+      // lifetime (§13.5 V5-P13c) — so an admin socket is scheduled to close on
+      // the admin clock, not on the 30-day user cookie. The 30 s principal sweep
+      // below re-runs `resolveSession` and remains the enforcement either way.
       const session = await auth.getSessionInfo(sessionId);
       if (!session) return null;
       return {
