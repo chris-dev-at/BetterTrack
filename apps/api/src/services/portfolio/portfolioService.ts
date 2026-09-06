@@ -1887,7 +1887,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         portfolioId,
         inputs,
         assetsById,
-        // The manual-default gate (V5-P4c): imported rows never take the default.
+        // The manual-default gate (V5-P4c): imported and provider-synced rows
+        // never take the default; rows this account's owner is responsible for
+        // — hand-entered, standing-order, mirrorchain replica (V5-P7) — do.
+        // The mapping is `manualDefaultAppliesToSource` in services/tax.
         source,
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
         // Preserve the replica apply signal for the tax planner's cash semantics.

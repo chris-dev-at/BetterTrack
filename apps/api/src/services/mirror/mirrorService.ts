@@ -842,6 +842,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     }
     // Replica rows are stamped `sync:mirrorchain`; the origin copy keeps the
     // real write path's tag, which rides the op as `originSource` (design §2).
+    // The tag is also what the tax planner reads for the manual-per-trade
+    // default: `sync:mirrorchain` is a member's own write replicated here, so
+    // it takes THIS copy's configured default like a hand-entered row
+    // (`manualDefaultAppliesToSource`, §6.17 "tax computes per copy").
     const isOrigin = meta.originPortfolioId === portfolioId;
     const syncTag =
       isOrigin && 'originSource' in payload && typeof payload.originSource === 'string'
