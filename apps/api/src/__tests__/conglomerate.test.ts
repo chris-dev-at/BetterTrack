@@ -1073,6 +1073,156 @@ describe('nested conglomerates', () => {
     expect(compare.body.error.code).toBe('NESTING_UNRESOLVABLE');
   });
 
+  /** Bulk-seed `count` distinct global assets in ONE insert. */
+  async function seedAssets(count: number, prefix: string): Promise<string[]> {
+    const rows = await harness.db
+      .insert(schema.assets)
+      .values(
+        Array.from({ length: count }, (_, i) => ({
+          providerId: 'yahoo',
+          providerRef: `${prefix}${i}`,
+          type: 'stock' as const,
+          symbol: `${prefix}${i}`,
+          name: `Asset ${prefix}${i}`,
+          currency: 'EUR',
+          exchange: 'XETRA',
+        })),
+      )
+      .returning({ id: schema.assets.id });
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Six baskets of 50 DISTINCT assets at 2 % each (Σ = 100) — the #1849 fixture's
+   * building blocks. Every per-basket cap is respected and each child resolves
+   * to 50 assets with nothing unresolved, so the gate's per-child walk passes
+   * them one at a time; it is only the parent's OWN flatten that goes past
+   * MAX_FLATTENED_POSITIONS (250).
+   */
+  async function seedWideChildren(agent: Agent, prefix: string): Promise<string[]> {
+    const assetIds = await seedAssets(300, prefix);
+    const children: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const id = await createId(agent, `${prefix} Child ${i}`);
+      expect(
+        (
+          await putPositions(
+            agent,
+            id,
+            assetIds.slice(i * 50, i * 50 + 50).map((assetId) => ({ assetId, weightPct: 2 })),
+          )
+        ).status,
+      ).toBe(200);
+      children.push(id);
+    }
+    return children;
+  }
+
+  it('refuses to activate a basket whose OWN flatten no read would serve (#1849)', async () => {
+    const { agent } = await login();
+    const children = await seedWideChildren(agent, 'W');
+    const root = await createId(agent, 'Wide Root');
+    // Σ = 100.002 — inside the §6.5 ±0.01 tolerance — over six children that
+    // each resolve cleanly. The root resolves to 300 assets.
+    expect(
+      (
+        await putPositions(
+          agent,
+          root,
+          children.map((childId) => ({ childId, weightPct: 16.667 })),
+        )
+      ).status,
+    ).toBe(200);
+
+    const activate = await agent.post(`/api/v1/conglomerates/${root}/activate`).set(...XRW);
+    expect(activate.status).toBe(422);
+    expect(activate.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+
+    // The property this issue exists for: after the activate attempt, `resolved`
+    // and `allocate` either BOTH succeed or the row is not `active`. It used to
+    // be `active` while every read of it 422'd.
+    const resolved = await agent.get(`/api/v1/conglomerates/${root}/resolved`);
+    const allocate = await agent
+      .post(`/api/v1/conglomerates/${root}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole' });
+    const status = (await agent.get(`/api/v1/conglomerates/${root}`)).body.status;
+    expect(resolved.status === 200 && allocate.status === 200).toBe(status === 'active');
+    expect(status).toBe('draft');
+    expect(resolved.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+    expect(allocate.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+  });
+
+  it('demotes an ACTIVE basket once a child edit takes its own flatten past the bound', async () => {
+    const { agent } = await login();
+    const children = await seedWideChildren(agent, 'G');
+    const mid = await createId(agent, 'Grown Mid');
+    const root = await createId(agent, 'Grown Root');
+    // Five children — exactly 250 resolved assets, the last size the bound
+    // admits — so both baskets activate legally.
+    expect(
+      (
+        await putPositions(
+          agent,
+          mid,
+          children.slice(0, 5).map((childId) => ({ childId, weightPct: 20 })),
+        )
+      ).status,
+    ).toBe(200);
+    expect((await putPositions(agent, root, [{ childId: mid, weightPct: 100 }])).status).toBe(200);
+    expect((await agent.post(`/api/v1/conglomerates/${mid}/activate`).set(...XRW)).status).toBe(
+      200,
+    );
+    expect((await agent.post(`/api/v1/conglomerates/${root}/activate`).set(...XRW)).status).toBe(
+      200,
+    );
+
+    // Grow the child: a sixth constituent takes the closure to 300 assets.
+    expect(
+      (
+        await putPositions(
+          agent,
+          mid,
+          children.map((childId) => ({ childId, weightPct: 16.667 })),
+        )
+      ).status,
+    ).toBe(200);
+
+    // The write stands, and neither basket keeps a status its own resolved view
+    // now refuses.
+    expect((await agent.get(`/api/v1/conglomerates/${mid}`)).body.status).toBe('draft');
+    expect((await agent.get(`/api/v1/conglomerates/${root}`)).body.status).toBe('draft');
+    expect((await agent.get(`/api/v1/conglomerates/${root}/resolved`)).status).toBe(422);
+  });
+
+  it('rolls an activation back when its gate refuses inside the transaction (#1849)', async () => {
+    const user = await harness.seedUser({ email: 'act@nest.test', username: 'nestactivate' });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const a1 = await seedAsset(harness);
+    const id = await createId(agent, 'Locked');
+    expect((await putPositions(agent, id, [{ assetId: a1.id, weightPct: 100 }])).status).toBe(200);
+    const repo = createConglomerateRepository(harness.db);
+
+    // The gate re-runs under the owner's `FOR UPDATE` locks, reading through the
+    // transaction; throwing there rolls the promotion back exactly as
+    // `verifyNesting` rolls a position write back.
+    await expect(
+      repo.setStatusVerified(user.id, id, 'active', {
+        verify: async (read) => {
+          expect((await read(id))?.positions).toHaveLength(1);
+          throw new Error('gate refused under the lock');
+        },
+      }),
+    ).rejects.toThrow('gate refused under the lock');
+    expect((await repo.findByIdForOwner(user.id, id))!.status).toBe('draft');
+
+    // …and a passing gate promotes through the same path.
+    expect(
+      await repo.setStatusVerified(user.id, id, 'active', { verify: async () => undefined }),
+    ).toBe(true);
+    expect((await repo.findByIdForOwner(user.id, id))!.status).toBe('active');
+  });
+
   it('activation counts a nested slice like any weight (Σ = 100 across kinds)', async () => {
     const { agent } = await login();
     const a1 = await seedAsset(harness);
@@ -1087,5 +1237,129 @@ describe('nested conglomerates', () => {
     const res = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('active');
+  });
+});
+
+/**
+ * The paranoid read scope over the basket surfaces (#1849). A conglomerate is
+ * local configuration and its routes stay KEPT, but a constituent may be the
+ * account's OWN custom asset — killed content — so a basket that resolves to one
+ * is not server-side readable: `GET /conglomerates` omits it and every other
+ * branch answers the established opaque 404. `remove` had neither the scope nor
+ * the readability check, and the nested-child half of `PUT /:id/positions` was
+ * unscoped.
+ */
+describe('nested conglomerates — the paranoid read scope', () => {
+  async function createId(agent: Agent, name: string): Promise<string> {
+    const res = await createConglomerate(agent, name);
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  async function putPositions(
+    agent: Agent,
+    id: string,
+    positions: Array<
+      { assetId: string; weightPct: number } | { childId: string; weightPct: number }
+    >,
+  ) {
+    return agent
+      .put(`/api/v1/conglomerates/${id}/positions`)
+      .set(...XRW)
+      .send({ positions });
+  }
+
+  async function setPrivacyMode(userId: string, mode: 'normal' | 'paranoid') {
+    await harness.db
+      .update(schema.users)
+      .set(
+        mode === 'paranoid'
+          ? { privacyMode: 'paranoid', paranoidMediaSet: ['server'] }
+          : { privacyMode: 'normal', paranoidMediaSet: null },
+      )
+      .where(eq(schema.users.id, userId));
+  }
+
+  /**
+   * `tainted` holds the account's own custom asset (and so is scoped out),
+   * `block` is a clean building block it also embeds, `plain` is empty.
+   */
+  async function seedTainted(email: string, username: string) {
+    const user = await harness.seedUser({ email, username });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const own = await seedAsset(harness, { ownerId: user.id, symbol: `CUST-${username}` });
+    const global = await seedAsset(harness, { symbol: `GLOB-${username}` });
+    const block = await createId(agent, 'Building Block');
+    expect(
+      (await putPositions(agent, block, [{ assetId: global.id, weightPct: 100 }])).status,
+    ).toBe(200);
+    const tainted = await createId(agent, 'Villa Ledger Mix');
+    expect(
+      (
+        await putPositions(agent, tainted, [
+          { assetId: own.id, weightPct: 50 },
+          { childId: block, weightPct: 50 },
+        ])
+      ).status,
+    ).toBe(200);
+    const plain = await createId(agent, 'Plain Draft');
+    return { user, agent, block, tainted, plain };
+  }
+
+  it('404s DELETE of a tainted basket exactly like GET, and deletes nothing', async () => {
+    const { user, agent, tainted } = await seedTainted('pd1@nest.test', 'nestpd1');
+    await setPrivacyMode(user.id, 'paranoid');
+
+    expect((await agent.get(`/api/v1/conglomerates/${tainted}`)).status).toBe(404);
+    expect(
+      (await agent.get('/api/v1/conglomerates')).body.conglomerates.map(
+        (c: { id: string }) => c.id,
+      ),
+    ).not.toContain(tainted);
+    const del = await agent.delete(`/api/v1/conglomerates/${tainted}`).set(...XRW);
+    expect(del.status).toBe(404);
+    expect(del.body.error.code).toBe('CONGLOMERATE_NOT_FOUND');
+
+    // The refusal is a scope decision, not a write: the basket is still there.
+    await setPrivacyMode(user.id, 'normal');
+    expect((await agent.get(`/api/v1/conglomerates/${tainted}`)).status).toBe(200);
+  });
+
+  it('names no tainted parent in the 409 that blocks a legitimate delete', async () => {
+    const { user, agent, block, tainted } = await seedTainted('pd2@nest.test', 'nestpd2');
+    await setPrivacyMode(user.id, 'paranoid');
+
+    // The block itself is clean and readable; its only parent is scoped out.
+    const blocked = await agent.delete(`/api/v1/conglomerates/${block}`).set(...XRW);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('CONGLOMERATE_IN_USE');
+    expect(blocked.body.error.message).not.toContain('Villa Ledger Mix');
+    expect(blocked.body.error.details.parents).toEqual([]);
+
+    // Scoped back in, the same refusal names the parent it always did.
+    await setPrivacyMode(user.id, 'normal');
+    const named = await agent.delete(`/api/v1/conglomerates/${block}`).set(...XRW);
+    expect(named.status).toBe(409);
+    expect(named.body.error.message).toContain('Villa Ledger Mix');
+    expect(named.body.error.details.parents.map((p: { id: string }) => p.id)).toEqual([tainted]);
+  });
+
+  it('404s nesting a child the read scope hides, so no write can outrun the read', async () => {
+    const { user, agent, block, tainted, plain } = await seedTainted('pd3@nest.test', 'nestpd3');
+    await setPrivacyMode(user.id, 'paranoid');
+
+    const res = await putPositions(agent, plain, [{ childId: tainted, weightPct: 100 }]);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('CONGLOMERATE_NOT_FOUND');
+    // The basket the caller CAN read is unchanged and still readable — before,
+    // the write landed and the very next GET of `plain` was a 404.
+    const after = await agent.get(`/api/v1/conglomerates/${plain}`);
+    expect(after.status).toBe(200);
+    expect(after.body.positions).toEqual([]);
+
+    // A clean child still nests, so the scope refuses only what it hides.
+    expect((await putPositions(agent, plain, [{ childId: block, weightPct: 100 }])).status).toBe(
+      200,
+    );
   });
 });

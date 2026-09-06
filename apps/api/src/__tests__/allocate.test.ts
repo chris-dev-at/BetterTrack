@@ -692,4 +692,67 @@ describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
     expect(body.leftoverEur).toBeCloseTo(0, 6);
     expect(body.warnings).toEqual([]);
   });
+
+  it('never allocates over a basket the activation gate let through (#1849)', async () => {
+    const { h, agent } = await harnessWith(() => cachedQuote(100));
+    // Six children of 50 DISTINCT assets at 2 % (Σ = 100 each); the root holds
+    // the six at 16.667 % (Σ = 100.002, inside the §6.5 ±0.01 tolerance). Every
+    // per-basket cap is respected — only the ROOT's own flatten, at 300 assets,
+    // goes past MAX_FLATTENED_POSITIONS.
+    const assetRows = await h.db
+      .insert(schema.assets)
+      .values(
+        Array.from({ length: 300 }, (_, i) => ({
+          providerId: 'yahoo',
+          providerRef: `WIDE${i}`,
+          type: 'stock' as const,
+          symbol: `WIDE${i}`,
+          name: `Asset WIDE${i}`,
+          currency: 'EUR',
+          exchange: 'XETRA',
+        })),
+      )
+      .returning({ id: schema.assets.id });
+
+    const children: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      children.push(
+        await seedConglomerate(
+          agent,
+          `Wide Child ${i}`,
+          assetRows.slice(i * 50, i * 50 + 50).map((row) => ({ assetId: row.id, weightPct: 2 })),
+        ),
+      );
+    }
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Wide Root' });
+    const rootId = created.body.id as string;
+    expect(
+      (
+        await agent
+          .put(`/api/v1/conglomerates/${rootId}/positions`)
+          .set(...XRW)
+          .send({
+            positions: children.map((childId) => ({ childId, weightPct: 16.667 })),
+          })
+      ).status,
+    ).toBe(200);
+
+    // The gate flattens the row it is gating, so the promotion is refused with
+    // the same code the calculator answers with — the two can no longer
+    // disagree about whether this basket is usable.
+    const activate = await agent.post(`/api/v1/conglomerates/${rootId}/activate`).set(...XRW);
+    expect(activate.status).toBe(422);
+    expect(activate.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${rootId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 10000, mode: 'whole' });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NESTING_TOO_MANY_ASSETS');
+    expect((await agent.get(`/api/v1/conglomerates/${rootId}`)).body.status).toBe('draft');
+  });
 });

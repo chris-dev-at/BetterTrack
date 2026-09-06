@@ -12,7 +12,7 @@ import type { Logger } from '../../../logger';
 import type { MarketDataService } from '../../../providers';
 import type { CurrencyService } from '../../currency/currencyService';
 import type { AudienceService } from '../../social/audienceService';
-import { createConglomerateService } from '../conglomerateService';
+import { createConglomerateService, type ConglomerateServiceDeps } from '../conglomerateService';
 
 /**
  * Service-seam tests for the V5-P6 write race (issue #1615). The concurrency the
@@ -131,7 +131,19 @@ interface StubBasket {
   >;
 }
 
-function createGraphService(baskets: Record<string, StubBasket>) {
+function createGraphService(
+  baskets: Record<string, StubBasket>,
+  hooks?: {
+    /**
+     * A racing write that COMMITS just before the activation transaction takes
+     * the owner's row locks (#1849). Everything the gate then reads is read
+     * through those locks, so this is exactly the interleaving the real
+     * repository can still produce — and the one the old unguarded
+     * read-then-`UPDATE` turned into a permanently `active` broken basket.
+     */
+    beforeActivationVerify?: () => void;
+  },
+) {
   const loads: string[] = [];
   const statusWrites: Array<{ id: string; status: string }> = [];
   const logged: Array<{ level: 'warn' | 'error'; fields: Record<string, unknown> }> = [];
@@ -215,6 +227,30 @@ function createGraphService(baskets: Record<string, StubBasket>) {
       if (basket) basket.status = status as ConglomerateDetailRow['status'];
       return true;
     },
+    setStatusVerified: async (
+      ownerId: string,
+      id: string,
+      status: string,
+      options: {
+        verify: (read: (id: string) => Promise<ConglomerateDetailRow | null>) => Promise<void>;
+      },
+    ) => {
+      if (ownerId !== OWNER || !baskets[id]) return false;
+      // From here the real repository holds the owner's rows FOR UPDATE, so a
+      // racing position write either committed BEFORE this point or blocks
+      // until the transaction ends.
+      hooks?.beforeActivationVerify?.();
+      // The gate re-runs against the state visible INSIDE the transaction;
+      // throwing there rolls the status write back, so nothing is recorded.
+      await options.verify(async (rowId) => {
+        loads.push(rowId);
+        return detailOf(rowId);
+      });
+      statusWrites.push({ id, status });
+      const basket = baskets[id];
+      if (basket) basket.status = status as ConglomerateDetailRow['status'];
+      return true;
+    },
     conglomerateIdsHoldingAsset: async (ownerId: string, assetId: string) =>
       ownerId === OWNER
         ? Object.entries(baskets)
@@ -276,18 +312,35 @@ describe('conglomerateService.replacePositions — post-commit ancestor revalida
     // 2xx, and the positions the caller sent are what is stored.
     expect(detail.id).toBe('C0');
     expect(baskets.C0!.positions).toEqual([asset('a0-0', 100)]);
-    // The ancestor that cannot be resolved is recorded as needing attention —
-    // a basket whose own resolved view is a 422 does not earn `active`.
-    expect(statusWrites).toEqual([{ id: 'A', status: 'draft' }]);
-    // B still flattens (six 50-asset children, one at a time), so it is left be.
-    expect(baskets.B!.status).toBe('active');
-    // And the failure is reported rather than silently swallowed.
-    expect(logged).toHaveLength(1);
-    expect(logged[0]!.level).toBe('warn');
-    expect(logged[0]!.fields).toMatchObject({
-      conglomerateId: 'A',
-      err: { code: 'NESTING_TOO_MANY_ASSETS' },
+    // Neither ancestor keeps `active`: B resolves to 1 + 5×50 = 251 assets and A
+    // reaches the very same set through it, so both are recorded as needing
+    // attention — a basket whose own resolved view is a 422 does not earn
+    // `active`.
+    expect(statusWrites).toEqual([
+      { id: 'B', status: 'draft' },
+      { id: 'A', status: 'draft' },
+    ]);
+    // INVERTED for #1849 — this line read `toBe('active')`. B was left claiming
+    // `active` two lines after A was demoted for resolving to the same assets,
+    // because the gate flattened each CHILD from that child's own root and never
+    // the row it was gating. B's own `GET /:id/resolved` 422s on this exact
+    // structure, so B is demoted for it too.
+    expect(baskets.B!.status).toBe('draft');
+    // And both failures are reported rather than silently swallowed.
+    expect(logged).toHaveLength(2);
+    expect(logged.map((l) => l.level)).toEqual(['warn', 'warn']);
+    expect(logged.map((l) => l.fields)).toMatchObject([
+      { conglomerateId: 'B', err: { code: 'NESTING_TOO_MANY_ASSETS' } },
+      { conglomerateId: 'A', err: { code: 'NESTING_TOO_MANY_ASSETS' } },
+    ]);
+
+    // …and the demotion is not something the owner can click away: re-activating
+    // B is refused with exactly the code its reads answer with.
+    await expect(service.activate(OWNER, 'B')).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'NESTING_TOO_MANY_ASSETS',
     });
+    expect(baskets.B!.status).toBe('draft');
   });
 
   it('still succeeds when the revalidation sweep itself fails, and reports it', async () => {
@@ -461,6 +514,259 @@ describe('conglomerateService.replacePositions — a poisoned read in the sweep'
     ]);
     expect(baskets.B!.status).toBe('active');
     expect(logged.some((l) => l.level === 'warn')).toBe(true);
+  });
+});
+
+/**
+ * The activation gate must flatten the row it is GATING, not only each child
+ * from that child's own root (#1849). Both read-time bounds are per-flatten-root
+ * — MAX_FLATTENED_POSITIONS over the distinct assets and the depth cap — so a
+ * basket of six 50-asset children passed the gate one child at a time and then
+ * 422'd on every read of itself.
+ */
+describe('conglomerateService.activate — the gate flattens the row it is gating', () => {
+  /**
+   * The issue's fixture, with every per-basket cap respected: C0…C5 hold 50
+   * distinct assets at 2 % each (Σ = 100), and B holds the six of them at
+   * 16.667 % — Σ = 100.002, inside the §6.5 ±0.01 tolerance. Each child resolves
+   * to 50 assets with nothing unresolved, so the per-child walk alone passes;
+   * B itself resolves to 300.
+   */
+  function wideFixture(): Record<string, StubBasket> {
+    const baskets: Record<string, StubBasket> = {
+      B: {
+        status: 'draft',
+        positions: Array.from({ length: 6 }, (_, i) => child(`C${i}`, 16.667)),
+      },
+    };
+    for (let i = 0; i < 6; i += 1) {
+      baskets[`C${i}`] = {
+        status: 'draft',
+        positions: Array.from({ length: 50 }, (_, j) => asset(`a${i}-${j}`, 2)),
+      };
+    }
+    return baskets;
+  }
+
+  it('refuses the 6×50 basket with the code its own reads answer with, and leaves it draft', async () => {
+    const { service, baskets, statusWrites } = createGraphService(wideFixture());
+
+    await expect(service.activate(OWNER, 'B')).rejects.toMatchObject({
+      statusCode: 422,
+      code: 'NESTING_TOO_MANY_ASSETS',
+    });
+    expect(statusWrites).toEqual([]);
+    expect(baskets.B!.status).toBe('draft');
+  });
+
+  it('never leaves a row `active` that its own resolved view refuses (the property)', async () => {
+    const { service, baskets } = createGraphService(wideFixture());
+
+    await service.activate(OWNER, 'B').catch(() => undefined);
+
+    const resolves = await service.resolved(OWNER, 'B').then(
+      () => true,
+      () => false,
+    );
+    // Either the row resolves, or it is not `active` — never both.
+    expect(resolves || baskets.B!.status !== 'active').toBe(true);
+    expect(resolves).toBe(false);
+    expect(baskets.B!.status).toBe('draft');
+  });
+
+  it('still activates a nested basket that stays inside the bound', async () => {
+    const baskets = wideFixture();
+    // Drop two children: 4 × 50 = 200 resolved assets, and the four remaining
+    // weights are re-stated to sum to 100.
+    baskets.B = { status: 'draft', positions: [0, 1, 2, 3].map((i) => child(`C${i}`, 25)) };
+    const { service, statusWrites } = createGraphService(baskets);
+
+    const detail = await service.activate(OWNER, 'B');
+
+    expect(detail.status).toBe('active');
+    expect(statusWrites).toEqual([{ id: 'B', status: 'active' }]);
+    await expect(service.resolved(OWNER, 'B')).resolves.toMatchObject({ unresolvedPct: 0 });
+  });
+});
+
+/**
+ * The activation race (#1849): the gate and the status write are one
+ * transaction, so a child edit that lands between them can no longer leave the
+ * parent `active` over a structure the gate would have refused.
+ */
+describe('conglomerateService.activate — a child emptied under the gate', () => {
+  it('refuses the promotion when the racing write is visible to the locked re-check', async () => {
+    // P = [a1 60, C 40], C = [x 100], P still `draft` — so the child write's own
+    // post-commit sweep skips P (it only demotes what is ALREADY active) and
+    // nothing but this gate stands between the two.
+    const baskets: Record<string, StubBasket> = {
+      P: { status: 'draft', positions: [asset('a1', 60), child('C', 40)] },
+      C: { status: 'draft', positions: [asset('x', 100)] },
+    };
+    const { service, statusWrites } = createGraphService(baskets, {
+      beforeActivationVerify: () => {
+        baskets.C!.positions = [];
+      },
+    });
+
+    await expect(service.activate(OWNER, 'P')).rejects.toMatchObject({
+      statusCode: 400,
+      code: 'ACTIVATION_INVALID',
+    });
+    // The write rolled back with the gate: P is not `active` and 40 % of it does
+    // not silently resolve onto the 60 % leg.
+    expect(statusWrites).toEqual([]);
+    expect(baskets.P!.status).toBe('draft');
+  });
+
+  it('activates normally when nothing races it', async () => {
+    const baskets: Record<string, StubBasket> = {
+      P: { status: 'draft', positions: [asset('a1', 60), child('C', 40)] },
+      C: { status: 'draft', positions: [asset('x', 100)] },
+    };
+    const { service, statusWrites } = createGraphService(baskets);
+
+    await expect(service.activate(OWNER, 'P')).resolves.toMatchObject({ status: 'active' });
+    expect(statusWrites).toEqual([{ id: 'P', status: 'active' }]);
+  });
+});
+
+/**
+ * The paranoid read scope on the two branches that skipped it (#1849). A basket
+ * that resolves to one of the account's own custom assets is not server-side
+ * readable while the caller is scoped out: `list` omits it and every other
+ * branch returns the established opaque 404.
+ */
+describe('conglomerateService — the scoped-out branches', () => {
+  /** `includeCustomAssets: false`, i.e. the caller's own custom assets are killed content. */
+  const scopedOutParanoid: ConglomerateServiceDeps['paranoid'] = {
+    runAllowedWithOptional: <T>(
+      _required: readonly string[],
+      _optional: readonly string[],
+      _capability: unknown,
+      action: (allowed: ReadonlySet<string>) => Promise<T>,
+    ) => action(new Set<string>()),
+  };
+
+  /**
+   * `TAINTED` holds the owner's own custom asset (so it is tainted), `PLAIN` is an empty
+   * basket the caller wants to nest it into, and `BLOCK` is a clean building block
+   * that `TAINTED` also embeds.
+   */
+  function taintedFixture() {
+    const baskets: Record<string, StubBasket> = {
+      TAINTED: { status: 'draft', positions: [asset('customX', 50), child('BLOCK', 50)] },
+      BLOCK: { status: 'draft', positions: [asset('global1', 100)] },
+      PLAIN: { status: 'draft', positions: [] },
+    };
+    const graph = createGraphService(baskets);
+    const seam = graph.repo as unknown as {
+      ownedAssetConglomerateIds: (ownerId: string) => Promise<Set<string>>;
+      delete: (ownerId: string, id: string) => Promise<boolean>;
+      visibleAssetIds: (
+        ownerId: string,
+        ids: readonly string[],
+        options?: { includeCustomAssets?: boolean },
+      ) => Promise<Set<string>>;
+    };
+    const deleted: string[] = [];
+    seam.ownedAssetConglomerateIds = async (ownerId) =>
+      new Set(ownerId === OWNER ? ['TAINTED'] : []);
+    seam.delete = async (_ownerId, id) => {
+      deleted.push(id);
+      return true;
+    };
+    // The repository's own scope: a custom asset is invisible to a scoped-out
+    // caller, so only the global one resolves.
+    seam.visibleAssetIds = async (_ownerId, ids, options) =>
+      new Set(
+        options?.includeCustomAssets === false ? ids.filter((id) => id !== 'customX') : [...ids],
+      );
+    return { ...graph, deleted };
+  }
+
+  function scopedService(fixture: ReturnType<typeof taintedFixture>) {
+    return createConglomerateService({
+      repo: fixture.repo,
+      assetRepo: {} as unknown as AssetRepository,
+      marketData: {} as unknown as MarketDataService,
+      currencyService: {} as unknown as CurrencyService,
+      audience: { clearForSubject: async () => undefined } as unknown as AudienceService,
+      paranoid: scopedOutParanoid,
+    });
+  }
+
+  it('404s DELETE of a tainted basket exactly like GET, and deletes nothing', async () => {
+    const fixture = taintedFixture();
+    const service = scopedService(fixture);
+
+    await expect(service.get(OWNER, 'TAINTED')).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'CONGLOMERATE_NOT_FOUND',
+    });
+    await expect(service.remove(OWNER, 'TAINTED')).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'CONGLOMERATE_NOT_FOUND',
+    });
+    expect(fixture.deleted).toEqual([]);
+    // The row itself is untouched — the refusal is a scope decision, not a write.
+    expect(fixture.baskets.TAINTED).toBeDefined();
+  });
+
+  it('names no tainted parent in the 409 that blocks a legitimate delete', async () => {
+    const fixture = taintedFixture();
+    const service = scopedService(fixture);
+
+    // BLOCK is clean and readable, but its only parent is the tainted basket — one
+    // `GET /conglomerates` deliberately omits.
+    const err = await service.remove(OWNER, 'BLOCK').then(
+      () => null,
+      (e: unknown) => e as { statusCode: number; code: string; message: string; details?: unknown },
+    );
+    expect(err).toMatchObject({ statusCode: 409, code: 'CONGLOMERATE_IN_USE' });
+    expect(err!.message).not.toContain('TAINTED');
+    expect(err!.details).toEqual({ parents: [] });
+    expect(fixture.deleted).toEqual([]);
+  });
+
+  it('names the parents a scoped-in caller may see', async () => {
+    const fixture = taintedFixture();
+    const service = createConglomerateService({
+      repo: fixture.repo,
+      assetRepo: {} as unknown as AssetRepository,
+      marketData: {} as unknown as MarketDataService,
+      currencyService: {} as unknown as CurrencyService,
+      audience: { clearForSubject: async () => undefined } as unknown as AudienceService,
+    });
+
+    await expect(service.remove(OWNER, 'BLOCK')).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'CONGLOMERATE_IN_USE',
+      message: expect.stringContaining('TAINTED'),
+      details: { parents: [{ id: 'TAINTED', name: 'TAINTED' }] },
+    });
+  });
+
+  it('refuses to nest a child the read scope hides, with the same opaque 404', async () => {
+    const fixture = taintedFixture();
+    const service = scopedService(fixture);
+
+    await expect(
+      service.replacePositions(OWNER, 'PLAIN', [{ childId: 'TAINTED', weightPct: 100 }]),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'CONGLOMERATE_NOT_FOUND' });
+    // The write never happened, so `GET /conglomerates/N` cannot start 404ing.
+    expect(fixture.baskets.PLAIN!.positions).toEqual([]);
+    await expect(service.get(OWNER, 'PLAIN')).resolves.toMatchObject({ id: 'PLAIN' });
+  });
+
+  it('still nests a child that is clean', async () => {
+    const fixture = taintedFixture();
+    const service = scopedService(fixture);
+
+    await expect(
+      service.replacePositions(OWNER, 'PLAIN', [{ childId: 'BLOCK', weightPct: 100 }]),
+    ).resolves.toMatchObject({ id: 'PLAIN' });
+    expect(fixture.baskets.PLAIN!.positions).toEqual([child('BLOCK', 100)]);
   });
 });
 
