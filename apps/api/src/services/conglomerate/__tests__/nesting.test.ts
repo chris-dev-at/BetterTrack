@@ -333,6 +333,64 @@ describe('flattenConglomerate', () => {
     // a per-call cache the shared basket was re-read every time (#1776).
     expect(loads).toEqual(['p1', 'shared', 'p2']);
   });
+
+  it('does not serve a REJECTED read to a later caller of the same cache', async () => {
+    // A shared cache memoised the rejected promise, so one transient repository
+    // failure on a shared grandchild became the answer every later flatten got —
+    // with no second attempt (#1831). The cache de-duplicates concurrent
+    // readers; it is not a failure log.
+    const rows = [
+      row('p1', [childPos('shared', 100)]),
+      row('p2', [childPos('shared', 100)]),
+      row('shared', [assetPos('x', 100)]),
+    ];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const loads: string[] = [];
+    const boom = new Error('transient read failure');
+    const load = (id: string) => {
+      loads.push(id);
+      if (id === 'shared' && loads.filter((l) => l === 'shared').length === 1) {
+        return Promise.reject(boom);
+      }
+      return Promise.resolve(byId.get(id) ?? null);
+    };
+
+    const cache = createFlattenCache();
+    await expect(flattenConglomerate(load, 'p1', { cache })).rejects.toBe(boom);
+    // The failure is not retained…
+    expect(cache.has('shared')).toBe(false);
+    // …so the next flatten genuinely re-reads and resolves.
+    const second = await flattenConglomerate(load, 'p2', { cache });
+    expect(second!.positions.map((p) => p.assetId)).toEqual(['x']);
+    expect(loads).toEqual(['p1', 'shared', 'p2', 'shared']);
+    // The rows that DID resolve are still cached — the eviction is surgical.
+    expect(cache.has('p1')).toBe(true);
+  });
+
+  it('shares one in-flight read between concurrent callers, failure included', async () => {
+    // Eviction must not break the de-duplication it lives inside: two branches
+    // that reach the same basket before it settles still take ONE read.
+    const loads: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = async (id: string) => {
+      loads.push(id);
+      await gate;
+      throw new Error(`no ${id}`);
+    };
+
+    const cache = createFlattenCache();
+    const first = flattenConglomerate(load, 'root', { cache });
+    const second = flattenConglomerate(load, 'root', { cache });
+    release!();
+
+    await expect(first).rejects.toThrow('no root');
+    await expect(second).rejects.toThrow('no root');
+    expect(loads).toEqual(['root']);
+    expect(cache.has('root')).toBe(false);
+  });
 });
 
 describe('mapFlattened', () => {
