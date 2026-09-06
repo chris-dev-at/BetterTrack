@@ -331,10 +331,10 @@ export function backtestPreviewCacheKey(
  * must share one memo entry — keying by the ordered list gave one six-basket set
  * 720 distinct keys × 4 ranges × 3 modes × 4 frequencies, a memo that could
  * essentially never be hit twice. Everything the core computes is therefore
- * derived from the CANONICAL (id-sorted) series list too, so the cached value is
- * genuinely order-free: the shared window comes from the canonical first series
- * rather than from whichever id the picker happened to list first, and the
- * response re-projects the cached series into the caller's request order.
+ * order-free by construction: the shared window is derived from the whole SET
+ * (#1832 — see {@link comparisonWindowStart}), the canonical (id-sorted) list
+ * only fixes the order the core is stored and refused in, and the response
+ * re-projects the cached series into the caller's request order.
  *
  * The key is **content-addressed** like the preview key (V5-P6): a conglomerate
  * id is a mutable handle, so keying by id alone served a 1 h-stale chart and
@@ -375,10 +375,10 @@ export function backtestComparisonCacheKey(
 
 /**
  * The order a comparison is COMPUTED in: by conglomerate id, so re-ordering the
- * picker is the same request (#1755). The first entry is the primary whose
- * effective window every other series runs over — a set-derived choice rather
- * than a list-position one, which is what lets one memo entry answer every
- * permutation.
+ * picker is the same request (#1755). It is a storage/reporting order only — no
+ * entry is privileged. The shared window comes from the whole set (#1832), so
+ * this order decides just how the cached core is serialized and which of two
+ * equally uncomparable series is named first in a refusal.
  */
 function canonicalCompositionOrder(
   compositions: readonly ConglomerateComposition[],
@@ -400,6 +400,40 @@ function canonicalCompositionOrder(
  * are short by months or years.
  */
 export const COMPARISON_COVERAGE_GRACE_DAYS = 7;
+
+/**
+ * The shared window's start for an N-way comparison (#1832): the requested
+ * range's start, pushed up to the LATEST date every compared basket has price
+ * history from — the honest "latest common start" of the set.
+ *
+ * A basket's own earliest usable date is the one the engine would clip it to on
+ * its own: its **common start** (the latest listing across its constituents) in
+ * `clip` mode, its **earliest** listing in the §14 full-window modes, exactly as
+ * {@link BacktestService.runPreview} anchors a MAX preview. Taking the max over
+ * the set is what "compare these baskets" means: two baskets with history from
+ * 2010 and 2015 are comparable over 2015→today, and neither the request nor the
+ * ids may decide which of the two windows is used.
+ *
+ * Because the result is ≥ every basket's own clip point, no series is clipped by
+ * the window and no basket can be refused merely for being younger than its
+ * siblings. What the coverage rule still refuses is a basket that *claims* the
+ * window and then does not deliver it: a provider gap right after t₀, or data
+ * that stops inside it (#1811).
+ */
+function comparisonWindowStart(
+  baskets: readonly ResolvedConglomerateBasket[],
+  range: BacktestPreviewRange,
+  mode: BacktestMode,
+  end: string,
+): string {
+  // MAX has no requested floor — the window is the set's own history.
+  let start = range === 'MAX' ? '' : yearsBefore(end, RANGE_YEARS[range]);
+  for (const basket of baskets) {
+    const available = mode === 'clip' ? commonStart(basket.assets) : earliestStart(basket.assets);
+    if (available > start) start = available;
+  }
+  return start;
+}
 
 export function createBacktestService(deps: BacktestServiceDeps): BacktestService {
   const { assetRepo, conglomerateRepo, marketData, currencyService, redis } = deps;
@@ -988,6 +1022,9 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         const providerRange = PROVIDER_RANGE[input.range];
 
         let positions: Array<{ assetId: string; weight: number }>;
+        // The share of the sandbox basket that resolved to NO asset — an empty
+        // nested child. Always 0 on the flat path (an asset row always resolves).
+        let unresolvedPct = 0;
         if (hasNestedConstituents) {
           // Apply only the root overrides, then reuse the canonical recursive
           // resolver. This preserves the stored child structure, cycle/depth
@@ -1006,6 +1043,16 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
               assetId: position.assetId,
               weight: position.weightPct,
             })) ?? [];
+          // A child emptied by its owner (which demotes the parent to `draft`
+          // but does not un-share it) is dropped by the flatten, and the
+          // survivors are normalized back to 100. Carry that slice into the
+          // response (#1832): without it a `[A 60, emptied child 40]` sandbox is
+          // byte-identical to the same basket at `[A 100]`, so the curve, total
+          // return, drawdown and best/worst day are a single-asset basket's,
+          // presented as the shared basket at its own stored weights. Every
+          // sibling read path — `resolved`, `allocate`, a comparison series, the
+          // benchmark overlay — already reports it.
+          unresolvedPct = flat?.unresolvedPct ?? 0;
         } else {
           // Preserve the original flat-sandbox path exactly: pass raw top-level
           // tweak weights to the engine without the flattener's percentage
@@ -1071,7 +1118,9 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         // Preserve the original full wire shape for flat baskets. Nested baskets
         // use the aggregate DTO so descendant identities and effective internal
         // weights cannot escape through contributions, entry events or notices.
-        return hasNestedConstituents ? toSharedSandboxResponse(result) : toResponse(result, null);
+        return hasNestedConstituents
+          ? toSharedSandboxResponse(result, unresolvedPct)
+          : toResponse(result, null);
       };
 
       if (!deps.paranoid) return render(candidate);
@@ -1110,12 +1159,22 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
 
   /**
    * Run the baseline-independent core of a comparison over the already-resolved
-   * compositions (in CANONICAL id order): load each series' price history, run
-   * the first as the primary to fix the shared window, then run every other over
-   * that exact window with identical settings. A non-primary that can't cover
-   * the window — at either end — is a 422 (the V4-P7 short-benchmark outcome).
-   * The primary's own clip notice is expected and never an error — it just means
-   * the window is shorter than requested.
+   * compositions (in CANONICAL id order): load each series' price history, fix
+   * ONE shared window over the whole set, and run every series over that exact
+   * window with identical settings. A series that can't cover the window — at
+   * either end — is a 422 (the V4-P7 short-benchmark outcome).
+   *
+   * No series is the "primary" (#1832). The window used to be the first
+   * canonically-sorted basket's own effective window, which made the id sort
+   * order decide whether a comparison was possible at all: an older basket
+   * sorting first opened the window at its own t₀ and 422'd every younger
+   * sibling, while the identical request with the ids the other way round
+   * succeeded. Id order is deliberately absent from the request semantics and
+   * the memo key, so the user could not even influence it. The window is
+   * derived from the SET instead ({@link comparisonWindowStart}), and every
+   * series — including the one that set the window — goes through the same
+   * coverage rule, so a basket with a provider gap right after t₀ is refused no
+   * matter where its id sorts.
    */
   async function computeComparisonCore(
     userId: string,
@@ -1130,42 +1189,10 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     const baskets = await loadCompositionAssets(userId, compositions, providerRange, globalOnly);
 
     const end = todayIso();
-    const primary = baskets[0]!;
-    const primaryStart =
-      range === 'MAX'
-        ? mode === 'clip'
-          ? commonStart(primary.assets)
-          : earliestStart(primary.assets)
-        : yearsBefore(end, RANGE_YEARS[range]);
+    const window = { start: comparisonWindowStart(baskets, range, mode, end), end };
 
-    let primaryResult: BacktestResult;
-    try {
-      primaryResult = await backtest({
-        positions: primary.positions,
-        assets: primary.assets,
-        range: { start: primaryStart, end },
-        converter: fx,
-        baseCurrency: fx.baseCurrency,
-        mode,
-        rebalance,
-      });
-    } catch (err) {
-      throw mapEngineError(err);
-    }
-
-    const window = { start: primaryResult.startDate, end: primaryResult.endDate };
-    const series: ComparisonCore['series'] = [
-      {
-        conglomerateId: primary.id,
-        name: primary.name,
-        series: primaryResult.series.map((p) => ({ date: p.date, value: p.value })),
-        stats: toStats(primaryResult.stats),
-        unresolvedPct: primary.unresolvedPct,
-      },
-    ];
-
-    for (let i = 1; i < baskets.length; i += 1) {
-      const basket = baskets[i]!;
+    const runs: Array<{ basket: ResolvedConglomerateBasket; result: BacktestResult }> = [];
+    for (const basket of baskets) {
       let result: BacktestResult;
       try {
         result = await backtest({
@@ -1180,23 +1207,46 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       } catch (err) {
         throw mapEngineError(err);
       }
-      // A series that does not cover the window is not comparable over it, at
-      // either end (#1755, #1811) — the same rule the benchmark path applies.
-      assertCoversWindow(`Conglomerate ${basket.name}`, 'the comparison window', result, window);
-      series.push({
-        conglomerateId: basket.id,
-        name: basket.name,
-        series: result.series.map((p) => ({ date: p.date, value: p.value })),
-        stats: toStats(result.stats),
-        unresolvedPct: basket.unresolvedPct,
-      });
+      runs.push({ basket, result });
     }
 
+    // What every series is measured against: the best-covered end of the set.
+    // The window opens at the latest date every basket has history from, so the
+    // series that set it charts from day one and the rest are compared to that
+    // day (the pre-#1832 rule compared them to the *primary's* day, which is the
+    // same date whenever the primary is the best-covered series — and an
+    // arbitrary one otherwise). Likewise at the tail: a comparison over prices
+    // that are collectively a fortnight stale is still a comparison, so the
+    // reference is the furthest any series got, not the calendar's today.
+    const covered = {
+      start: runs.reduce(
+        (earliest, r) => (r.result.startDate < earliest ? r.result.startDate : earliest),
+        runs[0]!.result.startDate,
+      ),
+      end: runs.reduce((latest, r) => {
+        const reach = r.result.endCoverage?.date ?? window.end;
+        return reach > latest ? reach : latest;
+      }, runs[0]!.result.endCoverage?.date ?? window.end),
+    };
+    for (const { basket, result } of runs) {
+      // A series that does not cover the window is not comparable over it, at
+      // either end (#1755, #1811) — the same rule the benchmark path applies.
+      assertCoversWindow(`Conglomerate ${basket.name}`, 'the comparison window', result, covered);
+    }
+
+    const series: ComparisonCore['series'] = runs.map(({ basket, result }) => ({
+      conglomerateId: basket.id,
+      name: basket.name,
+      series: result.series.map((p) => ({ date: p.date, value: p.value })),
+      stats: toStats(result.stats),
+      unresolvedPct: basket.unresolvedPct,
+    }));
+
     // The reported window is the span EVERY charted series reaches — the latest
-    // first day and the earliest last day, not the primary's own (#1755,
-    // #1811): the grace above tolerates a series whose exchange was shut on the
-    // primary's first or final day, and a response must never claim a date one
-    // of its own curves does not reach.
+    // first day and the earliest last day (#1755, #1811): the grace above
+    // tolerates a series whose exchange was shut on the window's first or final
+    // day, and a response must never claim a date one of its own curves does not
+    // reach.
     const startDate = series.reduce((latest, s) => {
       const first = s.series[0]?.date ?? latest;
       return first > latest ? first : latest;
@@ -1500,8 +1550,16 @@ function toResponse(
   };
 }
 
-/** Shape a shared sandbox result without any descendant-level identity fields. */
-function toSharedSandboxResponse(r: BacktestResult): SharedSandboxAggregateResponse {
+/**
+ * Shape a shared sandbox result without any descendant-level identity fields.
+ * `unresolvedPct` is the aggregate share that resolved to no asset (#1832) — a
+ * number, never an identity: it says how much of the basket the curve is NOT,
+ * without naming the child it went missing in.
+ */
+function toSharedSandboxResponse(
+  r: BacktestResult,
+  unresolvedPct: number,
+): SharedSandboxAggregateResponse {
   return {
     startDate: r.startDate,
     endDate: r.endDate,
@@ -1511,5 +1569,6 @@ function toSharedSandboxResponse(r: BacktestResult): SharedSandboxAggregateRespo
     rebalance: r.rebalance,
     rebalanceEvents: r.rebalanceEvents.map((e) => ({ date: e.date })),
     idleCashAvgPct: r.idleCashAvgPct,
+    unresolvedPct,
   };
 }

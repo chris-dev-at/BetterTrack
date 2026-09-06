@@ -638,6 +638,15 @@ export const FRIEND_GROUPS_MAX = 30;
 export const FRIEND_GROUP_MEMBERS_MAX = 200;
 
 /**
+ * The typed refusal `POST /social/groups/:groupId/members` answers with when the
+ * circle is genuinely full (§8 error envelope). Shared so the SPA can name that
+ * ceiling — the one refusal the owner can act on, by removing a member they can
+ * see — instead of folding it into the generic "could not update the group"
+ * (#1830).
+ */
+export const FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE = 'FRIEND_GROUP_MEMBER_LIMIT_REACHED';
+
+/**
  * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
  * one user, its members are a subset of the owner's accepted friends, and it is
  * private to the owner — nobody else can see or use it. `members` is the current
