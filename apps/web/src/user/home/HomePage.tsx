@@ -28,7 +28,6 @@ import {
   type ResolvedScope,
 } from './homeData';
 import { useHomeBoard } from './homeSync';
-import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
 import { widgetDefinition } from './widgets';
 
@@ -137,7 +136,18 @@ function HomeBoard() {
   // layout names portfolio ids and tickers, which is the inference that mode is
   // bought to prevent. Fails closed — only a mode that has RESOLVED to normal
   // enables the sync.
-  const { privacyMode } = usePrivacyMode();
+  //
+  // Read from the account gate's published context, never from a query of our
+  // own. `usePrivacyMode()` here opened a SECOND `getParanoidMediaState`
+  // request under the account-UNSCOPED `['vault','media']` key — unshared with
+  // the gate's `['vault','media', userId]` entry, never seeded and never
+  // invalidated by a mode change, and refetched on every window focus. Its
+  // `privacyMode` is null on any error or 429, so a rate-limited duplicate of
+  // the one read every signed-in user already makes silently demoted the board
+  // to device-local with nothing on screen to say so. Reaching this component
+  // IS the proof the mode resolved: `HomePage` above renders `PortfolioPage`
+  // for a paranoid account.
+  const privacyMode = useResolvedPrivacyMode();
   const { config, update } = useHomeBoard(user?.id, { sync: privacyMode === 'normal' });
   const [editing, setEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);

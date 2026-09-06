@@ -4568,6 +4568,16 @@
   width: 100%;
 }
 
+/* The scroll container this table needs, without the rules that come with it.
+   `.bt-table-wrap` is the only place `overflow-x: auto` is declared, so the
+   table has to sit in one — but its `border-block` would box a home widget,
+   and the board is un-boxed quiet content by design (one focal point, no
+   frames). Declared AFTER `.bt-table-wrap` (equal specificity: source order
+   decides), so moving it above that rule would silently restore the border. */
+.bt-table-wrap--bare {
+  border-block: 0;
+}
+
 /* ── Board spacing while editing ────────────────────────────────────────────
    The owner explicitly allowed extra room here: the reading board stays tight,
    and the builder trades density for slots that are unmistakably BETWEEN widgets
@@ -7813,6 +7823,21 @@ html[data-bt-askdock='open'] .bt-install-prompt {
     bottom: calc(72px + env(safe-area-inset-bottom, 0px));
     left: calc(12px + env(safe-area-inset-left, 0px));
     max-width: none;
+  }
+
+  /* The card's own 44px floor. Its actions are `size="sm"` (`.bt-btn--sm`,
+     28px) and the phone block far above lifts only `.bt-btn--icon`,
+     `.bt-iconbtn`, `.bt-tab` and `.bt-topbar .bt-btn` — so the dismiss X
+     cleared 44 as an icon button while INSTALL, the only install path left
+     once `beforeinstallprompt` is preventDefault-ed, measured 58×28. Keyed to
+     the card rather than to `.bt-btn` at large: a global floor would re-space
+     every dense page-level button on a phone, which is a redesign, not a fix.
+     Same breakpoint as the block it sits in — this is exactly the width band
+     where the card becomes the full-width touch affordance above the bottom
+     bar. Declared after `.bt-btn--sm`, and one class more specific than it. */
+  .bt-install-prompt .bt-btn {
+    min-height: 44px;
+    min-width: 44px;
   }
 }
 

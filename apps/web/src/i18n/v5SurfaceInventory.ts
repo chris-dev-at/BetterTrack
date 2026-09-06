@@ -1866,14 +1866,6 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     delegatedTo: 'VaultManagerRow',
   },
   {
-    component: 'user/home/HomePage.tsx',
-    read: 'HomeBoard.$destructured',
-    states: ['loading', 'error'],
-    reason:
-      'AccountModeRoot resolves the same account-scoped privacy query before the authenticated home board can mount.',
-    delegatedTo: 'AccountModeRoot',
-  },
-  {
     component: 'user/control/panels/ConnectionsPanel.tsx',
     read: 'ConnectionsPanel.vaultConfigs',
     states: ['loading', 'error'],
@@ -2153,8 +2145,15 @@ export type V5AsyncStateDebtLedger = Readonly<
  * It is the §6.18 gate again — unresolved or failed reads render nothing about
  * AI and leave the wizard exactly as a deployment without a provider sees it —
  * so it is an exemption above, not debt, and the ceiling stays zero.
+ *
+ * 225 → 224 with the V5-P13b home sync gate (#1878): `HomeBoard` no longer opens
+ * a read at all. It used to call `usePrivacyMode()` — a second, account-UNSCOPED
+ * `['vault','media']` query, unshared with the one the account gate already
+ * resolved — whose failure silently demoted the board to a device-local copy.
+ * The mode now comes from that gate's published context, which is synchronous,
+ * so the site and its delegated-to-AccountModeRoot exemption are both gone.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 225;
+export const V5_ASYNC_READ_SITE_BASELINE = 224;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
