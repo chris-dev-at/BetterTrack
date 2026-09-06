@@ -17,11 +17,14 @@ import { claimReminderMarker } from './reminderMarker';
  * notification center onto the DURABLE `notifications.dispatch` queue (#368).
  *
  * The type is opt-in (default OFF on every channel), and the opt-in is checked
- * HERE, before any side effect: gating only at the delivery matrix would still
- * let the dispatcher write its hidden dedupe marker (the inbox row doubles as
- * that marker) and let this scan take its 45-day lock, so a recipient who
- * enabled the type a day later would silently receive nothing for that report.
- * Same rule, same reason as the sibling dividend scan.
+ * HERE, before any side effect AND before any provider read: gating only at the
+ * delivery matrix would still let the dispatcher write its hidden dedupe marker
+ * (the inbox row doubles as that marker) and let this scan take its 45-day lock,
+ * so a recipient who enabled the type a day later would silently receive nothing
+ * for that report — and gating after the earnings fetch (the shape until #1827)
+ * spent one upstream `quoteSummary` per distinct held/watched asset every day on
+ * a deployment where nobody enabled the type at all. Same rule, same order, same
+ * reason as the sibling dividend scan.
  *
  * Firing is idempotent per (user, asset, REPORT) — not per date. Yahoo's
  * `earningsDate` is an estimated window until the company confirms it, so the
@@ -75,6 +78,16 @@ export const EARNINGS_REMINDER_LOCK_TTL_SECONDS = 45 * 24 * 60 * 60;
  */
 export const EARNINGS_REPORT_MATCH_DAYS = 21;
 
+/**
+ * How many times one asset's earnings read may be attempted in a single run. A
+ * provider failure is deliberately NOT cached as "skip this asset for the rest
+ * of the run" — that let a rate-limit blip at the first holder silently cost
+ * every later holder/watcher of the same asset their reminder. The next row
+ * re-attempts instead; the cap keeps a genuine outage from turning into one call
+ * per row. Mirrors `DIVIDEND_PROVIDER_ATTEMPTS_PER_ASSET` in the sibling scan.
+ */
+export const EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET = 3;
+
 /** Redis idempotency key for one (user, asset, report date). */
 export function earningsReminderLockKey(userId: string, assetId: string, dateKey: string): string {
   return `earnings:reminded:${userId}:${assetId}:${dateKey}`;
@@ -127,14 +140,20 @@ export interface EarningsReminderScanResult {
   failed: number;
   /** Rows abandoned by a throw (repository, Redis, transport) — isolated. */
   errored: number;
-  /** Distinct assets whose provider read failed; every holder of them is skipped. */
+  /** Rows skipped because their asset's provider read failed on this row (or its
+   *  attempt budget was already spent). A later row re-attempts the asset. */
+  rowsSkipped: number;
+  /** Distinct assets still unresolved when the run ended. */
   assetsFailed: number;
   /** Users whose pass threw; the users after them still ran. */
   usersFailed: number;
   /** Users the paranoid transition guard deferred (`runIfAllowed` said no). */
   usersDeferred: number;
-  /** Everything the run did NOT do: `assetsFailed + failed + errored +
-   *  usersFailed + usersDeferred`. Non-zero ⇒ the run is not complete. */
+  /** Everything the run did NOT do: `rowsSkipped + failed + errored +
+   *  usersFailed + usersDeferred`. Counted per ROW (not per unresolved asset,
+   *  which `assetsFailed` reports separately) so a blip that a later row
+   *  re-attempted successfully still shows up as the reminder it cost.
+   *  Non-zero ⇒ the run is not complete. */
   skipped: number;
   /** `skipped > 0` — a run that must never be logged as clean. */
   degraded: boolean;
@@ -148,6 +167,7 @@ function emptyResult(): EarningsReminderScanResult {
     suppressed: 0,
     failed: 0,
     errored: 0,
+    rowsSkipped: 0,
     assetsFailed: 0,
     usersFailed: 0,
     usersDeferred: 0,
@@ -164,7 +184,9 @@ function errorMessage(err: unknown): string {
  * Sweep every user's held + watched assets and emit a reminder for each whose
  * next earnings report falls inside the lead window and has not already been
  * reminded (per-key lock). One earnings read per distinct asset, regardless of
- * how many users hold/watch it.
+ * how many users hold/watch it — and none at all for an asset whose every
+ * holder/watcher is opted out. A read that FAILS is re-attempted by the next row
+ * for that asset, up to {@link EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET}.
  */
 export async function runEarningsReminderScan(
   deps: EarningsReminderScanDeps,
@@ -177,13 +199,16 @@ export async function runEarningsReminderScan(
   // The next earnings report per distinct asset, fetched once and reused across
   // every user who holds/watches it. `undefined` = not yet resolved.
   const nextByAsset = new Map<string, EarningsEvent | null>();
+  /** Failed provider attempts per asset, bounded by the per-asset budget. */
+  const attemptsByAsset = new Map<string, number>();
   const occurredAt = new Date(now).toISOString();
   const processed = new Set<string>();
-  const failedAssets = new Set<string>();
+  const unresolvedAssets = new Set<string>();
   let reminded = 0;
   let suppressed = 0;
   let failed = 0;
   let errored = 0;
+  let rowsSkipped = 0;
   let usersFailed = 0;
   let usersDeferred = 0;
 
@@ -211,24 +236,51 @@ export async function runEarningsReminderScan(
     if (processed.has(rowKey)) return;
     processed.add(rowKey);
 
+    // Opt-in gate FIRST — before the provider read, not after it. A recipient
+    // who never enabled the type gets no reminder whatever the report says, so
+    // reading the asset for them is a daily upstream call with nowhere to go
+    // (the read is uncached at the daily cadence: EARNINGS_TTL_SECONDS is 6 h).
+    // It is also the gate that must precede every side effect — see below.
+    if (!(await optedIn(a.userId))) return;
+
     let next = nextByAsset.get(a.assetId);
     if (next === undefined) {
-      next = null;
       const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
-      if (marketData.intelCapabilities(ref).earnings) {
-        try {
-          const { value } = await marketData.getEarningsEvents(ref);
-          next = value.next ?? null;
-        } catch (err) {
-          logger?.warn(
-            { assetId: a.assetId, providerRef: a.providerRef, err: errorMessage(err) },
-            'earnings.remind: earnings fetch failed, skipping asset',
-          );
-          failedAssets.add(a.assetId);
-          next = null;
-        }
+      if (!marketData.intelCapabilities(ref).earnings) {
+        // A permanent, expected answer for this run — not a failure.
+        nextByAsset.set(a.assetId, null);
+        return;
       }
-      nextByAsset.set(a.assetId, next);
+      const attempts = attemptsByAsset.get(a.assetId) ?? 0;
+      if (attempts >= EARNINGS_PROVIDER_ATTEMPTS_PER_ASSET) {
+        // The attempt budget for this asset is spent; every further row is a
+        // RECORDED skip, so the run reports degraded instead of under-counting.
+        rowsSkipped += 1;
+        return;
+      }
+      try {
+        const { value } = await marketData.getEarningsEvents(ref);
+        next = value.next ?? null;
+        nextByAsset.set(a.assetId, next);
+        unresolvedAssets.delete(a.assetId);
+      } catch (err) {
+        // NOT cached as null: the next row for this asset re-attempts (up to the
+        // budget above), so one recipient taking a rate-limit does not cost
+        // every other holder/watcher of it their reminder for the day.
+        attemptsByAsset.set(a.assetId, attempts + 1);
+        unresolvedAssets.add(a.assetId);
+        rowsSkipped += 1;
+        logger?.warn(
+          {
+            assetId: a.assetId,
+            providerRef: a.providerRef,
+            attempt: attempts + 1,
+            err: errorMessage(err),
+          },
+          'earnings.remind: earnings fetch failed; row skipped, asset re-attempted for the next row',
+        );
+        return;
+      }
     }
 
     if (!next || !next.date) return;
@@ -238,17 +290,12 @@ export async function runEarningsReminderScan(
     // never a reminder (the ahead-of-time fires landed on earlier scan days).
     if (dateKey < todayKey || dateKey > horizonKey) return;
 
-    // Opt-in gate, BEFORE the lock and the emit: a recipient who never enabled
-    // the type must leave no trace at all this run — neither the 45-day lock nor
-    // the dispatcher's hidden dedupe row, both of which would mask a later
-    // enable for this same (asset, report date).
-    if (!(await optedIn(a.userId))) return;
-
     // Claim the report BEFORE emitting: same report under a corrected date ⇒
     // already reminded, stay silent; and no crash window can leave the per-date
-    // lock without its anchor. Claimed AFTER the opt-in gate for the same reason
-    // the lock always was — a recipient who never enabled the type leaves no
-    // state behind at all.
+    // lock without its anchor. Reached only past the opt-in gate at the top of
+    // this row — a recipient who never enabled the type must leave no trace at
+    // all this run: neither the 45-day lock nor the dispatcher's hidden dedupe
+    // row, both of which would mask a later enable for this (asset, date).
     const claim = await claimReminderMarker({
       redis,
       lockKey: earningsReminderLockKey(a.userId, a.assetId, dateKey),
@@ -346,14 +393,15 @@ export async function runEarningsReminderScan(
     }
   }
 
-  const skipped = failedAssets.size + failed + errored + usersFailed + usersDeferred;
+  const skipped = rowsSkipped + failed + errored + usersFailed + usersDeferred;
   return {
     scanned: processed.size,
     reminded,
     suppressed,
     failed,
     errored,
-    assetsFailed: failedAssets.size,
+    rowsSkipped,
+    assetsFailed: unresolvedAssets.size,
     usersFailed,
     usersDeferred,
     skipped,

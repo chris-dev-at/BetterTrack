@@ -1,5 +1,7 @@
 import type { DividendEvent } from '@bettertrack/contracts';
 
+import { displayZoneDay } from './format';
+
 /**
  * The date a dividend event is *upcoming* on, shared by every surface that
  * renders one (§13.5 V5-P5 arc a).
@@ -13,7 +15,12 @@ import type { DividendEvent } from '@bettertrack/contracts';
  * (#1758). This module is the one copy of the server's rule, so the label, the
  * date and any client-side ordering all agree with the payload's own order.
  *
- * Days are compared as UTC day strings, exactly like the server.
+ * Days are compared as DISPLAY-ZONE day strings ({@link displayZoneDay}),
+ * exactly like the server's roll-ups (`services/marketIntel/displayDay.ts`) —
+ * and, crucially, exactly the day these dates are rendered in by `formatDate`.
+ * On the UTC day (the shape until #1827) the boundary lagged for the two hours
+ * after Vienna midnight, which is #1758's defect reopened nightly: an event that
+ * went ex yesterday was still labelled upcoming.
  */
 
 export interface UpcomingDividendDate {
@@ -21,11 +28,6 @@ export interface UpcomingDividendDate {
   iso: string;
   /** True when `iso` is the ex-date, false when it is the pay date. */
   isEx: boolean;
-}
-
-/** The UTC day of an instant (`YYYY-MM-DD`), the server's `todayStart` unit. */
-export function utcDay(at: number = Date.now()): string {
-  return new Date(at).toISOString().slice(0, 10);
 }
 
 /**
@@ -37,7 +39,7 @@ export function utcDay(at: number = Date.now()): string {
  */
 export function upcomingDividendDate(
   event: Pick<DividendEvent, 'exDate' | 'payDate'>,
-  todayStart: string = utcDay(),
+  todayStart: string = displayZoneDay(),
 ): UpcomingDividendDate | null {
   let best: UpcomingDividendDate | null = null;
   // Ex first so a same-day tie keeps the ex label (strictly-earlier wins below).
@@ -62,7 +64,7 @@ export function upcomingDividendDate(
  */
 export function nextUpcomingDividend<T extends Pick<DividendEvent, 'exDate' | 'payDate'>>(
   upcoming: readonly T[],
-  todayStart: string = utcDay(),
+  todayStart: string = displayZoneDay(),
 ): T | null {
   let best: { event: T; day: string } | null = null;
   for (const event of upcoming) {

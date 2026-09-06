@@ -14,6 +14,7 @@ import type {
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { CurrencyService } from '../currency/currencyService';
+import { marketIntelDisplayDay } from './displayDay';
 import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
 
 /**
@@ -192,11 +193,14 @@ export function createPortfolioMarketIntelService(
         if (!byAsset.has(row.assetId)) byAsset.set(row.assetId, { row, source: 'watchlist' });
       }
 
-      // "Upcoming" is any event with at least one date >= the start of today
-      // (UTC) — an ex-date landing today still belongs on the calendar, and so
-      // does an event that has already gone ex but whose payout is still to
-      // come: that pay date is exactly what the Home widget renders for it.
-      const todayStart = new Date(now()).toISOString().slice(0, 10);
+      // "Upcoming" is any event with at least one date >= the start of today in
+      // the DISPLAY zone (see displayDay.ts) — an ex-date landing today still
+      // belongs on the calendar, and so does an event that has already gone ex
+      // but whose payout is still to come: that pay date is exactly what the
+      // Home widget renders for it. The day has to be the one the entry is
+      // rendered in, or between 00:00 and 02:00 Vienna the calendar serves a
+      // payout that went ex yesterday under an "Upcoming" heading.
+      const todayStart = marketIntelDisplayDay(now());
 
       // One provider call per asset lands on the queue every other consumer
       // shares (§5.3), so the book is capped per request and the response says
