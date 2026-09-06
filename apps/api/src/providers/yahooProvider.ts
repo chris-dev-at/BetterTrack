@@ -117,6 +117,10 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
       if (q.isYahooFinance === false) continue;
       const symbol = (q.symbol ?? '').trim();
       if (symbol === '') continue;
+      // Yahoo's search payload has no currency field, so the hit carries what
+      // the symbol shape yields plus whether that was a reading or the house
+      // default — the catalog must not store a default as a denomination.
+      const currency = currencyForSearchResult(symbol, q.exchange);
       out.push({
         providerId: PROVIDER_ID,
         providerRef: symbol,
@@ -124,7 +128,8 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
         name: q.longname ?? q.shortname ?? symbol,
         exchange: q.exchDisp ?? q.exchange ?? null,
         type: mapAssetType(q.quoteType, symbol),
-        currency: currencyForSearchResult(symbol, q.exchange),
+        currency: currency.code,
+        currencyGuessed: currency.guessed,
       });
     }
     return out;

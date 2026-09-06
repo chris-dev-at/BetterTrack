@@ -40,7 +40,13 @@ export interface StubMarketDataControls {
     range: HistoryRange,
     interval?: HistoryInterval,
   ) => Promise<CachedResult<PricePoint[]>> | CachedResult<PricePoint[]>;
-  /** Meta behaviour (unused by the read API, which sources meta from the DB row). */
+  /**
+   * Meta behaviour. The read API sources an asset's descriptive fields from the
+   * DB row, but NOT its denomination: `assetService` labels a price series with
+   * the provider's own currency and the catalog enrichment resolves a defaulted
+   * one through here (#1875). Left unset it throws, which both callers treat as
+   * "unknown" and degrade from.
+   */
   meta?: (ref: AssetRef) => Promise<CachedResult<AssetMeta>> | CachedResult<AssetMeta>;
   // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
   /**
