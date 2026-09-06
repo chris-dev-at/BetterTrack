@@ -577,6 +577,38 @@ describe('the reach summary agrees with what enforcement grants', () => {
       .send({ audience: 'private' });
     expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].shareCount).toBe(0);
   });
+
+  /**
+   * The warning may only count what the owner can reconcile. Archiving a
+   * portfolio leaves its audience row in place, but enforcement excludes
+   * archived portfolios and My items does not list them — so counting that row
+   * would tell the owner "1 shared item points at this group" against nothing
+   * they can see, which is the blind confirmation #1710 removed (#1830).
+   */
+  it('leaves an archived portfolio out of the warning, since nothing reaches it any more', async () => {
+    const { aliceAgent, bob } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+
+    const created = await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Old ideas' });
+    expect(created.status).toBe(201);
+    const secondId = created.body.portfolio.id as string;
+    expect((await shareToGroup(aliceAgent, secondId, groupId)).status).toBe(200);
+
+    // Live: counted here and listed in My items — the #1710 behaviour.
+    expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].shareCount).toBe(1);
+    expect(await myPortfolio(aliceAgent, secondId)).toBeDefined();
+
+    expect(
+      (await aliceAgent.post(`/api/v1/portfolios/${secondId}/archive`).set(...XRW)).status,
+    ).toBe(200);
+
+    expect((await aliceAgent.get('/api/v1/social/groups')).body.groups[0].shareCount).toBe(0);
+    expect(await myPortfolio(aliceAgent, secondId)).toBeUndefined();
+  });
 });
 
 describe('a group audience scopes the comment thread (§13.5 V5-P8)', () => {
@@ -665,33 +697,129 @@ describe('the friend-group surface is bounded (§13.5 V5-P8, #1780)', () => {
     expect(list.body.groups).toHaveLength(FRIEND_GROUPS_MAX);
   });
 
-  it('refuses a member past the roster ceiling, but still accepts an idempotent repeat', async () => {
-    const { aliceAgent, bob, carol } = await scenario();
-    const groupId = await createGroup(aliceAgent, 'Family');
-    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
-
-    // Fill the rest of the roster directly (the ceiling counts stored rows).
+  /**
+   * Insert `count` extra users and put them on `groupId`'s roster directly, so
+   * the stored roster can be filled without 199 round trips. `befriended` also
+   * writes the owner↔member friendship row, which is what decides whether the
+   * resulting rows are part of the roster the owner can SEE.
+   */
+  async function fillRoster(
+    ownerId: string,
+    groupId: string,
+    count: number,
+    opts: { befriended: boolean; prefix?: string } = { befriended: false },
+  ): Promise<string[]> {
+    const prefix = opts.prefix ?? 'filler';
     const filler = await harness.db
       .insert(schema.users)
       .values(
-        Array.from({ length: FRIEND_GROUP_MEMBERS_MAX - 1 }, (_, i) => ({
-          email: `filler${i}@bt.test`,
-          username: `filler${i}`,
+        Array.from({ length: count }, (_, i) => ({
+          email: `${prefix}${i}@bt.test`,
+          username: `${prefix}${i}`,
           passwordHash: 'x',
         })),
       )
       .returning({ id: schema.users.id });
+    const ids = filler.map((u) => u.id);
+    if (opts.befriended) {
+      // Friendship rows are stored canonically (user_a < user_b), whichever way
+      // round the pair happens to sort.
+      await harness.db.insert(schema.friendships).values(
+        ids.map((id) => ({
+          userA: ownerId < id ? ownerId : id,
+          userB: ownerId < id ? id : ownerId,
+        })),
+      );
+    }
     await harness.db
       .insert(schema.friendGroupMembers)
-      .values(filler.map((u) => ({ groupId, memberId: u.id })));
+      .values(ids.map((id) => ({ groupId, memberId: id })));
+    return ids;
+  }
+
+  /** The RAW roster rows of a group — including any the owner cannot see. */
+  async function storedRosterSize(groupId: string): Promise<number> {
+    const rows = await harness.db
+      .select()
+      .from(schema.friendGroupMembers)
+      .where(eq(schema.friendGroupMembers.groupId, groupId));
+    return rows.length;
+  }
+
+  it('refuses a member past the roster ceiling, but still accepts an idempotent repeat', async () => {
+    const { aliceAgent, alice, bob, carol } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+
+    // Fill the rest of the roster directly, with members alice really can
+    // reach — the circle is genuinely full.
+    await fillRoster(alice.id, groupId, FRIEND_GROUP_MEMBERS_MAX - 1, { befriended: true });
 
     const over = await addMember(aliceAgent, groupId, carol.id);
     expect(over.status).toBe(400);
     expect(over.body.error.code).toBe('FRIEND_GROUP_MEMBER_LIMIT_REACHED');
 
+    // The refusal names a state the owner can resolve: every blocking row is in
+    // the roster they read, so `memberCount` reports the blocking total and each
+    // one has a Remove button (#1830).
+    const list = await aliceAgent.get('/api/v1/social/groups');
+    expect(friendGroupListResponseSchema.safeParse(list.body).success).toBe(true);
+    expect(list.body.groups[0].memberCount).toBe(FRIEND_GROUP_MEMBERS_MAX);
+    expect(list.body.groups[0].members).toHaveLength(FRIEND_GROUP_MEMBERS_MAX);
+    // Removing one of them makes room, and the add that was refused now lands.
+    expect(
+      (await aliceAgent.delete(`/api/v1/social/groups/${groupId}/members/${bob.id}`).set(...XRW))
+        .status,
+    ).toBe(200);
+    expect((await addMember(aliceAgent, groupId, carol.id)).status).toBe(200);
+
     // A repeat add of someone already in the full circle adds nobody, so the
     // ceiling has nothing to refuse — the endpoint stays idempotent.
+    expect((await addMember(aliceAgent, groupId, carol.id)).status).toBe(200);
+  });
+
+  /**
+   * The ceiling counts STORED rows, but the owner only ever sees the live
+   * roster. A row for a disabled or no-longer-friend member grants nothing, is
+   * absent from `members` and therefore has no Remove button — so it must never
+   * be what refuses an add, or the circle is permanently un-addable-to with the
+   * cause invisible and unclearable (#1830).
+   */
+  it('clears the roster rows the owner cannot see instead of refusing an add behind them', async () => {
+    const { aliceAgent, alice, bob, carol } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
     expect((await addMember(aliceAgent, groupId, bob.id)).status).toBe(200);
+
+    // Fill the circle to the stored ceiling with rows that grant nothing: 198
+    // non-friends, plus one friend whose account an admin disabled.
+    await fillRoster(alice.id, groupId, FRIEND_GROUP_MEMBERS_MAX - 2, { befriended: false });
+    const [disabled] = await fillRoster(alice.id, groupId, 1, {
+      befriended: true,
+      prefix: 'disabled',
+    });
+    await harness.db
+      .update(schema.users)
+      .set({ status: 'disabled' })
+      .where(eq(schema.users.id, disabled!));
+
+    expect(await storedRosterSize(groupId)).toBe(FRIEND_GROUP_MEMBERS_MAX);
+    // …yet the owner is told the circle holds one member, so the add they are
+    // offered must not come back as a full-circle refusal.
+    const before = await aliceAgent.get('/api/v1/social/groups');
+    expect(before.body.groups[0].memberCount).toBe(1);
+
+    const added = await addMember(aliceAgent, groupId, carol.id);
+    expect(added.status).toBe(200);
+    expect(friendGroupSchema.safeParse(added.body).success).toBe(true);
+    expect(added.body.memberCount).toBe(2);
+
+    // The unreachable rows are gone, not merely uncounted — the circle can be
+    // filled again with members the owner can actually reach.
+    expect(await storedRosterSize(groupId)).toBe(2);
+    const list = await aliceAgent.get('/api/v1/social/groups');
+    expect(list.body.groups[0].members.map((m: { username: string }) => m.username).sort()).toEqual(
+      ['bob', 'carol'],
+    );
   });
 
   it('meters the moderation and roster-churn writes like their POST siblings', async () => {

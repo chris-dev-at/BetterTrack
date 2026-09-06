@@ -3,7 +3,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { FRIEND_GROUPS_MAX, FRIEND_GROUP_MEMBERS_MAX } from '@bettertrack/contracts';
+import {
+  FRIEND_GROUPS_MAX,
+  FRIEND_GROUP_MEMBERS_MAX,
+  FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
+} from '@bettertrack/contracts';
+
+import { ApiError } from '../../lib/apiClient';
 
 vi.mock('../../lib/socialApi', () => ({
   listGroups: vi.fn(),
@@ -240,5 +246,46 @@ describe('FriendGroupsSection — the friend-group ceilings', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^add$/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The circle can fill up between the list read and the click (another tab,
+   * another device). The refusal that comes back is the one refusal the owner
+   * can act on — remove a member they can see — so it must name itself instead
+   * of arriving as the generic "could not update the group" (#1830).
+   */
+  async function clickAddWith(error: unknown) {
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [], shareCount: 0 }],
+    });
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [{ user: { id: BOB, username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    vi.mocked(addGroupMember).mockRejectedValue(error);
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    await user.click(await screen.findByRole('button', { name: /^add$/i }));
+  }
+
+  test('names the roster ceiling when the add is refused for it', async () => {
+    await clickAddWith(
+      new ApiError(400, FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE, 'A group can have at most 200.'),
+    );
+
+    expect(
+      await screen.findByText(
+        `This group is full — a group can hold at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not update the group/i)).not.toBeInTheDocument();
+  });
+
+  test('keeps the generic message for any other failed add', async () => {
+    await clickAddWith(new ApiError(500, 'INTERNAL', 'boom'));
+
+    expect(await screen.findByText(/could not update the group/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this group is full/i)).not.toBeInTheDocument();
   });
 });
