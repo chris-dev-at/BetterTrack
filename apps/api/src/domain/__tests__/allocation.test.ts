@@ -4,6 +4,8 @@ import {
   allocateBudget,
   AllocationError,
   DEFAULT_FRACTIONAL_STEP,
+  rescaleUnreachableWeight,
+  unreachableWeightNote,
   WEIGHT_SUM_TOLERANCE,
   type AllocationInput,
   type AllocationLine,
@@ -950,5 +952,87 @@ describe('allocateBudget — never-overshoot property', () => {
         expect(raised.totalCostEur).toBeLessThanOrEqual(suggested);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The note's denomination (#1831)
+// ---------------------------------------------------------------------------
+
+describe('allocateBudget — the note is spelled in the run’s currency', () => {
+  it('renders a CHF run entirely in CHF: no euro sign anywhere in the notes', () => {
+    // The §6.7 worked example, run by a CHF-base caller: same numbers, same
+    // sentence, but every figure is the money the caller actually asked about.
+    // A hardcoded `€` used to tell them to raise a CHF budget "to ≥ ~1400 €".
+    const res = allocateBudget({ ...workedExample('whole'), currency: 'CHF' });
+    const googl = line(res, 'googl');
+
+    expect(googl.note).toBe(
+      'GOOGL share price (140 CHF) exceeds its 100 CHF slice; raise the budget to ≥ ~1400 CHF or use fractional mode.',
+    );
+    expect(res.warnings).toEqual([googl.note]);
+    for (const warning of res.warnings) expect(warning).not.toContain('€');
+    // The structured facts carry the denomination, so a caller restating them
+    // (the Invest Calculator's withheld-share rescale) keeps this spelling.
+    expect(googl.unreachable?.currency).toBe('CHF');
+    // Only the label moved: the plan itself is untouched.
+    expect(res.totalCostEur).toBe(900);
+    expect(res.leftoverEur).toBe(100);
+    expect(res.totalCostEur).toBeLessThanOrEqual(1000);
+  });
+
+  it('renders the fractional-mode note in the run currency too', () => {
+    const res = allocateBudget({
+      budgetEur: 100,
+      mode: 'fractional',
+      step: 1,
+      currency: 'USD',
+      positions: [pos('x', 0.99, 50), pos('y', 0.01, 80)],
+    });
+
+    const y = line(res, 'y');
+    expect(y.note).toBe(
+      'y: one 1-share step (80 USD) exceeds its 1 USD slice; raise the budget to ≥ ~8000 USD.',
+    );
+    expect(y.note).not.toContain('€');
+    expect(res.totalCostEur).toBeLessThanOrEqual(100);
+  });
+
+  it('is byte-identical to the euro sentence for a EUR run, given or omitted', () => {
+    // §6.7's worked example is the contract for a EUR-base run: the currency
+    // parameter may not move it by one character.
+    const omitted = allocateBudget(workedExample('whole'));
+    const given = allocateBudget({ ...workedExample('whole'), currency: 'EUR' });
+    const lowercase = allocateBudget({ ...workedExample('whole'), currency: 'eur' });
+
+    expect(line(omitted, 'googl').note).toBe(
+      'GOOGL share price (140 €) exceeds its 100 € slice; raise the budget to ≥ ~1400 € or use fractional mode.',
+    );
+    expect(line(given, 'googl').note).toBe(line(omitted, 'googl').note);
+    expect(lowercase.warnings).toEqual(omitted.warnings);
+  });
+
+  it('keeps Σ cost ≤ B when the caller withheld part of the budget', () => {
+    // What the Invest Calculator does with an unresolved nested slice (#1811):
+    // the engine is handed the resolved remainder, and the note is restated in
+    // the caller's own denomination. Both budgets bound the same plan.
+    const budgetChf = 1000;
+    const allocatable = budgetChf * 0.6;
+    const res = allocateBudget({
+      budgetEur: allocatable,
+      mode: 'whole',
+      currency: 'CHF',
+      positions: [pos('big', 0.9, 200), pos('small', 0.1, 140)],
+    });
+
+    expect(res.totalCostEur).toBeLessThanOrEqual(allocatable);
+    expect(res.totalCostEur).toBeLessThanOrEqual(budgetChf);
+    const small = line(res, 'small');
+    expect(small.unreachable).toBeDefined();
+    const restated = unreachableWeightNote(
+      rescaleUnreachableWeight(small.unreachable!, allocatable / budgetChf),
+    );
+    expect(restated).toContain('CHF');
+    expect(restated).not.toContain('€');
   });
 });
