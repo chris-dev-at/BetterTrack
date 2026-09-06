@@ -398,6 +398,76 @@ describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
     expect(body.totalCostEur).toBeLessThanOrEqual(1000);
   });
 
+  it('spells every warning in the caller’s base currency, never in euros', async () => {
+    // #1831: the "raise the budget to ≥ ~X €" note was hardcoded in euros while
+    // the response — budget, prices, leftover and the withheld-slice warning
+    // beside it — is denominated in the caller's base. A CHF user was told to
+    // raise a CHF budget by a figure spelled in €, two currencies in one
+    // `warnings` array for one run.
+    const prices: Record<string, number> = { VWCE: 100, GOLD: 450 };
+    const { h, agent } = await harnessWith((ref) =>
+      ref.providerRef === 'EURCHF=X'
+        ? cachedQuote(2, { currency: 'CHF' })
+        : cachedQuote(prices[ref.providerRef]!),
+    );
+    // 1 EUR = 2 CHF, so VWCE is 200 CHF and GOLD 900 CHF.
+    await agent
+      .patch('/api/v1/settings/account')
+      .set(...XRW)
+      .send({ baseCurrency: 'CHF' })
+      .expect(200);
+
+    const vwce = await seedAsset(h, { symbol: 'VWCE', providerRef: 'VWCE' });
+    const gold = await seedAsset(h, { symbol: 'GOLD', providerRef: 'GOLD' });
+    const bonds = await seedConglomerate(agent, 'CHF Bonds', []);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'CHF Core' });
+    expect(created.status).toBe(201);
+    const coreId = created.body.id as string;
+    await agent
+      .put(`/api/v1/conglomerates/${coreId}/positions`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: vwce.id, weightPct: 30 },
+          { assetId: gold.id, weightPct: 30 },
+          { childId: bonds, weightPct: 40 },
+        ],
+      })
+      .expect(200);
+
+    // CHF 1 000: 40 % withheld for the empty child, so GOLD's 300 CHF slice
+    // cannot reach one 900 CHF share — an unreachable weight, plus the withheld
+    // warning built beside it.
+    const res = await agent
+      .post(`/api/v1/conglomerates/${coreId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole' });
+
+    expect(res.status).toBe(200);
+    expect(allocateResponseSchema.safeParse(res.body).success).toBe(true);
+    const body = res.body as AllocateResponse;
+    expect(body.baseCurrency).toBe('CHF');
+
+    const goldRow = body.positions.find((p) => p.assetId === gold.id)!;
+    expect(goldRow.qty).toBe(0);
+    expect(goldRow.note).toContain('900 CHF');
+    expect(goldRow.note).toContain('300 CHF');
+    expect(body.warnings).toContain(goldRow.note);
+    expect(body.warnings.length).toBeGreaterThan(1);
+    for (const warning of body.warnings) {
+      expect(warning).not.toContain('€');
+      expect(warning).toContain('CHF');
+    }
+
+    // Never overshoot, withheld slice included: what is not spent is leftover.
+    expect(body.totalCostEur).toBeCloseTo(200, 6);
+    expect(body.totalCostEur).toBeLessThanOrEqual(1000);
+    expect(body.totalCostEur + body.leftoverEur).toBeCloseTo(1000, 6);
+  });
+
   it('withholds an EMPTY nested slice instead of redistributing it onto the rest', async () => {
     // The issue's scenario: "Core" = 60 % VWCE + 40 % "Bonds", where Bonds has
     // no positions. Flattening drops the empty child and normalizes VWCE to

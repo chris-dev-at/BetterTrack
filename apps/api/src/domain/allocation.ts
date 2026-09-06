@@ -202,6 +202,15 @@ export interface AllocationInput {
    * singles never deploys less capital than the flag-off plan (module header).
    */
   atLeastOneShare?: boolean;
+  /**
+   * ISO code of the currency `budgetEur` and every `priceEur` are denominated
+   * in — the caller's base (§5.4), EUR when omitted. **Display only**: the
+   * engine does no FX, it only needs the label so a note it renders names the
+   * money the run is actually made of (#1831). Carried onto every
+   * {@link UnreachableWeight} so a caller restating a note gets the same
+   * spelling.
+   */
+  currency?: string;
   /** Basket positions; at least one. */
   positions: readonly AllocationPositionInput[];
 }
@@ -256,6 +265,12 @@ export interface UnreachableWeight {
   mode: AllocationMode;
   /** The buyable increment: 1 share in whole mode, the fractional step otherwise. */
   step: number;
+  /**
+   * ISO code of the currency every figure below is denominated in — the run's
+   * base ({@link AllocationInput.currency}), so the note is rendered in the
+   * money the caller asked about rather than assuming euros (#1831).
+   */
+  currency: string;
   /** Price of one share, in the budget's currency. */
   priceEur: number;
   /** This position's slice of the budget (`wᵢ · B`). */
@@ -288,15 +303,23 @@ export function rescaleUnreachableWeight(
  * Render an unreachable weight as the §6.7 note — the one place the sentence is
  * built, so a caller restating the figure in its own denomination produces the
  * same sentence the engine would have.
+ *
+ * Every figure is spelled in {@link UnreachableWeight.currency}: the response
+ * this note travels in is denominated in the caller's base (§5.4), so a hard
+ * `€` told a CHF user to raise a CHF budget to "≥ ~2250 €" — one `warnings`
+ * array carrying two currencies for one run (#1831). EUR still prints the `€`
+ * sign of §6.7's worked example; any other base prints its ISO code, exactly
+ * like the withheld-slice warning built beside it.
  */
 export function unreachableWeightNote(u: UnreachableWeight): string {
+  const amount = (value: number): string => money(value, u.currency);
   return u.mode === 'whole'
-    ? `${u.symbol} share price (${fmtEur(u.priceEur)} €) exceeds its ${fmtEur(
+    ? `${u.symbol} share price (${amount(u.priceEur)}) exceeds its ${amount(
         u.targetEur,
-      )} € slice; raise the budget to ≥ ~${fmtEur(u.suggestedBudgetEur)} € or use fractional mode.`
-    : `${u.symbol}: one ${u.step}-share step (${fmtEur(u.step * u.priceEur)} €) exceeds its ${fmtEur(
+      )} slice; raise the budget to ≥ ~${amount(u.suggestedBudgetEur)} or use fractional mode.`
+    : `${u.symbol}: one ${u.step}-share step (${amount(u.step * u.priceEur)}) exceeds its ${amount(
         u.targetEur,
-      )} € slice; raise the budget to ≥ ~${fmtEur(u.suggestedBudgetEur)} €.`;
+      )} slice; raise the budget to ≥ ~${amount(u.suggestedBudgetEur)}.`;
 }
 
 export interface AllocationResult {
@@ -331,9 +354,19 @@ function epsilonFloor(x: number): number {
   return Math.floor(x);
 }
 
-/** €-figure for a human-readable note: rounded to cents, trailing zeros trimmed. Display-only. */
-function fmtEur(value: number): string {
+/** Money figure for a human-readable note: rounded to cents, trailing zeros trimmed. Display-only. */
+function fmtAmount(value: number): string {
   return String(Math.round(value * 100) / 100);
+}
+
+/**
+ * A note's money figure with its denomination: `140 €` for a EUR run — §6.7's
+ * own spelling, kept byte-identical — and `140 CHF` for any other base, the
+ * `<amount> <ISO>` form the withheld-slice warning already uses.
+ */
+function money(value: number, currency: string): string {
+  const code = currency.toUpperCase();
+  return `${fmtAmount(value)} ${code === 'EUR' ? '€' : code}`;
 }
 
 /**
@@ -623,6 +656,9 @@ export function allocateBudget(input: AllocationInput): AllocationResult {
     );
   }
 
+  // Display-only label for the notes; the engine itself never converts (§5.4).
+  const currency = input.currency && input.currency.trim() !== '' ? input.currency : 'EUR';
+
   // In whole mode the increment is exactly 1 share, so `qty = k · step` is exact.
   const step = mode === 'fractional' ? (input.step ?? DEFAULT_FRACTIONAL_STEP) : 1;
   const forceSingles = mode === 'whole' && input.atLeastOneShare === true;
@@ -747,6 +783,7 @@ export function allocateBudget(input: AllocationInput): AllocationResult {
         symbol: s.symbol,
         mode,
         step,
+        currency,
         priceEur: s.priceEur,
         targetEur: s.targetEur,
         suggestedBudgetEur:
