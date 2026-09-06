@@ -117,6 +117,9 @@ const previewResponse: SharedSandboxPreviewResponse = {
   rebalance: 'none',
   rebalanceEvents: [],
   idleCashAvgPct: null,
+  // The aggregate (nested) variant states the share that resolved to no asset
+  // (#1832); this fixture's basket resolves completely.
+  unresolvedPct: 0,
 };
 
 function renderPage() {
