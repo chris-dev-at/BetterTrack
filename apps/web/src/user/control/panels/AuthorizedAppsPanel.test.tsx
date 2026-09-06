@@ -96,7 +96,9 @@ describe('AuthorizedAppsPanel', () => {
     expect(grantRow).toHaveTextContent('Charting Buddy can:');
     // Scopes render via OAUTH_SCOPE_LABELS, not the raw scope string.
     expect(
-      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+      within(grantRow).getByText(
+        /View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them/i,
+      ),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Revoke access' }));
@@ -161,7 +163,9 @@ describe('AuthorizedAppsPanel', () => {
     const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
     expect(within(grantRow).getAllByRole('listitem')).toHaveLength(2);
     expect(
-      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+      within(grantRow).getByText(
+        /View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them/i,
+      ),
     ).toBeInTheDocument();
     expect(
       within(grantRow).getByText(
@@ -186,7 +190,9 @@ describe('AuthorizedAppsPanel', () => {
     // the user granted, exactly as `ApiKeysPanel` argues for its chips.
     const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
     expect(
-      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+      within(grantRow).getByText(
+        /View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them/i,
+      ),
     ).toBeInTheDocument();
     expect(within(grantRow).getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
   });
