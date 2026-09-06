@@ -63,6 +63,60 @@ export const isAdminTwoFactorSetupRequired = (err: unknown): boolean =>
  */
 export type AdminSignOutReason = 'expired';
 
+/**
+ * Reading an admin-API failure as "this console's session window closed"
+ * (§13.5 V5-P13c, #1779).
+ *
+ * §6.12 makes every `/admin/*` route answer **404** to anyone who is not an
+ * admin, and `requireAdmin` raises that 404 with the generic `NOT_FOUND` code.
+ * So a bare 404 on the admin origin means the caller lost admin authority — on a
+ * live console, that the session expired.
+ *
+ * A 404 that names a DOMAIN outcome is a different animal: `GET /admin/users/:id`
+ * answers `USER_NOT_FOUND` for an account a colleague just deleted. That row is
+ * gone; the session is not. Both still end the surface (the caller decides how),
+ * but only the first may claim "your admin session expired".
+ *
+ * These two live here rather than beside the hooks in `sessionExpiry.ts` (which
+ * re-exports them) because the deadline machinery in this very file reads them:
+ * the auth-loss answer to a deadline refresh has to end the session, and a
+ * module cycle would be the price of keeping them next to their consumers.
+ */
+const DOMAINLESS_NOT_FOUND_CODES = new Set(['', 'NOT_FOUND']);
+
+/**
+ * The §6.12 "you are not an admin here any more" answer — a 404 that names no
+ * domain outcome. Deliberately does NOT include 401: on routes that verify a
+ * factor (`POST /admin/security/2fa/totp/disable`), a 401 is the *code* being
+ * wrong, not the session being gone.
+ */
+export function isAdminWindowClosed(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 404 && DOMAINLESS_NOT_FOUND_CODES.has(err.code);
+}
+
+/**
+ * Why a 401/404 read failure should sign the console out. `'expired'` when the
+ * failure really is the window closing, `undefined` when the route answered a
+ * domain 404 — the console's local session ends either way (the read path has
+ * always treated `isNotAuthorized` structurally), but only an `'expired'`
+ * reason may claim an expiry on the login screen, and only an `'expired'` reason
+ * revokes the session server-side (see {@link AuthContextValue.clearSession}):
+ * the server is still perfectly happy with the session behind a domain 404.
+ */
+export function adminSignOutReason(err: unknown): AdminSignOutReason | undefined {
+  if (err instanceof ApiError && err.status === 401) return 'expired';
+  return isAdminWindowClosed(err) ? 'expired' : undefined;
+}
+
+/**
+ * Did this failure end the caller's admin authority? A 401 (no session at all)
+ * or the §6.12 domainless 404 (a session the server no longer accepts as an
+ * admin's). Anything else — a 500, a transport failure, a domain 404 — is not
+ * an answer about the session.
+ */
+const isAdminAuthLoss = (err: unknown): boolean =>
+  (err instanceof ApiError && err.status === 401) || isAdminWindowClosed(err);
+
 /** One hour in ms — the unit the 6–24 h admin session policy is expressed in. */
 const HOUR_MS = 3_600_000;
 
@@ -113,10 +167,15 @@ interface AuthContextValue {
   completeTwoFactorSetup: () => Promise<void>;
   logout: () => Promise<void>;
   /**
-   * Drop the in-memory session without an API round-trip. Pages call this when
-   * a request comes back 401/404 mid-use (expired cookie, account disabled) so
-   * the guard bounces back to the login screen. Pass `'expired'` when the cause
-   * is the V5-P13c session window, so the login screen can say what happened.
+   * Drop the session in memory immediately, so the guard bounces back to the
+   * login screen. Pages call this when a request comes back 401/404 mid-use
+   * (expired cookie, account disabled, a row another admin removed).
+   *
+   * Pass `'expired'` when the cause is the V5-P13c session window: that both
+   * lets the login screen say what happened AND revokes the session server-side,
+   * best-effort (fired off, never awaited — the screen swap does not wait on the
+   * network). Without a reason the sign-out stays local, because a domain 404 or
+   * a cancelled login challenge is not the server ending this session.
    */
   clearSession: (reason?: AdminSignOutReason) => void;
   /**
@@ -327,6 +386,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearSession = useCallback((reason?: AdminSignOutReason) => {
+    // An EXPIRY sign-out revokes server-side too, best-effort and without
+    // blocking the screen swap (V5-P13c). The reason is exactly the distinction
+    // that decides this: `'expired'` means the window closed (a 401, the §6.12
+    // domainless 404, or the courtesy deadline firing), and there the cookie is
+    // either already dead — so this is a no-op — or the deadline fired up to
+    // CLOCK_TOLERANCE_MS early on a browser clock running ahead, leaving the
+    // cookie and the Redis session both live. Without the revoke that second
+    // case told the operator "your admin session expired" over a session a
+    // single reload walked straight back into.
+    //
+    // No reason means the session is NOT over server-side: a domain 404
+    // (`GET /admin/users/:id` answering `USER_NOT_FOUND` for a row a colleague
+    // just deleted) ends the surface, and cancelling a pending login challenge
+    // ends nothing at all. Revoking there would log a working admin out — back
+    // through password + TOTP — because a row went missing. See
+    // {@link adminSignOutReason}.
+    if (reason === 'expired') {
+      void (async () => {
+        try {
+          await api.logout();
+        } catch {
+          // Already-dead cookie, or an unreachable backend. The local sign-out
+          // stands either way — this is cleanup, never the outcome.
+        }
+      })();
+    }
     setUser(null);
     setTwoFactorChallenge(null);
     setSessionDeadline(null);
@@ -354,8 +439,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * policy read; the anchor is this session's own `createdAt`, which
    * `GET /auth/sessions` marks as `current` — deriving it from "when this tab
    * loaded" instead would hand a console reloaded 11 h into a 12 h window a
-   * fresh 12 h. A failure in either read leaves the deadline unknown rather than
-   * guessed: the write and read seams still sign out on the next 401/404.
+   * fresh 12 h. An UNREADABLE answer (a 500, an unreachable backend) leaves the
+   * deadline unknown rather than guessed: the write and read seams still sign
+   * out on the next 401/404. An AUTH-LOSS answer is not unreadable — it is the
+   * server saying the window already closed, and it signs the console out here
+   * (see the catch).
    */
   useEffect(() => {
     if (status !== 'authenticated') {
@@ -408,12 +496,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         setSessionDeadline(deadline);
-      } catch {
-        // Unreadable window — see above. Never manufacture a sign-out from it.
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        // An ANSWER, not an outage: `GET /admin/security/session-policy` answers
+        // 404 (§6.12) and `GET /auth/sessions` 401 the moment this session stops
+        // being an admin's — which is exactly what lowering the lifetime below
+        // this session's own age produces on the next read. Swallowing it left
+        // the console `authenticated`, rendering a full page of admin data, with
+        // the deadline derived from the OLD, longer policy still armed — the very
+        // parked-console case this machinery exists to prevent. Treat it like any
+        // other seam: end the session and say why.
+        if (isAdminAuthLoss(err)) {
+          clearSession('expired');
+          return;
+        }
+        // Anything else (a 500, an unreachable backend) is not an answer about
+        // the session. Unreadable window — see above. Never manufacture a
+        // sign-out from it.
       }
     })();
     return () => controller.abort();
-  }, [status, sessionPolicyAttempt]);
+  }, [status, sessionPolicyAttempt, clearSession]);
 
   // Sign out the moment the window closes, without waiting for a click.
   useEffect(() => {
