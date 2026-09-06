@@ -4569,8 +4569,9 @@
 }
 
 /* The scroll container this table needs, without the rules that come with it.
-   `.bt-table-wrap` is the only place `overflow-x: auto` is declared, so the
-   table has to sit in one — but its `border-block` would box a home widget,
+   `.bt-table-wrap` is the only scroll container the table styles offer (a
+   `.bt-table` carries none of its own), so the table has to sit in one — but
+   the wrap's `border-block` would box a home widget,
    and the board is un-boxed quiet content by design (one focal point, no
    frames). Declared AFTER `.bt-table-wrap` (equal specificity: source order
    decides), so moving it above that rule would silently restore the border. */

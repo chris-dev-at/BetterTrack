@@ -134,8 +134,10 @@ function HomeBoard() {
    */
   // Paranoid accounts keep a device-local board (owner decision, §16): the
   // layout names portfolio ids and tickers, which is the inference that mode is
-  // bought to prevent. Fails closed — only a mode that has RESOLVED to normal
-  // enables the sync.
+  // bought to prevent. The gate above is what enforces that, not this line:
+  // `ResolvedPrivacyModeContext` reads `'normal'` until the account gate
+  // publishes otherwise, and the same default sends `HomePage` down this branch
+  // — so a board reached here syncs, and a paranoid one is never reached.
   //
   // Read from the account gate's published context, never from a query of our
   // own. `usePrivacyMode()` here opened a SECOND `getParanoidMediaState`

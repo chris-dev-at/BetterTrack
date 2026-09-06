@@ -725,8 +725,8 @@ const HOME_CONFIG_SOURCE = 'apps/web/src/user/home/config.ts';
  * One seeded widget. `variant` is the stored display form; a type that declares
  * variants gets one entry per form, since the two forms are different markup
  * (a donut vs. a ranked bar list, cards vs. a table) and only the stored one is
- * ever painted. Sizes are deliberately absent: `parseHomeLayout` clamps a
- * missing size to the type's own default, so the seed never restates
+ * ever painted. Size is not a field here: every entry is stored at
+ * {@link HOME_BOARD_SEED_SIZE}, so the seed never restates
  * `WIDGET_SIZE_RULES`.
  */
 interface HomeBoardSeedEntry {
@@ -887,6 +887,17 @@ function assertCompleteHomeBoardSeed(): void {
   ).toEqual([]);
 }
 
+/**
+ * The size every seeded widget is stored at. `size` is REQUIRED by
+ * `homeLayoutWidgetSchema` (`packages/contracts/src/settings.ts`) — the frame is
+ * `.strict()` and a document missing it is a 400, not a clamp — so the seed has
+ * to name one. It names the widest, which is also what the overflow half of this
+ * gate wants to measure: `clampSize` drops `l` back to the type's own default
+ * for the types that do not allow it, so this still restates nothing from
+ * `WIDGET_SIZE_RULES`.
+ */
+const HOME_BOARD_SEED_SIZE = 'l';
+
 /** The board document this gate stores on its fixture account. */
 function homeBoardSeedLayout(assetId: string, watchlistId: string): unknown {
   return {
@@ -894,6 +905,7 @@ function homeBoardSeedLayout(assetId: string, watchlistId: string): unknown {
     widgets: HOME_BOARD_SEED.map((entry, index) => ({
       id: `mobile-gate-${index}`,
       type: entry.type,
+      size: HOME_BOARD_SEED_SIZE,
       settings: {
         ...(entry.variant === undefined ? {} : { variant: entry.variant }),
         // The two types whose empty state is "pick one first": pointed at the
@@ -1123,15 +1135,27 @@ async function createRouteFixtures(
         }),
         'checking the populated notification state',
       ),
-      responseJson<{ layout: { widgets: unknown[] } | null }>(
+      responseJson<{ layout: { widgets: Array<{ type: string; size: string }> } | null }>(
         await api.get(`${API_BASE_URL}/api/v1/settings/home`),
         'checking the seeded home board',
       ),
     ]);
+  // Read back field-for-field, not just counted: the board is stored through a
+  // `.strict()` contract that can gain a required key, and a seed the server
+  // rejects (or silently narrows) would otherwise surface only as `/` quietly
+  // measuring the five-widget default.
   expect(
     homeBoard.layout?.widgets.length,
     'The account must hold the full-catalog board, or `/` falls back to the five-widget default.',
   ).toBe(HOME_BOARD_SEED.length);
+  expect(
+    homeBoard.layout?.widgets.map((widget) => widget.type),
+    'The stored board must round-trip the seeded types in order.',
+  ).toEqual(HOME_BOARD_SEED.map((entry) => entry.type));
+  expect(
+    homeBoard.layout?.widgets.every((widget) => widget.size === HOME_BOARD_SEED_SIZE),
+    'Every seeded widget must round-trip the size it was stored at.',
+  ).toBe(true);
   expect(portfolio.holdings.some((holding) => holding.asset.id === apple!.id)).toBe(true);
   expect(cash.movements.length).toBeGreaterThanOrEqual(2);
   expect(cashSources.sources.some((source) => source.name === LONG_CASH_SOURCE_NAME)).toBe(true);

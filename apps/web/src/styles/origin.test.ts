@@ -363,15 +363,25 @@ describe('Origin phone chrome', () => {
   });
 
   /**
-   * `overflow-x: auto` is declared in exactly one place, so a table that is not
-   * inside a `.bt-table-wrap` has nowhere to scroll and — with `nowrap` headers
-   * and a width that is a minimum, not a maximum — no way to compress either
-   * (#1878). The home board's own table takes the container for that scroll
-   * alone: the `--bare` modifier drops the wrap's rules, which would otherwise
-   * box an un-boxed widget.
+   * `.bt-table-wrap` is the only scroll container the table styles offer — a
+   * `.bt-table` declares no `overflow-x` of its own — so a table outside one has
+   * nowhere to scroll and, with `nowrap` headers and a width that is a minimum
+   * rather than a maximum, no way to compress either (#1878). The home board's
+   * own table takes the container for that scroll alone: the `--bare` modifier
+   * drops the wrap's rules, which would otherwise box an un-boxed widget.
    */
-  it('keeps the scroll container the one place overflow-x is declared', () => {
+  it('keeps every table inside the one scroll container the table styles offer', () => {
     expect(originCss).toMatch(/\.bt-table-wrap \{[^}]*overflow-x: auto;/);
+    // The wrap holds that role only while no table rule grows its own scroll:
+    // a `.bt-table*` selector declaring overflow-x would make the container
+    // optional, and the assertion below stop meaning anything.
+    const tableRulesWithScroll = [...originCss.matchAll(/\n(\.bt-table[^,{]*)[^{]*\{([^}]*)\}/g)]
+      .filter(([, , body]) => body!.includes('overflow-x'))
+      .map(([, selector]) => selector!.trim());
+    expect(
+      tableRulesWithScroll,
+      'only .bt-table-wrap may declare a table scroll axis, or the wrap stops being load-bearing',
+    ).toEqual(['.bt-table-wrap']);
     const bare = originCss.indexOf('.bt-table-wrap--bare {');
     expect(bare, 'Missing the borderless scroll-container modifier').toBeGreaterThan(-1);
     expect(originCss.slice(bare)).toMatch(/\.bt-table-wrap--bare \{[^}]*border-block: 0;/);
@@ -438,6 +448,13 @@ describe('Installable PWA', () => {
    * dock — rendered deeper in the tree — wins the paint. Without this rule the
    * card, dismiss button included, is unreachable while the dock is open.
    */
+  it('yields the corner to the AskDock, which shares it and paints above', () => {
+    expect(originCss).toMatch(/\.bt-askdock \{[^}]*right: 16px;[^}]*z-index: 45;/);
+    expect(originCss).toMatch(
+      /html\[data-bt-askdock='open'\] \.bt-install-prompt \{\s*display: none;\s*\}/,
+    );
+  });
+
   /**
    * The card's own tap-target floor (#1878). Its actions are `size="sm"`, and
    * the phone block lifts only `.bt-btn--icon`, `.bt-iconbtn`, `.bt-tab` and
@@ -473,13 +490,6 @@ describe('Installable PWA', () => {
     // The rule it overrides stays the compact desktop density, or the floor
     // above would be silently redundant.
     expect(originCss).toMatch(/\.bt-btn--sm \{[^}]*min-height: 28px;/);
-  });
-
-  it('yields the corner to the AskDock, which shares it and paints above', () => {
-    expect(originCss).toMatch(/\.bt-askdock \{[^}]*right: 16px;[^}]*z-index: 45;/);
-    expect(originCss).toMatch(
-      /html\[data-bt-askdock='open'\] \.bt-install-prompt \{\s*display: none;\s*\}/,
-    );
   });
 
   it('compensates the translucent status bar in a standalone window, both ways', () => {
