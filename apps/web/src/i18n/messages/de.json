@@ -243,6 +243,16 @@
     }
   },
   "common": {
+    "assetType": {
+      "stock": "Aktie",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Rohstoff",
+      "crypto": "Krypto",
+      "custom": "Eigene Anlage",
+      "other": "Sonstige"
+    },
     "save": "Speichern",
     "done": "Fertig",
     "cancel": "Abbrechen",
@@ -6013,6 +6023,8 @@
         "title": "News",
         "description": "Schlagzeilen zu deinen Beständen",
         "empty": "Gerade keine Schlagzeilen zu deinen Beständen.",
+        "emptyPartial": "Keine Schlagzeilen in dem Teil deiner Anlagen, den wir abfragen konnten.",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen.",
         "unavailable": "News sind nicht verfügbar."
       },
       "attention": {
@@ -6078,6 +6090,8 @@
         "title": "Dividenden",
         "description": "Kommende Ex- und Zahltage",
         "empty": "Keine Dividenden in Sicht.",
+        "emptyPartial": "Keine Dividenden in Sicht in dem Teil deiner Anlagen, den wir abfragen konnten.",
+        "truncated": "Nur teilweise: Du hältst oder beobachtest mehr Anlagen, als wir in einem Durchlauf abfragen.",
         "unavailable": "Dividendendaten sind nicht verfügbar.",
         "exDate": "Ex-Tag",
         "payDate": "Zahltag"
@@ -6899,15 +6913,6 @@
     "keys": {
       "navigate": "Navigieren",
       "open": "Öffnen"
-    },
-    "assetType": {
-      "stock": "Aktie",
-      "etf": "ETF",
-      "index": "Index",
-      "fx": "FX",
-      "commodity": "Rohstoff",
-      "crypto": "Krypto",
-      "other": "Sonstige"
     }
   },
   "firstrun": {
