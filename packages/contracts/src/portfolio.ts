@@ -1264,10 +1264,21 @@ export const cashMovementSchema = z
      * flat tag set (absent until a surface serves it, `[]` = untagged);
      * `originalCurrency` is set only when the row entered from a non-EUR feed and
      * its magnitude was carried over 1:1 — `amountEur` stays authoritative and
-     * the ledger never converts.
+     * the ledger never converts; `dedupHash` is the statement-import idempotency
+     * key (`UNIQUE(portfolio, dedup_hash)`), present only on rows an import
+     * landed.
+     *
+     * `dedupHash` rides the OWNER's own ledger read for one reason: the paranoid
+     * capture (`apps/web/src/user/vault/ui/migration.ts`) drains the ledger
+     * through exactly this DTO, and enable hard-deletes the server cleartext —
+     * a key the DTO cannot carry is destroyed by the round trip, after which a
+     * re-imported statement books every row a second time (NULLs never collide
+     * in the unique index). It is a hash of the caller's own row returned only
+     * to that caller, so it widens no one's visibility.
      */
     tags: z.array(z.string().uuid()).optional(),
     originalCurrency: z.string().nullable().optional(),
+    dedupHash: z.string().nullable().optional(),
   })
   .strict();
 export type CashMovement = z.infer<typeof cashMovementSchema>;

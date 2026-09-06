@@ -898,11 +898,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       note: r.note,
       source: r.source,
       createdAt: r.createdAt.toISOString(),
-      // Cash-flow overlay (V5 cash fusion). Both fields are OPTIONAL in the
+      // Cash-flow overlay (V5 cash fusion). All three fields are OPTIONAL in the
       // contract, so a caller that does not resolve tags simply omits them and
-      // every pre-fusion fixture still parses; `[]` genuinely means untagged.
+      // every pre-fusion fixture still parses; `[]` genuinely means untagged and
+      // an absent `dedupHash` means the row carries none (a manual entry), which
+      // is exactly what the paranoid capture writes into the vault for it.
       ...(tags !== undefined ? { tags: [...tags] } : {}),
       ...(r.originalCurrency !== null ? { originalCurrency: r.originalCurrency } : {}),
+      ...(r.dedupHash !== null ? { dedupHash: r.dedupHash } : {}),
     };
   }
 

@@ -304,6 +304,11 @@ export function createExpenseBudgetService(deps: ExpenseBudgetServiceDeps): Expe
           spent,
           remaining: toCents(budget.amount - spent),
           exceeded: isOverBudget(spent, budget.amount),
+          // The row's real age, not the read's. `listForOwner` orders by it, and
+          // the paranoid capture builds the vault document from this list — a
+          // stamped-at-migration timestamp reordered the list after a round trip.
+          createdAt: budget.createdAt.toISOString(),
+          updatedAt: budget.updatedAt.toISOString(),
         };
       });
       return { period, budgets: progress };

@@ -178,6 +178,10 @@ function toTransaction(record: ExpenseTransactionRecord): ExpenseTransaction {
     source: record.source,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt.toISOString(),
+    // Optional in the contract: omitted (like null) means a manual row no import
+    // can collide with. Served so the paranoid capture can carry the key through
+    // enable, which hard-deletes the only server copy of it.
+    ...(record.dedupHash !== null ? { dedupHash: record.dedupHash } : {}),
   };
 }
 
