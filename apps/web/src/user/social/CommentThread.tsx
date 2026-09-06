@@ -184,6 +184,12 @@ export function CommentThread({
   // expanded thread keeps its header honest off the poll it already runs; the
   // collapsed head falls back to the cheap summary (which never polls).
   const count = thread.data?.pages[0]?.commentCount ?? summary?.commentCount ?? 0;
+  // …and the item reaction chips beside it follow the same rule: page 0 carries
+  // the item-level aggregate fresh on every poll, while the summary is fetched
+  // once and never refetched (no `refetchInterval`, `refetchOnWindowFocus` off).
+  // Reading only the summary froze the chips at mount, so two friends with the
+  // thread open never saw each other's reactions (#1830).
+  const itemReactions = thread.data?.pages[0]?.reactions ?? summary?.reactions;
   const trimmed = draft.trim();
   // Pages arrive newest-first (page 0 is the newest window); render oldest-first.
   const comments = [...(thread.data?.pages ?? [])].reverse().flatMap((page) => page.comments);
@@ -210,9 +216,9 @@ export function CommentThread({
             {expanded ? '▲' : '▼'}
           </span>
         </Button>
-        {summary ? (
+        {itemReactions ? (
           <ReactionChips
-            reactions={summary.reactions}
+            reactions={itemReactions}
             onToggle={(emoji) => itemReactionMutation.mutate(emoji)}
             pending={itemReactionMutation.isPending}
             ariaLabel={t('social.comments.itemReactionsLabel')}
