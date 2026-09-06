@@ -2531,6 +2531,24 @@
     align-items: center;
   }
 
+  /* The same floor for the menus the PAGE owns rather than the header (#1834).
+     The rule above stops at `.bt-topbar`, so an asset or widget menu kept
+     `.bt-menu-item`'s 32px row — and a page-local row that wears no shared
+     class at all kept whatever its utilities gave it. Keyed on the menu roles
+     every row already carries as well as the class, and scoped to Origin's own
+     popover so the Tailwind-only console keeps its density (§7.1, #1057).
+     Measured by the overlay sweep in `e2e/mobile-overflow.spec.ts`. */
+  .bt-menu-item,
+  .bt-popover :is([role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio']) {
+    min-height: 44px;
+  }
+
+  /* The command palette's row floor is deliberately NOT declared here (#1834):
+     its base row rule lives further down the file at the same specificity, so a
+     floor in this block would lose the cascade to it on source order alone and
+     render 38px. It sits in the palette section's own phone block — see
+     `R2: palette` — which origin.test.ts asserts by index, not by presence. */
+
   .bt-topbar .bt-rail__brand {
     justify-content: center;
     padding: 0;
@@ -7179,6 +7197,20 @@
 
   .bt-palette__foot {
     display: none;
+  }
+}
+
+/* The command palette is navigation, not decoration: on a phone its rows ARE
+   the destinations, and 38px sat below the floor every other destination row in
+   the shell already has (#1834). Declared HERE rather than in the phone chrome
+   block near the top of the file on purpose: `.bt-palette__row` above is the
+   same (0,1,0) specificity, so only source order decides the winner, and a
+   floor declared before it renders at 38px however phone-scoped it looks.
+   Measured as real geometry by the overlay sweep in
+   `e2e/mobile-overflow.spec.ts`; the order itself is guarded in origin.test.ts. */
+@media (max-width: 480px) {
+  .bt-palette__row {
+    min-height: 44px;
   }
 }
 

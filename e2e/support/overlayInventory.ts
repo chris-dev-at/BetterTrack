@@ -448,14 +448,35 @@ function overlayBindings(sourceFile: ts.SourceFile, detection: OverlayDetection)
 }
 
 /**
- * Whether a product component renders an overlay: a resolved overlay primitive
+ * One overlay a product component renders, at the JSX site that opens it.
+ *
+ * Identity is per SITE, not per file: a file that opens a second, unrelated
+ * overlay is a second surface to measure, and the file-level answer below
+ * cannot express that (#1834).
+ */
+export interface OverlaySite {
+  /** 1-based line of the opening element, for the "what to register" message. */
+  line: number;
+  /** What made it an overlay: the tag, or the markup it paints. */
+  description: string;
+}
+
+/**
+ * Every overlay a product component renders: a resolved overlay primitive
  * (under any local name), an overlay it builds itself (a portal or in-place
  * modal markup), or a `bt-popover` it paints — including one composed through a
  * local class constant.
+ *
+ * Sites nested inside an already-counted overlay are NOT counted again: the
+ * panel markup a primitive wraps is that same overlay, not a second one. Two
+ * sites that open the SAME logical overlay from two branches of one render are
+ * still two sites — the detector reads syntax, not intent — which is why the
+ * classification entries in the gate declare how many sites they account for
+ * rather than being counted one-per-entry.
  */
-export function rendersOverlay(relativePath: string, detection: OverlayDetection): boolean {
+export function overlaySites(relativePath: string, detection: OverlayDetection): OverlaySite[] {
   const sourceFile = parseSource(relativePath, detection.reader);
-  if (!sourceFile) return false;
+  if (!sourceFile) return [];
   const bindings = overlayBindings(sourceFile, detection);
 
   // A class constant is only a popover if it is USED as a className. AskDock
@@ -471,13 +492,19 @@ export function rendersOverlay(relativePath: string, detection: OverlayDetection
     }
   }
 
-  let found = false;
+  const sites: OverlaySite[] = [];
+  const record = (node: ts.Node, description: string) => {
+    sites.push({
+      line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+      description,
+    });
+  };
+
   const visit = (node: ts.Node) => {
-    if (found) return;
     // A component that portals or paints its own `aria-modal`/`role="dialog"`
     // markup is an overlay even when it imports no primitive at all.
     if (isCreatePortalCall(node, sourceFile)) {
-      found = true;
+      record(node, 'createPortal(…)');
       return;
     }
     const opening = ts.isJsxElement(node)
@@ -492,13 +519,13 @@ export function rendersOverlay(relativePath: string, detection: OverlayDetection
         bindings.components.has(tag) ||
         (member !== undefined && (bindings.namespaces.get(namespace!)?.has(member) ?? false))
       ) {
-        found = true;
+        record(node, `<${tag}>`);
         return;
       }
       const modal = jsxAttributeText(opening, 'aria-modal', sourceFile);
       const role = jsxAttributeText(opening, 'role', sourceFile);
       if (modal?.includes('true') || role?.includes('"dialog"')) {
-        found = true;
+        record(node, `<${tag}> with its own aria-modal/role="dialog" markup`);
         return;
       }
       const className = opening.attributes.properties.find(
@@ -513,7 +540,7 @@ export function rendersOverlay(relativePath: string, detection: OverlayDetection
             new RegExp(`(^|[^\\w$])${name}([^\\w$]|$)`).test(text),
           )
         ) {
-          found = true;
+          record(node, `<${tag}> painted as a bt-popover`);
           return;
         }
       }
@@ -521,7 +548,80 @@ export function rendersOverlay(relativePath: string, detection: OverlayDetection
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return found;
+  return sites;
+}
+
+/**
+ * Whether a product component renders an overlay at all — the file-level answer
+ * the set-equality half of the gate is built on.
+ */
+export function rendersOverlay(relativePath: string, detection: OverlayDetection): boolean {
+  return overlaySites(relativePath, detection).length > 0;
+}
+
+/**
+ * One entry of the gate's classification tables, reduced to what the count
+ * check needs: which sources it classifies, and how many of each source's
+ * overlay sites it accounts for.
+ */
+export interface OverlayClassification {
+  /** Scenario label or exclusion surface, quoted back in the failure. */
+  label: string;
+  sources: readonly string[];
+  /** Sites accounted for in EACH named source; one when unstated. */
+  overlays?: number;
+}
+
+/**
+ * Under-registered and over-claiming overlay files, as human-readable lines
+ * (#1834).
+ *
+ * The set-equality half of the gate matches FILES, so a second overlay added to
+ * an already-classified file satisfied it without ever being opened at 390px or
+ * given an exclusion — the same silent green the discovery step was rebuilt to
+ * remove. This counts instead, in the two directions that can hide one:
+ *
+ *  1. the entries naming a file must account for at least as many overlays as
+ *     it renders. Entries stay free to classify STATE variants of one overlay
+ *     ("edit variant" beside the measured create sheet), which is why the test
+ *     is "reaches the count" rather than "equals" it, and why an entry that
+ *     covers a whole family of dialogs says so with
+ *     {@link OverlayClassification.overlays};
+ *  2. no single entry may claim more overlays than the file still renders — a
+ *     family count left standing after a dialog is deleted would silently
+ *     absorb the next one added.
+ */
+export function overlayRegistrationProblems(
+  detection: OverlayDetection,
+  classifications: readonly OverlayClassification[],
+): string[] {
+  const problems: string[] = [];
+
+  for (const source of overlaySurfaceSources(detection)) {
+    const entries = classifications.filter((entry) => entry.sources.includes(source));
+    if (entries.length === 0) continue; // The set-equality assertion owns this half.
+    const sites = overlaySites(source, detection);
+    const rendered = `${source} renders ${sites.length} overlay${
+      sites.length === 1 ? '' : 's'
+    } (${sites.map((site) => `line ${site.line}: ${site.description}`).join('; ')})`;
+
+    const accounted = entries.reduce((total, entry) => total + (entry.overlays ?? 1), 0);
+    if (accounted < sites.length) {
+      problems.push(
+        `${rendered} but ${entries.map((entry) => `"${entry.label}"`).join(', ')} account${
+          entries.length === 1 ? 's' : ''
+        } for ${accounted}; give the unclassified overlay its own scenario or exclusion, or raise \`overlays\` on an entry that genuinely covers it.`,
+      );
+    }
+
+    for (const entry of entries.filter((entry) => (entry.overlays ?? 1) > sites.length)) {
+      problems.push(
+        `${rendered} but "${entry.label}" claims to cover ${entry.overlays}; lower its \`overlays\` to what the file still renders.`,
+      );
+    }
+  }
+
+  return problems;
 }
 
 /**
