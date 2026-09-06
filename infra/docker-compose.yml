@@ -355,26 +355,40 @@ services:
   # ── Observability (§13.5 V5-P2 arc (a), §16 2026-07-17) ─────────────────────
   # Self-provisioned monitoring: Prometheus scrapes the API metrics listener
   # over the internal network; Grafana auto-wires the datasource + starter
-  # dashboard on first boot (zero owner setup). Their host ports bind to
+  # dashboard on first boot (zero owner setup). Grafana's host port binds to
   # ${BT_OBS_BIND_HOST} (default 127.0.0.1 = localhost only; set a LAN IP for
-  # LAN access) and are DELIBERATELY not routed through the public web/nginx
+  # LAN access); Prometheus's binds to ${BT_PROMETHEUS_BIND_HOST}, a SEPARATE
+  # input that stays on loopback when the LAN recipe moves Grafana — Grafana has
+  # a login, Prometheus has none. Neither is routed through the public web/nginx
   # front proxy — these surfaces are never reachable from a public origin. The
   # admin panel is the only public management surface.
   prometheus:
     image: prom/prometheus:v2.53.3
     restart: unless-stopped
     logging: *bounded-logging
+    # DELIBERATELY no --web.enable-lifecycle / --web.enable-admin-api: both add
+    # unauthenticated WRITE endpoints (`POST /-/reload`, `POST /-/quit`; series
+    # deletion and snapshotting) to a server that has no login of its own, and
+    # nothing in this repo calls them — the admin Monitoring probe only GETs
+    # `/-/healthy`, which Prometheus serves either way. `checkProductionCompose`
+    # fails if either flag comes back.
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'
-      - '--web.enable-lifecycle'
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - promdata:/prometheus
     ports:
-      # localhost/LAN only — never the public origin.
-      - '${BT_OBS_BIND_HOST:-127.0.0.1}:${BT_PROMETHEUS_PORT:-9090}:9090'
+      # Loopback by default, and DELIBERATELY not ${BT_OBS_BIND_HOST}: Prometheus
+      # has no authentication of its own (apps/api/src/http/grafanaProxy.ts is
+      # explicit that it is never proxied for exactly that reason), so following
+      # the documented LAN recipe's bind would hand every metric to every device
+      # on that network with no credential. Grafana is the LAN surface; ad-hoc
+      # PromQL goes through its Explore view or an SSH tunnel. Pointing
+      # BT_PROMETHEUS_BIND_HOST off loopback publishes an unauthenticated metrics
+      # server on purpose (docs/monitoring.md).
+      - '${BT_PROMETHEUS_BIND_HOST:-127.0.0.1}:${BT_PROMETHEUS_PORT:-9090}:9090'
     depends_on:
       api:
         condition: service_healthy

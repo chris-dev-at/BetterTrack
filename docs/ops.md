@@ -666,11 +666,15 @@ Prometheus. That opt-in is off by default and password-gated; see
 - The API metrics listener binds `0.0.0.0` **inside** the api container so
   Prometheus can scrape it, but its port is **never** published to a host port,
   so it is unreachable from outside the docker network.
-- Prometheus (`:9090`) and Grafana (`:3001`) publish host ports bound to
-  **`BT_OBS_BIND_HOST`** (default `127.0.0.1` = localhost only). They are **not**
-  added to any port overlay (`docker-compose.ports.yml` /
-  `docker-compose.subdomains.yml`) and are **not** routed by the `web`/nginx
-  front proxy — verifiable in `infra/docker-compose.yml` and `infra/nginx/`.
+- Grafana (`:3001`) publishes a host port bound to **`BT_OBS_BIND_HOST`** and
+  Prometheus (`:9090`) one bound to **`BT_PROMETHEUS_BIND_HOST`** (both default
+  `127.0.0.1` = localhost only). The two binds are deliberately separate:
+  Grafana has a login, Prometheus has none, so the LAN recipe below moves
+  Grafana only and Prometheus stays on loopback unless it is pointed elsewhere
+  on purpose (`docs/monitoring.md`). Neither service is added to any port
+  overlay (`docker-compose.ports.yml` / `docker-compose.subdomains.yml`) and
+  neither is routed by the `web`/nginx front proxy — verifiable in
+  `infra/docker-compose.yml` and `infra/nginx/`.
 
 ### Reaching Grafana
 
@@ -685,6 +689,9 @@ Prometheus. That opt-in is off by default and password-gated; see
 - **From your LAN** — set `BT_OBS_BIND_HOST` in `infra/.env` to the host's LAN
   IP (e.g. `192.168.1.10`), `docker compose up -d`, then open
   `http://192.168.1.10:3001`. **Never** set it to `0.0.0.0` on a public host.
+  This moves Grafana only; Prometheus — which has no login — keeps its own
+  loopback bind (`BT_PROMETHEUS_BIND_HOST`), so use Grafana's _Explore_ view or
+  an SSH tunnel for raw PromQL.
   Safe on its own — Grafana's own login still guards it — but **not** together
   with `BT_GRAFANA_ANON_ENABLED=true`, which is server-wide and would publish
   every dashboard to the LAN with no credential. The grafana service refuses to

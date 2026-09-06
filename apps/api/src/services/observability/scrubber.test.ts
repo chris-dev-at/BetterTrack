@@ -7,6 +7,8 @@ import {
   REDACTED_EMAIL,
   REDACTED_ID,
   REDACTED_TOKEN,
+  SCRUB_INPUT_MAX_CHARS,
+  boundScrubInput,
   redactIdentifiers,
   redactString,
   scrubEvent,
@@ -77,24 +79,24 @@ describe('redactString', () => {
     );
   });
 
-  it('stays linear on a long unbroken run — the scrub cannot stall the capture', () => {
-    // A capture is scrubbed BEFORE it is capped, so `redactString` sees the raw
-    // message at full length, and again inside the captured stack whose first
-    // line repeats it. The email pattern used to rescan from every offset in one
-    // unbroken run of email characters, making that O(n²): a 200k-char blob —
-    // well inside what an upstream HTML error page or a rejected upload yields —
-    // took ~24s, blowing the capture path's budget on a single problem.
-    //
-    // 200k is deliberately 4x the 50k that already cost ~1.5s: quadratic doubles
-    // four-fold per doubling, so a regression here misses this bound by orders
-    // of magnitude rather than flaking against it.
-    const blob = `blob rejected: ${'A'.repeat(200_000)}`;
-    const started = performance.now();
-    const out = redactString(blob);
-    const elapsed = performance.now() - started;
+  it('redacts a credential parameter that follows a non-credential one, value only', () => {
+    // The rule decides on the parameter NAME, so `?foo=…` must not swallow the
+    // parameter after it — including one that only a second URL inside the same
+    // message introduces (`?foo=1?apikey=…`), which is where a two-step matcher
+    // could silently under-redact.
+    expect(redactString('?foo=1&apikey=SECRET')).toBe(`?foo=1&apikey=${REDACTED_TOKEN}`);
+    expect(redactString('?foo=1?apikey=SECRET')).toBe(`?foo=1?apikey=${REDACTED_TOKEN}`);
+    expect(redactString('?a=1?b=2?token=SECRET')).toBe(`?a=1?b=2?token=${REDACTED_TOKEN}`);
+  });
 
-    expect(out).toBe(blob); // nothing email-shaped in it — no redaction, just the scan
-    expect(elapsed).toBeLessThan(1_000);
+  it('takes a credential value whole even where the walk stops a non-secret one', () => {
+    // The matcher stops a NON-secret value at the next `?` so it cannot rescan
+    // it (see `QUERY_PARAM_RE`). A secret value must not inherit that stop: a
+    // `?` inside it is part of the credential, and keeping the tail would be an
+    // under-redaction the cheaper walk paid for.
+    expect(redactString('?apikey=abc?def')).toBe(`?apikey=${REDACTED_TOKEN}`);
+    expect(redactString('?apikey=abc?def&next=1')).toBe(`?apikey=${REDACTED_TOKEN}&next=1`);
+    expect(redactString('?apikey=a=b&c=d')).toBe(`?apikey=${REDACTED_TOKEN}&c=d`);
   });
 
   it('still redacts an email that follows a long run of email characters', () => {
@@ -142,6 +144,114 @@ describe('redactIdentifiers', () => {
   it('is what `scrubOpsError` applies, so the two surfaces cannot drift apart', () => {
     const failure = 'portfolio 550e8400-e29b-41d4-a716-446655440000 not found';
     expect(scrubOpsError(failure)).toBe(redactIdentifiers(failure));
+  });
+});
+
+/**
+ * The linearity guard, as a TABLE of named regression cases (#1853).
+ *
+ * It used to be a single input — `'A'.repeat(200_000)` — and that input is
+ * FALSE ASSURANCE for every rule but the email one: with no `?`, no `&` and no
+ * credential word in it, the query rule never entered the path that made it
+ * catastrophic, so the assertion passed at ~0 ms while, on the same machine, a
+ * 96 KB run of its own keyword took 1.5 s and a quarter-MB JSON-ish blob 2.9 s.
+ *
+ * The last row is the shape that a REWRITE reintroduced the blowup on, and it
+ * is here because the first three did not catch it: a plain run of
+ * `?`-separated parameters whose values nothing terminates. Against a matcher
+ * that lets a value span the next `?`, the value is scanned once by its own
+ * match and again by every match after it — 300 KB of it cost ~7.5 s, while the
+ * single pattern this file's other rows were written for was linear on exactly
+ * that input. Cheap parameters, no keyword, no separator: nothing but a cost
+ * assertion sees it.
+ *
+ * The budget is one number for every input on purpose: the linear scan costs a
+ * few milliseconds at most for all four, and every shape it replaced cost
+ * seconds, so a regression misses this by more than an order of magnitude
+ * rather than flaking against it on a loaded CI runner.
+ */
+const SCRUB_TIME_BUDGET_MS = 100;
+
+describe('scrub cost', () => {
+  it.each([
+    ['an unbroken run with nothing rule-shaped in it', `blob rejected: ${'A'.repeat(200_000)}`],
+    ['a 96 KB run of the query rule’s own keyword', `?${'key'.repeat(32_000)}`],
+    [
+      'a quarter-MB JSON-ish blob repeating two credential words',
+      `?${'{"apikey":"a","signature":"b"},'.repeat(8_000)}`,
+    ],
+    ['a 300 KB run of unterminated non-credential parameters', '?a='.repeat(100_000)],
+  ])('stays linear on %s', (_label, input) => {
+    const started = performance.now();
+    const out = redactIdentifiers(input);
+    const elapsed = performance.now() - started;
+
+    // None of the three is actually redactable — the scan is all that is timed.
+    expect(out).toBe(input);
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
+  });
+});
+
+/**
+ * The input bound the two paths that scrub OUTSIDE text apply before scrubbing
+ * (#1853). Its whole job is to be cheap without costing redaction strength, so
+ * every case here pairs "what was dropped" with "what is still redacted".
+ */
+describe('boundScrubInput', () => {
+  it('leaves a string inside the bound exactly as it was', () => {
+    const message = `ECONNREFUSED smtp.example.test:587 ${'x'.repeat(1_000)}`;
+    expect(boundScrubInput(message)).toBe(message);
+    expect(boundScrubInput('')).toBe('');
+  });
+
+  it('cuts at a separator, so a straddling credential goes whole rather than in half', () => {
+    const straddling = `${'x'.repeat(SCRUB_INPUT_MAX_CHARS - 10)} ?apikey=SECRETVALUE`;
+    const out = redactIdentifiers(boundScrubInput(straddling));
+
+    expect(out).not.toContain('SECRET');
+    // The cut fell inside `?apikey=SECRETVALUE`; backing up to the `=` takes the
+    // value with it and leaves the readable half of nothing behind.
+    expect(out.endsWith('?apikey')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(SCRUB_INPUT_MAX_CHARS);
+  });
+
+  it('drops an address the cut landed inside rather than keeping its local part', () => {
+    const straddling = `${'x'.repeat(SCRUB_INPUT_MAX_CHARS - 5)} alice@example.com`;
+    const out = redactIdentifiers(boundScrubInput(straddling));
+
+    expect(out).not.toContain('alice');
+    expect(out).not.toContain('@');
+  });
+
+  it('still redacts everything that sits inside the bound', () => {
+    const early = `GET /v8?apikey=EARLYSECRET as alice@example.com ${'x'.repeat(SCRUB_INPUT_MAX_CHARS)}`;
+    const out = redactIdentifiers(boundScrubInput(early));
+
+    expect(out).toContain(`?apikey=${REDACTED_TOKEN}`);
+    expect(out).toContain(REDACTED_EMAIL);
+    expect(out).not.toContain('EARLYSECRET');
+    expect(out).not.toContain('alice@');
+  });
+
+  it('redacts what it kept even when one run is longer than the backoff window', () => {
+    // No separator anywhere near the cut, so the cut lands mid-value. The rule
+    // matches the value from its `name=` — which is retained — so the kept
+    // prefix of the secret still falls.
+    const out = redactIdentifiers(boundScrubInput(`?apikey=${'S'.repeat(20_000)}`));
+
+    expect(out).toBe(`?apikey=${REDACTED_TOKEN}`);
+  });
+
+  it('bounds the work the rules do — a 1 MB hostile string is read once, briefly', () => {
+    const hostile = `?${'{"apikey":"a","signature":"b"},'.repeat(34_000)}`;
+    expect(hostile.length).toBeGreaterThan(1_000_000);
+
+    const started = performance.now();
+    const out = redactIdentifiers(boundScrubInput(hostile));
+    const elapsed = performance.now() - started;
+
+    expect(out.length).toBeLessThanOrEqual(SCRUB_INPUT_MAX_CHARS);
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
   });
 });
 

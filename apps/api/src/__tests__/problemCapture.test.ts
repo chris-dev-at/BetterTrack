@@ -22,6 +22,7 @@ import {
 } from '../services/observability/problemService';
 import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
 import { scrubOpsError } from '../services/ops/opsText';
+import { REDACTED_TOKEN, SCRUB_INPUT_MAX_CHARS } from '../services/observability/scrubber';
 import {
   createProblemRepository,
   type ProblemRepository,
@@ -38,6 +39,17 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * deduped by fingerprint with an incremented occurrence count, and rate-capped
  * so an identical-error storm cannot unbounded-write.
  */
+/**
+ * Wall-clock ceiling for one capture's scrubbing work (#1853), the same number
+ * the scrubber's own linearity guard uses. Every string the capture reads is
+ * bounded before the value rules see it — the title and the message directly,
+ * and the STACK per line, because a V8 `Error.stack` repeats the message
+ * verbatim on its first line and capping frames caps nothing about their
+ * length. The pre-fix path spent SECONDS on one message, so a regression misses
+ * this by orders of magnitude rather than flaking.
+ */
+const SCRUB_TIME_BUDGET_MS = 100;
+
 describe('problem capture (Sentry replacement)', () => {
   let harness: TestHarness;
 
@@ -435,6 +447,70 @@ describe('problem capture (Sentry replacement)', () => {
     expect(row!.message).toContain('[redacted-email]');
     expect(row!.message).not.toContain('alice@');
     expect(row!.message).not.toContain('example.com');
+  });
+
+  it('bounds a 1 MB message BEFORE the scrubber reads it, and still redacts it', async () => {
+    // #1853: capture scrubbed the RAW string and capped afterwards, so every
+    // byte past the cap was scanned for nothing — and the query rule's own
+    // keyword made that scan quadratic (296 KB cost ~2.9 s on the API's single
+    // event loop). This is a megabyte of exactly that shape.
+    const hostile =
+      'GET https://api.provider.com/v8?apikey=SUPERSECRET failed: ' +
+      `?${'{"apikey":"a","signature":"b"},'.repeat(34_000)}`;
+    expect(hostile.length).toBeGreaterThan(1_000_000);
+
+    const started = performance.now();
+    harness.ctx.problems.captureError(new Error(hostile));
+    const elapsed = performance.now() - started;
+    await harness.ctx.problems.flush();
+
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
+
+    const [row] = await harness.db.select().from(problems);
+    // Bounding the INPUT costs no redaction on the part that is kept…
+    expect(row!.message).toContain(`?apikey=${REDACTED_TOKEN}`);
+    expect(row!.message).not.toContain('SUPERSECRET');
+    // …and the row is still held to the documented caps.
+    expect(row!.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
+    expect(row!.message).toContain('[truncated]');
+  });
+
+  it('bounds the captured STACK line the message is repeated into', async () => {
+    // The message's own bound is not enough: `Error.stack`'s first line is the
+    // message verbatim, and the frame cap bounds the NUMBER of lines, not their
+    // length — so this string reached the value rules in full through the stack
+    // even after #1853's first fix, which is the whole stall again by another
+    // door. The shape is the one a `?`-run matcher rescans (~7.5 s at 300 KB).
+    //
+    // Sized in MEGABYTES on purpose. The bound is invisible in the stored row —
+    // that is its design, it only declines to read a tail the context's byte
+    // ceiling drops anyway — so cost is the only thing that can assert it, and
+    // the rules are linear now, which makes a small input cheap either way.
+    // Twelve MB of it measures ~390 ms with the bound removed (the stack is
+    // walked twice: `captureStack`, then `scrubEvent` over the context) against
+    // ~10 ms with it, so the guard has room on a loaded runner in both
+    // directions.
+    const hostile = `provider rejected ${'?a='.repeat(4_000_000)}`;
+    expect(hostile.length).toBeGreaterThan(12_000_000);
+
+    const started = performance.now();
+    harness.ctx.problems.captureError(new Error(hostile));
+    const elapsed = performance.now() - started;
+    await harness.ctx.problems.flush();
+
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
+
+    const [row] = await harness.db.select().from(problems);
+    const stack = (row!.context as Record<string, unknown>).stack as string;
+    // Reading less costs nothing that was being stored: the context's own byte
+    // ceiling sits four times below the scrub bound, so this message was never
+    // going to reach the row whole either way.
+    expect(stack.split('\n')[0]!.length).toBeLessThanOrEqual(SCRUB_INPUT_MAX_CHARS);
+    expect(Buffer.byteLength(stack, 'utf8')).toBeLessThanOrEqual(PROBLEM_CONTEXT_VALUE_MAX_BYTES);
+    expect(stack).toContain('provider rejected ?a=');
+    // The message itself is still stored, scrubbed and capped as ever.
+    expect(row!.message).toContain('provider rejected');
+    expect(row!.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
   });
 });
 

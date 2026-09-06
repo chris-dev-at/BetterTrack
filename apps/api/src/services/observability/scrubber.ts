@@ -87,8 +87,73 @@ const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\
 // exactly what a fetch/axios provider error embeds in its message — survived
 // every other rule (an `apikey=` value is not `bt*_`-shaped and not an email).
 // The name is matched loosely so `x-api-key`, `apiKey` and `sig` all land.
-const QUERY_SECRET_RE =
-  /([?&][^?&=\s]*(?:key|token|secret|password|passwd|pwd|auth|credential|signature|sig)[^?&=\s]*=)([^&\s"'<>]*)/gi;
+//
+// Split into a SHAPE and a NAME TEST on purpose. Written as the single pattern
+// it used to be — `[?&][^?&=\s]*(?:key|token|…)[^?&=\s]*=` — the two unbounded
+// runs around the alternation make the scan catastrophic: every keyword
+// occurrence the engine reaches by backtracking re-runs the second run to the
+// end of the parameter looking for an `=`. `'?' + 'key'.repeat(32_000)` (96 KB)
+// took ~1.5 s and a quarter-MB JSON-ish blob ~2.9 s on the API's event loop,
+// which the ops cockpit then paid up to 25 times per admin page load (#1853) —
+// the same O(n²) shape `EMAIL_RE` above was already given a guard for.
+//
+// Below, both runs exclude every character that can END them (`=` and the
+// parameter separators for the name; the separators and quotes for the value),
+// so each has exactly ONE possible end and nothing backtracks. The accepted
+// language is unchanged: "a `?`/`&` parameter whose name contains a credential
+// word" is now decided by testing the matched name, which is a plain scan of a
+// short string.
+//
+// The VALUE class stops at `?` as well as at `&`, which is what keeps the walk
+// SINGLE-PASS. A value allowed to span the next `?` is scanned once by the
+// match and then again by the match that follows it, which is quadratic on a
+// run of `?`-separated parameters — `'?a='.repeat(100_000)` cost ~7.5 s that
+// way, the same stall in a new shape. A secret's value must still run to the
+// `&`, so {@link redactQuerySecrets} extends it forward by hand, once, and
+// resumes past it: the redacted span is never re-read either.
+const QUERY_PARAM_RE = /([?&])([^?&=\s]*)=([^?&\s"'<>]*)/g;
+const SECRET_PARAM_NAME_RE = /key|token|secret|password|passwd|pwd|auth|credential|signature|sig/i;
+
+/** Characters that terminate a query VALUE — the complement of its full class. */
+const QUERY_VALUE_STOP: ReadonlySet<string> = new Set([...'&"\'<>', ...' \t\n\r\f\v']);
+
+/**
+ * Replace the VALUE of every credential-named query parameter, keeping the name.
+ *
+ * Hand-rolled rather than a `.replace` because a non-secret parameter must not
+ * consume its own value: the one-pattern form never matched `?foo=…` at all, so
+ * a credential parameter sitting inside that value (`?foo=1?apikey=…`) was
+ * still found, and swallowing it here would be a silent under-redaction. The
+ * forward walk finds it on its own now, because a non-secret value stops at the
+ * `?` that introduces it — no rewind, and so no character is examined twice.
+ *
+ * Every iteration moves `lastIndex` strictly forward (a match is at least
+ * `[?&]` + `=`) and never back, so the whole function is one left-to-right pass
+ * over the string whatever it contains.
+ */
+function redactQuerySecrets(value: string): string {
+  QUERY_PARAM_RE.lastIndex = 0;
+  let out = '';
+  let copied = 0;
+  let match: RegExpExecArray | null;
+  while ((match = QUERY_PARAM_RE.exec(value)) !== null) {
+    const [, lead = '', name = ''] = match;
+    // Not a credential: leave it, and resume where its own value ended — which
+    // is at the next `?`/`&` at the latest, so the parameter after it is the
+    // next thing the walk looks at.
+    if (!SECRET_PARAM_NAME_RE.test(name)) continue;
+    // A credential's value runs to the `&`/whitespace/quote, `?` included, so
+    // `?apikey=abc?def` still goes whole. Walked here rather than in the
+    // pattern because only the secret branch pays for it, and it is paid once:
+    // the scan resumes at `end`.
+    let end = match.index + lead.length + name.length + 1;
+    while (end < value.length && !QUERY_VALUE_STOP.has(value[end]!)) end += 1;
+    out += `${value.slice(copied, match.index)}${lead}${name}=${REDACTED_TOKEN}`;
+    copied = end;
+    QUERY_PARAM_RE.lastIndex = end;
+  }
+  return copied === 0 ? value : out + value.slice(copied);
+}
 
 // BetterTrack token shapes: personal API keys, every OAuth token/secret/id
 // prefix (§6.13) and the outbound-webhook signing secret (`whsec_…`, §6.13
@@ -106,11 +171,11 @@ const BEARER_RE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
  * still reads ("…?apikey=[redacted-token]") — only its value goes.
  */
 export function redactString(value: string): string {
-  return value
-    .replace(BEARER_RE, (_m, scheme: string) => `${scheme} ${REDACTED_TOKEN}`)
-    .replace(BT_TOKEN_RE, REDACTED_TOKEN)
-    .replace(QUERY_SECRET_RE, (_m, name: string) => `${name}${REDACTED_TOKEN}`)
-    .replace(EMAIL_RE, REDACTED_EMAIL);
+  return redactQuerySecrets(
+    value
+      .replace(BEARER_RE, (_m, scheme: string) => `${scheme} ${REDACTED_TOKEN}`)
+      .replace(BT_TOKEN_RE, REDACTED_TOKEN),
+  ).replace(EMAIL_RE, REDACTED_EMAIL);
 }
 
 // Canonical UUIDs (v1–v5 and the nil UUID) anywhere in a string.
@@ -139,6 +204,79 @@ const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
  */
 export function redactIdentifiers(value: string): string {
   return redactString(value).replace(UUID_RE, REDACTED_ID);
+}
+
+/**
+ * How much of one free-text string the value rules are ever asked to read.
+ *
+ * The rules are linear, but linear is not free, and two paths hand them strings
+ * that originate OUTSIDE our code and that nothing bounds at write time: a
+ * thrown provider message carrying an upstream HTML error page (the Problems
+ * capture) and a dead-lettered `failedReason` (the ops cockpit, up to 25 rows
+ * per admin page load, on every live-refresh tick). Both run on the API's
+ * single event loop, so one oversized string is a product-wide stall, not an
+ * admin-console one (#1853).
+ *
+ * Deliberately far ABOVE every surface's own cap — a captured message is cut to
+ * 2 000 chars, an ops string to 300 — so this bound never shortens text a
+ * caller would have kept. It only declines to READ a tail nothing renders.
+ */
+export const SCRUB_INPUT_MAX_CHARS = 16_000;
+
+/**
+ * Characters a value rule's match can never span: the query rules key off
+ * `?`/`&`/`=`, and every other rule's run stops at whitespace or at one of the
+ * quoting characters its value class already excludes. Cutting at one of these
+ * therefore cannot split a credential in half.
+ */
+const SCRUB_CUT_SEPARATORS: ReadonlySet<string> = new Set([
+  ...' \t\n\r\f\v',
+  ...'?&=,;',
+  ...'"\'<>',
+]);
+
+/** How far the cut may walk back to reach one of them. */
+const SCRUB_CUT_BACKOFF_CHARS = 512;
+
+/**
+ * Bound a free-text string to {@link SCRUB_INPUT_MAX_CHARS} BEFORE it is
+ * scrubbed, cutting at a separator so no half credential is kept.
+ *
+ * Order matters in both directions, which is why this is a separate step rather
+ * than a plain `slice` at either call site. Scrubbing the raw string first is
+ * what let one message stall the loop; cutting blindly first is what
+ * {@link redactString}'s callers were warned against, because the kept half of
+ * an address or a token matches nothing. Walking back to a separator resolves
+ * it: the cut lands BETWEEN tokens, so the tail that goes takes the whole token
+ * with it and what stays is still scrubbed in full.
+ *
+ * If a single unbroken run is longer than the backoff window the cut lands
+ * inside it. What survives is then a run PREFIX, and the credential shapes are
+ * matched from their left edge — `btk_…`, `Bearer …` and a query value whose
+ * `name=` is retained all still fall to the rules on a prefix alone.
+ *
+ * `EMAIL_RE` is the exception, and the one residual risk here: it needs a
+ * `.tld` to its RIGHT, so a cut landing inside a long domain with no separator
+ * within the backoff window leaves `alice@partialdomain` unredacted. Do not
+ * reason about that as "the callers' caps discard the region around the cut" —
+ * they do not reliably: redaction SHRINKS what it keeps (`?apikey=` plus 15 900
+ * chars of value collapses to 24), so material from raw offset ~16 000 can land
+ * well inside a stored 2 000-char message. It stays a bound rather than a rule
+ * because reaching it takes a purpose-built string: an address whose domain runs
+ * past the backoff window, positioned exactly on the cut.
+ *
+ * The same shrink is why this bound can now drop diagnostic tail text a caller
+ * would have kept — `Error: … ?apikey=<20 KB> ECONNRESET after 3 attempts` no
+ * longer stores the `ECONNRESET` clause. Accepted: the alternative is reading
+ * an unbounded upstream blob on the API's single event loop.
+ */
+export function boundScrubInput(value: string): string {
+  if (value.length <= SCRUB_INPUT_MAX_CHARS) return value;
+  const floor = Math.max(0, SCRUB_INPUT_MAX_CHARS - SCRUB_CUT_BACKOFF_CHARS);
+  for (let i = SCRUB_INPUT_MAX_CHARS; i > floor; i -= 1) {
+    if (SCRUB_CUT_SEPARATORS.has(value[i - 1]!)) return value.slice(0, i - 1);
+  }
+  return value.slice(0, SCRUB_INPUT_MAX_CHARS);
 }
 
 function scrub(value: ScrubbableValue): ScrubbableValue {
