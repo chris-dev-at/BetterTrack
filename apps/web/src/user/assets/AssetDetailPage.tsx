@@ -38,8 +38,10 @@ import {
   useAddToWatchlist,
   useWatchlistMembership,
 } from '../../lib/workboardApi';
+import { assetTypeLabelKey } from '../../lib/assetTypeLabel';
 import { cx } from '../../lib/cx';
 import { nextUpcomingDividend } from '../../lib/dividendDates';
+import { useDeployCapability } from '../../lib/featureFlags';
 import {
   displayZoneDay,
   formatDate,
@@ -140,7 +142,10 @@ function AssetHeader({
               </>
             ) : null}
             <span className="mx-1.5 bt-muted">·</span>
-            <span className="capitalize">{asset.type}</span>
+            {/* The taxonomy slug is an English enum, not copy: it goes through
+                the shared label helper so this page, the search rows and the ⌘K
+                palette all name the same asset the same way in EN and DE. */}
+            <span>{t(assetTypeLabelKey(asset.type))}</span>
           </p>
           <CapabilityTags type={asset.type} className="mt-1.5" />
         </div>
@@ -293,9 +298,14 @@ function AlertsSection({
  */
 function DividendsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  // A deployment without the arc can only answer `available: false`, so the
+  // request is pure waste — the same `enabled:` gate the portfolio, forecast,
+  // nav and command surfaces already apply (§13.5 V5-P5).
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_DIVIDENDS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetDividends(assetId, signal),
+    enabled: marketIntel,
     staleTime: 3_600_000,
   });
 
@@ -449,9 +459,11 @@ function EstimatedBadge({ estimated }: { estimated: boolean }) {
  */
 function EarningsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_EARNINGS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetEarnings(assetId, signal),
+    enabled: marketIntel,
     staleTime: 15 * 60_000,
   });
 
@@ -557,9 +569,11 @@ function splitRatio(numerator: number, denominator: number, ratio: string): stri
  */
 function SplitsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_SPLITS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetSplits(assetId, signal),
+    enabled: marketIntel,
     staleTime: 60 * 60_000,
   });
 
@@ -610,9 +624,11 @@ function SplitsSection({ assetId }: { assetId: string }) {
  */
 function NewsSection({ assetId }: { assetId: string }) {
   const t = useT();
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: ASSET_NEWS_QUERY_KEY(assetId),
     queryFn: ({ signal }) => getAssetNews(assetId, signal),
+    enabled: marketIntel,
     staleTime: 15 * 60_000,
   });
 

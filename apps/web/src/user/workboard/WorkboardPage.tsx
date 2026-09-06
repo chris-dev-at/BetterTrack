@@ -17,6 +17,7 @@ import {
   workboardSparklinesQueryKey,
 } from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
+import { useDeployCapability } from '../../lib/featureFlags';
 import { formatDate, formatSignedPercent } from '../../lib/format';
 import { EARNINGS_CALENDAR_QUERY_KEY, getEarningsCalendar } from '../../lib/marketIntelApi';
 import { useT } from '../../i18n';
@@ -523,9 +524,14 @@ const EARNINGS_PANEL_COLLAPSED = 5;
 function UpcomingEarningsZone() {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
+  // A deployment without the arc can only answer `available: false`, so the
+  // request is pure waste — same `enabled:` gate the other market-intel call
+  // sites apply (§13.5 V5-P5).
+  const marketIntel = useDeployCapability('marketIntel');
   const { data } = useQuery({
     queryKey: EARNINGS_CALENDAR_QUERY_KEY,
     queryFn: ({ signal }) => getEarningsCalendar(signal),
+    enabled: marketIntel,
     staleTime: 15 * 60_000,
   });
 

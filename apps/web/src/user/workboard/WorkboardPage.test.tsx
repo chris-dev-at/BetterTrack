@@ -32,6 +32,16 @@ vi.mock('../../lib/marketIntelApi', () => ({
   getEarningsCalendar: vi.fn(),
 }));
 
+// The deploy-time market-intel capability (§13.5 V5-P5). It decides whether the
+// board ASKS for the earnings calendar at all, so the gate-off case drives it
+// explicitly (#1874).
+const deployCapabilities = vi.hoisted(() => ({ marketIntel: true }));
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapability: (key: string) =>
+    key === 'marketIntel' ? deployCapabilities.marketIntel : true,
+}));
+
 vi.mock('../../lib/socialApi', () => ({
   getAudience: vi.fn(),
   listFriends: vi.fn(),
@@ -163,6 +173,7 @@ function gateQuoteReads() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  deployCapabilities.marketIntel = true;
   vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
     quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })),
     failed: [],
@@ -810,5 +821,24 @@ describe('WorkboardPage — reorder', () => {
     fireEvent.drop(rowB);
 
     await waitFor(() => expect(screen.getByText(/Failed to save new order/i)).toBeInTheDocument());
+  });
+});
+
+describe('WorkboardPage — earnings gated on the deployment (#1874)', () => {
+  test('issues no earnings-calendar request when the capability is off', async () => {
+    deployCapabilities.marketIntel = false;
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
+
+    expect(getEarningsCalendar).not.toHaveBeenCalled();
+  });
+
+  test('still asks for it when the deployment has the capability', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+
+    renderPage();
+    await waitFor(() => expect(getEarningsCalendar).toHaveBeenCalled());
   });
 });

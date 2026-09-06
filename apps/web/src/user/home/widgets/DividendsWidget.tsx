@@ -64,35 +64,55 @@ export function DividendsWidget({ size }: WidgetProps) {
     )
     .slice(0, size === 's' ? 3 : MAX_ROWS);
 
-  if (rows.length === 0) return <Empty title={t('home.widgets.dividends.empty')} />;
+  // The server caps the per-request provider fan-out (§5.3), so a book past that
+  // budget yields a calendar covering only part of it. Say so — and say it tied
+  // to `truncated`, NOT to having rows: the cap runs over the raw book, so a
+  // capped read can legitimately surface no upcoming event at all, and "No
+  // dividends coming up." over a book only partly read is the loudest
+  // claim-of-completeness this widget can make (NewsDigestPage.tsx states the
+  // same rule for the digest page).
+  const truncated = calendarQuery.data.truncated === true;
+
+  if (rows.length === 0) {
+    return (
+      <Empty
+        title={t(
+          truncated ? 'home.widgets.dividends.emptyPartial' : 'home.widgets.dividends.empty',
+        )}
+      />
+    );
+  }
 
   return (
-    <ul className="bt-band">
-      {rows.map(({ entry, date }) => (
-        <li className="bt-home-row bt-home-row--split" key={`${entry.assetId}-${date.iso}`}>
-          <span className="bt-home-row__main">
-            <Link className="bt-row-title bt-home-txn__link" to={`/assets/${entry.assetId}`}>
-              {entry.symbol}
-            </Link>
-            <span className="bt-row-sub bt-home-row__sub">
-              {[
-                t(date.isEx ? 'home.widgets.dividends.exDate' : 'home.widgets.dividends.payDate'),
-                formatDate(date.iso),
-              ].join(' · ')}
+    <>
+      {truncated ? <p className="bt-meta">{t('home.widgets.dividends.truncated')}</p> : null}
+      <ul className="bt-band">
+        {rows.map(({ entry, date }) => (
+          <li className="bt-home-row bt-home-row--split" key={`${entry.assetId}-${date.iso}`}>
+            <span className="bt-home-row__main">
+              <Link className="bt-row-title bt-home-txn__link" to={`/assets/${entry.assetId}`}>
+                {entry.symbol}
+              </Link>
+              <span className="bt-row-sub bt-home-row__sub">
+                {[
+                  t(date.isEx ? 'home.widgets.dividends.exDate' : 'home.widgets.dividends.payDate'),
+                  formatDate(date.iso),
+                ].join(' · ')}
+              </span>
             </span>
-          </span>
-          {/*
+            {/*
             Only shown when the currency came with it: an amount whose
             denomination is unknown would be rendered in the user's base currency
             by default, quietly relabelling a $0.24 dividend as €0.24.
           */}
-          {entry.amount !== null && entry.currency !== null ? (
-            <span className="bt-num">
-              <MoneyText amount={entry.amount} currency={entry.currency} unitPrice />
-            </span>
-          ) : null}
-        </li>
-      ))}
-    </ul>
+            {entry.amount !== null && entry.currency !== null ? (
+              <span className="bt-num">
+                <MoneyText amount={entry.amount} currency={entry.currency} unitPrice />
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

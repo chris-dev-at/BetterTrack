@@ -97,3 +97,44 @@ describe('NewsWidget — one story, one row (#1758)', () => {
     expect(screen.queryByText('SYM1')).not.toBeInTheDocument();
   });
 });
+
+describe('NewsWidget — a book the server only partly read (§5.3 cap, #1874)', () => {
+  const TRUNCATED_LINE = 'Partial: you hold or watch more assets than we look up in one pass.';
+
+  test('never claims "no headlines" over a digest that covered part of the book', async () => {
+    // The cap runs over the RAW book (held first, then watchlist by symbol), so
+    // a capped selection can legitimately carry no held group at all.
+    vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [], truncated: true });
+
+    renderWidget();
+
+    expect(
+      await screen.findByText('No headlines in the part of your assets we could look up.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No headlines for your holdings right now.')).not.toBeInTheDocument();
+  });
+
+  test('shows the rows AND the truncation line when both are present', async () => {
+    vi.mocked(getNewsDigest).mockResolvedValue({
+      available: true,
+      groups: [group(0, [MACRO])],
+      truncated: true,
+    });
+
+    renderWidget();
+
+    expect(await screen.findByText(MACRO.title)).toBeInTheDocument();
+    expect(screen.getByText(TRUNCATED_LINE)).toBeInTheDocument();
+  });
+
+  test('leaves the plain empty state alone when the whole book was covered', async () => {
+    vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [] });
+
+    renderWidget();
+
+    expect(
+      await screen.findByText('No headlines for your holdings right now.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(TRUNCATED_LINE)).not.toBeInTheDocument();
+  });
+});
