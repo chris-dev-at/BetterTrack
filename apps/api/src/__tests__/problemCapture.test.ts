@@ -47,8 +47,14 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * verbatim on its first line and capping frames caps nothing about their
  * length. The pre-fix path spent SECONDS on one message, so a regression misses
  * this by orders of magnitude rather than flaking.
+ *
+ * Held at the scrubber guard's value as that one moves (100 ms → 500 ms,
+ * #1856): the two price the same work on the same runner, which turned out to
+ * be up to ~20x slower per scan than the dev box these numbers were first taken
+ * on. The bound is what this measures, and it leaves the margin intact — the
+ * megabyte below cost ~2.9 s unbounded and the 12 MB one far more.
  */
-const SCRUB_TIME_BUDGET_MS = 100;
+const SCRUB_TIME_BUDGET_MS = 500;
 
 describe('problem capture (Sentry replacement)', () => {
   let harness: TestHarness;

@@ -1,5 +1,7 @@
 import { and, arrayContains, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 
+import type { WebhookDeliveryError } from '@bettertrack/contracts';
+
 import type { Database } from '../db';
 import {
   webhookDeliveries,
@@ -181,7 +183,12 @@ export interface RecordWebhookDeliveryInput {
   status: 'success' | 'failed';
   responseStatus: number | null;
   attempts: number;
-  error: string | null;
+  /**
+   * One of the closed set of logged reasons, never free text — the column is a
+   * user-readable log, so receiver- and socket-provided strings (an errno with
+   * its address and port, a certificate's altnames) may not reach it.
+   */
+  error: WebhookDeliveryError | null;
   createdAt?: Date;
 }
 

@@ -4,6 +4,8 @@ import { request as httpsRequest } from 'node:https';
 import {
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_DELIVERY_HTTP_ERROR,
+  WEBHOOK_DELIVERY_NETWORK_ERROR,
   WEBHOOK_DELIVERY_REFUSED_ERROR,
   WEBHOOK_DELIVERY_SECRET_ERROR,
   WEBHOOK_DELIVERY_TIMEOUT_ERROR,
@@ -12,6 +14,7 @@ import {
   WEBHOOK_EVENT_HEADER,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
+  type WebhookDeliveryError,
 } from '@bettertrack/contracts';
 
 import type {
@@ -70,7 +73,13 @@ export interface WebhookTransportResult {
   ok: boolean;
   /** The receiver's HTTP status; null on a network/timeout error. */
   status: number | null;
-  /** A short failure reason (never the response body). */
+  /**
+   * A STRUCTURAL failure reason — never the response body, and never the
+   * socket's own message: `err.message` carries the address, the port, the errno
+   * and, on a TLS mismatch, the certificate's alternate names. The dispatcher
+   * maps whatever arrives here onto {@link WebhookDeliveryError} before anything
+   * is persisted, so a transport that leaks text still cannot reach the log.
+   */
   error?: string;
 }
 
@@ -104,7 +113,8 @@ export type WebhookDeliveryOutcome = 'delivered' | 'retry' | 'failed' | 'disable
 export interface WebhookDeliveryResult {
   outcome: WebhookDeliveryOutcome;
   status: number | null;
-  error?: string;
+  /** Always one of the logged constants — the raw transport text stops at `shortReason`. */
+  error?: WebhookDeliveryError;
 }
 
 export interface WebhookAttemptContext {
@@ -136,7 +146,6 @@ export interface WebhookDispatcher {
 }
 
 const DELIVERY_USER_AGENT = 'BetterTrack-Webhooks/1';
-const MAX_ERROR_LEN = 200;
 
 /**
  * Receiver answers that mean "this delivery will never be accepted": a malformed
@@ -165,10 +174,37 @@ export function isPermanentWebhookStatus(status: number | null): boolean {
   return status !== null && PERMANENT_STATUSES.has(status);
 }
 
-/** Never persist receiver-provided text — keep failure reasons short + structural. */
-function shortReason(status: number | null, error: string | undefined): string {
-  if (status !== null) return `HTTP ${status}`;
-  return (error ?? 'delivery failed').slice(0, MAX_ERROR_LEN);
+/**
+ * Map one failed attempt onto the closed set of logged reasons
+ * ({@link WEBHOOK_DELIVERY_ERRORS}). NOTHING the receiver or the socket produced
+ * is passed through — not the response body, not `err.message`, not the status
+ * text.
+ *
+ * The status itself still rides along in `responseStatus`, because a receiver
+ * that answered HTTP is the subscriber's own endpoint telling them what it
+ * thinks of the payload. Everything that did NOT answer HTTP collapses into one
+ * value: a refused connection, a reset, a failed TLS handshake and a receiver
+ * that never answered are indistinguishable in the log, so a destination the
+ * guard allows cannot be probed through the delivery log — the same property the
+ * guard-refused branch in `deliver` guarantees.
+ *
+ * Two residues are known and accepted, both inherent to allowing LAN receivers
+ * at all (which the product contract does):
+ *  - a destination that ANSWERS HTTP is still distinguishable from one that does
+ *    not, and its status is logged — that is the diagnostic the feature exists
+ *    for, and gutting it would leave the subscriber unable to see their own
+ *    receiver returning 401;
+ *  - `deliveries[].createdAt` leaks coarse timing, so a filtered port (full
+ *    transport deadline) reads differently from a refused one (immediate).
+ * Neither is narrowed further here; both are recorded so the next reader does
+ * not mistake the collapse above for a complete non-probe guarantee.
+ */
+function shortReason(status: number | null, error: string | undefined): WebhookDeliveryError {
+  if (status !== null) return WEBHOOK_DELIVERY_HTTP_ERROR;
+  // The one pre-send condition worth telling apart: nothing was dialled at all,
+  // so it says nothing about what is listening anywhere.
+  if (error === WEBHOOK_DELIVERY_UNRESOLVED_ERROR) return WEBHOOK_DELIVERY_UNRESOLVED_ERROR;
+  return WEBHOOK_DELIVERY_NETWORK_ERROR;
 }
 
 export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDispatcher {
@@ -191,7 +227,7 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     eventType: string;
     attempts: number;
     responseStatus: number | null;
-    error: string;
+    error: WebhookDeliveryError;
   }): Promise<boolean> {
     const inserted = await deliveries.record({
       id: input.deliveryId,
@@ -235,14 +271,16 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     status: number | null;
     error?: string;
   }): Promise<WebhookDeliveryResult> {
+    // Canonical before ANY of it travels on — a retry result is logged by the
+    // job and its message must not carry socket text either.
+    const reason = shortReason(input.status, input.error);
     // A failed attempt that still has retries left → let BullMQ back off. A
     // permanent receiver refusal has nothing to wait for, so it skips straight
     // to the terminal branch and spends ONE attempt instead of the full ladder.
     if (input.attempt < input.maxAttempts && !isPermanentWebhookStatus(input.status)) {
-      return { outcome: 'retry', status: input.status, error: input.error };
+      return { outcome: 'retry', status: input.status, error: reason };
     }
     // Terminal failure: record it and advance the auto-disable streak once.
-    const reason = shortReason(input.status, input.error);
     const disabled = await recordTerminalFailure({
       subscriptionId: input.subscriptionId,
       userId: input.userId,
@@ -393,7 +431,9 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
       try {
         result = await transport.send({ url: sub.url, headers, body, target });
       } catch (err) {
-        result = { ok: false, status: null, error: err instanceof Error ? err.message : 'error' };
+        // The detail belongs in the operator's log, never in the subscriber's.
+        logger.warn({ subscriptionId: sub.id, err }, 'webhook transport failed');
+        result = { ok: false, status: null, error: WEBHOOK_DELIVERY_NETWORK_ERROR };
       }
 
       if (result.ok) {
@@ -479,7 +519,11 @@ export function createPinnedWebhookTransport(timeoutMs = 10_000): WebhookTranspo
             res.on('end', () => finish({ ok, status }));
             res.on('error', () => finish({ ok, status }));
           });
-          req.on('error', (err: Error) => finish({ ok: false, status: null, error: err.message }));
+          // Structural, never `err.message`: ECONNREFUSED names the address and
+          // port it dialled, and a TLS mismatch names the certificate's hosts.
+          req.on('error', () =>
+            finish({ ok: false, status: null, error: WEBHOOK_DELIVERY_NETWORK_ERROR }),
+          );
           req.end(payload);
         });
       } finally {
