@@ -113,6 +113,23 @@ describe('Origin phone chrome', () => {
     return originCss.slice(start, end);
   }
 
+  /**
+   * The palette's own phone block — the one declared AFTER the base
+   * `.bt-palette__row` rule. Sliced from the base rule forward precisely so a
+   * floor that drifted back into an earlier block cannot satisfy the assertion:
+   * both selectors are (0,1,0), `@media` adds no specificity, and the cascade
+   * therefore falls to source order.
+   */
+  function palettePhoneBlock(): { start: number; block: string } {
+    const base = originCss.indexOf('.bt-palette__row {');
+    if (base === -1) throw new Error('Missing the base palette row rule');
+    const start = originCss.indexOf(`@media (max-width: ${PHONE_SHELL_MAX_WIDTH}px)`, base);
+    if (start === -1) throw new Error('Missing the palette phone media block');
+    const end = originCss.indexOf('}\n}', start);
+    if (end === -1) throw new Error('Unterminated palette phone media block');
+    return { start, block: originCss.slice(start, end) };
+  }
+
   /** The later phone block dedicated to the portalled Control Center. */
   function controlPhoneBlock(): string {
     const controlStart = originCss.indexOf('/* ===== R2: control center ===== */');
@@ -187,14 +204,43 @@ describe('Origin phone chrome', () => {
    * 32px `.bt-menu-item` row and the command palette — primary navigation on a
    * phone — kept its 38px row, neither declared nor measured. Both halves are
    * asserted here as text and in `e2e/mobile-overflow.spec.ts` as geometry.
+   *
+   * Presence is not enough for either half. Both floors reuse the very selector
+   * they are overriding, so they carry the same (0,1,0) specificity as the base
+   * rule and `@media` adds none — the winner is decided by SOURCE ORDER alone.
+   * A floor declared before its base rule computes to the compact height at
+   * every phone width while still reading, in the file and to a presence-only
+   * test, as though it applied. So each half asserts the order too.
    */
   it('gives content-owned menu rows and palette rows the same 44px floor', () => {
     const phoneCss = phoneBlock();
+    const phoneStart = originCss.indexOf(`@media (max-width: ${PHONE_SHELL_MAX_WIDTH}px)`);
 
     expect(phoneCss).toMatch(
       /\.bt-menu-item,\s*\.bt-popover :is\(\[role='menuitem'\], \[role='menuitemcheckbox'\], \[role='menuitemradio'\]\) \{[^}]*min-height: 44px;/,
     );
-    expect(phoneCss).toMatch(/\.bt-palette__row \{[^}]*min-height: 44px;/);
+    // `.bt-menu-item`'s base rule is declared BEFORE this phone block, so the
+    // floor above wins. Moving the base below the block would silently undo it.
+    const menuItemBase = originCss.indexOf('.bt-menu-item {');
+    expect(menuItemBase, 'the base .bt-menu-item rule must exist').toBeGreaterThan(-1);
+    expect(
+      menuItemBase,
+      'the 32px base must stay ABOVE the phone block, or the 44px floor loses the cascade',
+    ).toBeLessThan(phoneStart);
+
+    // The palette's base rule is the other way round — declared far below this
+    // block — so its floor lives in the palette section's own phone block, and
+    // must not be (re)declared up here where it would be dead.
+    expect(
+      phoneCss,
+      'a palette floor in the first phone block is overridden by the base rule below it',
+    ).not.toContain('.bt-palette__row');
+    const palettePhone = palettePhoneBlock();
+    expect(palettePhone.block).toMatch(/\.bt-palette__row \{[^}]*min-height: 44px;/);
+    expect(
+      palettePhone.start,
+      'the palette floor must be declared after the 38px base rule it overrides',
+    ).toBeGreaterThan(originCss.indexOf('.bt-palette__row {'));
 
     // The rules the rows above override must stay the compact desktop density,
     // or this floor would be silently redundant — and the console, which is
