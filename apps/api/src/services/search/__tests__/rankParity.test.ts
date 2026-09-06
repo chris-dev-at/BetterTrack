@@ -7,7 +7,15 @@ import { catalogSimilaritySql, catalogTierSql } from '../../../data/repositories
 import * as schema from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createStubMarketData, providerHit } from '../../../testing/marketDataStubs';
-import { providerHitRank, rankProviderHits, trigramSimilarity } from '../catalogEnrichment';
+import {
+  SEARCH_FOLD_ALPHABET,
+  providerHitRank,
+  rankProviderHits,
+  searchDocument,
+  searchFold,
+  searchTranslit,
+  trigramSimilarity,
+} from '../catalogEnrichment';
 
 /**
  * Drift guard between the two rankings §6.2 requires to be the same one (#1810).
@@ -54,6 +62,19 @@ const FIXTURES: Fixture[] = [
   // stops there (`1.5` + `x`, not `1.5x`).
   { symbol: 'BRK-B.US', name: 'Berkshire Hathaway US Listing' },
   { symbol: 'LEV15.DE', name: 'Amundi 1.5x Daily Leveraged' },
+  // Accented rows the shipped seed really carries, plus the ASCII neighbour
+  // that used to win their queries outright (#1876): `Ruck` returned "Daimler
+  // TRUCK" and nothing else. `ß`, `ø` and `č` are here because the fold has to
+  // agree with the database on the whole map, not only on the umlauts.
+  { symbol: 'DB1.DE', name: 'Deutsche Börse AG' },
+  { symbol: 'HNR1.DE', name: 'Hannover Rück SE' },
+  { symbol: 'MUV2.DE', name: 'Münchener Rück AG (Munich Re)' },
+  { symbol: 'DTG.DE', name: 'Daimler Truck Holding AG' },
+  { symbol: 'EL', name: 'The Estée Lauder Companies Inc.' },
+  { symbol: 'NESN.SW', name: 'Nestlé S.A.' },
+  { symbol: 'ORSTED.CO', name: 'Ørsted A/S' },
+  { symbol: 'CEZ.PR', name: 'ČEZ a.s.' },
+  { symbol: 'GRSS.DE', name: 'Großmann Straßen AG' },
 ];
 
 /**
@@ -99,6 +120,24 @@ const QUERIES = [
   '1.5x',
   'us brk',
   '1.5 leveraged',
+  // #1876: the ASCII spelling, the German one and the accented one of the same
+  // row, through every tier — exact symbol, prefix, substring, word and fuzzy.
+  'estee lauder',
+  'Estée Lauder',
+  'borse',
+  'boerse',
+  'börse',
+  'ruck',
+  'rück',
+  'muenchener',
+  'münchener',
+  'nestle',
+  'orsted',
+  'cez',
+  'grossmann',
+  'strassen',
+  'straßen',
+  'gross',
 ];
 
 const asHit = (fixture: Fixture): AssetSearchResult =>
@@ -220,5 +259,71 @@ describe('provider-hit ranking mirrors the catalog read (#1810)', () => {
     // The value the misspelling promise rests on (§6.2): at the threshold, not
     // below it — `assetRepository.FUZZY_SIMILARITY_THRESHOLD`.
     expect(trigramSimilarity('BAYN.DE', 'bayr')).toBeCloseTo(0.3, 6);
+  });
+
+  it('folds, transliterates and builds the search document exactly as the database does (#1876)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+
+    // Every mapped character in both cases, then the shapes a catalog holds.
+    const samples = [
+      SEARCH_FOLD_ALPHABET,
+      SEARCH_FOLD_ALPHABET.toUpperCase(),
+      ...FIXTURES.map((fixture) => `${fixture.symbol} ${fixture.name}`),
+      'Deutsche Börse AG',
+      'Großmann & Söhne, Straßenbau',
+      'ÅRSTED Ørsted',
+      'plain ascii row',
+    ];
+
+    for (const sample of samples) {
+      const result = await h.db.execute(sql`
+        select "bettertrack_search_fold"(${sample}) as "fold",
+               "bettertrack_search_translit"(${sample}) as "translit",
+               "bettertrack_search_document"(${sample}) as "document"
+      `);
+      const row = rows<{ fold: string; translit: string; document: string }>(result)[0]!;
+      expect(searchFold(sample), `fold(${sample})`).toBe(row.fold);
+      expect(searchTranslit(sample), `translit(${sample})`).toBe(row.translit);
+      expect(searchDocument(sample), `document(${sample})`).toBe(row.document);
+    }
+  });
+
+  it('generates search_text from the same document the mirror builds (#1876)', async () => {
+    const h = await seedFixtures();
+
+    const result = await h.db.execute(sql`
+      select ${schema.assets.symbol} as "symbol",
+             ${schema.assets.name} as "name",
+             ${schema.assets.searchText}::text as "stored",
+             to_tsvector('simple', ${schema.assets.symbol} || ' ' || ${schema.assets.name})::text
+               as "legacy"
+      from ${schema.assets}
+    `);
+    const vectors = rows<{ symbol: string; name: string; stored: string; legacy: string }>(result);
+    expect(vectors).toHaveLength(FIXTURES.length);
+
+    for (const vector of vectors) {
+      const source = `${vector.symbol} ${vector.name}`;
+      const mirrored = await h.db.execute(
+        sql`select to_tsvector('simple', ${searchDocument(source)})::text as "vector"`,
+      );
+      expect(vector.stored, `search_text for ${vector.symbol}`).toBe(
+        rows<{ vector: string }>(mirrored)[0]!.vector,
+      );
+
+      // A row that is already its own ASCII spelling keeps the exact tsvector it
+      // carried before migration 0114 — `to_tsvector('simple', …)` lowercases on
+      // its own — so nothing that stores one (a paranoid round trip, §13) has to
+      // be re-derived. A row with a second spelling necessarily gains lexemes.
+      if (searchDocument(source) === source.toLowerCase()) {
+        expect(vector.stored, `${vector.symbol} tokenises as it did before 0114`).toBe(
+          vector.legacy,
+        );
+      } else {
+        expect(vector.stored, `${vector.symbol} indexes its folded spelling`).not.toBe(
+          vector.legacy,
+        );
+      }
+    }
   });
 });
