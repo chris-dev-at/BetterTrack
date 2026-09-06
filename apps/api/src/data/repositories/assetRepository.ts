@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
-import type { SQL } from 'drizzle-orm';
+import type { AnyColumn, SQL } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assetCatalogWatermark, assets, priceHistory } from '../schema';
@@ -166,6 +166,11 @@ type AssetRefreshValues = Partial<Pick<typeof assets.$inferInsert, RefreshableAs
  * → symbol prefix (1) → name substring **or** simple-config word match (2) →
  * everything else (3).
  *
+ * Every arm compares ACCENT-FOLDED text (#1876): the query is folded once, and
+ * each row arm is tried against both the row's fold and its German
+ * transliteration — see {@link fold} / {@link translit} for why the row carries
+ * two spellings and the query only one.
+ *
  * Exported because {@link searchCatalog} is not its only consumer: the provider
  * fallback ranks a provider's hits by these same tiers before capping how many
  * it may write (`services/search/catalogEnrichment.ts` — a JS mirror, since
@@ -177,28 +182,67 @@ type AssetRefreshValues = Partial<Pick<typeof assets.$inferInsert, RefreshableAs
  * fixture set and asserts the JS ranker agrees.
  */
 export function catalogTierSql(query: string): SQL {
-  const prefix = `${escapeLike(query)}%`;
-  const substring = `%${escapeLike(query)}%`;
+  const needle = fold(query);
+  const prefix = fold(`${escapeLike(query)}%`);
+  const substring = fold(`%${escapeLike(query)}%`);
   return sql`case
-    when upper(${assets.symbol}) = upper(${query}) then 0
-    when upper(${assets.symbol}) like upper(${prefix}) then 1
-    when ${assets.name} ilike ${substring}
-      or ${assets.searchText} @@ plainto_tsquery('simple', ${query}) then 2
+    when ${fold(assets.symbol)} = ${needle} or ${translit(assets.symbol)} = ${needle} then 0
+    when ${fold(assets.symbol)} like ${prefix} or ${translit(assets.symbol)} like ${prefix} then 1
+    when ${fold(assets.name)} like ${substring} or ${translit(assets.name)} like ${substring}
+      or ${assets.searchText} @@ plainto_tsquery('simple', ${needle}) then 2
     else 3
   end`;
 }
 
 /**
- * The catalog read's trigram score for one row (§6.2): the better of the symbol
- * and name similarities, which orders every tier and gates the fuzzy one at
- * {@link FUZZY_SIMILARITY_THRESHOLD}. Exported for the same reason as
+ * The catalog read's trigram score for one row (§6.2): the best of the folded
+ * symbol and name similarities, which orders every tier and gates the fuzzy one
+ * at {@link FUZZY_SIMILARITY_THRESHOLD}. Exported for the same reason as
  * {@link catalogTierSql}.
+ *
+ * Four `similarity()` calls where there used to be two, for the same reason the
+ * tiers grew a second arm each: a row is scored on its BEST spelling. For the
+ * ASCII majority `translit(x) = fold(x)`, so the extra pair scores identically
+ * and only costs CPU on a scan whose bound is stated in {@link searchCatalog};
+ * for "Münchener Rück AG" it is what lets `Muenchener` outrank a stray trigram
+ * neighbour instead of merely qualifying.
  */
 export function catalogSimilaritySql(query: string): SQL {
+  const needle = fold(query);
   return sql`greatest(
-    similarity(${assets.symbol}, ${query}),
-    similarity(${assets.name}, ${query})
+    similarity(${fold(assets.symbol)}, ${needle}),
+    similarity(${translit(assets.symbol)}, ${needle}),
+    similarity(${fold(assets.name)}, ${needle}),
+    similarity(${translit(assets.name)}, ${needle})
   )`;
+}
+
+/**
+ * The ASCII spelling of `value` (#1876, migration 0114): lowercased, with every
+ * Latin-1/Latin-Extended-A letter folded to its base letter. Applied to BOTH
+ * sides of every comparison above, which is what makes the whole read
+ * accent-insensitive — `upper()`, `ILIKE`, `to_tsvector('simple', …)` and
+ * `similarity()` are every one of them accent-SENSITIVE, so before this the
+ * ASCII spelling of a shipped DE/AT row matched nothing at all.
+ *
+ * A LIKE pattern may be folded whole: the fold touches no `%`, `_` or `\`, so
+ * `fold(escapeLike(q) || '%')` is `fold(escapeLike(q)) || '%'`.
+ */
+function fold(value: SQL | AnyColumn | string): SQL {
+  return sql`"bettertrack_search_fold"(${value})`;
+}
+
+/**
+ * The German spelling of the same value: ä→ae, ö→oe, ü→ue, ß→ss, then folded.
+ *
+ * The row carries both spellings and the QUERY is only ever folded, because one
+ * normalised form cannot serve both — `Borse` needs ö→o and `Boerse` needs
+ * ö→oe — and expanding the query instead would make a query of `OE` an
+ * exact-symbol hit on `O`. Only the row's own alternative spelling is ever
+ * matched, so nothing that was not already a hit becomes one.
+ */
+function translit(value: SQL | AnyColumn | string): SQL {
+  return sql`"bettertrack_search_translit"(${value})`;
 }
 
 export function createAssetRepository(db: Database) {
@@ -270,15 +314,18 @@ export function createAssetRepository(db: Database) {
      * this query while costing no second scan, no second round-trip and no
      * duplicated predicate. Ranking, ordering and the limit are untouched.
      *
-     * Plan note (#1709): this is, deliberately, a full pass over the caller's
-     * visible rows — the planner reaches them through `assets_owner_id_idx`,
-     * then filters and sorts every one of them. No index can narrow the MATCH
-     * arms: the fuzzy tier is a `similarity() >= τ` function call (unlike `%`,
-     * whose threshold lives in the `pg_trgm.similarity_threshold` GUC, it is
-     * not index-supported), and the tiers above it are `upper(symbol) LIKE` and
-     * a `%…%` ILIKE with no expression index. The composite trigram GIN that
-     * claimed to serve this scanned nothing and cost a write on every catalog
-     * upsert, so migration 0110 dropped it. The premise that makes the pass
+     * Plan note (#1709, #1876): this is, deliberately, a full pass over the
+     * caller's visible rows — the planner reaches them through
+     * `assets_owner_id_idx`, then filters and sorts every one of them. No index
+     * can narrow the MATCH arms: the fuzzy tier is a `similarity() >= τ`
+     * function call (unlike `%`, whose threshold lives in the
+     * `pg_trgm.similarity_threshold` GUC, it is not index-supported), and the
+     * tiers above it are a folded `symbol LIKE` and a folded `%…%` with no
+     * expression index. Neither GIN that claimed to serve this could be scanned
+     * — the composite trigram one because no arm speaks its operators (0110),
+     * the `search_text` one because `search_text` never appears in a filter and
+     * the `offset 0` fence exists so it cannot (0114) — and each cost a write
+     * on every catalog upsert, so both are dropped. The premise that makes the pass
      * cheap — a self-hosted catalog of thousands of rows, LIMIT ~20 — is no
      * longer something a single account can destroy either: the interactive
      * provider fallback that grows the global catalog now carries a per-user

@@ -128,6 +128,64 @@ describe('GET /api/v1/search', () => {
     },
   );
 
+  it('answers the ASCII and German spellings of an accented catalog row exactly as the accented one (#1876)', async () => {
+    // A provider that never answers: the catalog has to carry all of this.
+    const marketData = createStubMarketData({
+      search: () => new Promise<never>(() => undefined),
+    });
+    const h = await createTestApp({ marketData, backfill });
+    await seedCatalogAsset(h, { symbol: 'EL', name: 'The Estée Lauder Companies Inc.' });
+    await seedCatalogAsset(h, { symbol: 'DB1.DE', name: 'Deutsche Börse AG' });
+    await seedCatalogAsset(h, { symbol: 'AAPL', name: 'Apple Inc.' });
+
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const resultsFor = async (q: string) => {
+      const res = await agent.get(`/api/v1/search?q=${encodeURIComponent(q)}`);
+      expect(res.status, `status for ${q}`).toBe(200);
+      return res.body.results as { symbol: string }[];
+    };
+
+    // Before the fold each of the ASCII spellings returned nothing at all.
+    const lauder = await resultsFor('Estée Lauder');
+    expect(lauder[0]?.symbol).toBe('EL');
+    expect(await resultsFor('Estee Lauder')).toEqual(lauder);
+
+    const boerse = await resultsFor('Börse');
+    expect(boerse[0]?.symbol).toBe('DB1.DE');
+    expect(await resultsFor('Borse')).toEqual(boerse);
+    expect(await resultsFor('Boerse')).toEqual(boerse);
+  });
+
+  it('ranks a folded German row above a stray trigram neighbour, and the catalog answers it alone (#1876)', async () => {
+    const marketData = createStubMarketData({
+      search: () => {
+        throw new Error('must not be called');
+      },
+    });
+    const h = await createTestApp({ marketData, backfill });
+    await seedCatalogAsset(h, { symbol: 'HNR1.DE', name: 'Hannover Rück SE' });
+    await seedCatalogAsset(h, { symbol: 'MUV2.DE', name: 'Münchener Rück AG (Munich Re)' });
+    // "Daimler TRUCK" — the unrelated substring match that was the ONLY row
+    // `Ruck` used to return, the two `Rück` rows being unreachable.
+    await seedCatalogAsset(h, { symbol: 'DTG.DE', name: 'Daimler Truck Holding AG' });
+
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/search?q=Ruck');
+    expect(res.status).toBe(200);
+    const symbols = (res.body.results as { symbol: string }[]).map((r) => r.symbol);
+    expect(symbols[0]).toBe('HNR1.DE');
+    expect(symbols.indexOf('HNR1.DE')).toBeLessThan(symbols.indexOf('DTG.DE'));
+
+    // Three market rows is not a thin catalog (§6.2), so no enrichment budget
+    // slot is spent and no provider fan-out starts for rows Postgres holds.
+    expect(res.body.enriching).toBe(false);
+    await h.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(0);
+  });
+
   it('resolves a misspelled query via the trigram index where a provider would 404', async () => {
     // The provider hard-fails on the misspelling — no error may surface (§6.2).
     const marketData = createStubMarketData({
