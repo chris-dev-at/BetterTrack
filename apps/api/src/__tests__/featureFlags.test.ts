@@ -7,13 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FEATURE_FLAG_KEYS, featureFlagsResponseSchema } from '@bettertrack/contracts';
 
 import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import * as schema from '../data/schema';
 import { createAlertsEvaluateJob, createDeadLetter, runJobDefinition } from '../jobs';
 import type { JobContext } from '../jobs';
 import type { Logger } from '../logger';
 import { alertFireLockKey, alertFireWindowStart } from '../services/alerts/alertEvaluator';
 import {
+  createFeatureFlagService,
   FEATURE_FLAG_CACHE_KEY,
+  FEATURE_FLAG_GENERATION_KEY,
   FEATURE_FLAG_PROPAGATION_UNCONFIRMED,
 } from '../services/featureFlags/featureFlagService';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
@@ -38,25 +41,31 @@ afterEach(() => {
 type SpyableRedis = {
   del: (...args: unknown[]) => Promise<unknown>;
   set: (...args: unknown[]) => Promise<unknown>;
+  incr: (...args: unknown[]) => Promise<unknown>;
 };
 
 /**
- * Break exactly the snapshot key's `del` (and optionally its `set`), leaving
- * every other Redis call — sessions, rate limits — working. Returns nothing:
- * `vi.restoreAllMocks()` in `afterEach` puts the client back.
+ * Break exactly the snapshot key's `del` (and optionally the generation key's
+ * `incr`), leaving every other Redis call — sessions, rate limits — working.
+ * Returns nothing: `vi.restoreAllMocks()` in `afterEach` puts the client back.
+ *
+ * The generation bump IS the propagation since #1847, which is why it is the
+ * knob the 503 case turns: a failed DEL leaves a snapshot that no reader will
+ * serve, while a failed bump is the one outcome after which running instances
+ * really may keep the old value.
  */
-function breakSnapshotWrites(options: { set: boolean }): void {
+function breakSnapshotWrites(options: { generation: boolean }): void {
   const redis = harness.ctx.redis as unknown as SpyableRedis;
   const realDel = redis.del.bind(redis);
-  const realSet = redis.set.bind(redis);
+  const realIncr = redis.incr.bind(redis);
   vi.spyOn(redis, 'del').mockImplementation(async (...args: unknown[]) => {
     if (args[0] === FEATURE_FLAG_CACHE_KEY) throw new Error('redis unavailable (del)');
     return realDel(...args);
   });
-  if (!options.set) return;
-  vi.spyOn(redis, 'set').mockImplementation(async (...args: unknown[]) => {
-    if (args[0] === FEATURE_FLAG_CACHE_KEY) throw new Error('redis unavailable (set)');
-    return realSet(...args);
+  if (!options.generation) return;
+  vi.spyOn(redis, 'incr').mockImplementation(async (...args: unknown[]) => {
+    if (args[0] === FEATURE_FLAG_GENERATION_KEY) throw new Error('redis unavailable (incr)');
+    return realIncr(...args);
   });
 }
 
@@ -232,13 +241,15 @@ describe('admin toggle surface', () => {
  * effect, and we won't tell you" is the wrong answer to give an admin.
  */
 describe('a flip whose propagation cannot be confirmed is not reported as clean', () => {
-  it('falls back to rewriting the snapshot when the DEL fails — still 200, still effective at once', async () => {
+  it('still propagates when the snapshot DEL fails — still 200, still effective at once', async () => {
+    // #1847: the DEL is housekeeping now, not the invalidation. The generation
+    // bump landed, so the snapshot left behind is one no reader will serve.
     const user = await loginUser();
     const admin = await harness.seedAdmin();
     const adminAgent = await harness.loginAdmin(admin);
 
     expect((await user.get('/api/v1/chat/conversations')).status).toBe(200);
-    breakSnapshotWrites({ set: false });
+    breakSnapshotWrites({ generation: false });
 
     const flip = await adminAgent
       .patch('/api/v1/admin/feature-flags/chat')
@@ -247,16 +258,16 @@ describe('a flip whose propagation cannot be confirmed is not reported as clean'
     expect(flip.status).toBe(200);
     expect(flip.body.flags.find((f: { key: string }) => f.key === 'chat').enabled).toBe(false);
 
-    // The rewrite propagated exactly like the DEL would have: next request refuses.
+    // The bump propagated exactly like the DEL would have: next request refuses.
     const refused = await user.get('/api/v1/chat/conversations');
     expect(refused.status).toBe(404);
     expect(refused.body.error?.code).toBe('FEATURE_DISABLED');
   });
 
-  it('surfaces 503 when neither the DEL nor the rewrite lands — and still persists the value', async () => {
+  it('surfaces 503 when the generation bump does not land — and still persists the value', async () => {
     const admin = await harness.seedAdmin();
     const adminAgent = await harness.loginAdmin(admin);
-    breakSnapshotWrites({ set: true });
+    breakSnapshotWrites({ generation: true });
 
     const flip = await adminAgent
       .patch('/api/v1/admin/feature-flags/imports')
@@ -281,6 +292,60 @@ describe('a flip whose propagation cannot be confirmed is not reported as clean'
         e.action === 'feature_flag.changed' && e.meta?.key === 'imports',
     );
     expect(entry?.meta?.propagated).toBe(false);
+  });
+
+  it('cannot be reverted by a cache-aside read that began before the flip', async () => {
+    // The kill switch's whole point is stopping something in progress, and the
+    // window is widest right after an invalidation, when many requests miss the
+    // cache at once. One of those reads used to load `chat: true` from the
+    // store, sit through the admin's flip, and then publish its stale snapshot
+    // under a 60 s TTL — so `requireFeature('chat')` kept serving the killed
+    // feature for a full minute while the flip was audited as propagated
+    // (#1847).
+    const admin = await harness.seedAdmin();
+    const store = createAppSettingsRepository(harness.db);
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readPreFlip: (() => void) | undefined;
+    const storeRead = new Promise<void>((resolve) => {
+      readPreFlip = resolve;
+    });
+    let holdNextRead = true;
+    const reader = createFeatureFlagService({
+      repo: {
+        ...store,
+        async getAll() {
+          const rows = await store.getAll();
+          if (holdNextRead) {
+            holdNextRead = false;
+            readPreFlip!(); // the rows in hand are the PRE-flip ones …
+            await held; // … and the flip lands before this read resolves
+          }
+          return rows;
+        },
+      },
+      redis: harness.ctx.redis,
+      // This instance only ever READS; the flip below goes through the wired
+      // service, exactly as a second process would see it.
+      audit: { record: async () => {} } as never,
+      logger: harness.ctx.logger,
+    });
+
+    // Cold cache, then a read that stalls mid-store-load.
+    await harness.ctx.redis.del(FEATURE_FLAG_CACHE_KEY);
+    const inflight = reader.isEnabled('chat');
+    await storeRead;
+
+    await harness.ctx.featureFlags.setFlag('chat', false, { id: admin.id });
+    release!();
+    // The in-flight read legitimately answers what it read: it started first.
+    expect(await inflight).toBe(true);
+
+    // The very next read must see the kill — whatever the stalled one cached.
+    expect(await reader.isEnabled('chat')).toBe(false);
+    expect(await harness.ctx.featureFlags.isEnabled('chat')).toBe(false);
   });
 
   it('marks a confirmed flip as propagated in the audit log', async () => {

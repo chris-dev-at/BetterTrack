@@ -21,6 +21,7 @@ import {
   type ProblemService,
 } from '../services/observability/problemService';
 import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
+import { scrubOpsError } from '../services/ops/opsText';
 import {
   createProblemRepository,
   type ProblemRepository,
@@ -168,6 +169,51 @@ describe('problem capture (Sentry replacement)', () => {
     const context = rows[0]!.context as Record<string, unknown>;
     expect(context.queue).toBe('market.refresh');
     expect(context.scope).toBe('worker');
+  });
+
+  it('redacts an object id from a captured problem, exactly as the ops cockpit does', async () => {
+    // The dead-letter panel and the Problems page render the SAME failure text.
+    // The id pass lived only in `scrubOpsError`, so one surface showed
+    // `[redacted-id]` and the other the user's raw id (#1847).
+    const failure = 'no recipient for user 550e8400-e29b-41d4-a716-446655440000';
+    harness.ctx.problems.captureJobFailure(new Error(failure), {
+      queue: 'notifications.dispatch',
+      jobId: 'notify-42',
+    });
+    await harness.ctx.problems.flush();
+
+    const [row] = await harness.db.select().from(problems);
+    expect(row!.message).toBe('no recipient for user [redacted-id]');
+    // The two surfaces agree on one fixture string.
+    expect(row!.message).toBe(scrubOpsError(failure));
+    // Including the stack, whose first line repeats the message verbatim.
+    expect(JSON.stringify(row)).not.toContain('550e8400');
+    // Our own scheduling handle is NOT an object id and survives — it is what
+    // tells two identical failures apart.
+    expect((row!.context as Record<string, unknown>).jobId).toBe('notify-42');
+  });
+
+  it('stores a bounded stack for a failed job, like the request path', async () => {
+    // A permanently-failed job is the capture an operator can least often
+    // reproduce, and its row used to carry no call path at all (#1847).
+    harness.ctx.problems.captureJobFailure(new Error('handler threw'), {
+      queue: 'market.refresh',
+    });
+    harness.ctx.problems.captureProviderFailure(new Error('breaker open'), { providerId: 'yahoo' });
+    harness.ctx.problems.captureWorkerError(new Error('lock extension failed'), {
+      queue: 'alerts.evaluate',
+    });
+    await harness.ctx.problems.flush();
+
+    const rows = await harness.db.select().from(problems);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const stack = (row.context as Record<string, unknown>).stack as string;
+      expect(stack).toContain('Error: ');
+      // The same bound the request path uses: 20 frames plus the elision mark.
+      expect(stack.split('\n').length).toBeLessThanOrEqual(21);
+      expect(Buffer.byteLength(stack, 'utf8')).toBeLessThanOrEqual(PROBLEM_CONTEXT_VALUE_MAX_BYTES);
+    }
   });
 
   it('persists an unhandled request error through the error-handler seam (zero config)', async () => {
@@ -398,12 +444,16 @@ function fakeRepo(): {
   writes: () => number;
   occurrences: (fingerprint?: string) => number;
   fingerprints: () => number;
+  /** Every upsert, in order — the write's own `seenAt` included. */
+  upserts: () => UpsertProblemInput[];
 } {
   let writes = 0;
+  const seen: UpsertProblemInput[] = [];
   const rows = new Map<string, { occurrences: number }>();
   const repo: ProblemRepository = {
     async upsert(input: UpsertProblemInput) {
       writes += 1;
+      seen.push(input);
       const existing = rows.get(input.fingerprint);
       if (existing) existing.occurrences += input.occurrences;
       else rows.set(input.fingerprint, { occurrences: input.occurrences });
@@ -435,6 +485,7 @@ function fakeRepo(): {
         ? [...rows.values()].reduce((sum, row) => sum + row.occurrences, 0)
         : (rows.get(fingerprint)?.occurrences ?? 0),
     fingerprints: () => rows.size,
+    upserts: () => [...seen],
   };
 }
 
@@ -508,6 +559,41 @@ describe('problem capture rate cap', () => {
     await service.list({ limit: 25 });
     await service.flush();
     expect(occurrences()).toBe(50);
+  });
+
+  it('stamps a drained occurrence with when it happened, not when it drained', async () => {
+    // A drain runs at the window roll — up to a whole window after the
+    // occurrences it writes. Stamping the drain's own clock made every deferred
+    // occurrence look like a fresh sighting, which is what reopened problems an
+    // admin had resolved in the meantime and pushed `last_seen_at` past the
+    // last real one (#1847).
+    const { repo, upserts } = fakeRepo();
+    let clock = 1_000_000;
+    const service = createProblemService({
+      repo,
+      now: () => clock,
+      windowMs: 60_000,
+      maxRepeatWritesPerFingerprint: 1,
+    });
+
+    service.captureError(new Error('flood')); // the insert
+    service.captureError(new Error('flood')); // the one folded bump
+    clock = 1_005_000;
+    service.captureError(new Error('flood')); // throttled → deferred
+    clock = 1_009_000;
+    service.captureError(new Error('flood')); // throttled → deferred
+    clock = 1_070_000; // a window later: the roll drains
+    await service.list({ limit: 25 });
+    await service.flush();
+
+    const writes = upserts();
+    expect(writes).toHaveLength(3);
+    expect(writes[0]!.seenAt.getTime()).toBe(1_000_000);
+    expect(writes[1]!.seenAt.getTime()).toBe(1_000_000);
+    // Both deferred occurrences ride the drain, dated by the NEWEST of them —
+    // never by the drain's own clock (1_070_000).
+    expect(writes[2]!.occurrences).toBe(2);
+    expect(writes[2]!.seenAt.getTime()).toBe(1_009_000);
   });
 
   it('releases its tracking map every window, so new fingerprints stay welcome', async () => {

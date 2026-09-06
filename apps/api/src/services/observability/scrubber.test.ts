@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { REDACTED, REDACTED_EMAIL, REDACTED_TOKEN, redactString, scrubEvent } from './scrubber';
+import { scrubOpsError } from '../ops/opsText';
+
+import {
+  REDACTED,
+  REDACTED_EMAIL,
+  REDACTED_ID,
+  REDACTED_TOKEN,
+  redactIdentifiers,
+  redactString,
+  scrubEvent,
+} from './scrubber';
 
 describe('redactString', () => {
   it('redacts email addresses anywhere in the string', () => {
@@ -97,6 +107,41 @@ describe('redactString', () => {
     );
     // …and one reached only by backtracking over a long local part.
     expect(redactString(`x${'a.b-c'.repeat(20_000)}@example.com`)).toBe(REDACTED_EMAIL);
+  });
+});
+
+/**
+ * The identifier pass the OPERATIONAL surfaces share (#1847). It used to live
+ * only in `scrubOpsError`, so the dead-letter panel and the Problems row
+ * written from the very same failure disagreed about the same string.
+ */
+describe('redactIdentifiers', () => {
+  it('redacts a canonical UUID anywhere in the string, on top of every other rule', () => {
+    expect(redactIdentifiers('no recipient for user 550e8400-e29b-41d4-a716-446655440000')).toBe(
+      `no recipient for user ${REDACTED_ID}`,
+    );
+    // Upper case, the nil UUID, and more than one of them.
+    expect(
+      redactIdentifiers(
+        'copy 00000000-0000-0000-0000-000000000000 → 018F0000-0000-7000-8000-000000001345',
+      ),
+    ).toBe(`copy ${REDACTED_ID} → ${REDACTED_ID}`);
+    // Everything `redactString` catches still goes.
+    expect(
+      redactIdentifiers('mail alice@example.com about 550e8400-e29b-41d4-a716-446655440000'),
+    ).toBe(`mail ${REDACTED_EMAIL} about ${REDACTED_ID}`);
+  });
+
+  it('leaves non-UUID handles alone — a job id is ours, not a user’s object', () => {
+    expect(redactIdentifiers('alerts.evaluate job 41 failed')).toBe(
+      'alerts.evaluate job 41 failed',
+    );
+    expect(redactIdentifiers('deadbeef-cafe')).toBe('deadbeef-cafe');
+  });
+
+  it('is what `scrubOpsError` applies, so the two surfaces cannot drift apart', () => {
+    const failure = 'portfolio 550e8400-e29b-41d4-a716-446655440000 not found';
+    expect(scrubOpsError(failure)).toBe(redactIdentifiers(failure));
   });
 });
 

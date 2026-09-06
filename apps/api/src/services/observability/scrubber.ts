@@ -32,6 +32,7 @@ export type ScrubbableValue =
 export const REDACTED = '[redacted]';
 export const REDACTED_EMAIL = '[redacted-email]';
 export const REDACTED_TOKEN = '[redacted-token]';
+export const REDACTED_ID = '[redacted-id]';
 
 /**
  * Object keys whose VALUE is wholesale-redacted regardless of content — headers
@@ -110,6 +111,34 @@ export function redactString(value: string): string {
     .replace(BT_TOKEN_RE, REDACTED_TOKEN)
     .replace(QUERY_SECRET_RE, (_m, name: string) => `${name}${REDACTED_TOKEN}`)
     .replace(EMAIL_RE, REDACTED_EMAIL);
+}
+
+// Canonical UUIDs (v1–v5 and the nil UUID) anywhere in a string.
+//
+// An error message very often names the row it failed on — "portfolio
+// 550e8400-… not found" — and that identifier is a user's object, not
+// diagnostic information. The operator needs to know WHICH surface is failing
+// and WHY, which survives redaction intact.
+const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
+/**
+ * {@link redactString} plus object identifiers — the pass the OPERATIONAL
+ * surfaces share (#1847).
+ *
+ * The dead-letter/breaker panel (`scrubOpsError`) and the Problems capture
+ * render the SAME failure text, so a rule that lives in only one of them makes
+ * the two surfaces disagree about the same string: `notifications.dispatch`
+ * failing on "no recipient for user 550e8400-…" showed `[redacted-id]` in the
+ * ops cockpit and the raw user id in the Problems row written from it. One
+ * implementation, both callers.
+ *
+ * Kept OUT of {@link redactString} on purpose: that function is also the
+ * per-value pass for the captured context tree and the per-key request log,
+ * where an id (a BullMQ job id, our own scheduling handle) is the one thing
+ * that makes two identical error strings distinguishable.
+ */
+export function redactIdentifiers(value: string): string {
+  return redactString(value).replace(UUID_RE, REDACTED_ID);
 }
 
 function scrub(value: ScrubbableValue): ScrubbableValue {
