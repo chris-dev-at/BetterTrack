@@ -209,6 +209,39 @@ export type FlattenCache = Map<string, Promise<ConglomerateDetailRow | null>>;
 
 export const createFlattenCache = (): FlattenCache => new Map();
 
+/**
+ * Read one basket through a {@link FlattenCache}: the read already in flight (or
+ * already settled) when there is one, otherwise a fresh `load` memoised for the
+ * callers behind it.
+ *
+ * A **rejected** read is NOT retained (#1831). Memoising it turned one transient
+ * repository failure into the answer every later caller got: the post-write
+ * activation sweep shares one cache across the whole closure, so a single failed
+ * read of one grandchild re-threw — with no second attempt — for every ancestor
+ * above it, and the sweep demoted each of them to `draft` on a network blip. The
+ * cache is a de-duplicator for concurrent readers, not a failure log: once the
+ * read has failed the entry is dropped, so the next caller genuinely re-reads.
+ */
+export function cachedFlattenLoad(
+  cache: FlattenCache,
+  id: string,
+  load: (id: string) => Promise<ConglomerateDetailRow | null>,
+): Promise<ConglomerateDetailRow | null> {
+  const inFlight = cache.get(id);
+  if (inFlight) return inFlight;
+  const pending: Promise<ConglomerateDetailRow | null> = load(id).then(
+    (row) => row,
+    (err: unknown) => {
+      // Only ever evict OUR OWN entry: a caller behind this one may already have
+      // replaced it with a fresh read after this promise settled.
+      if (cache.get(id) === pending) cache.delete(id);
+      throw err;
+    },
+  );
+  cache.set(id, pending);
+  return pending;
+}
+
 export interface FlattenConglomerateOptions {
   /**
    * Optional local overrides for the ROOT basket only, keyed by an asset
@@ -260,13 +293,8 @@ export async function flattenConglomerate(
   options?: FlattenConglomerateOptions,
 ): Promise<FlattenedConglomerate | null> {
   const cache = options?.cache ?? createFlattenCache();
-  function loadOnce(id: string): Promise<ConglomerateDetailRow | null> {
-    const inFlight = cache.get(id);
-    if (inFlight) return inFlight;
-    const pending = load(id);
-    cache.set(id, pending);
-    return pending;
-  }
+  const loadOnce = (id: string): Promise<ConglomerateDetailRow | null> =>
+    cachedFlattenLoad(cache, id, load);
 
   const root = await loadOnce(rootId);
   if (!root) return null;
