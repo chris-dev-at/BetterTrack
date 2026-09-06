@@ -323,7 +323,7 @@
       "selectedOne": "1 ausgewählt",
       "selectedOther": "{{count}} ausgewählt",
       "scopeDescription": {
-        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen und Cashbestände ansehen",
+        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen, Cashbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds ansehen",
         "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten",
         "workboard:read": "Deine Watchlist, Konglomerate und Backtests ansehen",
         "workboard:write": "Deine Watchlist und Konglomerate erstellen und bearbeiten",
@@ -348,7 +348,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Deine Portfolios, Bestände und Kassenbestände lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
+          "description": "Deine Portfolios, Bestände, Kassenbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
         },
         "workboard": {
           "label": "Workbench",

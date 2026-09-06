@@ -225,7 +225,9 @@ test('oauth consent: third-party scopes render grouped by module in plain langua
     // Plain-language labels (from OAUTH_SCOPE_LABELS) — never the raw scope
     // tokens. This is the "plain language" half of the acceptance.
     await expect(
-      page.getByText('View your portfolios, holdings, transactions and cash balances'),
+      page.getByText(
+        'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
+      ),
     ).toBeVisible();
     await expect(page.getByText('Search assets and read market data')).toBeVisible();
     await expect(page.getByText('See your friends and the items shared with you')).toBeVisible();
