@@ -261,6 +261,55 @@ test('renders one bounded page of keys and reaches the rest through the footer',
   expect(await within(keysSection).findByText('bot-25')).toBeInTheDocument();
 });
 
+/**
+ * #1848 D2. Like the users table, this panel rendered its footer INSIDE the
+ * non-empty branch, so a window that answered nothing lost the pager exactly
+ * when it was needed. The footer now sits in both branches, and the offset
+ * snaps back to a page that still holds rows.
+ *
+ * The empty-page footer itself is asserted where it can be held still — the
+ * component's own `ListPagination.test.tsx` ("keeps a usable way back on an
+ * empty page past the first") and `UsersPage.test.tsx`, whose server keeps
+ * answering the stale window. Here the snap-back lands immediately, which is
+ * the outcome that matters to the operator.
+ */
+test('an empty page past the first snaps back to a page that still has rows', async () => {
+  const firstPage = Array.from({ length: 25 }, (_, i) => key({ id: `k-${i}`, name: `bot-${i}` }));
+  // The set still says 50, but the second window is empty: the keys that lived
+  // there were revoked while the operator was reading page 1.
+  vi.mocked(api.listAdminApiKeys).mockImplementation(async (params = {}) => {
+    const offset = params.offset ?? 0;
+    return offset === 0
+      ? { keys: firstPage, page: { total: 50, limit: 25, offset } }
+      : { keys: [], page: { total: 50, limit: 25, offset } };
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText('bot-0');
+  const keysSection = screen.getByRole('heading', { level: 2, name: 'Keys' }).closest('section')!;
+  await user.click(within(keysSection).getByRole('button', { name: 'Next' }));
+
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenCalledWith(
+      { offset: 25, includeRevoked: false },
+      expect.anything(),
+    ),
+  );
+  // Not "No API keys have been created yet." over 25 live keys: the surface
+  // recovers to the page that has them.
+  await waitFor(() =>
+    expect(api.listAdminApiKeys).toHaveBeenLastCalledWith(
+      { offset: 0, includeRevoked: false },
+      expect.anything(),
+    ),
+  );
+  expect(await within(keysSection).findByText('bot-0')).toBeInTheDocument();
+  expect(
+    within(keysSection).queryByText('No API keys have been created yet.'),
+  ).not.toBeInTheDocument();
+});
+
 test('leaves revoked keys out of the default view until the filter asks for them', async () => {
   const user = userEvent.setup();
   renderPage();

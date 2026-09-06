@@ -5808,6 +5808,25 @@
       },
       "why": "Editing a price by hand would put money math behind a browser session, and merging duplicates without provenance, a dry run and a rollback is a change nobody can undo. Both need a domain answer first, so this package ships the reading and stops there."
     },
+    "audit": {
+      "title": "Audit log",
+      "subtitle": "Every administrative and security-relevant action.",
+      "loading": "Loading audit log…",
+      "empty": "No audit entries yet.",
+      "loadError": "Could not load the audit log.",
+      "loadMoreError": "Could not load more audit entries.",
+      "loadMore": "Load more",
+      "loadingMore": "Loading…",
+      "actorSystem": "system",
+      "columns": {
+        "when": "When",
+        "action": "Action",
+        "actor": "Actor",
+        "target": "Target",
+        "ip": "IP",
+        "details": "Details"
+      }
+    },
     "pagination": {
       "range": "{{first}}–{{last}} of {{total}}",
       "previous": "Previous",

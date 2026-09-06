@@ -415,6 +415,77 @@ test('renders the registration surface in German', async () => {
   expect(screen.getByRole('heading', { name: 'Registrierungstoken' })).toBeInTheDocument();
 });
 
+/**
+ * #1848 D3. The badge read `rows.length` — the size of the PAGE — while
+ * `page.total` sat one line above it: 60 pending applications rendered a "25"
+ * directly over a footer saying "1–25 of 60".
+ */
+test('the approval-queue badge counts the queue, not the page', async () => {
+  vi.mocked(api.listRegistrationRequests).mockImplementation(async (params = {}) => {
+    const offset = params.offset ?? 0;
+    return {
+      requests: Array.from({ length: 25 }, (_, i) => ({
+        ...pendingRequest,
+        id: `req-${offset + i}`,
+        username: `applicant_${offset + i}`,
+        email: `applicant-${offset + i}@test.dev`,
+      })),
+      page: { total: 60, limit: 25, offset },
+    };
+  });
+  renderPage();
+
+  await screen.findByText('applicant_0');
+  const queue = screen
+    .getByRole('heading', { name: 'Approval queue' })
+    .closest('div')!.parentElement!;
+  expect(within(queue).getByText('60')).toBeInTheDocument();
+  expect(within(queue).queryByText('25')).not.toBeInTheDocument();
+});
+
+/** #1848 D2, on the queue's own empty-state shape. */
+test('deciding the last application on page 2 returns to page 1 instead of an empty queue', async () => {
+  const user = userEvent.setup();
+  // 26 applications: 25 on page 1, the last one on page 2.
+  const queued = (offset: number, count: number, total: number) => ({
+    requests: Array.from({ length: count }, (_, i) => ({
+      ...pendingRequest,
+      id: `req-${offset + i}`,
+      username: `applicant_${offset + i}`,
+      email: `applicant-${offset + i}@test.dev`,
+    })),
+    page: { total, limit: 25, offset },
+  });
+  vi.mocked(api.listRegistrationRequests).mockImplementation(async (params = {}) =>
+    (params.offset ?? 0) === 0 ? queued(0, 25, 26) : queued(25, 1, 26),
+  );
+  vi.mocked(api.approveRegistrationRequest).mockResolvedValue(undefined as never);
+  renderPage();
+
+  await screen.findByText('applicant_0');
+  await user.click(screen.getAllByRole('button', { name: 'Next' })[0]!);
+  expect(await screen.findByText('applicant_25')).toBeInTheDocument();
+
+  // Approving the only row there empties the window the reload re-reads.
+  vi.mocked(api.listRegistrationRequests).mockImplementation(async (params = {}) =>
+    (params.offset ?? 0) === 0 ? queued(0, 25, 25) : queued(params.offset ?? 0, 0, 25),
+  );
+  await user.click(screen.getByRole('button', { name: 'Approve' }));
+
+  expect(await screen.findByText('applicant_0')).toBeInTheDocument();
+  await waitFor(() =>
+    expect(api.listRegistrationRequests).toHaveBeenLastCalledWith({ offset: 0 }, expect.anything()),
+  );
+  // The whole remaining queue is page 1: all 25 rows are listed, the badge
+  // counts them, and nothing says "no pending registrations" over a full queue.
+  expect(screen.getByText('applicant_24')).toBeInTheDocument();
+  expect(screen.queryByText('No pending registrations.')).not.toBeInTheDocument();
+  const queue = screen
+    .getByRole('heading', { name: 'Approval queue' })
+    .closest('div')!.parentElement!;
+  expect(within(queue).getByText('25')).toBeInTheDocument();
+});
+
 test('the approval queue and the token list each render one bounded page', async () => {
   // #1814: both lists used to arrive whole. Neither table is pruned — exhausted
   // and revoked tokens stay forever, and a busy approval mode can queue
