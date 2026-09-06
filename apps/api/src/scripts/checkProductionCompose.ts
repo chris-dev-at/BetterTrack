@@ -20,6 +20,8 @@ interface ProductionTopology {
   profiles?: string[];
   interpolationEnvironment?: Record<string, string>;
   webPortTargets: number[];
+  /** Set on the probe render that moves `BT_OBS_BIND_HOST` off loopback. */
+  lanObservabilityBind?: string;
 }
 
 interface RenderedPort {
@@ -33,6 +35,7 @@ interface RenderedLogging {
 }
 
 interface RenderedService {
+  command?: unknown;
   entrypoint?: unknown;
   environment?: Record<string, unknown>;
   logging?: RenderedLogging;
@@ -62,6 +65,12 @@ const offsiteInterpolationEnvironment = {
   BT_BACKUP_RETENTION_RCLONE_REMOTE: 'check-retention:bettertrack-backups',
 };
 
+/**
+ * RFC1918 stand-in for "the operator followed the LAN recipe". Never a real
+ * deploy value — it only has to be non-loopback for the probe render.
+ */
+const LAN_BIND_PROBE = '192.168.242.10';
+
 const topologies: ReadonlyArray<ProductionTopology> = [
   {
     label: 'subdomains',
@@ -90,6 +99,17 @@ const topologies: ReadonlyArray<ProductionTopology> = [
     profiles: ['offsite', 'offsite-retention'],
     interpolationEnvironment: offsiteInterpolationEnvironment,
     webPortTargets: [3000, 8080, 8081, 8082, 8083],
+  },
+  {
+    // docs/monitoring.md's LAN recipe, rendered: BT_OBS_BIND_HOST moves Grafana
+    // (which has a login) onto the network. Prometheus, which has none, must not
+    // travel with it — `assertPrometheusExposure` runs on this render too.
+    label: 'subdomains+lan-obs-bind',
+    mode: 'subdomains',
+    overlays: [resolve(repoRoot, 'infra/docker-compose.subdomains.yml')],
+    interpolationEnvironment: { BT_OBS_BIND_HOST: LAN_BIND_PROBE },
+    webPortTargets: [80],
+    lanObservabilityBind: LAN_BIND_PROBE,
   },
 ];
 
@@ -451,11 +471,108 @@ export function assertGrafanaAnonymousAccessBind(config: RenderedCompose, topolo
   );
 }
 
+const PROMETHEUS_BIND_HOST_KEY = 'BT_PROMETHEUS_BIND_HOST';
+
+/**
+ * Prometheus flags that add unauthenticated WRITE endpoints to a server which
+ * has no login of its own: `--web.enable-lifecycle` serves `POST /-/reload` and
+ * `POST /-/quit`, `--web.enable-admin-api` serves series deletion, tombstone
+ * cleaning and snapshotting. Nothing in this repo calls any of them.
+ */
+export const PROMETHEUS_FORBIDDEN_FLAGS = [
+  '--web.enable-lifecycle',
+  '--web.enable-admin-api',
+] as const;
+
+/** The endpoints `--web.enable-lifecycle` gates — the reason it is refused. */
+export const PROMETHEUS_LIFECYCLE_GATED_PATHS = ['/-/reload', '/-/quit'] as const;
+
+/**
+ * What the admin Monitoring probe GETs (`monitoringService.ts`). Prometheus
+ * serves it unconditionally — it is NOT one of the lifecycle-gated paths above —
+ * so dropping the flag leaves the health probe working.
+ */
+export const PROMETHEUS_HEALTH_PROBE_PATH = '/-/healthy';
+
+/**
+ * Prometheus is the one observability service with no authentication at all
+ * (`apps/api/src/http/grafanaProxy.ts` never proxies it for exactly that
+ * reason). Two things therefore have to hold in the rendered contract:
+ *
+ * 1. it runs without the write-endpoint flags above — `POST /-/quit` from
+ *    anything that can reach the port would otherwise stop the monitoring stack;
+ * 2. its published host bind stays on loopback. It reads `BT_PROMETHEUS_BIND_HOST`
+ *    and deliberately NOT `BT_OBS_BIND_HOST`, so the documented LAN recipe moves
+ *    Grafana — which has a login — without dragging an unauthenticated metrics
+ *    server onto the network with it.
+ */
+export function assertPrometheusExposure(config: RenderedCompose, topology: string): void {
+  const prometheus = renderedService(config, topology, 'prometheus');
+
+  // Both argv sources: a flag smuggled into an entrypoint override reaches the
+  // binary exactly like one in `command`.
+  const argv = [prometheus.entrypoint, prometheus.command]
+    .flatMap((part) => (Array.isArray(part) ? (part as unknown[]) : [part]))
+    .filter((part) => part !== undefined && part !== null)
+    .map((part) => String(part))
+    .join('\n');
+
+  for (const flag of PROMETHEUS_FORBIDDEN_FLAGS) {
+    assert(
+      !argv.includes(flag),
+      `${topology}: prometheus must not run with ${flag} — it publishes unauthenticated write ` +
+        `endpoints (${PROMETHEUS_LIFECYCLE_GATED_PATHS.join(', ')}, series deletion) on a server ` +
+        `with no login of its own, and nothing here calls them (the admin probe only GETs ` +
+        `${PROMETHEUS_HEALTH_PROBE_PATH}, which is served either way)`,
+    );
+  }
+
+  const exposedBinds = (prometheus.ports ?? [])
+    .map((port) => String(port.host_ip ?? ''))
+    .filter((host) => !isLoopbackBind(host))
+    .map((host) => host || '(all interfaces)');
+
+  assert.equal(
+    exposedBinds.length,
+    0,
+    `${topology}: prometheus publishes on the non-loopback bind ${exposedBinds.join(', ')} — that ` +
+      `is an unauthenticated metrics server, and its whole TSDB, for everything that can reach it. ` +
+      `Its bind is ${PROMETHEUS_BIND_HOST_KEY} (loopback by default) and must not follow ` +
+      `${GRAFANA_BIND_HOST_KEY}: Grafana, which has a login, is the LAN surface`,
+  );
+}
+
+/**
+ * Guards the probe render itself: if `BT_OBS_BIND_HOST` stopped moving Grafana,
+ * the "prometheus stayed on loopback" assertion above would pass for the wrong
+ * reason on that topology.
+ */
+export function assertLanObservabilityBind(
+  config: RenderedCompose,
+  topology: string,
+  lanBind: string,
+): void {
+  const grafanaBinds = (renderedService(config, topology, 'grafana').ports ?? []).map((port) =>
+    String(port.host_ip ?? ''),
+  );
+
+  assert(
+    grafanaBinds.includes(lanBind),
+    `${topology}: the LAN-bind probe did not take — grafana renders ` +
+      `${grafanaBinds.join(', ') || '(no published port)'} instead of ${lanBind}, so this render ` +
+      `proves nothing about prometheus`,
+  );
+}
+
 function validateTopology(config: RenderedCompose, topology: ProductionTopology): void {
   assertServiceLoggingLimits(config, topology.label);
   assertGrafanaAdminCredential(config, topology.label);
   assertGrafanaTelemetryDisabled(config, topology.label);
   assertGrafanaAnonymousAccessBind(config, topology.label);
+  assertPrometheusExposure(config, topology.label);
+  if (topology.lanObservabilityBind) {
+    assertLanObservabilityBind(config, topology.label, topology.lanObservabilityBind);
+  }
 
   const apiEnvironment = renderedEnvironment(config, topology.label, 'api');
   const workerEnvironment = renderedEnvironment(config, topology.label, 'worker');
