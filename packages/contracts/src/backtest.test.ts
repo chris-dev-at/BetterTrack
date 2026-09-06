@@ -173,7 +173,7 @@ describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
 });
 
 describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested privacy', () => {
-  const aggregateResponse = {
+  const sharedFields = {
     startDate: '2021-01-04',
     endDate: '2026-01-05',
     series: [{ date: '2021-01-04', value: 100 }],
@@ -191,8 +191,11 @@ describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested p
     idleCashAvgPct: null,
   };
 
+  /** The nested (aggregate) variant: no identity fields, plus the missing share. */
+  const aggregateResponse = { ...sharedFields, unresolvedPct: 0 };
+
   const fullResponse = {
-    ...aggregateResponse,
+    ...sharedFields,
     contributions: [],
     notice: null,
     benchmark: null,
@@ -204,6 +207,23 @@ describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested p
     expect(sharedSandboxPreviewResponseSchema.safeParse(aggregateResponse).success).toBe(true);
     expect(sharedSandboxPreviewResponseSchema.parse(fullResponse)).toEqual(fullResponse);
     expect(backtestResponseSchema.safeParse(fullResponse).success).toBe(true);
+  });
+
+  it('carries the unresolved share on the aggregate variant, and only there (#1832)', () => {
+    // A partially-resolved nested basket (an emptied child) is normalized back
+    // to 100 % over what survived, so without this number its response is
+    // byte-identical to a fully-resolved basket at the surviving weights.
+    expect(
+      sharedSandboxAggregateResponseSchema.safeParse({ ...sharedFields, unresolvedPct: 40 })
+        .success,
+    ).toBe(true);
+    // It is not optional: a nested sandbox always states what it resolved.
+    expect(sharedSandboxAggregateResponseSchema.safeParse(sharedFields).success).toBe(false);
+    // …and the flat variant keeps its exact legacy shape — an asset row always
+    // resolves, so bolting the field onto a full response is a hybrid.
+    expect(
+      sharedSandboxPreviewResponseSchema.safeParse({ ...fullResponse, unresolvedPct: 0 }).success,
+    ).toBe(false);
   });
 
   it('rejects partially-redacted hybrids', () => {
