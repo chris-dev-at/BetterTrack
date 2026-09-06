@@ -3,13 +3,15 @@ import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
   PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
+  WEBHOOK_DELIVERY_HTTP_ERROR,
+  WEBHOOK_DELIVERY_NETWORK_ERROR,
   WEBHOOK_DELIVERY_REFUSED_ERROR,
   WEBHOOK_DELIVERY_SECRET_ERROR,
   WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
@@ -26,6 +28,7 @@ import {
   webhookDeliveryListResponseSchema,
   webhookEventPayloadSchema,
   webhookSubscriptionListResponseSchema,
+  type WebhookDeliveryError,
   type WebhookEventType,
 } from '@bettertrack/contracts';
 
@@ -64,6 +67,7 @@ import { isParanoidKilledWebhookEvent } from '../services/account/paranoidEnforc
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
+import { DEPLOYMENT_SUBNETS_ENV } from '../services/security/outboundUrlGuard';
 import type {
   OutboundUrlResolver,
   ResolvedOutboundUrl,
@@ -170,6 +174,26 @@ function alertEvent(userId: string): AlertTriggeredEvent {
     occurredAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Declare which private network belongs to THIS deployment (§13.5 V5-P10).
+ * Unset, the outbound guard derives it from the machine's own interfaces — so
+ * without this pin the LAN-receiver assertions below would pass or fail
+ * depending on the subnet the test host happens to sit on. `172.18/16` is the
+ * shape compose gives the internal bridge; every other RFC1918 address in this
+ * file is therefore the operator's own network.
+ */
+const DEPLOYMENT_SUBNET = '172.18.0.0/16';
+const previousDeploymentSubnets = process.env[DEPLOYMENT_SUBNETS_ENV];
+
+beforeAll(() => {
+  process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+});
+
+afterAll(() => {
+  if (previousDeploymentSubnets === undefined) delete process.env[DEPLOYMENT_SUBNETS_ENV];
+  else process.env[DEPLOYMENT_SUBNETS_ENV] = previousDeploymentSubnets;
+});
 
 beforeEach(async () => {
   recorder = recordingTransport(200);
@@ -1077,7 +1101,9 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     expect(log[0]!.status).toBe('failed');
     expect(log[0]!.attempts).toBe(1);
     expect(log[0]!.responseStatus).toBe(410);
-    expect(log[0]!.error).toBe('HTTP 410');
+    // The status is the diagnostic and it rides in `responseStatus`; the reason
+    // string is one constant so no failure carries text back to the subscriber.
+    expect(log[0]!.error).toBe(WEBHOOK_DELIVERY_HTTP_ERROR);
     const afterRefusal = webhookSubscriptionListResponseSchema.parse(
       (await agent.get('/api/v1/settings/webhooks')).body,
     );
@@ -1258,7 +1284,7 @@ describe('delivery-log retention', () => {
         status: 'failed',
         responseStatus: 500,
         attempts: WEBHOOK_DELIVER_ATTEMPTS,
-        error: 'down',
+        error: WEBHOOK_DELIVERY_HTTP_ERROR,
         createdAt: new Date(old.getTime() + index * 1000),
       });
     }
@@ -1845,7 +1871,10 @@ describe('destination guard: user-supplied webhook URLs cannot reach the deploym
     expect(await h.db.select().from(schema.webhookSubscriptions)).toHaveLength(0);
   });
 
-  it('still accepts a plain-http RFC1918 LAN receiver', async () => {
+  it('still accepts a plain-http LAN receiver outside the deployment network', async () => {
+    // The owner's recorded allowance: a self-hosted receiver on their own LAN,
+    // over plain http. `192.168.1.50` is RFC1918 but not part of the declared
+    // deployment subnet, so the carve-out below leaves it exactly as it was.
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
 
@@ -1854,6 +1883,148 @@ describe('destination guard: user-supplied webhook URLs cannot reach the deploym
     expect(createWebhookSubscriptionResponseSchema.parse(res.body).subscription.url).toBe(
       'http://192.168.1.50:9000/hook',
     );
+  });
+
+  it.each([
+    ['a literal address on the deployment bridge', 'http://172.18.0.4:5432/hook'],
+    ['the monitoring stack by address', 'http://172.18.0.9:9090/-/reload'],
+  ])('refuses %s at create and writes no row', async (_label, url) => {
+    // RFC1918 is the compose stack's OWN network: `db`, `redis`, `prometheus`,
+    // `grafana` and the exporters publish no host ports precisely so nothing
+    // outside can reach them, and the delivery worker sits on that same bridge.
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const res = await postSubscription(agent, url);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(WEBHOOK_URL_BLOCKED_CODE);
+    expect(await harness.db.select().from(schema.webhookSubscriptions)).toHaveLength(0);
+  });
+
+  it('refuses a compose SERVICE NAME, which is how that URL would really be written', async () => {
+    // Docker's embedded DNS answers `prometheus` with a bridge address, so the
+    // refusal has to come from the resolved address, not from the spelling.
+    const composeDns: OutboundUrlResolver = async () => [{ address: '172.18.0.7', family: 4 }];
+    const h = await createTestApp({ webhookUrlResolver: composeDns });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await postSubscription(agent, 'http://prometheus:9090/-/reload');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(WEBHOOK_URL_BLOCKED_CODE);
+    expect(await h.db.select().from(schema.webhookSubscriptions)).toHaveLength(0);
+  });
+
+  it('refuses the deployment network at DELIVERY too, terminally and without a status', async () => {
+    // A hostname that was public at create time and now answers with a bridge
+    // address — the per-attempt guard must refuse it exactly like loopback.
+    let internal = false;
+    const rebinding: OutboundUrlResolver = async () =>
+      internal ? [{ address: '172.18.0.7', family: 4 }] : [{ address: '93.184.216.34', family: 4 }];
+    const delivering = recordingTransport(200);
+    const h = await createTestApp({
+      webhookTransport: delivering.transport,
+      webhookUrlResolver: rebinding,
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = await postSubscription(agent, 'https://receiver.test/hook');
+    expect(created.status).toBe(201);
+    const subId = createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id;
+
+    internal = true;
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+
+    expect(delivering.requests).toHaveLength(0);
+    const log = await h.ctx.webhooks.listDeliveries(user.id, subId);
+    expect(log).toHaveLength(1);
+    expect(log[0]!.status).toBe('failed');
+    expect(log[0]!.responseStatus).toBeNull();
+    expect(log[0]!.error).toBe(WEBHOOK_DELIVERY_REFUSED_ERROR);
+  });
+
+  it('records no receiver- or socket-provided text, on a destination it allows', async () => {
+    // Three destinations on a LAN the guard allows, differing only in what a
+    // scanner would learn from them: a closed port, a filtered one, and a live
+    // service that does not speak HTTP. The transport hands the dispatcher the
+    // very strings Node produces for those three.
+    const probes = [
+      { url: 'http://192.168.44.11:5432/hook', error: 'connect ECONNREFUSED 192.168.44.11:5432' },
+      { url: 'http://192.168.44.12:6379/hook', error: 'timeout' },
+      { url: 'http://192.168.44.13:9090/hook', error: 'socket hang up' },
+    ];
+    const leaking: WebhookTransport = {
+      async send(req) {
+        const probe = probes.find(({ url }) => url === req.url);
+        return { ok: false, status: null, error: probe?.error };
+      },
+    };
+    const h = await createTestApp({ webhookTransport: leaking });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const ids: string[] = [];
+    for (const probe of probes) {
+      const res = await postSubscription(agent, probe.url);
+      expect(res.status).toBe(201);
+      ids.push(createWebhookSubscriptionResponseSchema.parse(res.body).subscription.id);
+    }
+
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+
+    // The stored column itself, not only the projection the API returns.
+    const stored = await h.db.select().from(schema.webhookDeliveries);
+    expect(stored).toHaveLength(3);
+    for (const row of stored) {
+      expect(row.error).toBe(WEBHOOK_DELIVERY_NETWORK_ERROR);
+      expect(row.responseStatus).toBeNull();
+    }
+    expect(JSON.stringify(stored)).not.toMatch(/ECONNREFUSED|hang up|5432|6379|9090|192\.168\.44/);
+
+    // …and the three rows are byte-identical in shape, so the log cannot tell a
+    // closed port from a filtered one from something that is listening — the
+    // property the guard-refused path already guaranteed.
+    const shape = async (id: string) =>
+      (await h.ctx.webhooks.listDeliveries(user.id, id)).map((delivery) => ({
+        status: delivery.status,
+        responseStatus: delivery.responseStatus,
+        attempts: delivery.attempts,
+        error: delivery.error,
+      }));
+    const closed = await shape(ids[0]!);
+    expect(closed).toEqual([
+      {
+        status: 'failed',
+        responseStatus: null,
+        attempts: 1,
+        error: WEBHOOK_DELIVERY_NETWORK_ERROR,
+      },
+    ]);
+    expect(await shape(ids[1]!)).toEqual(closed);
+    expect(await shape(ids[2]!)).toEqual(closed);
+  });
+
+  it('scrubs a free-text row written before the closed set existed', async () => {
+    // The delivery log keeps 30 days, so rows from before this rule are still
+    // readable — they must come back structural, not as the socket text they
+    // were stored as.
+    const { agent, id } = await createSubscription(['alert.triggered']);
+    await createWebhookDeliveryRepository(harness.db).record({
+      id: DELIVERY_A,
+      subscriptionId: id,
+      eventType: 'alert.triggered',
+      status: 'failed',
+      responseStatus: null,
+      attempts: 3,
+      // A row from before the closed set: the repository's type now refuses
+      // free text, which is the point — this is what the 30-day log still holds.
+      error: 'connect ECONNREFUSED 172.18.0.4:5432' as WebhookDeliveryError,
+    });
+
+    const res = await agent.get(`/api/v1/settings/webhooks/${id}/deliveries`);
+    expect(res.status).toBe(200);
+    const { deliveries } = webhookDeliveryListResponseSchema.parse(res.body);
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]!.error).toBe(WEBHOOK_DELIVERY_NETWORK_ERROR);
   });
 
   it('refuses an update to a blocked destination and leaves the stored URL intact', async () => {

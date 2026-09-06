@@ -60,6 +60,13 @@ x-api-worker-environment: &api-worker-environment
   BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
   BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
   BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
+  # The internal service network user-supplied outbound destinations may never
+  # dial. Blank (the normal case) makes the API/worker derive it from their own
+  # container interfaces, i.e. the compose bridge below; set it only where that
+  # derivation is wrong for the topology (host networking, a LAN that really is
+  # the operator's own network). Forwarded here so the documented override
+  # actually reaches both processes.
+  BT_OUTBOUND_DEPLOYMENT_SUBNETS: '${BT_OUTBOUND_DEPLOYMENT_SUBNETS:-}'
 
   # Email and first-admin seed inputs.
   SMTP_HOST: '${SMTP_HOST:-}'
