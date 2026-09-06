@@ -373,6 +373,57 @@ test('paging asks the server for the next window and reports the real total', as
   await waitFor(() => expect(lastListQuery()).toMatchObject({ offset: 25 }));
 });
 
+/**
+ * #1848 D2. The users list was one of the two pages that rendered its pager
+ * INSIDE the non-empty branch, so bulk-disabling the last row of page 2 left an
+ * empty state with no way back — the only escape was hand-editing `?offset=`.
+ */
+test('a page emptied by a bulk action snaps back to the last page that has rows', async () => {
+  const user = userEvent.setup();
+  const joe: AdminUser = { ...jane, id: 'user-2', username: 'joe', email: 'joe@bettertrack.test' };
+  // 26 active accounts; the operator is on page 2, holding the 26th.
+  vi.mocked(api.listUsers).mockImplementation(async (query = {}) =>
+    (query.offset ?? 0) === 0 ? page([jane], 26, 0) : page([joe], 26, 25),
+  );
+  vi.mocked(api.bulkUserAction).mockResolvedValue({ action: 'disable', disabled: 1, skipped: 0 });
+  renderPage('en', '/admin/users?status=active&offset=25');
+
+  await screen.findByText('joe@bettertrack.test');
+  expect(screen.getByText('26–26 of 26')).toBeInTheDocument();
+
+  // The bulk action retires the only row of page 2; the reload behind it reads
+  // the SAME offset, which now answers nothing.
+  await user.click(screen.getByRole('checkbox', { name: 'Select all users' }));
+  vi.mocked(api.listUsers).mockImplementation(async (query = {}) => {
+    const offset = query.offset ?? 0;
+    return offset === 0 ? page([jane], 25, 0) : page([], 25, offset);
+  });
+  await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  await user.click(screen.getByRole('button', { name: 'Disable 1 user' }));
+
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ offset: 0 }));
+  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+  expect(screen.getByText('1–1 of 25')).toBeInTheDocument();
+  expect(screen.queryByText(/26–25/)).not.toBeInTheDocument();
+});
+
+test('an empty page past the first keeps a working way back', async () => {
+  const user = userEvent.setup();
+  // The window answered nothing and the snap-back has not landed yet: the
+  // empty state renders, and the pager must render WITH it.
+  vi.mocked(api.listUsers).mockResolvedValue(page([], 25, 25));
+  renderPage('en', '/admin/users?offset=25');
+
+  expect(await screen.findByText('No users yet. Create the first one.')).toBeInTheDocument();
+  const previous = screen.getByRole('button', { name: 'Previous' });
+  expect(previous).toBeEnabled();
+  // The range never counts backwards, whatever the window answered.
+  expect(screen.getByText('0–0 of 25')).toBeInTheDocument();
+
+  await user.click(previous);
+  await waitFor(() => expect(lastListQuery()).toMatchObject({ offset: 0 }));
+});
+
 test('changing a filter returns to the first page instead of stranding the operator', async () => {
   const user = userEvent.setup();
   renderPage('en', '/admin/users?offset=50');

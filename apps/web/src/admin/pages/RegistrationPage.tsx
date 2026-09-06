@@ -14,7 +14,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
-import { ListPagination } from '../components/ListPagination';
+import { ListPagination, useOffsetSnapBack } from '../components/ListPagination';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
   Alert,
@@ -331,13 +331,17 @@ function ApprovalQueueSection({
   const hintKey = activityHintKey(active, 'admin.settings.approvals.inactive');
   const rows = requests.data?.requests ?? [];
   const page = requests.data?.page ?? null;
+  // Deciding the only application on page 2 empties that window (#1848).
+  useOffsetSnapBack(page, rows.length, setOffset);
 
   return (
     <Panel padded={false}>
       <PanelHeader
         title={t('admin.settings.approvals.title')}
         description={`${t('admin.settings.approvals.description')}${hintKey ? ` ${t(hintKey)}` : ''}`}
-        actions={rows.length > 0 ? <Badge tone="sky">{rows.length}</Badge> : undefined}
+        // The badge counts the QUEUE, not the page (#1848): 60 pending under a
+        // page of 25 read "25" directly above a footer saying "1–25 of 60".
+        actions={page && page.total > 0 ? <Badge tone="sky">{page.total}</Badge> : undefined}
       />
 
       {decide.error ? (
@@ -477,6 +481,8 @@ function RegistrationTokensSection({ active }: { active: SectionActivity }) {
   const hintKey = activityHintKey(active, 'admin.settings.tokens.inactive');
   const rows = tokens.data?.tokens ?? [];
   const page = tokens.data?.page ?? null;
+  // Revoking the last token on a page empties that window (#1848).
+  useOffsetSnapBack(page, rows.length, setOffset);
 
   function onCreate(event: FormEvent) {
     event.preventDefault();
