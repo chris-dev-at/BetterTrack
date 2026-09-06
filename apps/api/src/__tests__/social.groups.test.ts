@@ -828,8 +828,15 @@ describe('the friend-group surface is bounded (§13.5 V5-P8, #1780)', () => {
     const groupId = await createGroup(aliceAgent, 'Family');
     await addMember(aliceAgent, groupId, bob.id);
 
-    const keys = progressiveKeys('social', limiterKeyForUser(alice.id));
+    // `social_write` since #1855, not `social`: curating a circle is ordinary
+    // interaction, and the contract's 200-member ceiling is only reachable one
+    // request at a time — the anti-probing bucket's 30/hour made it unbuildable.
+    const keys = progressiveKeys('social_write', limiterKeyForUser(alice.id));
     const spent = async () => Number((await harness.ctx.redis.get(keys.count)) ?? 0);
+    const probingKeys = progressiveKeys('social', limiterKeyForUser(alice.id));
+    // Whatever the friend requests in `scenario()` already spent — the circle
+    // surface below must not add a single unit to it.
+    const probingBefore = await harness.ctx.redis.get(probingKeys.count);
 
     let before = await spent();
     expect(
@@ -854,6 +861,9 @@ describe('the friend-group surface is bounded (§13.5 V5-P8, #1780)', () => {
       204,
     );
     expect(await spent()).toBe(before + 1);
+
+    // …and none of the circle surface touched the friend-request rail.
+    expect(await harness.ctx.redis.get(probingKeys.count)).toBe(probingBefore);
   });
 });
 

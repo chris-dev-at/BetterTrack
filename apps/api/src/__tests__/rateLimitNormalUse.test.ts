@@ -2,6 +2,8 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
+import { FRIEND_GROUP_MEMBERS_MAX } from '@bettertrack/contracts';
+
 import { limiterKeyForUser } from '../http/middleware/rateLimit';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser } from '../testing/createTestApp';
@@ -171,7 +173,10 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
    */
   const COST = {
     socialShared: 10,
-    socialThread: 6,
+    /** Shared by the thread PAGE read and its collapsed head (#1855). */
+    socialThread: 7,
+    /** The audience write's per-recipient fan-out (#1855). */
+    socialAudienceSet: 20,
     analyticsSeries: 10,
     backtestPreview: 25,
     /** Per SERIES — the comparison route multiplies by the body's id count (#1755). */
@@ -179,8 +184,8 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     backtestSharedSandbox: 25,
     importCreate: 100,
   };
-  /** `expensive`: 3550 units / minute (config/env.ts §10 COST TABLE). */
-  const EXPENSIVE_LIMIT = 3550;
+  /** `expensive`: 4000 units / minute (config/env.ts §10 COST TABLE). */
+  const EXPENSIVE_LIMIT = 4000;
   /** A syntactically valid conglomerate id — the sandbox route validates params. */
   const SOME_ID = '018f0000-0000-7000-8000-000000000001';
 
@@ -204,6 +209,8 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     // thread refetching on its own 30 s poll.
     const SHARED = 6;
     const THREADS = 3;
+    const SUMMARIES = 3;
+    const AUDIENCE_SETS = 2;
     const ANALYTICS = 6;
     const PREVIEWS = 4;
     const IMPORTS = 1;
@@ -221,6 +228,24 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
         .get(`/api/v1/social/items/portfolio/${pid}/thread`)
         .set('Cookie', cookie);
       expect(res.status).toBe(200);
+    }
+    for (let i = 0; i < SUMMARIES; i += 1) {
+      // The collapsed head. It shipped metered by NOTHING while its sibling
+      // above paid for the same access resolution (#1855).
+      const res = await request(limited.app)
+        .get(`/api/v1/social/items/portfolio/${pid}/thread/summary`)
+        .set('Cookie', cookie);
+      expect(res.status).toBe(200);
+    }
+    for (let i = 0; i < AUDIENCE_SETS; i += 1) {
+      // Past the cost guard, then rejected by `validateBody`: the 400 is proof
+      // the meter — not the audience layer — is what the request cleared.
+      const res = await request(limited.app)
+        .put(`/api/v1/social/audience/portfolio/${pid}`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({});
+      expect(res.status).toBe(400);
     }
     for (let i = 0; i < ANALYTICS; i += 1) {
       const res = await request(limited.app)
@@ -269,20 +294,24 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     const spent =
       SHARED * COST.socialShared +
       THREADS * COST.socialThread +
+      SUMMARIES * COST.socialThread +
+      AUDIENCE_SETS * COST.socialAudienceSet +
       ANALYTICS * COST.analyticsSeries +
       PREVIEWS * COST.backtestPreview +
       IMPORTS * COST.importCreate +
       COMPARE_SERIES * COST.backtestCompare +
       SANDBOXES * COST.backtestSharedSandbox;
-    expect(spent).toBe(448);
+    expect(spent).toBe(512);
     const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
     expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
 
     // …and NOTHING ELSE in the app meters against `expensive`. Until #1755 that
     // sentence was a comment sitting next to a total that omitted the two most
-    // expensive reads in the app — the omission was pinned, not caught. It is an
-    // assertion now: an ordinary read from a route with no cost mount leaves the
-    // work counter exactly where the metered calls left it.
+    // expensive reads in the app, and until #1855 it was still satisfied BY the
+    // thread head's omission rather than in spite of it — the omission was
+    // pinned, not caught. Both now carry weights above, so what is left below is
+    // genuinely unmetered work: an ordinary read from a route with no cost mount
+    // leaves the work counter exactly where the metered calls left it.
     for (const path of ['/api/v1/conglomerates', '/api/v1/portfolios', '/api/v1/auth/me']) {
       expect((await request(limited.app).get(path).set('Cookie', cookie)).status).toBe(200);
     }
@@ -307,10 +336,10 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
 
     // `limiters.cost('importCreate')` runs BEFORE multer, so a bodyless POST
     // spends its 100 units and is rejected for the missing file without the API
-    // reading an upload: 35 of them leave 50 of the minute's 3550 units, which
-    // is less than the 36th costs.
+    // reading an upload: 40 of them spend the minute's 4000 units exactly, so
+    // the 41st has nothing left to buy.
     const drain = Math.floor(EXPENSIVE_LIMIT / COST.importCreate);
-    expect(drain).toBe(35);
+    expect(drain).toBe(40);
     for (let i = 0; i < drain; i += 1) {
       const res = await request(limited.app)
         .post('/api/v1/imports')
@@ -328,7 +357,7 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     expect(over.headers['retry-after']).toBe('20');
     expect(over.body.error.details).toEqual({ retryAfter: 20 });
 
-    // The refusal came from the COST dimension: 31 requests is nowhere near
+    // The refusal came from the COST dimension: 41 requests is nowhere near
     // `generalBurst`'s 600/30 s or `general`'s 9000/15 min, and neither of their
     // ladders armed. That is the whole point of the dimension — the caller is
     // bounded by the WORK it asked for, not by how many requests carried it.
@@ -372,6 +401,17 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
       .set('Cookie', cookie)
       .send({});
     expect(sandbox.status).toBe(429);
+    // …including the two mounts #1855 added.
+    const summary = await request(limited.app)
+      .get(`/api/v1/social/items/portfolio/${SOME_ID}/thread/summary`)
+      .set('Cookie', cookie);
+    expect(summary.status).toBe(429);
+    const audience = await request(limited.app)
+      .put(`/api/v1/social/audience/portfolio/${SOME_ID}`)
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({});
+    expect(audience.status).toBe(429);
 
     // …and the budget is PER USER: a second account on the same address reads
     // its shared list normally throughout.
@@ -420,6 +460,203 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     // 600/30 s, so the COUNT dimension would have waved every one of them
     // through — neither ladder armed. Only the WORK budget noticed.
     expect(remaining + 3).toBeLessThan(60);
+    for (const namespace of ['general', 'general_burst']) {
+      expect(
+        await limited.ctx.redis.get(
+          progressiveKeys(namespace, limiterKeyForUser(user.id)).cooldown,
+        ),
+      ).toBeNull();
+    }
+  }, 120_000);
+});
+
+/**
+ * The V5-P8 interaction surface, driven through the REAL middleware chain
+ * (#1855). V5-P8 mounted comments, item reactions, comment reactions, comment
+ * moderation and the whole friend-circle surface on `limiters.social` — the
+ * anti-probing bucket that exists to make bulk email→username guessing
+ * expensive, and which §10 exempts from the normal-use sizing rule. These tests
+ * are the ones a unit test of the schedules cannot write: they read which
+ * NAMESPACE each route actually spends from.
+ */
+describe('the V5-P8 interaction writes have a budget of their own (#1855)', () => {
+  /** A syntactically valid subject id — the routes validate their params. */
+  const SOME_ID = '018f0000-0000-7000-8000-000000000001';
+
+  const addMember = (app: Application, cookie: string[], groupId: string) =>
+    request(app)
+      .post(`/api/v1/social/groups/${groupId}/members`)
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ userId: SOME_ID });
+
+  it('lets one request per member reach the 200-member circle the contract advertises', async () => {
+    // `FRIEND_GROUP_MEMBERS_MAX` is 200 and there is NO bulk endpoint, so the
+    // ceiling is only reachable one POST at a time. On the 30/hour anti-probing
+    // bucket that was ~7 hours of perfectly paced clicking — and the same hour
+    // also closed the user's friend requests, comments and reactions.
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'circle@bt.test', username: 'circler' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    const created = await request(limited.app)
+      .post('/api/v1/social/groups')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ name: 'Inner circle' });
+    expect(created.status).toBe(201);
+    const groupId = created.body.id as string;
+
+    // Each add clears the limiter and is then refused by the service for the
+    // non-friend it names (§6.9) — a 4xx that is not 429 is the whole assertion.
+    for (let i = 0; i < FRIEND_GROUP_MEMBERS_MAX; i += 1) {
+      const res = await addMember(limited.app, cookie, groupId);
+      expect(res.status).not.toBe(429);
+    }
+
+    // The create + 200 adds all landed in ONE window and nothing armed.
+    const key = progressiveKeys('social_write', limiterKeyForUser(user.id));
+    expect(Number(await limited.ctx.redis.get(key.count))).toBeGreaterThan(
+      FRIEND_GROUP_MEMBERS_MAX,
+    );
+    expect(await limited.ctx.redis.get(key.cooldown)).toBeNull();
+    // …and none of it was charged to the anti-probing bucket, which is still
+    // untouched: filling a circle must not spend a friend-request allowance.
+    expect(
+      await limited.ctx.redis.get(progressiveKeys('social', limiterKeyForUser(user.id)).count),
+    ).toBeNull();
+  }, 120_000);
+
+  it('leaves the interaction writes open when the friend-request rail is spent', async () => {
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'prober@bt.test', username: 'prober' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    // Exhaust the strict bucket the honest way: 30 friend requests in an hour.
+    let status = 202;
+    for (let i = 0; i < 40 && status !== 429; i += 1) {
+      status = (
+        await request(limited.app)
+          .post('/api/v1/social/requests')
+          .set(...XRW)
+          .set('Cookie', cookie)
+          .send({ identifier: `nobody-${i}@bt.test` })
+      ).status;
+    }
+    expect(status).toBe(429);
+
+    // The V5-P8 writes are untouched: each clears its own limiter and is then
+    // answered by the audience layer (404 for an item the caller cannot see).
+    const comment = await request(limited.app)
+      .post(`/api/v1/social/items/portfolio/${SOME_ID}/comments`)
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ body: 'hi' });
+    expect(comment.status).not.toBe(429);
+    const reaction = await request(limited.app)
+      .post(`/api/v1/social/items/portfolio/${SOME_ID}/reactions`)
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ emoji: '🔥' });
+    expect(reaction.status).not.toBe(429);
+  });
+
+  it('leaves the friend-request rail open when the interaction budget is spent', async () => {
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'chatty@bt.test', username: 'chatty' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    // Arming the cooldown IS the state 1200 writes would leave behind; draining
+    // it request by request would take a thousand round trips to prove the same
+    // thing. What matters is which namespace each route reads.
+    await limited.ctx.redis.set(
+      progressiveKeys('social_write', limiterKeyForUser(user.id)).cooldown,
+      '1',
+      'EX',
+      60,
+    );
+
+    // Every V5-P8 interaction write is refused — which is what proves each of
+    // them is wired to this namespace rather than to the strict one.
+    const refused = [
+      request(limited.app)
+        .post(`/api/v1/social/items/portfolio/${SOME_ID}/comments`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({ body: 'hi' }),
+      request(limited.app)
+        .post(`/api/v1/social/items/portfolio/${SOME_ID}/reactions`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({ emoji: '🔥' }),
+      request(limited.app)
+        .post(`/api/v1/social/comments/${SOME_ID}/reactions`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({ emoji: '🔥' }),
+      request(limited.app)
+        .delete(`/api/v1/social/comments/${SOME_ID}`)
+        .set(...XRW)
+        .set('Cookie', cookie),
+      request(limited.app)
+        .post('/api/v1/social/groups')
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({ name: 'Blocked' }),
+      addMember(limited.app, cookie, SOME_ID),
+    ];
+    for (const pending of refused) {
+      expect((await pending).status).toBe(429);
+    }
+
+    // …and friend-request creation is NOT: its budget is a different namespace,
+    // and a spent emoji allowance may not close the rail §10 sized for probing.
+    const friendRequest = await request(limited.app)
+      .post('/api/v1/social/requests')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ identifier: 'someone@bt.test' });
+    expect(friendRequest.status).not.toBe(429);
+  });
+
+  it("stops an audience replay loop long before it can fan out at general's rate", async () => {
+    // `PUT /social/audience/:kind/:subjectId` has the largest fan-out of any
+    // V5-P8 write — the owner's whole friendship set, a roster of up to 200, a
+    // transition lock per derived recipient and one notification emit each — and
+    // it shipped metered by nothing but the app-wide request counter, i.e. at
+    // 600 req/min, while a single emoji toggle was capped at 30/hour.
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'audience@bt.test', username: 'audiencer' });
+    const cookie = await sessionCookie(limited.app, user);
+
+    const put = () =>
+      request(limited.app)
+        .put(`/api/v1/social/audience/portfolio/${SOME_ID}`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({});
+
+    // 20 units each, so the minute's 4000 buy 200 calls — the guard runs ahead
+    // of `validateBody`, so the 400s below are proof the meter is what let them
+    // through, not the handler.
+    const allowed = Math.floor(4000 / 20);
+    expect(allowed).toBe(200);
+    for (let i = 0; i < allowed; i += 1) {
+      expect((await put()).status).toBe(400);
+    }
+    const over = await put();
+    expect(over.status).toBe(429);
+
+    // The COUNT dimension would have waved all 201 through: `general` allows
+    // 600/min and `generalBurst` 600/30 s, and neither ladder armed. The write
+    // is now bounded by the fan-out it asks for, at a THIRD of that rate.
+    expect(allowed * 3).toBeLessThanOrEqual(600);
+    expect(
+      await limited.ctx.redis.get(
+        progressiveKeys('expensive', limiterKeyForUser(user.id)).cooldown,
+      ),
+    ) //
+      .toBe('1');
     for (const namespace of ['general', 'general_burst']) {
       expect(
         await limited.ctx.redis.get(
