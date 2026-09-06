@@ -594,6 +594,64 @@ describe('portfolio dividend calendar (V5-P5)', () => {
 
     expect(await service.dividendCalendar('user-1')).toEqual({ available: false, entries: [] });
   });
+
+  it('drops an event whose only date is yesterday in the DISPLAY zone (#1827)', async () => {
+    // 23:30 UTC is 01:30 the next day in Europe/Vienna — the zone every one of
+    // these dates is rendered in (§7.1). Measured on the UTC day, the calendar
+    // served a payout that went ex yesterday under "Upcoming dividends" for the
+    // two hours after local midnight, every night.
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({
+          currency: 'USD',
+          upcoming: [
+            {
+              exDate: '2026-09-05T00:00:00.000Z',
+              payDate: null,
+              amount: 0.25,
+              currency: 'USD',
+            },
+          ],
+        }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: [held({ assetId: 'asset-a', providerRef: 'AAA' })] }),
+      currency,
+      enabled: true,
+      now: () => Date.parse('2026-09-05T23:30:00.000Z'),
+    });
+
+    expect((await service.dividendCalendar('user-1')).entries).toEqual([]);
+  });
+
+  it('keeps an event dated today in the display zone at that same instant', async () => {
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({
+          currency: 'USD',
+          upcoming: [
+            {
+              exDate: '2026-09-06T00:00:00.000Z',
+              payDate: null,
+              amount: 0.25,
+              currency: 'USD',
+            },
+          ],
+        }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: [held({ assetId: 'asset-a', providerRef: 'AAA' })] }),
+      currency,
+      enabled: true,
+      now: () => Date.parse('2026-09-05T23:30:00.000Z'),
+    });
+
+    expect((await service.dividendCalendar('user-1')).entries).toHaveLength(1);
+  });
 });
 
 describe('portfolio roll-ups — provider fan-out budget (§5.3)', () => {

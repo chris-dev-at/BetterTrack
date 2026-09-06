@@ -4,8 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { DividendCalendarEntry } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { upcomingDividendDate, utcDay } from '../../../lib/dividendDates';
-import { formatDate } from '../../../lib/format';
+import { upcomingDividendDate } from '../../../lib/dividendDates';
+import { displayZoneDay, formatDate } from '../../../lib/format';
 import {
   getPortfolioDividendCalendar,
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
@@ -56,7 +56,7 @@ export function DividendsWidget({ size }: WidgetProps) {
   // on, and `upcomingDividendDate` is that same rule — so the widget renders the
   // API's order as it arrived. Re-sorting here on a date chosen by a different
   // rule is exactly what reversed the list and printed a past ex-date (#1758).
-  const today = utcDay();
+  const today = displayZoneDay();
   const rows = calendarQuery.data.entries
     .map((entry) => ({ entry, date: upcomingDividendDate(entry, today) }))
     .filter((row): row is { entry: DividendCalendarEntry; date: { iso: string; isEx: boolean } } =>

@@ -396,6 +396,21 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
     expect(screen.queryByText('44,00 %')).not.toBeInTheDocument();
   });
 
+  test('captions a forward-annualized amount as such, never as TTM (#1790)', async () => {
+    // The mapper publishes whichever basis the provider had, and the contract is
+    // explicit that the field name is historical: a consumer must read
+    // `trailingAmountBasis`. This page rendered it under "TTM per share"
+    // regardless, asserting twelve months of payouts that were never read.
+    vi.mocked(getAssetDividends).mockResolvedValue({
+      ...availableDividends,
+      trailingAmount: 0.98,
+      trailingAmountBasis: 'forward-annualized' as const,
+    });
+    renderPage();
+    expect(await screen.findByText('Annualised per share')).toBeInTheDocument();
+    expect(screen.queryByText('TTM per share')).not.toBeInTheDocument();
+  });
+
   test('plots the payout history on a time axis, so a skipped quarter is a gap (#1790)', async () => {
     // Two payouts a quarter apart, then a two-quarter gap: a company that
     // skipped a payment. Plotted in array order all three sit equally spaced and

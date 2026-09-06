@@ -329,4 +329,70 @@ describe('marketIntel.earningsCalendar — provider fan-out budget (§5.3)', () 
       watchBook(MARKET_INTEL_ROLLUP_MAX_ASSETS - 1).map((a) => a.symbol),
     );
   });
+
+  it('issues the capped fan-out concurrently, as the budget sizing assumes', async () => {
+    // The cap is sized against the shared outbound queue's spacing ("one
+    // request's cold cost is MARKET_INTEL_ROLLUP_MAX_ASSETS × 250 ms worst
+    // case", rollupBudget.ts), which only bounds the request if the reads are in
+    // flight together. Serially it was one full round trip per asset — and for a
+    // paranoid-eligible caller the account-transition lock stayed held for the
+    // whole loop. Depth is recorded around an await so the reads must overlap.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const marketData = createStubMarketData({
+      earnings: async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight -= 1;
+        return nextOn('2026-08-10T00:00:00.000Z')();
+      },
+    });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo(watchBook(MARKET_INTEL_ROLLUP_MAX_ASSETS)),
+      enabled: true,
+      now: BEFORE_ALL,
+    });
+
+    const res = await service.earningsCalendar('u1');
+    expect(maxInFlight).toBeGreaterThan(1);
+    // …without spending more of the budget, or changing what the response says.
+    expect(marketData.calls.earnings).toBe(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(res.entries).toHaveLength(MARKET_INTEL_ROLLUP_MAX_ASSETS);
+    expect(res.truncated).toBeUndefined();
+  });
+});
+
+describe('marketIntel.earningsCalendar — the day the entry is rendered in (#1827)', () => {
+  it('drops a report dated yesterday in the display zone, though the UTC day is still it', async () => {
+    // 23:30 UTC is 01:30 the NEXT day in the display zone (Europe/Vienna, §7.1),
+    // where every one of these dates is rendered. On the UTC day the panel kept
+    // announcing a report the reader's calendar says was yesterday — #1758's
+    // defect, reopened for two hours every night.
+    const marketData = createStubMarketData({ earnings: nextOn('2026-09-05T00:00:00.000Z') });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL]),
+      enabled: true,
+      now: clock('2026-09-05T23:30:00.000Z'),
+    });
+
+    expect((await service.earningsCalendar('u1')).entries).toEqual([]);
+  });
+
+  it('keeps a report dated today in the display zone', async () => {
+    const marketData = createStubMarketData({ earnings: nextOn('2026-09-06T00:00:00.000Z') });
+    const service = createMarketIntelService({
+      marketData,
+      assetRepo,
+      intelRepo: intelRepo([AAPL]),
+      enabled: true,
+      now: clock('2026-09-05T23:30:00.000Z'),
+    });
+
+    expect((await service.earningsCalendar('u1')).entries.map((e) => e.symbol)).toEqual(['AAPL']);
+  });
 });

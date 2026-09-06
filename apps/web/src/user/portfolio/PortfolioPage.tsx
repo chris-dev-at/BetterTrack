@@ -32,8 +32,9 @@ import { assetTypeLabels } from './assetTypeLabels';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
-import { upcomingDividendDate, utcDay } from '../../lib/dividendDates';
+import { upcomingDividendDate } from '../../lib/dividendDates';
 import {
+  displayZoneDay,
   EM_DASH,
   formatDate,
   formatMoney,
@@ -1458,7 +1459,7 @@ function DividendIntelSection() {
   const visibleEntries = showAll ? entries : entries.slice(0, 3);
   // One "today" for the whole list so every row is labelled against the same
   // day boundary the API used when it built and ordered the calendar.
-  const calendarToday = utcDay();
+  const calendarToday = displayZoneDay();
   const total = !proj ? 0 : view === 'monthly' ? proj.monthlyTotalBase : proj.yearlyTotalBase;
   const basisNote = hasProjection ? dividendBasisNote(proj.basis, t) : null;
 
