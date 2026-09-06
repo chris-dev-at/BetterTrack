@@ -168,9 +168,51 @@ describe('redactIdentifiers', () => {
  * The budget is one number for every input on purpose: the linear scan costs a
  * few milliseconds at most for all four, and every shape it replaced cost
  * seconds, so a regression misses this by more than an order of magnitude
- * rather than flaking against it on a loaded CI runner.
+ * rather than by a hair.
+ *
+ * That number was 100 ms, and at 100 ms it reds `verify` (#1856). The scan is
+ * not what changed: the 300 KB row costs ~5 ms warm and ~8 ms cold on a dev
+ * box, but on a CI runner — which runs the API and web suites concurrently,
+ * four forked workers apiece — this whole file took 121 ms on the last GREEN
+ * run, and that one row measured 103 ms on the red one. A ~20x spread on a
+ * regex-execution-bound scan belongs to the RUNNER, and pricing the guard for
+ * an idle dev box left it no room for the machine it actually runs on. 500 ms
+ * buys the room back and gives up nothing that matters: the second-scale costs
+ * above were measured the same way the ~5 ms was, so on the runner that
+ * produced the 103 ms the cheapest of them is tens of seconds, not 1.5 s.
  */
-const SCRUB_TIME_BUDGET_MS = 100;
+const SCRUB_TIME_BUDGET_MS = 500;
+
+/** How many times a row may re-time its scan before it believes the clock. */
+const SCRUB_TIME_SAMPLES = 5;
+
+/**
+ * Time `scan` and return the CHEAPEST of up to {@link SCRUB_TIME_SAMPLES} runs.
+ *
+ * The budget above sets the scale the runner works at; this covers the tail
+ * inside it. The assertion is about COMPLEXITY, but a single wall-clock sample
+ * also prices in whatever else the machine was doing during it, and against a
+ * scan this short one preemption is worth more than the scan itself: measured
+ * under 4x CPU oversubscription, single samples of the 300 KB row ranged over
+ * 12-72 ms while the cheapest of five stayed at 30 ms.
+ *
+ * A stall lands on a sample, not on every sample, while a quadratic scan cannot
+ * get under the budget on any of them, so the MINIMUM is the statistic that
+ * tells the two apart. Sampling stops at the first run inside the budget, so
+ * the normal case still pays for exactly one scan, and it stops just as early
+ * on a run so far past the budget that only a complexity regression explains
+ * it — a reintroduced ~7.5 s blowup fails after one scan, not five.
+ */
+function fastestScrubMs(scan: () => void): number {
+  let fastest = Number.POSITIVE_INFINITY;
+  for (let sample = 0; sample < SCRUB_TIME_SAMPLES; sample += 1) {
+    const started = performance.now();
+    scan();
+    fastest = Math.min(fastest, performance.now() - started);
+    if (fastest < SCRUB_TIME_BUDGET_MS || fastest > SCRUB_TIME_BUDGET_MS * 10) break;
+  }
+  return fastest;
+}
 
 describe('scrub cost', () => {
   it.each([
@@ -182,11 +224,12 @@ describe('scrub cost', () => {
     ],
     ['a 300 KB run of unterminated non-credential parameters', '?a='.repeat(100_000)],
   ])('stays linear on %s', (_label, input) => {
-    const started = performance.now();
-    const out = redactIdentifiers(input);
-    const elapsed = performance.now() - started;
+    let out = '';
+    const elapsed = fastestScrubMs(() => {
+      out = redactIdentifiers(input);
+    });
 
-    // None of the three is actually redactable — the scan is all that is timed.
+    // None of the four is actually redactable — the scan is all that is timed.
     expect(out).toBe(input);
     expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
   });
@@ -246,9 +289,10 @@ describe('boundScrubInput', () => {
     const hostile = `?${'{"apikey":"a","signature":"b"},'.repeat(34_000)}`;
     expect(hostile.length).toBeGreaterThan(1_000_000);
 
-    const started = performance.now();
-    const out = redactIdentifiers(boundScrubInput(hostile));
-    const elapsed = performance.now() - started;
+    let out = '';
+    const elapsed = fastestScrubMs(() => {
+      out = redactIdentifiers(boundScrubInput(hostile));
+    });
 
     expect(out.length).toBeLessThanOrEqual(SCRUB_INPUT_MAX_CHARS);
     expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);

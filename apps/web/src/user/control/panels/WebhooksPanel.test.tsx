@@ -9,6 +9,7 @@ import {
   WEBHOOK_DELIVERY_TIMEOUT_ERROR,
   WEBHOOK_DELIVERY_UNRESOLVED_ERROR,
   type CreateWebhookSubscriptionResponse,
+  type WebhookDeliveryError,
   type WebhookDeliveryListResponse,
   type WebhookSubscriptionListResponse,
 } from '@bettertrack/contracts';
@@ -65,7 +66,7 @@ const CREATED: CreateWebhookSubscriptionResponse = {
 /** One failed delivery row: no HTTP status, only a scrubbed reason string. */
 function delivery(
   suffix: string,
-  error: string,
+  error: WebhookDeliveryError,
   attempts: number,
 ): WebhookDeliveryListResponse['deliveries'][number] {
   return {
