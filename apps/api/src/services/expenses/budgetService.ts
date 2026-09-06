@@ -22,6 +22,7 @@ import type {
 import { isDriverErrorCode } from '../../data/driverError';
 import type { Logger } from '../../logger';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import { calendarDayInTimezone } from '../standingOrders/schedule';
 
 /**
  * Expense dashboards + per-category budgets with matrix-routed alerts
@@ -32,7 +33,8 @@ import type { NotificationCenter } from '../notifications/notificationCenter';
  * target.
  *
  * Strict separation (the P9 mandate) holds by construction: this service touches
- * only the expense repositories and the notification center — it imports no
+ * only the expense repositories and the notification center (plus one pure,
+ * I/O-free calendar helper — {@link calendarDayInTimezone}) — it imports no
  * portfolio / domain money-math / tax / currency module, so the feature cannot
  * alter any portfolio surface and does no FX (every aggregate is a currency-naive
  * magnitude sum in the recorded amounts; the area is single-currency by design).
@@ -118,9 +120,28 @@ function isUniqueViolation(err: unknown): boolean {
   return isDriverErrorCode(err, '23505');
 }
 
-/** The calendar-month period key (`YYYY-MM`, UTC) for an instant. */
+/**
+ * The clock the expense ledger's months are read on.
+ *
+ * Rows are dated on the deploy's calendar day, so "the current month" has to be
+ * the same one the ledger displays — it was UTC, which made the aggregates flip
+ * two hours late: at 01:15 Vienna on 1 October `GET /expenses/summary` still
+ * answered September while a row booked `2025-10-01` was already on the ledger
+ * and invisible to it. The cash lane hit exactly this and fixed it in #1792; the
+ * value here deliberately MIRRORS `CASH_MONTH_TIME_ZONE` rather than importing
+ * it — the expense area imports nothing from the cash/portfolio lane (the §13.5
+ * V5-P9 separation wall, frozen by `expensesSeparation.test.ts`).
+ */
+const EXPENSE_MONTH_TIME_ZONE = 'Europe/Vienna';
+
+/**
+ * The calendar-month period key (`YYYY-MM`) of an instant on the ledger's clock
+ * — see {@link EXPENSE_MONTH_TIME_ZONE}. `calendarDayInTimezone` is the pure,
+ * I/O-free `Intl` hop the standing-order scheduler already isolates for exactly
+ * this question; the month is its `YYYY-MM-DD` day truncated.
+ */
 function periodKeyFor(date: Date): string {
-  return date.toISOString().slice(0, 7);
+  return calendarDayInTimezone(date.getTime(), EXPENSE_MONTH_TIME_ZONE).slice(0, 7);
 }
 
 /** The `[from, toExclusive)` ISO-day bounds of a `YYYY-MM` month. */

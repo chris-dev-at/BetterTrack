@@ -3208,6 +3208,10 @@
     "friendsSelect": "Select friends",
     "allFriendsConfirm": "This shares a read-only view with everyone you are friends with.",
     "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This may let more people see this item.",
+    "audienceGroupNamed": {
+      "one": "group “{{name}}” ({{count}} member)",
+      "other": "group “{{name}}” ({{count}} members)"
+    },
     "audienceWidenAcknowledge": "I understand this change widens access.",
     "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
     "publicAcknowledge": "I understand that anyone with the link can see this.",

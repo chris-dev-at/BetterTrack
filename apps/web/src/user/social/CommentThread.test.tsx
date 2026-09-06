@@ -345,6 +345,75 @@ describe('CommentThread (§13.5 V5-P8)', () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
+  test('a poll that starts 404ing collapses the thread exactly as a mount rejection does', async () => {
+    // The summary is read once; since #1855 the newest-window poll is the ONLY
+    // read still running, so it is the only one that can learn the owner has
+    // narrowed the audience under an open thread. TanStack keeps the last
+    // successful `data` across a failed refetch, so leaving its failure unread
+    // kept every comment on screen while the server refused every read.
+    vi.useFakeTimers();
+    try {
+      const reactions = [{ emoji: '🔥' as const, count: 2, reacted: false }];
+      vi.mocked(getCommentThreadSummary).mockResolvedValue(summary({ commentCount: 1, reactions }));
+      vi.mocked(getCommentThread).mockResolvedValueOnce(
+        thread({ comments: [oneComment], commentCount: 1, reactions }),
+      );
+      const { container } = renderThread();
+      await vi.advanceTimersByTimeAsync(0);
+
+      fireEvent.click(screen.getByRole('button', { name: /1 comment$/i }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByText('Nice pick!')).toBeInTheDocument();
+
+      // The owner narrows the audience (or unfriends the reader): every tick
+      // from here is a confirmed rejection.
+      vi.mocked(getCommentThread).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'not found'));
+      await vi.advanceTimersByTimeAsync(THREAD_POLL_MS + 1);
+
+      expect(screen.queryByText('Nice pick!')).not.toBeInTheDocument();
+      expect(screen.queryByText('bob')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /1 comment/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('group', { name: /react to this item/i })).not.toBeInTheDocument();
+      expect(container).toBeEmptyDOMElement();
+
+      // …and the refused poll stops rather than hammering a closed door.
+      const refusedCalls = vi.mocked(getCommentThread).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(THREAD_POLL_MS * 3);
+      expect(getCommentThread).toHaveBeenCalledTimes(refusedCalls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a transport failure on the poll keeps the recoverable retry row', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(getCommentThreadSummary).mockResolvedValue(summary({ commentCount: 1 }));
+      const page = thread({ comments: [oneComment], commentCount: 1 });
+      vi.mocked(getCommentThread).mockResolvedValueOnce(page);
+      renderThread();
+      await vi.advanceTimersByTimeAsync(0);
+
+      fireEvent.click(screen.getByRole('button', { name: /1 comment$/i }));
+      await vi.advanceTimersByTimeAsync(0);
+
+      vi.mocked(getCommentThread).mockRejectedValue(new Error('offline'));
+      await vi.advanceTimersByTimeAsync(THREAD_POLL_MS + 1);
+
+      // Recoverable, so the surface stays — as one compact retry row, not as a
+      // thread rendered from data the reader may no longer be allowed to see.
+      expect(screen.getByText(/couldn't load the comments/i)).toBeInTheDocument();
+      expect(screen.queryByText('Nice pick!')).not.toBeInTheDocument();
+
+      vi.mocked(getCommentThread).mockResolvedValue(page);
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByText('Nice pick!')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('keeps transport failures visible and retryable', async () => {
     vi.mocked(getCommentThreadSummary)
       .mockRejectedValueOnce(new Error('offline'))
