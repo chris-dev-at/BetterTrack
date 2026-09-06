@@ -31,6 +31,15 @@ vi.mock('../../lib/marketIntelApi', () => ({
   getAssetNews: vi.fn(),
 }));
 
+// The deploy-time market-intel capability (§13.5 V5-P5). It decides whether the
+// page ASKS for intel at all, so the gate-off case drives it explicitly (#1874).
+const deployCapabilities = vi.hoisted(() => ({ marketIntel: true }));
+vi.mock('../../lib/featureFlags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/featureFlags')>()),
+  useDeployCapability: (key: string) =>
+    key === 'marketIntel' ? deployCapabilities.marketIntel : true,
+}));
+
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
 // exactly as the PriceChart tests do (same shape, different file).
 const chartMocks = vi.hoisted(() => {
@@ -63,6 +72,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ApiError } from '../../lib/apiClient';
+import { I18nProvider } from '../../i18n';
 import { formatDate } from '../../lib/format';
 import {
   getAssetDividends,
@@ -169,6 +179,7 @@ function makeAddToWatchlistMutation(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  deployCapabilities.marketIntel = true;
   vi.mocked(getAssetDetail).mockResolvedValue(baseDetail);
   vi.mocked(getAssetQuote).mockResolvedValue({
     quote: baseDetail.quote,
@@ -1090,5 +1101,59 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
       watchlistId: 'wl-phone',
     });
     expect(container.querySelector('.bt-asset-detail')).toBeInTheDocument();
+  });
+});
+
+describe('AssetDetailPage — market intel gated on the deployment (#1874)', () => {
+  test('issues none of the four intel requests when the capability is off', async () => {
+    deployCapabilities.marketIntel = false;
+
+    renderPage();
+    await screen.findByText('Bayer AG');
+    // The page itself did load — the detail read is not gated.
+    await waitFor(() => expect(getAssetDetail).toHaveBeenCalled());
+
+    // …and no request was spent on an arc that could only answer available:false.
+    expect(getAssetDividends).not.toHaveBeenCalled();
+    expect(getAssetEarnings).not.toHaveBeenCalled();
+    expect(getAssetSplits).not.toHaveBeenCalled();
+    expect(getAssetNews).not.toHaveBeenCalled();
+  });
+
+  test('still asks for all four when the deployment has the capability', async () => {
+    renderPage();
+    await screen.findByText('Bayer AG');
+
+    await waitFor(() => expect(getAssetDividends).toHaveBeenCalled());
+    expect(getAssetEarnings).toHaveBeenCalled();
+    expect(getAssetSplits).toHaveBeenCalled();
+    expect(getAssetNews).toHaveBeenCalled();
+  });
+});
+
+describe('AssetDetailPage — the asset-type badge is copy, not an enum (#1874)', () => {
+  test('renders the translated label rather than the raw slug', async () => {
+    renderPage();
+
+    expect(await screen.findByText('Stock')).toBeInTheDocument();
+    expect(screen.queryByText('stock')).not.toBeInTheDocument();
+  });
+
+  test('renders it in German under a DE provider', async () => {
+    // `I18nProvider` seeds the format locale to de-AT, which is also the
+    // module default in tests — so this leaves no locale residue behind it.
+    render(
+      <I18nProvider initialLocale="de">
+        <QueryClientProvider client={makeQueryClient()}>
+          <MemoryRouter initialEntries={[`/assets/${ASSET_ID}`]}>
+            <Routes>
+              <Route path="/assets/:id" element={<AssetDetailPage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByText('Aktie')).toBeInTheDocument();
   });
 });

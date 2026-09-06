@@ -1652,6 +1652,13 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
   },
   {
     component: 'user/workboard/WorkboardPage.tsx',
+    read: 'UpcomingEarningsZone.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the zone ASKS for the earnings calendar at all (#1874); an unresolved or failing bootstrap leaves the optional zone absent, which is the state binding P5 already prescribes when unconfigured.',
+  },
+  {
+    component: 'user/workboard/WorkboardPage.tsx',
     read: 'UpcomingEarningsZone.data',
     states: ['loading', 'error'],
     reason:
@@ -1708,6 +1715,34 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'The shared hook returns the complete query to MirrorInvitesSection, which renders loading and classifies terminal versus retryable failures in Social requests.',
     delegatedTo: 'MirrorInvitesSection',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'DividendsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874). While it is unresolved or failing the block is absent exactly as binding P5 requires when unconfigured, which is what the intel read below would draw anyway — there is no state of its own, and the server stays the real boundary.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'EarningsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874); an unresolved or failing bootstrap leaves the optional earnings block absent, which is the state binding P5 already prescribes when unconfigured.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'NewsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874); an unresolved or failing bootstrap leaves the optional news block absent, which is the state binding P5 already prescribes when unconfigured.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'SplitsSection.marketIntel',
+    states: ['loading', 'error'],
+    reason:
+      'The deploy-time capability read only decides whether the block ASKS for intel at all (#1874); an unresolved or failing bootstrap leaves the optional splits block absent, which is the state binding P5 already prescribes when unconfigured.',
   },
   {
     component: 'user/assets/AssetDetailPage.tsx',
@@ -2146,14 +2181,22 @@ export type V5AsyncStateDebtLedger = Readonly<
  * AI and leave the wizard exactly as a deployment without a provider sees it —
  * so it is an exemption above, not debt, and the ceiling stays zero.
  *
- * 225 → 224 with the V5-P13b home sync gate (#1878): `HomeBoard` no longer opens
+ * 225 → 230 with the V5-P5 intel gating (#1874): the asset page's four intel
+ * blocks and the Workboard's earnings zone now read the deploy capability and
+ * gate their request on it, so a deployment with the arc off spends no round
+ * trips on reads that could only answer `available: false`. Each capability read
+ * decides ONLY whether its block asks — while unresolved or failing, the block
+ * stays absent exactly as binding P5 prescribes when unconfigured — so all five
+ * are exemptions above, not debt, and the ceiling stays zero.
+ *
+ * 230 → 229 with the V5-P13b home sync gate (#1878): `HomeBoard` no longer opens
  * a read at all. It used to call `usePrivacyMode()` — a second, account-UNSCOPED
  * `['vault','media']` query, unshared with the one the account gate already
  * resolved — whose failure silently demoted the board to a device-local copy.
  * The mode now comes from that gate's published context, which is synchronous,
  * so the site and its delegated-to-AccountModeRoot exemption are both gone.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 224;
+export const V5_ASYNC_READ_SITE_BASELINE = 229;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

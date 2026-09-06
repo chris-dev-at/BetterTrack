@@ -109,3 +109,48 @@ describe('DividendsWidget — the date an event is upcoming on (V5-P5, #1758)', 
     expect(await screen.findByText('No dividends coming up.')).toBeInTheDocument();
   });
 });
+
+describe('DividendsWidget — a book the server only partly read (§5.3 cap, #1874)', () => {
+  const TRUNCATED_LINE = 'Partial: you hold or watch more assets than we look up in one pass.';
+
+  test('never claims "no dividends" over a calendar that covered part of the book', async () => {
+    // 60 held + watched assets, the server keeps 50: the ten dropped are the
+    // watchlist tail, and none of the fifty has an upcoming date.
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [],
+      truncated: true,
+    });
+
+    renderWidget();
+
+    expect(
+      await screen.findByText(
+        'No dividends coming up in the part of your assets we could look up.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No dividends coming up.')).not.toBeInTheDocument();
+  });
+
+  test('shows the rows AND the truncation line when both are present', async () => {
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [entry({ exDate: iso(3) })],
+      truncated: true,
+    });
+
+    renderWidget();
+
+    expect(await screen.findByText('AAA')).toBeInTheDocument();
+    expect(screen.getByText(TRUNCATED_LINE)).toBeInTheDocument();
+  });
+
+  test('leaves the plain empty state alone when the whole book was covered', async () => {
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({ available: true, entries: [] });
+
+    renderWidget();
+
+    expect(await screen.findByText('No dividends coming up.')).toBeInTheDocument();
+    expect(screen.queryByText(TRUNCATED_LINE)).not.toBeInTheDocument();
+  });
+});

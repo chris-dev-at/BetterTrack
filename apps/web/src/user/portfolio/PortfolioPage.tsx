@@ -41,6 +41,7 @@ import {
   formatPercent,
   formatQuantity,
   formatSignedPercent,
+  formatUnitPrice,
 } from '../../lib/format';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
@@ -1540,9 +1541,14 @@ function DividendIntelSection() {
                     {entry.symbol}
                   </Link>
                   <span className="bt-meta flex items-center gap-2">
+                    {/* A per-SHARE distribution, not a total: the unit-price
+                        rule (§7.1 rule 4) is what keeps a sub-cent monthly-ETF
+                        payout from printing as 0,00 — the Home widget already
+                        renders this exact field that way, and the two surfaces
+                        must not disagree about the same number. */}
                     {entry.amount != null ? (
                       <span className="bt-soft bt-num">
-                        {formatMoney(entry.amount, entry.currency ?? undefined)}
+                        {formatUnitPrice(entry.amount, entry.currency ?? undefined)}
                       </span>
                     ) : null}
                     {date !== null ? (

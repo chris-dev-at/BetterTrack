@@ -76,39 +76,54 @@ export function NewsWidget({ size }: WidgetProps) {
     })
     .filter((group) => group.headlines.length > 0);
 
-  if (groups.length === 0) return <Empty title={t('home.widgets.news.empty')} />;
+  // The server caps the per-request provider fan-out (§5.3), so a book past that
+  // budget yields a digest covering only part of it. The line is tied to
+  // `truncated`, NOT to having groups: the cap runs over the raw book before the
+  // news-capability and held-only filters, so a capped selection can yield zero
+  // groups — and the plain empty state is then the loudest claim-of-completeness
+  // the widget can make (the rule NewsDigestPage.tsx already states).
+  const truncated = digestQuery.data.truncated === true;
+
+  if (groups.length === 0) {
+    return (
+      <Empty title={t(truncated ? 'home.widgets.news.emptyPartial' : 'home.widgets.news.empty')} />
+    );
+  }
 
   return (
-    <ul className="bt-band bt-home-news">
-      {groups.map((group) => (
-        <li className="bt-home-news__group" key={group.assetId}>
-          <p className="bt-label bt-home-news__symbol" title={group.name}>
-            {group.symbol}
-          </p>
-          <ul className="bt-home-news__items">
-            {group.headlines.map((headline) => (
-              <li key={headline.id}>
-                <a
-                  className="bt-home-news__link"
-                  href={headline.url}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  {headline.title}
-                </a>
-                <span className="bt-meta bt-home-news__meta">
-                  {[
-                    headline.publisher,
-                    headline.publishedAt === null ? null : formatDateTime(headline.publishedAt),
-                  ]
-                    .filter((part) => part !== null && part !== '')
-                    .join(' · ')}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </li>
-      ))}
-    </ul>
+    <>
+      {truncated ? <p className="bt-meta">{t('home.widgets.news.truncated')}</p> : null}
+      <ul className="bt-band bt-home-news">
+        {groups.map((group) => (
+          <li className="bt-home-news__group" key={group.assetId}>
+            <p className="bt-label bt-home-news__symbol" title={group.name}>
+              {group.symbol}
+            </p>
+            <ul className="bt-home-news__items">
+              {group.headlines.map((headline) => (
+                <li key={headline.id}>
+                  <a
+                    className="bt-home-news__link"
+                    href={headline.url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {headline.title}
+                  </a>
+                  <span className="bt-meta bt-home-news__meta">
+                    {[
+                      headline.publisher,
+                      headline.publishedAt === null ? null : formatDateTime(headline.publishedAt),
+                    ]
+                      .filter((part) => part !== null && part !== '')
+                      .join(' · ')}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
