@@ -5,6 +5,8 @@ import { cloneElement, isValidElement } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { backtestPreviewRequestSchema } from '@bettertrack/contracts';
+
 vi.mock('../../lib/conglomerateApi', () => ({
   getConglomerate: vi.fn(),
   getResolvedConglomerate: vi.fn(),
@@ -326,6 +328,61 @@ describe('ConglomerateDetailPage', () => {
         /40,00 % of this blueprint is a nested blueprint that holds no assets/,
       ),
     ).toBeInTheDocument();
+  });
+
+  test('an EMPTY blueprint is not reported as a nested one that holds no assets (#1877)', async () => {
+    // A blueprint whose only constituent was a deleted custom asset flattens to
+    // `{ positions: [], nested: false, unresolvedPct: 100 }` — there is nothing
+    // for the remainder to be normalized against. The empty state below is the
+    // honest message; the nested-blueprint alert would be a claim the same
+    // payload contradicts.
+    vi.mocked(getConglomerate).mockResolvedValue({
+      ...DETAIL,
+      positionCount: 0,
+      positions: [],
+    });
+    vi.mocked(getResolvedConglomerate).mockResolvedValue({
+      conglomerateId: CONGLOMERATE_ID,
+      nested: false,
+      positions: [],
+      unresolvedPct: 100,
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+    expect(screen.queryByText(/holds no assets/)).not.toBeInTheDocument();
+  });
+
+  test('backtests a nested basket that resolves past the 50-position write cap (#1877)', async () => {
+    // The server activates a basket that resolves to up to MAX_FLATTENED_POSITIONS
+    // assets; the detail page posts that whole resolved vector. While the preview
+    // contract was bounded at the §6.5 write cap of 50, this request was a
+    // permanent 400 VALIDATION_ERROR on a blueprint the server calls `active`.
+    const positions = Array.from({ length: 200 }, (_, i) => ({
+      assetId: `018f0000-0000-7000-8000-${(i + 1).toString(16).padStart(12, '0')}`,
+      weightPct: 0.5,
+      asset: AAPL,
+    }));
+    vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
+    vi.mocked(getResolvedConglomerate).mockResolvedValue({
+      conglomerateId: CONGLOMERATE_ID,
+      nested: true,
+      positions,
+      unresolvedPct: 0,
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(previewBacktest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          positions: positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+        }),
+        expect.anything(),
+      ),
+    );
+    const sent = vi.mocked(previewBacktest).mock.calls[0]![0];
+    expect(backtestPreviewRequestSchema.safeParse(sent).success).toBe(true);
   });
 
   test('a fully-resolved basket says nothing about an unresolved share', async () => {

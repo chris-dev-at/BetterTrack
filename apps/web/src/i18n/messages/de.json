@@ -2503,6 +2503,7 @@
       },
       "rangeAriaLabel": "Backtest-Zeitraum auswählen",
       "benchmarkAriaLabel": "Benchmark wählen",
+      "benchmarkUnresolvedShare": "{{pct}} ohne Assets — diese Spalte zeigt nur den Rest",
       "modeAriaLabel": "Modus für spät notierte Werte wählen",
       "rebalanceAriaLabel": "Rebalancing-Frequenz wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",

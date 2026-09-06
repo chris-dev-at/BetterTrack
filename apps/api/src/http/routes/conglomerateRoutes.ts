@@ -12,6 +12,7 @@ import {
   type UpdateConglomerateRequest,
 } from '@bettertrack/contracts';
 
+import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -22,9 +23,11 @@ import type { AppContext } from '../context';
  * Conglomerate owned by another user is a 404, never a 403 (no IDOR, §8).
  * Controllers stay thin: parse → service → respond. The Invest Calculator's
  * `POST /:id/allocate` (§6.7) is mounted here; the backtest endpoint lives on
- * its own router.
+ * its own router. That one handler is cost-metered (§10 COST TABLE) — its
+ * fan-out follows the flatten, not the §6.5 write cap — while the CRUD around
+ * it stays on `general` alone.
  */
-export function createConglomerateRouter(ctx: AppContext): Router {
+export function createConglomerateRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
@@ -119,8 +122,14 @@ export function createConglomerateRouter(ctx: AppContext): Router {
 
   // POST /conglomerates/:id/allocate — Invest Calculator: budget → buy list (§6.7),
   // denominated in the caller's base currency (§5.4, V3-P10d).
+  //
+  // Cost-metered (§10 COST TABLE, #1877): the allocation walks the RESOLVED
+  // flatten — up to MAX_FLATTENED_POSITIONS assets, one row read, one quote and
+  // one FX conversion each — so its work scales with user-controlled input while
+  // `general`'s request counter cannot tell it apart from a 2 ms read.
   router.post(
     '/:conglomerateId/allocate',
+    limiters.cost('conglomerateAllocate'),
     validateParams(conglomerateIdParamSchema),
     validateBody(allocateRequestSchema),
     async (req, res) => {

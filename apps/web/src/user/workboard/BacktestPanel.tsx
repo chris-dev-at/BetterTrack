@@ -479,6 +479,20 @@ function StatsTable({
             </th>
             <th scope="col" className="px-3 py-2 text-right font-medium">
               {benchmark.label}
+              {/* The slice of a conglomerate benchmark that resolved to NO asset
+                  (#1877): its curve and every stat in this column cover only the
+                  REST of that basket, normalized to 100 among themselves. Saying
+                  so is what keeps the Δ column from silently comparing the
+                  basket against a partial benchmark carrying the whole one's
+                  name — the sibling surfaces (`ComparisonPage`, the blueprint
+                  detail page) already do. Always 0 for an asset or preset. */}
+              {benchmark.unresolvedPct > 0 ? (
+                <span className="block text-xs font-normal normal-case tracking-normal bt-muted">
+                  {t('workboard.backtest.benchmarkUnresolvedShare', {
+                    pct: formatPercent(benchmark.unresolvedPct),
+                  })}
+                </span>
+              ) : null}
             </th>
             {showDelta ? (
               <th scope="col" className="px-3 py-2 text-right font-medium">

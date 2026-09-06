@@ -147,7 +147,14 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
    * bar below — restated here so a weight edit has to be argued, not just made.
    */
   const COST_BAR = {
-    /** Builder weight-tuning: one debounced preview every ~3 s. */
+    /**
+     * Builder weight-tuning: one debounced preview every ~3 s, in BASKET UNITS
+     * per minute — `backtestPreview` is priced per 50 positions and the route
+     * multiplies by ⌈positions / 50⌉ (#1877). A Builder draft is capped at 50
+     * positions by §6.5, so every preview in this term is exactly one unit; a
+     * blueprint detail page replaying a 250-asset flatten pays five, and is not
+     * slider-driven.
+     */
     backtestPreviewPerMinute: 20,
     /**
      * N-way comparison, in SERIES per minute — `backtestCompare` is priced per
@@ -164,6 +171,12 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
      * allowance (140 req/min below), not by this term.
      */
     backtestSharedSandboxPerMinute: 2,
+    /**
+     * The Invest Calculator (#1877). A deliberate submit, not a slider: one
+     * calculation plus two re-runs from changing the budget or toggling
+     * whole-shares — the toggle re-runs the last calculation immediately.
+     */
+    conglomerateAllocatePerMinute: 3,
     /** Analytics range / filter / compare changes. */
     analyticsSeriesPerMinute: 12,
     /** Shared-with-me list on tab focus + reconnect refetch. */
@@ -229,7 +242,10 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       // until #1855 metered by nothing at all.
       socialAudienceSet: 20,
       // A perturbed weight vector is a cache MISS by construction; a miss walks
-      // the positions' history sequentially through the provider layer.
+      // the positions' history sequentially through the provider layer. PER
+      // 50-POSITION BASKET UNIT since #1877: the preview bound is now the
+      // flatten bound (250), so one body can carry five drafts' worth of that
+      // walk. A ≤ 50-position Builder preview still costs exactly this.
       backtestPreview: 25,
       // PER SERIES (#1755) — the route multiplies by the number of baskets the
       // body overlays, so a 6-way comparison spends 120. Just under a preview
@@ -237,6 +253,11 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       backtestCompare: 20,
       // A preview's engine run with no memo behind it, so every request pays.
       backtestSharedSandbox: 25,
+      // The Invest Calculator (#1877), until then metered by nothing: one asset
+      // read, one quote and one FX conversion for each of up to 250 RESOLVED
+      // assets — the flatten bound, not the 50-position write cap. Under a
+      // comparison series, which pays for the same fan-out plus an engine run.
+      conglomerateAllocate: 15,
       // Series + optional compare series + contribution table, over a window
       // that ANALYTICS_MAX_RANGE_DAYS now bounds.
       analyticsSeries: 10,
@@ -255,6 +276,7 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       COST_BAR.backtestPreviewPerMinute * requestCosts.backtestPreview +
       COST_BAR.backtestComparePerMinute * requestCosts.backtestCompare +
       COST_BAR.backtestSharedSandboxPerMinute * requestCosts.backtestSharedSandbox +
+      COST_BAR.conglomerateAllocatePerMinute * requestCosts.conglomerateAllocate +
       COST_BAR.analyticsSeriesPerMinute * requestCosts.analyticsSeries +
       COST_BAR.socialSharedPerMinute * requestCosts.socialShared +
       COST_BAR.socialGroupsPerMinute * requestCosts.socialGroups +
@@ -264,7 +286,7 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
       COST_BAR.importRowResolvePerMinute * requestCosts.importRowResolve;
     // Pins the model's arithmetic, not a measurement: editing a term above has
     // to restate this number deliberately.
-    expect(worstMinute).toBe(1273);
+    expect(worstMinute).toBe(1318);
     expect(expensive.windowSec).toBe(60);
     expect(expensive.limit).toBeGreaterThanOrEqual(worstMinute * 3);
   });
@@ -280,6 +302,13 @@ describe('§10 COST TABLE — weights for the expensive reads (#1643)', () => {
     // …and #1855 did the same for the audience write, whose per-recipient
     // fan-out was the largest of any V5-P8 write and metered by nothing.
     expect(requestCosts.socialAudienceSet).toBeGreaterThan(0);
+    // …and #1877 for the Invest Calculator, the last V5-P6 read whose fan-out
+    // follows the 250-asset flatten while `general` was its only guard.
+    expect(requestCosts.conglomerateAllocate).toBeGreaterThan(0);
+    // A preview of a full flatten is priced as the five drafts' worth of work it
+    // is, so it can never cost less than the comparison of two baskets that
+    // resolve to the same assets.
+    expect(requestCosts.backtestPreview * 5).toBeGreaterThan(requestCosts.backtestCompare * 2);
     // A comparison is priced per SERIES, so the cheapest one (2 baskets) already
     // costs more than the strictly cheaper single-basket preview, and the
     // dearest (6) costs proportionally more than that.

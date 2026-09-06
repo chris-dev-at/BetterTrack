@@ -741,6 +741,7 @@ export const REQUEST_COST_KEYS = [
   'backtestPreview',
   'backtestCompare',
   'backtestSharedSandbox',
+  'conglomerateAllocate',
   'analyticsSeries',
   'importCreate',
   'importRowResolve',
@@ -1286,18 +1287,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | GET  /social/items/:kind/:id/thread       | socialThread    |    7  | two access resolutions, a participant probe, a page read and two grouped reaction aggregates — and the SPA POLLS it every 30 s while a thread is open (#1829) |
   // | GET  /social/items/:kind/:id/thread/summary | socialThread  |    7  | the SAME key (#1855): the collapsed head runs the identical access-resolution path, minus only the page fetch |
   // | PUT  /social/audience/:kind/:subjectId    | socialAudienceSet |  20 | the largest fan-out of any social write: the owner's whole friendship set (no LIMIT), a group roster of up to 200, a paranoid transition lock per derived recipient and one notification emit each (#1855) |
-  // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
+  // | POST /backtest/preview                    | backtestPreview |   25  | **per 50-position basket unit** — a weight-perturbed vector is a cache MISS by construction, and a miss walks the positions' history sequentially through the provider layer; the route multiplies by ⌈positions / 50⌉ (1–5) because the body may now carry a nested blueprint's whole 250-asset flatten (#1877) |
   // | POST /backtest/compare                    | backtestCompare |   20  | **per series** — the route multiplies by the body's id count (2–6 ⇒ 40–120): the same history walk as a preview, once per basket, over baskets that each flatten to up to 250 assets |
   // | POST /backtest/shared/:id/preview         | backtestSharedSandbox | 25 | a preview's engine run over a friend's basket, deliberately with NO Redis memo — every request computes |
+  // | POST /conglomerates/:id/allocate          | conglomerateAllocate | 15 | the Invest Calculator's fan-out follows the FLATTEN, not the §6.5 50-position write cap: one asset row read, one quote and one FX conversion per resolved asset, up to 250 of them — and `general` was its only guard (#1877) |
   // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
   // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    7  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
   //
-  // `backtestCompare` is the table's only PER-UNIT-OF-WORK weight. A flat price
-  // would either overcharge a two-basket comparison or undercharge a six-basket
-  // one by 3×, and the endpoint's whole problem was that its cost is chosen by
-  // the caller. The multiplier is read off the raw body by the route and clamped
-  // to the contract's own 2–6 bound, so a caller cannot name its own price.
+  // `backtestCompare` and `backtestPreview` are the table's PER-UNIT-OF-WORK
+  // weights. A flat price would either overcharge a two-basket comparison or
+  // undercharge a six-basket one by 3×, and the endpoint's whole problem was
+  // that its cost is chosen by the caller. Each multiplier is read off the raw
+  // body by the route and clamped to the contract's own bound (2–6 series;
+  // 1–250 positions ⇒ 1–5 basket units), so a caller cannot name its own price.
+  // `backtestPreview`'s unit is one 50-position basket — the §6.5 write cap —
+  // so every Builder preview still costs exactly the 25 it always did, and only
+  // a resolved nested blueprint of up to 250 assets pays the 5× it asks for.
   //
   // A note on `analyticsSeries`, so the next reader does not re-derive it from
   // the wrong bound: its work is sized by the DATA, never by the requested
@@ -1313,23 +1319,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // most expensive read in the app — now have weights of their own above.
   //
   // MODELLED NORMAL-USE BAR for the unit budget — the same one active user,
-  // pessimistically doing all seven things inside the SAME minute (nobody
-  // actually does):
+  // pessimistically doing all of these inside the SAME minute (nobody actually
+  // does):
   //
-  //   * builder weight-tuning, one debounced preview every ~3 s  = 20 × 25 = 500
+  //   * builder weight-tuning, one debounced preview every ~3 s, each
+  //     over a ≤ 50-position draft = ONE basket unit                = 20 × 25 = 500
   //   * analytics range/filter/compare changes, ~12 refetches     = 12 × 10 = 120
   //   * shared-with-me list on focus + reconnect refetch, ~6      =  6 × 10 =  60
   //   * two CSV uploads                                          =  2 × 100 = 200
-  //   * a bulk kind sweep over a statement's undecided rows, ~20  = 20 ×  6 = 120
+  //   * a bulk kind sweep over a statement's undecided rows, ~20  = 20 ×  7 = 140
   //   * two three-basket comparisons (an explicit action, memoised
   //     across every permutation of one set)                      =  5 × 20 = 100
   //   * a couple of what-if tweaks on a friend's shared basket    =  2 × 25 =  50
   //   * three shared items opened (a collapsed head each), one of
   //     them expanded, and its 30 s poll — one NEWEST-WINDOW read
   //     per tick since #1855, not one per loaded page             =  7 ×  7 =  49
+  //   * a minute of hopping between /people and an AudiencePicker =  2 ×  7 =  14
   //   * reworking the audience on a couple of shared items        =  2 × 20 =  40
+  //   * an Invest Calculator run plus two re-runs from changing
+  //     the budget or toggling whole-shares (#1877)               =  3 × 15 =  45
   //
-  //   ⇒ worst realistic 1 min ≈ 1273 units → expensive 4000  (3.1×)
+  //   ⇒ worst realistic 1 min ≈ 1318 units → expensive 4000  (3.0×)
   //
   // The ceiling and the FLOOR move together, which is why #1855 could raise it
   // at all. A weight only binds while `expensive.limit / weight` stays under
@@ -1351,8 +1361,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //
   // …and, on the other side, every weight is large enough that the COST budget
   // bites BEFORE the request COUNT one would: a caller doing nothing but these
-  // is stopped after 160 previews or sandboxes, 40 uploads, ~33 six-basket
-  // comparisons, 200 audience changes or 400 shared/analytics reads per minute —
+  // is stopped after 160 single-unit previews or sandboxes (32 previews of a
+  // full 250-asset flatten), 40 uploads, ~33 six-basket comparisons, 266 budget
+  // allocations, 200 audience changes or 400 shared/analytics reads per minute —
   // all under `general`'s 600 req/min. That is the point of the
   // dimension: a pathological caller is bounded by the WORK it asks for, not by
   // how many requests that work happens to arrive in. Both numbers are pinned
@@ -1672,6 +1683,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         // heavier than any social READ, so a replay loop is refused after 200
         // calls a minute instead of `general`'s 600.
         socialAudienceSet: 20,
+        // PER 50-POSITION BASKET UNIT since #1877, not per request: the body may
+        // now carry a nested blueprint's whole resolved flatten (up to
+        // MAX_FLATTENED_POSITIONS = 250), which is five Builder drafts' worth of
+        // history walking. The route multiplies by ⌈positions / 50⌉ read off the
+        // raw body and clamped to the contract's bound, so a ≤ 50-position
+        // Builder preview — the only shape that existed when this weight was
+        // set — still costs exactly 25.
         backtestPreview: 25,
         // PER SERIES, not per request (#1755): the route multiplies this by the
         // number of conglomerates the body asks to overlay, because that is what
@@ -1684,6 +1702,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         // WITHOUT a Redis memo (the sandbox never persists a thing), so every
         // request computes where a preview may be answered from cache.
         backtestSharedSandbox: 25,
+        // The Invest Calculator (§6.7), metered by nothing until #1877. Its work
+        // follows the FLATTEN, not the 50-position write cap: one asset row read,
+        // one quote and one FX conversion for each of up to 250 resolved assets,
+        // computed on every submit (there is no memo). Below a comparison series
+        // (20), which pays for the same fan-out plus a full engine run over
+        // per-asset history, and above `analyticsSeries` (10), whose fan-out is
+        // one portfolio's holdings.
+        conglomerateAllocate: 15,
         analyticsSeries: 10,
         importCreate: 100,
         importRowResolve: 7,
