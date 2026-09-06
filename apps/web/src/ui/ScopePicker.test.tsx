@@ -213,11 +213,15 @@ describe('ScopePicker', () => {
     // Not shown yet — verbose descriptions moved into info-points, per the
     // anti-bloat rule.
     expect(
-      screen.queryByText(/read your portfolios, holdings and cash balances/i),
+      screen.queryByText(
+        /read your portfolios, holdings, cash balances and the dividend, earnings and news feeds/i,
+      ),
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /more info about portfolio/i }));
     expect(
-      screen.getByText(/read your portfolios, holdings and cash balances/i),
+      screen.getByText(
+        /read your portfolios, holdings, cash balances and the dividend, earnings and news feeds/i,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -287,7 +291,8 @@ describe('ScopeSummary', () => {
           },
           {
             scope: 'portfolio:read',
-            label: 'View your portfolios, holdings, transactions and cash balances',
+            label:
+              'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
           },
           { scope: 'market:read', label: 'Search assets and read market data' },
         ]}
@@ -297,7 +302,9 @@ describe('ScopeSummary', () => {
     // Every module row surfaces its plain-language claim(s) under the module label.
     const portfolio = screen.getByText('Portfolio').closest('li')!;
     expect(
-      within(portfolio).getByText('View your portfolios, holdings, transactions and cash balances'),
+      within(portfolio).getByText(
+        'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
+      ),
     ).toBeInTheDocument();
     expect(
       within(portfolio).getByText(
