@@ -1636,6 +1636,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     delegatedTo: 'AudiencePicker',
   },
   {
+    component: 'user/social/CommentThread.tsx',
+    read: 'CommentThread.head',
+    states: ['loading', 'error'],
+    reason:
+      'The 30 s poll of the newest window (#1855) is a REFRESH of a page the thread read has already drawn, not a read of its own: while it is unresolved or failing the surface renders exactly what the paged read left there, and that read owns the loading, error and empty states for the whole thread. A spinner or error card for a background tick would report a transport detail the reader never asked for.',
+    delegatedTo: 'CommentThread.thread',
+  },
+  {
     component: 'user/components/CmdKPalette.tsx',
     read: 'CmdKPalette.capabilities',
     states: ['loading', 'error'],
@@ -2125,8 +2133,14 @@ export type V5AsyncStateDebtLedger = Readonly<
  * are the §6.18 gate — an unresolved or failed read is treated exactly like
  * "no provider configured", so there is no loading or error state to draw — and
  * are recorded as exemptions above rather than as debt; the ceiling stays zero.
+ *
+ * 223 → 224 with the V5-P8 poll bound (#1855): `CommentThread`'s 30 s poll moves
+ * off the infinite query — which refetched EVERY loaded page per tick — onto a
+ * read of the newest window alone. That read is a refresh of a page the thread
+ * read has already drawn, so it has no states of its own: it delegates to the
+ * paged read and is recorded as an exemption above, and the ceiling stays zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 223;
+export const V5_ASYNC_READ_SITE_BASELINE = 224;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
