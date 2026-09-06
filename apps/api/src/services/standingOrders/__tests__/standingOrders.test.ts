@@ -421,6 +421,166 @@ describe('standing orders — pause / resume', () => {
   });
 });
 
+/**
+ * A service whose portfolio lock runs `mutate` in exactly the window the daily
+ * scan leaves open (#1836): after `listActive` snapshotted the row, before the
+ * locked claim re-reads it. Everything else is the harness's real wiring, so
+ * the booking below goes through the real repositories.
+ */
+function serviceWithLockHook(mutate: (orderId: string) => Promise<void>) {
+  const repo = createStandingOrderRepository(harness.db);
+  return createStandingOrderService({
+    repo: {
+      ...repo,
+      async withActivePortfolioLock(portfolioId, orderId, periodKey, action) {
+        await mutate(orderId);
+        return repo.withActivePortfolioLock(portfolioId, orderId, periodKey, action);
+      },
+    },
+    portfolioRepo: createPortfolioRepository(harness.db),
+    assetRepo: createAssetRepository(harness.db),
+    transactionRepo: createTransactionRepository(harness.db),
+    cashMovementRepo: createCashMovementRepository(harness.db),
+    cashSourceRepo: createCashSourceRepository(harness.db),
+    marketData,
+    snapshots: { async invalidate() {} },
+    notify: {
+      async emit() {
+        return true;
+      },
+    },
+  });
+}
+
+describe('standing orders — an edit between the scan snapshot and the claim', () => {
+  it('books the amount and note in force at the claim, not the snapshotted ones', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-deduct',
+      amount: 3000,
+      label: 'rent',
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.id as string;
+    await depositCash(agent, pid, 5000);
+
+    const repo = createStandingOrderRepository(harness.db);
+    let edited = false;
+    const service = serviceWithLockHook(async (orderId) => {
+      expect(orderId).toBe(id);
+      const patched = await repo.update(user.id, orderId, { amount: 30, label: 'rent (cut)' });
+      expect(patched?.amount).toBe(30);
+      edited = true;
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(edited).toBe(true);
+    expect(result).toMatchObject({ booked: 1, deferred: 0, skippedArchived: 0, failed: 0 });
+    const rows = await cashRows(pid, SOURCE_TAG_STANDING_ORDER);
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]!.amountEur)).toBe(-30);
+    expect(rows[0]!.note).toBe('rent (cut)');
+    expect((await runPeriodKeys(id)).map((r) => r.key)).toEqual(['2026-04-01']);
+  });
+
+  it('books the buy quantity in force at the claim, not the snapshotted one', async () => {
+    const { user, agent, pid } = await setup();
+    const assetId = await seedAsset('EDIT');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 10,
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.id as string;
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = serviceWithLockHook(async (orderId) => {
+      const patched = await repo.update(user.id, orderId, { amount: 2 });
+      expect(patched?.amount).toBe(2);
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(result).toMatchObject({ booked: 1, deferred: 0, skippedArchived: 0, failed: 0 });
+    const txns = await txnRows(pid);
+    expect(txns).toHaveLength(1);
+    expect(Number(txns[0]!.quantity)).toBe(2);
+    expect(Number(txns[0]!.price)).toBe(100);
+    expect(txns[0]!.source).toBe(SOURCE_TAG_STANDING_ORDER);
+    expect((await runPeriodKeys(id)).map((r) => r.key)).toEqual(['2026-04-01']);
+  });
+
+  it('does not book a period an end date pulled back behind it has retired', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const id = created.body.id as string;
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = serviceWithLockHook(async (orderId) => {
+      const patched = await repo.update(user.id, orderId, { endDate: '2026-04-01' });
+      expect(patched?.endDate).toBe('2026-04-01');
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-02T12:00:00Z') });
+
+    expect(result).toMatchObject({
+      booked: 0,
+      skippedDuplicate: 0,
+      deferred: 0,
+      skippedArchived: 1,
+      failed: 0,
+    });
+    // Only Apr 1 — Apr 2 is neither booked nor claimed, so nothing was burnt.
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
+    expect((await runPeriodKeys(id)).map((r) => r.key)).toEqual(['2026-04-01']);
+  });
+
+  it('judges affordability against the fresh amount, not the snapshotted one', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-deduct',
+      amount: 10,
+      label: 'netflix',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const id = created.body.id as string;
+    await depositCash(agent, pid, 50);
+
+    const repo = createStandingOrderRepository(harness.db);
+    const service = serviceWithLockHook(async (orderId) => {
+      const patched = await repo.update(user.id, orderId, { amount: 200 });
+      expect(patched?.amount).toBe(200);
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    // The snapshotted €10 was covered; the €200 in force is not — so the period
+    // defers (and retries) instead of overdrawing the portfolio.
+    expect(result).toMatchObject({ booked: 0, deferred: 1, skippedArchived: 0, failed: 0 });
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toEqual([]);
+    expect(await runPeriodKeys(id)).toEqual([]);
+  });
+});
+
 describe('standing orders — archived portfolios', () => {
   it('suspends archived orders and resumes only at the first later anchor', async () => {
     const { agent, pid: activePid } = await setup();
