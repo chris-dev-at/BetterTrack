@@ -289,8 +289,37 @@ export const WEBHOOK_DELIVERY_REFUSED_ERROR = 'destination not allowed';
  */
 export const WEBHOOK_DELIVERY_UNRESOLVED_ERROR = 'destination unresolved';
 
-/** The delivery-log `error` recorded when the receiver did not answer in time. */
+/**
+ * The transport's own marker for "the receiver did not answer within the
+ * deadline". It is NOT written to the delivery log any more: a filtered port
+ * times out where a closed one refuses instantly, so recording the difference
+ * would let the log answer questions about a network the subscriber is only
+ * allowed to POST to. Both persist as {@link WEBHOOK_DELIVERY_NETWORK_ERROR}.
+ *
+ * It stays in the accepted set because the 30-day log still holds rows written
+ * before that change, and those must keep rendering as the timeout they were.
+ */
 export const WEBHOOK_DELIVERY_TIMEOUT_ERROR = 'timeout';
+
+/**
+ * The delivery-log `error` recorded when the receiver answered with a status it
+ * refused the delivery on. The status itself is the diagnostic and is carried by
+ * `responseStatus`, so this string is deliberately constant.
+ */
+export const WEBHOOK_DELIVERY_HTTP_ERROR = 'receiver rejected the delivery';
+
+/**
+ * The delivery-log `error` recorded for EVERY transport-level failure: a refused
+ * connection, a reset, a TLS handshake that did not complete, a receiver that
+ * never answered.
+ *
+ * One constant for all of them, on purpose. The socket's own message names the
+ * address, the port, the errno and — on a TLS mismatch — the certificate's
+ * alternate names; persisting it would turn a log the subscriber may read into a
+ * scanner for whatever the guard still allows. Refused, filtered and live-but-
+ * not-HTTP therefore look identical in the log, exactly as a guard refusal does.
+ */
+export const WEBHOOK_DELIVERY_NETWORK_ERROR = 'delivery failed';
 
 /**
  * The delivery-log `error` recorded when the subscription's signing secret would
@@ -310,6 +339,46 @@ export const WEBHOOK_DELIVERY_SECRET_ERROR = 'secret unavailable';
 export const WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR = 'event no longer subscribed';
 
 /**
+ * The CLOSED set of values `webhook_deliveries.error` may hold — the whole
+ * vocabulary the dispatcher is allowed to write and the API is allowed to
+ * return. Receiver- and socket-provided text is not in it and cannot get in:
+ * anything else a row still holds is mapped onto
+ * {@link WEBHOOK_DELIVERY_NETWORK_ERROR} on the way out
+ * ({@link normalizeWebhookDeliveryError}).
+ *
+ * {@link WEBHOOK_DELIVERY_TIMEOUT_ERROR} is accepted but no longer written; see
+ * its own note.
+ */
+export const WEBHOOK_DELIVERY_ERRORS = [
+  WEBHOOK_DELIVERY_HTTP_ERROR,
+  WEBHOOK_DELIVERY_REFUSED_ERROR,
+  WEBHOOK_DELIVERY_UNRESOLVED_ERROR,
+  WEBHOOK_DELIVERY_TIMEOUT_ERROR,
+  WEBHOOK_DELIVERY_SECRET_ERROR,
+  WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR,
+  WEBHOOK_DELIVERY_NETWORK_ERROR,
+] as const;
+export const webhookDeliveryErrorSchema = z.enum(WEBHOOK_DELIVERY_ERRORS);
+export type WebhookDeliveryError = (typeof WEBHOOK_DELIVERY_ERRORS)[number];
+
+const DELIVERY_ERRORS: ReadonlySet<string> = new Set<string>(WEBHOOK_DELIVERY_ERRORS);
+
+/**
+ * Coerce a stored `error` onto the closed set. A row written before the set
+ * existed can still hold a raw socket message (`connect ECONNREFUSED
+ * 172.18.0.4:5432`, a TLS altname list); it reads back as the structural
+ * "delivery failed" like every other transport failure, so the documented
+ * "scrubbed" contract is true for the whole 30-day window, not only for rows
+ * written from now on.
+ */
+export function normalizeWebhookDeliveryError(stored: string | null): WebhookDeliveryError | null {
+  if (stored === null) return null;
+  return DELIVERY_ERRORS.has(stored)
+    ? (stored as WebhookDeliveryError)
+    : WEBHOOK_DELIVERY_NETWORK_ERROR;
+}
+
+/**
  * A target URL: a valid absolute http(s) URL. Plain http is accepted (a
  * self-hosted LAN receiver is a first-class use case); the payload is signed
  * either way so the receiver can still authenticate it.
@@ -319,7 +388,9 @@ export const WEBHOOK_DELIVERY_UNSUBSCRIBED_ERROR = 'event no longer subscribed';
  * link-local/cloud metadata (`169.254.0.0/16`, `fe80::/10`), unspecified,
  * broadcast or another non-routable range, with
  * {@link WEBHOOK_URL_BLOCKED_CODE}. Private LAN ranges (RFC1918, `fc00::/7`)
- * stay allowed — that is the self-hosted-receiver case above.
+ * stay allowed — that is the self-hosted-receiver case above — EXCEPT the
+ * private network the deployment's own services sit on, which is refused like
+ * loopback: a receiver is a host on the operator's network, not one of ours.
  */
 export const webhookUrlSchema = z
   .string()
@@ -413,8 +484,12 @@ export const webhookDeliverySchema = z
     responseStatus: z.number().int().nullable(),
     /** How many attempts the delivery took (BullMQ retries counted). */
     attempts: z.number().int().positive(),
-    /** Short scrubbed failure reason; null on success. */
-    error: z.string().nullable(),
+    /**
+     * Why the delivery failed, as one of {@link WEBHOOK_DELIVERY_ERRORS}; null
+     * on success. A closed set, never free text: nothing the receiver or the
+     * socket produced reaches this field.
+     */
+    error: webhookDeliveryErrorSchema.nullable(),
     createdAt: z.string(),
   })
   .strict();
@@ -428,12 +503,16 @@ export type WebhookDeliveryListResponse = z.infer<typeof webhookDeliveryListResp
 /**
  * Why a logged delivery failed, as ONE discriminated value the UI can explain.
  *
- * The stored `error` stays a short scrubbed string (never receiver-provided
- * text), so the four causes that record no `responseStatus` — a guard refusal, a
- * timeout, an unresolvable host and an unavailable signing secret — would
- * otherwise be one indistinguishable red badge. Deriving the reason here rather
- * than in the SPA keeps the writer (the dispatcher) and the reader on the same
- * constants.
+ * The stored `error` is one of {@link WEBHOOK_DELIVERY_ERRORS} (never
+ * receiver-provided text), so the causes that record no `responseStatus` — a
+ * guard refusal, an unresolvable host, an unavailable signing secret and every
+ * transport failure — would otherwise be one indistinguishable red badge.
+ * Deriving the reason here rather than in the SPA keeps the writer (the
+ * dispatcher) and the reader on the same constants.
+ *
+ * `timeout` is only ever derived from a row written before the transport
+ * failures were collapsed; a new one reports `network` (see
+ * {@link WEBHOOK_DELIVERY_NETWORK_ERROR}).
  */
 export const WEBHOOK_DELIVERY_FAILURE_REASONS = [
   /** The receiver answered, with a status it refused the delivery on. */
@@ -456,6 +535,8 @@ export type WebhookDeliveryFailureReason = (typeof WEBHOOK_DELIVERY_FAILURE_REAS
 
 /** The canonical `error` strings the dispatcher writes, mapped to their reason. */
 const FAILURE_REASON_BY_ERROR: Readonly<Record<string, WebhookDeliveryFailureReason>> = {
+  [WEBHOOK_DELIVERY_HTTP_ERROR]: 'http',
+  [WEBHOOK_DELIVERY_NETWORK_ERROR]: 'network',
   [WEBHOOK_DELIVERY_REFUSED_ERROR]: 'refused',
   [WEBHOOK_DELIVERY_UNRESOLVED_ERROR]: 'unresolved',
   [WEBHOOK_DELIVERY_TIMEOUT_ERROR]: 'timeout',
