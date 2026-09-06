@@ -31,13 +31,29 @@ const SHARE_KINDS: readonly ShareKind[] = ['portfolio', 'conglomerate', 'idea', 
  * (required principals reject, optional ones are filtered) are the thing under
  * test, so stubbing them away would prove nothing.
  */
-function makeParanoidGuard(modes: Record<string, 'normal' | 'paranoid'>): ParanoidModeGuard {
+function makeParanoidGuard(
+  modes: Record<string, 'normal' | 'paranoid'>,
+  /** Every lock set the guard was asked to hold, in order — the thing #1829 bounds. */
+  lockedSets?: string[][],
+): ParanoidModeGuard {
   return createParanoidModeGuard({
     privacyModeFor: async (userId) => modes[userId] ?? 'normal',
-    withLockedPrivacyModes: async (userIds, run) =>
-      run(new Map(userIds.map((userId) => [userId, modes[userId] ?? 'normal']))),
+    withLockedPrivacyModes: async (userIds, run) => {
+      lockedSets?.push([...userIds]);
+      return run(new Map(userIds.map((userId) => [userId, modes[userId] ?? 'normal'])));
+    },
   });
 }
+
+/**
+ * The two guard wirings the service can be built with. `context.ts` ALWAYS
+ * passes a guard, so the second one is production — and until #1829 the whole
+ * suite ran only the first, green over a branch the running app never executed.
+ */
+const GUARD_CONFIGS = [
+  ['no paranoid guard', (): ParanoidModeGuard | undefined => undefined],
+  ['the production paranoid guard', (): ParanoidModeGuard | undefined => makeParanoidGuard({})],
+] as const;
 
 function makeHarness(paranoid?: ParanoidModeGuard) {
   const comments = {
@@ -50,6 +66,11 @@ function makeHarness(paranoid?: ParanoidModeGuard) {
     listParticipantsForItem: vi
       .fn<ItemCommentRepository['listParticipantsForItem']>()
       .mockResolvedValue([]),
+    // The #1829 probe: "does any participant need the paranoid treatment?" —
+    // false is the shape of every ordinary thread.
+    hasRestrictedParticipant: vi
+      .fn<ItemCommentRepository['hasRestrictedParticipant']>()
+      .mockResolvedValue(false),
     softDelete: vi.fn<ItemCommentRepository['softDelete']>().mockResolvedValue(true),
   };
   const reactions = {
@@ -74,6 +95,21 @@ function makeHarness(paranoid?: ParanoidModeGuard) {
     listActorIdsForComment: vi
       .fn<ItemReactionRepository['listActorIdsForComment']>()
       .mockResolvedValue([]),
+    hasOwnItemReaction: vi
+      .fn<ItemReactionRepository['hasOwnItemReaction']>()
+      .mockResolvedValue(false),
+    hasOwnCommentReaction: vi
+      .fn<ItemReactionRepository['hasOwnCommentReaction']>()
+      .mockResolvedValue(false),
+    hasRestrictedThreadActor: vi
+      .fn<ItemReactionRepository['hasRestrictedThreadActor']>()
+      .mockResolvedValue(false),
+    hasRestrictedItemActor: vi
+      .fn<ItemReactionRepository['hasRestrictedItemActor']>()
+      .mockResolvedValue(false),
+    hasRestrictedCommentActor: vi
+      .fn<ItemReactionRepository['hasRestrictedCommentActor']>()
+      .mockResolvedValue(false),
   };
   const audience = {
     ownsSubject: vi.fn<AudienceService['ownsSubject']>().mockResolvedValue(false),
@@ -213,419 +249,624 @@ async function expectNotFound(
   await expect(operation).rejects.toMatchObject({ statusCode: 404, code });
 }
 
-describe('commentService — audience and moderation boundaries', () => {
-  describe.each(SHARE_KINDS)('%s thread access', (kind) => {
-    it('uses the live audience matrix for owner, admitted viewer, and unauthorized viewer', async () => {
-      const harness = makeHarness();
-      admitOwner(harness, kind);
-      admit(harness, kind, [VIEWER]);
+/**
+ * EVERY boundary below is proven in BOTH wirings (#1829): without a guard, and
+ * with the one `context.ts` always passes. The production wiring must reach the
+ * same answers through the bounded path, not through a participant enumeration.
+ */
+for (const [label, guard] of GUARD_CONFIGS) {
+  describe(`commentService — audience and moderation boundaries (${label})`, () => {
+    describe.each(SHARE_KINDS)('%s thread access', (kind) => {
+      it('uses the live audience matrix for owner, admitted viewer, and unauthorized viewer', async () => {
+        const harness = makeHarness(guard());
+        admitOwner(harness, kind);
+        admit(harness, kind, [VIEWER]);
 
-      await expect(harness.service.getThread(OWNER, kind, SUBJECT_ID)).resolves.toMatchObject({
-        kind,
-        subjectId: SUBJECT_ID,
+        await expect(harness.service.getThread(OWNER, kind, SUBJECT_ID)).resolves.toMatchObject({
+          kind,
+          subjectId: SUBJECT_ID,
+        });
+        await expect(harness.service.getThread(VIEWER, kind, SUBJECT_ID)).resolves.toMatchObject({
+          kind,
+          subjectId: SUBJECT_ID,
+        });
+        await expectNotFound(harness.service.getThread(OUTSIDER, kind, SUBJECT_ID), 'NOT_FOUND');
+
+        // The denied subject never reaches comment or reaction reads.
+        expect(harness.comments.listForItem).toHaveBeenCalledTimes(2);
+        expect(harness.reactions.summaryForComments).toHaveBeenCalledTimes(2);
+        expect(harness.reactions.summaryForItem).toHaveBeenCalledTimes(2);
       });
-      await expect(harness.service.getThread(VIEWER, kind, SUBJECT_ID)).resolves.toMatchObject({
-        kind,
-        subjectId: SUBJECT_ID,
+    });
+
+    it('fails closed on the next thread, comment, and item-reaction operation after revocation', async () => {
+      const harness = makeHarness(guard());
+      let currentlyAdmitted = true;
+      admitWhile(harness, 'portfolio', () => currentlyAdmitted);
+
+      // Establish that the viewer was admitted, then revoke them before the next operation.
+      await expect(
+        harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID),
+      ).resolves.toBeDefined();
+      harness.comments.listForItem.mockClear();
+      harness.comments.create.mockClear();
+      harness.reactions.toggleItem.mockClear();
+      harness.reactions.summaryForComments.mockClear();
+      harness.reactions.summaryForItem.mockClear();
+      harness.userRepo.findById.mockClear();
+      currentlyAdmitted = false;
+
+      await expectNotFound(harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID), 'NOT_FOUND');
+      await expectNotFound(
+        harness.service.addComment(VIEWER, 'portfolio', SUBJECT_ID, 'no longer admitted'),
+        'NOT_FOUND',
+      );
+      await expectNotFound(
+        harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '👍'),
+        'NOT_FOUND',
+      );
+
+      expect(harness.comments.listForItem).not.toHaveBeenCalled();
+      expect(harness.comments.create).not.toHaveBeenCalled();
+      expect(harness.userRepo.findById).not.toHaveBeenCalled();
+      expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
+      expect(harness.reactions.summaryForComments).not.toHaveBeenCalled();
+      expect(harness.reactions.summaryForItem).not.toHaveBeenCalled();
+    });
+
+    it('does not admit a public-link reader into a thread', async () => {
+      const harness = makeHarness(guard());
+      harness.audience.authorizePublicItemRead.mockResolvedValue({ name: 'Public item' });
+
+      await expectNotFound(harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID), 'NOT_FOUND');
+
+      expect(harness.audience.authorizePublicItemRead).not.toHaveBeenCalled();
+      expect(harness.comments.listForItem).not.toHaveBeenCalled();
+      expect(harness.reactions.summaryForItem).not.toHaveBeenCalled();
+    });
+
+    it('only gives canDelete to an item owner or the comment author', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.listForItem.mockResolvedValue([commentRow()]);
+      admitOwner(harness, 'portfolio');
+      admit(harness, 'portfolio', [AUTHOR, VIEWER]);
+
+      const ownerThread = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
+      const authorThread = await harness.service.getThread(AUTHOR, 'portfolio', SUBJECT_ID);
+      const viewerThread = await harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID);
+
+      expect(ownerThread.comments[0]?.canDelete).toBe(true);
+      expect(authorThread.comments[0]?.canDelete).toBe(true);
+      expect(viewerThread.comments[0]?.canDelete).toBe(false);
+    });
+
+    it('lets an author clean up their comment after audience revocation', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+
+      await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
+
+      expectNoAudienceRead(harness);
+      expect(harness.comments.softDelete).toHaveBeenCalledWith(
+        COMMENT_ID,
+        AUTHOR,
+        expect.any(Function),
+      );
+    });
+
+    it('lets an author delete their own comment while the ITEM OWNER is paranoid', async () => {
+      // The owner's account mode is not the author's business: blocking here would
+      // strand the author's own text forever AND disclose the owner's mode via 403.
+      const harness = makeHarness(makeParanoidGuard({ [OWNER]: 'paranoid' }));
+      harness.comments.getById.mockResolvedValue(commentRef());
+
+      await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
+
+      expect(harness.comments.softDelete).toHaveBeenCalledWith(
+        COMMENT_ID,
+        AUTHOR,
+        expect.any(Function),
+      );
+    });
+
+    it('still refuses a paranoid viewer their own delete (their own capability is off)', async () => {
+      const harness = makeHarness(makeParanoidGuard({ [AUTHOR]: 'paranoid' }));
+      harness.comments.getById.mockResolvedValue(commentRef());
+
+      await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).rejects.toMatchObject({
+        statusCode: 403,
       });
-      await expectNotFound(harness.service.getThread(OUTSIDER, kind, SUBJECT_ID), 'NOT_FOUND');
-
-      // The denied subject never reaches comment or reaction reads.
-      expect(harness.comments.listForItem).toHaveBeenCalledTimes(2);
-      expect(harness.reactions.summaryForComments).toHaveBeenCalledTimes(2);
-      expect(harness.reactions.summaryForItem).toHaveBeenCalledTimes(2);
+      expect(harness.comments.softDelete).not.toHaveBeenCalled();
     });
-  });
 
-  it('fails closed on the next thread, comment, and item-reaction operation after revocation', async () => {
-    const harness = makeHarness();
-    let currentlyAdmitted = true;
-    admitWhile(harness, 'portfolio', () => currentlyAdmitted);
+    it('lets an author delete a comment whose subject no longer exists', async () => {
+      // Orphans predate the subject-teardown purge; without this they are
+      // undeletable forever, because no owner resolves to authorize the removal.
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      harness.audience.subjectOwner.mockResolvedValue(undefined);
 
-    // Establish that the viewer was admitted, then revoke them before the next operation.
-    await expect(harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID)).resolves.toBeDefined();
-    harness.comments.listForItem.mockClear();
-    harness.comments.create.mockClear();
-    harness.reactions.toggleItem.mockClear();
-    harness.reactions.summaryForComments.mockClear();
-    harness.reactions.summaryForItem.mockClear();
-    harness.userRepo.findById.mockClear();
-    currentlyAdmitted = false;
+      await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
 
-    await expectNotFound(harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID), 'NOT_FOUND');
-    await expectNotFound(
-      harness.service.addComment(VIEWER, 'portfolio', SUBJECT_ID, 'no longer admitted'),
-      'NOT_FOUND',
-    );
-    await expectNotFound(
-      harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '👍'),
-      'NOT_FOUND',
-    );
-
-    expect(harness.comments.listForItem).not.toHaveBeenCalled();
-    expect(harness.comments.create).not.toHaveBeenCalled();
-    expect(harness.userRepo.findById).not.toHaveBeenCalled();
-    expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
-    expect(harness.reactions.summaryForComments).not.toHaveBeenCalled();
-    expect(harness.reactions.summaryForItem).not.toHaveBeenCalled();
-  });
-
-  it('does not admit a public-link reader into a thread', async () => {
-    const harness = makeHarness();
-    harness.audience.authorizePublicItemRead.mockResolvedValue({ name: 'Public item' });
-
-    await expectNotFound(harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID), 'NOT_FOUND');
-
-    expect(harness.audience.authorizePublicItemRead).not.toHaveBeenCalled();
-    expect(harness.comments.listForItem).not.toHaveBeenCalled();
-    expect(harness.reactions.summaryForItem).not.toHaveBeenCalled();
-  });
-
-  it('only gives canDelete to an item owner or the comment author', async () => {
-    const harness = makeHarness();
-    harness.comments.listForItem.mockResolvedValue([commentRow()]);
-    admitOwner(harness, 'portfolio');
-    admit(harness, 'portfolio', [AUTHOR, VIEWER]);
-
-    const ownerThread = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
-    const authorThread = await harness.service.getThread(AUTHOR, 'portfolio', SUBJECT_ID);
-    const viewerThread = await harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID);
-
-    expect(ownerThread.comments[0]?.canDelete).toBe(true);
-    expect(authorThread.comments[0]?.canDelete).toBe(true);
-    expect(viewerThread.comments[0]?.canDelete).toBe(false);
-  });
-
-  it('lets an author clean up their comment after audience revocation', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-
-    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
-
-    expectNoAudienceRead(harness);
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(
-      COMMENT_ID,
-      AUTHOR,
-      expect.any(Function),
-    );
-  });
-
-  it('lets an author delete their own comment while the ITEM OWNER is paranoid', async () => {
-    // The owner's account mode is not the author's business: blocking here would
-    // strand the author's own text forever AND disclose the owner's mode via 403.
-    const harness = makeHarness(makeParanoidGuard({ [OWNER]: 'paranoid' }));
-    harness.comments.getById.mockResolvedValue(commentRef());
-
-    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
-
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(
-      COMMENT_ID,
-      AUTHOR,
-      expect.any(Function),
-    );
-  });
-
-  it('still refuses a paranoid viewer their own delete (their own capability is off)', async () => {
-    const harness = makeHarness(makeParanoidGuard({ [AUTHOR]: 'paranoid' }));
-    harness.comments.getById.mockResolvedValue(commentRef());
-
-    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).rejects.toMatchObject({
-      statusCode: 403,
+      expect(harness.comments.softDelete).toHaveBeenCalledWith(
+        COMMENT_ID,
+        AUTHOR,
+        expect.any(Function),
+      );
     });
-    expect(harness.comments.softDelete).not.toHaveBeenCalled();
-  });
 
-  it('lets an author delete a comment whose subject no longer exists', async () => {
-    // Orphans predate the subject-teardown purge; without this they are
-    // undeletable forever, because no owner resolves to authorize the removal.
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    harness.audience.subjectOwner.mockResolvedValue(undefined);
+    it('gives a non-author the uniform 404 on an orphaned comment', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      harness.audience.subjectOwner.mockResolvedValue(undefined);
 
-    await expect(harness.service.deleteComment(AUTHOR, COMMENT_ID)).resolves.toBeUndefined();
+      await expectNotFound(harness.service.deleteComment(VIEWER, COMMENT_ID), 'COMMENT_NOT_FOUND');
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(
-      COMMENT_ID,
-      AUTHOR,
-      expect.any(Function),
-    );
-  });
-
-  it('gives a non-author the uniform 404 on an orphaned comment', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    harness.audience.subjectOwner.mockResolvedValue(undefined);
-
-    await expectNotFound(harness.service.deleteComment(VIEWER, COMMENT_ID), 'COMMENT_NOT_FOUND');
-
-    expect(harness.comments.softDelete).not.toHaveBeenCalled();
-  });
-
-  it('reads ONE bounded page and takes the count from it when the page IS the thread', async () => {
-    const harness = makeHarness();
-    admitOwner(harness, 'portfolio');
-    harness.comments.listForItem.mockResolvedValue([commentRow()]);
-
-    const thread = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
-
-    expect(harness.comments.listForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, {
-      limit: COMMENT_PAGE_SIZE + 1,
-      before: undefined,
-      authorIds: undefined,
+      expect(harness.comments.softDelete).not.toHaveBeenCalled();
     });
-    // A page that did not fill ends the walk — and, with no cursor above it, it
-    // is the WHOLE live thread, so the count comes out of the page instead of a
-    // `count(*)` the 30 s poll would repeat forever (#1725).
-    expect(thread.nextCursor).toBeNull();
-    expect(thread.commentCount).toBe(1);
-    expect(harness.comments.countForItem).not.toHaveBeenCalled();
-  });
 
-  it('still counts when the page cannot prove the total — a full page, or an older one', async () => {
-    const harness = makeHarness();
-    admitOwner(harness, 'portfolio');
-    // A full page + the lookahead row: an older page exists, so the page the
-    // viewer gets says nothing about how long the thread is.
-    harness.comments.listForItem.mockResolvedValue(
-      Array.from({ length: COMMENT_PAGE_SIZE + 1 }, (_unused, index) =>
-        commentRow({ id: `comment-${index}` }),
-      ),
-    );
-    harness.comments.countForItem.mockResolvedValue(4200);
+    it('reads ONE bounded page and takes the count from it when the page IS the thread', async () => {
+      const harness = makeHarness(guard());
+      admitOwner(harness, 'portfolio');
+      harness.comments.listForItem.mockResolvedValue([commentRow()]);
 
-    const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
-    expect(first.commentCount).toBe(4200);
+      const thread = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
 
-    // A cursor page is short here, but rows NEWER than the cursor are outside it
-    // — the count is not derivable and must still be asked for.
-    harness.comments.listForItem.mockResolvedValue([commentRow()]);
-    const older = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, 'comment-0');
-    expect(older.commentCount).toBe(4200);
-    expect(harness.comments.countForItem).toHaveBeenCalledTimes(2);
-  });
-
-  it('hands back the boundary comment ID as the cursor and passes it through unparsed', async () => {
-    const harness = makeHarness();
-    admitOwner(harness, 'portfolio');
-    // A full page + 1 probe row: newest-first out of SQL, oldest-first back out.
-    const page = Array.from({ length: COMMENT_PAGE_SIZE + 1 }, (_unused, index) =>
-      commentRow({
-        id: `comment-${index}`,
-        createdAt: new Date(CREATED_AT.getTime() - index * 1000),
-      }),
-    );
-    harness.comments.listForItem.mockResolvedValue(page);
-
-    const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
-    expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
-    const oldestOfPage = page[COMMENT_PAGE_SIZE - 1]!;
-    // The cursor carries NO timestamp: the ordering key is resolved in SQL from
-    // this row, so a millisecond-truncated `Date` can never move the boundary.
-    expect(first.nextCursor).toBe(oldestOfPage.id);
-    expect(first.comments[0]!.id).toBe(oldestOfPage.id);
-
-    await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, first.nextCursor!);
-    expect(harness.comments.listForItem).toHaveBeenLastCalledWith('portfolio', SUBJECT_ID, {
-      limit: COMMENT_PAGE_SIZE + 1,
-      before: oldestOfPage.id,
-      authorIds: undefined,
+      expect(harness.comments.listForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, {
+        limit: COMMENT_PAGE_SIZE + 1,
+        before: undefined,
+        authorIds: undefined,
+      });
+      // A page that did not fill ends the walk — and, with no cursor above it, it
+      // is the WHOLE live thread, so the count comes out of the page instead of a
+      // `count(*)` the 30 s poll would repeat forever (#1725).
+      expect(thread.nextCursor).toBeNull();
+      expect(thread.commentCount).toBe(1);
+      expect(harness.comments.countForItem).not.toHaveBeenCalled();
     });
-  });
 
-  it('summarizes a thread without reading a single body', async () => {
-    const harness = makeHarness();
-    admitOwner(harness, 'portfolio');
-    harness.comments.countForItem.mockResolvedValue(12);
-    harness.reactions.summaryForItem.mockResolvedValue([{ emoji: '🔥', count: 3, reacted: false }]);
+    it('still counts when the page cannot prove the total — a full page, or an older one', async () => {
+      const harness = makeHarness(guard());
+      admitOwner(harness, 'portfolio');
+      // A full page + the lookahead row: an older page exists, so the page the
+      // viewer gets says nothing about how long the thread is.
+      harness.comments.listForItem.mockResolvedValue(
+        Array.from({ length: COMMENT_PAGE_SIZE + 1 }, (_unused, index) =>
+          commentRow({ id: `comment-${index}` }),
+        ),
+      );
+      harness.comments.countForItem.mockResolvedValue(4200);
 
-    await expect(harness.service.getThreadSummary(OWNER, 'portfolio', SUBJECT_ID)).resolves.toEqual(
-      {
+      const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
+      expect(first.commentCount).toBe(4200);
+
+      // A cursor page is short here, but rows NEWER than the cursor are outside it
+      // — the count is not derivable and must still be asked for.
+      harness.comments.listForItem.mockResolvedValue([commentRow()]);
+      const older = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, 'comment-0');
+      expect(older.commentCount).toBe(4200);
+      expect(harness.comments.countForItem).toHaveBeenCalledTimes(2);
+    });
+
+    it('hands back the boundary comment ID as the cursor and passes it through unparsed', async () => {
+      const harness = makeHarness(guard());
+      admitOwner(harness, 'portfolio');
+      // A full page + 1 probe row: newest-first out of SQL, oldest-first back out.
+      const page = Array.from({ length: COMMENT_PAGE_SIZE + 1 }, (_unused, index) =>
+        commentRow({
+          id: `comment-${index}`,
+          createdAt: new Date(CREATED_AT.getTime() - index * 1000),
+        }),
+      );
+      harness.comments.listForItem.mockResolvedValue(page);
+
+      const first = await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID);
+      expect(first.comments).toHaveLength(COMMENT_PAGE_SIZE);
+      const oldestOfPage = page[COMMENT_PAGE_SIZE - 1]!;
+      // The cursor carries NO timestamp: the ordering key is resolved in SQL from
+      // this row, so a millisecond-truncated `Date` can never move the boundary.
+      expect(first.nextCursor).toBe(oldestOfPage.id);
+      expect(first.comments[0]!.id).toBe(oldestOfPage.id);
+
+      await harness.service.getThread(OWNER, 'portfolio', SUBJECT_ID, first.nextCursor!);
+      expect(harness.comments.listForItem).toHaveBeenLastCalledWith('portfolio', SUBJECT_ID, {
+        limit: COMMENT_PAGE_SIZE + 1,
+        before: oldestOfPage.id,
+        authorIds: undefined,
+      });
+    });
+
+    it('summarizes a thread without reading a single body', async () => {
+      const harness = makeHarness(guard());
+      admitOwner(harness, 'portfolio');
+      harness.comments.countForItem.mockResolvedValue(12);
+      harness.reactions.summaryForItem.mockResolvedValue([
+        { emoji: '🔥', count: 3, reacted: false },
+      ]);
+
+      await expect(
+        harness.service.getThreadSummary(OWNER, 'portfolio', SUBJECT_ID),
+      ).resolves.toEqual({
         kind: 'portfolio',
         subjectId: SUBJECT_ID,
         commentCount: 12,
         reactions: [{ emoji: '🔥', count: 3, reacted: false }],
-      },
-    );
-    expect(harness.comments.listForItem).not.toHaveBeenCalled();
-  });
+      });
+      expect(harness.comments.listForItem).not.toHaveBeenCalled();
+    });
 
-  it('refuses the summary to an unauthorized viewer, exactly like the thread', async () => {
-    const harness = makeHarness();
-    await expectNotFound(
-      harness.service.getThreadSummary(OUTSIDER, 'portfolio', SUBJECT_ID),
-      'NOT_FOUND',
-    );
-    expect(harness.comments.countForItem).not.toHaveBeenCalled();
-  });
+    it('refuses the summary to an unauthorized viewer, exactly like the thread', async () => {
+      const harness = makeHarness(guard());
+      await expectNotFound(
+        harness.service.getThreadSummary(OUTSIDER, 'portfolio', SUBJECT_ID),
+        'NOT_FOUND',
+      );
+      expect(harness.comments.countForItem).not.toHaveBeenCalled();
+    });
 
-  it('lets the current item owner moderate any live comment', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    harness.audience.ownsSubject.mockImplementation(
-      async (viewerId, kind, subjectId) =>
-        viewerId === OWNER && kind === 'portfolio' && subjectId === SUBJECT_ID,
-    );
+    it('lets the current item owner moderate any live comment', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      harness.audience.ownsSubject.mockImplementation(
+        async (viewerId, kind, subjectId) =>
+          viewerId === OWNER && kind === 'portfolio' && subjectId === SUBJECT_ID,
+      );
 
-    await expect(harness.service.deleteComment(OWNER, COMMENT_ID)).resolves.toBeUndefined();
+      await expect(harness.service.deleteComment(OWNER, COMMENT_ID)).resolves.toBeUndefined();
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(
-      COMMENT_ID,
-      OWNER,
-      expect.any(Function),
-    );
-  });
+      expect(harness.comments.softDelete).toHaveBeenCalledWith(
+        COMMENT_ID,
+        OWNER,
+        expect.any(Function),
+      );
+    });
 
-  it('does not let a third admitted viewer delete another author’s comment', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    admit(harness, 'portfolio', [VIEWER]);
+    it('does not let a third admitted viewer delete another author’s comment', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      admit(harness, 'portfolio', [VIEWER]);
 
-    await expectNotFound(harness.service.deleteComment(VIEWER, COMMENT_ID), 'COMMENT_NOT_FOUND');
+      await expectNotFound(harness.service.deleteComment(VIEWER, COMMENT_ID), 'COMMENT_NOT_FOUND');
 
-    expect(harness.comments.softDelete).not.toHaveBeenCalled();
-  });
+      expect(harness.comments.softDelete).not.toHaveBeenCalled();
+    });
 
-  for (const [label, ref] of [
-    ['unknown', undefined],
-    ['tombstoned', commentRef({ deletedAt: CREATED_AT })],
-  ] as const) {
-    it(`rejects a ${label} comment deletion without an authorization or mutation`, async () => {
-      const harness = makeHarness();
-      harness.comments.getById.mockResolvedValue(ref);
+    for (const [label, ref] of [
+      ['unknown', undefined],
+      ['tombstoned', commentRef({ deletedAt: CREATED_AT })],
+    ] as const) {
+      it(`rejects a ${label} comment deletion without an authorization or mutation`, async () => {
+        const harness = makeHarness(guard());
+        harness.comments.getById.mockResolvedValue(ref);
+
+        await expectNotFound(
+          harness.service.deleteComment(AUTHOR, COMMENT_ID),
+          'COMMENT_NOT_FOUND',
+        );
+
+        expect(harness.audience.ownsSubject).not.toHaveBeenCalled();
+        expect(harness.comments.softDelete).not.toHaveBeenCalled();
+      });
+    }
+
+    it('returns not found when the comment soft-delete loses a concurrent race', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      harness.comments.softDelete.mockResolvedValue(false);
 
       await expectNotFound(harness.service.deleteComment(AUTHOR, COMMENT_ID), 'COMMENT_NOT_FOUND');
 
-      expect(harness.audience.ownsSubject).not.toHaveBeenCalled();
-      expect(harness.comments.softDelete).not.toHaveBeenCalled();
+      expect(harness.comments.softDelete).toHaveBeenCalledWith(
+        COMMENT_ID,
+        AUTHOR,
+        expect.any(Function),
+      );
     });
-  }
 
-  it('returns not found when the comment soft-delete loses a concurrent race', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    harness.comments.softDelete.mockResolvedValue(false);
+    for (const [label, ref] of [
+      ['unknown', undefined],
+      ['tombstoned', commentRef({ deletedAt: CREATED_AT })],
+    ] as const) {
+      it(`rejects a ${label} comment reaction before reaction reads or mutations`, async () => {
+        const harness = makeHarness(guard());
+        harness.comments.getById.mockResolvedValue(ref);
 
-    await expectNotFound(harness.service.deleteComment(AUTHOR, COMMENT_ID), 'COMMENT_NOT_FOUND');
+        await expectNotFound(
+          harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍'),
+          'COMMENT_NOT_FOUND',
+        );
 
-    expect(harness.comments.softDelete).toHaveBeenCalledWith(
-      COMMENT_ID,
-      AUTHOR,
-      expect.any(Function),
-    );
-  });
+        expectNoAudienceRead(harness);
+        expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
+        expect(harness.reactions.summaryForComment).not.toHaveBeenCalled();
+      });
+    }
 
-  for (const [label, ref] of [
-    ['unknown', undefined],
-    ['tombstoned', commentRef({ deletedAt: CREATED_AT })],
-  ] as const) {
-    it(`rejects a ${label} comment reaction before reaction reads or mutations`, async () => {
-      const harness = makeHarness();
-      harness.comments.getById.mockResolvedValue(ref);
+    it('rechecks a comment’s current parent audience before every reaction toggle', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      let currentlyAdmitted = true;
+      admitWhile(harness, 'portfolio', () => currentlyAdmitted);
+      harness.reactions.summaryForComment.mockResolvedValue([
+        { emoji: '👍', count: 1, reacted: true },
+      ]);
+
+      await expect(
+        harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍'),
+      ).resolves.toEqual({
+        reactions: [{ emoji: '👍', count: 1, reacted: true }],
+      });
+      currentlyAdmitted = false;
 
       await expectNotFound(
         harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍'),
         'COMMENT_NOT_FOUND',
       );
 
-      expectNoAudienceRead(harness);
+      // Two calls for the accepted toggle — the entry read that names the
+      // parent subject, and the revalidating re-read under the lock, which
+      // #1829 made unconditional rather than paranoid-only — plus one for the
+      // refused toggle, which never reaches the lock.
+      expect(harness.comments.getById).toHaveBeenCalledTimes(3);
+      expect(harness.reactions.toggleComment).toHaveBeenCalledTimes(1);
+      expect(harness.reactions.summaryForComment).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses that same live access rule for item reactions', async () => {
+      const harness = makeHarness(guard());
+      let currentlyAdmitted = true;
+      admitWhile(harness, 'portfolio', () => currentlyAdmitted);
+      harness.reactions.summaryForItem.mockResolvedValue([
+        { emoji: '🔥', count: 1, reacted: true },
+      ]);
+
+      await expect(
+        harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
+      ).resolves.toEqual({ reactions: [{ emoji: '🔥', count: 1, reacted: true }] });
+      currentlyAdmitted = false;
+
+      await expectNotFound(
+        harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
+        'NOT_FOUND',
+      );
+
+      expect(harness.reactions.toggleItem).toHaveBeenCalledTimes(1);
+      expect(harness.reactions.summaryForItem).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * The two rights that outlive the item's current visibility (#1780): the
+   * author's cleanup over their own comment already existed; a reactor's over
+   * their own reaction is its missing counterpart. Neither may become a way back
+   * into a thread the viewer is no longer admitted to.
+   */
+  describe(`reaction withdrawal survives losing access, adding one does not (${label})`, () => {
+    it('removes the viewer’s own item reaction with no audience read admitting them', async () => {
+      const harness = makeHarness(guard());
+      // Nobody is admitted: `resolveAccess` refuses for every kind. The viewer
+      // holds the row, which is the ONLY thing that lets the delete be attempted
+      // at all (#1829).
+      harness.reactions.hasOwnItemReaction.mockResolvedValue(true);
+      harness.reactions.removeItem.mockResolvedValue(true);
+      harness.reactions.summaryForItem.mockResolvedValue([]);
+
+      await expect(
+        harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
+      ).resolves.toEqual({ reactions: [] });
+
+      expect(harness.reactions.removeItem).toHaveBeenCalledWith(
+        VIEWER,
+        'portfolio',
+        SUBJECT_ID,
+        '🔥',
+      );
+      // No add, and the aggregate is filtered to the viewer's own rows — a
+      // cleanup must not report activity on an item they cannot read.
+      expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
+      expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(
+        VIEWER,
+        'portfolio',
+        SUBJECT_ID,
+        [VIEWER],
+      );
+    });
+
+    it('removes the viewer’s own comment reaction the same way', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+      harness.reactions.hasOwnCommentReaction.mockResolvedValue(true);
+      harness.reactions.removeComment.mockResolvedValue(true);
+      harness.reactions.summaryForComment.mockResolvedValue([]);
+
+      await expect(
+        harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍'),
+      ).resolves.toEqual({
+        reactions: [],
+      });
+
+      expect(harness.reactions.removeComment).toHaveBeenCalledWith(VIEWER, COMMENT_ID, '👍');
       expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
-      expect(harness.reactions.summaryForComment).not.toHaveBeenCalled();
+      expect(harness.reactions.summaryForComment).toHaveBeenCalledWith(VIEWER, COMMENT_ID, [
+        VIEWER,
+      ]);
     });
-  }
 
-  it('rechecks a comment’s current parent audience before every reaction toggle', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    let currentlyAdmitted = true;
-    admitWhile(harness, 'portfolio', () => currentlyAdmitted);
-    harness.reactions.summaryForComment.mockResolvedValue([
-      { emoji: '👍', count: 1, reacted: true },
-    ]);
+    it('still refuses a NEW reaction from someone the item does not admit', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
 
-    await expect(harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍')).resolves.toEqual({
-      reactions: [{ emoji: '👍', count: 1, reacted: true }],
+      await expectNotFound(
+        harness.service.toggleItemReaction(OUTSIDER, 'portfolio', SUBJECT_ID, '🔥'),
+        'NOT_FOUND',
+      );
+      await expectNotFound(
+        harness.service.toggleCommentReaction(OUTSIDER, COMMENT_ID, '👍'),
+        'COMMENT_NOT_FOUND',
+      );
+
+      expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
+      expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
     });
-    currentlyAdmitted = false;
 
-    await expectNotFound(
-      harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍'),
-      'COMMENT_NOT_FOUND',
-    );
+    it('keeps the ordinary toggle intact for an admitted viewer', async () => {
+      const harness = makeHarness(guard());
+      admit(harness, 'portfolio', [VIEWER]);
+      harness.reactions.summaryForItem.mockResolvedValue([
+        { emoji: '🔥', count: 2, reacted: true },
+      ]);
 
-    expect(harness.comments.getById).toHaveBeenCalledTimes(2);
-    expect(harness.reactions.toggleComment).toHaveBeenCalledTimes(1);
-    expect(harness.reactions.summaryForComment).toHaveBeenCalledTimes(1);
+      // `removeItem` finds nothing, so this is an ADD — through the audience gate,
+      // answering with the item's full aggregate exactly as before.
+      await expect(
+        harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
+      ).resolves.toEqual({ reactions: [{ emoji: '🔥', count: 2, reacted: true }] });
+      expect(harness.reactions.toggleItem).toHaveBeenCalledTimes(1);
+      // No actor filter: with nobody restricted the aggregate is unfiltered, so
+      // the partial index can serve it (#1829).
+      expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(
+        VIEWER,
+        'portfolio',
+        SUBJECT_ID,
+        undefined,
+      );
+    });
+
+    it('purges the comment’s reactions in the soft-delete transaction', async () => {
+      const harness = makeHarness(guard());
+      harness.comments.getById.mockResolvedValue(commentRef());
+
+      await harness.service.deleteComment(AUTHOR, COMMENT_ID);
+
+      const purge = harness.comments.softDelete.mock.calls[0]![2];
+      expect(purge).toBeTypeOf('function');
+      const tx = {} as never;
+      await purge!(tx);
+      expect(harness.reactions.deleteForComment).toHaveBeenCalledWith(COMMENT_ID, tx);
+    });
   });
-
-  it('uses that same live access rule for item reactions', async () => {
-    const harness = makeHarness();
-    let currentlyAdmitted = true;
-    admitWhile(harness, 'portfolio', () => currentlyAdmitted);
-    harness.reactions.summaryForItem.mockResolvedValue([{ emoji: '🔥', count: 1, reacted: true }]);
-
-    await expect(
-      harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
-    ).resolves.toEqual({ reactions: [{ emoji: '🔥', count: 1, reacted: true }] });
-    currentlyAdmitted = false;
-
-    await expectNotFound(
-      harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
-      'NOT_FOUND',
-    );
-
-    expect(harness.reactions.toggleItem).toHaveBeenCalledTimes(1);
-    expect(harness.reactions.summaryForItem).toHaveBeenCalledTimes(1);
-  });
-});
+}
 
 /**
- * The two rights that outlive the item's current visibility (#1780): the
- * author's cleanup over their own comment already existed; a reactor's over
- * their own reaction is its missing counterpart. Neither may become a way back
- * into a thread the viewer is no longer admitted to.
+ * #1829 — the bounded path the thread read already shipped, made reachable in
+ * the wiring the app actually runs. `context.ts` always passes a guard, so
+ * before this every `getThread`/`getThreadSummary` enumerated the thread's
+ * participants with no LIMIT, took one `users` row lock per participant, and
+ * handed a non-empty id list to aggregates the partial index could then no
+ * longer serve. None of it bought anything unless a participant was paranoid.
  */
-describe('reaction withdrawal survives losing access, adding one does not', () => {
-  it('removes the viewer’s own item reaction with no audience read admitting them', async () => {
-    const harness = makeHarness();
-    // Nobody is admitted: `resolveAccess` refuses for every kind.
-    harness.reactions.removeItem.mockResolvedValue(true);
-    harness.reactions.summaryForItem.mockResolvedValue([]);
+describe('the paranoid machinery is paid for only when a participant needs it (#1829)', () => {
+  const BLOCKED = 'blocked-1';
 
-    await expect(
-      harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
-    ).resolves.toEqual({ reactions: [] });
+  it('enumerates nobody and locks nobody extra when no participant is restricted', async () => {
+    const lockedSets: string[][] = [];
+    const harness = makeHarness(makeParanoidGuard({}, lockedSets));
+    admit(harness, 'portfolio', [VIEWER]);
+    harness.comments.listForItem.mockResolvedValue([commentRow()]);
+    harness.comments.countForItem.mockResolvedValue(7);
 
-    expect(harness.reactions.removeItem).toHaveBeenCalledWith(
+    await harness.service.getThreadSummary(VIEWER, 'portfolio', SUBJECT_ID);
+    await harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID, 'comment-0');
+
+    // The probe was asked; the unbounded discovery scans were not.
+    expect(harness.comments.hasRestrictedParticipant).toHaveBeenCalledWith('portfolio', SUBJECT_ID);
+    expect(harness.reactions.hasRestrictedThreadActor).toHaveBeenCalledWith(
+      'portfolio',
+      SUBJECT_ID,
+    );
+    expect(harness.comments.listParticipantsForItem).not.toHaveBeenCalled();
+    expect(harness.reactions.listActorIdsForThread).not.toHaveBeenCalled();
+
+    // …so every read runs UNFILTERED, which is what lets the partial thread
+    // index serve the count and the page.
+    expect(harness.comments.countForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, undefined);
+    expect(harness.comments.listForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, {
+      limit: COMMENT_PAGE_SIZE + 1,
+      before: 'comment-0',
+      authorIds: undefined,
+    });
+    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(
       VIEWER,
       'portfolio',
       SUBJECT_ID,
-      '🔥',
+      undefined,
     );
-    // No add, and the aggregate is filtered to the viewer's own rows — a
-    // cleanup must not report activity on an item they cannot read.
-    expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
-    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(VIEWER, 'portfolio', SUBJECT_ID, [
-      VIEWER,
+
+    // …and the only rows locked are the two required principals, on both reads.
+    expect(lockedSets).toEqual([
+      [VIEWER, OWNER],
+      [VIEWER, OWNER],
     ]);
   });
 
-  it('removes the viewer’s own comment reaction the same way', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-    harness.reactions.removeComment.mockResolvedValue(true);
-    harness.reactions.summaryForComment.mockResolvedValue([]);
+  it('still enumerates, locks and filters when one participant IS restricted', async () => {
+    const lockedSets: string[][] = [];
+    const harness = makeHarness(makeParanoidGuard({ [BLOCKED]: 'paranoid' }, lockedSets));
+    admit(harness, 'portfolio', [VIEWER]);
+    harness.comments.hasRestrictedParticipant.mockResolvedValue(true);
+    harness.comments.listParticipantsForItem.mockResolvedValue([AUTHOR, BLOCKED]);
+    harness.reactions.listActorIdsForThread.mockResolvedValue([BLOCKED, OUTSIDER]);
+    harness.comments.listForItem.mockResolvedValue([commentRow()]);
 
-    await expect(harness.service.toggleCommentReaction(VIEWER, COMMENT_ID, '👍')).resolves.toEqual({
-      reactions: [],
+    await harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID);
+
+    // The discovery is bounded, and the lock set carries every candidate.
+    expect(harness.comments.listParticipantsForItem).toHaveBeenCalledWith(
+      'portfolio',
+      SUBJECT_ID,
+      251,
+    );
+    expect(harness.reactions.listActorIdsForThread).toHaveBeenCalledWith(
+      'portfolio',
+      SUBJECT_ID,
+      251,
+    );
+    expect(lockedSets).toEqual([[VIEWER, OWNER, AUTHOR, BLOCKED, OUTSIDER]]);
+
+    // The paranoid participant is filtered out of EVERY read; the normal ones stay.
+    const allowed = [VIEWER, OWNER, AUTHOR, OUTSIDER];
+    expect(harness.comments.listForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, {
+      limit: COMMENT_PAGE_SIZE + 1,
+      before: undefined,
+      authorIds: allowed,
     });
-
-    expect(harness.reactions.removeComment).toHaveBeenCalledWith(VIEWER, COMMENT_ID, '👍');
-    expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
-    expect(harness.reactions.summaryForComment).toHaveBeenCalledWith(VIEWER, COMMENT_ID, [VIEWER]);
+    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(
+      VIEWER,
+      'portfolio',
+      SUBJECT_ID,
+      allowed,
+    );
+    expect(harness.reactions.summaryForComments).toHaveBeenCalledWith(
+      VIEWER,
+      [COMMENT_ID],
+      allowed,
+    );
   });
 
-  it('still refuses a NEW reaction from someone the item does not admit', async () => {
-    const harness = makeHarness();
+  it('fails CLOSED rather than growing an unbounded lock set past the ceiling', async () => {
+    const lockedSets: string[][] = [];
+    const harness = makeHarness(makeParanoidGuard({ [BLOCKED]: 'paranoid' }, lockedSets));
+    admit(harness, 'portfolio', [VIEWER]);
+    harness.comments.hasRestrictedParticipant.mockResolvedValue(true);
+    // The repository answered with a FULL page of ids: the answer is truncated,
+    // so there may be participants this read cannot name — and therefore cannot
+    // lock. It shows less instead of showing an unlockable actor.
+    harness.comments.listParticipantsForItem.mockResolvedValue(
+      Array.from({ length: 251 }, (_unused, index) => `crowd-${index}`),
+    );
+
+    await harness.service.getThread(VIEWER, 'portfolio', SUBJECT_ID);
+
+    expect(lockedSets).toEqual([[VIEWER, OWNER]]);
+    expect(harness.comments.listForItem).toHaveBeenCalledWith('portfolio', SUBJECT_ID, {
+      limit: COMMENT_PAGE_SIZE + 1,
+      before: undefined,
+      authorIds: [VIEWER, OWNER],
+    });
+  });
+
+  it('refuses a stranger’s reaction toggles before any write or actor scan', async () => {
+    const harness = makeHarness(makeParanoidGuard({}));
     harness.comments.getById.mockResolvedValue(commentRef());
 
     await expectNotFound(
@@ -637,34 +878,46 @@ describe('reaction withdrawal survives losing access, adding one does not', () =
       'COMMENT_NOT_FOUND',
     );
 
+    // Not one write against the subject id the caller named…
+    expect(harness.reactions.removeItem).not.toHaveBeenCalled();
+    expect(harness.reactions.removeComment).not.toHaveBeenCalled();
     expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
     expect(harness.reactions.toggleComment).not.toHaveBeenCalled();
+    // …and not one DISTINCT scan over its actors, restricted probe included.
+    expect(harness.reactions.listActorIdsForItem).not.toHaveBeenCalled();
+    expect(harness.reactions.listActorIdsForComment).not.toHaveBeenCalled();
+    expect(harness.reactions.hasRestrictedItemActor).not.toHaveBeenCalled();
+    expect(harness.reactions.hasRestrictedCommentActor).not.toHaveBeenCalled();
+    expect(harness.reactions.summaryForItem).not.toHaveBeenCalled();
+    expect(harness.reactions.summaryForComment).not.toHaveBeenCalled();
   });
 
-  it('keeps the ordinary toggle intact for an admitted viewer', async () => {
-    const harness = makeHarness();
-    admit(harness, 'portfolio', [VIEWER]);
-    harness.reactions.summaryForItem.mockResolvedValue([{ emoji: '🔥', count: 2, reacted: true }]);
+  it('keeps the withdrawal right, and only for the caller’s own row', async () => {
+    const harness = makeHarness(makeParanoidGuard({}));
+    // Nobody admits this viewer any more, but they hold the reaction.
+    harness.reactions.hasOwnItemReaction.mockResolvedValue(true);
+    harness.reactions.removeItem.mockResolvedValue(true);
 
-    // `removeItem` finds nothing, so this is an ADD — through the audience gate,
-    // answering with the item's full aggregate exactly as before.
     await expect(
       harness.service.toggleItemReaction(VIEWER, 'portfolio', SUBJECT_ID, '🔥'),
-    ).resolves.toEqual({ reactions: [{ emoji: '🔥', count: 2, reacted: true }] });
-    expect(harness.reactions.toggleItem).toHaveBeenCalledTimes(1);
-    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(VIEWER, 'portfolio', SUBJECT_ID);
-  });
+    ).resolves.toEqual({ reactions: [] });
 
-  it('purges the comment’s reactions in the soft-delete transaction', async () => {
-    const harness = makeHarness();
-    harness.comments.getById.mockResolvedValue(commentRef());
-
-    await harness.service.deleteComment(AUTHOR, COMMENT_ID);
-
-    const purge = harness.comments.softDelete.mock.calls[0]![2];
-    expect(purge).toBeTypeOf('function');
-    const tx = {} as never;
-    await purge!(tx);
-    expect(harness.reactions.deleteForComment).toHaveBeenCalledWith(COMMENT_ID, tx);
+    expect(harness.reactions.hasOwnItemReaction).toHaveBeenCalledWith(
+      VIEWER,
+      'portfolio',
+      SUBJECT_ID,
+      '🔥',
+    );
+    expect(harness.reactions.removeItem).toHaveBeenCalledWith(
+      VIEWER,
+      'portfolio',
+      SUBJECT_ID,
+      '🔥',
+    );
+    // Still no way back INTO the thread: the answer is the viewer's own rows.
+    expect(harness.reactions.summaryForItem).toHaveBeenCalledWith(VIEWER, 'portfolio', SUBJECT_ID, [
+      VIEWER,
+    ]);
+    expect(harness.reactions.toggleItem).not.toHaveBeenCalled();
   });
 });

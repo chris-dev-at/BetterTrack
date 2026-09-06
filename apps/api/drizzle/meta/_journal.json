@@ -792,6 +792,13 @@
       "when": 1788560000000,
       "tag": "0112_asset_catalog_write_watermark",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1788640000000,
+      "tag": "0113_users_privacy_mode_restricted_index",
+      "breakpoints": true
     }
   ]
 }

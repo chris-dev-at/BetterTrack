@@ -279,6 +279,15 @@ export const users = pgTable(
     // Email is stored lowercased; username uniqueness is case-insensitive.
     uniqueIndex('users_email_unique').on(t.email),
     uniqueIndex('users_username_lower_unique').on(sql`lower(${t.username})`),
+    // "Is anybody involved here in a non-normal account mode?" — the probe every
+    // comment-thread read asks before it decides whether the read needs the
+    // per-participant privacy locks at all (#1829). PARTIAL, so the index holds
+    // one entry per paranoid account and is empty on the overwhelming majority
+    // of deployments: the probe then costs an empty index scan instead of a
+    // sequential pass over `users`, no matter how large the table gets.
+    index('users_privacy_mode_restricted_idx')
+      .on(t.id)
+      .where(sql`${t.privacyMode} <> 'normal'`),
   ],
 );
 
