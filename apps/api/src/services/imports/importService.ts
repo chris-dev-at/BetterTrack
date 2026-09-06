@@ -122,14 +122,13 @@ export interface ImportServiceDeps {
   resolutionQueue?: RequestQueue;
   /**
    * Per-user AI seams for the GENERIC staging path (#964), both OPTIONAL by
-   * design and both returning `undefined` when the tier is unconfigured,
+   * design and both returning `undefined` when the assistant is unconfigured,
    * disabled, over cap, or refused.
    *
-   * A factory rather than a bound seam because both binders take the calling
-   * user's id (their daily cap, their audit trail), and because
-   * `bindHeavyTierAi` deliberately THROWS under a test runner — the wiring
-   * catches that and degrades, so no test can reach a real heavy model and no
-   * deployment without an AI provider loses the ability to import.
+   * A factory rather than a bound seam because the binder takes the calling
+   * user's id (their daily cap, their audit trail), and because binding may
+   * throw — the wiring catches that and degrades, so no deployment without an AI
+   * provider loses the ability to import.
    *
    * When both are absent the generic path is the fully deterministic pipeline:
    * headers the dictionary cannot name stay unnamed, ambiguous rows stay
@@ -533,12 +532,11 @@ function guardStagedRow(line: MappedLine): MappedLine {
 /**
  * Bind an OPTIONAL AI seam, treating every failure as "not configured" (#964).
  *
- * `bindHeavyTierAi` throws by design under a test runner, a deployment may have
- * no AI provider at all, and a binder may refuse for a user over their cap.
- * All three mean the same thing to this subsystem — run deterministically — so
- * they collapse here rather than each becoming a failed upload. This is the
- * mechanism behind the standing rule that the heavy tier is optional and its
- * absence is a graceful degrade, not a 500.
+ * A deployment may have no AI provider at all, and a binder may refuse for a
+ * user over their cap. Both mean the same thing to this subsystem — run
+ * deterministically — so they collapse here rather than becoming a failed
+ * upload. This is the mechanism behind the standing rule that the AI fallback is
+ * optional and its absence is a graceful degrade, not a 500.
  */
 function safeSeam<T>(bind: () => T | undefined): T | undefined {
   try {
@@ -1117,8 +1115,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     try {
       staged = await stageGenericFile(bytes, input.filename, {
         // Both seams are looked up per user and either may be absent. A binder
-        // that throws (the heavy tier refuses under a test runner) degrades to
-        // the deterministic path rather than failing the upload.
+        // that throws degrades to the deterministic path rather than failing the
+        // upload.
         header: { ai: safeSeam(() => deps.headerAi?.(userId)) },
         rows: { ai: safeSeam(() => deps.rowAi?.(userId)) },
       });

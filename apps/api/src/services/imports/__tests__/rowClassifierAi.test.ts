@@ -1,22 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AiService } from '../../ai/aiService';
 import {
-  bindCheapTierAi,
   buildRowKindBatchPrompt,
   capCell,
   MAX_CELL_CHARS,
   parseRowKindBatchReply,
   REPLY_SEPARATOR_CHARS,
-  ROW_CLASSIFICATION_AI_TIER,
   ROW_CLASSIFY_SYSTEM_PROMPT,
   type AiBatchRow,
-  type ImportRowAiSeam,
 } from '../rowClassifierAi';
 
 /**
- * Stage-3 plumbing (prompt contract + defensive parse + tier pinning), pure and
- * model-free: nothing here can reach a provider.
+ * Stage-3 plumbing (prompt contract + defensive parse), pure and model-free:
+ * nothing here can reach a provider. The seam and its ONE binder are covered in
+ * `importAi.test.ts`.
  */
 
 function batchRow(overrides: Partial<AiBatchRow> = {}): AiBatchRow {
@@ -31,41 +28,6 @@ function batchRow(overrides: Partial<AiBatchRow> = {}): AiBatchRow {
     ...overrides,
   };
 }
-
-describe('CHEAP-tier pinning', () => {
-  it('pins this feature to the CHEAP tier (HEAVY/qwen3.8 is another task)', () => {
-    expect(ROW_CLASSIFICATION_AI_TIER).toBe('cheap');
-  });
-
-  it('binds through the guarded AiService.complete path with temperature 0', async () => {
-    const calls: { userId: string; request: Parameters<AiService['complete']>[1] }[] = [];
-    const ai = {
-      complete: async (userId: string, request: Parameters<AiService['complete']>[1]) => {
-        calls.push({ userId, request });
-        return { text: '0=buy', model: 'llama3.1:7b', provider: 'ollama' };
-      },
-    };
-    const seam = bindCheapTierAi(ai, 'user-1');
-
-    const result = await seam.complete({ system: 'SYS', prompt: 'PROMPT' });
-    expect(result).toEqual({ text: '0=buy', model: 'llama3.1:7b' });
-    expect(calls[0]!.userId).toBe('user-1');
-    expect(calls[0]!.request.system).toBe('SYS');
-    expect(calls[0]!.request.prompt).toBe('PROMPT');
-    expect(calls[0]!.request.temperature).toBe(0);
-  });
-
-  it('structurally rejects the raw two-argument AiService as a seam', () => {
-    const rawService: Pick<AiService, 'complete'> = {
-      complete: async () => ({ text: '', model: '', provider: 'ollama' }),
-    };
-    // The narrow one-argument seam is NOT satisfied by AiService['complete'] —
-    // wiring must go through bindCheapTierAi, which pins the CHEAP tier.
-    const misuse = rawService as unknown as ImportRowAiSeam;
-    expect(typeof misuse.complete).toBe('function'); // runtime shape differs…
-    expect(() => Promise.resolve(misuse)).not.toThrow(); // …but only the binder type-checks
-  });
-});
 
 describe('batch prompt', () => {
   it('carries the strict <index>=<LABEL> output contract', () => {

@@ -1798,6 +1798,13 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI, and the floating panel simply is not mounted.',
   },
   {
+    component: 'user/portfolio/ImportPage.tsx',
+    read: 'ImportPage.aiCapability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate decides only whether the upload step discloses that the generic staging path draws on the shared daily AI budget (#1857); an unresolved or failed read is treated exactly like "no provider configured", so the line is simply absent and the wizard is byte-identical — a skeleton or an error card there would report an AI bootstrap as an import failure.',
+  },
+  {
     component: 'user/parked/ParkedPage.tsx',
     read: 'AiGatedParked.capability',
     states: ['loading', 'error'],
@@ -2139,8 +2146,15 @@ export type V5AsyncStateDebtLedger = Readonly<
  * read of the newest window alone. That read is a refresh of a page the thread
  * read has already drawn, so it has no states of its own: it delegates to the
  * paged read and is recorded as an exemption above, and the ceiling stays zero.
+ *
+ * 224 → 225 with the V5-P12 import-budget disclosure (#1857): the import
+ * wizard's upload step reads the same AI capability to decide whether to say
+ * that a generically-staged file spends the caller's shared daily AI budget.
+ * It is the §6.18 gate again — unresolved or failed reads render nothing about
+ * AI and leave the wizard exactly as a deployment without a provider sees it —
+ * so it is an exemption above, not debt, and the ceiling stays zero.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 224;
+export const V5_ASYNC_READ_SITE_BASELINE = 225;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

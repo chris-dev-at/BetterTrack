@@ -120,7 +120,7 @@ const UNDERSTANDING: ImportUnderstanding = {
       header: 'Kurswert',
       field: 'amount',
       confidence: 0.6,
-      reason: 'ai proposal (heavy tier) — a suggestion, not a mapping',
+      reason: 'ai proposal — a suggestion, not a mapping',
       needsReview: true,
       source: 'ai',
       alternativeOf: { header: 'Betrag', confidence: 0.97 },

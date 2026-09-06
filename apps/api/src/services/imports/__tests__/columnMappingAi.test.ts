@@ -14,11 +14,8 @@ import {
   UnmappableTableError,
   type ColumnMapResult,
 } from '../columnMapping';
-import {
-  HEADER_MAPPING_AI_TIER,
-  MAX_AI_HEADERS,
-  type ImportHeaderAiSeam,
-} from '../headerMappingAi';
+import { MAX_AI_HEADERS } from '../headerMappingAi';
+import type { ImportAiSeam } from '../importAi';
 
 /**
  * The AI header-mapping FALLBACK (#964, §16 2026-07-31), end to end through the
@@ -32,13 +29,12 @@ import {
  *     from until a human confirms it;
  *  3. the vocabulary is closed — anything else the model says is discarded.
  *
- * No test here may reach a model: every seam is a stub. The one binder that
- * could reach the real heavy tier refuses to run under a test runner at all
- * (`headerMappingAi.test.ts`).
+ * No test here may reach a model: every seam is a stub, and the one binder that
+ * could reach a provider is not constructed here (`importAi.test.ts`).
  */
 
 interface StubSeam {
-  seam: ImportHeaderAiSeam;
+  seam: ImportAiSeam;
   calls: { system: string; prompt: string }[];
 }
 
@@ -48,10 +44,9 @@ function stubSeam(reply: string | ((prompt: string) => string)): StubSeam {
   return {
     calls,
     seam: {
-      tier: HEADER_MAPPING_AI_TIER,
       complete: async ({ system, prompt }) => {
         calls.push({ system, prompt });
-        return { text: typeof reply === 'string' ? reply : reply(prompt), model: 'stub-heavy' };
+        return { text: typeof reply === 'string' ? reply : reply(prompt), model: 'stub-model' };
       },
     },
   };
@@ -308,8 +303,7 @@ describe('the vocabulary is closed — the model proposes a FIELD, never a value
   });
 
   it('falls back to today’s behaviour when the provider fails', async () => {
-    const failing: ImportHeaderAiSeam = {
-      tier: HEADER_MAPPING_AI_TIER,
+    const failing: ImportAiSeam = {
       complete: async () => {
         throw new Error('ollama unreachable');
       },
@@ -439,7 +433,7 @@ describe('understandTableWithAi — a real broker file, end to end', () => {
       header: 'Handelsplatz',
       field: 'ignore',
       confidence: AI_PROPOSAL_CONFIDENCE,
-      reason: 'ai proposal (heavy tier) — a suggestion, not a mapping',
+      reason: 'ai proposal — a suggestion, not a mapping',
       needsReview: true,
       source: 'ai',
     });
@@ -447,7 +441,7 @@ describe('understandTableWithAi — a real broker file, end to end', () => {
       header: 'Kurswert',
       field: 'amount',
       confidence: AI_PROPOSAL_CONFIDENCE,
-      reason: 'ai proposal (heavy tier) — a suggestion, not a mapping',
+      reason: 'ai proposal — a suggestion, not a mapping',
       needsReview: true,
       source: 'ai',
       // 0.95, not the dictionary's bare 0.93: `Endbetrag` also carries
