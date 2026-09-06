@@ -23,6 +23,7 @@ import type { MarketIntelRepository } from '../../data/repositories/marketIntelR
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
+import { marketIntelDisplayDay } from './displayDay';
 import { capRollupSubjects, MARKET_INTEL_ROLLUP_MAX_ASSETS } from './rollupBudget';
 
 /**
@@ -259,42 +260,54 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         : await intelRepo.listUserWatchAssets(userId),
     );
 
-    // "Upcoming" is UTC-day-based: a report dated today still belongs on the
-    // panel, anything strictly before today has already happened. The guard is
-    // not optional — the keystone serves a cached earnings payload stale for up
-    // to STALE_TTL_SECONDS while the provider breaker is open, so a reported
-    // date lingers and, being the smallest key, would sort to the very front.
-    const todayStart = new Date(now()).toISOString().slice(0, 10);
+    // "Upcoming" is measured on the DISPLAY day (see displayDay.ts): a report
+    // dated today still belongs on the panel, anything strictly before today has
+    // already happened — and "today" has to be the day the entry is rendered in,
+    // or the panel keeps yesterday's report between 00:00 and 02:00 Vienna. The
+    // guard is not optional — the keystone serves a cached earnings payload
+    // stale for up to STALE_TTL_SECONDS while the provider breaker is open, so a
+    // reported date lingers and, being the smallest key, would sort to the very
+    // front.
+    const todayStart = marketIntelDisplayDay(now());
 
-    const entries: EarningsCalendarEntry[] = [];
-    for (const a of selected) {
-      const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
-      // Skip assets whose resolved provider can't serve earnings.
-      if (!marketData.intelCapabilities(ref).earnings) continue;
-      let next;
-      try {
-        const cached = await marketData.getEarningsEvents(ref);
-        next = cached.value.next;
-      } catch {
-        // A single bad upstream degrades that asset to no-entry — never a 5xx
-        // across the whole calendar (§13.5 V5-P5).
-        continue;
-      }
-      // Only dated upcoming reports make the panel; an undated/absent next drops.
-      if (!next || !next.date) continue;
-      // …and so does a report that already happened (see `todayStart`).
-      if (next.date.slice(0, 10) < todayStart) continue;
-      entries.push({
-        assetId: a.assetId,
-        symbol: a.symbol,
-        name: a.name,
-        date: next.date,
-        epsEstimate: next.epsEstimate,
-        estimated: next.estimated,
-        held: a.held,
-        watched: a.watched,
-      });
-    }
+    // Concurrently, like the news digest and the dividend calendar: the cap's
+    // sizing (rollupBudget.ts) is stated against the shared outbound queue's
+    // spacing, which only bounds the request if the reads are in flight together
+    // — serially it was one full round trip per asset, and for a paranoid caller
+    // the account-transition lock stayed held for that whole window.
+    const built = await Promise.all(
+      selected.map(async (a): Promise<EarningsCalendarEntry | null> => {
+        const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
+        // Skip assets whose resolved provider can't serve earnings.
+        if (!marketData.intelCapabilities(ref).earnings) return null;
+        let next;
+        try {
+          const cached = await marketData.getEarningsEvents(ref);
+          next = cached.value.next;
+        } catch {
+          // A single bad upstream degrades that asset to no-entry — never a 5xx
+          // across the whole calendar (§13.5 V5-P5).
+          return null;
+        }
+        // Only dated upcoming reports make the panel; an undated/absent next drops.
+        if (!next || !next.date) return null;
+        // …and so does a report that already happened (see `todayStart`).
+        if (next.date.slice(0, 10) < todayStart) return null;
+        return {
+          assetId: a.assetId,
+          symbol: a.symbol,
+          name: a.name,
+          date: next.date,
+          epsEstimate: next.epsEstimate,
+          estimated: next.estimated,
+          held: a.held,
+          watched: a.watched,
+        };
+      }),
+    );
+    // Selection order is preserved by `Promise.all`, so the sort below breaks
+    // same-date ties exactly as the serial build did.
+    const entries = built.filter((entry): entry is EarningsCalendarEntry => entry !== null);
     // Ascending by date — the next report first (the panel reads chronologically).
     entries.sort((x, y) => x.date.localeCompare(y.date));
     return { available: true, entries, ...(truncated ? { truncated: true as const } : {}) };
