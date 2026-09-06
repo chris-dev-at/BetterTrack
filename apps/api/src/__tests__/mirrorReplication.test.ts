@@ -9,6 +9,7 @@ import {
   MIRROR_OP_VERSION,
   MIRROR_ROW_DELETED,
   MIRROR_SYNC_STALLED,
+  SOURCE_TAG_MANUAL,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   type MirrorOpPayload,
 } from '@bettertrack/contracts';
@@ -126,6 +127,46 @@ async function sourceBalances(userId: string, portfolioId: string) {
     includeArchived: true,
   });
   return sources;
+}
+
+/** The frozen tax facts of a copy's sells, in insertion order (issue #1861). */
+async function sellTaxFacts(portfolioId: string) {
+  const rows = await harness.db
+    .select()
+    .from(schema.transactions)
+    .where(eq(schema.transactions.portfolioId, portfolioId));
+  return rows
+    .filter((row) => row.side === 'sell')
+    .map((row) => ({
+      source: row.source,
+      taxMode: row.taxMode,
+      taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+    }));
+}
+
+/** A buy and a taxable sell of it, submitted on the origin copy (issue #1861). */
+async function submitBuyAndGainSell(userId: string, portfolioId: string, assetId: string) {
+  await harness.ctx.mirror.submitTransactionsCreate(userId, portfolioId, [
+    {
+      assetId,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      fee: 0,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    },
+  ]);
+  await harness.ctx.mirror.submitTransactionsCreate(userId, portfolioId, [
+    {
+      assetId,
+      side: 'sell',
+      quantity: 10,
+      price: 19,
+      fee: 0,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    },
+  ]);
 }
 
 async function mirrorAuditRows(portfolioId: string) {
@@ -481,6 +522,102 @@ describe('mirrorchain M2 — replication core', () => {
     expect(
       aCash.movements.some((m) => m.kind === 'tax_withholding' || m.kind === 'tax_refund'),
     ).toBe(false);
+  });
+
+  it('the manual-per-trade default applies to replicated rows, so equal settings book equal tax (#1861)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    // Both members run manual-per-trade with the same 27.5 % default. One
+    // logical trade in one logical portfolio must therefore carry one tax
+    // figure — the replica used to skip the default and book zero, because its
+    // `sync:mirrorchain` tag failed a literal `=== 'manual'` gate.
+    for (const member of [alice, bob]) {
+      await harness.ctx.tax.updateSettings(member.id, {
+        mode: 'manual_per_trade',
+        manualDefaultRatePct: 27.5,
+      });
+    }
+    await submitBuyAndGainSell(alice.id, aPid, asset.id);
+    await harness.ctx.mirror.submitDividendRecord(alice.id, aPid, {
+      assetId: asset.id,
+      grossAmountEur: 100,
+      executedAt: '2026-03-01T10:00:00.000Z',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Gain 10·(19−10) = 90 → 27.5 % = 24.75 in BOTH books, each frozen locally.
+    expect(await sellTaxFacts(aPid)).toEqual([
+      { source: SOURCE_TAG_MANUAL, taxMode: 'manual_per_trade', taxAmountEur: 24.75 },
+    ]);
+    expect(await sellTaxFacts(bPid)).toEqual([
+      { source: SOURCE_TAG_SYNC_MIRRORCHAIN, taxMode: 'manual_per_trade', taxAmountEur: 24.75 },
+    ]);
+
+    // The dividend path carries its own copy of the gate (§6.8.4): 27.5 % of
+    // the €100 gross = 27.50, on the origin and on the replica alike.
+    const aDividends = (await harness.ctx.tax.listDividends(alice.id, aPid)).dividends;
+    const bDividends = (await harness.ctx.tax.listDividends(bob.id, bPid)).dividends;
+    expect(aDividends[0]).toMatchObject({
+      source: SOURCE_TAG_MANUAL,
+      taxMode: 'manual_per_trade',
+      taxAmountEur: 27.5,
+    });
+    expect(bDividends[0]).toMatchObject({
+      source: SOURCE_TAG_SYNC_MIRRORCHAIN,
+      taxMode: 'manual_per_trade',
+      taxAmountEur: 27.5,
+    });
+
+    // Each copy settled its own tax in its own cash book.
+    for (const [userId, pid] of [
+      [alice.id, aPid],
+      [bob.id, bPid],
+    ] as const) {
+      const cash = await harness.ctx.portfolio.getCashMovements(userId, pid);
+      expect(
+        cash.movements.filter((m) => m.kind === 'tax_withholding').map((m) => m.amountEur),
+      ).toEqual(expect.arrayContaining([-24.75, -27.5]));
+    }
+  });
+
+  it('applying the default stays per copy: a member with a different default books their own tax (§6.17)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    // Same mode, different configured default — replication carries the trade,
+    // never the settings.
+    await harness.ctx.tax.updateSettings(alice.id, {
+      mode: 'manual_per_trade',
+      manualDefaultRatePct: 27.5,
+    });
+    await harness.ctx.tax.updateSettings(bob.id, {
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
+    await submitBuyAndGainSell(alice.id, aPid, asset.id);
+    await harness.ctx.mirror.submitDividendRecord(alice.id, aPid, {
+      assetId: asset.id,
+      grossAmountEur: 100,
+      executedAt: '2026-03-01T10:00:00.000Z',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    expect(await sellTaxFacts(aPid)).toEqual([
+      { source: SOURCE_TAG_MANUAL, taxMode: 'manual_per_trade', taxAmountEur: 24.75 },
+    ]);
+    expect(await sellTaxFacts(bPid)).toEqual([
+      { source: SOURCE_TAG_SYNC_MIRRORCHAIN, taxMode: 'manual_per_trade', taxAmountEur: 5 },
+    ]);
+    expect((await harness.ctx.tax.listDividends(alice.id, aPid)).dividends[0]).toMatchObject({
+      taxAmountEur: 27.5,
+    });
+    expect((await harness.ctx.tax.listDividends(bob.id, bPid)).dividends[0]).toMatchObject({
+      taxAmountEur: 5,
+    });
+
+    // Bob's stored settings are untouched by what Alice runs — the default that
+    // applied is his, read back from his own record.
+    expect(await harness.ctx.tax.getSettings(bob.id)).toMatchObject({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
   });
 
   it('refuses an edit to a cash movement whose delete is already the latest op (§3 terminality)', async () => {
