@@ -40,7 +40,10 @@ afterEach(() => {
 // passed (that is what reds a chart suite that only ended within a frame of
 // its last render). One frame here — after the last `cleanup()`, so every
 // store's listeners are gone and notifying is a no-op — runs the callbacks
-// still queued and disarms their fallbacks while the window is alive.
+// still queued and disarms their fallbacks while the window is alive. Either
+// half of RTK's race retires the pair, so on a loaded runner where the 100 ms
+// fallback beats the frame this has already happened by the time the wait
+// below returns; it is only the window closing first that has to be ruled out.
 afterAll(async () => {
   // The real timer both bounds the wait and covers the case a file leaves a
   // fake clock installed, where jsdom would never deliver the frame: it
