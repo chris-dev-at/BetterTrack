@@ -9,7 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createDeadLetter, DEAD_LETTER_KEY, QUEUE_NAMES, type QueueRegistry } from '../jobs';
-import { summaryOf } from '../services/ops/jobOpsService';
+import { JOB_FAILURE_PAGE_SIZE, readJobOps, summaryOf } from '../services/ops/jobOpsService';
 import { readProviderOps } from '../services/ops/providerOpsService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -30,6 +30,9 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
  * catch — a fixture with an empty payload makes that check unable to fail.
  */
 const PAYLOAD_MARKER = 'DEAD-LETTER-PAYLOAD-MUST-NOT-LEAK';
+
+/** Wall-clock ceiling for one full-page dead-letter read (#1853, see its test). */
+const READ_JOB_OPS_BUDGET_MS = 500;
 
 let harness: TestHarness;
 
@@ -261,6 +264,43 @@ describe('GET /admin/ops/jobs — the §9 dead-letter list finally has a reader 
     expect(JSON.stringify(res.body)).not.toContain('victim@');
     const body = adminOpsJobsResponseSchema.parse(res.body);
     expect(body.failures[0]!.failedReason.length).toBeLessThanOrEqual(ADMIN_OPS_ERROR_MAX_LENGTH);
+  });
+
+  /**
+   * Nothing caps a dead-letter entry's size at write time, and this read scrubs
+   * one per projected row — a full page of them, again on every live-refresh
+   * tick of the page an operator stares at while an incident is live. With the
+   * pre-fix rule a quarter-MB `failedReason` cost ~2.9 s EACH on the API's single
+   * event loop: ~71 s of blocked loop per page load, stalling every user's
+   * request and making the incident worse the more it was looked at (#1853).
+   *
+   * The budget is generous because the read also LLRANGEs and JSON-parses
+   * ~7.5 MB before any scrubbing happens (~13 ms here, all told); it is still
+   * more than two orders of magnitude below what the scan alone used to cost.
+   */
+  it('projects a full page of 300 KB failure reasons without blocking the loop', async () => {
+    const hostile = `?${'{"apikey":"a","signature":"b"},'.repeat(10_000)}`;
+    expect(hostile.length).toBeGreaterThan(300_000);
+    for (let i = 0; i < JOB_FAILURE_PAGE_SIZE; i += 1) {
+      await seedDeadLetter({
+        jobId: `job-${i}`,
+        failedReason: `dispatch failed: ?apikey=SUPERSECRET ${hostile}`,
+      });
+    }
+
+    const started = performance.now();
+    const body = await readJobOps({ queues: null, redis: harness.ctx.redis });
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(READ_JOB_OPS_BUDGET_MS);
+    expect(body.failures).toHaveLength(JOB_FAILURE_PAGE_SIZE);
+    for (const failure of body.failures) {
+      // Reading less costs no redaction on what is shown: the credential is
+      // still gone, and the row is still held to the wire limit.
+      expect(failure.failedReason).toContain('?apikey=');
+      expect(failure.failedReason).not.toContain('SUPERSECRET');
+      expect(failure.failedReason.length).toBeLessThanOrEqual(ADMIN_OPS_ERROR_MAX_LENGTH);
+    }
   });
 
   it('reads depths, schedules, next run and the sweep counts when a registry exists', async () => {

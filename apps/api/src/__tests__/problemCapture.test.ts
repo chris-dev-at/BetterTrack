@@ -22,6 +22,7 @@ import {
 } from '../services/observability/problemService';
 import { registerProcessErrorCapture } from '../services/observability/processErrorCapture';
 import { scrubOpsError } from '../services/ops/opsText';
+import { REDACTED_TOKEN } from '../services/observability/scrubber';
 import {
   createProblemRepository,
   type ProblemRepository,
@@ -38,6 +39,15 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * deduped by fingerprint with an incremented occurrence count, and rate-capped
  * so an identical-error storm cannot unbounded-write.
  */
+/**
+ * Wall-clock ceiling for one capture's scrubbing work (#1853), the same number
+ * the scrubber's own linearity guard uses. A 1 MB capture measures ~13 ms of it
+ * (the message is bounded first; the stack that repeats the message is scanned
+ * in full and linearly), while the pre-fix path spent SECONDS on one message —
+ * so a regression misses this by orders of magnitude rather than flaking.
+ */
+const SCRUB_TIME_BUDGET_MS = 100;
+
 describe('problem capture (Sentry replacement)', () => {
   let harness: TestHarness;
 
@@ -435,6 +445,32 @@ describe('problem capture (Sentry replacement)', () => {
     expect(row!.message).toContain('[redacted-email]');
     expect(row!.message).not.toContain('alice@');
     expect(row!.message).not.toContain('example.com');
+  });
+
+  it('bounds a 1 MB message BEFORE the scrubber reads it, and still redacts it', async () => {
+    // #1853: capture scrubbed the RAW string and capped afterwards, so every
+    // byte past the cap was scanned for nothing — and the query rule's own
+    // keyword made that scan quadratic (296 KB cost ~2.9 s on the API's single
+    // event loop). This is a megabyte of exactly that shape.
+    const hostile =
+      'GET https://api.provider.com/v8?apikey=SUPERSECRET failed: ' +
+      `?${'{"apikey":"a","signature":"b"},'.repeat(34_000)}`;
+    expect(hostile.length).toBeGreaterThan(1_000_000);
+
+    const started = performance.now();
+    harness.ctx.problems.captureError(new Error(hostile));
+    const elapsed = performance.now() - started;
+    await harness.ctx.problems.flush();
+
+    expect(elapsed).toBeLessThan(SCRUB_TIME_BUDGET_MS);
+
+    const [row] = await harness.db.select().from(problems);
+    // Bounding the INPUT costs no redaction on the part that is kept…
+    expect(row!.message).toContain(`?apikey=${REDACTED_TOKEN}`);
+    expect(row!.message).not.toContain('SUPERSECRET');
+    // …and the row is still held to the documented caps.
+    expect(row!.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 16);
+    expect(row!.message).toContain('[truncated]');
   });
 });
 

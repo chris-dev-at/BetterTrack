@@ -1,6 +1,6 @@
 import { ADMIN_OPS_ERROR_MAX_LENGTH } from '@bettertrack/contracts';
 
-import { REDACTED_ID, redactIdentifiers } from '../observability/scrubber';
+import { REDACTED_ID, boundScrubInput, redactIdentifiers } from '../observability/scrubber';
 
 /**
  * The single place free text is cleaned before it leaves the operations cockpit
@@ -16,6 +16,13 @@ import { REDACTED_ID, redactIdentifiers } from '../observability/scrubber';
  * or an address in half and leave the readable half on screen, which is worse
  * than either alone — a half-token is still a lead, and a half-address still
  * identifies a person.
+ *
+ * What the scrubber READS is bounded first, though, and separately: a
+ * dead-lettered `failedReason` has no size limit at write time, this runs once
+ * per projected row (25 per read) on the API's single event loop, and the
+ * cockpit is the surface an operator hammers precisely while an incident is
+ * live. {@link boundScrubInput} cuts at a separator so that cheaper read cannot
+ * cost redaction strength (#1853).
  */
 
 /**
@@ -37,7 +44,7 @@ export { REDACTED_ID };
  * 500 the whole cockpit read on a long message.
  */
 export function scrubOpsError(value: string): string {
-  const redacted = redactIdentifiers(value);
+  const redacted = redactIdentifiers(boundScrubInput(value));
   return redacted.length > ADMIN_OPS_ERROR_MAX_LENGTH
     ? `${redacted.slice(0, ADMIN_OPS_ERROR_MAX_LENGTH - 1)}…`
     : redacted;

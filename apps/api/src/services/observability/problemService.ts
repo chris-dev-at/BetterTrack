@@ -12,7 +12,13 @@ import type { Logger } from '../../logger';
 import { problemCapturesDroppedTotal } from '../../metrics';
 import { AuditAction, type AuditService } from '../audit/auditService';
 
-import { redactIdentifiers, redactString, scrubEvent, type ScrubbableValue } from './scrubber';
+import {
+  boundScrubInput,
+  redactIdentifiers,
+  redactString,
+  scrubEvent,
+  type ScrubbableValue,
+} from './scrubber';
 
 /**
  * DB-backed problem capture — the Sentry replacement (PROJECTPLAN.md §13.5
@@ -432,19 +438,30 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   ): void => {
     // A caller-supplied count is folded in, never trusted blindly.
     const observed = Number.isFinite(observedRaw) ? Math.max(1, Math.trunc(observedRaw)) : 1;
-    // Scrub, THEN cap: the scrubber must see the whole string (a token cut in
-    // half matches nothing), and `problems.title`/`.message` are unbounded
-    // `text` that the admin page renders, so nothing else keeps a pathological
-    // message from becoming the row. The byte ceiling behind the char cap is
-    // what a multi-byte payload (an upstream HTML error page) is actually held
-    // to — the write budget counts rows per minute and never bytes.
+    // Scrub, THEN cap: the scrubber must see the string it will keep (a token
+    // cut in half matches nothing), and `problems.title`/`.message` are
+    // unbounded `text` that the admin page renders, so nothing else keeps a
+    // pathological message from becoming the row. The byte ceiling behind the
+    // char cap is what a multi-byte payload (an upstream HTML error page) is
+    // actually held to — the write budget counts rows per minute and never
+    // bytes.
+    // What the scrubber READS is bounded first, though: a thrown provider
+    // message carries whatever the upstream sent, capture runs on the API's
+    // single event loop, and every character past `boundScrubInput`'s ceiling
+    // is discarded by the caps below anyway — so reading it was pure cost
+    // (#1853). That bound cuts at a separator, so it cannot hand the scrubber
+    // half a credential and call the other half gone.
     // `redactIdentifiers`, not `redactString`: the ops cockpit already strips a
     // UUID out of the very same failure text, so capturing it raw made the two
     // surfaces disagree about one string and put a user's object id on the
     // Problems page (#1847). The fold key is unaffected —
     // `normalizeForFingerprint` collapses long hex either way.
-    const title = boundProblemTitle(truncateErrorMessage(redactIdentifiers(rawTitle)));
-    const message = boundProblemMessage(truncateErrorMessage(redactIdentifiers(rawMessage)));
+    const title = boundProblemTitle(
+      truncateErrorMessage(redactIdentifiers(boundScrubInput(rawTitle))),
+    );
+    const message = boundProblemMessage(
+      truncateErrorMessage(redactIdentifiers(boundScrubInput(rawMessage))),
+    );
     // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
     // token bodies) that the stored row does not, so fingerprinting them would
     // split one visible problem into a row per user.
