@@ -669,6 +669,13 @@ function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
       setRemoveTarget(null);
       void queryClient.invalidateQueries({ queryKey: ['social', 'friends'] });
       void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
+      // The unfriend transaction also drops the ex-friend from every circle
+      // (`socialService.removeFriend` → `groups.removeMutualMemberships`), and
+      // `FriendGroupsSection` sits on this same page reading that key. Without
+      // this the circle card keeps listing the ex-friend — with a Remove button
+      // and a memberCount that includes them — for the whole page visit: an
+      // owner surface claiming a reach the server no longer grants.
+      void queryClient.invalidateQueries({ queryKey: ['social', 'groups'] });
     },
   });
 

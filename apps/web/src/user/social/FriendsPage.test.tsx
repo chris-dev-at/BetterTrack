@@ -367,6 +367,55 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(listFriends).toHaveBeenCalledTimes(2));
   });
 
+  test('removing a friend drops them from the circles on the same page visit', async () => {
+    // `socialService.removeFriend` runs `groups.removeMutualMemberships` inside
+    // the unfriend transaction, so a circle card still listing the ex-friend —
+    // with a Remove button and a memberCount including them — is an owner
+    // surface claiming a reach the server no longer grants.
+    vi.mocked(listFriends)
+      .mockResolvedValueOnce({
+        friends: [{ user: { id: 'u9', username: 'bob' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+      })
+      .mockResolvedValue(EMPTY_FRIENDS);
+    vi.mocked(listGroups)
+      .mockResolvedValueOnce({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Family',
+            memberCount: 1,
+            members: [{ id: 'u9', username: 'bob', profileIcon: null }],
+            shareCount: 0,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        groups: [{ id: 'g1', name: 'Family', memberCount: 0, members: [], shareCount: 0 }],
+      });
+    vi.mocked(removeFriend).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    // The circle, open, shows bob as a live member.
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    expect(screen.getByText('1 member')).toBeInTheDocument();
+    const circle = screen.getByText('Family').closest('li') as HTMLElement;
+    expect(within(circle).getByText('bob')).toBeInTheDocument();
+
+    // Unfriend him from the friend overview beside it (Remove lives there, on
+    // expand — the circle's own member row carries a Remove of its own).
+    await user.click(screen.getByRole('button', { name: 'bob' }));
+    const friendCard = screen.getByRole('button', { name: 'bob' }).closest('li') as HTMLElement;
+    await user.click(within(friendCard).getByRole('button', { name: 'Remove' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove friend?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+
+    expect(removeFriend).toHaveBeenCalledWith('u9');
+    await waitFor(() => expect(listGroups).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('0 members')).toBeInTheDocument());
+    expect(screen.queryByText('bob')).not.toBeInTheDocument();
+  });
+
   test('a friend card exposes a chat entry point that routes to the future chat surface', async () => {
     vi.mocked(listFriends).mockResolvedValue({
       friends: [{ user: { id: 'u5', username: 'erin' }, createdAt: '2026-01-01T00:00:00.000Z' }],

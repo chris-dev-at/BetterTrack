@@ -514,6 +514,77 @@ describe('AudiencePicker — friend groups (V5-P8)', () => {
       confirmWiden: true,
     });
   });
+
+  describe('the widening confirmation names the circle it means', () => {
+    const WORK = '00000000-0000-0000-0000-0000000000f2';
+
+    function withCircles(current: { audience: 'group' | 'specific_friends'; groupId?: string }) {
+      vi.mocked(listGroups).mockResolvedValue({
+        groups: [
+          { id: GROUP, name: 'Family', memberCount: 3, members: [], shareCount: 0 },
+          { id: WORK, name: 'Work', memberCount: 18, members: [], shareCount: 0 },
+        ],
+      });
+      vi.mocked(getAudience).mockResolvedValue({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: current.audience,
+        friendIds: [],
+        groupId: current.groupId ?? null,
+        link: { active: false, createdAt: null },
+      });
+    }
+
+    test('a group → group swap names both circles, not "Friend group" twice', async () => {
+      // Three people to eighteen is a genuine widening (contracts classifies it
+      // so); asking the owner to acknowledge it while refusing to name either
+      // circle makes the acknowledgment meaningless.
+      withCircles({ audience: 'group', groupId: GROUP });
+      const user = userEvent.setup();
+      renderPicker();
+
+      await waitFor(() => expect(screen.getByRole('radio', { name: /work/i })).toBeEnabled());
+      await user.click(screen.getByRole('radio', { name: /work/i }));
+
+      expect(
+        screen.getByText(
+          /change access from group “Family” \(3 members\) to group “Work” \(18 members\)/i,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/from Friend group to Friend group/i)).toBeNull();
+    });
+
+    test('a specific-friends → group change names the target circle', async () => {
+      withCircles({ audience: 'specific_friends' });
+      const user = userEvent.setup();
+      renderPicker();
+
+      await waitFor(() =>
+        expect(screen.getByRole('radio', { name: /friend group/i })).toBeEnabled(),
+      );
+      await user.click(screen.getByRole('radio', { name: /friend group/i }));
+      await user.click(screen.getByRole('radio', { name: /work/i }));
+
+      expect(
+        screen.getByText(/change access from Specific friends to group “Work” \(18 members\)/i),
+      ).toBeInTheDocument();
+    });
+
+    test('a group → specific-friends change names the source circle', async () => {
+      withCircles({ audience: 'group', groupId: WORK });
+      const user = userEvent.setup();
+      renderPicker();
+
+      await waitFor(() =>
+        expect(screen.getByRole('radio', { name: /specific friends/i })).toBeEnabled(),
+      );
+      await user.click(screen.getByRole('radio', { name: /specific friends/i }));
+
+      expect(
+        screen.getByText(/change access from group “Work” \(18 members\) to Specific friends/i),
+      ).toBeInTheDocument();
+    });
+  });
 });
 
 describe('AudiencePicker — MIRRORCHAIN §10 share notice (V5-P7 M5)', () => {
