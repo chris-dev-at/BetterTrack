@@ -1,11 +1,20 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   assertGrafanaAdminCredential,
   assertGrafanaAnonymousAccessBind,
   assertGrafanaTelemetryDisabled,
+  assertLanObservabilityBind,
+  assertPrometheusExposure,
   assertServiceLoggingLimits,
   GRAFANA_TELEMETRY_SETTINGS,
+  PROMETHEUS_FORBIDDEN_FLAGS,
+  PROMETHEUS_HEALTH_PROBE_PATH,
+  PROMETHEUS_LIFECYCLE_GATED_PATHS,
   type RenderedCompose,
 } from '../checkProductionCompose';
 
@@ -394,6 +403,106 @@ describe('production Compose Grafana anonymous-access × bind-host gate', () => 
 
     expect(() => assertGrafanaAnonymousAccessBind(rendered, 'test')).toThrow(
       'test: grafana renders anonymous access on the non-loopback bind 192.168.1.10',
+    );
+  });
+});
+
+const prometheusCommand = [
+  '--config.file=/etc/prometheus/prometheus.yml',
+  '--storage.tsdb.path=/prometheus',
+  '--storage.tsdb.retention.time=15d',
+];
+
+function prometheusCompose(
+  overrides: { command?: unknown; entrypoint?: unknown; ports?: unknown[] } = {},
+): RenderedCompose {
+  return {
+    services: {
+      prometheus: {
+        command: overrides.command ?? prometheusCommand,
+        ...(overrides.entrypoint === undefined ? {} : { entrypoint: overrides.entrypoint }),
+        ports: overrides.ports ?? [{ target: 9090, host_ip: '127.0.0.1' }],
+      },
+    },
+  } as RenderedCompose;
+}
+
+describe('production Compose Prometheus exposure gate', () => {
+  it('accepts the shipped shape: no write-endpoint flags, published on loopback only', () => {
+    expect(() => assertPrometheusExposure(prometheusCompose(), 'test')).not.toThrow();
+  });
+
+  it.each([...PROMETHEUS_FORBIDDEN_FLAGS])('fails when %s comes back in the command', (flag) => {
+    const rendered = prometheusCompose({ command: [...prometheusCommand, flag] });
+
+    expect(() => assertPrometheusExposure(rendered, 'test')).toThrow(
+      `test: prometheus must not run with ${flag}`,
+    );
+  });
+
+  it('fails when a write-endpoint flag is smuggled through an entrypoint override', () => {
+    const rendered = prometheusCompose({
+      entrypoint: ['/bin/prometheus', '--web.enable-lifecycle'],
+      command: prometheusCommand,
+    });
+
+    expect(() => assertPrometheusExposure(rendered, 'test')).toThrow(
+      'test: prometheus must not run with --web.enable-lifecycle',
+    );
+  });
+
+  it('fails when the bind follows the LAN recipe onto the network', () => {
+    const rendered = prometheusCompose({ ports: [{ target: 9090, host_ip: '192.168.1.10' }] });
+
+    expect(() => assertPrometheusExposure(rendered, 'test')).toThrow(
+      'test: prometheus publishes on the non-loopback bind 192.168.1.10',
+    );
+  });
+
+  it('fails when the port is published on every interface', () => {
+    const rendered = prometheusCompose({ ports: [{ target: 9090 }] });
+
+    expect(() => assertPrometheusExposure(rendered, 'test')).toThrow(
+      'test: prometheus publishes on the non-loopback bind (all interfaces)',
+    );
+  });
+
+  it.each(['localhost', '::1', '127.0.1.1'])('accepts the loopback bind %s', (host) => {
+    const rendered = prometheusCompose({ ports: [{ target: 9090, host_ip: host }] });
+
+    expect(() => assertPrometheusExposure(rendered, 'test')).not.toThrow();
+  });
+
+  it('keeps the admin health probe off the endpoints the dropped flag gated', () => {
+    // The flag removal is only safe because `/-/healthy` is served either way;
+    // this is the assertion that couples the two if the probe path ever moves.
+    const monitoringService = readFileSync(
+      resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        '../../services/observability/monitoringService.ts',
+      ),
+      'utf8',
+    );
+
+    expect(monitoringService).toContain(`'${PROMETHEUS_HEALTH_PROBE_PATH}'`);
+    expect(PROMETHEUS_LIFECYCLE_GATED_PATHS).not.toContain(PROMETHEUS_HEALTH_PROBE_PATH);
+  });
+});
+
+describe('production Compose LAN observability-bind probe', () => {
+  const lanBind = '192.168.242.10';
+
+  it('accepts the render where the LAN bind moved Grafana', () => {
+    const rendered = grafanaCompose({ ports: [{ target: 3000, host_ip: lanBind }] });
+
+    expect(() => assertLanObservabilityBind(rendered, 'test', lanBind)).not.toThrow();
+  });
+
+  it('fails when the probe no longer moves Grafana, so the render proves nothing', () => {
+    const rendered = grafanaCompose({ ports: [{ target: 3000, host_ip: '127.0.0.1' }] });
+
+    expect(() => assertLanObservabilityBind(rendered, 'test', lanBind)).toThrow(
+      'test: the LAN-bind probe did not take',
     );
   });
 });
