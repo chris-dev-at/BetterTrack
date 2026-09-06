@@ -1,6 +1,6 @@
 import { ADMIN_OPS_ERROR_MAX_LENGTH } from '@bettertrack/contracts';
 
-import { redactString } from '../observability/scrubber';
+import { REDACTED_ID, redactIdentifiers } from '../observability/scrubber';
 
 /**
  * The single place free text is cleaned before it leaves the operations cockpit
@@ -19,19 +19,15 @@ import { redactString } from '../observability/scrubber';
  */
 
 /**
- * Canonical UUIDs (v1–v5 and the nil UUID) anywhere in a string.
- *
- * A job failure very often names the row it failed on — "portfolio
- * 550e8400-… not found" — and that identifier is a user's object, not
- * diagnostic information. The operator needs to know WHICH QUEUE is failing and
- * WHY, which survives redaction intact. Deliberately not applied to the
- * projection's own `jobId` field: a BullMQ job id is our own scheduling handle,
- * not a user's object, and losing it would cost the operator the one thing that
- * makes two identical error strings distinguishable.
+ * The identifier pass lives in the scrubber ({@link redactIdentifiers}, #1847),
+ * because the Problems capture renders the same failure text and a second copy
+ * here is exactly how the two surfaces came to disagree about one string. This
+ * module keeps only its cap. Deliberately not applied to the projection's own
+ * `jobId` field: a BullMQ job id is our own scheduling handle, not a user's
+ * object, and losing it would cost the operator the one thing that makes two
+ * identical error strings distinguishable.
  */
-const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-
-export const REDACTED_ID = '[redacted-id]';
+export { REDACTED_ID };
 
 /**
  * Redact identifiers from a free-text operational string, then bound it.
@@ -41,7 +37,7 @@ export const REDACTED_ID = '[redacted-id]';
  * 500 the whole cockpit read on a long message.
  */
 export function scrubOpsError(value: string): string {
-  const redacted = redactString(value).replace(UUID_RE, REDACTED_ID);
+  const redacted = redactIdentifiers(value);
   return redacted.length > ADMIN_OPS_ERROR_MAX_LENGTH
     ? `${redacted.slice(0, ADMIN_OPS_ERROR_MAX_LENGTH - 1)}…`
     : redacted;

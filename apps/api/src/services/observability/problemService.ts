@@ -12,7 +12,7 @@ import type { Logger } from '../../logger';
 import { problemCapturesDroppedTotal } from '../../metrics';
 import { AuditAction, type AuditService } from '../audit/auditService';
 
-import { redactString, scrubEvent, type ScrubbableValue } from './scrubber';
+import { redactIdentifiers, redactString, scrubEvent, type ScrubbableValue } from './scrubber';
 
 /**
  * DB-backed problem capture — the Sentry replacement (PROJECTPLAN.md §13.5
@@ -199,6 +199,15 @@ interface DeferredWrite {
   message: string;
   /** Already scrubbed AND bounded — captured once, on the first throttle. */
   context: unknown;
+  /**
+   * When the LAST deferred occurrence actually happened (#1847). A drain runs
+   * at window roll — up to a whole window later — and the row's reopen rule
+   * compares the incoming sighting against `resolved_at`. Stamping the drain's
+   * own clock therefore re-opened a problem an admin had resolved DURING the
+   * window out of occurrences that all predate the resolution, flagged it as a
+   * regression and pushed `last_seen_at` past the last real sighting.
+   */
+  occurredAt: number;
 }
 
 /** Per-fingerprint budget state inside the current window. */
@@ -265,6 +274,19 @@ function boundStack(stack: string): string {
 }
 
 /**
+ * The stack as it is stored: bounded, and with object ids dropped (#1847).
+ *
+ * A stack's first line repeats the message verbatim, so storing it raw put back
+ * exactly the id {@link redactIdentifiers} had just taken out of the title and
+ * the message. Applied HERE and not to the whole context tree, because the
+ * other captured fields — `requestId`, a BullMQ `jobId` — are our own handles,
+ * and redacting them costs the operator the correlation they exist for.
+ */
+function captureStack(stack: string): string {
+  return redactIdentifiers(boundStack(stack));
+}
+
+/**
  * Pull a stable `{ name, message }` out of any thrown value.
  *
  * Unwraps drizzle's `DrizzleQueryError` first: since 0.44 its message is the
@@ -309,7 +331,11 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   let loggedDropInWindow = false;
   const inflight = new Set<Promise<unknown>>();
 
-  /** Issue one upsert, tracked so {@link ProblemService.flush} can await it. */
+  /**
+   * Issue one upsert, tracked so {@link ProblemService.flush} can await it.
+   * `seenAt` is when the occurrences HAPPENED, never when the write was issued
+   * — see {@link DeferredWrite.occurredAt}.
+   */
   const enqueueWrite = (
     fingerprint: string,
     kind: ProblemRow['kind'],
@@ -317,9 +343,10 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     message: string,
     context: unknown,
     occurrences: number,
+    seenAt: number,
   ): void => {
     const write = repo
-      .upsert({ fingerprint, kind, title, message, context, seenAt: new Date(now()), occurrences })
+      .upsert({ fingerprint, kind, title, message, context, seenAt: new Date(seenAt), occurrences })
       .catch((writeErr: unknown) => {
         logger?.error({ err: writeErr, kind }, 'failed to persist captured problem');
       });
@@ -335,6 +362,10 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
    * leave its occurrences in memory forever, so the stored `occurrence_count`
    * silently under-reported the incident. Costs at most one write per
    * fingerprint that was actually throttled.
+   *
+   * The write is stamped with the deferred occurrences' OWN time, not the
+   * drain's: a late write is a late report of something that already happened,
+   * and the row's reopen rule reads `seenAt` as "when this recurred" (#1847).
    */
   const drainPending = (): void => {
     for (const [fingerprint, state] of tracked) {
@@ -347,6 +378,7 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
           deferred.message,
           deferred.context,
           state.pending,
+          deferred.occurredAt,
         );
       }
       state.pending = 0;
@@ -406,14 +438,20 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
     // message from becoming the row. The byte ceiling behind the char cap is
     // what a multi-byte payload (an upstream HTML error page) is actually held
     // to — the write budget counts rows per minute and never bytes.
-    const title = boundProblemTitle(truncateErrorMessage(redactString(rawTitle)));
-    const message = boundProblemMessage(truncateErrorMessage(redactString(rawMessage)));
+    // `redactIdentifiers`, not `redactString`: the ops cockpit already strips a
+    // UUID out of the very same failure text, so capturing it raw made the two
+    // surfaces disagree about one string and put a user's object id on the
+    // Problems page (#1847). The fold key is unaffected —
+    // `normalizeForFingerprint` collapses long hex either way.
+    const title = boundProblemTitle(truncateErrorMessage(redactIdentifiers(rawTitle)));
+    const message = boundProblemMessage(truncateErrorMessage(redactIdentifiers(rawMessage)));
     // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
     // token bodies) that the stored row does not, so fingerprinting them would
     // split one visible problem into a row per user.
     const fingerprint = fingerprintOf(kind, title, message, discriminator);
 
-    rollWindow(now());
+    const at = now();
+    rollWindow(at);
     const state = tracked.get(fingerprint);
     let occurrences = observed;
     if (state === undefined) {
@@ -441,19 +479,26 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       // captures stay a counter bump), because the drain has to name a row and
       // `upsert` refreshes title/message/context from what it is handed.
       state.pending += observed;
-      state.deferred ??= {
-        kind,
-        title,
-        message,
-        context: context ? boundProblemContext(scrubEvent(context) as unknown) : null,
-      };
+      if (state.deferred === null) {
+        state.deferred = {
+          kind,
+          title,
+          message,
+          context: context ? boundProblemContext(scrubEvent(context) as unknown) : null,
+          occurredAt: at,
+        };
+      } else {
+        // The row is remembered once, but WHEN it last happened is not: the
+        // drain must report the newest deferred sighting, never the first.
+        state.deferred.occurredAt = at;
+      }
       return;
     }
 
     // Scrub first (the whole tree, so no half-token survives), bound second.
     const scrubbedContext = context ? boundProblemContext(scrubEvent(context) as unknown) : null;
 
-    enqueueWrite(fingerprint, kind, title, message, scrubbedContext, occurrences);
+    enqueueWrite(fingerprint, kind, title, message, scrubbedContext, occurrences, at);
   };
 
   const record = async (
@@ -488,30 +533,38 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
       const discriminator =
         route === null ? '' : `${method ?? ''} ${redactString(route)} ${status ?? ''}`.trim();
       const withStack: ProblemCaptureContext | null =
-        stack === null ? (context ?? null) : { ...context, stack: boundStack(stack) };
+        stack === null ? (context ?? null) : { ...context, stack: captureStack(stack) };
       capture('error', name, message, withStack, discriminator, options?.occurrences);
     },
 
     captureJobFailure(err, meta) {
-      const { message } = describeError(err);
+      const { message, stack } = describeError(err);
       capture('job', `${meta.queue} job failed`, message, {
         queue: meta.queue,
         ...(meta.jobId ? { jobId: meta.jobId } : {}),
+        // The same bounded stack the request path stores (#1847): a
+        // permanently-failed job is the capture an operator can least often
+        // reproduce, and its row used to carry no call path at all.
+        ...(stack === null ? {} : { stack: captureStack(stack) }),
       });
     },
 
     captureWorkerError(err, meta) {
-      const { message } = describeError(err);
+      const { message, stack } = describeError(err);
       capture('job', `${meta.queue} worker error`, message, {
         queue: meta.queue,
         scope: 'worker',
+        ...(stack === null ? {} : { stack: captureStack(stack) }),
       });
     },
 
     captureProviderFailure(err, meta) {
-      const { message } = describeError(err);
+      const { message, stack } = describeError(err);
       const providerId = meta.providerId ?? 'provider';
-      capture('provider', `${providerId} provider failure`, message, { providerId });
+      capture('provider', `${providerId} provider failure`, message, {
+        providerId,
+        ...(stack === null ? {} : { stack: captureStack(stack) }),
+      });
     },
 
     async flush() {
