@@ -376,6 +376,22 @@ describe('outbound URL guard — the deployment’s own service network', () => 
     expect(parseDeploymentSubnets('172.18.0.0')).toBeNull();
     expect(parseDeploymentSubnets('172.18.0.0/16, not-a-cidr/16')).toBeNull();
     expect(parseDeploymentSubnets('172.18.0.0/64')).toBeNull();
+    // `none` means "this deployment has no internal network" — it cannot be
+    // combined with a carve-out, so mixing it in is a mistake, not an intent.
+    expect(parseDeploymentSubnets('172.18.0.0/16, none')).toBeNull();
+    expect(parseDeploymentSubnets('none, none')).toBeNull();
+    // And "no internal network" has exactly one spelling: a list of separators
+    // is not a quiet way to say it.
+    expect(parseDeploymentSubnets(',')).toBeNull();
+  });
+
+  it('refuses a `none` mixed with CIDRs at runtime too, keeping the carve-out', () => {
+    process.env[DEPLOYMENT_SUBNETS_ENV] = `${DEPLOYMENT_SUBNET}, none`;
+    try {
+      expect(deploymentNetworkSubnets()).toEqual(deploymentSubnetsFromInterfaces());
+    } finally {
+      process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+    }
   });
 
   it('falls back to the derived network when the value is malformed', () => {

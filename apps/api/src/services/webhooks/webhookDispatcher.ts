@@ -187,6 +187,17 @@ export function isPermanentWebhookStatus(status: number | null): boolean {
  * that never answered are indistinguishable in the log, so a destination the
  * guard allows cannot be probed through the delivery log — the same property the
  * guard-refused branch in `deliver` guarantees.
+ *
+ * Two residues are known and accepted, both inherent to allowing LAN receivers
+ * at all (which the product contract does):
+ *  - a destination that ANSWERS HTTP is still distinguishable from one that does
+ *    not, and its status is logged — that is the diagnostic the feature exists
+ *    for, and gutting it would leave the subscriber unable to see their own
+ *    receiver returning 401;
+ *  - `deliveries[].createdAt` leaks coarse timing, so a filtered port (full
+ *    transport deadline) reads differently from a refused one (immediate).
+ * Neither is narrowed further here; both are recorded so the next reader does
+ * not mistake the collapse above for a complete non-probe guarantee.
  */
 function shortReason(status: number | null, error: string | undefined): WebhookDeliveryError {
   if (status !== null) return WEBHOOK_DELIVERY_HTTP_ERROR;

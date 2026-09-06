@@ -281,6 +281,34 @@ describe('market-intelligence gate (§13.5 V5-P5)', () => {
   });
 });
 
+/**
+ * #1856: the deployment-network carve-out is documented for operators, so the
+ * variable has to be part of the boot contract — a typo in it must not leave the
+ * process running on a derivation the operator believes they overrode.
+ */
+describe('outbound deployment-network carve-out (§13.5 V5-P10)', () => {
+  it('accepts unset, blank, a CIDR list and the lone literal "none"', () => {
+    expect(() => config({})).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '' })).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '   ' })).not.toThrow();
+    expect(() =>
+      config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: '172.18.0.0/16, fd00:beef::/64' }),
+    ).not.toThrow();
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: 'none' })).not.toThrow();
+  });
+
+  it.each([
+    ['a bare address', '172.18.0.0'],
+    ['a typo in one entry', '172.18.0.0/16, oops'],
+    ['an out-of-range prefix', '172.18.0.0/64'],
+    ['"none" mixed with a carve-out', '172.18.0.0/16, none'],
+  ])('refuses %s at boot instead of silently deriving', (_label, value) => {
+    expect(() => config({ BT_OUTBOUND_DEPLOYMENT_SUBNETS: value })).toThrow(
+      /BT_OUTBOUND_DEPLOYMENT_SUBNETS/,
+    );
+  });
+});
+
 describe('operational data retention (§13.5 V5-P14, PL-01)', () => {
   it('uses conservative defaults when the owner leaves the variables unset or blank', () => {
     const defaults = {

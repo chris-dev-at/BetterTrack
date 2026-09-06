@@ -576,6 +576,36 @@ a failed probe keeps Stooq serving and starts another cooldown. A still-fresh
 cached quote can delay the probe and visible switch until the next upstream
 refresh.
 
+## Outbound webhooks and this deployment's own network
+
+A user's webhook receiver may sit on the operator's LAN — that is deliberate, a
+self-hosted stack is often the only thing on its network. What a receiver may
+NEVER reach is this deployment's own service network: `db`, `redis`,
+`prometheus`, `grafana` and the exporters publish no host ports precisely so
+they are unreachable, and a receiver URL pointing at one of them is refused both
+when it is saved and again on every delivery attempt (the worker re-checks after
+DNS resolution, so a rebind cannot slip through).
+
+By default nothing is configured. The api and worker derive that network from
+their own container interfaces, which on the shipped compose bridge is exactly
+right, whatever address pool Docker picked.
+
+`BT_OUTBOUND_DEPLOYMENT_SUBNETS` overrides the derivation and is forwarded to
+both processes by the shared API/worker environment anchor:
+
+| Value                          | Meaning                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| blank / unset (**normal**)     | Derive from the process's own private interfaces                               |
+| `172.18.0.0/16,fd00:beef::/64` | Refuse exactly these ranges                                                    |
+| `none`                         | This deployment has no internal network — refuse nothing beyond the base rules |
+
+Set it when the derivation is wrong for your topology. The derived prefix is the
+interface's own, so an api running with **host networking** on a flat
+`10.0.0.0/8` LAN derives all of `10/8` and refuses every receiver on it; naming
+the real service network here restores them. A malformed value (a bare address,
+a bad prefix, or `none` mixed with CIDRs) is refused at boot rather than quietly
+ignored — restart the api and worker after changing it.
+
 ## Observability (Prometheus + Grafana)
 
 Full monitoring ships **inside the deploy stack** — PROJECTPLAN.md §13.5 V5-P2

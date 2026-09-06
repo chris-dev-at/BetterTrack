@@ -17,6 +17,7 @@ import {
   type SecretBoxKeyring,
 } from '../services/crypto/secretBox';
 import { isKnownSecretPlaceholder } from '../services/password/knownPlaceholders';
+import { parseDeploymentSubnets } from '../services/security/outboundUrlGuard';
 import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
 import { API_SERVICE_NAME, API_VERSION } from '../version';
 
@@ -87,6 +88,31 @@ const envSchema = z.object({
   BT_PRODUCT_ORIGIN: optionalUrl,
   BT_MOBILE_ORIGIN: optionalUrl,
   APP_ORIGIN: optionalUrl,
+  // Names the private network THIS deployment's own services sit on, so a
+  // user-supplied outbound destination (a webhook receiver, §13.5 V5-P10) can
+  // never dial db/redis/prometheus/grafana or an exporter. Comma-separated
+  // CIDRs, or the literal `none` for a deployment that has no internal network.
+  // Blank/unset is the normal case: the guard then DERIVES the ranges from the
+  // process's own private interfaces, which in the shipped compose topology is
+  // exactly the bridge api/worker sit on.
+  //
+  // The guard reads the raw variable itself (it is a module-level singleton
+  // shared by the http context and the worker, so it takes no config object)
+  // and independently falls back to the derived answer on a value it cannot
+  // parse. It is declared HERE so the value is part of the #982 production
+  // environment contract — forwarded by the one Compose anchor, documented in
+  // the production example — and so an operator typo fails boot loudly instead
+  // of quietly reverting to derivation on a knob they believe they set.
+  BT_OUTBOUND_DEPLOYMENT_SUBNETS: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z
+      .string()
+      .refine((value) => parseDeploymentSubnets(value) !== null, {
+        message:
+          'must be a comma-separated CIDR list (e.g. "172.18.0.0/16,fd00:beef::/64") or the single literal "none"',
+      })
+      .optional(),
+  ),
 
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: optionalPositiveInt,

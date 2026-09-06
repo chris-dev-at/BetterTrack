@@ -177,6 +177,13 @@ const NOTHING_ALLOWED: ReadonlySet<string> = new Set();
  * when the derivation is wrong for a topology (host networking, an overlay the
  * API is not attached to, a bare-metal box whose LAN really is the operator's
  * home network and must stay reachable).
+ *
+ * It is a first-class deployment variable (#982): declared in the env schema,
+ * forwarded to BOTH processes by the one Compose API/worker anchor, and
+ * documented in `infra/.env.production.example` — so setting it in `.env` really
+ * does reach the guard. The schema also rejects a malformed value at boot; the
+ * in-process fallback below stays as the last resort for any path that reaches
+ * the guard without going through `loadConfig`.
  */
 export const DEPLOYMENT_SUBNETS_ENV = 'BT_OUTBOUND_DEPLOYMENT_SUBNETS';
 
@@ -196,12 +203,12 @@ function subnetRule(address: string, prefixText: string | undefined): OutboundSu
   return { address, prefix, family: family === 4 ? 'ipv4' : 'ipv6' };
 }
 
-/** The non-empty, non-`none` entries of a {@link DEPLOYMENT_SUBNETS_ENV} value. */
+/** The non-empty entries of a {@link DEPLOYMENT_SUBNETS_ENV} value. */
 function deploymentSubnetTokens(raw: string): string[] {
   return raw
     .split(',')
     .map((token) => token.trim())
-    .filter((token) => token !== '' && token.toLowerCase() !== 'none');
+    .filter((token) => token !== '');
 }
 
 /**
@@ -210,11 +217,23 @@ function deploymentSubnetTokens(raw: string): string[] {
  *
  * All-or-nothing on purpose: dropping the entry a typo produced would silently
  * widen the allowance, which is the failure mode this whole carve-out exists to
- * prevent. The caller falls back to the derived answer instead.
+ * prevent. The caller falls back to the derived answer instead, and
+ * `BT_OUTBOUND_DEPLOYMENT_SUBNETS` is refused by the env schema at boot so the
+ * typo is loud rather than merely survivable.
+ *
+ * `none` is only meaningful as the WHOLE value: `172.18.0.0/16, none` cannot be
+ * both a carve-out and no carve-out, so it reads as a mistake and is refused
+ * with everything else. An empty list (`,`) is refused for the same reason —
+ * "this deployment has no internal network" has exactly one spelling.
  */
 export function parseDeploymentSubnets(raw: string): OutboundSubnetRule[] | null {
+  const tokens = deploymentSubnetTokens(raw);
+  if (tokens.length === 0) return null;
+  if (tokens.some((token) => token.toLowerCase() === 'none')) {
+    return tokens.length === 1 ? [] : null;
+  }
   const rules: OutboundSubnetRule[] = [];
-  for (const token of deploymentSubnetTokens(raw)) {
+  for (const token of tokens) {
     const slash = token.lastIndexOf('/');
     const rule = slash < 0 ? null : subnetRule(token.slice(0, slash), token.slice(slash + 1));
     if (!rule) return null;
@@ -251,6 +270,12 @@ function isPrivateLanAddress(address: string): boolean {
  * bridge it must never dial, so its own interface describes that bridge exactly,
  * whatever pool Docker picked. Public interface addresses are deliberately NOT
  * derived: a hosted box's public /24 is the internet, not this deployment.
+ *
+ * The derived prefix is the INTERFACE's prefix, so it is only as tight as the
+ * topology: an api address of `10.1.2.3/8` (host networking on a flat corporate
+ * or home LAN) derives `10.0.0.0/8` and refuses every 10/8 receiver, and
+ * `172.x/12` likewise. That fails closed, which is the right direction, and the
+ * remedy is naming the real service network in {@link DEPLOYMENT_SUBNETS_ENV}.
  */
 export function deploymentSubnetsFromInterfaces(
   interfaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces(),
@@ -276,8 +301,18 @@ interface DeploymentNetwork {
 }
 
 /** Sentinel cache key for "no env override — the derived answer". */
-const DERIVED_KEY = ' derived';
-let deploymentCache: { key: string; network: DeploymentNetwork } | null = null;
+const DERIVED_KEY = null;
+/**
+ * Memoised carve-out, keyed on the env value so a changed override rebuilds it.
+ *
+ * Under {@link DERIVED_KEY} the memo also freezes `networkInterfaces()` at the
+ * first call: an interface attached AFTER boot (`docker network connect`) is not
+ * part of the carve-out until the process restarts. Deliberate — the guard runs
+ * on every delivery attempt and re-reading the interface table there is the
+ * wrong cost — but it does mean a topology change needs a restart, like every
+ * other value in the deployment contract.
+ */
+let deploymentCache: { key: string | null; network: DeploymentNetwork } | null = null;
 
 function deploymentNetwork(): DeploymentNetwork {
   // An EMPTY value counts as unset, not as "no deployment network": compose
