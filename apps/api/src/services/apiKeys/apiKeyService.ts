@@ -252,6 +252,40 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
     }
   }
 
+  /**
+   * Resolve the keys one tier mutation moves onto a different allowance, as the
+   * union of "buckets": a tier id = the keys explicitly assigned to that tier,
+   * `null` = the untiered keys that inherit whichever row is currently default.
+   *
+   * Bounded by construction (#1730, #1835): at most `API_KEY_TIER_RESET_MAX_KEYS`
+   * ids are read per bucket and no mutation passes more than two buckets, so an
+   * administrative tier edit can never fan out into an unbounded per-key burst.
+   * Keys past the cap keep their cooldown until it decays on its own, and the
+   * overflow is logged rather than silently dropped.
+   */
+  async function resolveTierResetTargets(
+    buckets: readonly (string | null)[],
+    context: { tierId: string; operation: string },
+  ): Promise<string[]> {
+    const affected = new Set<string>();
+    for (const bucket of buckets) {
+      const ids = await repo.listActiveIdsByTier(bucket, API_KEY_TIER_RESET_MAX_KEYS);
+      if (ids.length === API_KEY_TIER_RESET_MAX_KEYS) {
+        // Never silently truncate: an operator can see that it happened.
+        logger.warn(
+          {
+            ...context,
+            bucket: bucket === null ? 'untiered' : 'assigned',
+            cap: API_KEY_TIER_RESET_MAX_KEYS,
+          },
+          'api-key tier change hit the limiter-reset cap; remaining keys cool down normally',
+        );
+      }
+      for (const id of ids) affected.add(id);
+    }
+    return [...affected];
+  }
+
   async function publishInvalidation(
     event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
   ): Promise<void> {
@@ -417,6 +451,15 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         isDefault: input.isDefault ?? false,
       });
       invalidateDefaultTier();
+      // Creating a tier AS the default demotes the previous default row, which
+      // moves EVERY untiered key onto this new allowance (#1835) — their live
+      // cooldown and escalation rung have to move with it, exactly as on the
+      // assign path. A non-default tier starts empty and changes no budget.
+      if (row.isDefault) {
+        await clearKeyLimiterState(
+          await resolveTierResetTargets([null], { tierId: row.id, operation: 'tier-create' }),
+        );
+      }
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierCreated,
@@ -429,6 +472,10 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
     },
 
     async updateTier(id, patch, actor) {
+      // The default flag BEFORE the edit: flipping it off is a budget change for
+      // the untiered keys just as flipping it on is, and the updated row alone
+      // cannot tell the two apart (#1835).
+      const before = await tierRepo.getById(id);
       const row = await tierRepo.update(id, patch);
       if (!row) throw notFound('API key tier not found.', 'API_KEY_TIER_NOT_FOUND');
       invalidateDefaultTier();
@@ -441,25 +488,14 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         patch.windowSec !== undefined ||
         patch.isDefault !== undefined
       ) {
-        const assigned = await repo.listActiveIdsByTier(id, API_KEY_TIER_RESET_MAX_KEYS);
         // Keys with no explicit tier resolve the default row, so they carry this
-        // tier's budget exactly while it IS the default.
-        const inheriting = row.isDefault
-          ? await repo.listActiveIdsByTier(null, API_KEY_TIER_RESET_MAX_KEYS)
-          : [];
-        const affected = [...new Set([...assigned, ...inheriting])];
-        if (
-          assigned.length === API_KEY_TIER_RESET_MAX_KEYS ||
-          inheriting.length === API_KEY_TIER_RESET_MAX_KEYS
-        ) {
-          // Never silently truncate: the keys past the cap keep their cooldown
-          // until it decays, and an operator can see that it happened.
-          logger.warn(
-            { tierId: id, reset: affected.length, cap: API_KEY_TIER_RESET_MAX_KEYS },
-            'api-key tier edit hit the limiter-reset cap; remaining keys cool down normally',
-          );
-        }
-        await clearKeyLimiterState(affected);
+        // tier's budget exactly while it IS the default — and stop carrying it
+        // the moment it is not, falling onto whatever now resolves.
+        const buckets: (string | null)[] = [id];
+        if (row.isDefault || before?.isDefault) buckets.push(null);
+        await clearKeyLimiterState(
+          await resolveTierResetTargets(buckets, { tierId: id, operation: 'tier-update' }),
+        );
       }
       await audit.record({
         actorId: actor.id,
@@ -479,8 +515,19 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         // Never leave keys homeless: the default must be re-pointed first.
         throw badRequest('Cannot delete the default tier.', 'API_KEY_TIER_DEFAULT');
       }
+      // `api_keys.tier_id` is ON DELETE SET NULL, so every key on this tier drops
+      // onto the default allowance the instant the row goes (#1835). Read the
+      // members BEFORE the delete — afterwards nothing points at this tier — and
+      // clear them after it, so a request racing the delete cannot re-arm a
+      // cooldown under the tier that no longer exists. The deleted row is never
+      // the default (refused above), so untiered keys are untouched.
+      const assigned = await resolveTierResetTargets([id], {
+        tierId: id,
+        operation: 'tier-delete',
+      });
       await tierRepo.delete(id);
       invalidateDefaultTier();
+      await clearKeyLimiterState(assigned);
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierDeleted,
