@@ -133,6 +133,7 @@ import {
   type WidgetType,
 } from './config';
 import { homeCacheKey } from './homeSync';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { setViewportWidth } from '../../test/viewport';
 import { HomePage } from './HomePage';
 
@@ -2102,4 +2103,85 @@ test('at 390 px the home builder opens its catalog and keeps widget settings usa
 
   expect(screen.getByLabelText('Portfolio')).toBeInTheDocument();
   expect(container.querySelector('.bt-home-page')).toBeInTheDocument();
+});
+
+// ─── The sync gate (#1878) ────────────────────────────────────────────────────
+
+/**
+ * The board belongs to the account, and whether it syncs is decided by the mode
+ * the account gate already RESOLVED and published on its context — never by a
+ * second read of the board's own.
+ *
+ * `HomeBoard` used to call `usePrivacyMode()`, which is not the context reader
+ * but a query: with its default `accountId = null` it opened
+ * `['vault','media']`, unshared with the gate's `['vault','media', userId]`,
+ * never seeded by the offline cache and never invalidated by a mode change. Its
+ * `privacyMode` is null on any error — including the 429 that endpoint's retry
+ * policy is hardened for — so a rate-limited duplicate silently demoted the
+ * board to device-local: no fetch on mount, `push` returning early, and nothing
+ * on screen to say the board had stopped following the account.
+ *
+ * Nothing here stubs `getParanoidMediaState`, so the assertion on the cache is
+ * the direct proof: an account-unscoped entry cannot exist, because nobody asks
+ * for one any more.
+ */
+test('the board syncs from the resolved mode, with no account-unscoped vault-media query', async () => {
+  const user = editMode();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderHome(client);
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  // The mount reconcile ran: this board follows the account.
+  await vi.waitFor(() => expect(getHomeLayout).toHaveBeenCalled());
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Remove Upcoming' }));
+
+  // …and so does the edit, once the push debounce fires.
+  await vi.waitFor(
+    () => {
+      expect(putHomeLayout).toHaveBeenCalled();
+    },
+    { timeout: 5_000 },
+  );
+  expect(
+    (vi.mocked(putHomeLayout).mock.calls[0]?.[0] as HomeConfig).widgets.map(
+      (widget) => widget.type,
+    ),
+  ).not.toContain('upcoming');
+
+  expect(
+    client.getQueryCache().findAll({ queryKey: ['vault', 'media'] }),
+    'Home must read the resolved mode from context, never open its own media query',
+  ).toEqual([]);
+});
+
+/**
+ * The other half of the same gate (owner decision, §16): a paranoid account's
+ * board stays on the device, because the layout names portfolio ids and tickers
+ * — the inference the mode is bought to prevent. `HomePage` renders the
+ * portfolio page for that account, so the board never mounts and no layout
+ * traffic leaves the device in either direction.
+ */
+test('a paranoid account keeps its board on the device — no layout read, no layout write', async () => {
+  render(
+    <I18nProvider initialLocale="en">
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <MemoryRouter>
+          <ResolvedPrivacyModeProvider accountId={ACCOUNT} mode="paranoid">
+            <HomePage />
+          </ResolvedPrivacyModeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </I18nProvider>,
+  );
+
+  // The portfolio page, not the board: no greeting, no builder, no widgets.
+  await vi.waitFor(() => expect(listPortfolios).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'Customize' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('region', { name: 'Net worth' })).not.toBeInTheDocument();
+  expect(getHomeLayout).not.toHaveBeenCalled();
+  expect(putHomeLayout).not.toHaveBeenCalled();
 });

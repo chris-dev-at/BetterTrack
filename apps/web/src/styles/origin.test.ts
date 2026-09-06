@@ -362,6 +362,44 @@ describe('Origin phone chrome', () => {
     expect(phoneCss).toContain('position: sticky');
   });
 
+  /**
+   * `.bt-table-wrap` is the only scroll container the table styles offer — a
+   * `.bt-table` declares no `overflow-x` of its own — so a table outside one has
+   * nowhere to scroll and, with `nowrap` headers and a width that is a minimum
+   * rather than a maximum, no way to compress either (#1878). The home board's
+   * own table takes the container for that scroll alone: the `--bare` modifier
+   * drops the wrap's rules, which would otherwise box an un-boxed widget.
+   */
+  it('keeps every table inside the one scroll container the table styles offer', () => {
+    expect(originCss).toMatch(/\.bt-table-wrap \{[^}]*overflow-x: auto;/);
+    // The wrap holds that role only while no table rule grows its own scroll:
+    // a `.bt-table*` selector declaring overflow-x would make the container
+    // optional, and the assertion below stop meaning anything.
+    const tableRulesWithScroll = [...originCss.matchAll(/\n(\.bt-table[^,{]*)[^{]*\{([^}]*)\}/g)]
+      .filter(([, , body]) => body!.includes('overflow-x'))
+      .map(([, selector]) => selector!.trim());
+    expect(
+      tableRulesWithScroll,
+      'only .bt-table-wrap may declare a table scroll axis, or the wrap stops being load-bearing',
+    ).toEqual(['.bt-table-wrap']);
+    const bare = originCss.indexOf('.bt-table-wrap--bare {');
+    expect(bare, 'Missing the borderless scroll-container modifier').toBeGreaterThan(-1);
+    expect(originCss.slice(bare)).toMatch(/\.bt-table-wrap--bare \{[^}]*border-block: 0;/);
+    expect(
+      bare,
+      'the modifier must be declared after the rule it overrides — equal specificity, source order decides',
+    ).toBeGreaterThan(originCss.indexOf('.bt-table-wrap {'));
+
+    const homeTable = readFileSync(
+      resolve(process.cwd(), 'src/user/home/widgets/PortfolioCardsWidget.tsx'),
+      'utf8',
+    );
+    expect(
+      homeTable,
+      'the home board table must sit in the scroll container like every other .bt-table',
+    ).toContain('<div className="bt-table-wrap bt-table-wrap--bare">');
+  });
+
   it('prevents iOS field zoom for coarse pointers beyond the phone breakpoint', () => {
     expect(originCss).toMatch(
       /@media \(pointer: coarse\) \{\s*:is\(input, select, textarea\) \{\s*font-size: 16px !important;/,
@@ -415,6 +453,43 @@ describe('Installable PWA', () => {
     expect(originCss).toMatch(
       /html\[data-bt-askdock='open'\] \.bt-install-prompt \{\s*display: none;\s*\}/,
     );
+  });
+
+  /**
+   * The card's own tap-target floor (#1878). Its actions are `size="sm"`, and
+   * the phone block lifts only `.bt-btn--icon`, `.bt-iconbtn`, `.bt-tab` and
+   * `.bt-topbar .bt-btn` to 44px — so the dismiss X cleared the floor as an
+   * icon button while the INSTALL action, the only install path left once
+   * `beforeinstallprompt` is preventDefault-ed, rendered 58×28 at every phone
+   * profile. Source order is asserted as well as presence: `.bt-btn--sm` is
+   * declared far above and `@media` adds no specificity, so a floor that
+   * drifted above it would read as applied while computing to 28px. The
+   * measuring half is the install-affordance step in
+   * `e2e/mobile-overflow.spec.ts`.
+   */
+  it('gives the install card its own 44px floor, below the base sm button rule', () => {
+    const cardPhoneStart = originCss.indexOf(
+      '@media (max-width: 760px)',
+      originCss.indexOf('.bt-install-prompt {'),
+    );
+    expect(cardPhoneStart, 'Missing the install card phone media block').toBeGreaterThan(-1);
+    const cardPhoneBlock = originCss.slice(
+      cardPhoneStart,
+      originCss.indexOf('}\n}', cardPhoneStart),
+    );
+
+    expect(cardPhoneBlock).toMatch(
+      /\.bt-install-prompt \.bt-btn \{[^}]*min-height: 44px;[^}]*min-width: 44px;/,
+    );
+    const smallButtonBase = originCss.indexOf('.bt-btn--sm {');
+    expect(smallButtonBase, 'the base .bt-btn--sm rule must exist').toBeGreaterThan(-1);
+    expect(
+      cardPhoneStart,
+      'the floor must stay BELOW the 28px .bt-btn--sm rule it overrides',
+    ).toBeGreaterThan(smallButtonBase);
+    // The rule it overrides stays the compact desktop density, or the floor
+    // above would be silently redundant.
+    expect(originCss).toMatch(/\.bt-btn--sm \{[^}]*min-height: 28px;/);
   });
 
   it('compensates the translucent status bar in a standalone window, both ways', () => {

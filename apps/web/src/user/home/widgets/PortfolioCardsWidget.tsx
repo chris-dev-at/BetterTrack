@@ -175,79 +175,93 @@ export function PortfolioCardsWidget({
             })}
           </p>
         ) : null}
-        <table className="bt-table bt-home-ptable">
-          <thead>
-            <tr>
-              <th scope="col">{t('home.widgets.portfolioCards.colName')}</th>
-              <th className="is-num" scope="col">
-                {t('home.widgets.portfolioCards.colValue')}
-              </th>
-              <th className="is-num" scope="col">
-                {t('home.widgets.portfolioCards.colToday')}
-              </th>
-              <th className="is-num" scope="col">
-                {t('home.widgets.portfolioCards.colShare')}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {portfolios.map((portfolio, index) => {
-              if (isVaultedPortfolio(portfolio)) {
+        {/* Every other `.bt-table` in the SPA sits in a `.bt-table-wrap`, which
+            is where `overflow-x: auto` lives. Without it this table had nowhere
+            to scroll and no way to compress (`.bt-table th` is `nowrap` and the
+            100% width is a minimum under `table-layout: auto`), so a long
+            currency figure in a wide fallback font pushed the whole page
+            sideways at 360px. The modifier drops the wrap's own rules: the home
+            board is un-boxed quiet content, and this container is taken for its
+            overflow alone. */}
+        <div className="bt-table-wrap bt-table-wrap--bare">
+          <table className="bt-table bt-home-ptable">
+            <thead>
+              <tr>
+                <th scope="col">{t('home.widgets.portfolioCards.colName')}</th>
+                <th className="is-num" scope="col">
+                  {t('home.widgets.portfolioCards.colValue')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('home.widgets.portfolioCards.colToday')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('home.widgets.portfolioCards.colShare')}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {portfolios.map((portfolio, index) => {
+                if (isVaultedPortfolio(portfolio)) {
+                  return (
+                    <LockedPortfolioTableRow
+                      fallback={lockedFallback}
+                      key={portfolio.id}
+                      portfolio={portfolio}
+                    />
+                  );
+                }
+                const totals = summaries[index]?.data?.totals ?? null;
                 return (
-                  <LockedPortfolioTableRow
-                    fallback={lockedFallback}
-                    key={portfolio.id}
-                    portfolio={portfolio}
-                  />
-                );
-              }
-              const totals = summaries[index]?.data?.totals ?? null;
-              return (
-                <tr key={portfolio.id}>
-                  <td>
-                    <Link
-                      className="bt-home-txn__link"
-                      to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
-                    >
-                      {portfolioDisplayName(portfolio, lockedFallback)}
-                    </Link>
-                    {/* One failed row retries itself; the other nine keep their
-                        figures instead of being replaced by a single panel. */}
-                    {summaries[index]?.isError || histories[index]?.isError ? (
-                      <button
-                        className="bt-link ml-2 text-xs"
-                        onClick={() => {
-                          void summaries[index]?.refetch();
-                          void histories[index]?.refetch();
-                        }}
-                        type="button"
+                  <tr key={portfolio.id}>
+                    <td>
+                      <Link
+                        className="bt-home-txn__link"
+                        to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
                       >
-                        {t('common.retry')}
-                      </button>
-                    ) : null}
-                  </td>
-                  <td className="is-num">
-                    {summaries[index]?.isPending ? (
-                      ELLIPSIS
-                    ) : totals === null ? (
-                      EM_DASH
-                    ) : (
-                      <MoneyText amount={totals.totalValueEur} />
-                    )}
-                  </td>
-                  <td className="is-num">
-                    {totals === null ? EM_DASH : <MoneyText amount={totals.dayChangeEur} signed />}
-                  </td>
-                  <td className="is-num bt-muted">
-                    {totals === null || totalValue === null || totalValue <= 0
-                      ? EM_DASH
-                      : formatPercent((totals.totalValueEur / totalValue) * 100)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                        {portfolioDisplayName(portfolio, lockedFallback)}
+                      </Link>
+                      {/* One failed row retries itself; the other nine keep their
+                        figures instead of being replaced by a single panel. */}
+                      {summaries[index]?.isError || histories[index]?.isError ? (
+                        <button
+                          className="bt-link ml-2 text-xs"
+                          onClick={() => {
+                            void summaries[index]?.refetch();
+                            void histories[index]?.refetch();
+                          }}
+                          type="button"
+                        >
+                          {t('common.retry')}
+                        </button>
+                      ) : null}
+                    </td>
+                    <td className="is-num">
+                      {summaries[index]?.isPending ? (
+                        ELLIPSIS
+                      ) : totals === null ? (
+                        EM_DASH
+                      ) : (
+                        <MoneyText amount={totals.totalValueEur} />
+                      )}
+                    </td>
+                    <td className="is-num">
+                      {totals === null ? (
+                        EM_DASH
+                      ) : (
+                        <MoneyText amount={totals.dayChangeEur} signed />
+                      )}
+                    </td>
+                    <td className="is-num bt-muted">
+                      {totals === null || totalValue === null || totalValue <= 0
+                        ? EM_DASH
+                        : formatPercent((totals.totalValueEur / totalValue) * 100)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </>
     );
   }
