@@ -33,6 +33,7 @@ import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { CurrencyService } from '../currency/currencyService';
 import type { AudienceService } from '../social/audienceService';
 import {
+  cachedFlattenLoad,
   createFlattenCache,
   createsCycle,
   flattenConglomerate,
@@ -393,18 +394,25 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     ownerId: string,
     positions: readonly ConglomerateDetailRow['positions'][number][],
     includeCustomAssets: boolean,
-    cache?: FlattenCache,
+    options?: {
+      cache?: FlattenCache;
+      /** Row loader; the sweep supplies its own so the flatten reads the way it reads. */
+      load?: (id: string) => Promise<ConglomerateDetailRow | null>;
+    },
   ): Promise<string | null> {
+    const load =
+      options?.load ??
+      ((cid: string) =>
+        repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }));
     for (const position of positions) {
       if (position.kind !== 'conglomerate') continue;
       const child = await flattenConglomerate(
-        (cid) =>
-          repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }),
+        load,
         position.childId,
         // One cache for the whole sweep when the caller supplies it: without it
         // each child got a fresh one, so a diamond grandchild was re-loaded once
         // per branch and again for every ancestor above (#1776).
-        cache ? { cache } : undefined,
+        options?.cache ? { cache: options.cache } : undefined,
       );
       if (!child || child.positions.length === 0) {
         return `Nested conglomerate ${position.child.name} resolves to no assets — give it positions or remove it before activating.`;
@@ -431,12 +439,17 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
    * longer earns; re-activating it after fixing (or removing) the child is the
    * normal `POST /:id/activate` and re-runs the same gate.
    *
-   * Two seeds, two callers:
-   *  - a `PUT /:id/positions` seeds the edited basket, ancestors only — the
-   *    sum-to-100 half of the gate belongs to that basket's own weights and is
-   *    deliberately left alone;
-   *  - a custom-asset delete seeds every basket that held it and checks those
-   *    too, because the cascade can empty one outright (§6.8.5, #1776).
+   * Two seeds, two callers — both check the seeds themselves:
+   *  - a `PUT /:id/positions` seeds the edited basket. Pointing an `active`
+   *    basket at an empty child is the very state this gate exists to forbid,
+   *    and `replacePositions` never touches `status`, so nothing else re-runs it
+   *    — an autosave could swap a resolving child for an empty one and leave the
+   *    basket `active` while its own resolved view reported 100 % unresolved
+   *    (#1831). This adds the NESTED half only: {@link activationFailure} checks
+   *    emptiness and nesting and never the weight sum, so an edit still cannot
+   *    demote a basket over its own weights (that stays `POST /:id/activate`'s);
+   *  - a custom-asset delete seeds every basket that held it, because the
+   *    cascade can empty one outright (§6.8.5, #1776).
    *
    * **TOTAL: it never throws.** It runs AFTER its write committed, so a failure
    * here — a flatten that refuses a structure it cannot resolve, or a
@@ -458,15 +471,30 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     options?: { checkSeeds?: boolean },
   ): Promise<void> {
     const cache = createFlattenCache();
-    const loadCached = (id: string): Promise<ConglomerateDetailRow | null> => {
-      const inFlight = cache.get(id);
-      if (inFlight) return inFlight;
-      const pending = repo.findByIdForOwner(ownerId, id, {
-        globalAssetMetadataOnly: !includeCustomAssets,
-      });
-      cache.set(id, pending);
-      return pending;
+    /**
+     * One basket read, retried ONCE on failure (#1831). A demotion here is
+     * silent and permanent — nothing re-promotes — so it must follow from a
+     * structure that genuinely does not resolve, never from a blip on the way to
+     * reading it. The rejected read is evicted from the shared cache
+     * ({@link cachedFlattenLoad}), so the retry is a real second read; a
+     * failure that survives both is treated as before, i.e. reported and
+     * demoted by {@link activationFailure}.
+     */
+    const readRow = async (id: string): Promise<ConglomerateDetailRow | null> => {
+      const read = () =>
+        repo.findByIdForOwner(ownerId, id, { globalAssetMetadataOnly: !includeCustomAssets });
+      try {
+        return await read();
+      } catch (err) {
+        deps.logger?.warn(
+          { err, ownerId, conglomerateId: id },
+          'conglomerate activation revalidation could not read a basket — retrying once',
+        );
+        return read();
+      }
     };
+    const loadCached = (id: string): Promise<ConglomerateDetailRow | null> =>
+      cachedFlattenLoad(cache, id, readRow);
 
     /** Why `row` may no longer carry `active`, or null. Never throws. */
     const activationFailure = async (row: ConglomerateDetailRow): Promise<string | null> => {
@@ -474,7 +502,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       // asset at all — 100 % unresolved, the state #1755 ruled invalid.
       if (row.positions.length === 0) return 'it has no positions left';
       try {
-        return await nestedActivationFailure(ownerId, row.positions, includeCustomAssets, cache);
+        return await nestedActivationFailure(ownerId, row.positions, includeCustomAssets, {
+          cache,
+          load: readRow,
+        });
       } catch (err) {
         deps.logger?.warn(
           { err, ownerId, conglomerateId: row.id },
@@ -689,6 +720,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
         mode: req.mode,
         step: req.step,
         atLeastOneShare: req.atLeastOneShare,
+        // The budget and every price above are already in the caller's base, so
+        // the engine's notes must be spelled in it too — a hardcoded `€` put two
+        // currencies in one `warnings` array (#1831).
+        currency: fx.baseCurrency,
         positions,
       });
     } catch (err) {
@@ -857,11 +892,12 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
             : undefined,
         );
         if (!ok) throw NOT_FOUND();
-        // What this basket resolves to just changed, and an ANCESTOR's `active`
-        // status was granted against the old answer (#1755). Bookkeeping only,
-        // and the write above is already durable — so this is total and cannot
-        // turn a saved draft into the Builder's "save failed" (#1776).
-        await revalidateActivation(ownerId, [id], includeCustomAssets);
+        // What this basket resolves to just changed, and its own `active` status
+        // — like every ANCESTOR's — was granted against the old answer (#1755,
+        // #1831). Bookkeeping only, and the write above is already durable — so
+        // this is total and cannot turn a saved draft into the Builder's "save
+        // failed" (#1776).
+        await revalidateActivation(ownerId, [id], includeCustomAssets, { checkSeeds: true });
         return detailOrThrow(ownerId, id, includeCustomAssets);
       });
     },

@@ -39,7 +39,8 @@ export const OAUTH_AUTH_CODE_TTL_SECONDS = 60;
  * Keyed by the shared #302 scope taxonomy.
  */
 export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
-  'portfolio:read': 'View your portfolios, holdings, transactions and cash balances',
+  'portfolio:read':
+    'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
   'portfolio:write': 'Create and edit portfolios, transactions, custom assets and cash',
   'workboard:read': 'View your watchlist, conglomerates and backtests',
   'workboard:write': 'Create and edit your watchlist and conglomerates',

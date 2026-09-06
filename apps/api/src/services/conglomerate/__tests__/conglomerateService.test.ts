@@ -124,7 +124,11 @@ describe('conglomerateService.replacePositions — concurrent nesting writes', (
 
 interface StubBasket {
   status: ConglomerateDetailRow['status'];
-  positions: Array<{ kind: 'asset'; assetId: string } | { kind: 'conglomerate'; childId: string }>;
+  /** `weightPct` defaults to an even split, so a fixture only states it when it matters. */
+  positions: Array<
+    | { kind: 'asset'; assetId: string; weightPct?: number }
+    | { kind: 'conglomerate'; childId: string; weightPct?: number }
+  >;
 }
 
 function createGraphService(baskets: Record<string, StubBasket>) {
@@ -135,20 +139,20 @@ function createGraphService(baskets: Record<string, StubBasket>) {
   const detailOf = (id: string): ConglomerateDetailRow | null => {
     const basket = baskets[id];
     if (!basket) return null;
-    const weightPct = basket.positions.length > 0 ? 100 / basket.positions.length : 0;
+    const evenSplit = basket.positions.length > 0 ? 100 / basket.positions.length : 0;
     const positions: ConglomerateConstituentRow[] = basket.positions.map((p, sortOrder) =>
       p.kind === 'asset'
         ? {
             kind: 'asset',
             assetId: p.assetId,
-            weightPct,
+            weightPct: p.weightPct ?? evenSplit,
             sortOrder,
             asset: { symbol: p.assetId, name: p.assetId, currency: 'EUR', type: 'stock' as const },
           }
         : {
             kind: 'conglomerate',
             childId: p.childId,
-            weightPct,
+            weightPct: p.weightPct ?? evenSplit,
             sortOrder,
             child: {
               id: p.childId,
@@ -196,10 +200,12 @@ function createGraphService(baskets: Record<string, StubBasket>) {
     replacePositions: async (_ownerId: string, id: string, positions: readonly PositionInput[]) => {
       const basket = baskets[id];
       if (!basket) return false;
+      // The real repository stores the weights the caller sent and never touches
+      // `status` — the reason the post-write gate has to run at all (#1831).
       basket.positions = positions.map((p) =>
         p.kind === 'asset'
-          ? { kind: 'asset' as const, assetId: p.assetId }
-          : { kind: 'conglomerate' as const, childId: p.childId },
+          ? { kind: 'asset' as const, assetId: p.assetId, weightPct: p.weightPct }
+          : { kind: 'conglomerate' as const, childId: p.childId, weightPct: p.weightPct },
       );
       return true;
     },
@@ -234,8 +240,16 @@ function createGraphService(baskets: Record<string, StubBasket>) {
   return { service, repo, baskets, loads, statusWrites, logged };
 }
 
-const asset = (assetId: string) => ({ kind: 'asset' as const, assetId });
-const child = (childId: string) => ({ kind: 'conglomerate' as const, childId });
+const asset = (assetId: string, weightPct?: number) => ({
+  kind: 'asset' as const,
+  assetId,
+  ...(weightPct === undefined ? {} : { weightPct }),
+});
+const child = (childId: string, weightPct?: number) => ({
+  kind: 'conglomerate' as const,
+  childId,
+  ...(weightPct === undefined ? {} : { weightPct }),
+});
 
 describe('conglomerateService.replacePositions — post-commit ancestor revalidation', () => {
   it('still succeeds when an ancestor cannot be flattened, and demotes it instead', async () => {
@@ -261,7 +275,7 @@ describe('conglomerateService.replacePositions — post-commit ancestor revalida
 
     // 2xx, and the positions the caller sent are what is stored.
     expect(detail.id).toBe('C0');
-    expect(baskets.C0!.positions).toEqual([asset('a0-0')]);
+    expect(baskets.C0!.positions).toEqual([asset('a0-0', 100)]);
     // The ancestor that cannot be resolved is recorded as needing attention —
     // a basket whose own resolved view is a 422 does not earn `active`.
     expect(statusWrites).toEqual([{ id: 'A', status: 'draft' }]);
@@ -315,6 +329,138 @@ describe('conglomerateService.replacePositions — post-commit ancestor revalida
     // The edited basket is read once by the sweep and once more to build the
     // response — the two reads the request genuinely needs.
     expect(times('E')).toBe(2);
+  });
+});
+
+/**
+ * The gate on the basket the write itself edited (#1831). `replacePositions`
+ * never touches `status`, and the sweep used to check ANCESTORS only — so an
+ * autosave could point an `active` basket at an empty child and leave it
+ * `active` while its own resolved view reported the slice unresolved.
+ */
+describe('conglomerateService.replacePositions — the edited basket is gated too', () => {
+  it('demotes the edited basket when the edit points it at an empty nested child', async () => {
+    const { service, baskets, statusWrites } = createGraphService({
+      P: { status: 'active', positions: [asset('a1', 60), child('C', 40)] },
+      C: { status: 'draft', positions: [asset('x1')] },
+      E: { status: 'draft', positions: [] },
+    });
+
+    const detail = await service.replacePositions(OWNER, 'P', [
+      { assetId: 'a1', weightPct: 60 },
+      { childId: 'E', weightPct: 40 },
+    ]);
+
+    // The write itself stands — the swap is what the owner asked for…
+    expect(baskets.P!.positions).toEqual([asset('a1', 60), child('E', 40)]);
+    // …but P no longer earns `active`: 40 % of it now resolves to nothing, the
+    // state `POST /:id/activate` refuses outright.
+    expect(statusWrites).toEqual([{ id: 'P', status: 'draft' }]);
+    expect(detail.status).toBe('draft');
+  });
+
+  it('leaves a still-resolvable edit — and its ancestors — alone', async () => {
+    const { service, baskets, statusWrites } = createGraphService({
+      A: { status: 'active', positions: [child('P')] },
+      P: { status: 'active', positions: [asset('a1', 60), child('C', 40)] },
+      C: { status: 'active', positions: [asset('x1')] },
+    });
+
+    await service.replacePositions(OWNER, 'P', [
+      { assetId: 'a1', weightPct: 70 },
+      { childId: 'C', weightPct: 30 },
+    ]);
+
+    expect(statusWrites).toEqual([]);
+    expect(baskets.P!.status).toBe('active');
+    expect(baskets.A!.status).toBe('active');
+  });
+
+  it('does not take over the sum-to-100 rule: off-sum weights are not demoted', async () => {
+    // The gate re-run here is the NESTED half only (emptiness + nesting). Σ = 100
+    // is checked when a basket is activated, over its own weights, and an edit
+    // that leaves the sum short is a draft-in-progress, not a broken structure.
+    const { service, baskets, statusWrites } = createGraphService({
+      P: { status: 'active', positions: [asset('a1', 30), asset('a2', 20)] },
+    });
+
+    await service.replacePositions(OWNER, 'P', [
+      { assetId: 'a1', weightPct: 30 },
+      { assetId: 'a2', weightPct: 25 },
+    ]);
+
+    expect(statusWrites).toEqual([]);
+    expect(baskets.P!.status).toBe('active');
+  });
+});
+
+/**
+ * One transient read must not decide a status (#1831). The sweep shares ONE
+ * cache across the whole closure, so a rejected read that stayed in it was
+ * re-thrown — with no second attempt — for every ancestor above the failed
+ * basket, and each of them was demoted on a network blip.
+ */
+describe('conglomerateService.replacePositions — a poisoned read in the sweep', () => {
+  const diamond = () => ({
+    A: { status: 'active' as const, positions: [child('B'), child('C')] },
+    B: { status: 'active' as const, positions: [child('X')] },
+    C: { status: 'active' as const, positions: [child('X')] },
+    X: { status: 'active' as const, positions: [asset('x1')] },
+  });
+
+  /** Make `id`'s first `failures` reads reject; later ones serve the real row. */
+  function poisonReads(repo: ConglomerateRepository, id: string, failures: number) {
+    const seam = repo as unknown as {
+      findByIdForOwner: (
+        ownerId: string,
+        rowId: string,
+        opts?: unknown,
+      ) => Promise<ConglomerateDetailRow | null>;
+    };
+    const real = seam.findByIdForOwner.bind(repo);
+    const attempts = { count: 0 };
+    seam.findByIdForOwner = async (ownerId, rowId, opts) => {
+      if (rowId === id) {
+        attempts.count += 1;
+        if (attempts.count <= failures) throw new Error(`transient read failure on ${rowId}`);
+      }
+      return real(ownerId, rowId, opts);
+    };
+    return attempts;
+  }
+
+  it('demotes nobody when a single read of a shared grandchild fails once', async () => {
+    const { service, repo, baskets, statusWrites } = createGraphService(diamond());
+    const attempts = poisonReads(repo, 'X', 1);
+
+    await service.replacePositions(OWNER, 'X', [{ assetId: 'x1', weightPct: 100 }]);
+
+    // The failed read is retried rather than memoised, so nothing in the
+    // closure is judged on it. Every basket keeps the status it earned.
+    expect(statusWrites).toEqual([]);
+    expect(baskets.A!.status).toBe('active');
+    expect(baskets.B!.status).toBe('active');
+    expect(baskets.C!.status).toBe('active');
+    expect(attempts.count).toBeGreaterThan(1);
+  });
+
+  it('still demotes what genuinely cannot resolve when the read keeps failing', async () => {
+    const { service, repo, baskets, statusWrites, logged } = createGraphService(diamond());
+    poisonReads(repo, 'X', Number.MAX_SAFE_INTEGER);
+
+    // The edit itself survives the failing sweep, exactly as before.
+    await expect(
+      service.replacePositions(OWNER, 'C', [{ childId: 'X', weightPct: 100 }]),
+    ).resolves.toMatchObject({ id: 'C' });
+
+    // C nests X and A reaches it through B; neither can be shown to resolve, so
+    // neither keeps `active` — and both refusals are reported.
+    expect(statusWrites).toEqual([
+      { id: 'C', status: 'draft' },
+      { id: 'A', status: 'draft' },
+    ]);
+    expect(baskets.B!.status).toBe('active');
+    expect(logged.some((l) => l.level === 'warn')).toBe(true);
   });
 });
 
