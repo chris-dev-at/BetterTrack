@@ -161,7 +161,13 @@ export function CommentThread({
     initialData: () => pages[0],
     initialDataUpdatedAt: () => thread.dataUpdatedAt,
     staleTime: THREAD_POLL_MS,
-    refetchInterval: expanded ? THREAD_POLL_MS : false,
+    // A poll that has started failing stops. It is the one read still running
+    // after mount, so it is the one that learns the item's audience has
+    // narrowed — and the surface below reacts to that error instead of
+    // re-issuing a read the server has already refused. Recovery goes through
+    // the retry row (a transport blip), never through a silent tick.
+    refetchInterval: (query) =>
+      expanded && query.state.status !== 'error' ? THREAD_POLL_MS : false,
     retry: false,
   });
 
@@ -207,15 +213,35 @@ export function CommentThread({
   // would leak whether the item still exists. A transport/server failure is
   // recoverable, so keep one compact retry row instead of silently removing the
   // entire comments surface.
-  if (isError && isConfirmedApiOutcome(error)) return null;
-  if (isError) {
+  //
+  // Both reads are judged by that rule, not just the summary. The summary is
+  // fetched once at mount and never refetched (`refetchOnWindowFocus` is off
+  // app-wide), so after #1855 moved the interval onto `head` the poll became the
+  // ONLY read that can learn that the owner has narrowed the audience — or
+  // unfriended the reader — under an already-open thread. Leaving its failure
+  // unread left TanStack's retained `head.data` on screen: every comment body,
+  // author, count and reaction chip kept rendering while the server refused
+  // every read.
+  const readError = isError ? error : head.isError ? head.error : null;
+  const readFailed = isError || head.isError;
+  if (readFailed && isConfirmedApiOutcome(readError)) return null;
+  if (readFailed) {
     return (
       <section
         className="bt-phone-surface bt-comment-thread bt-t-rule flex flex-col items-start gap-2"
         style={{ paddingTop: 18 }}
       >
         <Alert tone="error">{t('social.comments.loadError')}</Alert>
-        <Button onClick={() => void refetch()} size="sm" variant="quiet">
+        <Button
+          onClick={() => {
+            if (isError) void refetch();
+            // Refetching the polled window clears its error state, which is
+            // what restarts the interval.
+            if (head.isError) void head.refetch();
+          }}
+          size="sm"
+          variant="quiet"
+        >
           {t('common.retry')}
         </Button>
       </section>

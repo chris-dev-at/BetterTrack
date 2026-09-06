@@ -3208,6 +3208,10 @@
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
     "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dadurch könnten mehr Personen diesen Eintrag sehen.",
+    "audienceGroupNamed": {
+      "one": "Gruppe „{{name}}“ ({{count}} Mitglied)",
+      "other": "Gruppe „{{name}}“ ({{count}} Mitglieder)"
+    },
     "audienceWidenAcknowledge": "Mir ist bewusst, dass diese Änderung den Zugriff erweitert.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",

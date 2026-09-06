@@ -1638,9 +1638,9 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
   {
     component: 'user/social/CommentThread.tsx',
     read: 'CommentThread.head',
-    states: ['loading', 'error'],
+    states: ['loading'],
     reason:
-      'The 30 s poll of the newest window (#1855) is a REFRESH of a page the thread read has already drawn, not a read of its own: while it is unresolved or failing the surface renders exactly what the paged read left there, and that read owns the loading, error and empty states for the whole thread. A spinner or error card for a background tick would report a transport detail the reader never asked for.',
+      'While the 30 s poll of the newest window (#1855) is unresolved the surface renders exactly what the paged read left there, and that read owns the loading and empty states for the whole thread: a spinner for a background tick would report a transport detail the reader never asked for. Its FAILURE is observed (#1872) — the poll is the only read still running after mount, so it is the one that learns the item’s audience has narrowed under an open thread, and it collapses or retries the surface by the same rule as the summary read.',
     delegatedTo: 'CommentThread.thread',
   },
   {

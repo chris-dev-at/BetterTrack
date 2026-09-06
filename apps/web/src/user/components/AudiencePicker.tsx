@@ -389,6 +389,23 @@ export function AudiencePicker({
 
   const selectedCount = friendIds.size;
 
+  // Both slots of the widening confirmation name the reach they mean. Rendering
+  // the bare tier badge flattened a `group → group` swap into "from Friend group
+  // to Friend group" — an owner asked to acknowledge a widening (three people to
+  // eighteen) whose recipients the dialog refused to name, although the circle's
+  // name and live size are already loaded here.
+  function reachLabel(a: ShareAudience, gid: string | null): string {
+    if (a !== 'group') return t(`sharing.badge.${a}`);
+    const circle = gid ? groups.find((g) => g.id === gid) : undefined;
+    // A circle deleted since the share was made resolves to nobody server-side
+    // (`ON DELETE SET NULL`), so there is no name to give: keep the plain badge.
+    if (!circle) return t('sharing.badge.group');
+    return t(`sharing.audienceGroupNamed.${circle.memberCount === 1 ? 'one' : 'other'}`, {
+      name: circle.name,
+      count: circle.memberCount,
+    });
+  }
+
   return (
     <Dialog
       phoneSheet
@@ -559,8 +576,8 @@ export function AudiencePicker({
             <div className="flex flex-col gap-2">
               <p>
                 {t('sharing.audienceChangeConfirm', {
-                  from: t(`sharing.badge.${initialAudience}`),
-                  to: t(`sharing.badge.${audience}`),
+                  from: reachLabel(initialAudience, audienceQuery.data?.groupId ?? null),
+                  to: reachLabel(audience, groupId),
                 })}
               </p>
               <label className="bt-soft flex cursor-pointer items-start gap-2">
