@@ -327,12 +327,26 @@ export type SharedSandboxPreviewRequest = z.infer<typeof sharedSandboxPreviewReq
  * The curve, aggregate statistics and identity-free rebalance dates remain
  * useful for the sandbox without widening the share.
  */
-export const sharedSandboxAggregateResponseSchema = backtestResponseSchema.omit({
-  contributions: true,
-  notice: true,
-  benchmark: true,
-  entryEvents: true,
-});
+export const sharedSandboxAggregateResponseSchema = backtestResponseSchema
+  .omit({
+    contributions: true,
+    notice: true,
+    benchmark: true,
+    entryEvents: true,
+  })
+  .extend({
+    /**
+     * The share of this sandbox basket that resolved to NO asset, in percent —
+     * a nested constituent whose child basket is empty (#1832). The remaining
+     * weights are normalized over what did resolve, so a non-zero value means
+     * the curve and every statistic beside it describe the *rest* of the
+     * basket, not all of it; `0` for a fully-resolved one. Reported for the
+     * same reason `resolved`, `allocate`, a comparison series and the benchmark
+     * overlay report it, and identity-free like the rest of this variant: it
+     * says how much went missing, never in which child.
+     */
+    unresolvedPct: z.number(),
+  });
 export type SharedSandboxAggregateResponse = z.infer<typeof sharedSandboxAggregateResponseSchema>;
 
 /**

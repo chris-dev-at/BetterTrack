@@ -59,7 +59,13 @@ import { SettingsPage } from './pages/SettingsPage';
  *  7. a browser clock that disagrees with the server's, in EITHER direction, is
  *     never turned into a sign-out — and the screen that decides this is measured
  *     against the session's OWN window, so a normal clock error on a 24 h-wide
- *     install does not silently disable the deadline instead.
+ *     install does not silently disable the deadline instead;
+ *  8. an AUTH-LOSS answer to the deadline refresh itself ends the session, rather
+ *     than being swallowed into "unknown" while the previous, longer deadline
+ *     stays armed — and an EXPIRY sign-out revokes the session server-side, so
+ *     the operator is never told "expired" over a session a reload walks straight
+ *     back into, while a domain 404 stays the local-only sign-out it always was
+ *     (#1833).
  */
 
 /** Expected copy always comes from the catalog, so EN and DE assert the same claim. */
@@ -636,12 +642,18 @@ describe('the read path keeps its own 401-or-404 sign-out', () => {
     renderConsole(<ResourceProbe />);
 
     await expectExpiryScreen();
+    // Auth loss, so the sign-out is also a revoke (#1833) — harmless here, since
+    // the cookie the server just refused is already dead.
+    await waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
   });
 
-  test('a domain 404 still ends the surface, but claims no expiry', async () => {
+  test('a domain 404 still ends the surface, but claims no expiry and revokes nothing', async () => {
     // `GET /admin/users/:id` answers USER_NOT_FOUND for an account another admin
     // just deleted. The structural sign-out is pre-existing; what must not happen
-    // is the login screen asserting that THIS admin's session window closed.
+    // is the login screen asserting that THIS admin's session window closed —
+    // nor, since #1833 added the revoke, DESTROYING a session the server is still
+    // perfectly happy with. That row is gone; the session is not, and re-entering
+    // password + TOTP because a row went missing is not a sign-out policy.
     vi.mocked(api.getSettings).mockRejectedValue(
       new ApiError(404, 'USER_NOT_FOUND', 'User not found.'),
     );
@@ -653,6 +665,7 @@ describe('the read path keeps its own 401-or-404 sign-out', () => {
     expect(
       screen.queryByText(message('en', 'auth.adminLogin.sessionExpired')),
     ).not.toBeInTheDocument();
+    expect(api.logout).not.toHaveBeenCalled();
   });
 });
 
@@ -773,5 +786,80 @@ describe('the client-held deadline (V5-P13c)', () => {
     // The server is the authority; an unknown deadline leaves the console alone
     // and the write/read seams still sign out on the next 401/404.
     expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+  });
+  test.each([
+    ['a 404 NOT_FOUND from the policy read', 'getSessionPolicy' as const],
+    ['a 401 from the session list', 'listOwnSessions' as const],
+  ])('%s ends the console session instead of keeping the old deadline', async (_label, call) => {
+    // Both reads answer this way the moment the window closes: §6.12 makes the
+    // admin route 404, and `GET /auth/sessions` 401s without a session. Swallowed,
+    // they left the console `authenticated` with the OLD deadline armed.
+    vi.mocked(api[call]).mockRejectedValue(
+      call === 'getSessionPolicy'
+        ? expiredAdminSession()
+        : new ApiError(401, 'UNAUTHENTICATED', 'refused'),
+    );
+    vi.mocked(api.getSettings).mockResolvedValue(settings);
+    renderConsole(<SettingsPage />);
+
+    await expectExpiryScreen();
+    // And it is a real sign-out, not just a local one.
+    await waitFor(() => expect(api.logout).toHaveBeenCalled());
+  });
+
+  test('lowering the lifetime below this session\u2019s age lands on the expiry screen, not a success toast', async () => {
+    // The card's own flow, seven hours into a 12 h window: the PATCH succeeds
+    // against the pre-write value, and every read after it 404s because the new
+    // 6 h window is already behind this session's age. Before #1833 that painted
+    // a green "Session lifetime updated." over a dead session, left a full page
+    // of admin data rendered, and kept the timer armed for the old 12 h.
+    vi.setSystemTime(SESSION_CREATED_AT_MS + 7 * 60 * 60 * 1000);
+    vi.mocked(api.getSettings).mockResolvedValue(settings);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderConsole(<SecuritySettingsPage />);
+
+    const hours = await screen.findByLabelText(
+      message('en', 'admin.security.sessionPolicy.hoursLabel'),
+    );
+    await waitFor(() => expect(api.listOwnSessions).toHaveBeenCalled());
+
+    vi.mocked(api.updateSessionPolicy).mockResolvedValue({
+      ...sessionPolicy,
+      sessionLifetimeHours: 6,
+    });
+    vi.mocked(api.getSessionPolicy).mockRejectedValue(expiredAdminSession());
+    vi.mocked(api.listOwnSessions).mockRejectedValue(expiredAdminSession());
+    await user.clear(hours);
+    await user.type(hours, '6');
+    await user.click(
+      screen.getByRole('button', { name: message('en', 'admin.security.sessionPolicy.save') }),
+    );
+
+    // Immediately — no timer advance. The old behaviour only bounced at 12 h.
+    await expectExpiryScreen();
+    expect(
+      screen.queryByText(message('en', 'admin.security.sessionPolicy.saved')),
+    ).not.toBeInTheDocument();
+  });
+
+  test('the courtesy sign-out revokes the session instead of leaving it live', async () => {
+    // The deadline may fire up to CLOCK_TOLERANCE_MS early on a browser clock
+    // running ahead. Without a revoke the operator was shown "your admin session
+    // expired" while the cookie and the Redis session were both intact, and a
+    // single reload re-bootstrapped straight back into the console.
+    vi.mocked(api.getSettings).mockResolvedValue(settings);
+    renderConsole(<SettingsPage />);
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    await waitFor(() => expect(api.listOwnSessions).toHaveBeenCalled());
+    expect(api.logout).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
+    await expectExpiryScreen();
+    // The revoke itself is the claim: `POST /auth/logout` destroys the session
+    // record, so a reload has nothing left to bootstrap from. What the server
+    // then answers `GET /me` with is the server's own contract, verified in the
+    // API suite — mocking it here would only assert the mock.
+    await waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
   });
 });
