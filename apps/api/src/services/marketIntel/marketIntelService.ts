@@ -43,15 +43,64 @@ export const NEWS_DIGEST_MAX_HEADLINES =
   MARKET_INTEL_ROLLUP_MAX_ASSETS * NEWS_DIGEST_HEADLINES_PER_GROUP;
 
 /**
- * Payouts one dividend response may carry — 25 years of quarterly payments, so
- * no real payer is cut, and a provider that streams thousands of rows cannot
- * make the asset page arbitrarily large. The bound lives HERE for the same
- * reason {@link NEWS_DIGEST_HEADLINES_PER_GROUP} does (#1790): a provider is not
- * a trust boundary, and a mapper is per-provider while this is the one place
- * every provider's dividend payload passes through. When the list is longer, the
- * MOST RECENT payouts are what survives.
+ * Payouts one dividend response may carry — 25 years of MONTHLY distributions,
+ * or a century of quarterly ones, so no real payer is cut, and a provider that
+ * streams thousands of rows still cannot make the asset page arbitrarily large.
+ * The cadence is why the number is what it is (#1873): at 100 this claimed to
+ * cut no one while ending a monthly distributor's history — Realty Income, JEPI,
+ * most monthly ETFs — after 8.3 years, silently, under the `historyRange` label
+ * the asset page prints from the SURVIVING first row.
+ *
+ * The bound lives HERE for the same reason {@link NEWS_DIGEST_HEADLINES_PER_GROUP}
+ * does (#1790): a provider is not a trust boundary, and a mapper is per-provider
+ * while this is the one place every provider's dividend payload passes through.
+ * When the list is longer, the MOST RECENT payouts are what survives.
  */
-export const DIVIDEND_HISTORY_MAX_EVENTS = 100;
+export const DIVIDEND_HISTORY_MAX_EVENTS = 300;
+
+/**
+ * The remaining per-asset payload bounds (#1873), for the same reason and in the
+ * same place as {@link DIVIDEND_HISTORY_MAX_EVENTS}: whichever provider answered,
+ * every payload the per-asset read API returns passes through this service, so
+ * the ceiling on a response is stated once HERE and not per provider. Each is
+ * generous enough that no real issuer is cut — they exist so a second provider
+ * returning hundreds cannot flow straight through to the client. Which end
+ * survives follows the array's own ordering, spelled out per constant.
+ */
+
+/**
+ * Announced future ex/pay dates one dividend response may carry — two years of
+ * monthly ones (Yahoo supplies at most a single event). The forward calendar
+ * runs soonest-first, so the SOONEST survive.
+ */
+export const DIVIDEND_UPCOMING_MAX_EVENTS = 24;
+
+/**
+ * Past reports one earnings response may carry — ten years of quarterly reports
+ * (Yahoo's history supplies four). The list is ascending by the date each row
+ * carries, so the MOST RECENT reports are what survives.
+ */
+export const EARNINGS_RECENT_MAX_EVENTS = 40;
+
+/**
+ * Headlines one per-asset news response may carry (the Yahoo provider asks for
+ * 20). The provider's own ordering is what the asset page renders, so the HEAD
+ * survives; the portfolio digest sorts newest-first before applying its own,
+ * tighter {@link NEWS_DIGEST_HEADLINES_PER_GROUP}.
+ */
+export const NEWS_HEADLINES_MAX = 50;
+
+/**
+ * Splits one splits response may carry, per array — a century of them for any
+ * real issuer (Apple has had five). `history` is ascending by date, so the MOST
+ * RECENT survive; `upcoming` is a forward calendar, so the soonest do.
+ */
+export const SPLIT_EVENTS_MAX = 50;
+
+/** The last `max` rows of an ascending list — the recent end of a history. */
+function lastN<T>(rows: T[], max: number): T[] {
+  return rows.length > max ? rows.slice(rows.length - max) : rows;
+}
 
 /**
  * Dedupe + bound a provider's payout history, ascending by ex-date.
@@ -74,9 +123,7 @@ function normalizeDividendHistory(history: DividendEvent[]): DividendEvent[] {
     deduped.push(event);
   }
   deduped.sort((a, b) => (a.exDate ?? '').localeCompare(b.exDate ?? ''));
-  return deduped.length > DIVIDEND_HISTORY_MAX_EVENTS
-    ? deduped.slice(deduped.length - DIVIDEND_HISTORY_MAX_EVENTS)
-    : deduped;
+  return lastN(deduped, DIVIDEND_HISTORY_MAX_EVENTS);
 }
 
 /** Digest groups newest-first by their most recent headline, symbol as tiebreak. */
@@ -330,6 +377,7 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
             available: true,
             ...cached.value,
             history: normalizeDividendHistory(cached.value.history),
+            upcoming: cached.value.upcoming.slice(0, DIVIDEND_UPCOMING_MAX_EVENTS),
           };
         } catch {
           // A provider error/timeout (or an open breaker with nothing cached)
@@ -344,7 +392,11 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).earnings) return UNAVAILABLE_EARNINGS;
         try {
           const cached = await marketData.getEarningsEvents(ref);
-          return { available: true, ...cached.value };
+          return {
+            available: true,
+            ...cached.value,
+            recent: lastN(cached.value.recent, EARNINGS_RECENT_MAX_EVENTS),
+          };
         } catch {
           return UNAVAILABLE_EARNINGS;
         }
@@ -356,7 +408,7 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).news) return UNAVAILABLE_NEWS;
         try {
           const cached = await marketData.getNewsHeadlines(ref);
-          return { available: true, headlines: cached.value };
+          return { available: true, headlines: cached.value.slice(0, NEWS_HEADLINES_MAX) };
         } catch {
           return UNAVAILABLE_NEWS;
         }
@@ -368,7 +420,12 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
         if (!capsFor(ref).splits) return UNAVAILABLE_SPLITS;
         try {
           const cached = await marketData.getSplitEvents(ref);
-          return { available: true, ...cached.value };
+          return {
+            available: true,
+            ...cached.value,
+            history: lastN(cached.value.history, SPLIT_EVENTS_MAX),
+            upcoming: cached.value.upcoming.slice(0, SPLIT_EVENTS_MAX),
+          };
         } catch {
           return UNAVAILABLE_SPLITS;
         }
