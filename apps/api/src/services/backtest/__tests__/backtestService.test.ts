@@ -136,6 +136,14 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
     { date: '2025-01-02', close: 150 },
     { date: '2026-01-05', close: 176 },
   ],
+  // Stopped one day AFTER `DELISTED`: the pair models a provider that went
+  // quiet six months ago, where the whole comparison — not one series — is
+  // stale.
+  STALE_TAIL: [
+    { date: '2024-01-02', close: 100 },
+    { date: '2025-01-02', close: 110 },
+    { date: '2025-06-16', close: 120 },
+  ],
   // Alive throughout, but its exchange was shut on the window's FIRST day —
   // the head-side mirror of HOLIDAY_SHY, two days and no more.
   HOLIDAY_LATE: [
@@ -175,6 +183,12 @@ const HIDDEN_NO_HISTORY_CHILD_ID = '018f0000-0000-7000-8000-000000000009';
 const HIDDEN_NO_HISTORY_ROOT_ID = '018f0000-0000-7000-8000-00000000000a';
 /** Flat fixture whose valid three-decimal weights expose redundant normalization drift. */
 const PRECISE_FLAT_ID = '018f0000-0000-7000-8000-00000000000b';
+/**
+ * A shared root whose nested child was later EMPTIED by its owner (which demotes
+ * the root to `draft` but does not un-share it): 60 % A + 40 % of nothing.
+ */
+const EMPTIED_CHILD_ID = '018f0000-0000-7000-8000-00000000000c';
+const PARTIAL_ROOT_ID = '018f0000-0000-7000-8000-00000000000d';
 /** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
 const VIEWER_ID = 'v1';
 
@@ -285,6 +299,19 @@ function createHarness() {
           ],
         };
       }
+      if (id === EMPTIED_CHILD_ID) {
+        return { id: EMPTIED_CHILD_ID, name: 'Emptied Child', positions: [] };
+      }
+      if (id === PARTIAL_ROOT_ID) {
+        return {
+          id: PARTIAL_ROOT_ID,
+          name: 'Partly Empty',
+          positions: [
+            { kind: 'asset', assetId: 'A', weightPct: 60 },
+            { kind: 'conglomerate', childId: EMPTIED_CHILD_ID, weightPct: 40 },
+          ],
+        };
+      }
       if (id === PRECISE_FLAT_ID) {
         return {
           id: PRECISE_FLAT_ID,
@@ -343,6 +370,7 @@ function createHarness() {
         HIDDEN_CUSTOM_ROOT_ID,
         HIDDEN_NO_HISTORY_ROOT_ID,
         PRECISE_FLAT_ID,
+        PARTIAL_ROOT_ID,
       ].includes(conglomerateId)
         ? { ownerId: 'u1' }
         : undefined,
@@ -575,6 +603,7 @@ const CX = '018f0000-0000-7000-8000-0000000000f2'; // 100 % DELISTED — stops m
 const CH = '018f0000-0000-7000-8000-0000000000f3'; // 100 % HOLIDAY_SHY — a 3-day tail gap
 const CG = '018f0000-0000-7000-8000-0000000000f4'; // 100 % GAP_START — a 27-day head gap
 const CJ = '018f0000-0000-7000-8000-0000000000f5'; // 100 % HOLIDAY_LATE — a 2-day head gap
+const CS = '018f0000-0000-7000-8000-0000000000f6'; // 100 % STALE_TAIL — stops one day after CX
 
 /** An asset or nested constituent, as the repository serves it. */
 type StubConstituent =
@@ -620,6 +649,10 @@ const COMPARISON_CONGLOMERATES: Record<string, { name: string; positions: StubCo
   [CJ]: {
     name: 'Shut Monday',
     positions: [{ kind: 'asset', assetId: 'HOLIDAY_LATE', weightPct: 100 }],
+  },
+  [CS]: {
+    name: 'Quiet Tail',
+    positions: [{ kind: 'asset', assetId: 'STALE_TAIL', weightPct: 100 }],
   },
 };
 
@@ -771,13 +804,101 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
     expect(caReturn - cbReturn).not.toBeCloseTo(0, 6); // the two baselines really differ
   });
 
-  it('rejects a non-primary series that does not cover the primary window (2-series alignment semantics)', async () => {
+  it('rejects a series that does not cover the shared window, whichever id sorts first (#1811, #1832)', async () => {
+    // The pre-#1832 fixture pair here was [CA, CC] — a basket that merely LISTS
+    // later than its sibling. That is no longer a refusal: a younger basket now
+    // sets the shared window (see the test below), so this proves the refusal
+    // that survives, on the fixture ids the new semantics need. `Gap Runner` has
+    // history since 2022, so it declares the whole window and then has no price
+    // for its first 27 days — and it is refused whether it sorts first or last,
+    // where before whichever basket sorted first was never checked at all.
+    const run = (longId: string, gapId: string) => {
+      const { service, catalog } = createComparisonHarness();
+      catalog.set(longId, {
+        name: 'Long Runner',
+        positions: [{ kind: 'asset', assetId: 'LONG', weightPct: 100 }],
+      });
+      catalog.set(gapId, {
+        name: 'Gap Runner',
+        positions: [{ kind: 'asset', assetId: 'GAP_START', weightPct: 100 }],
+      });
+      return service.runComparison('u1', { conglomerateIds: [longId, gapId], range: '3Y' });
+    };
+
+    for (const [longId, gapId] of [
+      [CL, CG], // the gap basket sorts LAST — the pre-#1832 covered case
+      [CG, CL], // …and FIRST, where it used to escape the coverage rule entirely
+    ] as const) {
+      await expect(run(longId, gapId)).rejects.toMatchObject({
+        statusCode: 422,
+        code: 'BACKTEST_UNAVAILABLE',
+        message:
+          'Conglomerate Gap Runner does not cover the comparison window — its data starts 2024-01-29, after 2024-01-02.',
+      });
+    }
+  });
+
+  it('opens the shared window at the youngest basket’s listing, whichever id sorts first (#1832)', async () => {
+    // The issue's scenario in the fixture's own numbers: `Old` has history from
+    // 2025-12-30, `Young` lists 2026-01-02. The window used to be whichever
+    // basket sorted first — so `Old` first opened it at 2025-12-30 and 422'd
+    // `Young`, while the IDENTICAL request with the ids the other way round
+    // succeeded over 2026-01-02. The honest shared window is the latest common
+    // start, and the ids may not decide which of the two is used.
+    const run = (oldId: string, youngId: string) => {
+      const { service, catalog } = createComparisonHarness();
+      catalog.set(oldId, {
+        name: 'Old',
+        positions: [
+          { kind: 'asset', assetId: 'A', weightPct: 60 },
+          { kind: 'asset', assetId: 'B', weightPct: 40 },
+        ],
+      });
+      catalog.set(youngId, {
+        name: 'Young',
+        positions: [{ kind: 'asset', assetId: 'C', weightPct: 100 }],
+      });
+      return service.runComparison('u1', { conglomerateIds: [oldId, youngId], range: 'MAX' });
+    };
+
+    const oldSortsFirst = await run(CA, CC);
+    const youngSortsFirst = await run(CC, CA);
+
+    for (const cmp of [oldSortsFirst, youngSortsFirst]) {
+      expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+      // The latest common start, not the older basket's own t₀.
+      expect(cmp.startDate).toBe('2026-01-02');
+      expect(cmp.endDate).toBe('2026-01-05');
+      // …and every series really spans the window it is charted over.
+      for (const s of cmp.series) {
+        expect(s.series[0]!.date).toBe(cmp.startDate);
+        expect(s.series.at(-1)!.date).toBe(cmp.endDate);
+        expect(s.series[0]!.value).toBeCloseTo(100, 10);
+      }
+    }
+
+    // Same outcome AND the same numbers, series by series (the ids are swapped,
+    // so they line up by name): 60 % of A's 120→132 plus 40 % of a flat B, and
+    // C's 10→11.
+    const statsByName = (cmp: Awaited<ReturnType<typeof run>>) =>
+      new Map(cmp.series.map((s) => [s.name, s.stats]));
+    expect(statsByName(youngSortsFirst)).toEqual(statsByName(oldSortsFirst));
+    expect(statsByName(oldSortsFirst).get('Old')!.totalReturnPct).toBeCloseTo(6, 10);
+    expect(statsByName(oldSortsFirst).get('Young')!.totalReturnPct).toBeCloseTo(10, 10);
+  });
+
+  it('measures the tail against the furthest any series reached, not the calendar’s today', async () => {
     const { service } = createComparisonHarness();
-    // CA's window starts 2025-12-30; CC (100 % C) only lists from 2026-01-02, so
-    // it cannot cover the window — a 422, exactly as a short V4-P7 benchmark.
-    await expect(
-      service.runComparison('u1', { conglomerateIds: [CA, CC], range: '1Y' }),
-    ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+    // Both baskets stopped six months ago — a provider that went quiet, not a
+    // delisting: the pair is a fortnight-stale comparison, not an impossible
+    // one. `Quiet Tail` reaches one day further than `Delisted Co`, which is
+    // inside the same grace the head side uses.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CX, CS], range: '3Y' });
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.startDate).toBe('2024-01-02');
+    // The reported end is still the day EVERY curve reaches.
+    expect(cmp.endDate).toBe('2025-06-15');
+    for (const s of cmp.series) expect(s.series.at(-1)!.date >= cmp.endDate).toBe(true);
   });
 
   it('refuses a series whose data STOPS inside the window, like one that starts late (#1755)', async () => {
@@ -1170,6 +1291,54 @@ describe('backtestService.runSharedSandboxPreview', () => {
     // a mix, so it has to stay one.
     const childCurve = await service.runPreview('u1', PREVIEW);
     expect(sandbox.series.at(-1)!.value).not.toBeCloseTo(childCurve.series.at(-1)!.value, 2);
+  });
+
+  it('reports the share an emptied child left unresolved instead of renormalising it away (#1832)', async () => {
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: PARTIAL_ROOT_ID,
+      positions: [
+        { id: 'A', weight: 60 },
+        { id: EMPTIED_CHILD_ID, weight: 40 },
+      ],
+      range: '1Y',
+    });
+    const parsed = sharedSandboxAggregateResponseSchema.parse(sandbox);
+
+    // The curve IS 100 % A: the flatten drops the emptied child and normalizes
+    // the survivor back to 100, so the series, total return, drawdown and
+    // best/worst day are a single-asset basket's…
+    const allA = await service.runPreview('u1', {
+      positions: [{ assetId: 'A', weight: 100 }],
+      range: '1Y',
+    });
+    expect(parsed.series).toEqual(allA.series);
+    expect(parsed.stats).toEqual(allA.stats);
+    // …and this number is the only thing that says so. Without it the response
+    // is byte-identical to the same basket at [A 100], presented to the viewer
+    // as the shared basket at its own stored weights.
+    expect(parsed.unresolvedPct).toBeCloseTo(40, 9);
+
+    // A fully-resolved nested basket is now distinguishable from it: it says 0.
+    const resolved = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: NESTED_ID,
+      positions: [
+        { id: CONG_ID, weight: 50 },
+        { id: 'A', weight: 50 },
+      ],
+      range: '1Y',
+    });
+    expect(sharedSandboxAggregateResponseSchema.parse(resolved).unresolvedPct).toBe(0);
+
+    // The unresolvable row stays part of the pinned id set — a viewer may not
+    // drop it to make the basket look whole.
+    await expect(
+      service.runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: PARTIAL_ROOT_ID,
+        positions: [{ id: 'A', weight: 60 }],
+        range: '1Y',
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
   });
 
   it('refuses a sandbox that collapses the basket onto the opaque child (#1755)', async () => {
