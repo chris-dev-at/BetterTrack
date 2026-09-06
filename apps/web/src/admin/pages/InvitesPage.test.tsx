@@ -142,6 +142,40 @@ test('keeps a newly created invite URL open until it is acknowledged', async () 
   await waitFor(() => expect(screen.queryByText(created.inviteUrl)).not.toBeInTheDocument());
 });
 
+/**
+ * #1848 D2, on the invites list: a window that has fallen off the end of the
+ * set must not read as "no invites" over 25 live rows. Nothing but the URL
+ * could bring the operator back before.
+ */
+test('a page that emptied under a revoke returns to the page that still has rows', async () => {
+  const pageOf = (offset: number) =>
+    Array.from({ length: 25 }, (_, i) => ({
+      ...invite,
+      id: `00000000-0000-0000-0000-${String(offset + i).padStart(12, '0')}`,
+      email: `invitee-${offset + i}@bettertrack.test`,
+    }));
+  vi.mocked(api.listInvites).mockImplementation(async (params = {}) => {
+    const offset = params.offset ?? 0;
+    return offset === 0
+      ? { invites: pageOf(0), page: { total: 50, limit: 25, offset } }
+      : { invites: [], page: { total: 50, limit: 25, offset } };
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText('invitee-0@bettertrack.test');
+  await user.click(screen.getByRole('button', { name: en('admin.pagination.next') }));
+
+  await waitFor(() =>
+    expect(api.listInvites).toHaveBeenCalledWith({ offset: 25 }, expect.anything()),
+  );
+  await waitFor(() =>
+    expect(api.listInvites).toHaveBeenLastCalledWith({ offset: 0 }, expect.anything()),
+  );
+  expect(await screen.findByText('invitee-0@bettertrack.test')).toBeInTheDocument();
+  expect(screen.queryByText(en('admin.invites.empty'))).not.toBeInTheDocument();
+});
+
 test('renders one bounded page and reaches the rest through the footer', async () => {
   // #1814: the list used to arrive whole — nothing prunes invites, so a
   // long-lived instance answered with every row it had ever written.

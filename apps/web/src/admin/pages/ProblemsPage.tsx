@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
@@ -99,60 +99,85 @@ export function ProblemsPage() {
     [setParams],
   );
 
-  // `offset` is the page currently being fetched; `rows` is everything loaded
-  // so far. A filter change resets both — a page of `error` rows must never be
-  // appended under a `job` filter.
-  const [offset, setOffset] = useState(0);
-  const [rows, setRows] = useState<Problem[]>([]);
+  // How many PAGE_SIZE windows the operator has opened. A filter change resets
+  // it — a page of `error` rows must never be shown under a `job` filter.
+  const [pageCount, setPageCount] = useState(1);
   useEffect(() => {
-    setOffset(0);
-    setRows([]);
+    setPageCount(1);
   }, [kind, status]);
 
+  /**
+   * Every window currently on screen, re-read together and merged by id
+   * (#1848).
+   *
+   * The previous shape kept a growing `rows` array and spliced each response in
+   * by numeric offset. But the offset is a position in a MUTATING, time-ordered
+   * set: one capture arriving shifts every row down by one, so the live tick's
+   * re-read of `offset=25` returned a window starting one row earlier and the
+   * splice rendered that row TWICE under the same React key. A resolve shrank
+   * the set and dropped the row at the page boundary instead. And page 1 was
+   * frozen the moment "Load more" was clicked — `current.slice(0, offset)` was
+   * never re-read, so a problem a colleague had resolved kept offering
+   * "Resolve" forever.
+   *
+   * Re-reading the pages that are still shown fixes all three at once, and the
+   * id-keyed merge (rather than a single `limit: PAGE_SIZE * pageCount` read)
+   * keeps the request bounded by the contract's `limit` cap of 200 no matter
+   * how far the operator pages. A row that moves between two windows during the
+   * read is rendered once, at its first sighting.
+   */
   const resource = useResource(
-    (signal) =>
-      api.listProblems(
-        {
-          ...(kind === 'all' ? {} : { kind }),
-          ...(status === 'all' ? {} : { status }),
-          limit: PAGE_SIZE,
-          offset,
-        },
-        signal,
-      ),
-    [kind, status, offset],
+    async (signal) => {
+      const filter = {
+        ...(kind === 'all' ? {} : { kind }),
+        ...(status === 'all' ? {} : { status }),
+      };
+      const windows = await Promise.all(
+        Array.from({ length: pageCount }, (_, index) =>
+          api.listProblems({ ...filter, limit: PAGE_SIZE, offset: index * PAGE_SIZE }, signal),
+        ),
+      );
+      const head = windows[0]!;
+      const tail = windows[windows.length - 1]!;
+      const seen = new Set<string>();
+      const problems: Problem[] = [];
+      for (const window of windows) {
+        for (const problem of window.problems) {
+          if (seen.has(problem.id)) continue;
+          seen.add(problem.id);
+          problems.push(problem);
+        }
+      }
+      return {
+        ...tail,
+        problems,
+        // The drop tally is a trailing-window counter, identical in every
+        // concurrent response — read it once rather than summing it per window.
+        droppedCaptures: head.droppedCaptures,
+        droppedCapturesTotal: head.droppedCapturesTotal,
+      } satisfies ProblemListResponse;
+    },
+    [kind, status, pageCount],
   );
   const { data, loading, error, reload } = resource;
 
-  // Apply each response ONCE: `offset` changes a render before its response
-  // arrives, and re-running on the previous page's data would append it twice.
-  const applied = useRef<ProblemListResponse | null>(null);
-  useEffect(() => {
-    if (data === null || applied.current === data) return;
-    applied.current = data;
-    setRows((current) =>
-      offset === 0 ? data.problems : [...current.slice(0, offset), ...data.problems],
-    );
-  }, [data, offset]);
+  // The rendered list IS the last read of the pages on screen; nothing is
+  // accumulated locally, so nothing can drift out of step with the server.
+  const rows = data?.problems ?? [];
 
   const live = useLiveRefresh(reload);
 
-  // The mutation patches its own row from the response, so a resolve deep in
-  // the list is reflected without collapsing the loaded pages back to the
-  // first; the reload behind it refreshes the counts and the current page.
-  const patchRow = useCallback((updated: Problem) => {
-    setRows((current) => current.map((row) => (row.id === updated.id ? updated : row)));
-  }, []);
-
   // Both actions address one problem row, which the retention sweep or a second
   // operator can retire between the list read and the click — a banner, not a
-  // forced sign-out (V5-P13c audit of every `useAdminMutation` call site).
-  const resolve = useAdminMutation(async (id: string) => patchRow(await api.resolveProblem(id)), {
+  // forced sign-out (V5-P13c audit of every `useAdminMutation` call site). The
+  // reload behind them re-reads every window on screen, so the acted-on row and
+  // the counts settle together.
+  const resolve = useAdminMutation(async (id: string) => void (await api.resolveProblem(id)), {
     errorKey: 'admin.problems.actionError',
     notFound: 'surface',
     onSuccess: reload,
   });
-  const reopen = useAdminMutation(async (id: string) => patchRow(await api.reopenProblem(id)), {
+  const reopen = useAdminMutation(async (id: string) => void (await api.reopenProblem(id)), {
     errorKey: 'admin.problems.actionError',
     notFound: 'surface',
     onSuccess: reload,
@@ -271,7 +296,7 @@ export function ProblemsPage() {
           <div className="mt-3 flex justify-center">
             <Button
               disabled={loading}
-              onClick={() => setOffset(rows.length)}
+              onClick={() => setPageCount((count) => count + 1)}
               size="sm"
               variant="secondary"
             >
