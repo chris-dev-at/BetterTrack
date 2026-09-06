@@ -182,6 +182,28 @@ describe('Origin phone chrome', () => {
   });
 
   /**
+   * The rows INSIDE the overlays the phone gate opens (#1834). The topbar rule
+   * asserted above stops at `.bt-topbar`, so a menu the page owns kept the
+   * 32px `.bt-menu-item` row and the command palette — primary navigation on a
+   * phone — kept its 38px row, neither declared nor measured. Both halves are
+   * asserted here as text and in `e2e/mobile-overflow.spec.ts` as geometry.
+   */
+  it('gives content-owned menu rows and palette rows the same 44px floor', () => {
+    const phoneCss = phoneBlock();
+
+    expect(phoneCss).toMatch(
+      /\.bt-menu-item,\s*\.bt-popover :is\(\[role='menuitem'\], \[role='menuitemcheckbox'\], \[role='menuitemradio'\]\) \{[^}]*min-height: 44px;/,
+    );
+    expect(phoneCss).toMatch(/\.bt-palette__row \{[^}]*min-height: 44px;/);
+
+    // The rules the rows above override must stay the compact desktop density,
+    // or this floor would be silently redundant — and the console, which is
+    // Tailwind-only, must remain out of their reach (#1057 owns that half).
+    expect(originCss).toMatch(/\.bt-menu-item \{[^}]*min-height: 32px;/);
+    expect(originCss).toMatch(/\.bt-palette__row \{[^}]*min-height: 38px;/);
+  });
+
+  /**
    * The admin console's half of the same contract (#1756). The console is
    * Tailwind-utility-only, so the `.bt-*` rule above cannot reach it and its
    * controls carry density utilities (`min-h-[30px]`, `h-9 w-9`) that are all
