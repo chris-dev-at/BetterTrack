@@ -126,9 +126,10 @@ export interface ProcessDueResult {
   deferred: number;
   /**
    * Orders whose final in-lock recheck aborted the write: the portfolio was
-   * archived or moved into a vault — or the order paused, removed, or its
-   * watermark advanced past the candidate period — between the scan's
-   * optimistic `listActive` read and the locked claim.
+   * archived or moved into a vault — or the order paused, removed, its
+   * watermark advanced past the candidate period, or its end date pulled back
+   * behind that period — between the scan's optimistic `listActive` read and
+   * the locked claim.
    */
   skippedArchived: number;
   /**
@@ -569,22 +570,40 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             order.portfolioId,
             order.id,
             due,
-            async (tx) => {
+            async (tx, current) => {
+              // The `listActive` snapshot named the candidate; the row this
+              // lock just pinned decides the money (#1836). On a book of a few
+              // hundred orders the snapshot is minutes old by the time the last
+              // order gets here — each one polls a quote and takes this lock —
+              // so an owner who edited the amount, the note or the end date in
+              // that window would otherwise have the stale figure booked. The
+              // asset join is carried over: `assetId` is not patchable, and the
+              // accepted quote was fetched for exactly that ref.
+              const fresh: StandingOrderWithAsset = { ...order, ...current };
+              // An end date pulled back behind the candidate retires this
+              // period outright: booking it would record an occurrence the
+              // order no longer has. Aborting is the safe direction — an
+              // earlier occurrence that is now the due one simply books on the
+              // next scan, through the same claim ledger.
+              if (dueOccurrence(specOf(fresh), today) !== due) return 'superseded' as const;
+
               // Provisioning Main is itself a cleartext write, so it belongs
               // inside the lock and inside this transaction: outside, a
               // move-in that purged `portfolio_cash_sources` a moment earlier
               // would be handed a fresh orphan row across the vault boundary
               // (#1712).
               const cashSourceId =
-                order.kind === 'buy-asset'
+                fresh.kind === 'buy-asset'
                   ? null
-                  : (await cashSourceRepo.getOrCreateMain(order.portfolioId, tx)).id;
-              if (order.kind === 'cash-deduct') {
-                const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
-                if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
+                  : (await cashSourceRepo.getOrCreateMain(fresh.portfolioId, tx)).id;
+              if (fresh.kind === 'cash-deduct') {
+                const movements = await cashMovementRepo.listForPortfolio(fresh.portfolioId, tx);
+                // Affordability is judged against the very amount the booking
+                // below will write — never against the snapshotted one.
+                if (!cashCovers(fresh, cashSourceId!, movements)) return 'deferred' as const;
               }
 
-              const claimed = await repo.claimPeriod(order.id, due, tx);
+              const claimed = await repo.claimPeriod(fresh.id, due, tx);
               if (!claimed) return 'duplicate' as const;
 
               try {
@@ -594,7 +613,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
                 // lock or rolling back the durable claim.
                 await tx.transaction(async (savepoint) => {
                   await bookRow(
-                    order,
+                    fresh,
                     bookPrice,
                     executedAt,
                     cashSourceId,
@@ -617,6 +636,14 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             logger?.info(
               { orderId: order.id, portfolioId: order.portfolioId, due },
               'standing order: skipped — portfolio unavailable or order superseded during execution',
+            );
+            return;
+          }
+          if (outcome === 'superseded') {
+            result.skippedArchived += 1;
+            logger?.info(
+              { orderId: order.id, portfolioId: order.portfolioId, due },
+              'standing order: skipped — the schedule no longer covers this period (edited during execution)',
             );
             return;
           }

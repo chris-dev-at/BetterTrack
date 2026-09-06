@@ -339,6 +339,42 @@ describe('sessionService — ephemeral sessions (V4-P2b, §399 §A)', () => {
     expect(await sessions.setPersistent(id, true)).toBe(false);
   });
 
+  it('setAbsoluteLifetime shortens a key that would outlive the new cap', async () => {
+    // The admin resolve path re-stamps a live session when the configured
+    // lifetime changes (§13.5 V5-P13c). A 5000s persistent window capped at 60s
+    // must leave the storage TTL on the cap, not the window.
+    const sessions = make();
+    const id = await sessions.create('u', 0, true);
+    expect(await sessions.setAbsoluteLifetime(id, 60_000)).toBe(true);
+    expect((await sessions.get(id))?.absoluteLifetimeMs).toBe(60_000);
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(60);
+  });
+
+  it('setAbsoluteLifetime never extends: an idle ephemeral window is not re-armed', async () => {
+    // The cap is a cap, not a renewal. An ephemeral session's TTL is the SLIDING
+    // idle window, so re-deriving it from `now` alone would hand a session idle
+    // for 80 of its 100 seconds a full fresh window on a policy change it did
+    // nothing to earn.
+    const sessions = make();
+    const id = await sessions.create('u', 0, false);
+    await redis.expire(sessKey(id), 20); // 80s of the idle window already spent
+    now += 80_000;
+    expect(await sessions.setAbsoluteLifetime(id, 500_000)).toBe(true);
+    expect((await sessions.get(id))?.absoluteLifetimeMs).toBe(500_000);
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(20);
+  });
+
+  it('setAbsoluteLifetime is a no-op-false on a session that is already gone', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', 0, false);
+    await sessions.destroy(id);
+    expect(await sessions.setAbsoluteLifetime(id, 60_000)).toBe(false);
+  });
+
   it('listForUser reports persistence per session; a legacy (unmarked) session reads persistent', async () => {
     const sessions = make();
     const persistentId = await sessions.create('u', 0, true);

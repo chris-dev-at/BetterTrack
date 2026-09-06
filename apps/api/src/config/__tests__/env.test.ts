@@ -2,6 +2,12 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
+  DEFAULT_ADMIN_SESSION_LIFETIME_HOURS,
+} from '@bettertrack/contracts';
+
 import { decryptSecret, encryptSecret } from '../../services/crypto/secretBox';
 import { loadConfig, UNSAFE_GRAFANA_PASSWORDS } from '../env';
 
@@ -576,5 +582,32 @@ describe('Telegram/Discord kill-switch is independent of the bot token', () => {
     const cfg = config({ BT_TELEGRAM_DISCORD_ENABLED: 'false', BT_TELEGRAM_BOT_TOKEN: 'token' });
     expect(cfg.telegram).toMatchObject({ offered: false, enabled: false });
     expect(cfg.discord).toMatchObject({ offered: false, enabled: false });
+  });
+});
+
+/**
+ * The 6/24/12 admin-session window is defined ONCE, in contracts — where it also
+ * gates the runtime write, the response payload and the console's own range
+ * check (#1833). The env fallback used to hardcode the same three numbers, so
+ * widening the window in contracts would have left this schema rejecting a legal
+ * value at boot.
+ */
+describe('the admin session lifetime env bounds come from contracts (§13.5 V5-P13c)', () => {
+  it('defaults to the contract default when unset', () => {
+    expect(config({}).admin.sessionLifetimeHours).toBe(DEFAULT_ADMIN_SESSION_LIFETIME_HOURS);
+  });
+
+  it('accepts exactly the contract window and refuses either side of it', () => {
+    for (const hours of [ADMIN_SESSION_LIFETIME_MIN_HOURS, ADMIN_SESSION_LIFETIME_MAX_HOURS]) {
+      expect(
+        config({ ADMIN_SESSION_LIFETIME_HOURS: String(hours) }).admin.sessionLifetimeHours,
+      ).toBe(hours);
+    }
+    for (const hours of [
+      ADMIN_SESSION_LIFETIME_MIN_HOURS - 1,
+      ADMIN_SESSION_LIFETIME_MAX_HOURS + 1,
+    ]) {
+      expect(() => config({ ADMIN_SESSION_LIFETIME_HOURS: String(hours) })).toThrow();
+    }
   });
 });
