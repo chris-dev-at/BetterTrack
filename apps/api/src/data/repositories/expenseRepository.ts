@@ -167,6 +167,13 @@ export interface ExpenseTransactionRecord {
   bookedOn: string;
   description: string;
   source: string;
+  /**
+   * Bank-import idempotency key (`UNIQUE(user, dedup_hash)`); NULL on manual
+   * rows. On the record because the owner's list read is what the paranoid
+   * capture drains, and enable hard-deletes the cleartext it otherwise only
+   * lives in.
+   */
+  dedupHash: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -244,6 +251,7 @@ function toTransaction(row: ExpenseTransactionRow): ExpenseTransactionRecord {
     bookedOn: row.bookedOn,
     description: row.description,
     source: row.source,
+    dedupHash: row.dedupHash ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

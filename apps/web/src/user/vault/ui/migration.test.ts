@@ -1,6 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PARANOID_REHYDRATION_HANDLERS, type VaultEntityKind } from '@bettertrack/contracts';
+import {
+  PARANOID_REHYDRATION_HANDLERS,
+  cashMovementSchema,
+  cashMovementsResponseSchema,
+  expenseBudgetListResponseSchema,
+  expenseBudgetProgressSchema,
+  expenseCategoryListResponseSchema,
+  expenseTransactionListResponseSchema,
+  expenseTransactionSchema,
+  portfolioListResponseSchema,
+  portfolioTaxSettingsResponseSchema,
+  taxSettingsResponseSchema,
+  type VaultEntityKind,
+} from '@bettertrack/contracts';
 
 import type { PortfolioStore } from '../../../lib/portfolioStore';
 
@@ -59,6 +72,7 @@ import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
 import { getParanoidNormalRevision } from '../../../lib/userApi';
 import { openVaultSession } from '../engine/session';
 import { toStrictRestoreDocument } from '../paranoidDisable';
+import roundTripFixture from './paranoidCaptureRoundTrip.fixture.json';
 import {
   buildNormalVaultDocument,
   captureNormalVault,
@@ -319,6 +333,8 @@ describe('buildNormalVaultDocument', () => {
           spent: 25,
           remaining: 275,
           exceeded: false,
+          createdAt: NOW,
+          updatedAt: NOW,
         },
       ],
     });
@@ -1695,5 +1711,228 @@ describe('buildNormalVaultDocument', () => {
       undefined,
     );
     expect(document.entities.expenseTransaction).toHaveLength(501);
+  });
+});
+
+/**
+ * The client half of the cross-package round trip (issue #1858).
+ *
+ * `paranoidCaptureRoundTrip.fixture.json` holds an account as the server's own
+ * endpoints serve it (`reads`) and the restore payload the SHIPPED capture makes
+ * of it (`document`). This suite regenerates the second from the first, so the
+ * file provably contains no hand-written restore entity; the API suite
+ * (`apps/api/src/services/expenses/__tests__/vaultDedupRegression.test.ts`)
+ * seeds `reads` into a real database, purges it the way enable does, and drives
+ * that exact `document` through the real restore. The capture cannot be
+ * regressed on either side without one of the two failing: stamp `dedupHash:
+ * null` again and this file's assertion breaks, edit the fixture to match and
+ * the API's re-import books a duplicate.
+ */
+describe('paranoid capture round-trip fixture', () => {
+  /**
+   * Every field the three vault-classified read DTOs declare, classified: the
+   * capture either carries it into the vault row or deliberately does not, with
+   * the reason stated. A field added to one of these contracts fails this
+   * assertion until someone makes that call — which is exactly what did not
+   * happen when `dedupHash` and the budget timestamps went missing, silently,
+   * into an irreversible one-way migration.
+   */
+  const CAPTURED_DTO_FIELDS = {
+    cashMovement: {
+      shape: cashMovementSchema.shape,
+      carried: [
+        'id',
+        'kind',
+        'amountEur',
+        'sourceId',
+        'transactionId',
+        'transferId',
+        'counterpartSourceId',
+        'dividendId',
+        'taxYear',
+        'executedAt',
+        'note',
+        'source',
+        'dedupHash',
+        'originalCurrency',
+        'createdAt',
+      ],
+      notCarried: {
+        tags: 'emitted as its own cashMovementTag join rows and restored from those',
+        mirror: 'chain overlay re-derived per copy; replication never rides a vault document',
+      },
+    },
+    expenseTransaction: {
+      shape: expenseTransactionSchema.shape,
+      carried: [
+        'id',
+        'categoryId',
+        'direction',
+        'amount',
+        'currency',
+        'bookedOn',
+        'description',
+        'source',
+        'dedupHash',
+        'createdAt',
+        'updatedAt',
+      ],
+      notCarried: {},
+    },
+    expenseBudget: {
+      shape: expenseBudgetProgressSchema.shape,
+      carried: ['id', 'categoryId', 'amount', 'currency', 'createdAt', 'updatedAt'],
+      notCarried: {
+        categoryName: 'snapshot of the expenseCategory row, which rides the document itself',
+        categoryColor: 'snapshot of the expenseCategory row, which rides the document itself',
+        period: 'the queried month, not a stored column',
+        spent: 're-evaluated per read from the restored transactions',
+        remaining: 're-evaluated per read from the restored transactions',
+        exceeded: 're-evaluated per read from the restored transactions',
+      },
+    },
+  } as const;
+
+  const reads = {
+    portfolios: portfolioListResponseSchema.parse(roundTripFixture.reads.portfolios),
+    cash: cashMovementsResponseSchema.parse(roundTripFixture.reads.cash),
+    portfolioTaxSettings: portfolioTaxSettingsResponseSchema.parse(
+      roundTripFixture.reads.portfolioTaxSettings,
+    ),
+    taxSettings: taxSettingsResponseSchema.parse(roundTripFixture.reads.taxSettings),
+    expenseCategories: expenseCategoryListResponseSchema.parse(
+      roundTripFixture.reads.expenseCategories,
+    ),
+    expenseTransactions: expenseTransactionListResponseSchema.parse(
+      roundTripFixture.reads.expenseTransactions,
+    ),
+    expenseBudgets: expenseBudgetListResponseSchema.parse(roundTripFixture.reads.expenseBudgets),
+  };
+
+  const IMPORTED_MOVEMENT_ID = '018f0000-0000-7000-8000-00000000a004';
+  const MANUAL_MOVEMENT_ID = '018f0000-0000-7000-8000-00000000a003';
+  const EXPENSE_ID = '018f0000-0000-7000-8000-00000000a007';
+  const OLDER_BUDGET_ID = '018f0000-0000-7000-8000-00000000c001';
+  const NEWER_BUDGET_ID = '018f0000-0000-7000-8000-00000000b001';
+  /** H(the ORIGINAL bank row), still on the row after the user edited its text. */
+  const IMPORT_HASH = '27c07763486885bceed1e09b634e77572e7db29709c8240e18e02cd9d1e6e03c';
+
+  async function captureFixtureAccount() {
+    vi.mocked(listExpenseCategories).mockResolvedValue(reads.expenseCategories);
+    vi.mocked(listExpenseTransactions).mockResolvedValue(reads.expenseTransactions);
+    vi.mocked(listExpenseBudgets).mockResolvedValue(reads.expenseBudgets);
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => reads.portfolios),
+      listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
+      getCashMovements: vi.fn(async () => reads.cash),
+      getPortfolioTaxSettings: vi.fn(async () => reads.portfolioTaxSettings),
+      getTaxSettings: vi.fn(async () => reads.taxSettings),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+    let synthetic = 0;
+    const document = await buildNormalVaultDocument({
+      userId: roundTripFixture.capture.userId,
+      deviceId: roundTripFixture.capture.deviceId,
+      store,
+      now: () => roundTripFixture.capture.now,
+      id: () =>
+        `${roundTripFixture.capture.syntheticIdPrefix}${String(++synthetic).padStart(12, '0')}`,
+    });
+    return toStrictRestoreDocument(document);
+  }
+
+  it('declares every read-DTO field as carried into the vault or deliberately not', () => {
+    for (const [kind, spec] of Object.entries(CAPTURED_DTO_FIELDS)) {
+      expect(Object.keys(spec.shape).sort(), `${kind} contract fields`).toEqual(
+        [...spec.carried, ...Object.keys(spec.notCarried)].sort(),
+      );
+    }
+  });
+
+  it('is the document the shipped capture emits for the fixture account', async () => {
+    const built = await captureFixtureAccount();
+    // Regeneration hatch for when `reads` legitimately changes shape:
+    // `REGENERATE_FIXTURE=1 vitest run src/user/vault/ui/migration.test.ts`.
+    // It is deliberately not a way to silence a capture regression — the API
+    // round trip consumes whatever this writes, so a document with the dedup key
+    // nulled out still books the same statement twice over there.
+    if (process.env.REGENERATE_FIXTURE) {
+      const fs = await import('node:fs');
+      fs.writeFileSync(
+        'src/user/vault/ui/paranoidCaptureRoundTrip.fixture.json',
+        `${JSON.stringify({ ...roundTripFixture, document: built }, null, 2)}\n`,
+      );
+    }
+    expect(built).toEqual(roundTripFixture.document);
+  });
+
+  it('carries the import dedup key and the budgets’ real age out of the reads', async () => {
+    const strict = await captureFixtureAccount();
+    const entity = (kind: string, id: string) => {
+      const found = strict.entities.find((row) => row.kind === kind && row.id === id);
+      if (!found) throw new Error(`the capture emitted no ${kind} ${id}`);
+      return found.data as Record<string, unknown>;
+    };
+
+    // The fused statement row: the key is the ledger's ONLY idempotency handle,
+    // and this document is the only copy of it that survives enable.
+    expect(entity('cashMovement', IMPORTED_MOVEMENT_ID)).toEqual({
+      portfolioId: reads.portfolios.portfolios[0]!.id,
+      sourceId: reads.cash.sources[0]!.id,
+      kind: 'withdrawal',
+      amountEur: '-42.5',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt: '2026-07-01T00:00:00.000Z',
+      note: 'User-edited description',
+      source: 'import:n26',
+      dedupHash: IMPORT_HASH,
+      originalCurrency: null,
+      createdAt: '2026-07-01T08:00:00.000Z',
+    });
+    // A hand-entered row genuinely has no key; absent on the DTO means null here.
+    expect(entity('cashMovement', MANUAL_MOVEMENT_ID)).toMatchObject({
+      source: 'manual',
+      dedupHash: null,
+    });
+
+    expect(entity('expenseTransaction', EXPENSE_ID)).toEqual({
+      userId: roundTripFixture.capture.userId,
+      categoryId: '018f0000-0000-7000-8000-00000000a005',
+      direction: 'expense',
+      amount: '42.5',
+      currency: 'EUR',
+      bookedOn: '2026-07-01',
+      description: 'User-edited description',
+      source: 'import:n26',
+      // H(original statement row) — NOT H(the row as it now reads). A restore
+      // that recomputed the hash from content would produce a key the next
+      // import of the same statement cannot collide with.
+      dedupHash: IMPORT_HASH,
+      createdAt: '2026-07-01T08:00:00.000Z',
+      updatedAt: '2026-07-03T09:30:00.000Z',
+    });
+
+    // Budgets keep their own age. Stamping the migration instant collapsed the
+    // list to one timestamp, and `listForOwner` then ordered it by UUID: these
+    // two ids sort in the reverse of their ages, so a collapse is visible.
+    expect(entity('expenseBudget', OLDER_BUDGET_ID)).toEqual({
+      userId: roundTripFixture.capture.userId,
+      categoryId: '018f0000-0000-7000-8000-00000000a005',
+      amount: '300',
+      currency: 'EUR',
+      createdAt: '2026-05-01T08:30:00.000Z',
+      updatedAt: '2026-05-01T08:30:00.000Z',
+    });
+    expect(entity('expenseBudget', NEWER_BUDGET_ID)).toMatchObject({
+      createdAt: '2026-06-01T08:30:00.000Z',
+      updatedAt: '2026-06-01T08:30:00.000Z',
+    });
+    expect(OLDER_BUDGET_ID > NEWER_BUDGET_ID, 'the older budget must sort last by id').toBe(true);
   });
 });
