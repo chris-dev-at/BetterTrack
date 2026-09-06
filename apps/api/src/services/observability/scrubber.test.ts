@@ -86,6 +86,17 @@ describe('redactString', () => {
     // could silently under-redact.
     expect(redactString('?foo=1&apikey=SECRET')).toBe(`?foo=1&apikey=${REDACTED_TOKEN}`);
     expect(redactString('?foo=1?apikey=SECRET')).toBe(`?foo=1?apikey=${REDACTED_TOKEN}`);
+    expect(redactString('?a=1?b=2?token=SECRET')).toBe(`?a=1?b=2?token=${REDACTED_TOKEN}`);
+  });
+
+  it('takes a credential value whole even where the walk stops a non-secret one', () => {
+    // The matcher stops a NON-secret value at the next `?` so it cannot rescan
+    // it (see `QUERY_PARAM_RE`). A secret value must not inherit that stop: a
+    // `?` inside it is part of the credential, and keeping the tail would be an
+    // under-redaction the cheaper walk paid for.
+    expect(redactString('?apikey=abc?def')).toBe(`?apikey=${REDACTED_TOKEN}`);
+    expect(redactString('?apikey=abc?def&next=1')).toBe(`?apikey=${REDACTED_TOKEN}&next=1`);
+    expect(redactString('?apikey=a=b&c=d')).toBe(`?apikey=${REDACTED_TOKEN}&c=d`);
   });
 
   it('still redacts an email that follows a long run of email characters', () => {
@@ -144,11 +155,18 @@ describe('redactIdentifiers', () => {
  * credential word in it, the query rule never entered the path that made it
  * catastrophic, so the assertion passed at ~0 ms while, on the same machine, a
  * 96 KB run of its own keyword took 1.5 s and a quarter-MB JSON-ish blob 2.9 s.
- * Both are pinned below, so a future rewrite of either rule cannot quietly
- * reintroduce the blowup.
  *
- * The budget is one number for every input on purpose: the linear scan costs
- * well under a millisecond for all three, and the shapes it replaced cost
+ * The last row is the shape that a REWRITE reintroduced the blowup on, and it
+ * is here because the first three did not catch it: a plain run of
+ * `?`-separated parameters whose values nothing terminates. Against a matcher
+ * that lets a value span the next `?`, the value is scanned once by its own
+ * match and again by every match after it — 300 KB of it cost ~7.5 s, while the
+ * single pattern this file's other rows were written for was linear on exactly
+ * that input. Cheap parameters, no keyword, no separator: nothing but a cost
+ * assertion sees it.
+ *
+ * The budget is one number for every input on purpose: the linear scan costs a
+ * few milliseconds at most for all four, and every shape it replaced cost
  * seconds, so a regression misses this by more than an order of magnitude
  * rather than flaking against it on a loaded CI runner.
  */
@@ -162,6 +180,7 @@ describe('scrub cost', () => {
       'a quarter-MB JSON-ish blob repeating two credential words',
       `?${'{"apikey":"a","signature":"b"},'.repeat(8_000)}`,
     ],
+    ['a 300 KB run of unterminated non-credential parameters', '?a='.repeat(100_000)],
   ])('stays linear on %s', (_label, input) => {
     const started = performance.now();
     const out = redactIdentifiers(input);

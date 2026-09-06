@@ -268,14 +268,30 @@ function fingerprintOf(
 const MAX_STACK_FRAMES = 20;
 
 /**
- * Trim a stack to its first frames. The byte ceiling is applied later, with
- * everything else in the context, by {@link boundProblemContext} — but a stack
- * that is bounded only by bytes is cut mid-frame, and the frames worth having
- * are the first ones.
+ * Trim a stack to its first frames, each bounded to what the scrubber reads.
+ *
+ * The byte ceiling is applied later, with everything else in the context, by
+ * {@link boundProblemContext} — but a stack that is bounded only by bytes is cut
+ * mid-frame, and the frames worth having are the first ones.
+ *
+ * The per-LINE bound is the one the scrubber needs (#1853). Capping frames caps
+ * nothing about their length, and a V8 `Error.stack`'s first line is the message
+ * verbatim — so a megabyte thrown message arrives here in full even though
+ * `capture` already bounded its own copy of it, and {@link captureStack} then
+ * hands all of it to the value rules on the API's single event loop. That is the
+ * one input on this path nothing bounded.
+ *
+ * Bounding per line rather than the joined stack costs nothing and keeps the
+ * frames independent of the message: a frame is never near the ceiling, so only
+ * an oversized first line is ever cut, and the frames behind it stay addressable
+ * up to the byte ceiling. Nothing DIAGNOSTIC is lost that was not already going:
+ * `boundProblemContext` holds the stored stack to
+ * `PROBLEM_CONTEXT_VALUE_MAX_BYTES`, four times below this ceiling, so a message
+ * long enough to reach the cut had already crowded the frames out by bytes.
  */
 function boundStack(stack: string): string {
-  const lines = stack.split('\n');
-  if (lines.length <= MAX_STACK_FRAMES) return stack;
+  const lines = stack.split('\n', MAX_STACK_FRAMES + 1).map(boundScrubInput);
+  if (lines.length <= MAX_STACK_FRAMES) return lines.join('\n');
   return `${lines.slice(0, MAX_STACK_FRAMES).join('\n')}\n…`;
 }
 

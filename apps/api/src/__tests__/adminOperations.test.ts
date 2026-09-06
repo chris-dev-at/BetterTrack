@@ -10,6 +10,7 @@ import {
 
 import { createDeadLetter, DEAD_LETTER_KEY, QUEUE_NAMES, type QueueRegistry } from '../jobs';
 import { JOB_FAILURE_PAGE_SIZE, readJobOps, summaryOf } from '../services/ops/jobOpsService';
+import { scrubOpsError } from '../services/ops/opsText';
 import { readProviderOps } from '../services/ops/providerOpsService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -31,7 +32,15 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
  */
 const PAYLOAD_MARKER = 'DEAD-LETTER-PAYLOAD-MUST-NOT-LEAK';
 
-/** Wall-clock ceiling for one full-page dead-letter read (#1853, see its test). */
+/**
+ * Wall-clock ceilings for one full-page dead-letter read (#1853, see its test).
+ *
+ * The tight one is the assertion that matters: scrubbing a full page of hostile
+ * `failedReason`s, with no I/O in it. It used to cost ~2.9 s PER ROW, so ~71 s
+ * a page. The loose one covers the whole read, whose LLRANGE + `JSON.parse` of
+ * ~7.5 MB dominate it and have nothing to do with this fix.
+ */
+const SCRUB_PAGE_BUDGET_MS = 100;
 const READ_JOB_OPS_BUDGET_MS = 500;
 
 let harness: TestHarness;
@@ -274,19 +283,34 @@ describe('GET /admin/ops/jobs — the §9 dead-letter list finally has a reader 
    * event loop: ~71 s of blocked loop per page load, stalling every user's
    * request and making the incident worse the more it was looked at (#1853).
    *
-   * The budget is generous because the read also LLRANGEs and JSON-parses
-   * ~7.5 MB before any scrubbing happens (~13 ms here, all told); it is still
-   * more than two orders of magnitude below what the scan alone used to cost.
+   * Timed in TWO parts on purpose. An end-to-end budget would be mostly the
+   * read's own LLRANGE + `JSON.parse` of ~7.5 MB, which is neither what this
+   * pins nor stable on a loaded runner; so the scrub cost is measured on its
+   * own over the same page of strings, tightly, and the read itself is only
+   * held to a loose ceiling that says the page still comes back at all.
+   *
+   * The hostile string carries BOTH shapes that made the scan quadratic: a
+   * keyword-dense blob (the rule this replaced, ~2.9 s at a quarter-MB) and a
+   * run of unterminated `?`-separated parameters (the rewrite that replaced it,
+   * ~7.5 s at 300 KB). Neither has a `&`, whitespace or a quote to stop a value
+   * early — that absence is what the quadratic shapes need.
    */
   it('projects a full page of 300 KB failure reasons without blocking the loop', async () => {
-    const hostile = `?${'{"apikey":"a","signature":"b"},'.repeat(10_000)}`;
+    const hostile = `?${'{"apikey":"a","signature":"b"},'.repeat(5_000)}${'?a='.repeat(50_000)}`;
     expect(hostile.length).toBeGreaterThan(300_000);
-    for (let i = 0; i < JOB_FAILURE_PAGE_SIZE; i += 1) {
-      await seedDeadLetter({
-        jobId: `job-${i}`,
-        failedReason: `dispatch failed: ?apikey=SUPERSECRET ${hostile}`,
-      });
+    const reasons = Array.from(
+      { length: JOB_FAILURE_PAGE_SIZE },
+      () => `dispatch failed: ?apikey=SUPERSECRET ${hostile}`,
+    );
+    for (const [i, failedReason] of reasons.entries()) {
+      await seedDeadLetter({ jobId: `job-${i}`, failedReason });
     }
+
+    // The work the fix is about, isolated from the read's I/O and parsing.
+    const scrubStarted = performance.now();
+    const scrubbed = reasons.map(scrubOpsError);
+    const scrubElapsed = performance.now() - scrubStarted;
+    expect(scrubElapsed).toBeLessThan(SCRUB_PAGE_BUDGET_MS);
 
     const started = performance.now();
     const body = await readJobOps({ queues: null, redis: harness.ctx.redis });
@@ -300,6 +324,8 @@ describe('GET /admin/ops/jobs — the §9 dead-letter list finally has a reader 
       expect(failure.failedReason).toContain('?apikey=');
       expect(failure.failedReason).not.toContain('SUPERSECRET');
       expect(failure.failedReason.length).toBeLessThanOrEqual(ADMIN_OPS_ERROR_MAX_LENGTH);
+      // Same string, same treatment, whichever of the two timed paths read it.
+      expect(scrubbed).toContain(failure.failedReason);
     }
   });
 

@@ -97,13 +97,25 @@ const EMAIL_RE = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\
 // which the ops cockpit then paid up to 25 times per admin page load (#1853) —
 // the same O(n²) shape `EMAIL_RE` above was already given a guard for.
 //
-// Below, both runs exclude the character that must follow them (`=` for the
-// name, `&`/whitespace/quotes for the value), so each has exactly ONE possible
-// end and nothing backtracks. The accepted language is unchanged: "a `?`/`&`
-// parameter whose name contains a credential word" is now decided by testing
-// the matched name, which is a plain scan of a short string.
-const QUERY_PARAM_RE = /([?&])([^?&=\s]*)=([^&\s"'<>]*)/g;
+// Below, both runs exclude every character that can END them (`=` and the
+// parameter separators for the name; the separators and quotes for the value),
+// so each has exactly ONE possible end and nothing backtracks. The accepted
+// language is unchanged: "a `?`/`&` parameter whose name contains a credential
+// word" is now decided by testing the matched name, which is a plain scan of a
+// short string.
+//
+// The VALUE class stops at `?` as well as at `&`, which is what keeps the walk
+// SINGLE-PASS. A value allowed to span the next `?` is scanned once by the
+// match and then again by the match that follows it, which is quadratic on a
+// run of `?`-separated parameters — `'?a='.repeat(100_000)` cost ~7.5 s that
+// way, the same stall in a new shape. A secret's value must still run to the
+// `&`, so {@link redactQuerySecrets} extends it forward by hand, once, and
+// resumes past it: the redacted span is never re-read either.
+const QUERY_PARAM_RE = /([?&])([^?&=\s]*)=([^?&\s"'<>]*)/g;
 const SECRET_PARAM_NAME_RE = /key|token|secret|password|passwd|pwd|auth|credential|signature|sig/i;
+
+/** Characters that terminate a query VALUE — the complement of its full class. */
+const QUERY_VALUE_STOP: ReadonlySet<string> = new Set([...'&"\'<>', ...' \t\n\r\f\v']);
 
 /**
  * Replace the VALUE of every credential-named query parameter, keeping the name.
@@ -111,9 +123,13 @@ const SECRET_PARAM_NAME_RE = /key|token|secret|password|passwd|pwd|auth|credenti
  * Hand-rolled rather than a `.replace` because a non-secret parameter must not
  * consume its own value: the one-pattern form never matched `?foo=…` at all, so
  * a credential parameter sitting inside that value (`?foo=1?apikey=…`) was
- * still found, and swallowing it here would be a silent under-redaction. On a
- * non-secret name the scan resumes just past its `=` — still forward progress,
- * so the walk stays linear.
+ * still found, and swallowing it here would be a silent under-redaction. The
+ * forward walk finds it on its own now, because a non-secret value stops at the
+ * `?` that introduces it — no rewind, and so no character is examined twice.
+ *
+ * Every iteration moves `lastIndex` strictly forward (a match is at least
+ * `[?&]` + `=`) and never back, so the whole function is one left-to-right pass
+ * over the string whatever it contains.
  */
 function redactQuerySecrets(value: string): string {
   QUERY_PARAM_RE.lastIndex = 0;
@@ -121,13 +137,20 @@ function redactQuerySecrets(value: string): string {
   let copied = 0;
   let match: RegExpExecArray | null;
   while ((match = QUERY_PARAM_RE.exec(value)) !== null) {
-    const [whole, lead = '', name = ''] = match;
-    if (!SECRET_PARAM_NAME_RE.test(name)) {
-      QUERY_PARAM_RE.lastIndex = match.index + lead.length + name.length + 1;
-      continue;
-    }
+    const [, lead = '', name = ''] = match;
+    // Not a credential: leave it, and resume where its own value ended — which
+    // is at the next `?`/`&` at the latest, so the parameter after it is the
+    // next thing the walk looks at.
+    if (!SECRET_PARAM_NAME_RE.test(name)) continue;
+    // A credential's value runs to the `&`/whitespace/quote, `?` included, so
+    // `?apikey=abc?def` still goes whole. Walked here rather than in the
+    // pattern because only the secret branch pays for it, and it is paid once:
+    // the scan resumes at `end`.
+    let end = match.index + lead.length + name.length + 1;
+    while (end < value.length && !QUERY_VALUE_STOP.has(value[end]!)) end += 1;
     out += `${value.slice(copied, match.index)}${lead}${name}=${REDACTED_TOKEN}`;
-    copied = match.index + whole.length;
+    copied = end;
+    QUERY_PARAM_RE.lastIndex = end;
   }
   return copied === 0 ? value : out + value.slice(copied);
 }
@@ -228,11 +251,24 @@ const SCRUB_CUT_BACKOFF_CHARS = 512;
  * with it and what stays is still scrubbed in full.
  *
  * If a single unbroken run is longer than the backoff window the cut lands
- * inside it. What survives is then a run PREFIX, and every credential shape we
- * know is matched from its left edge — `btk_…`, `Bearer …` and a query value
- * whose `name=` is retained all still fall to the rules. The callers' own caps
- * (300 and 2 000 chars) also sit an order of magnitude below this bound, so the
- * region around the cut is discarded before anything renders it.
+ * inside it. What survives is then a run PREFIX, and the credential shapes are
+ * matched from their left edge — `btk_…`, `Bearer …` and a query value whose
+ * `name=` is retained all still fall to the rules on a prefix alone.
+ *
+ * `EMAIL_RE` is the exception, and the one residual risk here: it needs a
+ * `.tld` to its RIGHT, so a cut landing inside a long domain with no separator
+ * within the backoff window leaves `alice@partialdomain` unredacted. Do not
+ * reason about that as "the callers' caps discard the region around the cut" —
+ * they do not reliably: redaction SHRINKS what it keeps (`?apikey=` plus 15 900
+ * chars of value collapses to 24), so material from raw offset ~16 000 can land
+ * well inside a stored 2 000-char message. It stays a bound rather than a rule
+ * because reaching it takes a purpose-built string: an address whose domain runs
+ * past the backoff window, positioned exactly on the cut.
+ *
+ * The same shrink is why this bound can now drop diagnostic tail text a caller
+ * would have kept — `Error: … ?apikey=<20 KB> ECONNRESET after 3 attempts` no
+ * longer stores the `ECONNRESET` clause. Accepted: the alternative is reading
+ * an unbounded upstream blob on the API's single event loop.
  */
 export function boundScrubInput(value: string): string {
   if (value.length <= SCRUB_INPUT_MAX_CHARS) return value;
