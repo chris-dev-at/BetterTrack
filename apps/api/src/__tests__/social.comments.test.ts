@@ -883,7 +883,10 @@ describe('moderation removes the content, not just the row (§13.5 V5-P8, #1780)
     await putAudience(aliceAgent, pid, { audience: 'all_friends' });
     const commentId = (await postComment(bobAgent, pid, 'metered')).body.id as string;
 
-    const keys = progressiveKeys('social', limiterKeyForUser(bob.id));
+    // `social_write` since #1855, not `social`: moderating your own item is
+    // ordinary interaction and must not spend the anti-probing budget that
+    // exists to make bulk email→username guessing expensive (§10).
+    const keys = progressiveKeys('social_write', limiterKeyForUser(bob.id));
     const before = Number((await harness.ctx.redis.get(keys.count)) ?? 0);
     expect(
       (
@@ -894,5 +897,9 @@ describe('moderation removes the content, not just the row (§13.5 V5-P8, #1780)
       ).status,
     ).toBe(204);
     expect(Number((await harness.ctx.redis.get(keys.count)) ?? 0)).toBe(before + 1);
+    // …and the anti-probing bucket saw none of it.
+    expect(
+      await harness.ctx.redis.get(progressiveKeys('social', limiterKeyForUser(bob.id)).count),
+    ).toBeNull();
   });
 });

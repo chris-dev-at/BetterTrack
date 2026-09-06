@@ -161,6 +161,11 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // Named circles usable as a `group` sharing audience. Every endpoint is
   // owner-scoped: a group is private to its owner, so a foreign/unknown group
   // 404s (no leak). Only accepted friends can be added.
+  //
+  // The writes meter on `socialWrite`, NOT on the anti-probing `social` bucket
+  // (#1855): there is no bulk add endpoint, so the contract's 200-member ceiling
+  // is only reachable one request at a time and 30/hour made it a ~7-hour click
+  // marathon that also spent the friend-request budget.
 
   // GET /social/groups — the caller's own groups, each with its live roster.
   // Cost-metered (§10 COST TABLE, #1780): one request hydrates EVERY circle of
@@ -175,7 +180,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // POST /social/groups — create an empty named group.
   router.post(
     '/groups',
-    limiters.social,
+    limiters.socialWrite,
     validateBody(createFriendGroupRequestSchema),
     async (req, res) => {
       const { name } = req.valid?.body as CreateFriendGroupRequest;
@@ -187,7 +192,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // PATCH /social/groups/:groupId — rename a group. 404 when not the caller's.
   router.patch(
     '/groups/:groupId',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(groupIdParamSchema),
     validateBody(renameFriendGroupRequestSchema),
     async (req, res) => {
@@ -202,7 +207,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // resolve to nobody (fail-closed, §6.9). 404 when not the caller's.
   router.delete(
     '/groups/:groupId',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(groupIdParamSchema),
     async (req, res) => {
       const { groupId } = req.valid?.params as GroupIdParam;
@@ -215,7 +220,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // 404 when the group isn't the caller's; 400 when the user isn't their friend.
   router.post(
     '/groups/:groupId/members',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(groupIdParamSchema),
     validateBody(addGroupMemberRequestSchema),
     async (req, res) => {
@@ -229,7 +234,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // DELETE /social/groups/:groupId/members/:userId — remove a member.
   router.delete(
     '/groups/:groupId/members/:userId',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(groupMemberParamSchema),
     async (req, res) => {
       const { groupId, userId } = req.valid?.params as GroupMemberParam;
@@ -387,8 +392,14 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // PUT /social/audience/:kind/:subjectId — set a subject's audience. `public_link`
   // is rejected without an explicit acknowledgment (§16); minting one returns the
   // raw token EXACTLY ONCE (hash-only storage, §14).
+  // Cost-metered (§10 COST TABLE, #1855): this is the largest per-request fan-out
+  // of any social write — the owner's whole friendship set, a group roster of up
+  // to 200, a paranoid transition lock across the derived recipient set and one
+  // notification emit each. It shipped metered by nothing but `general`, so a
+  // replay loop could drive that fan-out at 600 req/min.
   router.put(
     '/audience/:kind/:subjectId',
+    limiters.cost('socialAudienceSet'),
     validateParams(audienceParamSchema),
     validateBody(setAudienceRequestSchema),
     async (req, res) => {
@@ -420,6 +431,11 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // 404s exactly like a non-existent one (no enumeration). All sit behind
   // `requireUser`, and the non-owner path needs a friendship, so a public-link
   // (logged-out) visitor never reaches them — public links stay read-only (§16).
+  //
+  // The writes meter on `socialWrite` (#1855). Toggling the six item chips and
+  // the six on each comment, or moderating a spam flood off your own item, is
+  // ordinary interaction: it must not spend the anti-probing budget that exists
+  // to make bulk email→username guessing expensive.
 
   // GET /social/items/:kind/:subjectId/thread — ONE bounded page of the item's
   // comment thread + item-level reactions (newest page by default; `?cursor=`
@@ -428,8 +444,9 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // one request resolves access twice, probes the thread's participants, reads a
   // page and aggregates its comment AND item reactions — and `CommentThread.tsx`
   // polls it every 30 s for as long as a thread stays expanded, which is the one
-  // social read that repeats by itself. `general`'s request counter cannot see
-  // any of that.
+  // social read that repeats by itself — one NEWEST-WINDOW read per tick since
+  // #1855, however far back the reader has paged. `general`'s request counter
+  // cannot see any of that.
   router.get(
     '/items/:kind/:subjectId/thread',
     limiters.cost('socialThread'),
@@ -446,8 +463,14 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // GET /social/items/:kind/:subjectId/thread/summary — the collapsed head: the
   // live comment count + item reactions, no bodies. The SPA reads this while the
   // comments section is collapsed, so a long thread costs nothing until opened.
+  // Metered on its SIBLING'S key (#1855): it runs the identical access
+  // resolution — subject owner + vault probe, two `resolveAccess` calls, the
+  // restricted-scope question and a `FOR KEY SHARE` transaction — and skips only
+  // the page fetch. That is the same work class, so it carries the same weight
+  // rather than riding `general` alone.
   router.get(
     '/items/:kind/:subjectId/thread/summary',
+    limiters.cost('socialThread'),
     validateParams(audienceParamSchema),
     async (req, res) => {
       const { kind, subjectId } = req.valid?.params as AudienceParam;
@@ -459,7 +482,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // POST /social/items/:kind/:subjectId/comments — post one comment (audience-scoped).
   router.post(
     '/items/:kind/:subjectId/comments',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(audienceParamSchema),
     validateBody(createCommentRequestSchema),
     async (req, res) => {
@@ -473,7 +496,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // POST /social/items/:kind/:subjectId/reactions — toggle a curated emoji on the item.
   router.post(
     '/items/:kind/:subjectId/reactions',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(audienceParamSchema),
     validateBody(toggleReactionRequestSchema),
     async (req, res) => {
@@ -493,7 +516,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // the item owner moderating any comment; nobody else (404, never 403).
   router.delete(
     '/comments/:commentId',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(commentIdParamSchema),
     async (req, res) => {
       const { commentId } = req.valid?.params as CommentIdParam;
@@ -505,7 +528,7 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // POST /social/comments/:commentId/reactions — toggle a curated emoji on a comment.
   router.post(
     '/comments/:commentId/reactions',
-    limiters.social,
+    limiters.socialWrite,
     validateParams(commentIdParamSchema),
     validateBody(toggleReactionRequestSchema),
     async (req, res) => {

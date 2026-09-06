@@ -37,6 +37,7 @@ const ctx = (overrides: { general?: ProgressiveSchedule } = {}): AppContext => {
       },
       search: base,
       social: base,
+      socialWrite: base,
       feedback: base,
       feedbackThread: base,
       vault: base,
