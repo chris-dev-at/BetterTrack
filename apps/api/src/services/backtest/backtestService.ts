@@ -299,17 +299,39 @@ export interface BacktestService {
  * modes or frequencies never collide. The base currency is part of the
  * identity (V3-P10d): the same basket backtested in USD is a different result,
  * not a different rendering.
+ *
+ * A CONGLOMERATE benchmark is **content-addressed**, like every series of the
+ * comparison key (#1849). `input.benchmark` alone is `{ conglomerateId }`, and a
+ * conglomerate id is a mutable handle: keying by it served the pre-edit overlay
+ * — curve, stats and `unresolvedPct` — for the memo's full hour after the
+ * benchmark basket was edited, and, worse, after an edit to one of its NESTED
+ * CHILDREN, whose id never appears in the request at all. Nothing purges this
+ * memo on a conglomerate write (the only purge is the per-user paranoid
+ * transition), so `scope.benchmarkComposition` carries the benchmark's name, its
+ * fully *resolved* asset/weight vector and its unresolved share: an edit that
+ * changes what the benchmark IS lands on a different key and recomputes, while
+ * an edit that changes nothing observable still hits the memo. An asset or
+ * preset benchmark needs none of this — both are immutable handles.
  */
 export function backtestPreviewCacheKey(
   userId: string,
   input: BacktestPreviewInput,
   baseCurrency: string,
-  scope?: { globalOnly?: boolean },
+  scope?: { globalOnly?: boolean; benchmarkComposition?: ConglomerateComposition | null },
 ): string {
+  const composition = scope?.benchmarkComposition;
   const canonical = JSON.stringify({
     positions: input.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
     range: input.range,
     benchmark: input.benchmark ?? null,
+    benchmarkComposition: composition
+      ? {
+          id: composition.id,
+          name: composition.name,
+          positions: composition.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
+          unresolvedPct: composition.unresolvedPct,
+        }
+      : null,
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
     baseCurrency,
@@ -651,8 +673,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     conglomerateId: string,
     providerRange: HistoryRange,
     globalOnly = false,
+    /** Already resolved by the caller (the preview, which needs it for the memo key). */
+    precomputed?: ConglomerateComposition,
   ): Promise<ResolvedConglomerateBasket> {
-    const composition = await resolveConglomerateComposition(userId, conglomerateId, globalOnly);
+    const composition =
+      precomputed ?? (await resolveConglomerateComposition(userId, conglomerateId, globalOnly));
     return (await loadCompositionAssets(userId, [composition], providerRange, globalOnly))[0]!;
   }
 
@@ -672,6 +697,8 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     choice: BacktestBenchmarkInput,
     providerRange: HistoryRange,
     globalOnly = false,
+    /** The conglomerate branch's composition when the caller already resolved it. */
+    precomputed?: ConglomerateComposition | null,
   ): Promise<ResolvedBenchmark> {
     if ('conglomerateId' in choice) {
       const basket = await resolveConglomerateBasket(
@@ -679,6 +706,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         choice.conglomerateId,
         providerRange,
         globalOnly,
+        precomputed ?? undefined,
       );
       return {
         kind: 'conglomerate',
@@ -751,7 +779,19 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         opts?.baseCurrency === undefined
           ? currencyService
           : currencyService.withBase(opts.baseCurrency);
-      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency, { globalOnly });
+      // WHAT a conglomerate benchmark is, resolved BEFORE the memo is consulted
+      // (#1849) — database only, no provider I/O and no engine, exactly as the
+      // comparison path resolves its series. It addresses the key, so an edit to
+      // the benchmark basket (or to one of its nested children, whose id is not
+      // in the request) can no longer be answered from the pre-edit overlay.
+      const benchmarkComposition =
+        input.benchmark && 'conglomerateId' in input.benchmark
+          ? await resolveConglomerateComposition(userId, input.benchmark.conglomerateId, globalOnly)
+          : null;
+      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency, {
+        globalOnly,
+        benchmarkComposition,
+      });
       const cached = await redis.get(key);
       if (cached) {
         try {
@@ -778,8 +818,16 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // 2. Optional benchmark (V4-P7): resolve the choice — preset, catalog
       //    asset, or one of the caller's own conglomerates — into a second
       //    basket that will run through the same engine below.
+      //    The conglomerate branch reuses the composition already resolved for
+      //    the memo key above rather than flattening the basket twice.
       const resolvedBenchmark = input.benchmark
-        ? await resolveBenchmark(userId, input.benchmark, providerRange, globalOnly)
+        ? await resolveBenchmark(
+            userId,
+            input.benchmark,
+            providerRange,
+            globalOnly,
+            benchmarkComposition,
+          )
         : null;
 
       // 3. Requested window. The end is today; a finite range starts N years back

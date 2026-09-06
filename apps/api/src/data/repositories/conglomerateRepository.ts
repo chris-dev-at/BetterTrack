@@ -93,6 +93,118 @@ export interface NestingEdgeRow {
  */
 type Executor = Pick<Database, 'select'>;
 
+/**
+ * A single Conglomerate with its ordered constituents, read through `exec` —
+ * the database or an open transaction. Owner-scoped (§8): an unknown id, or one
+ * belonging to another user, is null.
+ *
+ * Parameterised over the executor for the same reason {@link selectNestingEdges}
+ * is: the activation gate re-runs INSIDE the status write's transaction
+ * (#1849), where it must observe a concurrent writer's committed positions
+ * rather than the snapshot the service read before taking the locks.
+ */
+async function selectDetailForOwner(
+  exec: Executor,
+  ownerId: string,
+  id: string,
+  options?: { globalAssetMetadataOnly?: boolean },
+): Promise<ConglomerateDetailRow | null> {
+  const headRows = await exec
+    .select({
+      id: conglomerates.id,
+      name: conglomerates.name,
+      description: conglomerates.description,
+      status: conglomerates.status,
+      visibility: conglomerates.visibility,
+      createdAt: conglomerates.createdAt,
+      updatedAt: conglomerates.updatedAt,
+    })
+    .from(conglomerates)
+    .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)))
+    .limit(1);
+  const head = headRows[0];
+  if (!head) return null;
+
+  const posRows = await exec
+    .select({
+      assetId: conglomeratePositions.assetId,
+      childId: conglomeratePositions.childConglomerateId,
+      weightPct: conglomeratePositions.weightPct,
+      sortOrder: conglomeratePositions.sortOrder,
+      symbol: assets.symbol,
+      name: assets.name,
+      currency: assets.currency,
+      type: assets.type,
+    })
+    .from(conglomeratePositions)
+    .leftJoin(
+      assets,
+      and(
+        eq(conglomeratePositions.assetId, assets.id),
+        options?.globalAssetMetadataOnly ? isNull(assets.ownerId) : undefined,
+      ),
+    )
+    .where(eq(conglomeratePositions.conglomerateId, id))
+    .orderBy(asc(conglomeratePositions.sortOrder));
+
+  // Child (nested-conglomerate) identity for the V5-P6 rows: name/status +
+  // own position count, fetched in one grouped query. Children are always
+  // the same owner's (write-time rule), so no extra owner filter is needed.
+  const childIds = posRows.flatMap((r) => (r.childId !== null ? [r.childId] : []));
+  const childById = new Map<
+    string,
+    { id: string; name: string; status: ConglomerateStatus; positionCount: number }
+  >();
+  if (childIds.length > 0) {
+    const childRows = await exec
+      .select({
+        id: conglomerates.id,
+        name: conglomerates.name,
+        status: conglomerates.status,
+        positionCount: sql<number>`count(${conglomeratePositions.id})`.mapWith(Number),
+      })
+      .from(conglomerates)
+      .leftJoin(conglomeratePositions, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+      .where(inArray(conglomerates.id, childIds))
+      .groupBy(conglomerates.id);
+    for (const c of childRows) childById.set(c.id, c);
+  }
+
+  const positions: ConglomerateConstituentRow[] = [];
+  for (const r of posRows) {
+    if (r.childId !== null) {
+      const child = childById.get(r.childId);
+      if (!child) continue; // FK-guaranteed; defensive only.
+      positions.push({
+        kind: 'conglomerate',
+        childId: r.childId,
+        weightPct: Number(r.weightPct),
+        sortOrder: r.sortOrder,
+        child,
+      });
+    } else if (r.assetId !== null) {
+      positions.push({
+        kind: 'asset',
+        assetId: r.assetId,
+        weightPct: Number(r.weightPct),
+        sortOrder: r.sortOrder,
+        asset: {
+          // Structure-only paranoid backtests deliberately retain the id/
+          // weight edge while refusing to select custom-asset metadata.
+          // The global-only asset lookup then turns that edge into the
+          // established opaque ASSET_NOT_FOUND before provider history.
+          symbol: r.symbol ?? '',
+          name: r.name ?? r.symbol ?? '',
+          currency: r.currency ?? 'EUR',
+          type: r.type ?? 'stock',
+        },
+      });
+    }
+  }
+
+  return { ...head, positionCount: positions.length, positions };
+}
+
 async function selectNestingEdges(exec: Executor, ownerId: string): Promise<NestingEdgeRow[]> {
   const rows = await exec
     .select({
@@ -162,103 +274,7 @@ export function createConglomerateRepository(db: Database) {
       id: string,
       options?: { globalAssetMetadataOnly?: boolean },
     ): Promise<ConglomerateDetailRow | null> {
-      const headRows = await db
-        .select({
-          id: conglomerates.id,
-          name: conglomerates.name,
-          description: conglomerates.description,
-          status: conglomerates.status,
-          visibility: conglomerates.visibility,
-          createdAt: conglomerates.createdAt,
-          updatedAt: conglomerates.updatedAt,
-        })
-        .from(conglomerates)
-        .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)))
-        .limit(1);
-      const head = headRows[0];
-      if (!head) return null;
-
-      const posRows = await db
-        .select({
-          assetId: conglomeratePositions.assetId,
-          childId: conglomeratePositions.childConglomerateId,
-          weightPct: conglomeratePositions.weightPct,
-          sortOrder: conglomeratePositions.sortOrder,
-          symbol: assets.symbol,
-          name: assets.name,
-          currency: assets.currency,
-          type: assets.type,
-        })
-        .from(conglomeratePositions)
-        .leftJoin(
-          assets,
-          and(
-            eq(conglomeratePositions.assetId, assets.id),
-            options?.globalAssetMetadataOnly ? isNull(assets.ownerId) : undefined,
-          ),
-        )
-        .where(eq(conglomeratePositions.conglomerateId, id))
-        .orderBy(asc(conglomeratePositions.sortOrder));
-
-      // Child (nested-conglomerate) identity for the V5-P6 rows: name/status +
-      // own position count, fetched in one grouped query. Children are always
-      // the same owner's (write-time rule), so no extra owner filter is needed.
-      const childIds = posRows.flatMap((r) => (r.childId !== null ? [r.childId] : []));
-      const childById = new Map<
-        string,
-        { id: string; name: string; status: ConglomerateStatus; positionCount: number }
-      >();
-      if (childIds.length > 0) {
-        const childRows = await db
-          .select({
-            id: conglomerates.id,
-            name: conglomerates.name,
-            status: conglomerates.status,
-            positionCount: sql<number>`count(${conglomeratePositions.id})`.mapWith(Number),
-          })
-          .from(conglomerates)
-          .leftJoin(
-            conglomeratePositions,
-            eq(conglomeratePositions.conglomerateId, conglomerates.id),
-          )
-          .where(inArray(conglomerates.id, childIds))
-          .groupBy(conglomerates.id);
-        for (const c of childRows) childById.set(c.id, c);
-      }
-
-      const positions: ConglomerateConstituentRow[] = [];
-      for (const r of posRows) {
-        if (r.childId !== null) {
-          const child = childById.get(r.childId);
-          if (!child) continue; // FK-guaranteed; defensive only.
-          positions.push({
-            kind: 'conglomerate',
-            childId: r.childId,
-            weightPct: Number(r.weightPct),
-            sortOrder: r.sortOrder,
-            child,
-          });
-        } else if (r.assetId !== null) {
-          positions.push({
-            kind: 'asset',
-            assetId: r.assetId,
-            weightPct: Number(r.weightPct),
-            sortOrder: r.sortOrder,
-            asset: {
-              // Structure-only paranoid backtests deliberately retain the id/
-              // weight edge while refusing to select custom-asset metadata.
-              // The global-only asset lookup then turns that edge into the
-              // established opaque ASSET_NOT_FOUND before provider history.
-              symbol: r.symbol ?? '',
-              name: r.name ?? r.symbol ?? '',
-              currency: r.currency ?? 'EUR',
-              type: r.type ?? 'stock',
-            },
-          });
-        }
-      }
-
-      return { ...head, positionCount: positions.length, positions };
+      return selectDetailForOwner(db, ownerId, id, options);
     },
 
     /** Create a new `draft` owned by the caller. Throws on a duplicate name. */
@@ -502,6 +518,68 @@ export function createConglomerateRepository(db: Database) {
           .update(conglomerates)
           .set({ updatedAt: new Date() })
           .where(eq(conglomerates.id, id));
+        return true;
+      });
+    },
+
+    /**
+     * Flip status under the owner's row locks, re-running the caller's gate
+     * against the rows visible INSIDE the transaction (#1849). The activation
+     * counterpart of {@link replacePositions}'s `verifyNesting`, and it uses the
+     * very same primitive: the owner's `conglomerates` rows are locked
+     * `FOR UPDATE` in id order (one order for every writer, so no deadlock), the
+     * gate re-reads through the transaction, and throwing rolls the status write
+     * back.
+     *
+     * That closes the activation race in both directions, because every position
+     * write bumps its basket's `conglomerates.updated_at` and therefore contends
+     * for these same row locks:
+     *  - a child edit that COMMITS first is visible to the re-check, which
+     *    refuses — the basket stays `draft`;
+     *  - a child edit that arrives while this transaction holds the locks blocks
+     *    until it commits, then runs its own post-write revalidation sweep
+     *    against a parent that is now `active` — and demotes it.
+     *
+     * Previously the gate ran on an unguarded read and the status was written
+     * with a bare `UPDATE`, so an interleaved `PUT /:id/positions` emptying a
+     * child slipped between the two: its sweep skipped the still-`draft` parent
+     * and the parent then landed `active` with 40 % of it resolving to nothing.
+     */
+    async setStatusVerified(
+      ownerId: string,
+      id: string,
+      status: ConglomerateStatus,
+      options: {
+        globalAssetMetadataOnly?: boolean;
+        /** Re-runs the caller's gate over the locked snapshot; throwing rolls back. */
+        verify: (read: (id: string) => Promise<ConglomerateDetailRow | null>) => Promise<void>;
+      },
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        await tx
+          .select({ id: conglomerates.id })
+          .from(conglomerates)
+          .where(eq(conglomerates.ownerId, ownerId))
+          .orderBy(asc(conglomerates.id))
+          .for('update');
+
+        const owned = await tx
+          .select({ id: conglomerates.id })
+          .from(conglomerates)
+          .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)))
+          .limit(1);
+        if (owned.length === 0) return false;
+
+        await options.verify((rowId) =>
+          selectDetailForOwner(tx, ownerId, rowId, {
+            globalAssetMetadataOnly: options.globalAssetMetadataOnly,
+          }),
+        );
+
+        await tx
+          .update(conglomerates)
+          .set({ status, updatedAt: new Date() })
+          .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)));
         return true;
       });
     },
