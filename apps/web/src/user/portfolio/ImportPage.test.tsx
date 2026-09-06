@@ -11,6 +11,7 @@ import { I18nProvider } from '../../i18n';
 
 vi.mock('../../lib/importsApi');
 vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/aiApi');
 // Partial mock ON PURPOSE. Vitest's automock empties exported arrays, which
 // would turn BOTH `CASH_TAGS_QUERY_KEY` and `IMPORT_BROKERS_QUERY_KEY` into
 // `[]` — the two react-query caches would then collide on one key and the tag
@@ -19,6 +20,7 @@ vi.mock('../../lib/cashApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/cashApi')>()),
   listCashTags: vi.fn(),
 }));
+import * as aiApi from '../../lib/aiApi';
 import * as importsApi from '../../lib/importsApi';
 import * as portfolioApi from '../../lib/portfolioApi';
 import * as cashApi from '../../lib/cashApi';
@@ -192,6 +194,22 @@ async function uploadFixtureFile(
   return user;
 }
 
+/** `GET /ai/capability` shapes: the disabled one, and one with budget left. */
+const AI_UNAVAILABLE = {
+  available: false,
+  model: null,
+  dailyCap: 20,
+  used: 0,
+  remaining: 0,
+};
+const AI_AVAILABLE = {
+  available: true,
+  model: 'llama3.1:8b',
+  dailyCap: 20,
+  used: 14,
+  remaining: 6,
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
@@ -201,6 +219,8 @@ beforeEach(() => {
   vi.mocked(importsApi.applyImportBatch).mockResolvedValue(APPLY_RESULT);
   vi.mocked(importsApi.discardImportBatch).mockResolvedValue(undefined);
   vi.mocked(cashApi.listCashTags).mockResolvedValue({ tags: [] });
+  // The default deployment shape: no assistant configured ⇒ nothing AI renders.
+  vi.mocked(aiApi.useAiCapability).mockReturnValue({ data: AI_UNAVAILABLE } as never);
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -257,6 +277,39 @@ describe('ImportPage', () => {
     await waitFor(() => expect(vi.mocked(importsApi.listImportBrokers)).toHaveBeenCalledTimes(2));
     expect(vi.mocked(portfolioApi.listPortfolios)).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('secret')).not.toBeInTheDocument();
+  });
+
+  // The generic staging path spends the caller's SHARED per-user daily AI budget
+  // (§6.18 — one cap per user, not per feature). It used to spend up to four
+  // units per upload with nothing on any of the 148 import strings saying so, so
+  // an insights user could be told they were out of budget for a feature they
+  // never opened. Disclosed as ONE line, before the upload, and only where AI
+  // exists at all.
+  test('discloses the shared daily AI budget on the upload step, with what is left', async () => {
+    vi.mocked(aiApi.useAiCapability).mockReturnValue({ data: AI_AVAILABLE } as never);
+    renderPage();
+
+    expect(
+      await screen.findByText(/draws on the same daily AI budget as the rest of the app/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/6 of 20 left today/i)).toBeInTheDocument();
+  });
+
+  test('discloses the shared daily AI budget in DE', async () => {
+    vi.mocked(aiApi.useAiCapability).mockReturnValue({ data: AI_AVAILABLE } as never);
+    renderPage('de');
+
+    expect(
+      await screen.findByText(/nutzt dasselbe tägliche KI-Kontingent wie der Rest der App/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/heute noch 6 von 20 übrig/i)).toBeInTheDocument();
+  });
+
+  test('says nothing about AI when no assistant is configured', async () => {
+    renderPage(); // beforeEach: capability unavailable
+
+    expect(await screen.findByLabelText('CSV export')).toBeInTheDocument();
+    expect(screen.queryByText(/daily AI budget/i)).not.toBeInTheDocument();
   });
 
   test('uploads the chosen file and renders the preview with per-row flags', async () => {
