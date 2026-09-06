@@ -4,19 +4,43 @@ import { Agent as HttpsAgent } from 'node:https';
 import { request as httpsRequest } from 'node:https';
 import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
+  DEPLOYMENT_SUBNETS_ENV,
   OUTBOUND_URL_BLOCKED,
   UnsafeOutboundUrlError,
   WEBHOOK_RECEIVER_URL_POLICY,
   assertSafeOutboundUrl,
   createPinnedAgent,
+  deploymentNetworkSubnets,
+  deploymentSubnetsFromInterfaces,
+  parseDeploymentSubnets,
   isOutboundPolicyRefusal,
   resolveSafeOutboundUrl,
   type OutboundUrlResolver,
   type ResolvedOutboundUrl,
 } from '../outboundUrlGuard';
+
+/**
+ * Every LAN assertion in this file would otherwise depend on the machine it runs
+ * on: with the variable unset the deployment carve-out is DERIVED from the
+ * host's own private interfaces, so a laptop on `192.168.1.0/24` would refuse
+ * the LAN receiver the next describe insists on. Declaring the deployment
+ * network makes the split explicit — `172.18/16` is ours, everything else is the
+ * operator's.
+ */
+const DEPLOYMENT_SUBNET = '172.18.0.0/16';
+const previousDeploymentSubnets = process.env[DEPLOYMENT_SUBNETS_ENV];
+
+beforeAll(() => {
+  process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+});
+
+afterAll(() => {
+  if (previousDeploymentSubnets === undefined) delete process.env[DEPLOYMENT_SUBNETS_ENV];
+  else process.env[DEPLOYMENT_SUBNETS_ENV] = previousDeploymentSubnets;
+});
 
 const BLOCKED_LITERALS = [
   ['IPv4 loopback', 'https://127.0.0.1/push'],
@@ -201,6 +225,166 @@ describe('outbound URL guard — webhook receiver policy', () => {
     expect(unresolvable).toBeInstanceOf(UnsafeOutboundUrlError);
     expect(isOutboundPolicyRefusal(unresolvable)).toBe(false);
     expect(isOutboundPolicyRefusal(new Error('ENOTFOUND'))).toBe(false);
+  });
+});
+
+/**
+ * The carve-out inside the LAN allowance: the private network THIS deployment's
+ * own services sit on. In the shipped compose topology RFC1918 is not "the
+ * user's home network" at all — it is the bridge `db`, `redis`, `prometheus`,
+ * `grafana` and the exporters share, and they publish no host ports precisely so
+ * nothing outside can reach them.
+ *
+ * These tests are also the pin that keeps the guard's doc comment honest: the
+ * guarantee it now states ("an allowed LAN destination is a host that is NOT part
+ * of this deployment") is asserted here, so comment and code cannot drift apart.
+ */
+describe('outbound URL guard — the deployment’s own service network', () => {
+  const webhookPolicy = { ...WEBHOOK_RECEIVER_URL_POLICY, resolveDns: false } as const;
+
+  it('exposes exactly the declared subnets', () => {
+    expect(deploymentNetworkSubnets()).toEqual([
+      { address: '172.18.0.0', prefix: 16, family: 'ipv4' },
+    ]);
+  });
+
+  it.each([
+    ['a service port on the deployment bridge', 'http://172.18.0.4:5432/hook'],
+    ['the monitoring stack', 'http://172.18.9.9:9090/-/reload'],
+    ['an https spelling of the same host', 'https://172.18.0.4/hook'],
+  ])('refuses %s', async (_label, url) => {
+    await expect(assertSafeOutboundUrl(url, webhookPolicy)).rejects.toMatchObject({
+      code: OUTBOUND_URL_BLOCKED,
+      reason: 'blocked_address',
+    });
+  });
+
+  it('refuses a compose service NAME, which is how a receiver would really be written', async () => {
+    // `http://prometheus:9090/-/reload` is a valid URL whose hostname Docker's
+    // embedded DNS answers with a bridge address.
+    const composeDns: OutboundUrlResolver = async () => [{ address: '172.18.0.7', family: 4 }];
+
+    const error = await assertSafeOutboundUrl('http://prometheus:9090/-/reload', {
+      ...WEBHOOK_RECEIVER_URL_POLICY,
+      resolver: composeDns,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(UnsafeOutboundUrlError);
+    expect(isOutboundPolicyRefusal(error)).toBe(true);
+  });
+
+  it('refuses it for strict callers too, not only under the LAN policy', async () => {
+    await expect(
+      assertSafeOutboundUrl('https://172.18.0.4/hook', { resolveDns: false }),
+    ).rejects.toMatchObject({ code: OUTBOUND_URL_BLOCKED });
+  });
+
+  it.each([
+    ['192.168/16 receiver', 'http://192.168.1.50:9000/hook'],
+    ['10/8 receiver', 'http://10.20.30.40/hook'],
+    // Same /12 as the deployment bridge, different /16: the carve-out is the
+    // deployment's subnet, NOT the RFC1918 block it happens to sit in.
+    ['172.16/12 receiver outside the deployment /16', 'http://172.31.255.254:8080/hook'],
+    ['IPv6 unique-local receiver', 'http://[fd12:3456::1]/hook'],
+  ])('still allows a genuine LAN %s', async (_label, url) => {
+    await expect(assertSafeOutboundUrl(url, webhookPolicy)).resolves.toBeInstanceOf(URL);
+  });
+
+  it('carves out an IPv6 deployment network the same way', async () => {
+    process.env[DEPLOYMENT_SUBNETS_ENV] = `${DEPLOYMENT_SUBNET}, fd00:beef::/64`;
+    try {
+      await expect(
+        assertSafeOutboundUrl('http://[fd00:beef::5]:9090/hook', webhookPolicy),
+      ).rejects.toMatchObject({ code: OUTBOUND_URL_BLOCKED });
+      await expect(
+        assertSafeOutboundUrl('http://[fd12:3456::1]/hook', webhookPolicy),
+      ).resolves.toBeInstanceOf(URL);
+    } finally {
+      process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+    }
+  });
+
+  it('lets a deployment with no internal network say so explicitly', async () => {
+    process.env[DEPLOYMENT_SUBNETS_ENV] = 'none';
+    try {
+      expect(deploymentNetworkSubnets()).toEqual([]);
+      await expect(
+        assertSafeOutboundUrl('http://172.18.0.4:5432/hook', webhookPolicy),
+      ).resolves.toBeInstanceOf(URL);
+    } finally {
+      process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+    }
+  });
+
+  it('treats an EMPTY value as unset, not as "no internal network"', () => {
+    // compose materializes an unset `${VAR:-}` into an empty string; that must
+    // fall back to the derived answer instead of dropping the carve-out.
+    process.env[DEPLOYMENT_SUBNETS_ENV] = '';
+    try {
+      expect(deploymentNetworkSubnets()).toEqual(deploymentSubnetsFromInterfaces());
+    } finally {
+      process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+    }
+  });
+
+  it('derives the network from the container’s own private interfaces', () => {
+    // What `os.networkInterfaces()` looks like inside the api container on the
+    // compose bridge: loopback, the bridge address, and (on a host-network
+    // deployment) a public address that is the internet, not this deployment.
+    const derived = deploymentSubnetsFromInterfaces({
+      lo: [
+        {
+          address: '127.0.0.1',
+          netmask: '255.0.0.0',
+          family: 'IPv4',
+          mac: '00:00:00:00:00:00',
+          internal: true,
+          cidr: '127.0.0.1/8',
+        },
+      ],
+      eth0: [
+        {
+          address: '172.18.0.5',
+          netmask: '255.255.0.0',
+          family: 'IPv4',
+          mac: '02:42:ac:12:00:05',
+          internal: false,
+          cidr: '172.18.0.5/16',
+        },
+        {
+          address: '203.0.113.10',
+          netmask: '255.255.255.0',
+          family: 'IPv4',
+          mac: '02:42:ac:12:00:05',
+          internal: false,
+          cidr: '203.0.113.10/24',
+        },
+      ],
+    });
+
+    expect(derived).toEqual([{ address: '172.18.0.5', prefix: 16, family: 'ipv4' }]);
+  });
+
+  it('parses a subnet list all-or-nothing', () => {
+    expect(parseDeploymentSubnets('172.18.0.0/16, fd00:beef::/64')).toEqual([
+      { address: '172.18.0.0', prefix: 16, family: 'ipv4' },
+      { address: 'fd00:beef::', prefix: 64, family: 'ipv6' },
+    ]);
+    expect(parseDeploymentSubnets('none')).toEqual([]);
+    // A typo must not merely drop that one entry: a dropped entry is a silently
+    // widened allowance, so the whole value is refused.
+    expect(parseDeploymentSubnets('172.18.0.0')).toBeNull();
+    expect(parseDeploymentSubnets('172.18.0.0/16, not-a-cidr/16')).toBeNull();
+    expect(parseDeploymentSubnets('172.18.0.0/64')).toBeNull();
+  });
+
+  it('falls back to the derived network when the value is malformed', () => {
+    process.env[DEPLOYMENT_SUBNETS_ENV] = '172.18.0.0/16, oops';
+    try {
+      expect(deploymentNetworkSubnets()).toEqual(deploymentSubnetsFromInterfaces());
+    } finally {
+      process.env[DEPLOYMENT_SUBNETS_ENV] = DEPLOYMENT_SUBNET;
+    }
   });
 });
 
