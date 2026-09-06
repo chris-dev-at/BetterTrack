@@ -710,6 +710,7 @@ export function deriveOrigins(e: {
 export const REQUEST_COST_KEYS = [
   'socialShared',
   'socialGroups',
+  'socialThread',
   'backtestPreview',
   'backtestCompare',
   'backtestSharedSandbox',
@@ -1220,6 +1221,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // |-------------------------------------------|-----------------|-------|-----|
   // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
   // | GET  /social/groups                       | socialGroups    |    6  | every circle of the caller WITH every circle's roster + share counts — three grouped reads, ceiling-bounded since #1780 |
+  // | GET  /social/items/:kind/:id/thread       | socialThread    |    6  | two access resolutions, a participant probe, a page read and two grouped reaction aggregates — and the SPA POLLS it every 30 s while a thread is open (#1829) |
   // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
   // | POST /backtest/compare                    | backtestCompare |   20  | **per series** — the route multiplies by the body's id count (2–6 ⇒ 40–120): the same history walk as a preview, once per basket, over baskets that each flatten to up to 250 assets |
   // | POST /backtest/shared/:id/preview         | backtestSharedSandbox | 25 | a preview's engine run over a friend's basket, deliberately with NO Redis memo — every request computes |
@@ -1258,14 +1260,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //   * two three-basket comparisons (an explicit action, memoised
   //     across every permutation of one set)                      =  5 × 20 = 100
   //   * a couple of what-if tweaks on a friend's shared basket    =  2 × 25 =  50
+  //   * one expanded comment thread's 30 s poll, plus one opened  =  3 ×  6 =  18
   //
-  //   ⇒ worst realistic 1 min ≈ 1150 units → expensive 3500  (3.0×)
+  //   ⇒ worst realistic 1 min ≈ 1180 units → expensive 3550  (3.0×)
   //
-  // The ceiling cannot simply keep climbing with the table: `importRowResolve`
-  // at 6 units would, past ~3600, let 600+ requests/min through on cost alone —
-  // which is where `general` already sits, and where the cost dimension would
-  // stop being the binding one. A further weight added here has to fit under
-  // that, or move a weight.
+  // The ceiling cannot simply keep climbing with the table: `importRowResolve`,
+  // `socialGroups` and `socialThread` at 6 units would, at 3600, let 600
+  // requests/min through on cost alone — which is where `general` already sits,
+  // and where the cost dimension would stop being the binding one. A further
+  // weight added here has to fit under that, or move a weight.
   //
   // The sweep is a BURST, not a rate: 20 is the bar for a normal statement's
   // undecided rows, and the budget leaves room for ~500 confirmations inside one
@@ -1550,14 +1553,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       //
       // Raised from 3000 with #1755, which brought the two remaining unmetered
       // expensive reads (the N-way comparison and the shared what-if sandbox)
-      // into the table: the modelled pessimistic minute grew with them, and the
-      // budget still clears it by 3×. The ceiling is not free to raise further —
-      // `importRowResolve` at 6 units would otherwise let 600+ requests/min
-      // through on cost alone, which is where the request COUNT limiter already
-      // sits and the cost dimension would stop binding.
+      // into the table; and from 3500 to 3550 with #1829, which added the
+      // comment thread. Each time the modelled pessimistic minute grew and the
+      // budget had to keep clearing it by 3×. The ceiling is nearly spent:
+      // `socialGroups` and `socialThread` at 6 units would, at 3600, let 600
+      // requests/min through on cost alone — which is where the request COUNT
+      // limiter already sits and the cost dimension would stop binding. The next
+      // weight added here has to fit under 3600, or move a weight.
       expensive: {
         windowSec: 60,
-        limit: 3500,
+        limit: 3550,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
@@ -1573,6 +1578,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         // count limiter already does, and the cost dimension would be
         // decorative.
         socialGroups: 6,
+        // The comment thread (#1829). Its per-request work is now BOUNDED — the
+        // page is an index scan, the participant question is one probe against a
+        // partial index — but it is the only social read that repeats on its own:
+        // an expanded thread refetches every 30 s, per open thread. Priced at the
+        // same floor as `socialGroups`, for the same reason: below 6 the unit
+        // budget would allow more requests per minute than `general` already
+        // does, and the weight would be decorative.
+        socialThread: 6,
         backtestPreview: 25,
         // PER SERIES, not per request (#1755): the route multiplies this by the
         // number of conglomerates the body asks to overlay, because that is what

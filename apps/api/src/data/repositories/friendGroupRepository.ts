@@ -1,10 +1,17 @@
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
 import { FRIEND_GROUPS_MAX, FRIEND_GROUP_MEMBERS_MAX } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { friendGroupMembers, friendGroups, friendships, shareAudiences, users } from '../schema';
+import {
+  friendGroupMembers,
+  friendGroups,
+  friendships,
+  portfolios,
+  shareAudiences,
+  users,
+} from '../schema';
 
 /**
  * Friend-group persistence (§13.5 V5-P8). A group is a named circle owned by one
@@ -95,6 +102,26 @@ export function createFriendGroupRepository(db: Database) {
   }
 
   /**
+   * The `group` share rows a member could actually OPEN — the only ones the
+   * delete warning may count (#1830). An archived portfolio keeps its audience
+   * row (`archivePortfolio` never clears it; only deleting does), but
+   * `authorizePortfolioRead` excludes archived portfolios, so that row already
+   * reaches nobody — and `listMyShared` reads with `includeArchived: false`, so
+   * it has no entry in My items either. Counting it would tell the owner "3
+   * shared items point at this group" against two rows they can see: exactly the
+   * blind confirmation #1710 set out to remove. The portfolio arm also drops a
+   * row whose subject no longer exists at all.
+   *
+   * Only `portfolio` has an archived state; the other kinds' rows are cleared
+   * with their subject, so they need no existence test. Vaulted portfolios are
+   * already clean — the move-in deletes their audience rows outright.
+   */
+  const reachableShare = or(
+    ne(shareAudiences.kind, 'portfolio'),
+    sql`exists (select 1 from ${portfolios} where ${portfolios.id} = ${shareAudiences.subjectId} and ${portfolios.archivedAt} is null)`,
+  );
+
+  /**
    * Count of live shares (across all kinds) that currently point at this group —
    * feeds the delete-warning copy so the owner knows how many shares will go
    * dark. Zero when nothing references it.
@@ -103,7 +130,13 @@ export function createFriendGroupRepository(db: Database) {
     const [row] = await db
       .select({ count: sql<number>`count(*)`.mapWith(Number) })
       .from(shareAudiences)
-      .where(and(eq(shareAudiences.audience, 'group'), eq(shareAudiences.groupId, groupId)));
+      .where(
+        and(
+          eq(shareAudiences.audience, 'group'),
+          eq(shareAudiences.groupId, groupId),
+          reachableShare,
+        ),
+      );
     return row?.count ?? 0;
   }
 
@@ -115,7 +148,11 @@ export function createFriendGroupRepository(db: Database) {
       .select({ groupId: shareAudiences.groupId, count: sql<number>`count(*)`.mapWith(Number) })
       .from(shareAudiences)
       .where(
-        and(eq(shareAudiences.audience, 'group'), inArray(shareAudiences.groupId, [...groupIds])),
+        and(
+          eq(shareAudiences.audience, 'group'),
+          inArray(shareAudiences.groupId, [...groupIds]),
+          reachableShare,
+        ),
       )
       .groupBy(shareAudiences.groupId);
     for (const r of rows) if (r.groupId) counts.set(r.groupId, r.count);
@@ -234,8 +271,14 @@ export function createFriendGroupRepository(db: Database) {
     /**
      * How many members one circle already holds — the ceiling check
      * `addGroupMember` runs. Counts the RAW roster rows (no friendship/active
-     * join): the ceiling bounds what is stored, and a row that currently grants
-     * nothing still occupies the circle and still has to be removed by hand.
+     * join): the ceiling bounds what is STORED, which is what makes the roster
+     * read bounded in the first place.
+     *
+     * A raw row that grants nothing is invisible in {@link rostersOf}, so the
+     * owner can neither see nor remove it — the ceiling must therefore never
+     * refuse an add on its behalf. {@link pruneUnreachableMembers} clears those
+     * rows before the refusal is reached (#1830), which keeps this count and the
+     * `memberCount` the owner reads in agreement at the boundary that matters.
      */
     async countMembers(groupId: string): Promise<number> {
       const [row] = await db
@@ -243,6 +286,45 @@ export function createFriendGroupRepository(db: Database) {
         .from(friendGroupMembers)
         .where(eq(friendGroupMembers.groupId, groupId));
       return row?.count ?? 0;
+    },
+
+    /**
+     * Drop every roster row of this group that is NOT part of the live roster —
+     * a member whose account was disabled, or who is no longer the owner's
+     * friend. Such a row grants nothing (every enforcement read ANDs the same
+     * two joins), is absent from `members`, and so has no Remove button: leaving
+     * it in place lets a circle become permanently un-addable-to with the cause
+     * invisible and unclearable (#1830).
+     *
+     * Called from the add path only, and only once the stored ceiling is
+     * reached: reads never write, and a disabled account that comes back is
+     * otherwise left in its circles exactly as before. At the ceiling the
+     * ordering is the honest one — a row the owner cannot see must not outrank a
+     * member they can actually reach. Returns how many rows were dropped, and is
+     * bounded by {@link FRIEND_GROUP_MEMBERS_MAX} rows.
+     *
+     * Self-contained: the friendship side is derived from the group's OWN owner
+     * row, so it cannot prune against the wrong user.
+     */
+    async pruneUnreachableMembers(groupId: string): Promise<number> {
+      const dropped = await db
+        .delete(friendGroupMembers)
+        .where(
+          and(
+            eq(friendGroupMembers.groupId, groupId),
+            sql`not exists (
+              select 1
+              from ${users}
+              join ${friendGroups} on ${friendGroups.id} = ${friendGroupMembers.groupId}
+              join ${friendships}
+                on (${friendships.userA} = ${friendGroups.ownerId} and ${friendships.userB} = ${users.id})
+                or (${friendships.userB} = ${friendGroups.ownerId} and ${friendships.userA} = ${users.id})
+              where ${users.id} = ${friendGroupMembers.memberId} and ${users.status} = 'active'
+            )`,
+          ),
+        )
+        .returning({ memberId: friendGroupMembers.memberId });
+      return dropped.length;
     },
 
     /**

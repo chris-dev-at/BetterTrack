@@ -171,6 +171,7 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
    */
   const COST = {
     socialShared: 10,
+    socialThread: 6,
     analyticsSeries: 10,
     backtestPreview: 25,
     /** Per SERIES — the comparison route multiplies by the body's id count (#1755). */
@@ -178,8 +179,8 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     backtestSharedSandbox: 25,
     importCreate: 100,
   };
-  /** `expensive`: 3500 units / minute (config/env.ts §10 COST TABLE). */
-  const EXPENSIVE_LIMIT = 3500;
+  /** `expensive`: 3550 units / minute (config/env.ts §10 COST TABLE). */
+  const EXPENSIVE_LIMIT = 3550;
   /** A syntactically valid conglomerate id — the sandbox route validates params. */
   const SOME_ID = '018f0000-0000-7000-8000-000000000001';
 
@@ -198,9 +199,11 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
 
     // A pessimistic ordinary minute at these surfaces: the shared-with-me list
     // refetching on focus, an analytics panel being re-filtered, a few debounced
-    // builder previews, one CSV upload, one three-basket comparison and a couple
-    // of what-if tweaks on a friend's shared basket.
+    // builder previews, one CSV upload, one three-basket comparison, a couple
+    // of what-if tweaks on a friend's shared basket, and an expanded comment
+    // thread refetching on its own 30 s poll.
     const SHARED = 6;
+    const THREADS = 3;
     const ANALYTICS = 6;
     const PREVIEWS = 4;
     const IMPORTS = 1;
@@ -209,6 +212,14 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
 
     for (let i = 0; i < SHARED; i += 1) {
       const res = await request(limited.app).get('/api/v1/social/shared').set('Cookie', cookie);
+      expect(res.status).toBe(200);
+    }
+    for (let i = 0; i < THREADS; i += 1) {
+      // The owner's own portfolio: a 200 proves the read ran, and the counter
+      // below proves `limiters.cost('socialThread')` is mounted on it (#1829).
+      const res = await request(limited.app)
+        .get(`/api/v1/social/items/portfolio/${pid}/thread`)
+        .set('Cookie', cookie);
       expect(res.status).toBe(200);
     }
     for (let i = 0; i < ANALYTICS; i += 1) {
@@ -257,12 +268,13 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     // `limiters.cost(...)` and this total falls by that endpoint's units.
     const spent =
       SHARED * COST.socialShared +
+      THREADS * COST.socialThread +
       ANALYTICS * COST.analyticsSeries +
       PREVIEWS * COST.backtestPreview +
       IMPORTS * COST.importCreate +
       COMPARE_SERIES * COST.backtestCompare +
       SANDBOXES * COST.backtestSharedSandbox;
-    expect(spent).toBe(430);
+    expect(spent).toBe(448);
     const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
     expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
 
@@ -275,11 +287,12 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
       expect((await request(limited.app).get(path).set('Cookie', cookie)).status).toBe(200);
     }
     expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
-    // …and that realistic minute still sits at roughly an EIGHTH of the budget,
+    // …and that realistic minute still sits at roughly a SEVENTH of the budget,
     // so the dimension never fires during ordinary use. It was a tenth before
-    // #1755 added two more surfaces to the same pessimistic minute; the ratio
-    // moved because the minute got bigger, not because the ceiling got looser.
-    expect(spent * 8).toBeLessThan(EXPENSIVE_LIMIT);
+    // #1755 added two more surfaces to the same pessimistic minute, and an
+    // eighth before #1829 added the thread; the ratio moves because the minute
+    // gets bigger, not because the ceiling gets looser.
+    expect(spent * 7).toBeLessThan(EXPENSIVE_LIMIT);
     expect(await limited.ctx.redis.get(key.cooldown)).toBeNull();
   }, 120_000);
 
@@ -294,8 +307,9 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
 
     // `limiters.cost('importCreate')` runs BEFORE multer, so a bodyless POST
     // spends its 100 units and is rejected for the missing file without the API
-    // reading an upload: 35 of them exactly exhaust the minute's 3500 units.
-    const drain = EXPENSIVE_LIMIT / COST.importCreate;
+    // reading an upload: 35 of them leave 50 of the minute's 3550 units, which
+    // is less than the 36th costs.
+    const drain = Math.floor(EXPENSIVE_LIMIT / COST.importCreate);
     expect(drain).toBe(35);
     for (let i = 0; i < drain; i += 1) {
       const res = await request(limited.app)

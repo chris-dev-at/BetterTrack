@@ -30,6 +30,7 @@ import type {
 import {
   FRIEND_GROUPS_MAX,
   FRIEND_GROUP_MEMBERS_MAX,
+  FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
   PROFILE_BIO_MAX,
   profileIconIdSchema,
 } from '@bettertrack/contracts';
@@ -236,7 +237,7 @@ const GROUP_LIMIT_REACHED = () =>
 const GROUP_MEMBER_LIMIT_REACHED = () =>
   badRequest(
     `A group can have at most ${FRIEND_GROUP_MEMBERS_MAX} members.`,
-    'FRIEND_GROUP_MEMBER_LIMIT_REACHED',
+    FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
   );
 /**
  * The unfriend transaction rolled back, so NOTHING changed — the friendship and
@@ -786,7 +787,17 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           (await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX &&
           !(await groups.isMember(groupId, memberId))
         ) {
-          throw GROUP_MEMBER_LIMIT_REACHED();
+          // The ceiling counts STORED rows, but the owner only ever sees the
+          // LIVE roster — a row for a disabled or no-longer-friend member is
+          // absent from `members`, so it has no Remove button and the refusal it
+          // causes can neither be explained nor cleared (#1830). Drop those rows
+          // first: what is left blocking the add is then exactly the population
+          // `memberCount` reports and the owner can act on, so the refusal below
+          // names a real, fixable cause.
+          await groups.pruneUnreachableMembers(groupId);
+          if ((await groups.countMembers(groupId)) >= FRIEND_GROUP_MEMBERS_MAX) {
+            throw GROUP_MEMBER_LIMIT_REACHED();
+          }
         }
         await groups.addMember(groupId, memberId);
         return groupOrThrow(userId, groupId);

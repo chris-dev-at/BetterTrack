@@ -4,6 +4,7 @@ import { useId, useMemo, useState, type FormEvent } from 'react';
 import {
   FRIEND_GROUPS_MAX,
   FRIEND_GROUP_MEMBERS_MAX,
+  FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE,
   type FriendGroup,
 } from '@bettertrack/contracts';
 
@@ -16,6 +17,7 @@ import {
   removeGroupMember,
   renameGroup,
 } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { EmptyState } from '../../ui';
 import { Button, Field, Icon, Input, SkeletonBlock } from '../../ui/origin';
@@ -131,6 +133,11 @@ function GroupCard({ group }: { group: FriendGroup }) {
   // The server refuses an add past the roster ceiling; say so before the click
   // rather than turning the ceiling into an opaque "could not update" (#1780).
   const rosterFull = group.memberCount >= FRIEND_GROUP_MEMBERS_MAX;
+  // …and if the refusal still arrives (a circle filled from another tab), it is
+  // the ceiling that says so, not the generic mutate error (#1830).
+  const addMemberLimitHit =
+    addMutation.error instanceof ApiError &&
+    addMutation.error.code === FRIEND_GROUP_MEMBER_LIMIT_ERROR_CODE;
 
   return (
     <li className="bt-panel overflow-hidden">
@@ -255,7 +262,14 @@ function GroupCard({ group }: { group: FriendGroup }) {
           </div>
 
           {addMutation.isError || removeMutation.isError || renameMutation.isError ? (
-            <Alert tone="error">{t('social.groups.mutateError')}</Alert>
+            <Alert tone="error">
+              {/* The one refusal the owner can act on — the circle is full of
+                  members they can see and remove — must name itself rather than
+                  hide inside the generic "could not update" (#1830). */}
+              {addMemberLimitHit
+                ? t('social.groups.memberLimitReached', { count: FRIEND_GROUP_MEMBERS_MAX })
+                : t('social.groups.mutateError')}
+            </Alert>
           ) : null}
 
           <div className="bt-t-rule flex justify-end" style={{ paddingTop: 14 }}>
