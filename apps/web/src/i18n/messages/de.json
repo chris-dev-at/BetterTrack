@@ -5808,6 +5808,25 @@
       },
       "why": "Einen Kurs von Hand zu ändern würde Geldrechnung hinter eine Browser-Sitzung stellen, und Dubletten ohne Herkunft, Probelauf und Rücknahme zusammenzuführen ist eine Änderung, die niemand rückgängig machen kann. Beides braucht zuerst eine Antwort in der Domäne – deshalb liefert dieses Paket das Lesen und hört dort auf."
     },
+    "audit": {
+      "title": "Audit-Protokoll",
+      "subtitle": "Jede administrative und sicherheitsrelevante Aktion.",
+      "loading": "Audit-Protokoll wird geladen …",
+      "empty": "Noch keine Audit-Einträge.",
+      "loadError": "Das Audit-Protokoll konnte nicht geladen werden.",
+      "loadMoreError": "Weitere Audit-Einträge konnten nicht geladen werden.",
+      "loadMore": "Mehr laden",
+      "loadingMore": "Wird geladen …",
+      "actorSystem": "System",
+      "columns": {
+        "when": "Zeitpunkt",
+        "action": "Aktion",
+        "actor": "Akteur",
+        "target": "Ziel",
+        "ip": "IP",
+        "details": "Details"
+      }
+    },
     "pagination": {
       "range": "{{first}}–{{last}} von {{total}}",
       "previous": "Zurück",
