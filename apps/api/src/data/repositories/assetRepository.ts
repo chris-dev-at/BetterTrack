@@ -135,16 +135,22 @@ export type RefreshableAssetField = (typeof REFRESHABLE_ASSET_FIELDS)[number];
  * carries a hand-checked type, exchange and native currency per row, so it may
  * refresh everything. A provider *search* hit is a projection built to fill a
  * picker: `yahooProvider.search` has no currency field to read at all, so
- * `currencyForSearchResult` guesses one from the symbol shape and falls back to
- * `'USD'`, and `mapAssetType` falls back to `'stock'` for an unknown quote type
- * — documented as safe precisely because "an imperfect guess here only affects
- * the picker badge, never a stored amount" (`yahooMapping.ts`). That contract
- * held only while an existing row was write-once. So the enrichment passes the
- * narrow set (`services/search/catalogEnrichment.ts`): `currency` is money —
- * `portfolioService` converts persisted cash movements through it, and tax,
- * snapshots, import validation and paranoid rehydration all read the same
- * column — and stays with the authoritative `getMeta`/`getQuote` +
- * `normalizeCurrency` path.
+ * `currencyForSearchResult` derives one from the symbol shape and otherwise
+ * defaults to `'USD'`, and `mapAssetType` falls back to `'stock'` for an unknown
+ * quote type — documented as safe precisely because "an imperfect guess here
+ * only affects the picker badge, never a stored amount" (`yahooMapping.ts`).
+ * That contract held only while an existing row was write-once. So the
+ * enrichment passes the narrow set (`services/search/catalogEnrichment.ts`):
+ * `currency` is money — `portfolioService` converts persisted cash movements
+ * through it, and tax, snapshots, import validation and paranoid rehydration
+ * all read the same column — so the projection's own currency is never written
+ * over a stored one.
+ *
+ * It is nonetheless refreshABLE, because a wrong denomination has to be
+ * fixable (#1875): the enrichment names `currency` exactly when the value it
+ * passes was re-read from the authoritative `getMeta` + `normalizeCurrency`
+ * path — which it now genuinely calls for a hit the provider flagged as
+ * defaulted, rather than leaving the correction to a caller that never existed.
  *
  * Omitting the option entirely keeps the pre-#1810 behaviour: insert or nothing.
  */
@@ -424,7 +430,7 @@ export function createAssetRepository(db: Database) {
      * -asset update is gated on `owner_id = user AND provider_id = 'manual'` and
      * there is no admin asset editor. So a correction shipped in the curated
      * seed list (a renamed issuer, a re-listed exchange, a wrong `currency` —
-     * which `assetService.getDetail` reads to decide base-currency conversion)
+     * the denomination `portfolioService` books a persisted cash movement in)
      * was a no-op on every existing install, and a name a provider has since
      * fixed stayed frozen at first touch. `name` is the sharpest case: it is
      * what `searchCatalog` both returns AND ranks on, so a stale one makes the
@@ -434,8 +440,9 @@ export function createAssetRepository(db: Database) {
      *  - it happens only for the columns THIS caller named in
      *    {@link UpsertGlobalOptions.refresh}, so a caller whose input is a
      *    best-effort projection cannot overwrite a column it merely guessed —
-     *    the reason `currency` survives a re-enrichment (see
-     *    {@link UpsertGlobalOptions}). No `refresh` at all means insert-or-nothing;
+     *    the reason a re-enrichment writes `currency` only when it re-read one
+     *    authoritatively (see {@link UpsertGlobalOptions}). No `refresh` at all
+     *    means insert-or-nothing;
      *  - it is scoped to `owner_id IS NULL`, so a user's custom asset can never
      *    be overwritten by a global refresh — same boundary as §10 everywhere
      *    else, restated in the WHERE rather than assumed from the unique index;
