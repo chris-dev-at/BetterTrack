@@ -188,6 +188,84 @@ const ENRICH_GUARD_COMPLETE_SCRIPT =
   "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('set', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3])) return 1 else return 0 end";
 
 /**
+ * The two-character folds `bettertrack_search_fold` applies before its
+ * `translate()` — the letters whose ASCII spelling is longer than one character.
+ */
+const FOLD_EXPANSIONS: readonly (readonly [string, string])[] = [
+  ['ß', 'ss'],
+  ['æ', 'ae'],
+  ['œ', 'oe'],
+  ['þ', 'th'],
+];
+
+/**
+ * The `translate()` map of `bettertrack_search_fold`, character for character
+ * (migration 0114). The two strings are index-aligned and must stay so — every
+ * character of both is asserted against the database itself in
+ * `__tests__/rankParity.test.ts`, so a one-character slip here fails the suite
+ * rather than silently unfolding one letter of the catalog.
+ */
+const FOLD_FROM =
+  'àáâãäåāăąçćĉċčďđðèéêëēĕėęěĝğġģĥħìíîïĩīĭįıĵķĺļľłñńņňòóôõöøōŏőŕŗřśŝşšţťŧùúûüũūŭůűųŵýÿŷźżž';
+const FOLD_TO =
+  'aaaaaaaaacccccdddeeeeeeeeegggghhiiiiiiiiijkllllnnnnooooooooorrrsssstttuuuuuuuuuuwyyyzzz';
+
+/**
+ * Every character the fold maps, as one string — the alphabet
+ * `__tests__/rankParity.test.ts` replays through the database so that no entry
+ * of the map above can drift from the migration's without failing.
+ */
+export const SEARCH_FOLD_ALPHABET = `${FOLD_FROM}${FOLD_EXPANSIONS.map(([from]) => from).join('')}`;
+
+/** The German expansions `bettertrack_search_translit` applies before folding. */
+const TRANSLIT_EXPANSIONS: readonly (readonly [string, string])[] = [
+  ['ä', 'ae'],
+  ['ö', 'oe'],
+  ['ü', 'ue'],
+];
+
+function expand(text: string, pairs: readonly (readonly [string, string])[]): string {
+  let value = text.toLowerCase();
+  for (const [from, to] of pairs) value = value.split(from).join(to);
+  return value;
+}
+
+/**
+ * `bettertrack_search_fold` in JS (#1876) — the ASCII spelling of `text`:
+ * lowercased, with every mapped Latin-1/Latin-Extended-A letter folded to its
+ * base letter. This is what BOTH sides of every catalog tier are compared in,
+ * so the mirror has to fold exactly as the database does.
+ */
+export function searchFold(text: string): string {
+  const expanded = expand(text, FOLD_EXPANSIONS);
+  let folded = '';
+  for (const character of expanded) {
+    const at = FOLD_FROM.indexOf(character);
+    folded += at === -1 ? character : FOLD_TO[at];
+  }
+  return folded;
+}
+
+/**
+ * `bettertrack_search_translit` in JS — the German spelling of `text`
+ * (ä→ae, ö→oe, ü→ue; ß→ss the fold already does), then folded.
+ */
+export function searchTranslit(text: string): string {
+  return searchFold(expand(text, TRANSLIT_EXPANSIONS));
+}
+
+/**
+ * `bettertrack_search_document` in JS — what the row's `search_text` tsvector is
+ * built over: the fold, plus the transliteration when the two differ. A row
+ * without umlauts therefore tokenises exactly as it did before 0114.
+ */
+export function searchDocument(text: string): string {
+  const folded = searchFold(text);
+  const transliterated = searchTranslit(text);
+  return transliterated === folded ? folded : `${folded} ${transliterated}`;
+}
+
+/**
  * Word tokens of `text` under the catalog's text-search configuration — the JS
  * side of `to_tsvector('simple', …)` / `plainto_tsquery('simple', …)` (#1810).
  *
@@ -313,11 +391,10 @@ export function rankProviderHits(
   query: string,
   hits: readonly AssetSearchResult[],
 ): AssetSearchResult[] {
-  const needle = query.trim();
-  const lowered = needle.toLowerCase();
-  const queryLexemes = simpleLexemes(needle);
+  const folded = searchFold(query.trim());
+  const queryLexemes = simpleLexemes(folded);
   return hits
-    .map((hit, index) => ({ hit, index, ...rankAgainst(needle, lowered, queryLexemes, hit) }))
+    .map((hit, index) => ({ hit, index, ...rankAgainst(folded, queryLexemes, hit) }))
     .sort(
       (a, b) =>
         a.tier - b.tier ||
@@ -352,38 +429,48 @@ export function providerHitRank(
   query: string,
   hit: Pick<AssetSearchResult, 'symbol' | 'name'>,
 ): ProviderHitRank {
-  const needle = query.trim();
-  return rankAgainst(needle, needle.toLowerCase(), simpleLexemes(needle), hit);
+  const folded = searchFold(query.trim());
+  return rankAgainst(folded, simpleLexemes(folded), hit);
 }
 
 /** {@link providerHitRank} with the query's derived forms hoisted out of the loop. */
 function rankAgainst(
-  needle: string,
-  lowered: string,
+  folded: string,
   queryLexemes: ReadonlySet<string>,
   hit: Pick<AssetSearchResult, 'symbol' | 'name'>,
 ): ProviderHitRank {
   return {
-    tier: tierOf(lowered, queryLexemes, hit),
-    sim: Math.max(trigramSimilarity(hit.symbol, needle), trigramSimilarity(hit.name, needle)),
+    tier: tierOf(folded, queryLexemes, hit),
+    // `catalogSimilaritySql`: the best of the four folded spellings, the query
+    // folded once. For an ASCII hit the transliterated pair scores identically.
+    sim: Math.max(
+      trigramSimilarity(searchFold(hit.symbol), folded),
+      trigramSimilarity(searchTranslit(hit.symbol), folded),
+      trigramSimilarity(searchFold(hit.name), folded),
+      trigramSimilarity(searchTranslit(hit.name), folded),
+    ),
   };
 }
 
 /** The read's `case` expression: exact symbol → symbol prefix → name/word → the rest. */
 function tierOf(
-  lowered: string,
+  folded: string,
   queryLexemes: ReadonlySet<string>,
   hit: Pick<AssetSearchResult, 'symbol' | 'name'>,
 ): number {
-  const symbol = hit.symbol.toLowerCase();
-  if (symbol === lowered) return 0;
-  if (symbol.startsWith(lowered)) return 1;
-  if (hit.name.toLowerCase().includes(lowered)) return 2;
-  // `search_text` is `to_tsvector('simple', symbol || ' ' || name)`, and
-  // plainto_tsquery ANDs the query's lexemes: every one must be present. An
-  // empty query has no lexemes, and an empty tsquery matches nothing.
+  // Each arm is tried against both of the row's spellings (#1876); the query
+  // carries only its fold, exactly as `catalogTierSql` builds it.
+  const symbolFold = searchFold(hit.symbol);
+  const symbolTranslit = searchTranslit(hit.symbol);
+  if (symbolFold === folded || symbolTranslit === folded) return 0;
+  if (symbolFold.startsWith(folded) || symbolTranslit.startsWith(folded)) return 1;
+  if (searchFold(hit.name).includes(folded) || searchTranslit(hit.name).includes(folded)) return 2;
+  // `search_text` is `to_tsvector('simple', bettertrack_search_document(symbol
+  // || ' ' || name))`, and plainto_tsquery ANDs the query's lexemes: every one
+  // must be present. An empty query has no lexemes, and an empty tsquery
+  // matches nothing.
   if (queryLexemes.size > 0) {
-    const document = simpleLexemes(`${hit.symbol} ${hit.name}`);
+    const document = simpleLexemes(searchDocument(`${hit.symbol} ${hit.name}`));
     let all = true;
     for (const lexeme of queryLexemes) {
       if (!document.has(lexeme)) {

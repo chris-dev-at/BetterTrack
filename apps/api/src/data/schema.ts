@@ -948,25 +948,38 @@ export const assets = pgTable(
     meta: jsonb('meta'),
     // Local search catalog (§5.5, §6.2): full-text document over symbol + name,
     // maintained by Postgres itself so it can never drift from the row.
+    //
+    // The document is ACCENT-FOLDED, and carries the German transliteration
+    // beside the fold whenever the two differ (#1876, migration 0114):
+    // "Deutsche Börse AG" indexes both `borse` and `boerse`, so the ASCII and
+    // the umlaut spelling of a shipped DE/AT row both find it. A row without
+    // umlauts folds to itself, so its tsvector is byte-identical to the one it
+    // carried before 0114. See `bettertrack_search_document` in that migration
+    // and its JS mirror in `services/search/catalogEnrichment.ts`.
     searchText: tsvector('search_text').generatedAlwaysAs(
-      (): SQL => sql`to_tsvector('simple', ${assets.symbol} || ' ' || ${assets.name})`,
+      (): SQL =>
+        sql`to_tsvector('simple', "bettertrack_search_document"(${assets.symbol} || ' ' || ${assets.name}))`,
     ),
   },
   (t) => [
     uniqueIndex('assets_provider_owner_unique').on(t.providerId, t.providerRef, t.ownerId),
-    // §5.5 search index: GIN over the generated tsvector for word matches.
+    // §5.5 search indexes: there are deliberately NONE for the catalog read's
+    // match arms — neither the composite trigram GIN (#1709 dropped it in 0110)
+    // nor the tsvector GIN over `search_text` (#1876 dropped it in 0114).
     //
-    // There is deliberately NO trigram index (#1709 retired the composite
-    // `assets_symbol_name_trgm_gin` in 0110). `gin_trgm_ops` answers only the
-    // `%`, `<%` and `<->` operators, and the catalog's fuzzy tier is a plain
-    // `similarity(...) >= 0.3` call — index-unusable by construction, as are
-    // the `upper(symbol) LIKE …` / `%…%` ILIKE tiers beside it. The read
-    // scanned and filtered every visible row with the index present, exactly as
-    // it does without it, while the index still cost a GIN write on every
-    // catalog upsert. The misspelling behaviour §6.2
-    // promises comes from the pg_trgm EXTENSION (`similarity`), which stays;
-    // see `assetRepository.searchCatalog` for the plan and the growth bound.
-    index('assets_search_text_gin').using('gin', t.searchText),
+    // `gin_trgm_ops` answers only the `%`, `<%` and `<->` operators, and the
+    // catalog's fuzzy tier is a plain `similarity(...) >= 0.3` call —
+    // index-unusable by construction, as are the folded `symbol LIKE …` /
+    // `%…%` tiers beside it. `search_text` looked more promising and was not:
+    // its ONLY appearance in the codebase is inside the `CASE` in the target
+    // list of `searchCatalog`'s fenced subquery, never in a filter, and the
+    // `offset 0` fence is there precisely so the planner cannot pull it up into
+    // one. So the read scanned and filtered every visible row with either index
+    // present, exactly as it does without them, while each still cost a GIN
+    // write on every catalog upsert. The misspelling behaviour §6.2 promises
+    // comes from the pg_trgm EXTENSION (`similarity`), which stays; see
+    // `assetRepository.searchCatalog` for the plan and the growth bound.
+    //
     // §5.5 intends one global row per (provider, ref) for market assets, but a
     // plain UNIQUE over (provider_id, provider_ref, owner_id) does NOT enforce
     // it: Postgres treats NULLs as distinct, so NULL owner_id rows never collide.
