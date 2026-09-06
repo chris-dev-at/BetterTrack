@@ -704,6 +704,219 @@ interface RouteFixtures {
   watchlistId: string;
 }
 
+// ─── The Home board this gate paints (#1878) ─────────────────────────────────
+//
+// `/` is the one route whose content is entirely user-chosen, and an account
+// that never opens the builder gets `DEFAULT_LAYOUT`: 5 of the 21 declared
+// widget types and not one of the 6 alternate display forms. The widest board
+// this gate had ever measured was therefore the zero-setup one, and a widget
+// that overflows or renders an undersized control could only be found by hand.
+//
+// The seed below is a literal table rather than something derived from the
+// source, for the same reason the overlay scenarios are: derivation would make
+// a widget the derivation missed absent from BOTH the seed and its check —
+// a silent green. {@link assertCompleteHomeBoardSeed} holds this table to
+// `config.ts`'s own lists instead, so a new widget type (or a new variant of
+// one) fails that test until it is given a seat here.
+
+const HOME_CONFIG_SOURCE = 'apps/web/src/user/home/config.ts';
+
+/**
+ * One seeded widget. `variant` is the stored display form; a type that declares
+ * variants gets one entry per form, since the two forms are different markup
+ * (a donut vs. a ranked bar list, cards vs. a table) and only the stored one is
+ * ever painted. Size is not a field here: every entry is stored at
+ * {@link HOME_BOARD_SEED_SIZE}, so the seed never restates
+ * `WIDGET_SIZE_RULES`.
+ */
+interface HomeBoardSeedEntry {
+  type: string;
+  variant?: string;
+}
+
+const HOME_BOARD_SEED: readonly HomeBoardSeedEntry[] = [
+  { type: 'net-worth' },
+  { type: 'today-change' },
+  { type: 'liquidity', variant: 'ring' },
+  { type: 'liquidity', variant: 'bar' },
+  { type: 'concentration' },
+  { type: 'performance-chart', variant: 'value' },
+  { type: 'performance-chart', variant: 'return' },
+  { type: 'net-worth-history' },
+  { type: 'cashflow-chart', variant: 'net' },
+  { type: 'cashflow-chart', variant: 'columns' },
+  { type: 'allocation', variant: 'donut' },
+  { type: 'allocation', variant: 'bars' },
+  { type: 'asset-spotlight' },
+  { type: 'top-movers', variant: 'list' },
+  { type: 'top-movers', variant: 'chips' },
+  { type: 'portfolio-cards', variant: 'cards' },
+  // The table form is the one that had no scroll container of its own (#1878);
+  // it is on the board precisely so the overflow half of this gate measures it.
+  { type: 'portfolio-cards', variant: 'table' },
+  { type: 'news' },
+  { type: 'attention' },
+  { type: 'upcoming' },
+  { type: 'recent-transactions' },
+  { type: 'cash-balances' },
+  { type: 'quick-cash' },
+  { type: 'watchlist' },
+  { type: 'dividends' },
+  { type: 'alerts' },
+  { type: 'shortcuts' },
+];
+
+/** Unwrap `[...] as const` / `<const>[...]` back to the literal it asserts. */
+function unwrapAssertion(expression: ts.Expression | undefined): ts.Expression | undefined {
+  let current = expression;
+  while (
+    current !== undefined &&
+    (ts.isAsExpression(current) || ts.isTypeAssertionExpression(current))
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function homeConfigRegistry(name: string): ts.Expression {
+  const initializer = unwrapAssertion(findRegistry(parseTsx(HOME_CONFIG_SOURCE), name));
+  expect(initializer, `${HOME_CONFIG_SOURCE} must declare ${name}`).toBeTruthy();
+  return initializer!;
+}
+
+function stringLiterals(node: ts.Expression, name: string): string[] {
+  expect(
+    ts.isArrayLiteralExpression(node),
+    `${HOME_CONFIG_SOURCE}: ${name} must stay an array literal for the seed check to read it`,
+  ).toBe(true);
+  return (node as ts.ArrayLiteralExpression).elements.map((element) => {
+    expect(
+      ts.isStringLiteral(element),
+      `${HOME_CONFIG_SOURCE}: ${name} must hold string literals`,
+    ).toBe(true);
+    return (element as ts.StringLiteral).text;
+  });
+}
+
+/** The widget types `config.ts` declares, read from its own `WIDGET_TYPES`. */
+function declaredWidgetTypes(): string[] {
+  return stringLiterals(homeConfigRegistry('WIDGET_TYPES'), 'WIDGET_TYPES');
+}
+
+/** Every declared display form, keyed by the type that offers it. */
+function declaredWidgetVariants(): Map<string, string[]> {
+  const rules = homeConfigRegistry('WIDGET_VARIANT_RULES');
+  expect(
+    ts.isObjectLiteralExpression(rules),
+    `${HOME_CONFIG_SOURCE}: WIDGET_VARIANT_RULES must stay an object literal`,
+  ).toBe(true);
+  const variants = new Map<string, string[]>();
+  for (const property of (rules as ts.ObjectLiteralExpression).properties) {
+    expect(
+      ts.isPropertyAssignment(property),
+      `${HOME_CONFIG_SOURCE}: every WIDGET_VARIANT_RULES entry must be a plain property`,
+    ).toBe(true);
+    const assignment = property as ts.PropertyAssignment;
+    const name = assignment.name;
+    const type = ts.isStringLiteral(name) ? name.text : name.getText();
+    const value = unwrapAssertion(assignment.initializer);
+    expect(
+      value !== undefined && ts.isObjectLiteralExpression(value),
+      `${HOME_CONFIG_SOURCE}: ${type} must declare its variants as an object literal`,
+    ).toBe(true);
+    const allowed = (value as ts.ObjectLiteralExpression).properties.find(
+      (entry): entry is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(entry) && entry.name.getText() === 'allowed',
+    );
+    expect(allowed, `${HOME_CONFIG_SOURCE}: ${type} must declare an \`allowed\` list`).toBeTruthy();
+    variants.set(type, stringLiterals(unwrapAssertion(allowed!.initializer)!, `${type}.allowed`));
+  }
+  return variants;
+}
+
+/** The schema version the SPA reads; a seed stored under any other is ignored. */
+function declaredHomeConfigVersion(): number {
+  const version = homeConfigRegistry('HOME_CONFIG_VERSION');
+  expect(
+    ts.isNumericLiteral(version),
+    `${HOME_CONFIG_SOURCE}: HOME_CONFIG_VERSION must stay a numeric literal`,
+  ).toBe(true);
+  return Number((version as ts.NumericLiteral).text);
+}
+
+/**
+ * Set equality between the seeded board and the source lists, in both
+ * directions — the same contract the overlay inventory holds its scenarios to.
+ * A widget type (or one type's second display form) that `config.ts` gains
+ * without a seat on this board fails here rather than going unmeasured, and a
+ * seeded type the source has dropped fails instead of being silently discarded
+ * by `parseHomeLayout`.
+ */
+function assertCompleteHomeBoardSeed(): void {
+  const declaredTypes = declaredWidgetTypes();
+  expect(declaredTypes.length, 'WIDGET_TYPES must not read as empty').toBeGreaterThan(0);
+  const seededTypes = new Set(HOME_BOARD_SEED.map(({ type }) => type));
+
+  expect(
+    declaredTypes.filter((type) => !seededTypes.has(type)),
+    'Every declared widget type must sit on the board the gate paints, or it is never measured at a phone width.',
+  ).toEqual([]);
+  expect(
+    [...seededTypes].filter((type) => !declaredTypes.includes(type)),
+    'A seeded widget type that config.ts no longer declares is dropped on read — remove it from the seed.',
+  ).toEqual([]);
+
+  const declaredVariants = declaredWidgetVariants();
+  expect(declaredVariants.size, 'WIDGET_VARIANT_RULES must not read as empty').toBeGreaterThan(0);
+  const seededVariants = new Set(
+    HOME_BOARD_SEED.filter((entry) => entry.variant !== undefined).map(
+      (entry) => `${entry.type}:${entry.variant}`,
+    ),
+  );
+  const declaredPairs = [...declaredVariants].flatMap(([type, allowed]) =>
+    allowed.map((variant) => `${type}:${variant}`),
+  );
+
+  expect(
+    declaredPairs.filter((pair) => !seededVariants.has(pair)),
+    'Every declared display form must be on the board; only the stored one is ever painted.',
+  ).toEqual([]);
+  expect(
+    [...seededVariants].filter((pair) => !declaredPairs.includes(pair)),
+    'A seeded variant config.ts does not declare degrades to the type default on read — the form it claims is never painted.',
+  ).toEqual([]);
+}
+
+/**
+ * The size every seeded widget is stored at. `size` is REQUIRED by
+ * `homeLayoutWidgetSchema` (`packages/contracts/src/settings.ts`) — the frame is
+ * `.strict()` and a document missing it is a 400, not a clamp — so the seed has
+ * to name one. It names the widest, which is also what the overflow half of this
+ * gate wants to measure: `clampSize` drops `l` back to the type's own default
+ * for the types that do not allow it, so this still restates nothing from
+ * `WIDGET_SIZE_RULES`.
+ */
+const HOME_BOARD_SEED_SIZE = 'l';
+
+/** The board document this gate stores on its fixture account. */
+function homeBoardSeedLayout(assetId: string, watchlistId: string): unknown {
+  return {
+    version: declaredHomeConfigVersion(),
+    widgets: HOME_BOARD_SEED.map((entry, index) => ({
+      id: `mobile-gate-${index}`,
+      type: entry.type,
+      size: HOME_BOARD_SEED_SIZE,
+      settings: {
+        ...(entry.variant === undefined ? {} : { variant: entry.variant }),
+        // The two types whose empty state is "pick one first": pointed at the
+        // fixtures so they paint real rows instead of an invitation.
+        ...(entry.type === 'asset-spotlight' ? { assetId, assetLabel: 'AAPL' } : {}),
+        ...(entry.type === 'watchlist' ? { watchlistId } : {}),
+      },
+    })),
+  };
+}
+
 async function responseJson<T>(response: APIResponse, context: string): Promise<T> {
   const text = await response.text();
   expect(response.ok(), `${context}: ${response.status()} ${text}`).toBeTruthy();
@@ -880,37 +1093,69 @@ async function createRouteFixtures(
     'creating the mobile route idea',
   );
 
+  // The Home board: every declared widget type and every declared display form,
+  // so the `/` sweep measures the widest board the product can compose instead
+  // of the five-widget zero-setup one (#1878).
+  await responseJson<Record<string, unknown>>(
+    await api.put(`${API_BASE_URL}/api/v1/settings/home`, {
+      headers,
+      data: { layout: homeBoardSeedLayout(apple!.id, watchlist.id) },
+    }),
+    'seeding the full-catalog home board',
+  );
+
   // Test-integrity assertions: this fixture is intentionally not a fresh/empty
   // account. These API reads fail before the viewport sweep if any seed seam
   // drifts, instead of silently turning the route assertions into empty states.
-  const [portfolio, cash, cashSources, tags, webhooks, notifications] = await Promise.all([
-    responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}`),
-      'checking the populated holding state',
-    ),
-    responseJson<{ movements: unknown[] }>(
-      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash`),
-      'checking the populated cash state',
-    ),
-    responseJson<{ sources: Array<{ name: string }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash/sources`),
-      'checking the populated cash-source state',
-    ),
-    responseJson<{ tags: Array<{ name: string }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/cash/tags`),
-      'checking the populated tag state',
-    ),
-    responseJson<{ subscriptions: Array<{ url: string }> }>(
-      await api.get(`${API_BASE_URL}/api/v1/settings/webhooks`),
-      'checking the populated webhook state',
-    ),
-    responseJson<{ items: unknown[] }>(
-      await api.get(`${API_BASE_URL}/api/v1/notifications`, {
-        params: { view: 'active', limit: 50 },
-      }),
-      'checking the populated notification state',
-    ),
-  ]);
+  const [portfolio, cash, cashSources, tags, webhooks, notifications, homeBoard] =
+    await Promise.all([
+      responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}`),
+        'checking the populated holding state',
+      ),
+      responseJson<{ movements: unknown[] }>(
+        await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash`),
+        'checking the populated cash state',
+      ),
+      responseJson<{ sources: Array<{ name: string }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash/sources`),
+        'checking the populated cash-source state',
+      ),
+      responseJson<{ tags: Array<{ name: string }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/cash/tags`),
+        'checking the populated tag state',
+      ),
+      responseJson<{ subscriptions: Array<{ url: string }> }>(
+        await api.get(`${API_BASE_URL}/api/v1/settings/webhooks`),
+        'checking the populated webhook state',
+      ),
+      responseJson<{ items: unknown[] }>(
+        await api.get(`${API_BASE_URL}/api/v1/notifications`, {
+          params: { view: 'active', limit: 50 },
+        }),
+        'checking the populated notification state',
+      ),
+      responseJson<{ layout: { widgets: Array<{ type: string; size: string }> } | null }>(
+        await api.get(`${API_BASE_URL}/api/v1/settings/home`),
+        'checking the seeded home board',
+      ),
+    ]);
+  // Read back field-for-field, not just counted: the board is stored through a
+  // `.strict()` contract that can gain a required key, and a seed the server
+  // rejects (or silently narrows) would otherwise surface only as `/` quietly
+  // measuring the five-widget default.
+  expect(
+    homeBoard.layout?.widgets.length,
+    'The account must hold the full-catalog board, or `/` falls back to the five-widget default.',
+  ).toBe(HOME_BOARD_SEED.length);
+  expect(
+    homeBoard.layout?.widgets.map((widget) => widget.type),
+    'The stored board must round-trip the seeded types in order.',
+  ).toEqual(HOME_BOARD_SEED.map((entry) => entry.type));
+  expect(
+    homeBoard.layout?.widgets.every((widget) => widget.size === HOME_BOARD_SEED_SIZE),
+    'Every seeded widget must round-trip the size it was stored at.',
+  ).toBe(true);
   expect(portfolio.holdings.some((holding) => holding.asset.id === apple!.id)).toBe(true);
   expect(cash.movements.length).toBeGreaterThanOrEqual(2);
   expect(cashSources.sources.some((source) => source.name === LONG_CASH_SOURCE_NAME)).toBe(true);
@@ -1091,6 +1336,11 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
       ],
     },
     expectedSelector: '.bt-drawer',
+    // The catalog is what the drawer IS. Eight is a floor well under the 21
+    // declared types (some are capability-gated and absent on a deployment
+    // without market intelligence) that still fails loudly if the rows stop
+    // matching the measured selector.
+    rows: { selector: '.bt-home-catalog__item', minimum: 8 },
     justification: 'Covers the fixed Home drawer and its independently scrolling catalog body.',
   },
   {
@@ -1673,6 +1923,18 @@ async function expectPopulatedRouteState(
   declaredRoute: string,
   fixtures: RouteFixtures,
 ): Promise<void> {
+  if (declaredRoute === '/') {
+    // The seeded board actually painted. Without this the sweep would report a
+    // clean `/` just as happily for the five-widget default the account falls
+    // back to whenever the stored document cannot be read (#1878).
+    await expect
+      .poll(() => page.locator('.bt-home-w').count(), {
+        message: `/ must render all ${HOME_BOARD_SEED.length} seeded widgets — a board that fell back to the default measures almost none of the catalog`,
+        timeout: 30_000,
+      })
+      .toBe(HOME_BOARD_SEED.length);
+  }
+
   if (declaredRoute === '/portfolio') {
     const holdingToggle = page.getByTestId(`holding-transactions-toggle-${fixtures.assetId}`);
     await expect(holdingToggle).toBeVisible({ timeout: 20_000 });
@@ -1920,6 +2182,18 @@ const TAP_TARGET_SELECTORS = [
   '.bt-popover [role="menuitemcheckbox"]',
   '.bt-popover [role="menuitemradio"]',
   '.bt-palette__row',
+  // The Home drawer's catalog rows — the same shape as the palette rows above,
+  // and the only way to put a widget on the board. Compliant when this was
+  // added (`origin.css` gives them 48px), so this is the contract that keeps
+  // them so rather than a fix (#1878).
+  '.bt-home-catalog__item',
+  // The install card's own actions (#1878). Both are `size="sm"`; the dismiss X
+  // cleared the floor only because it is also `.bt-btn--icon`, while INSTALL —
+  // the only install path left once `beforeinstallprompt` is preventDefault-ed
+  // — rendered 58×28. Measured on every swept surface, and deliberately
+  // RENDERED by the install-affordance step, since the card appears on no
+  // surface by itself.
+  '.bt-install-prompt .bt-btn',
 ] as const;
 
 /**
@@ -2100,6 +2374,60 @@ function announceTapTargetScope(
 }
 
 /**
+ * Render and measure the install affordance (§7.1, V5-P13b).
+ *
+ * The card is the one phone surface no route can reach: it appears only where
+ * the browser fires `beforeinstallprompt`, which Chromium decides on its own
+ * installability heuristics and never in a headless run. So the gate dispatches
+ * that event with the shape `InstallPrompt.tsx` reads — the same simulation
+ * `e2e/pwa-install.spec.ts` documents, which is honest because capturing the
+ * event IS the contract under test.
+ *
+ * Measured here rather than assumed: before #1878 its primary action was 58×28
+ * at every phone profile, and it was invisible to BOTH halves of the gate — the
+ * overflow sweep never rendered the card, and `pwa-install.spec.ts` renders it
+ * only at the default desktop viewport. On Android the mini-infobar is
+ * suppressed (`event.preventDefault()`), so that button is the only install
+ * path the user has left.
+ *
+ * Runs on the anonymous `/login` page, where `UserApp` mounts the card outside
+ * the session gate and where a first-time visitor on a phone actually meets it.
+ */
+async function sweepInstallAffordance(
+  page: Page,
+  declaredRoute: string,
+  viewportWidth: number,
+): Promise<void> {
+  // A fresh load of the route the card is measured on: the event is captured by
+  // a listener registered on mount, and the sweep above left the page on
+  // whichever anonymous route it swept last.
+  await settleRoute(page, declaredRoute, declaredRoute);
+  await page.evaluate(() => {
+    const event = new Event('beforeinstallprompt', { cancelable: true }) as Event & {
+      prompt?: () => Promise<void>;
+    };
+    // Never actually called here: the card is measured, not accepted.
+    event.prompt = () => Promise.resolve();
+    window.dispatchEvent(event);
+  });
+
+  const card = page.getByTestId('pwa-install-prompt');
+  await expect(card, 'the install card must render when the browser offers an install').toBeVisible(
+    { timeout: 20_000 },
+  );
+  // Both actions, named out loud: a card that rendered its dismiss X alone
+  // would satisfy an undersized-control assertion while leaving the install
+  // button — the one this floor exists for — unmeasured.
+  await expect(
+    card.locator('.bt-btn'),
+    'the install card must render both its actions for the tap-target sweep to measure them',
+  ).toHaveCount(2);
+
+  await expectNoPageOverflow(page, `${declaredRoute} — install affordance`, viewportWidth);
+  await expectTapTargets(page, `${declaredRoute} — install affordance`, viewportWidth);
+}
+
+/**
  * Raise and measure the PIN gate (§6.1) at phone width.
  *
  * `PinGate` renders from `UserApp.tsx` BEFORE the router, so it owns no
@@ -2232,6 +2560,10 @@ async function exerciseOverlayScenario(
 
 test('mobile route inventory classifies every UserApp destination', () => {
   assertCompleteRouteInventory();
+});
+
+test('the seeded home board covers every declared widget type and display form', () => {
+  assertCompleteHomeBoardSeed();
 });
 
 test('mobile route inventory classifies every AdminApp destination', () => {
@@ -2653,6 +2985,13 @@ for (const profile of VIEWPORT_PROFILES) {
           await expectTapTargets(anonymousPage, route, profile.viewport.width);
         });
       }
+      // The install card, in this profile's own locale: it floats over the page
+      // rather than living on one, so it is dispatched onto the last anonymous
+      // route instead of being reachable by navigation.
+      await test.step('install affordance', async () => {
+        await sweepInstallAffordance(anonymousPage, '/login', profile.viewport.width);
+      });
+
       // Invite acceptance uses stable English accessible names. Restore EN for
       // provisioning, then switch the authenticated app to this profile below.
       await setStoredLocale(anonymousPage, 'en');
