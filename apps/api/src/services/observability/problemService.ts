@@ -12,7 +12,13 @@ import type { Logger } from '../../logger';
 import { problemCapturesDroppedTotal } from '../../metrics';
 import { AuditAction, type AuditService } from '../audit/auditService';
 
-import { redactIdentifiers, redactString, scrubEvent, type ScrubbableValue } from './scrubber';
+import {
+  boundScrubInput,
+  redactIdentifiers,
+  redactString,
+  scrubEvent,
+  type ScrubbableValue,
+} from './scrubber';
 
 /**
  * DB-backed problem capture — the Sentry replacement (PROJECTPLAN.md §13.5
@@ -262,14 +268,30 @@ function fingerprintOf(
 const MAX_STACK_FRAMES = 20;
 
 /**
- * Trim a stack to its first frames. The byte ceiling is applied later, with
- * everything else in the context, by {@link boundProblemContext} — but a stack
- * that is bounded only by bytes is cut mid-frame, and the frames worth having
- * are the first ones.
+ * Trim a stack to its first frames, each bounded to what the scrubber reads.
+ *
+ * The byte ceiling is applied later, with everything else in the context, by
+ * {@link boundProblemContext} — but a stack that is bounded only by bytes is cut
+ * mid-frame, and the frames worth having are the first ones.
+ *
+ * The per-LINE bound is the one the scrubber needs (#1853). Capping frames caps
+ * nothing about their length, and a V8 `Error.stack`'s first line is the message
+ * verbatim — so a megabyte thrown message arrives here in full even though
+ * `capture` already bounded its own copy of it, and {@link captureStack} then
+ * hands all of it to the value rules on the API's single event loop. That is the
+ * one input on this path nothing bounded.
+ *
+ * Bounding per line rather than the joined stack costs nothing and keeps the
+ * frames independent of the message: a frame is never near the ceiling, so only
+ * an oversized first line is ever cut, and the frames behind it stay addressable
+ * up to the byte ceiling. Nothing DIAGNOSTIC is lost that was not already going:
+ * `boundProblemContext` holds the stored stack to
+ * `PROBLEM_CONTEXT_VALUE_MAX_BYTES`, four times below this ceiling, so a message
+ * long enough to reach the cut had already crowded the frames out by bytes.
  */
 function boundStack(stack: string): string {
-  const lines = stack.split('\n');
-  if (lines.length <= MAX_STACK_FRAMES) return stack;
+  const lines = stack.split('\n', MAX_STACK_FRAMES + 1).map(boundScrubInput);
+  if (lines.length <= MAX_STACK_FRAMES) return lines.join('\n');
   return `${lines.slice(0, MAX_STACK_FRAMES).join('\n')}\n…`;
 }
 
@@ -432,19 +454,30 @@ export function createProblemService(deps: ProblemServiceDeps): ProblemService {
   ): void => {
     // A caller-supplied count is folded in, never trusted blindly.
     const observed = Number.isFinite(observedRaw) ? Math.max(1, Math.trunc(observedRaw)) : 1;
-    // Scrub, THEN cap: the scrubber must see the whole string (a token cut in
-    // half matches nothing), and `problems.title`/`.message` are unbounded
-    // `text` that the admin page renders, so nothing else keeps a pathological
-    // message from becoming the row. The byte ceiling behind the char cap is
-    // what a multi-byte payload (an upstream HTML error page) is actually held
-    // to — the write budget counts rows per minute and never bytes.
+    // Scrub, THEN cap: the scrubber must see the string it will keep (a token
+    // cut in half matches nothing), and `problems.title`/`.message` are
+    // unbounded `text` that the admin page renders, so nothing else keeps a
+    // pathological message from becoming the row. The byte ceiling behind the
+    // char cap is what a multi-byte payload (an upstream HTML error page) is
+    // actually held to — the write budget counts rows per minute and never
+    // bytes.
+    // What the scrubber READS is bounded first, though: a thrown provider
+    // message carries whatever the upstream sent, capture runs on the API's
+    // single event loop, and every character past `boundScrubInput`'s ceiling
+    // is discarded by the caps below anyway — so reading it was pure cost
+    // (#1853). That bound cuts at a separator, so it cannot hand the scrubber
+    // half a credential and call the other half gone.
     // `redactIdentifiers`, not `redactString`: the ops cockpit already strips a
     // UUID out of the very same failure text, so capturing it raw made the two
     // surfaces disagree about one string and put a user's object id on the
     // Problems page (#1847). The fold key is unaffected —
     // `normalizeForFingerprint` collapses long hex either way.
-    const title = boundProblemTitle(truncateErrorMessage(redactIdentifiers(rawTitle)));
-    const message = boundProblemMessage(truncateErrorMessage(redactIdentifiers(rawMessage)));
+    const title = boundProblemTitle(
+      truncateErrorMessage(redactIdentifiers(boundScrubInput(rawTitle))),
+    );
+    const message = boundProblemMessage(
+      truncateErrorMessage(redactIdentifiers(boundScrubInput(rawMessage))),
+    );
     // Fold on the SCRUBBED pair: the raw strings carry per-user PII (emails,
     // token bodies) that the stored row does not, so fingerprinting them would
     // split one visible problem into a row per user.

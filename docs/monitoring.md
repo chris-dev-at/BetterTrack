@@ -30,17 +30,18 @@ reached**, and the **two external-access options** the owner chose to add on
                             └──────┬───────┘           └────┬─────┘
                      127.0.0.1:9090│                        │127.0.0.1:3001
                                    ▼                        ▼
-                         localhost / LAN bind   +   authenticated external path (opt-in)
+                         localhost only         +   localhost / LAN bind
+                         (no login of its own)      + authenticated external path (opt-in)
 ```
 
-| Service             | Image                                   | Scrapes / shows                          | Host port                |
-| ------------------- | --------------------------------------- | ---------------------------------------- | ------------------------ |
-| `prometheus`        | `prom/prometheus`                       | everything below (15-day TSDB)           | `BT_OBS_BIND_HOST:9090`  |
-| `grafana`           | `grafana/grafana-oss`                   | dashboards over Prometheus               | `BT_OBS_BIND_HOST:3001`  |
-| `node-exporter`     | `prom/node-exporter`                    | host CPU / memory / disk / network       | **none** (internal only) |
-| `cadvisor`          | `gcr.io/cadvisor/cadvisor`              | per-container CPU / mem / IO             | **none**                 |
-| `postgres-exporter` | `prometheuscommunity/postgres-exporter` | DB connections, cache hit ratio, commits | **none**                 |
-| `redis-exporter`    | `oliver006/redis_exporter`              | cache memory, hit rate, evictions        | **none**                 |
+| Service             | Image                                   | Scrapes / shows                          | Host port                      |
+| ------------------- | --------------------------------------- | ---------------------------------------- | ------------------------------ |
+| `prometheus`        | `prom/prometheus`                       | everything below (15-day TSDB)           | `BT_PROMETHEUS_BIND_HOST:9090` |
+| `grafana`           | `grafana/grafana-oss`                   | dashboards over Prometheus               | `BT_OBS_BIND_HOST:3001`        |
+| `node-exporter`     | `prom/node-exporter`                    | host CPU / memory / disk / network       | **none** (internal only)       |
+| `cadvisor`          | `gcr.io/cadvisor/cadvisor`              | per-container CPU / mem / IO             | **none**                       |
+| `postgres-exporter` | `prometheuscommunity/postgres-exporter` | DB connections, cache hit ratio, commits | **none**                       |
+| `redis-exporter`    | `oliver006/redis_exporter`              | cache memory, hit rate, evictions        | **none**                       |
 
 The exporters publish **no host ports at all** — Prometheus reaches them by
 service name over the internal docker network, so they are unreachable from any
@@ -67,20 +68,54 @@ Grafana auto-provisions the Prometheus datasource and every dashboard JSON under
 
 ## Reaching it — localhost / LAN (default, unchanged)
 
-By default nothing changes from the §16 (2026-07-17) posture: Prometheus and
-Grafana bind to **`BT_OBS_BIND_HOST`** (default `127.0.0.1`) and are not routed
-by the `web`/nginx front proxy.
+By default nothing changes from the §16 (2026-07-17) posture: Grafana binds to
+**`BT_OBS_BIND_HOST`**, Prometheus to **`BT_PROMETHEUS_BIND_HOST`** (both default
+`127.0.0.1`), and neither is routed by the `web`/nginx front proxy.
 
 - **On the deploy host** — `http://127.0.0.1:3001`.
 - **Over SSH** — `ssh -N -L 3001:127.0.0.1:3001 you@host`, then
-  `http://localhost:3001`.
+  `http://localhost:3001`. Same shape for Prometheus:
+  `ssh -N -L 9090:127.0.0.1:9090 you@host`.
 - **On your LAN** — set `BT_OBS_BIND_HOST` to the host's LAN IP; **never**
-  `0.0.0.0` on a public host. On a LAN bind Grafana's **own login is the only
-  thing between the dashboards and every device on that network**, so keep
-  `BT_GRAFANA_ANON_ENABLED=false` here — see
+  `0.0.0.0` on a public host. This moves **Grafana only**: `BT_OBS_BIND_HOST`
+  does not touch Prometheus, which stays on `127.0.0.1` (below). On that bind
+  Grafana's own login is what stands between the dashboards and every device on
+  the network, so keep `BT_GRAFANA_ANON_ENABLED=false` here — see
   [the one unsafe combination](#the-one-unsafe-combination-lan-bind-and-anonymous-access).
   This is the one place where two individually-safe settings on this page
   combine into an unsafe one.
+
+### Prometheus stays on loopback — it has no login at all
+
+Grafana has an account system; **Prometheus has none**, which is also why the
+admin app never proxies it (`apps/api/src/http/grafanaProxy.ts`). Its host port
+therefore has its own input, **`BT_PROMETHEUS_BIND_HOST`** (default
+`127.0.0.1`), and deliberately does **not** follow `BT_OBS_BIND_HOST` onto the
+LAN. Anything that can reach a non-loopback Prometheus port can read every
+metric and the whole 15-day TSDB — per-route request volumes, error rates, queue
+depth, Postgres and Redis internals — with no credential and no audit trail,
+while the admin console gates the same operational data behind an admin session
+and 2FA.
+
+Concretely, on a LAN bind:
+
+- **Dashboards on the LAN** — `BT_OBS_BIND_HOST=<LAN IP>` and leave
+  `BT_PROMETHEUS_BIND_HOST=127.0.0.1`. Grafana serves the dashboards behind its
+  login; it queries Prometheus over the internal docker network, so nothing is
+  lost by keeping the Prometheus port on loopback.
+- **Ad-hoc PromQL** — use Grafana's **Explore** view (same login), or tunnel:
+  `ssh -N -L 9090:127.0.0.1:9090 you@host`.
+- **Really want the raw Prometheus UI on the network?** Then say so explicitly:
+  `BT_PROMETHEUS_BIND_HOST=<LAN IP>`. That is an unauthenticated metrics server
+  for every device that can reach it — only do it on an isolated network.
+
+The service also runs **without `--web.enable-lifecycle` and without
+`--web.enable-admin-api`**: those add unauthenticated `POST /-/reload`,
+`POST /-/quit` and series-deletion endpoints, so on any exposed bind a single
+`curl` could stop or wipe the monitoring stack. Nothing here uses them — the
+admin **Monitoring** panel only GETs `/-/healthy`, which Prometheus serves with
+or without the flags. `checkProductionCompose` fails if a flag is reintroduced
+or if the Prometheus port renders on a non-loopback bind.
 
 ### The one unsafe combination: LAN bind and anonymous access
 
