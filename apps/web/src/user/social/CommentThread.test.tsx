@@ -197,6 +197,29 @@ describe('CommentThread (§13.5 V5-P8)', () => {
     );
   });
 
+  test('an expanded thread takes its item reactions from the polled page too', async () => {
+    // Same reason as the count beside them: the summary is read once and never
+    // refetched, so chips fed only from it froze at mount and two friends with
+    // the thread open never saw each other's item reactions (#1830).
+    vi.mocked(getCommentThreadSummary).mockResolvedValue(summary({ commentCount: 1 }));
+    vi.mocked(getCommentThread).mockResolvedValue(
+      thread({
+        comments: [oneComment],
+        commentCount: 1,
+        reactions: [{ emoji: '🔥', count: 1, reacted: false }],
+      }),
+    );
+    renderThread();
+
+    await userEvent.click(await screen.findByRole('button', { name: /1 comment$/i }));
+
+    const group = await screen.findByRole('group', { name: /react to this item/i });
+    await waitFor(() =>
+      expect(within(group).getByRole('button', { name: '🔥' })).toHaveTextContent('1'),
+    );
+    expect(toggleItemReaction).not.toHaveBeenCalled();
+  });
+
   test('surfaces a failed reaction toggle instead of failing silently', async () => {
     vi.mocked(getCommentThreadSummary).mockResolvedValue(summary({}));
     vi.mocked(toggleItemReaction).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'not found'));
