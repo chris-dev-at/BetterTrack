@@ -25,7 +25,11 @@ const DEFAULT_FOOTER =
   'You received this email because someone manages a BetterTrack account for this address.';
 
 /**
- * Shared shell so every email looks the same. `body` is trusted HTML. `lang`
+ * Shared shell so every email looks the same. `body` is trusted HTML — callers
+ * escape whatever they interpolate into it. `heading` is NOT: it is escaped here
+ * as a text node, because two callers ({@link deferredNotificationEmail} and
+ * {@link digestEmail}) render a heading built from user-supplied data — a group
+ * portfolio's name, a budget category, a custom asset's symbol (#1816). `lang`
  * sets the document language (localized notification emails pass the recipient's
  * locale); `footer` overrides the default account-email footer line.
  */
@@ -42,7 +46,7 @@ function layout(
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">',
     '<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;padding:32px;">',
     `<tr><td style="font-size:18px;font-weight:600;padding-bottom:16px;">${BRAND}</td></tr>`,
-    `<tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;">${heading}</td></tr>`,
+    `<tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;">${escapeHtml(heading)}</td></tr>`,
     `<tr><td style="font-size:14px;line-height:1.6;color:#333;">${body}</td></tr>`,
     '<tr><td style="font-size:12px;color:#8a9099;padding-top:24px;border-top:1px solid #eceef1;margin-top:24px;">',
     escapeHtml(footer),
@@ -721,7 +725,8 @@ export function alertTriggeredEmail(params: {
   return {
     subject: fillText(c.subject, { symbol }),
     html: layout(
-      c.heading.replace('{symbol}', escapeHtml(symbol)),
+      // `layout` escapes the heading, so the symbol goes in raw here (#1816).
+      c.heading.replace('{symbol}', symbol),
       [
         `<p>${escapeHtml(body)}</p>`,
         `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
@@ -756,7 +761,8 @@ export function earningsReminderEmail(params: {
   return {
     subject: fillText(c.subject, { symbol }),
     html: layout(
-      c.heading.replace('{symbol}', escapeHtml(symbol)),
+      // `layout` escapes the heading, so the symbol goes in raw here (#1816).
+      c.heading.replace('{symbol}', symbol),
       [
         `<p>${fillHtml(bodyTemplate, values)}</p>`,
         `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,

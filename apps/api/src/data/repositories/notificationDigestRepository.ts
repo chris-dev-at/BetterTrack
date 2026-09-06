@@ -43,7 +43,7 @@ export interface EnqueueDigestItemInput {
   period: string;
   title: string;
   body: string;
-  /** Push deep-link data (only meaningful for push/webpush); null for email. */
+  /** Deep-link data: the push payload, and the e-mail's target link (#1816). */
   data?: Record<string, string> | null;
 }
 
@@ -72,7 +72,7 @@ export interface EnqueueDeferredItemInput {
   channel: DigestChannel;
   title: string;
   body: string;
-  /** Push deep-link data (push/webpush only); null for email. */
+  /** Deep-link data: the push payload, and the e-mail's target link (#1816). */
   data?: Record<string, string> | null;
   /** Wall-clock moment the row becomes due for delivery. */
   deliverAfter: Date;
