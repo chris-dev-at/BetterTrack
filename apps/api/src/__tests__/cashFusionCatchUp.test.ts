@@ -22,6 +22,7 @@ import {
   fusionUuid,
   parseCents,
   parseMicros,
+  planInvalidationDay,
   planIsEmpty,
   planOwnerCatchUp,
   spendingPortfolioId,
@@ -160,6 +161,24 @@ describe('cash-fusion catch-up: 0076 rules, reproduced', () => {
       FUSION_AT,
     );
     expect(plan.movements[0]!.executedAt.toISOString()).toBe('2026-03-09T00:00:00.000Z');
+  });
+
+  it('names the earliest booked day an apply would invalidate', () => {
+    const plan = planOwnerCatchUp(
+      {
+        ...emptySnapshot(),
+        transactions: [
+          transaction('11111111-1111-4111-8111-111111111111', { bookedOn: '2026-03-09' }),
+          transaction('22222222-2222-4222-8222-222222222222', { bookedOn: '2026-02-17' }),
+          transaction('33333333-3333-4333-8333-333333333333', { bookedOn: '2026-04-02' }),
+        ],
+      },
+      FUSION_AT,
+    );
+    // Every planned movement is a backdated external flow, so the whole series
+    // from the EARLIEST of them is stale — that is the day to invalidate from.
+    expect(planInvalidationDay(plan)).toBe('2026-02-17');
+    expect(planInvalidationDay({ ...plan, movements: [] })).toBeNull();
   });
 
   it('carries a non-EUR magnitude 1:1 and records its currency', () => {
@@ -913,6 +932,76 @@ describe('cash-fusion catch-up: against the database', () => {
       .where(eq(schema.portfolios.userId, user.id));
     // Critically: no SECOND Spending portfolio.
     expect(portfolios.filter((row) => row.id === portfolioId)).toHaveLength(1);
+  });
+
+  it('invalidates the daily snapshots its backdated movements make stale (#1729)', async () => {
+    const user = await h.seedUser();
+    await simulateFusionRan(user.id);
+    await seedPostFusionExpenseRows(user.id); // booked 2026-02-01 … 2026-02-04
+    const repository = createCashFusionCatchUpRepository(h.db);
+    const portfolioId = spendingPortfolioId(user.id);
+
+    const snapshotState = async () =>
+      (
+        await h.db
+          .select()
+          .from(schema.portfolioSnapshotState)
+          .where(eq(schema.portfolioSnapshotState.portfolioId, portfolioId))
+      )[0] ?? null;
+    const snapshotRows = async () =>
+      h.db
+        .select()
+        .from(schema.portfolioDailySnapshots)
+        .where(eq(schema.portfolioDailySnapshots.portfolioId, portfolioId))
+        .orderBy(schema.portfolioDailySnapshots.date);
+
+    const first = await catchUpCashFusion({ dryRun: false, repository });
+    expect(first.failed).toBe(0);
+    expect(first.ownerReports[0]!.invalidatedFrom).toBe('2026-02-01');
+    expect((await snapshotState())?.dirtyFrom).toBe('2026-02-01');
+
+    // The series the fused surfaces would serve from here on: computed, clean,
+    // one row per day from the first movement.
+    await h.ctx.snapshots.recompute(portfolioId);
+    expect((await snapshotState())?.dirtyFrom ?? null).toBeNull();
+    const before = await snapshotRows();
+    const settledBefore = before.find((r) => r.date === '2026-02-04')!;
+    expect(Number(settledBefore.valueEur)).toBeCloseTo(2480.16, 9); // 2500 − 12.34 − 7.50
+    expect(before.some((r) => r.date === '2026-03-02')).toBe(true);
+
+    // One more row written through the old routes, booked far outside the
+    // nightly roll's 35-day heal window — the case that used to stay wrong
+    // forever because nothing marked it dirty.
+    await h.db.insert(schema.expenseTransactions).values({
+      userId: user.id,
+      direction: 'expense',
+      amount: '400.00',
+      currency: 'EUR',
+      bookedOn: '2026-03-01',
+      description: 'Rent',
+      source: 'manual',
+      createdAt: POST_FUSION,
+      updatedAt: POST_FUSION,
+    });
+
+    const second = await catchUpCashFusion({ dryRun: false, repository });
+    expect(second.failed).toBe(0);
+    expect(second.totals.movements).toBe(1);
+    expect(second.ownerReports[0]!.invalidatedFrom).toBe('2026-03-01');
+
+    expect((await snapshotState())?.dirtyFrom).toBe('2026-03-01');
+    const after = await snapshotRows();
+    // Exactly the affected range: earlier days untouched, later days gone.
+    expect(after.some((r) => r.date >= '2026-03-01')).toBe(false);
+    const settledAfter = after.find((r) => r.date === '2026-02-04')!;
+    expect(settledAfter.valueEur).toBe(settledBefore.valueEur);
+    expect(settledAfter.computedAt.getTime()).toBe(settledBefore.computedAt.getTime());
+
+    // And the series now carries the withdrawal from its own day on.
+    const series = await h.ctx.snapshots.getSeries(portfolioId);
+    const value = (date: string) => series.points.find((p) => p.date === date)?.valueEur;
+    expect(value('2026-02-28')).toBeCloseTo(2480.16, 9);
+    expect(value('2026-03-02')).toBeCloseTo(2080.16, 9);
   });
 
   it('rolls an owner back when the fused rows do not reconcile', async () => {
