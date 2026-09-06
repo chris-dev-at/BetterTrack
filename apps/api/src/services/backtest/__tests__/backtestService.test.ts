@@ -212,9 +212,18 @@ function createHarness() {
     findGlobal: async () => null,
   } as unknown as AssetRepository;
 
+  /**
+   * Baskets a test EDITED mid-run (#1849): the memo must notice a conglomerate
+   * benchmark whose composition changed, including through a nested child whose
+   * id never appears in the request.
+   */
+  const edited = new Map<string, { id: string; name: string; positions: unknown[] }>();
+
   const conglomerateRepo = {
     findByIdForOwner: async (ownerId: string, id: string) => {
       if (ownerId !== 'u1') return null;
+      const override = edited.get(id);
+      if (override) return override;
       if (id === CONG_ID) {
         return {
           id: CONG_ID,
@@ -379,7 +388,14 @@ function createHarness() {
     now: () => Date.parse('2026-01-05T12:00:00Z'),
   });
 
-  return { service, store, historyCalls: () => historyCalls };
+  return {
+    service,
+    store,
+    historyCalls: () => historyCalls,
+    /** Rewrite one basket's stored constituents, as a Builder autosave would. */
+    editConglomerate: (id: string, name: string, positions: unknown[]) =>
+      edited.set(id, { id, name, positions }),
+  };
 }
 
 const PREVIEW = {
@@ -425,6 +441,69 @@ describe('backtestService.runPreview — rebalance threading (V4-P7)', () => {
     const repeat = await service.runPreview('u1', { ...PREVIEW, rebalance: 'yearly' });
     expect(historyCalls()).toBe(4); // memo hit — no refetch
     expect(repeat).toEqual(yearly);
+  });
+});
+
+/**
+ * The preview memo and a CONGLOMERATE benchmark (#1849). The request carries
+ * only `{ conglomerateId }` — a mutable handle — and the memo was consulted
+ * before the benchmark was resolved at all, so for the entry's full hour an edit
+ * to the benchmark basket, or to one of its NESTED CHILDREN (whose id is not in
+ * the request), kept serving the pre-edit curve, stats and `unresolvedPct`.
+ * Nothing purges this memo on a conglomerate write.
+ */
+describe('backtestService.runPreview — a conglomerate benchmark is content-addressed', () => {
+  /** NESTED_ID = 50 % of CONG_ID (60/40 A/B) + 50 % direct A ⇒ 80 % A / 20 % B. */
+  const withBench = { ...PREVIEW, benchmark: { conglomerateId: NESTED_ID } };
+
+  it("recomputes after the benchmark's NESTED child is edited, its own id unchanged", async () => {
+    const { service, editConglomerate } = createHarness();
+
+    const first = await service.runPreview('u1', withBench);
+    expect(first.benchmark?.refId).toBe(NESTED_ID);
+    expect(first.benchmark?.unresolvedPct).toBe(0);
+
+    // The owner empties the nested child. Neither the benchmark's id nor any
+    // other field of the request changes — the child's id never appears in it.
+    editConglomerate(CONG_ID, 'My Mix', []);
+
+    const second = await service.runPreview('u1', withBench);
+    // Half the benchmark now resolves to nothing, and the overlay is the
+    // surviving remainder rather than the pre-edit basket.
+    expect(second.benchmark?.unresolvedPct).toBeCloseTo(50, 9);
+    expect(second.benchmark?.series).not.toEqual(first.benchmark?.series);
+    expect(second.benchmark?.stats.totalReturnPct).not.toBeCloseTo(
+      first.benchmark!.stats.totalReturnPct,
+      6,
+    );
+  });
+
+  it('recomputes after the benchmark basket itself is re-weighted', async () => {
+    const { service, editConglomerate } = createHarness();
+    const first = await service.runPreview('u1', withBench);
+
+    editConglomerate(NESTED_ID, 'Nested Mix', [{ kind: 'asset', assetId: 'B', weightPct: 100 }]);
+
+    const second = await service.runPreview('u1', withBench);
+    expect(second.benchmark?.stats.totalReturnPct).not.toBeCloseTo(
+      first.benchmark!.stats.totalReturnPct,
+      6,
+    );
+  });
+
+  it('still answers two genuinely identical requests from the memo', async () => {
+    const { service, store, historyCalls } = createHarness();
+
+    const first = await service.runPreview('u1', withBench);
+    const calls = historyCalls();
+    expect(calls).toBeGreaterThan(0);
+
+    const repeat = await service.runPreview('u1', withBench);
+    // Content-addressing the benchmark must not disable memoisation: the repeat
+    // does no provider work at all and writes no second entry.
+    expect(historyCalls()).toBe(calls);
+    expect(store.size).toBe(1);
+    expect(repeat).toEqual(first);
   });
 });
 

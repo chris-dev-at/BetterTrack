@@ -672,6 +672,81 @@ describe('POST /api/v1/backtest/preview — custom benchmarks (V4-P7)', () => {
     expect(res.body.benchmark.stats.maxDrawdownPct).toBeDefined();
   });
 
+  it("recomputes the overlay after the benchmark's NESTED child is edited (#1849)", async () => {
+    const { h, agent, marketData } = await harnessWith((ref) =>
+      ref.providerRef === 'AAA'
+        ? cachedHistory([
+            { time: tsOffset(-300), close: 100 },
+            { time: tsOffset(-1), close: 110 },
+          ])
+        : cachedHistory([
+            { time: tsOffset(-300), close: 200 },
+            { time: tsOffset(-1), close: 250 },
+          ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const b = await seedAsset(h, { providerRef: 'BBB', symbol: 'BBB', name: 'Asset B' });
+
+    const create = async (name: string) => {
+      const res = await agent
+        .post('/api/v1/conglomerates')
+        .set(...XRW)
+        .send({ name });
+      expect(res.status).toBe(201);
+      return res.body.id as string;
+    };
+    const put = (id: string, positions: unknown[]) =>
+      agent
+        .put(`/api/v1/conglomerates/${id}/positions`)
+        .set(...XRW)
+        .send({ positions });
+
+    // "Bonds" nests inside "Core"; "Core" is the benchmark the picker sends.
+    const bonds = await create('Bonds');
+    expect((await put(bonds, [{ assetId: b.id, weightPct: 100 }])).status).toBe(200);
+    const core = await create('Core');
+    expect(
+      (
+        await put(core, [
+          { assetId: a.id, weightPct: 50 },
+          { childId: bonds, weightPct: 50 },
+        ])
+      ).status,
+    ).toBe(200);
+
+    const body = {
+      positions: [{ assetId: a.id, weight: 100 }],
+      range: 'MAX',
+      benchmark: { conglomerateId: core },
+    };
+    const preview = () =>
+      agent
+        .post('/api/v1/backtest/preview')
+        .set(...XRW)
+        .send(body);
+
+    const first = await preview();
+    expect(first.status).toBe(200);
+    expect(first.body.benchmark.unresolvedPct).toBe(0);
+    // 50/50 of +10 % and +25 %.
+    expect(first.body.benchmark.stats.totalReturnPct).toBeCloseTo(17.5, 6);
+
+    // Empty the NESTED child. Core's id is unchanged, and so is every field of
+    // the request — the memo used to answer the next hour from the pre-edit run.
+    expect((await put(bonds, [])).status).toBe(200);
+
+    const second = await preview();
+    expect(second.status).toBe(200);
+    expect(second.body.benchmark.unresolvedPct).toBeCloseTo(50, 6);
+    expect(second.body.benchmark.stats.totalReturnPct).toBeCloseTo(10, 6);
+
+    // …and with nothing edited, the identical request is still a memo hit.
+    const historyBefore = marketData.calls.history;
+    const third = await preview();
+    expect(third.body).toEqual(second.body);
+    expect(marketData.calls.history).toBe(historyBefore);
+  });
+
   it("404s another user's conglomerate as benchmark — no existence leak", async () => {
     const { h, agent } = await harnessWith(() =>
       cachedHistory([

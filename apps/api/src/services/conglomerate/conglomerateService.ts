@@ -366,8 +366,14 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
         throw badRequest('A conglomerate cannot contain itself.', 'NESTING_CYCLE');
       }
       const owned = await repo.ownedConglomerateIds(ownerId, [...seenChildren]);
+      // Scoped exactly like the asset lookup above (#1849): while the caller is
+      // scoped out, a custom-asset-tainted basket is not server-side readable,
+      // so it may not be NESTED either. Unscoped, the write accepted a child the
+      // read scope hides — and the parent it produced was 404 on the very next
+      // `GET /conglomerates/:id` and absent from the list.
+      const hidden = includeCustomAssets ? null : await customAssetTaintedIds(ownerId);
       for (const childId of seenChildren) {
-        if (!owned.has(childId)) throw NOT_FOUND();
+        if (!owned.has(childId) || hidden?.has(childId)) throw NOT_FOUND();
       }
 
       assertNestingRules(id, seenChildren, await repo.nestingEdges(ownerId));
@@ -377,22 +383,38 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
   }
 
   /**
-   * The NESTED half of the activation gate (§6.5 + V5-P6): the reason this
-   * position set may not carry an `active` status, or `null` when every nested
-   * slice still resolves to assets.
+   * The NESTED half of the activation gate (§6.5 + V5-P6): the reason this row
+   * may not carry an `active` status, or `null` when it resolves and every
+   * nested slice still resolves to assets.
    *
-   * A nested constituent counts toward the 100 %, so a child that resolves to NO
-   * asset would let a basket activate whose weights add up on paper while its
-   * slice buys nothing: at flatten time the empty child is dropped and its weight
-   * is silently redistributed onto the survivors (a 60/40 basket buys 100 % of
-   * the 60 % leg). Extracted from {@link activateScoped} so the exact same rule
-   * can be re-run later — the gate is point-in-time, but the condition it checks
-   * belongs to a child the parent does not control (see
-   * {@link revalidateAncestorActivation}).
+   * Two rules, in the order they are checked:
+   *
+   *  1. **The row itself must flatten** (#1849). The gate used to walk only the
+   *     row's children, flattening each from that CHILD's own root — but both
+   *     read-time bounds are per-flatten-root: `nesting.ts` refuses at
+   *     `MAX_FLATTENED_POSITIONS` distinct assets and past
+   *     {@link MAX_NESTING_DEPTH}. Six children of 50 assets each therefore
+   *     passed the gate one at a time while the parent resolved to 300 assets,
+   *     so the basket went `active` and then 422'd on `GET /:id/resolved`, on
+   *     `POST /:id/allocate` and in every comparison it appeared in. The
+   *     flatten's own mapped 422 is deliberately left to PROPAGATE, so
+   *     activation refuses with exactly the code the read paths answer with;
+   *     the post-write sweep, which must never throw, catches it and demotes.
+   *  2. A nested constituent counts toward the 100 %, so a child that resolves
+   *     to NO asset would let a basket activate whose weights add up on paper
+   *     while its slice buys nothing: at flatten time the empty child is dropped
+   *     and its weight is silently redistributed onto the survivors (a 60/40
+   *     basket buys 100 % of the 60 % leg). Walked per child so the refusal can
+   *     NAME the offending one, which the root flatten's identity-free message
+   *     cannot.
+   *
+   * Extracted from {@link activateScoped} so the exact same rule can be re-run
+   * later — the gate is point-in-time, but the condition it checks belongs to
+   * children the parent does not control (see {@link revalidateActivation}).
    */
   async function nestedActivationFailure(
     ownerId: string,
-    positions: readonly ConglomerateDetailRow['positions'][number][],
+    row: Pick<ConglomerateDetailRow, 'id' | 'positions'>,
     includeCustomAssets: boolean,
     options?: {
       cache?: FlattenCache;
@@ -404,16 +426,17 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       options?.load ??
       ((cid: string) =>
         repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }));
-    for (const position of positions) {
+    // One cache for the whole gate — the caller's when it has one, so a sweep
+    // loads each basket in the closure exactly once (#1776); otherwise a fresh
+    // one, which still de-duplicates the root flatten against the per-child
+    // walk below instead of re-reading every descendant twice.
+    const cache = options?.cache ?? createFlattenCache();
+
+    await flattenConglomerate(load, row.id, { cache });
+
+    for (const position of row.positions) {
       if (position.kind !== 'conglomerate') continue;
-      const child = await flattenConglomerate(
-        load,
-        position.childId,
-        // One cache for the whole sweep when the caller supplies it: without it
-        // each child got a fresh one, so a diamond grandchild was re-loaded once
-        // per branch and again for every ancestor above (#1776).
-        options?.cache ? { cache: options.cache } : undefined,
-      );
+      const child = await flattenConglomerate(load, position.childId, { cache });
       if (!child || child.positions.length === 0) {
         return `Nested conglomerate ${position.child.name} resolves to no assets — give it positions or remove it before activating.`;
       }
@@ -502,7 +525,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       // asset at all — 100 % unresolved, the state #1755 ruled invalid.
       if (row.positions.length === 0) return 'it has no positions left';
       try {
-        return await nestedActivationFailure(ownerId, row.positions, includeCustomAssets, {
+        return await nestedActivationFailure(ownerId, row, includeCustomAssets, {
           cache,
           load: readRow,
         });
@@ -555,39 +578,56 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     }
   }
 
+  /**
+   * `POST /:id/activate` — the §6.5 gate and the status write as ONE
+   * transaction (#1849).
+   *
+   * The gate was previously run over an unguarded read and the promotion was a
+   * bare `UPDATE`, so a `PUT /:childId/positions` that emptied a child could
+   * interleave between them: the child write's post-commit sweep only demotes
+   * baskets that are ALREADY `active`, so it skipped the still-`draft` parent,
+   * and the activation then wrote `active` over a structure 40 % of which
+   * resolves to nothing — with nothing left to re-run the gate. Every rule is
+   * therefore re-checked through {@link ConglomerateRepository.setStatusVerified},
+   * i.e. against the rows visible under the owner's `FOR UPDATE` locks; a
+   * refusal thrown there rolls the promotion back.
+   */
   async function activateScoped(
     ownerId: string,
     id: string,
     includeCustomAssets: boolean,
   ): Promise<ConglomerateDetail> {
     await assertReadable(ownerId, id, includeCustomAssets);
-    const row = await repo.findByIdForOwner(ownerId, id, {
+    const ok = await repo.setStatusVerified(ownerId, id, 'active', {
       globalAssetMetadataOnly: !includeCustomAssets,
+      verify: async (read) => {
+        // The gate's whole closure — the row and every descendant it flattens —
+        // is read through the transaction, and each basket only once.
+        const cache = createFlattenCache();
+        const row = await cachedFlattenLoad(cache, id, read);
+        if (!row) throw NOT_FOUND();
+
+        if (row.positions.length < 1) {
+          throw badRequest(
+            'A conglomerate needs at least one position to activate.',
+            'ACTIVATION_INVALID',
+          );
+        }
+        const sum = row.positions.reduce((acc, p) => acc + p.weightPct, 0);
+        if (Math.abs(sum - ACTIVE_SUM) > SUM_TOLERANCE) {
+          throw badRequest(
+            'Weights must sum to 100% (±0.01) before a conglomerate can be activated.',
+            'ACTIVATION_INVALID',
+          );
+        }
+
+        const nestedFailure = await nestedActivationFailure(ownerId, row, includeCustomAssets, {
+          cache,
+          load: read,
+        });
+        if (nestedFailure !== null) throw badRequest(nestedFailure, 'ACTIVATION_INVALID');
+      },
     });
-    if (!row) throw NOT_FOUND();
-
-    if (row.positions.length < 1) {
-      throw badRequest(
-        'A conglomerate needs at least one position to activate.',
-        'ACTIVATION_INVALID',
-      );
-    }
-    const sum = row.positions.reduce((acc, p) => acc + p.weightPct, 0);
-    if (Math.abs(sum - ACTIVE_SUM) > SUM_TOLERANCE) {
-      throw badRequest(
-        'Weights must sum to 100% (±0.01) before a conglomerate can be activated.',
-        'ACTIVATION_INVALID',
-      );
-    }
-
-    const nestedFailure = await nestedActivationFailure(
-      ownerId,
-      row.positions,
-      includeCustomAssets,
-    );
-    if (nestedFailure !== null) throw badRequest(nestedFailure, 'ACTIVATION_INVALID');
-
-    const ok = await repo.setStatus(ownerId, id, 'active');
     if (!ok) throw NOT_FOUND();
     return detailOrThrow(ownerId, id, includeCustomAssets);
   }
@@ -909,26 +949,42 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async remove(ownerId, id) {
-      // Deleting a conglomerate still embedded in another is blocked with the
-      // parent names — fail-safe, no silent detach (V5-P6). A concurrent nest
-      // added between this check and the delete is backstopped by the child
-      // FK's NO ACTION. `parentsOf` is owner-scoped, so a foreign id yields []
-      // here and 404s below — no existence leak.
-      const parents = await repo.parentsOf(ownerId, id);
-      if (parents.length > 0) {
-        const names = parents.map((p) => p.name).join(', ');
-        throw new ApiError(
-          409,
-          'CONGLOMERATE_IN_USE',
-          `This conglomerate is a constituent of ${names} — remove it there first.`,
-          { parents },
-        );
-      }
-      const deleted = await repo.delete(ownerId, id);
-      if (!deleted) throw NOT_FOUND();
-      // Drop the audience row for this now-deleted basket (polymorphic subject,
-      // no cascade). Hygiene only — the enforcement joins already exclude it.
-      await audience.clearForSubject('conglomerate', id);
+      return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
+        // The one branch that had neither scope nor readability check (#1849).
+        // A custom-asset-tainted basket is not server-side readable while the
+        // caller is scoped out, so it is not deletable either — same opaque 404
+        // as `GET /:id`, exactly as if the id did not exist.
+        await assertReadable(ownerId, id, includeCustomAssets);
+        // Deleting a conglomerate still embedded in another is blocked with the
+        // parent names — fail-safe, no silent detach (V5-P6). A concurrent nest
+        // added between this check and the delete is backstopped by the child
+        // FK's NO ACTION. `parentsOf` is owner-scoped, so a foreign id yields []
+        // here and 404s below — no existence leak.
+        const parents = await repo.parentsOf(ownerId, id);
+        if (parents.length > 0) {
+          // A tainted parent is omitted from `GET /conglomerates` while the
+          // caller is scoped out, so its NAME may not surface here either — this
+          // 409 used to put the whole list of them in front of a paranoid
+          // caller. The refusal itself stands (the FK is real and the parent is
+          // still there); it is only spelled without naming what the scope
+          // hides.
+          const hidden = includeCustomAssets ? null : await customAssetTaintedIds(ownerId);
+          const named = hidden ? parents.filter((p) => !hidden.has(p.id)) : parents;
+          throw new ApiError(
+            409,
+            'CONGLOMERATE_IN_USE',
+            named.length > 0
+              ? `This conglomerate is a constituent of ${named.map((p) => p.name).join(', ')} — remove it there first.`
+              : 'This conglomerate is a constituent of another conglomerate — remove it there first.',
+            { parents: named },
+          );
+        }
+        const deleted = await repo.delete(ownerId, id);
+        if (!deleted) throw NOT_FOUND();
+        // Drop the audience row for this now-deleted basket (polymorphic subject,
+        // no cascade). Hygiene only — the enforcement joins already exclude it.
+        await audience.clearForSubject('conglomerate', id);
+      });
     },
 
     async resolved(ownerId, id) {
