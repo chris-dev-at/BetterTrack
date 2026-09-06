@@ -19,6 +19,13 @@ import {
  * feature; unmapped surfaces (admin, auth, account, health, oauth…) are simply
  * not captured. The asset a request concerned is recorded only for asset-detail
  * reads, feeding the "top assets" panel.
+ *
+ * FIRST-PARTY means a human on our own client: a request carrying `req.apiKey`
+ * — a personal API key or a third-party OAuth grant (§6.13) — is a program, and
+ * it is never captured (#1847). A bot polling `GET /portfolios` every minute
+ * otherwise pinned its owner into DAU/WAU/MAU forever, drove the feature
+ * counters at its own poll rate, and wrote the LIFETIME `usage_activations`
+ * marker for an account no human had ever used.
  */
 
 /** Router segment (`/api/v1/<segment>`) → the coarse feature bucket. */
@@ -72,6 +79,9 @@ export function createUsageCaptureMiddleware(
       // account column. A normal user that owns a v2 vault is decided below per
       // target; vault presence alone is not an account kill.
       if (!user || user.privacyMode === 'paranoid') return true;
+      // A bearer principal is dropped on `finish` regardless, so do not spend a
+      // vault lookup deciding how to record traffic that is never recorded.
+      if (req.apiKey) return true;
       if (target) return vaulted.isOwnedPortfolioVaulted(user.id, target.portfolioId);
       // Per-asset quote/history routes contain no portfolio attribution. When
       // the account owns any vault, recording the requested ids can reconstruct
@@ -83,7 +93,10 @@ export function createUsageCaptureMiddleware(
     res.on('finish', () => {
       void suppression.then((suppressed) => {
         // Only successful, authenticated first-party traffic counts as usage.
-        if (!req.authUser || res.statusCode >= 400 || suppressed) return;
+        // `req.apiKey` is the discriminator every other bearer-aware surface
+        // uses (rate limiting, the settings routes); its presence means the
+        // caller is a token, not a person.
+        if (!req.authUser || req.apiKey || res.statusCode >= 400 || suppressed) return;
         // A legacy paranoid account is NEVER captured (§13.5 V5-P13 arc b). Its client
         // values the portfolio locally, which means one `GET /assets/:id/quote`
         // per holding per day — capturing those wrote the account's complete
