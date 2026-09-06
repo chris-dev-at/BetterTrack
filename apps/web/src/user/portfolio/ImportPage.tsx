@@ -12,6 +12,7 @@ import { IMPORT_MAX_DISTINCT_INSTRUMENTS } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { useAiCapability } from '../../lib/aiApi';
 import { ApiError } from '../../lib/apiClient';
 import { CASH_TAGS_QUERY_KEY, listCashTags } from '../../lib/cashApi';
 import {
@@ -187,6 +188,12 @@ export function ImportPage() {
     () => new Map((cashTagsQuery.data?.tags ?? []).map((tag) => [tag.id, tag])),
     [cashTagsQuery.data],
   );
+
+  // The shared AI capability read every AI surface keys visibility off. It is
+  // NOT part of `referenceLoading`: the wizard works identically with or without
+  // an assistant, so a slow or failed capability read must never gate the upload
+  // step — it only decides whether the budget line below is shown.
+  const aiCapability = useAiCapability();
 
   const referenceLoading =
     portfoliosQuery.isLoading ||
@@ -488,6 +495,22 @@ export function ImportPage() {
                   : t('portfolio.import.uploadCta')}
               </Button>
             </div>
+            {/*
+              The generic staging path may spend the caller's SHARED per-user
+              daily AI budget — the same one insights and the NL builder draw on
+              (§6.18, one cap per user, not per feature). Disclosed here, BEFORE
+              the upload that would spend it, as one compact line rather than a
+              panel; when no assistant is configured (or the `ai` flag is off)
+              `available` is false and nothing about AI renders at all (#1857).
+            */}
+            {aiCapability.data?.available ? (
+              <p className="bt-meta" style={{ maxWidth: 640 }}>
+                {t('portfolio.import.aiBudgetNote', {
+                  remaining: aiCapability.data.remaining,
+                  cap: aiCapability.data.dailyCap,
+                })}
+              </p>
+            ) : null}
           </div>
         </section>
       ) : null}

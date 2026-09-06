@@ -79,7 +79,7 @@ import type { MappedLine, PendingKindFields } from './types';
  *
  * ── WHERE THE MODEL IS, AND IS NOT ────────────────────────────────────────────
  *
- * The optional heavy-tier header fallback is threaded through to
+ * The optional header fallback is threaded through to
  * {@link understandTableWithAi} and nothing else. Its output is a PROPOSAL that
  * never enters `fieldWinners`, and {@link extractRowFields} — the single
  * function that decides which column a VALUE is read from — reads only
@@ -140,9 +140,9 @@ export interface GenericStagingResult {
 }
 
 export interface GenericStagingContext {
-  /** Heavy-tier header fallback. Omitted ⇒ deterministic mapping only. */
+  /** Header-mapping fallback. Omitted ⇒ deterministic mapping only. */
   header?: HeaderMappingAiContext;
-  /** Cheap-tier row classification. Omitted ⇒ stages 1–2 plus review. */
+  /** Row classification fallback. Omitted ⇒ stages 1–2 plus review. */
   rows?: ClassifyContext;
 }
 

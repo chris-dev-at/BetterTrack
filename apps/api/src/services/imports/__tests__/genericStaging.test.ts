@@ -13,7 +13,7 @@ import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { AI_PROPOSAL_CONFIDENCE, MAPPABLE_FIELDS } from '../columnMapping';
 import { stageGenericFile } from '../genericStaging';
-import { HEADER_MAPPING_AI_TIER, type ImportHeaderAiSeam } from '../headerMappingAi';
+import type { ImportAiSeam } from '../importAi';
 
 /**
  * THE GENERIC STAGING PATH (#964, §16 2026-07-31: "IMPORT IS A WIZARD THAT
@@ -361,10 +361,9 @@ describe('the AI header fallback can never decide anything', () => {
     path.join(fixtureDir, 'flatex-securities-unknown-headers.csv'),
   );
 
-  function seamAnswering(reply: string): ImportHeaderAiSeam {
+  function seamAnswering(reply: string): ImportAiSeam {
     return {
-      tier: HEADER_MAPPING_AI_TIER,
-      complete: async () => ({ text: reply, model: 'stub-heavy' }),
+      complete: async () => ({ text: reply, model: 'stub-model' }),
     };
   }
 
@@ -406,8 +405,7 @@ describe('the AI header fallback can never decide anything', () => {
   });
 
   it('degrades to the deterministic pipeline when the seam THROWS', async () => {
-    const failing: ImportHeaderAiSeam = {
-      tier: HEADER_MAPPING_AI_TIER,
+    const failing: ImportAiSeam = {
       complete: async () => {
         throw new Error('provider exploded');
       },

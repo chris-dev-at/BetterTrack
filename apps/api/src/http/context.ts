@@ -252,8 +252,7 @@ import {
 } from '../services/account/vaultedPortfolioEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
-import { bindHeavyTierAi } from '../services/imports/headerMappingAi';
-import { bindCheapTierAi } from '../services/imports/rowClassifierAi';
+import { bindImportAi } from '../services/imports/importAi';
 import {
   createStandingOrderService,
   type StandingOrderService,
@@ -1661,15 +1660,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     // routine refusal.
     problems,
     paranoid: paranoidGuard,
-    // Generic staging path (#964, §16 2026-07-31): both AI tiers are OPTIONAL
-    // and neither can decide anything on its own — the heavy tier only PROPOSES
-    // column labels a human confirms, and the cheap tier's row verdicts are
-    // review-flagged. `bindHeavyTierAi` refuses under a test runner by design,
-    // and either binder may throw when no provider is configured; `safeSeam` in
-    // the service turns all of that into "run deterministically", so an import
-    // never fails because AI is unavailable.
-    headerAi: (userId) => bindHeavyTierAi(ai, userId),
-    rowAi: (userId) => bindCheapTierAi(ai, userId),
+    // Generic staging path (#964, §16 2026-07-31): both AI seams are OPTIONAL
+    // and neither can decide anything on its own — the header seam only PROPOSES
+    // column labels a human confirms, and the row seam's verdicts are
+    // review-flagged. They are the SAME seam bound twice, because §6.18
+    // configures one local model and one per-user daily budget; there is no tier
+    // to pick between (#1857). A binder that throws (no provider configured) is
+    // turned into "run deterministically" by `safeSeam` in the service, so an
+    // import never fails because AI is unavailable.
+    headerAi: (userId) => bindImportAi(ai, userId),
+    rowAi: (userId) => bindImportAi(ai, userId),
   });
 
   // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from
