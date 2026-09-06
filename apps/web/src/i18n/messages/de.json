@@ -2145,6 +2145,7 @@
       "fileLabel": "CSV-Export",
       "brokerLabel": "Broker",
       "brokerAuto": "Automatisch erkennen",
+      "aiBudgetNote": "Erkennt kein Broker die Datei, hilft die lokale KI beim Benennen der Spalten und beim Lesen unklarer Zeilen — sie nutzt dasselbe tägliche KI-Kontingent wie der Rest der App (heute noch {{remaining}} von {{cap}} übrig).",
       "uploadCta": "Vorschau erstellen",
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",

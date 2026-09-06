@@ -1,81 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AiService } from '../../ai/aiService';
 import { MAPPABLE_FIELDS, type MappableField } from '../columnMapping';
 import {
-  bindHeavyTierAi,
   buildHeaderMappingPrompt,
   buildHeaderMappingSystemPrompt,
-  HEADER_MAPPING_AI_TIER,
   MAX_AI_HEADERS,
   MAX_HEADER_PROMPT_CHARS,
   parseHeaderMappingReply,
-  type ImportHeaderAiSeam,
 } from '../headerMappingAi';
-import { REPLY_SEPARATOR_CHARS, type ImportRowAiSeam } from '../rowClassifierAi';
+import { REPLY_SEPARATOR_CHARS } from '../rowClassifierAi';
 import { MAX_CELL_CHARS } from '../table';
 
 /**
- * The HEAVY-tier header-mapping plumbing (tier pinning + prompt contract +
- * defensive parse), pure and model-free: nothing here can reach a provider, and
- * the binder that COULD refuses to run under a test runner at all.
+ * The header-mapping plumbing (prompt contract + defensive parse), pure and
+ * model-free: nothing here can reach a provider. The seam itself, its ONE binder
+ * and the failure taxonomy live in `importAi.test.ts` — there is no model tier
+ * to pin any more, because the deployment resolves exactly one model (#1857).
  */
 
 const VOCABULARY = new Set<MappableField>(MAPPABLE_FIELDS);
-const NO_ENV: NodeJS.ProcessEnv = {};
-
-function fakeAiService(text = '3=amount'): Pick<AiService, 'complete'> {
-  return {
-    complete: async () => ({ text, model: 'stub', provider: 'ollama' }),
-  };
-}
-
-describe('HEAVY-tier pinning', () => {
-  it('pins header mapping to the HEAVY tier (row classification stays cheap)', () => {
-    expect(HEADER_MAPPING_AI_TIER).toBe('heavy');
-  });
-
-  it('refuses to bind the real heavy model under a test runner', () => {
-    // The owner constraint, enforced rather than documented: a test that wired
-    // the genuine AiService in would otherwise reach the configured qwen3.8 on
-    // this machine. The default env IS the process env, so this is the shape
-    // every accidental wiring takes.
-    expect(() => bindHeavyTierAi(fakeAiService(), 'user-1')).toThrow(/heavy/i);
-    expect(() => bindHeavyTierAi(fakeAiService(), 'user-1')).toThrow(/test runner/i);
-  });
-
-  it('binds through the guarded AiService.complete path with temperature 0', async () => {
-    const calls: { userId: string; request: Parameters<AiService['complete']>[1] }[] = [];
-    const ai = {
-      complete: async (userId: string, request: Parameters<AiService['complete']>[1]) => {
-        calls.push({ userId, request });
-        return { text: '3=amount', model: 'qwen3:8b', provider: 'ollama' };
-      },
-    };
-    // The env is INJECTED here, so the guard above can be proven and the wiring
-    // it guards can still be tested — against a stub, never a provider.
-    const seam = bindHeavyTierAi(ai, 'user-1', NO_ENV);
-
-    expect(seam.tier).toBe('heavy');
-    const result = await seam.complete({ system: 'SYS', prompt: 'PROMPT' });
-    expect(result).toEqual({ text: '3=amount', model: 'qwen3:8b' });
-    expect(calls[0]!.userId).toBe('user-1');
-    expect(calls[0]!.request.system).toBe('SYS');
-    expect(calls[0]!.request.prompt).toBe('PROMPT');
-    expect(calls[0]!.request.temperature).toBe(0);
-  });
-
-  it('structurally rejects a CHEAP-tier seam where the HEAVY one is required', () => {
-    const cheap: ImportRowAiSeam = {
-      complete: async () => ({ text: '', model: '' }),
-    };
-    // @ts-expect-error — the cheap row-classifier seam carries no `tier`, so it
-    // cannot stand in for the heavy header seam. Tier is enforced by the type,
-    // not by whoever remembers to read the JSDoc.
-    const misuse: ImportHeaderAiSeam = cheap;
-    expect(misuse.tier).toBeUndefined();
-  });
-});
 
 describe('system prompt — the closed target vocabulary', () => {
   const system = buildHeaderMappingSystemPrompt(VOCABULARY);

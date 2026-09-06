@@ -2145,6 +2145,7 @@
       "fileLabel": "CSV export",
       "brokerLabel": "Broker",
       "brokerAuto": "Detect automatically",
+      "aiBudgetNote": "If no broker recognises the file, the local assistant helps name its columns and read unclear rows — it draws on the same daily AI budget as the rest of the app ({{remaining}} of {{cap}} left today).",
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",

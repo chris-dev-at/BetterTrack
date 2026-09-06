@@ -7,9 +7,9 @@ import {
   parseRowKindBatchReply,
   ROW_CLASSIFY_SYSTEM_PROMPT,
   type AiBatchRow,
-  type ImportRowAiSeam,
   type RowClassificationAiLabel,
 } from './rowClassifierAi';
+import { importAiFailureOf, type ImportAiFailure, type ImportAiSeam } from './importAi';
 
 /**
  * Row-kind classification for the import wizard (PROJECTPLAN.md §16
@@ -27,7 +27,7 @@ import {
  * 2. **keyword** — a multilingual first-match-wins verb table over the row's
  *    text, evaluated through RE2 alternations (linear time, so no pattern can
  *    stall an import — same discipline as the expense rule engine).
- * 3. **ai** — the CHEAP-tier fallback for the ambiguous remainder ONLY: batched
+ * 3. **ai** — the model fallback for the ambiguous remainder ONLY: batched
  *    into as few calls as the caps allow, parsed defensively, kind labels only
  *    (`rowClassifierAi.ts`).
  *
@@ -137,11 +137,16 @@ export const DEFAULT_AI_MAX_CALLS = 3;
 
 export interface ClassifyContext {
   /**
-   * The bound CHEAP-tier seam (`bindCheapTierAi`). Omitted ⇒ stage 3 is disabled
-   * and every ambiguous row stays `needsReview` — classification degrades to
-   * stages 1–2 plus review, never to a guess.
+   * The bound import seam (`bindImportAi`). Omitted ⇒ stage 3 is disabled and
+   * every ambiguous row stays `needsReview` — classification degrades to stages
+   * 1–2 plus review, never to a guess.
+   *
+   * Every call here spends a unit of the caller's SHARED per-user daily AI
+   * budget (§6.18 — one cap per user, not per feature), which is why the budget
+   * below is small and why an exhausted cap stops the loop rather than
+   * re-issuing guaranteed refusals.
    */
-  ai?: ImportRowAiSeam;
+  ai?: ImportAiSeam;
   aiMaxRowsPerCall?: number;
   aiMaxCalls?: number;
   reviewConfidenceBelow?: number;
@@ -1151,15 +1156,35 @@ const AI_CORROBORATED_CONFIDENCE = 0.85;
 const UNRESOLVED_CONFIDENCE = 0.25;
 
 /**
+ * The evidence a row carries when the CALL, rather than the reply, is what
+ * failed. Kept apart from the malformed-reply note below because they are not
+ * the same fact: a spent budget comes back tomorrow, an unconfigured assistant
+ * is nothing to wait for, an unreachable one is worth retrying — and none of
+ * the three is the model answering badly about this row (#1857).
+ */
+const AI_FAILURE_EVIDENCE: Record<ImportAiFailure, string> = {
+  'cap-exhausted': 'ai skipped — daily ai budget spent',
+  unavailable: 'ai skipped — no assistant configured',
+  failed: 'ai skipped — the assistant did not answer',
+};
+
+/** A batch's outcome: the labels it resolved, and why it resolved none. */
+interface BatchOutcome {
+  labels: Map<number, RowClassificationAiLabel | null>;
+  /** Null ⇒ the call itself succeeded; the labels are what the model said. */
+  failure: ImportAiFailure | null;
+}
+
+/**
  * One defensive batch call. Rows arrive with their POOL-GLOBAL index — the
  * prompt numbers rows by their position in the file (continuing across
  * chunks), so a reply stays attributable to the right row and the defensive
  * parser can reject out-of-batch hallucinations.
  */
 async function classifyBatchWithAi(
-  seam: ImportRowAiSeam,
+  seam: ImportAiSeam,
   batch: readonly { index: number; row: ClassifiableRow }[],
-): Promise<Map<number, RowClassificationAiLabel | null>> {
+): Promise<BatchOutcome> {
   const batchRows: AiBatchRow[] = batch.map(({ index, row }) => ({
     index,
     // Capped here as well as in the haystack: the prompt builder trims to 120
@@ -1182,12 +1207,16 @@ async function classifyBatchWithAi(
     for (const batchRow of batchRows) {
       labels.set(batchRow.index, parsed.get(batchRow.index) ?? null);
     }
-  } catch {
-    // Provider unavailable/erroring: every row of the batch stays unresolved —
-    // the real seam refunds the daily cap itself; we never retry here.
+  } catch (err) {
+    // The CALL failed — a spent daily budget, no configured assistant, or one
+    // that did not answer. Every row of the batch stays unresolved and the
+    // reason travels with the outcome, so the review row says which of the
+    // three happened instead of blaming the model's reply. We never retry here;
+    // the real seam refunds the daily cap itself.
     for (const batchRow of batchRows) labels.set(batchRow.index, null);
+    return { labels, failure: importAiFailureOf(err) };
   }
-  return labels;
+  return { labels, failure: null };
 }
 
 /**
@@ -1239,10 +1268,15 @@ export async function classifyRows(
     if (!resolved && verdict.aiEligible) pool.push({ index, row });
   }
 
-  // Stage 3: batched CHEAP-tier fallback for the ambiguous remainder ONLY —
+  // Stage 3: batched model fallback for the ambiguous remainder ONLY —
   // spending a model call on a row stages 1–2 settled would be a bug.
   if (ctx.ai !== undefined && pool.length > 0) {
     let callsUsed = 0;
+    // Once the seam has said the caller's shared daily budget is spent, every
+    // further call in this import is a guaranteed refusal. The budgeted
+    // remainder is not spent on one — the rows are flagged with that reason
+    // directly (#1857).
+    let capExhausted = false;
     // `cursor` advances by the validated step UNCONDITIONALLY. The old loop
     // advanced by `batch.length`, so any input that produced an empty batch
     // spun forever; nothing a caller passes can wedge this one.
@@ -1250,19 +1284,38 @@ export async function classifyRows(
       const batch = pool.slice(cursor, cursor + rowsPerCall);
       if (batch.length === 0) continue;
 
-      if (callsUsed >= maxCalls) {
-        // Budget exhausted: flag the remainder for review rather than looping.
+      if (capExhausted || callsUsed >= maxCalls) {
+        // No call is made for this batch: either the per-import call budget is
+        // spent, or the user's daily AI budget is — flag the remainder for
+        // review, with the reason, rather than looping.
+        const note = capExhausted
+          ? AI_FAILURE_EVIDENCE['cap-exhausted']
+          : 'ai call budget exhausted';
         for (const { index } of batch) {
           const flagged = verdicts[index];
           if (flagged === undefined) continue;
           flagged.needsReview = true;
-          flagged.evidence += '; ai call budget exhausted';
+          if (capExhausted)
+            flagged.confidence = Math.min(flagged.confidence, UNRESOLVED_CONFIDENCE);
+          flagged.evidence += `; ${note}`;
         }
         continue;
       }
       callsUsed += 1;
 
-      const labels = await classifyBatchWithAi(ctx.ai, batch);
+      const { labels, failure } = await classifyBatchWithAi(ctx.ai, batch);
+      if (failure !== null) {
+        if (failure === 'cap-exhausted') capExhausted = true;
+        for (const { index } of batch) {
+          const flagged = verdicts[index];
+          if (flagged === undefined) continue;
+          flagged.needsReview = true;
+          flagged.confidence = Math.min(flagged.confidence, UNRESOLVED_CONFIDENCE);
+          flagged.evidence += `; ${AI_FAILURE_EVIDENCE[failure]}`;
+        }
+        continue;
+      }
+
       for (const sent of batch) {
         const prior = verdicts[sent.index];
         if (prior === undefined) continue;

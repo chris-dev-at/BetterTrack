@@ -23,7 +23,7 @@
  * header lands in `unmapped`. Pure functions, no I/O.
  *
  * A THIRD evidence source is optional and strictly last: {@link mapColumnsWithAi}
- * shows a HEAVY-tier model the headers the two sources above could not name
+ * shows the configured local model the headers the two sources above could not name
  * (#964, `headerMappingAi.ts`). It is opt-in through an injected seam, it costs
  * at most one call per file, and what it returns is a PROPOSAL — flagged,
  * provenance-marked, and never a `fieldWinner` — so the deterministic answer
@@ -38,9 +38,9 @@ import {
   buildHeaderMappingSystemPrompt,
   parseHeaderMappingReply,
   type AiHeaderCandidate,
-  type ImportHeaderAiSeam,
   promptableCandidates,
 } from './headerMappingAi';
+import type { ImportAiSeam } from './importAi';
 import {
   ISO_CURRENCIES,
   MAX_CELL_CHARS,
@@ -1014,15 +1014,15 @@ export const AI_PROPOSAL_SOURCE = 'ai';
 export const AI_PROPOSAL_CONFIDENCE = CONFIDENCE_FLOOR;
 
 /** Every proposal's `reason`, so a reviewer can never mistake one for evidence. */
-const AI_PROPOSAL_REASON = 'ai proposal (heavy tier) — a suggestion, not a mapping';
+const AI_PROPOSAL_REASON = 'ai proposal — a suggestion, not a mapping';
 
 export interface HeaderMappingAiContext {
   /**
-   * The bound HEAVY-tier seam (`bindHeavyTierAi`). Omitted ⇒ the fallback is
+   * The bound import seam (`bindImportAi`). Omitted ⇒ the fallback is
    * disabled and the result is exactly {@link mapColumns}' — unmapped headers
    * stay unmapped, which is today's behaviour and the safe default.
    */
-  ai?: ImportHeaderAiSeam;
+  ai?: ImportAiSeam;
 }
 
 /**

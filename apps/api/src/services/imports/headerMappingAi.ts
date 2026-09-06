@@ -1,4 +1,3 @@
-import type { AiService } from '../ai/aiService';
 // TYPE-ONLY, and it has to stay that way: `columnMapping.ts` imports the runtime
 // functions below, so a runtime import back would close a cycle and put
 // `MAPPABLE_FIELDS` in the temporal dead zone at module load. The runtime
@@ -19,14 +18,15 @@ import { MAX_CELL_CHARS } from './table';
  *
  * Four hard mandates live here rather than in discipline:
  *
- * - **HEAVY tier, and ONCE per file.** {@link HEADER_MAPPING_AI_TIER} is pinned
- *   to `'heavy'` — the measured routing study is the whole reason this module
- *   exists. Header mapping is the once-per-file HARD job the cheap model failed
- *   (≈5/10, and it failed exactly the domain traps the dictionary encodes:
- *   `Valuta` is a date, `Nominale` is a quantity). Row classification is the
- *   opposite shape — bulk, easy, measured 6/6 — and stays CHEAP. Because this
- *   runs at most once per uploaded file, the heavy tier costs a single call, not
- *   a per-row bill.
+ * - **ONCE per file, on the ONE configured model.** There is no model tier:
+ *   §6.18 configures a single local Ollama endpoint/model pair and this feature
+ *   shares it — and the caller's per-user daily budget — with row
+ *   classification, insights and the NL builder (see `importAi.ts`). Header
+ *   mapping is the HARD half of that shared job (the domain traps the dictionary
+ *   encodes: `Valuta` is a date, `Nominale` is a quantity), which is why the
+ *   deterministic mapper goes first and why the model's answer is only ever a
+ *   PROPOSAL. Because this runs at most once per uploaded file, it costs a
+ *   single call, not a per-row bill.
  * - **Field names only.** The model picks a name from the CLOSED target
  *   vocabulary the caller hands it. It never produces or alters a value, a
  *   number, a date, or a header (§16 2026-07-22 LOCAL AI ONLY mandate). An
@@ -39,12 +39,6 @@ import { MAX_CELL_CHARS } from './table';
  *   could impersonate the reply protocol, and the contract is restated AFTER the
  *   header block so the last instruction the model reads is ours.
  */
-
-/**
- * The configured model tier this feature consumes. Deployment wiring resolves
- * this to the configured heavy endpoint/model; nothing here names a model.
- */
-export const HEADER_MAPPING_AI_TIER = 'heavy' as const;
 
 /**
  * How many unmapped headers ONE (and only) call may carry.
@@ -72,63 +66,28 @@ export interface AiHeaderCandidate {
   header: string;
 }
 
-/**
- * The narrow completion seam the header mapper consumes.
+/*
+ * REMOVED with the tier fiction (#1857): `ImportHeaderAiSeam`,
+ * `HEADER_MAPPING_AI_TIER` and `bindHeavyTierAi`.
  *
- * `tier` is what separates it from `ImportRowAiSeam`, which is otherwise
- * structurally identical: a CHEAP-tier seam is not assignable here, so wiring
- * the row classifier's binder into the header mapper is a compile error rather
- * than a silent tier downgrade to the model this feature was measured to fail
- * on. Only {@link bindHeavyTierAi} produces one.
- */
-export interface ImportHeaderAiSeam {
-  readonly tier: typeof HEADER_MAPPING_AI_TIER;
-  complete(request: { system: string; prompt: string }): Promise<{ text: string; model: string }>;
-}
-
-/**
- * Refuse to hand out a HEAVY-tier binding under a test runner.
+ * The seam was `ImportRowAiSeam` plus a `readonly tier: 'heavy'` field, and the
+ * whole point of the field was to make wiring the row classifier's binder in
+ * here a compile error — "a silent tier downgrade to the model this feature was
+ * measured to fail on". There was no other model to downgrade to: §6.18
+ * configures ONE local endpoint/model pair, `AiRegistry.resolve()` returns that
+ * one provider, and both binders went through the same `AiService.complete`. The
+ * type was enforcing a distinction the deployment could not make.
  *
- * The owner constraint is that this machine must never run the real heavy model
- * from a test. Discipline does not enforce that — a future integration test that
- * boots the app and posts a file would wire the genuine `AiService` in and
- * quietly reach the configured endpoint, with the only symptom being a slow
- * suite. So the ONE path to the heavy tier stops instead, loudly, naming the
- * stub as the fix.
+ * `bindHeavyTierAi` additionally REFUSED to bind under a test runner, so no test
+ * could observe how the seam actually resolves — the production path was
+ * structurally untestable, and the refusal protected against reaching a "heavy
+ * model" that does not exist. An unconfigured deployment (which is what a test
+ * run is) already fails closed inside `AiService.complete`:
+ * `AiUnavailableError`, which `mapColumnsWithAi` degrades on.
  *
- * The env is a parameter (defaulting to the real one) rather than a direct
- * `process.env` read so the wiring this guards — user id passthrough,
- * temperature 0 — is still testable against a stub. Passing an env explicitly is
- * a deliberate act; it does not weaken the default any caller gets.
+ * The single seam and its one binder now live in `importAi.ts`, and this module
+ * consumes `ImportAiSeam` like every other import AI consumer.
  */
-function assertHeavyTierAllowed(env: NodeJS.ProcessEnv): void {
-  if (env.VITEST === undefined && env.NODE_ENV !== 'test') return;
-  throw new Error(
-    'Refusing to bind the HEAVY AI tier under a test runner: this would call the real ' +
-      'heavy model. Inject a stub ImportHeaderAiSeam instead.',
-  );
-}
-
-/**
- * Bind the guarded {@link AiService.complete} path (feature flag + daily cap +
- * refund-on-failure) to the header mapper's HEAVY-tier seam. Temperature 0 is
- * fixed: a mapping proposal must be reproducible for the same file, or two
- * uploads of one statement disagree with each other.
- */
-export function bindHeavyTierAi(
-  ai: Pick<AiService, 'complete'>,
-  userId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): ImportHeaderAiSeam {
-  assertHeavyTierAllowed(env);
-  return {
-    tier: HEADER_MAPPING_AI_TIER,
-    complete: async ({ system, prompt }) => {
-      const completion = await ai.complete(userId, { system, prompt, temperature: 0 });
-      return { text: completion.text, model: completion.model };
-    },
-  };
-}
 
 /** `date, symbol, isin, …` — the caller's vocabulary, rendered for a prompt. */
 function vocabularyList(vocabulary: Iterable<MappableField>): string {
