@@ -41,7 +41,11 @@ export const OAUTH_AUTH_CODE_TTL_SECONDS = 60;
 export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'portfolio:read':
     'View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them',
-  'portfolio:write': 'Create and edit portfolios, transactions, custom assets and cash',
+  // #1860 — `/settings/taxes` resolves to this scope pair, so the write half
+  // also switches the account's tax regime. Named here because the consent
+  // screen is the only place the user is told what they are authorizing.
+  'portfolio:write':
+    "Create and edit portfolios, transactions, custom assets and cash, and change the account's tax regime for every future sell and dividend",
   'workboard:read': 'View your watchlist, conglomerates and backtests',
   'workboard:write': 'Create and edit your watchlist and conglomerates',
   'market:read': 'Search assets and read market data',
@@ -52,23 +56,138 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'notifications:write': 'Mark your notifications as read and change your notification settings',
   'chat:read': 'Read your messages',
   'chat:write': 'Send messages on your behalf',
+  // #1860 — the scope also carries the §15 vault control plane, existing-passkey
+  // management and first-party grant revocation, all of them destructive and a
+  // vault deletion irreversibly so (§6.16: seed phrase only, no escrow).
   'account:security':
-    'Manage your account security: sign-in sessions, two-factor, password change and app PIN',
+    "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault",
   // #405 — plain-language consent copy for the price-alerts scopes.
   'alerts:read': 'View your price alerts',
   'alerts:write': 'Create, edit, re-arm and delete your price alerts',
   // #1041 — plain-language consent copy for the cash-classification scopes.
   'cash:read': 'View your cash tags, budgets, rules, summaries and trends',
   'cash:write': 'Create and edit your cash tags, budgets and rules',
-  // #1042 — participation only; group administration remains browser-session-only.
+  // #1042 participation PLUS chain administration: the owner-approved board-#67
+  // widening (§16 2026-08-07) supersedes the participation-only rule of §16
+  // 2026-08-04, so `mirrorchain:write` reaches create/rename, member management,
+  // ownership transfer and chain deletion. Unlisted `/mirrorchain` routes stay
+  // default-closed (#1860 corrected the copy this comment used to understate).
   'mirrorchain:read': 'View your group portfolios, members, activity and invitations',
-  'mirrorchain:write': 'Accept or decline group invitations and leave group portfolios',
+  'mirrorchain:write':
+    'Join or leave group portfolios and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio',
   // #1043 — one inherently read-write scope; transitions remain browser-session-only.
   'vault:sync': 'Synchronize your client-encrypted vault across your devices',
   // #1315/#1338 — authenticated feedback capture plus caller-owned status history.
   'feedback:write': 'Send feedback, feature requests and bug reports on your behalf',
   'feedback:read': 'View your feedback submissions and their status',
 };
+
+// ── Consent-copy truthfulness census (#1860) ────────────────────────────────
+/** One bearer route template (method + `{param}` path) named by a claim. */
+export interface OAuthScopeCapabilityRoute {
+  readonly method: string;
+  readonly path: string;
+}
+
+/**
+ * One capability a scope really opens that its module name does not imply —
+ * typically destructive or irreversible — bound to the exact bearer routes that
+ * grant it and to the phrase the consent copy must contain for it.
+ */
+export interface OAuthScopeCapabilityClaim {
+  /** Stable id; also the key the web bundle guard uses for the German phrase. */
+  readonly id: string;
+  readonly scope: ApiKeyScope;
+  /** The bearer route templates that grant this capability. */
+  readonly routes: readonly OAuthScopeCapabilityRoute[];
+  /** Substring {@link OAUTH_SCOPE_LABELS} for {@link scope} must contain. */
+  readonly enPhrase: string;
+  /** Why this capability needs naming — the decision, in one line. */
+  readonly reason: string;
+}
+
+/**
+ * The link between what a scope GRANTS and what the consent screen SAYS.
+ *
+ * Three scopes drifted because a later owner-approved widening grew a bearer
+ * allowlist and left the copy behind (#1860), and nothing tied the two together:
+ * the picker test compared the label to itself. This table closes that loop from
+ * both sides —
+ *  - `apps/api` walks the REAL bearer allowlists against it, so a destructive
+ *    route added to an allowlist that no claim names fails CI;
+ *  - `apps/web` walks the EN + DE bundles against it, so a named capability
+ *    cannot go missing from either locale's copy.
+ *
+ * It is documentation plus a gate, never a second enforcement point: the
+ * middleware's allowlists remain the only thing that decides access.
+ */
+export const OAUTH_SCOPE_CAPABILITY_CLAIMS = [
+  {
+    id: 'mirrorchain.delete-chain',
+    scope: 'mirrorchain:write',
+    routes: [{ method: 'DELETE', path: '/mirrorchain/chains/{chainId}' }],
+    enPhrase: 'delete a group portfolio',
+    reason: 'Dissolving a chain destroys the shared portfolio for every member (board #67).',
+  },
+  {
+    id: 'mirrorchain.transfer-ownership',
+    scope: 'mirrorchain:write',
+    routes: [{ method: 'POST', path: '/mirrorchain/chains/{chainId}/transfer' }],
+    enPhrase: 'transfer ownership',
+    reason: 'The single transferable OWNER has final say; handing it away is irreversible here.',
+  },
+  {
+    id: 'mirrorchain.manage-members',
+    scope: 'mirrorchain:write',
+    routes: [
+      { method: 'POST', path: '/mirrorchain/chains/{chainId}/invites' },
+      { method: 'PATCH', path: '/mirrorchain/chains/{chainId}/members/{userId}/role' },
+      { method: 'DELETE', path: '/mirrorchain/chains/{chainId}/members/{userId}' },
+    ],
+    enPhrase: 'invite, promote and remove members',
+    reason: 'Membership and manage rights are chain administration, not participation.',
+  },
+  {
+    id: 'account-security.delete-vault',
+    scope: 'account:security',
+    routes: [{ method: 'DELETE', path: '/vaults/{vaultId}' }],
+    enPhrase: 'permanently deleting a vault',
+    reason: 'A vault opens by seed phrase with no escrow (§6.16) — deletion is unrecoverable.',
+  },
+  {
+    id: 'account-security.portfolio-vault-move',
+    scope: 'account:security',
+    routes: [
+      { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-in' },
+      { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out/challenge' },
+      { method: 'POST', path: '/portfolios/{portfolioId}/vault/move-out' },
+    ],
+    enPhrase: 'moving portfolios in and out of a vault',
+    reason: 'The §15 transitions move a whole portfolio between server rows and ciphertext.',
+  },
+  {
+    id: 'account-security.delete-passkey',
+    scope: 'account:security',
+    routes: [{ method: 'DELETE', path: '/auth/passkeys/{id}' }],
+    enPhrase: 'deleting a passkey',
+    reason: 'Removing a sign-in credential can lock the owner out of their own account.',
+  },
+  {
+    id: 'account-security.revoke-grant',
+    scope: 'account:security',
+    routes: [{ method: 'DELETE', path: '/settings/oauth-grants/{id}' }],
+    enPhrase: "revoking another app's access",
+    reason: "A first-party grant can kill a sibling app's tokens immediately.",
+  },
+  {
+    id: 'portfolio.tax-regime',
+    scope: 'portfolio:write',
+    routes: [{ method: 'PATCH', path: '/settings/taxes' }],
+    enPhrase: 'tax regime',
+    reason:
+      'Switching the regime applies FORWARD to every future sell and dividend (§16 2026-07-08).',
+  },
+] as const satisfies readonly OAuthScopeCapabilityClaim[];
 
 // ── Redirect URI validation ─────────────────────────────────────────────────
 /** Schemes that must never be a redirect target regardless of shape. */

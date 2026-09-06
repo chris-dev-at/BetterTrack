@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   API_KEY_SCOPES,
   type ApiKeyScope,
+  OAUTH_SCOPE_LABELS,
   type MeResponse,
   type OAuthApproveResponse,
   type OAuthAuthorizationDetailsResponse,
@@ -206,6 +207,26 @@ test('third-party card shows the signed-in account plus Use another account, and
       code_challenge_method: 'S256',
     }),
   );
+});
+
+test('consent screen names the destructive capabilities the requested scopes carry (#1860)', async () => {
+  // The scopes whose copy understated what they grant — the consent screen is
+  // the ONLY place the user is told before authorizing, so the corrected
+  // sentences have to survive the whole label → i18n → ScopeSummary path.
+  vi.mocked(getAuthorizationDetails).mockResolvedValue({
+    ...DETAILS,
+    scopes: [
+      { scope: 'mirrorchain:write', label: OAUTH_SCOPE_LABELS['mirrorchain:write'] },
+      { scope: 'account:security', label: OAUTH_SCOPE_LABELS['account:security'] },
+      { scope: 'portfolio:write', label: OAUTH_SCOPE_LABELS['portfolio:write'] },
+    ],
+  });
+  renderConsent();
+
+  expect(await screen.findByText(/delete a group portfolio/i)).toBeInTheDocument();
+  expect(screen.getByText(/transfer ownership/i)).toBeInTheDocument();
+  expect(screen.getByText(/permanently deleting a vault/i)).toBeInTheDocument();
+  expect(screen.getByText(/tax regime/i)).toBeInTheDocument();
 });
 
 test('client logos load from the cross-port BetterTrack API and fall back if that cache read fails', async () => {

@@ -324,7 +324,7 @@
       "selectedOther": "{{count}} selected",
       "scopeDescription": {
         "portfolio:read": "View your portfolios, holdings, transactions, cash balances and the dividend, earnings and news feeds derived from them",
-        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash",
+        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash, and change the account's tax regime for every future sell and dividend",
         "workboard:read": "View your watchlist, conglomerates and backtests",
         "workboard:write": "Create and edit your watchlist and conglomerates",
         "market:read": "Search assets and read market data",
@@ -334,13 +334,13 @@
         "notifications:write": "Mark your notifications as read and change your notification settings",
         "chat:read": "Read your messages",
         "chat:write": "Send messages on your behalf",
-        "account:security": "Manage your account security: sign-in sessions, two-factor, password change and app PIN",
+        "account:security": "Manage your account security: sign-in sessions, two-factor, password change, app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault",
         "alerts:read": "View your price alerts",
         "alerts:write": "Create, edit, re-arm and delete your price alerts",
         "cash:read": "View your cash tags, budgets, rules, summaries and trends",
         "cash:write": "Create and edit your cash tags, budgets and rules",
         "mirrorchain:read": "View your group portfolios, members, activity and invitations",
-        "mirrorchain:write": "Accept or decline group invitations and leave group portfolios",
+        "mirrorchain:write": "Join or leave group portfolios and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio",
         "vault:sync": "Synchronize your client-encrypted vault across your devices",
         "feedback:write": "Send feedback, feature requests and bug reports on your behalf",
         "feedback:read": "View your feedback submissions and their status"
@@ -348,7 +348,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Read your portfolios, holdings, cash balances and the dividend, earnings and news feeds derived from them, or create and edit portfolios, transactions, custom assets and cash movements."
+          "description": "Read your portfolios, holdings, cash balances and the dividend, earnings and news feeds derived from them, or create and edit portfolios, transactions, custom assets and cash movements and change the account's tax regime for every future sell and dividend."
         },
         "workboard": {
           "label": "Workbench",
@@ -380,7 +380,7 @@
         },
         "mirrorchain": {
           "label": "Group portfolios",
-          "description": "View your group portfolios, members, activity and invitations, or accept and decline invitations and leave group portfolios."
+          "description": "View your group portfolios, members, activity and invitations, or join and leave them and administer them: create and rename a group, invite, promote and remove members, transfer ownership and delete a group portfolio."
         },
         "vaultSync": {
           "label": "Vault sync",
@@ -388,7 +388,7 @@
         },
         "accountSecurity": {
           "label": "Account security",
-          "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
+          "description": "Manage sign-in sessions, two-factor authentication, password, the app PIN, passkeys and connected apps — including deleting a passkey, revoking another app's access, moving portfolios in and out of a vault and permanently deleting a vault."
         },
         "feedback": {
           "label": "Feedback",
