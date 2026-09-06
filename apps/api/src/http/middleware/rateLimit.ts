@@ -77,6 +77,13 @@ export interface RateLimiters {
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
+  /**
+   * Ordinary social interaction writes, per user (#1855) — friend circles and
+   * the V5-P8 comment/reaction surface. Its own namespace, so it neither spends
+   * nor inherits the anti-probing budget {@link RateLimiters.social} holds for
+   * friend-request creation.
+   */
+  socialWrite: RequestHandler;
   /** Authenticated feedback capture, per author. */
   feedback: RequestHandler;
   /** Support-thread replies, per author — independent of the capture budget. */
@@ -106,6 +113,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     requestCosts,
     search,
     social,
+    socialWrite,
     feedback,
     feedbackThread,
     vault,
@@ -230,6 +238,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   const expensiveLimiter = createProgressiveLimiter(ctx.redis, 'expensive', expensive);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
+  const socialWriteLimiter = createProgressiveLimiter(ctx.redis, 'social_write', socialWrite);
   const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
   const feedbackThreadLimiter = createProgressiveLimiter(
     ctx.redis,
@@ -263,6 +272,10 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     search: guard([searchLimiter], keyByUserOrIp),
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
+    // Friend circles and the V5-P8 comment/reaction writes, per user (#1855).
+    // A capacity budget in its own namespace: exhausting it never closes the
+    // friend-request rail above, and exhausting that rail never closes this one.
+    socialWrite: guard([socialWriteLimiter], keyByUserOrIp),
     // Text-only feedback creation is deliberately small-volume: five accepted
     // POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),

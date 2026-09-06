@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -45,9 +45,14 @@ import { Alert } from '../components/ui';
  * the user explicitly opened would be pure friction. On expand the newest page
  * loads and the 30 s poll starts; "load older" walks backwards one page at a
  * time. TanStack Query poll-refetches (no realtime).
+ *
+ * The poll reads the NEWEST WINDOW ONLY (#1855) — one request per tick whatever
+ * the reader has loaded below it. The older windows are comments already
+ * written: they refresh when the thread is mutated, not on the clock.
  */
 
-const THREAD_POLL_MS = 30_000;
+/** The expanded thread's poll interval — exported so its cost test can advance to it. */
+export const THREAD_POLL_MS = 30_000;
 
 /**
  * A row of the curated six emoji, each a toggle chip with a live count. Origin:
@@ -134,9 +139,46 @@ export function CommentThread({
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     // Nothing is fetched — and nothing polls — while the section is collapsed.
     enabled: expanded,
+    // Deliberately NOT polled (#1855). A background refetch of an infinite query
+    // refetches EVERY loaded page, so a `refetchInterval` here cost one request
+    // per loaded page per tick: a reader who had clicked "load older" nine times
+    // issued twenty requests a minute from an idle tab, against a cost model
+    // that budgeted three. The poll lives on `head` below, which reads the one
+    // window that can change on its own.
+    retry: false,
+  });
+
+  const pages = thread.data?.pages ?? [];
+  // The NEWEST window — the only page a new comment can land in, and therefore
+  // the only one worth polling. It starts from the page the infinite query has
+  // already fetched (`initialData`), so expanding a thread still costs exactly
+  // one request; from then on each 30 s tick costs exactly one more, however far
+  // back the reader has paged.
+  const head = useQuery({
+    queryKey: [...threadKey, 'head'],
+    queryFn: ({ signal }) => getCommentThread(kind, subjectId, undefined, signal),
+    enabled: expanded && pages.length > 0,
+    initialData: () => pages[0],
+    initialDataUpdatedAt: () => thread.dataUpdatedAt,
+    staleTime: THREAD_POLL_MS,
     refetchInterval: expanded ? THREAD_POLL_MS : false,
     retry: false,
   });
+
+  // A comment posted while the reader is paged back shifts the newest window's
+  // boundary, so the cursor the older pages were walked from no longer abuts it
+  // and the comments in between would fall into the gap. Re-walking the pages
+  // closes it: a refetch re-derives every cursor from a fresh page 0. Guarded by
+  // the boundary it healed, so a slow refetch cannot loop.
+  const headCursor = head.data?.nextCursor;
+  const pagedCursor = pages[0]?.nextCursor;
+  const healedFor = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (pages.length < 2 || headCursor === undefined || headCursor === pagedCursor) return;
+    if (healedFor.current === headCursor) return;
+    healedFor.current = headCursor;
+    void thread.refetch();
+  }, [headCursor, pagedCursor, pages.length, thread]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: threadKey });
 
@@ -180,19 +222,24 @@ export function CommentThread({
     );
   }
 
-  // Page 0 is the newest window and carries the authoritative live count, so an
-  // expanded thread keeps its header honest off the poll it already runs; the
-  // collapsed head falls back to the cheap summary (which never polls).
-  const count = thread.data?.pages[0]?.commentCount ?? summary?.commentCount ?? 0;
-  // …and the item reaction chips beside it follow the same rule: page 0 carries
-  // the item-level aggregate fresh on every poll, while the summary is fetched
-  // once and never refetched (no `refetchInterval`, `refetchOnWindowFocus` off).
-  // Reading only the summary froze the chips at mount, so two friends with the
-  // thread open never saw each other's reactions (#1830).
-  const itemReactions = thread.data?.pages[0]?.reactions ?? summary?.reactions;
+  // The newest window carries the authoritative live count, so an expanded
+  // thread keeps its header honest off the poll it already runs; the collapsed
+  // head falls back to the cheap summary (which never polls).
+  const newest = head.data ?? pages[0];
+  const count = newest?.commentCount ?? summary?.commentCount ?? 0;
+  // …and the item reaction chips beside it follow the same rule: the newest
+  // window carries the item-level aggregate fresh on every poll, while the
+  // summary is fetched once and never refetched (no `refetchInterval`,
+  // `refetchOnWindowFocus` off). Reading only the summary froze the chips at
+  // mount, so two friends with the thread open never saw each other's
+  // reactions (#1830).
+  const itemReactions = newest?.reactions ?? summary?.reactions;
   const trimmed = draft.trim();
   // Pages arrive newest-first (page 0 is the newest window); render oldest-first.
-  const comments = [...(thread.data?.pages ?? [])].reverse().flatMap((page) => page.comments);
+  // The polled `head` REPLACES page 0 rather than sitting beside it, so a comment
+  // deleted since the page was read leaves the list on the next tick.
+  const loadedPages = newest ? [newest, ...pages.slice(1)] : pages;
+  const comments = [...loadedPages].reverse().flatMap((page) => page.comments);
   const reactionError = itemReactionMutation.isError || commentReactionMutation.isError;
 
   return (

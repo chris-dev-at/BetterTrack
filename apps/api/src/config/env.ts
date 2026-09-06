@@ -711,6 +711,7 @@ export const REQUEST_COST_KEYS = [
   'socialShared',
   'socialGroups',
   'socialThread',
+  'socialAudienceSet',
   'backtestPreview',
   'backtestCompare',
   'backtestSharedSandbox',
@@ -1050,6 +1051,14 @@ export interface AppConfig {
     search: ProgressiveSchedule;
     /** Friend-request creation, per user — blunts bulk email→username probing (§6.9). */
     social: ProgressiveSchedule;
+    /**
+     * Ordinary social interaction writes, per user — friend circles and the
+     * V5-P8 comment/reaction surface (§13.5 V5-P8, #1855). Deliberately NOT the
+     * anti-probing bucket above: these are normal use and are sized by §10's
+     * normal-use rule, so a shipped ceiling (a 200-member circle, a moderated
+     * spam flood) is actually reachable.
+     */
+    socialWrite: ProgressiveSchedule;
     /** Authenticated feedback submissions, per user — five per hour (#1315). */
     feedback: ProgressiveSchedule;
     /** Support-thread replies, per author — a conversation budget, not the capture guard (#1339). */
@@ -1171,6 +1180,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | vault (writes)   | user id, else IP   |  1 min |   60  | no      |
   // | vaultRead        | user id, else IP   |  1 min |  600  | no      |
   // | apiKey           | api key / grant id |  1 min |  120  | no      |
+  // | socialWrite      | user id, else IP   |  5 min | 1200  | no      |
   // | social           | user id, else IP   |  1 h   |   30  | STRICT  |
   // | feedback         | user id, else IP   |  1 h   |    5  | STRICT  |
   // | feedbackThread   | user id, else IP   |  1 h   |   60  | STRICT  |
@@ -1199,6 +1209,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //     polls ~43/min on its own) → general 9000  (5.7×)
   //   ⇒ worst realistic 1 min on /search ≈ 96  → search 300  (3.1×)
   //
+  // ── The SOCIAL WRITE bar (#1855) ──────────────────────────────────────────
+  //
+  // V5-P8 hung four ordinary interactions — comments, item and comment
+  // reactions, comment moderation — plus the whole friend-circle surface on
+  // `social`, the anti-probing bucket §10 exempts from the sizing rule. The
+  // result was a contract nobody could satisfy: `FRIEND_GROUP_MEMBERS_MAX` is
+  // 200 and there is no bulk endpoint, so filling the advertised circle at
+  // 30 requests/hour took ~7 hours of perfectly paced clicking — and spent the
+  // same counter that answers "may I send a friend request?".
+  //
+  // `socialWrite` is that bucket, sized by the rule. Its modelled window is the
+  // heaviest realistic FIVE MINUTES of one active user:
+  //
+  //   * filling one circle to the contract's 200-member ceiling, one click per
+  //     member (the whole point of the bucket)                            = 200
+  //   * curating circles: create / rename / delete + member removals       =  20
+  //   * a lively thread, a comment every ~12 s                             =  25
+  //   * an item owner moderating a spam flood off their portfolio          =  40
+  //   * the six item chips plus the six on each of a few comments, toggled
+  //     and re-toggled while reading                                       =  60
+  //
+  //   ⇒ worst realistic 5 min ≈ 345 writes → socialWrite 1200  (3.5×)
+  //
+  // Friend-request creation itself does NOT move: it stays on `social` at
+  // 30/hour with the strict ladder, because that is the bucket's actual job.
+  //
   // The exact arithmetic behind those three numbers is pinned, term by term, in
   // `config/__tests__/rateLimitTable.test.ts`.
   //
@@ -1210,7 +1246,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // ceiling on those too. The endpoints below are the ones for which `general`
   // is the ONLY guard and whose per-request work is unbounded or scales with
   // user-controlled input; they also spend from a second dimension measured in
-  // WORK UNITS (`expensive`, 3500 units / min per user).
+  // WORK UNITS (`expensive`, 4000 units / min per user).
   //
   // ONE UNIT ≈ one ordinary cheap read (a couple of indexed queries). The
   // weights are cost ESTIMATES read off the code, in the same spirit as the
@@ -1220,14 +1256,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // | endpoint                                  | key             | units | why |
   // |-------------------------------------------|-----------------|-------|-----|
   // | GET  /social/shared                       | socialShared    |   10  | unbounded `Promise.all` fan-out over friends × shared items |
-  // | GET  /social/groups                       | socialGroups    |    6  | every circle of the caller WITH every circle's roster + share counts — three grouped reads, ceiling-bounded since #1780 |
-  // | GET  /social/items/:kind/:id/thread       | socialThread    |    6  | two access resolutions, a participant probe, a page read and two grouped reaction aggregates — and the SPA POLLS it every 30 s while a thread is open (#1829) |
+  // | GET  /social/groups                       | socialGroups    |    7  | every circle of the caller WITH every circle's roster + share counts — three grouped reads, ceiling-bounded since #1780 |
+  // | GET  /social/items/:kind/:id/thread       | socialThread    |    7  | two access resolutions, a participant probe, a page read and two grouped reaction aggregates — and the SPA POLLS it every 30 s while a thread is open (#1829) |
+  // | GET  /social/items/:kind/:id/thread/summary | socialThread  |    7  | the SAME key (#1855): the collapsed head runs the identical access-resolution path, minus only the page fetch |
+  // | PUT  /social/audience/:kind/:subjectId    | socialAudienceSet |  20 | the largest fan-out of any social write: the owner's whole friendship set (no LIMIT), a group roster of up to 200, a paranoid transition lock per derived recipient and one notification emit each (#1855) |
   // | POST /backtest/preview                    | backtestPreview |   25  | a weight-perturbed vector is a cache MISS by construction; a miss walks the positions' history sequentially through the provider layer |
   // | POST /backtest/compare                    | backtestCompare |   20  | **per series** — the route multiplies by the body's id count (2–6 ⇒ 40–120): the same history walk as a preview, once per basket, over baskets that each flatten to up to 250 assets |
   // | POST /backtest/shared/:id/preview         | backtestSharedSandbox | 25 | a preview's engine run over a friend's basket, deliberately with NO Redis memo — every request computes |
   // | GET  /analytics/portfolios/:id/series     | analyticsSeries |   10  | portfolio series + optional compare series + contribution table |
   // | POST /imports                             | importCreate    |  100  | the row classifier drives ≈450 `pg_trgm` scans per batch |
-  // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    6  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
+  // | PATCH /imports/:id/rows/:rowId            | importRowResolve|    7  | one call per row in the wizard's bulk sweep; each re-derives a row's instrument, hash and duplicate verdict |
   //
   // `backtestCompare` is the table's only PER-UNIT-OF-WORK weight. A flat price
   // would either overcharge a two-basket comparison or undercharge a six-basket
@@ -1260,18 +1298,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //   * two three-basket comparisons (an explicit action, memoised
   //     across every permutation of one set)                      =  5 × 20 = 100
   //   * a couple of what-if tweaks on a friend's shared basket    =  2 × 25 =  50
-  //   * one expanded comment thread's 30 s poll, plus one opened  =  3 ×  6 =  18
+  //   * three shared items opened (a collapsed head each), one of
+  //     them expanded, and its 30 s poll — one NEWEST-WINDOW read
+  //     per tick since #1855, not one per loaded page             =  7 ×  7 =  49
+  //   * reworking the audience on a couple of shared items        =  2 × 20 =  40
   //
-  //   ⇒ worst realistic 1 min ≈ 1180 units → expensive 3550  (3.0×)
+  //   ⇒ worst realistic 1 min ≈ 1273 units → expensive 4000  (3.1×)
   //
-  // The ceiling cannot simply keep climbing with the table: `importRowResolve`,
-  // `socialGroups` and `socialThread` at 6 units would, at 3600, let 600
-  // requests/min through on cost alone — which is where `general` already sits,
-  // and where the cost dimension would stop being the binding one. A further
-  // weight added here has to fit under that, or move a weight.
+  // The ceiling and the FLOOR move together, which is why #1855 could raise it
+  // at all. A weight only binds while `expensive.limit / weight` stays under
+  // `general`'s 600 req/min — otherwise the count limiter trips first and the
+  // unit is decorative. At 3550 that floor was 6 and the budget was spent: the
+  // note here said the next weight "has to fit under 3600, or move a weight".
+  // Metering the collapsed thread head (previously metered by nothing at all)
+  // pushed the modelled minute past what a 6-unit floor could fund, so the
+  // floor went to 7 and the ceiling to 4000 — 4000/7 = 571 req/min, still under
+  // `general`. Scaling both is NOT a loosening: every endpoint's
+  // requests-per-minute-before-refusal is within a few percent of where it was.
   //
   // The sweep is a BURST, not a rate: 20 is the bar for a normal statement's
-  // undecided rows, and the budget leaves room for ~500 confirmations inside one
+  // undecided rows, and the budget leaves room for ~570 confirmations inside one
   // minute before the units run out. That ceiling sits just under `general`'s
   // 600 req/min, which is what a sweep over an unusually large batch would meet
   // first anyway — so the weight bounds a caller by the work it asks for without
@@ -1279,9 +1325,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   //
   // …and, on the other side, every weight is large enough that the COST budget
   // bites BEFORE the request COUNT one would: a caller doing nothing but these
-  // is stopped after 140 previews or sandboxes, 35 uploads, ~29 six-basket
-  // comparisons or 350 shared/analytics reads per minute — all under `general`'s
-  // 600 req/min. That is the point of the
+  // is stopped after 160 previews or sandboxes, 40 uploads, ~33 six-basket
+  // comparisons, 200 audience changes or 400 shared/analytics reads per minute —
+  // all under `general`'s 600 req/min. That is the point of the
   // dimension: a pathological caller is bounded by the WORK it asks for, not by
   // how many requests that work happens to arrive in. Both numbers are pinned
   // in `config/__tests__/rateLimitTable.test.ts`.
@@ -1555,37 +1601,51 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // expensive reads (the N-way comparison and the shared what-if sandbox)
       // into the table; and from 3500 to 3550 with #1829, which added the
       // comment thread. Each time the modelled pessimistic minute grew and the
-      // budget had to keep clearing it by 3×. The ceiling is nearly spent:
-      // `socialGroups` and `socialThread` at 6 units would, at 3600, let 600
-      // requests/min through on cost alone — which is where the request COUNT
-      // limiter already sits and the cost dimension would stop binding. The next
-      // weight added here has to fit under 3600, or move a weight.
+      // budget had to keep clearing it by 3×.
+      //
+      // #1855 raised it to 4000 AND lifted the floor weight from 6 to 7, which
+      // is the only way the ceiling can move at all: a weight binds only while
+      // `limit / weight` stays under `general`'s 600 req/min, so at a floor of 6
+      // the ceiling could never pass 3600 — which is exactly the wall the #1829
+      // note named. Bringing the collapsed thread head onto the meter (it was
+      // metered by NOTHING) pushed the modelled minute past what that floor
+      // could fund, so both ends moved together and every endpoint's
+      // requests-before-refusal stayed within a few percent of where it was.
       expensive: {
         windowSec: 60,
-        limit: 3550,
+        limit: 4000,
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
       // Per-endpoint weights, in units. Rationale for each number — and the
-      // modelled bar the budget above clears by 3.0× — is in the §10 COST TABLE.
+      // modelled bar the budget above clears by 3.1× — is in the §10 COST TABLE.
       requestCosts: {
         socialShared: 10,
         // Three grouped reads (groups, rosters, share counts) rather than one,
         // over a set bounded by FRIEND_GROUPS_MAX × FRIEND_GROUP_MEMBERS_MAX
-        // since #1780 — so it is cheaper than `socialShared`'s open fan-out. Six
-        // is also the FLOOR at which the weight means anything: below it the
-        // unit budget would allow more requests per minute than `general`'s
+        // since #1780 — so it is cheaper than `socialShared`'s open fan-out.
+        // Seven is also the FLOOR at which the weight means anything: below it
+        // the unit budget would allow more requests per minute than `general`'s
         // count limiter already does, and the cost dimension would be
-        // decorative.
-        socialGroups: 6,
-        // The comment thread (#1829). Its per-request work is now BOUNDED — the
-        // page is an index scan, the participant question is one probe against a
-        // partial index — but it is the only social read that repeats on its own:
-        // an expanded thread refetches every 30 s, per open thread. Priced at the
-        // same floor as `socialGroups`, for the same reason: below 6 the unit
-        // budget would allow more requests per minute than `general` already
-        // does, and the weight would be decorative.
-        socialThread: 6,
+        // decorative. The floor is `limit / 600`, so it moved from 6 to 7 with
+        // the ceiling in #1855.
+        socialGroups: 7,
+        // The comment thread (#1829) AND — since #1855 — its collapsed head at
+        // `…/thread/summary`, which is mounted with this same key. Both run the
+        // identical bounded access-resolution path; the head skips only the page
+        // fetch, which is not enough to price it below the floor a weight has to
+        // clear to bind before `general`. The page read is also the only social
+        // read that repeats on its own, but an expanded thread now polls the
+        // NEWEST WINDOW only — one request per tick, not one per loaded page.
+        socialThread: 7,
+        // Setting an item's audience (#1855): the largest per-request fan-out of
+        // any social write. It reads the owner's entire friendship set with no
+        // LIMIT, resolves a group roster of up to FRIEND_GROUP_MEMBERS_MAX, takes
+        // a paranoid transition lock across the whole derived recipient set and
+        // emits one notification per recipient. Priced like a comparison series:
+        // heavier than any social READ, so a replay loop is refused after 200
+        // calls a minute instead of `general`'s 600.
+        socialAudienceSet: 20,
         backtestPreview: 25,
         // PER SERIES, not per request (#1755): the route multiplies this by the
         // number of conglomerates the body asks to overlay, because that is what
@@ -1600,7 +1660,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         backtestSharedSandbox: 25,
         analyticsSeries: 10,
         importCreate: 100,
-        importRowResolve: 6,
+        importRowResolve: 7,
       },
       // Provider search, per user (§6.2). 300/min — its own generous budget
       // rather than a share of `general`, because the read is cheap and bounded:
@@ -1631,6 +1691,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         limit: 30,
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
+      },
+      // Ordinary social interaction writes, per user (#1855) — friend circles
+      // and the whole V5-P8 comment/reaction surface. A CAPACITY limiter, sized
+      // by §10's normal-use rule (1200 / 5 min = 3.5× the modelled 345-write
+      // window in the SOCIAL WRITE bar above) and riding the general escalation
+      // ladder, because a viewer toggling emoji chips or an owner filling the
+      // 200-member circle the contract advertises is not abuse.
+      //
+      // It exists to get those writes OFF `social`: that bucket is an
+      // anti-probing control for friend-request creation, which §10 exempts from
+      // the sizing rule, and sharing it made the advertised circle unbuildable
+      // while a spent emoji budget also closed the friend-request rail. Its
+      // 240/min average stays well under `general`'s 600 req/min, so the
+      // dedicated budget is genuinely reachable rather than swallowed.
+      socialWrite: {
+        windowSec: 5 * 60,
+        limit: 1200,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
       },
       // STRICT (2026-09-02: deliberately NOT raised).
       // Feedback capture (#1315): enough for a short reporting session while
