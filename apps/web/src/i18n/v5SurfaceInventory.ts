@@ -991,7 +991,7 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/pages/AuditPage.tsx',
     reason: 'no-v5-deliverable',
-    note: 'V1 admin audit log (#11); still English-only.',
+    note: 'V1 admin audit log (#11); fully catalogued in EN + DE by #1848, which also stopped it rendering the server error envelope.',
   },
   {
     path: 'admin/pages/EmailPage.tsx',
@@ -2322,7 +2322,11 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
  */
 export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
   'admin/pages/AnnouncementsPage.tsx': 36,
-  'admin/pages/AuditPage.tsx': 13,
+  // 13 → 0 with #1848: the page rendered the server's raw error envelope — the
+  // offender #1814 was meant to be the last of — and every label around it was
+  // English-only. Both are now catalogue copy in EN + DE, so the same zero-floor
+  // ratchet as the W2 pages below applies here.
+  'admin/pages/AuditPage.tsx': 0,
   'admin/pages/EmailPage.tsx': 21,
   // 14 → 0 and 46 → 0 with the admin rebuild W2 (#1406). Both pages were
   // rewritten and are now fully catalogued in EN + DE — InvitesPage was the

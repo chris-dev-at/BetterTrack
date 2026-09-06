@@ -9,7 +9,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminCallFailure } from '../sessionExpiry';
 import { useResource } from '../useResource';
-import { ListPagination, type ListPage } from '../components/ListPagination';
+import { ListPagination, useOffsetSnapBack, type ListPage } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import {
   Alert,
@@ -51,6 +51,9 @@ export function ApiKeysPage() {
     (signal) => api.listAdminApiKeys({ offset, includeRevoked }, signal),
     [offset, includeRevoked],
   );
+  // Revoking the last key on a page empties that window; recover to the page
+  // that still holds rows instead of showing "no keys" over a full set (#1848).
+  useOffsetSnapBack(keys.data?.page ?? null, keys.data?.keys.length ?? 0, setOffset);
 
   return (
     <div className="space-y-8">
@@ -318,7 +321,12 @@ function KeysPanel({
           </button>
         </Alert>
       ) : keys.length === 0 ? (
-        <EmptyState>{t('admin.apiKeys.keys.empty')}</EmptyState>
+        // The pager stays on screen (#1848): revoke the last key on page 2 and
+        // the empty state used to render with no way back to page 1.
+        <>
+          <EmptyState>{t('admin.apiKeys.keys.empty')}</EmptyState>
+          <ListPagination page={page} rowCount={keys.length} onOffset={onOffset} />
+        </>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">

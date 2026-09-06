@@ -13,7 +13,7 @@ import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useAdminMutation } from '../useAdminMutation';
 import { useResource } from '../useResource';
-import { ListPagination } from '../components/ListPagination';
+import { ListPagination, useOffsetSnapBack } from '../components/ListPagination';
 import { Modal } from '../components/Modal';
 import { WorkspaceTabs } from '../components/WorkspaceTabs';
 import {
@@ -97,6 +97,8 @@ export function InvitesPage() {
 
   const rows = invites.data?.invites ?? [];
   const page = invites.data?.page ?? null;
+  // Revoking the last invite on a page empties that window (#1848).
+  useOffsetSnapBack(page, rows.length, setOffset);
   // Decorative counts: absent while the stats read is loading or failed, so a
   // missing number never reads as a confident zero.
   const counts = stats.loading || stats.error !== null ? undefined : tabCounts(stats.data);
