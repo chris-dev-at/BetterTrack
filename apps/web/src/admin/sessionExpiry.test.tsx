@@ -62,9 +62,10 @@ import { SettingsPage } from './pages/SettingsPage';
  *     install does not silently disable the deadline instead;
  *  8. an AUTH-LOSS answer to the deadline refresh itself ends the session, rather
  *     than being swallowed into "unknown" while the previous, longer deadline
- *     stays armed — and every self-issued sign-out revokes the session
- *     server-side, so the operator is never told "expired" over a session a
- *     reload walks straight back into (#1833).
+ *     stays armed — and an EXPIRY sign-out revokes the session server-side, so
+ *     the operator is never told "expired" over a session a reload walks straight
+ *     back into, while a domain 404 stays the local-only sign-out it always was
+ *     (#1833).
  */
 
 /** Expected copy always comes from the catalog, so EN and DE assert the same claim. */
@@ -641,12 +642,18 @@ describe('the read path keeps its own 401-or-404 sign-out', () => {
     renderConsole(<ResourceProbe />);
 
     await expectExpiryScreen();
+    // Auth loss, so the sign-out is also a revoke (#1833) — harmless here, since
+    // the cookie the server just refused is already dead.
+    await waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
   });
 
-  test('a domain 404 still ends the surface, but claims no expiry', async () => {
+  test('a domain 404 still ends the surface, but claims no expiry and revokes nothing', async () => {
     // `GET /admin/users/:id` answers USER_NOT_FOUND for an account another admin
     // just deleted. The structural sign-out is pre-existing; what must not happen
-    // is the login screen asserting that THIS admin's session window closed.
+    // is the login screen asserting that THIS admin's session window closed —
+    // nor, since #1833 added the revoke, DESTROYING a session the server is still
+    // perfectly happy with. That row is gone; the session is not, and re-entering
+    // password + TOTP because a row went missing is not a sign-out policy.
     vi.mocked(api.getSettings).mockRejectedValue(
       new ApiError(404, 'USER_NOT_FOUND', 'User not found.'),
     );
@@ -658,6 +665,7 @@ describe('the read path keeps its own 401-or-404 sign-out', () => {
     expect(
       screen.queryByText(message('en', 'auth.adminLogin.sessionExpired')),
     ).not.toBeInTheDocument();
+    expect(api.logout).not.toHaveBeenCalled();
   });
 });
 
@@ -848,12 +856,10 @@ describe('the client-held deadline (V5-P13c)', () => {
 
     await vi.advanceTimersByTimeAsync(12 * 60 * 60 * 1000);
     await expectExpiryScreen();
+    // The revoke itself is the claim: `POST /auth/logout` destroys the session
+    // record, so a reload has nothing left to bootstrap from. What the server
+    // then answers `GET /me` with is the server's own contract, verified in the
+    // API suite — mocking it here would only assert the mock.
     await waitFor(() => expect(api.logout).toHaveBeenCalledTimes(1));
-
-    // What the server now answers a reload with — the session it just revoked is
-    // gone, so re-bootstrapping cannot walk back into the console.
-    vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'refused'));
-    renderConsole(<SettingsPage />);
-    await waitFor(() => expect(screen.getAllByTestId('status')[1]).toHaveTextContent('anonymous'));
   });
 });

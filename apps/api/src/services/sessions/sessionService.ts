@@ -215,9 +215,18 @@ export interface SessionService {
    * TTL from it (§13.5 V5-P13c). Called by the admin resolve path when the
    * configured lifetime differs from what the record carries — a runtime policy
    * change, or a session minted before the cap was stamped at all. Deliberately
-   * does NOT touch `renewedAt`: this is a cap, not a renewal, and re-stamping it
-   * must never slide the persistence window it sits inside. False when the
-   * session is already gone.
+   * does NOT touch `renewedAt`, and floors the new key TTL at what the key
+   * already had left: this is a cap, not a renewal, and re-stamping it must
+   * never slide the persistence window it sits inside. False when the session is
+   * already gone.
+   *
+   * That makes a runtime policy change one-directional by design. LOWERING the
+   * lifetime reaches every live session on its next request. RAISING it reaches
+   * only sessions that make a request before their OLD deadline: one parked past
+   * it has already had its key expired by the storage TTL and is reaped from
+   * `listForUser`, even though `resolveSession` would now admit it. Fail-closed,
+   * and the alternative — keeping dead admin sessions alive on the chance the
+   * policy widens — is exactly what §6.12 asks us not to do.
    */
   setAbsoluteLifetime(sessionId: string, absoluteLifetimeMs: number): Promise<boolean>;
   destroy(sessionId: string): Promise<void>;
@@ -447,12 +456,21 @@ export function createSessionService(
       data.absoluteLifetimeMs = absoluteLifetimeMs;
       // `renewedAt` is deliberately untouched (see the interface note): the cap
       // rides on top of the existing window rather than resetting it.
-      await redis.set(
-        sessionKey(sessionId),
-        JSON.stringify(data),
-        'EX',
-        ttlSecondsFor(data, clock()),
-      );
+      //
+      // The new TTL is likewise floored at what the key already had left. For a
+      // PERSISTENT session `ttlSecondsFor` is a fixed window and the derivation
+      // alone is safe, but for an EPHEMERAL one it re-derives the SLIDING idle
+      // window from `now` — so a bare re-derive would hand a session that had
+      // been idle for most of its window a full fresh one. Taking the smaller of
+      // the two keeps the re-stamp strictly a cap: it can shorten the key, never
+      // extend it. A backend that reports no remaining TTL (`pttl` ≤ 0, which
+      // for a key we just read means no expiry set) leaves the derived value as
+      // the only bound, which is still an improvement on none.
+      const remainingMs = await redis.pttl(sessionKey(sessionId));
+      const derivedSeconds = ttlSecondsFor(data, clock());
+      const ttl =
+        remainingMs > 0 ? Math.min(derivedSeconds, Math.ceil(remainingMs / 1000)) : derivedSeconds;
+      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', Math.max(1, ttl));
       return true;
     },
 

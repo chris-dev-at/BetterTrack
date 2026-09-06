@@ -700,6 +700,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
    * Returns an options object so call sites can spread it into `sessions.create`
    * without branching. Enforcement stays on the read path: this is bookkeeping,
    * never the guarantee.
+   *
+   * The two `sessions.create` sites OUTSIDE this service take no cap because
+   * neither can reach an admin role: `googleAuthService.signInUser` runs
+   * `assertNotAdmin` on the line above its mint (a Google sign-in presents no
+   * second factor, §16), and `passkeyService`'s login verify refuses any
+   * `role !== 'user'` credential — audited `role_not_user` — for the same reason
+   * (#400). Should either ever be opened to admins, it must stamp the cap here
+   * too, or its cookie would claim the 30-day user window over a session the
+   * server refuses after ≤24 h.
    */
   const absoluteLifetimeOptions = async (
     role: UserRow['role'],

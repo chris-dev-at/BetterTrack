@@ -97,9 +97,11 @@ export function isAdminWindowClosed(err: unknown): boolean {
 /**
  * Why a 401/404 read failure should sign the console out. `'expired'` when the
  * failure really is the window closing, `undefined` when the route answered a
- * domain 404 — the session ends either way (the read path has always treated
- * `isNotAuthorized` structurally), but the login screen only claims an expiry
- * when that is what happened.
+ * domain 404 — the console's local session ends either way (the read path has
+ * always treated `isNotAuthorized` structurally), but only an `'expired'`
+ * reason may claim an expiry on the login screen, and only an `'expired'` reason
+ * revokes the session server-side (see {@link AuthContextValue.clearSession}):
+ * the server is still perfectly happy with the session behind a domain 404.
  */
 export function adminSignOutReason(err: unknown): AdminSignOutReason | undefined {
   if (err instanceof ApiError && err.status === 401) return 'expired';
@@ -165,12 +167,15 @@ interface AuthContextValue {
   completeTwoFactorSetup: () => Promise<void>;
   logout: () => Promise<void>;
   /**
-   * Drop the session: in memory immediately, and server-side best-effort (the
-   * revocation is fired off, never awaited — the screen swap does not wait on
-   * the network). Pages call this when a request comes back 401/404 mid-use
-   * (expired cookie, account disabled) so the guard bounces back to the login
-   * screen. Pass `'expired'` when the cause is the V5-P13c session window, so
-   * the login screen can say what happened.
+   * Drop the session in memory immediately, so the guard bounces back to the
+   * login screen. Pages call this when a request comes back 401/404 mid-use
+   * (expired cookie, account disabled, a row another admin removed).
+   *
+   * Pass `'expired'` when the cause is the V5-P13c session window: that both
+   * lets the login screen say what happened AND revokes the session server-side,
+   * best-effort (fired off, never awaited — the screen swap does not wait on the
+   * network). Without a reason the sign-out stays local, because a domain 404 or
+   * a cancelled login challenge is not the server ending this session.
    */
   clearSession: (reason?: AdminSignOutReason) => void;
   /**
@@ -381,22 +386,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearSession = useCallback((reason?: AdminSignOutReason) => {
-    // Revoke server-side too, best-effort and without blocking the screen swap
-    // (V5-P13c). Every caller here means "this session is over": a 401/404 seam,
-    // or the courtesy deadline firing. In the first case the cookie is already
-    // dead and this is a no-op; in the second — the deadline may fire up to
-    // CLOCK_TOLERANCE_MS early on a browser clock running ahead — the cookie and
-    // the Redis session are both still live, and without this the operator was
-    // told "your admin session expired" over a session a single reload walked
-    // straight back into.
-    void (async () => {
-      try {
-        await api.logout();
-      } catch {
-        // Already-dead cookie, or an unreachable backend. The local sign-out
-        // stands either way — this is cleanup, never the outcome.
-      }
-    })();
+    // An EXPIRY sign-out revokes server-side too, best-effort and without
+    // blocking the screen swap (V5-P13c). The reason is exactly the distinction
+    // that decides this: `'expired'` means the window closed (a 401, the §6.12
+    // domainless 404, or the courtesy deadline firing), and there the cookie is
+    // either already dead — so this is a no-op — or the deadline fired up to
+    // CLOCK_TOLERANCE_MS early on a browser clock running ahead, leaving the
+    // cookie and the Redis session both live. Without the revoke that second
+    // case told the operator "your admin session expired" over a session a
+    // single reload walked straight back into.
+    //
+    // No reason means the session is NOT over server-side: a domain 404
+    // (`GET /admin/users/:id` answering `USER_NOT_FOUND` for a row a colleague
+    // just deleted) ends the surface, and cancelling a pending login challenge
+    // ends nothing at all. Revoking there would log a working admin out — back
+    // through password + TOTP — because a row went missing. See
+    // {@link adminSignOutReason}.
+    if (reason === 'expired') {
+      void (async () => {
+        try {
+          await api.logout();
+        } catch {
+          // Already-dead cookie, or an unreachable backend. The local sign-out
+          // stands either way — this is cleanup, never the outcome.
+        }
+      })();
+    }
     setUser(null);
     setTwoFactorChallenge(null);
     setSessionDeadline(null);
