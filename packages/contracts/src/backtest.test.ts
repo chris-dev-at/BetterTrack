@@ -11,6 +11,7 @@ import {
   sharedSandboxPreviewRequestSchema,
   sharedSandboxPreviewResponseSchema,
 } from './backtest';
+import { MAX_FLATTENED_POSITIONS } from './conglomerate';
 
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
 const UUID_B = '018f0000-0000-7000-8000-00000000000b';
@@ -84,6 +85,41 @@ describe('backtestPreviewRequestSchema — benchmark field (V4-P7)', () => {
     expect(
       backtestPreviewRequestSchema.safeParse({ ...BASE_REQUEST, benchmark: '^GSPC' }).success,
     ).toBe(false);
+  });
+});
+
+describe('backtestPreviewRequestSchema — sized by the flatten, not by the write cap (#1877)', () => {
+  /** N distinct valid UUIDs, wide enough for a full 250-asset flatten. */
+  function positionUuids(n: number): { assetId: string; weight: number }[] {
+    return Array.from({ length: n }, (_, i) => ({
+      assetId: `018f0000-0000-7000-8000-${(i + 1).toString(16).padStart(12, '0')}`,
+      weight: 1,
+    }));
+  }
+
+  it('accepts exactly MAX_FLATTENED_POSITIONS positions and refuses one more', () => {
+    // The bound IS the flatten bound: a nested blueprint the server activates
+    // resolves to up to MAX_FLATTENED_POSITIONS assets, and the detail page
+    // backtests that resolved vector. A tighter bound here made an activatable
+    // blueprint's own backtest a permanent 400 VALIDATION_ERROR.
+    expect(
+      backtestPreviewRequestSchema.safeParse({
+        ...BASE_REQUEST,
+        positions: positionUuids(MAX_FLATTENED_POSITIONS),
+      }).success,
+    ).toBe(true);
+    const tooMany = backtestPreviewRequestSchema.safeParse({
+      ...BASE_REQUEST,
+      positions: positionUuids(MAX_FLATTENED_POSITIONS + 1),
+    });
+    expect(tooMany.success).toBe(false);
+    expect(tooMany.error?.issues[0]?.path).toEqual(['positions']);
+  });
+
+  it('still requires at least one position', () => {
+    expect(backtestPreviewRequestSchema.safeParse({ ...BASE_REQUEST, positions: [] }).success).toBe(
+      false,
+    );
   });
 });
 

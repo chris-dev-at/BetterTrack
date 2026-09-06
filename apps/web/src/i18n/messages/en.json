@@ -2503,6 +2503,7 @@
       },
       "rangeAriaLabel": "Select backtest range",
       "benchmarkAriaLabel": "Choose a benchmark",
+      "benchmarkUnresolvedShare": "{{pct}} without assets — this column is the rest",
       "modeAriaLabel": "Select late-listing mode",
       "rebalanceAriaLabel": "Select rebalance frequency",
       "noPositions": "Add positions to preview a backtest",

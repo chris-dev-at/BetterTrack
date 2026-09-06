@@ -380,6 +380,28 @@ describe('BacktestPanel', () => {
     expect(previewBacktest).not.toHaveBeenCalled();
   });
 
+  test('names the share of a benchmark basket that resolved to no asset (#1877)', async () => {
+    // The benchmark is a conglomerate whose 40 % nested child is empty: the
+    // server returns the curve and stats of the REST of it, normalized to 100.
+    // Printing a Δ column against that while the header carries the whole
+    // basket's name presents a partial benchmark as the whole one.
+    vi.mocked(previewBacktest).mockResolvedValue({
+      ...RESPONSE,
+      benchmark: { ...BENCHMARK_RESULT, unresolvedPct: 40 },
+    });
+    renderPanel();
+
+    expect(await screen.findByText(/40,00 % without assets/)).toBeInTheDocument();
+  });
+
+  test('says nothing about an unresolved share for a fully-resolved benchmark', async () => {
+    vi.mocked(previewBacktest).mockResolvedValue({ ...RESPONSE, benchmark: BENCHMARK_RESULT });
+    renderPanel();
+
+    await waitFor(() => expect(screen.getAllByText('My Mix').length).toBeGreaterThan(0));
+    expect(screen.queryByText(/without assets/)).not.toBeInTheDocument();
+  });
+
   test('shows an error state when the backtest request fails', async () => {
     vi.mocked(previewBacktest).mockRejectedValue(new Error('nope'));
     renderPanel();

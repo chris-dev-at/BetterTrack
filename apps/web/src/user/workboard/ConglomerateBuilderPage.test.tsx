@@ -431,6 +431,43 @@ describe('ConglomerateBuilderPage', () => {
     await waitFor(() => expect(screen.getByText('Detail view')).toBeInTheDocument());
   });
 
+  test('an autosave the server demotes relabels the Builder, without a reload (#1877)', async () => {
+    // The #1840 rule: a write that leaves an ACTIVE basket no longer earning the
+    // status demotes it to `draft` inside that same request. The Builder is the
+    // one screen the user is watching while that happens, so it has to read the
+    // status off the write's own response instead of the one it loaded with.
+    const positions = [
+      { id: 'a1', symbol: 'AAPL', weightPct: 60 },
+      { id: 'a2', symbol: 'MSFT', weightPct: 40 },
+    ];
+    const active = { ...detail(positions), status: 'active' as const };
+    vi.mocked(getConglomerate).mockResolvedValue(active);
+    vi.mocked(updateConglomerate).mockResolvedValue(active);
+    vi.mocked(replaceConglomeratePositions).mockResolvedValue({ ...active, status: 'draft' });
+    renderBuilder(`/workbench/blueprints/${CONGLOMERATE_ID}/edit`);
+    await screen.findByLabelText('Weight for AAPL');
+
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /re-activate/i })).toBeInTheDocument();
+
+    // Σ = 90 now: the server accepts the write and demotes.
+    fireEvent.change(screen.getByLabelText('Weight for MSFT'), { target: { value: '30' } });
+    await waitFor(
+      () =>
+        expect(replaceConglomeratePositions).toHaveBeenCalledWith(CONGLOMERATE_ID, [
+          { assetId: 'a1', weightPct: 60 },
+          { assetId: 'a2', weightPct: 30 },
+        ]),
+      { timeout: 3000 },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^activate$/i })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /re-activate/i })).not.toBeInTheDocument();
+  });
+
   test('an AI draft writes NOTHING until the user confirms it (regression)', async () => {
     vi.mocked(useAiCapability).mockReturnValue({
       data: { available: true, model: 'llama3.1:8b', dailyCap: 5, used: 0, remaining: 5 },

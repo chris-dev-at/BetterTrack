@@ -311,8 +311,15 @@ export function ConglomerateDetailPage() {
           weights, the donut and the backtest below all cover only what actually
           resolved — normalized to 100 among themselves — while the Invest
           Calculator on this same screen withholds this slice from a budget.
-          Saying so is what makes the two agree. */}
-      {resolved && resolved.unresolvedPct > 0 ? (
+          Saying so is what makes the two agree.
+
+          Gated on `nested` as well as on the share (#1877): a blueprint with NO
+          positions at all also flattens to `unresolvedPct: 100` — there is
+          nothing for the remainder to be normalized against — and telling a user
+          whose only constituent was a deleted custom asset that 100 % of it is a
+          nested blueprint is simply false. That blueprint's own empty state,
+          below, is the honest message. */}
+      {resolved && resolved.nested && resolved.unresolvedPct > 0 ? (
         <Alert tone="info">
           {t('workboard.detail.unresolvedShare', {
             pct: formatWeight(resolved.unresolvedPct),

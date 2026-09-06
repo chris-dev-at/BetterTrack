@@ -182,8 +182,16 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     /** Per SERIES — the comparison route multiplies by the body's id count (#1755). */
     backtestCompare: 20,
     backtestSharedSandbox: 25,
+    /** The Invest Calculator's 250-asset fan-out (#1877). */
+    conglomerateAllocate: 15,
     importCreate: 100,
   };
+  /**
+   * `backtestPreview` is priced per 50-position basket unit (#1877) — the §6.5
+   * write cap — so a Builder draft costs one unit and a nested blueprint's
+   * resolved flatten costs up to five.
+   */
+  const PREVIEW_BASKET_UNIT = 50;
   /** `expensive`: 4000 units / minute (config/env.ts §10 COST TABLE). */
   const EXPENSIVE_LIMIT = 4000;
   /** A syntactically valid conglomerate id — the sandbox route validates params. */
@@ -216,6 +224,7 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     const IMPORTS = 1;
     const COMPARE_SERIES = 3;
     const SANDBOXES = 2;
+    const ALLOCATES = 2;
 
     for (let i = 0; i < SHARED; i += 1) {
       const res = await request(limited.app).get('/api/v1/social/shared').set('Cookie', cookie);
@@ -288,6 +297,17 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
         .send({});
       expect(res.status).toBe(400);
     }
+    for (let i = 0; i < ALLOCATES; i += 1) {
+      // The Invest Calculator, metered by nothing at all until #1877. The guard
+      // is mounted ahead of `validateParams`, so the 400 is again proof the
+      // request cleared the meter rather than the allocation layer.
+      const res = await request(limited.app)
+        .post(`/api/v1/conglomerates/${SOME_ID}/allocate`)
+        .set(...XRW)
+        .set('Cookie', cookie)
+        .send({});
+      expect(res.status).toBe(400);
+    }
 
     // Every mount is present AND carries its own weight: drop any single
     // `limiters.cost(...)` and this total falls by that endpoint's units.
@@ -300,8 +320,9 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
       PREVIEWS * COST.backtestPreview +
       IMPORTS * COST.importCreate +
       COMPARE_SERIES * COST.backtestCompare +
-      SANDBOXES * COST.backtestSharedSandbox;
-    expect(spent).toBe(512);
+      SANDBOXES * COST.backtestSharedSandbox +
+      ALLOCATES * COST.conglomerateAllocate;
+    expect(spent).toBe(542);
     const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
     expect(await limited.ctx.redis.get(key.count)).toBe(String(spent));
 
@@ -323,6 +344,44 @@ describe('the cost-metered reads are mounted in the real chain (§10 COST TABLE,
     // gets bigger, not because the ceiling gets looser.
     expect(spent * 7).toBeLessThan(EXPENSIVE_LIMIT);
     expect(await limited.ctx.redis.get(key.cooldown)).toBeNull();
+  }, 120_000);
+
+  it('prices a preview by the basket it carries, not by the request (#1877)', async () => {
+    const limited = await createTestApp({ rateLimitsEnabled: true });
+    const user = await limited.seedUser({ email: 'flatten@bt.test', username: 'flattener' });
+    const cookie = await sessionCookie(limited.app, user);
+    const key = progressiveKeys('expensive', limiterKeyForUser(user.id));
+
+    // A Builder draft — the shape this weight was set for — is one unit.
+    const draft = await request(limited.app)
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ positions: Array.from({ length: PREVIEW_BASKET_UNIT }, () => ({})) });
+    expect(draft.status).toBe(400);
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(COST.backtestPreview));
+
+    // A nested blueprint's resolved flatten is FOUR of those baskets, and since
+    // the preview bound became MAX_FLATTENED_POSITIONS it may arrive in one
+    // request. Read off the raw body, so the price is set before `validateBody`
+    // has a chance to reject the garbage positions.
+    const flattened = await request(limited.app)
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ positions: Array.from({ length: 4 * PREVIEW_BASKET_UNIT }, () => ({})) });
+    expect(flattened.status).toBe(400);
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(COST.backtestPreview * 5));
+
+    // A caller cannot name its own price: past the contract's own bound the
+    // multiplier is clamped at the cap the request is about to be refused at.
+    const oversized = await request(limited.app)
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .set('Cookie', cookie)
+      .send({ positions: Array.from({ length: 1_000 }, () => ({})) });
+    expect(oversized.status).toBe(400);
+    expect(await limited.ctx.redis.get(key.count)).toBe(String(COST.backtestPreview * 10));
   }, 120_000);
 
   it('turns a pathological caller away on COST before the request COUNT would have', async () => {

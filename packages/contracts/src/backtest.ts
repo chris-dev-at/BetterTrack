@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { MAX_FLATTENED_POSITIONS } from './conglomerate';
+
 /**
  * Backtest preview contracts (PROJECTPLAN.md §6.5, §6.6, §7.2).
  *
@@ -98,10 +100,18 @@ export type BacktestPreviewPosition = z.infer<typeof backtestPreviewPositionSche
  * contributions, and every rebalance target), so a repeated id is not a heavier
  * weight — it is two cursors on one key, which the rebalance primitive refuses
  * outright to keep the invested total conserved. Merge the weights instead.
+ *
+ * The size bound is {@link MAX_FLATTENED_POSITIONS}, NOT the §6.5 per-basket
+ * write cap of 50. What the Builder drafts is capped at 50, but what the
+ * blueprint detail page and a blueprint-backed idea post is the RESOLVED
+ * flatten of a nested basket — and the server activates baskets that resolve to
+ * up to 250 assets. Bounding this at 50 made a blueprint the server itself
+ * declares `active` fail its own backtest with a 400 (#1877); the two bounds are
+ * pinned together in `backtest.test.ts` so they cannot drift apart again.
  */
 export const backtestPreviewRequestSchema = z
   .object({
-    positions: z.array(backtestPreviewPositionSchema).min(1).max(50),
+    positions: z.array(backtestPreviewPositionSchema).min(1).max(MAX_FLATTENED_POSITIONS),
     range: backtestPreviewRangeSchema,
     /** Exactly one benchmark at a time (V4-P7), or none. */
     benchmark: backtestBenchmarkInputSchema.nullish(),

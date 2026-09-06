@@ -252,7 +252,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/portfolios', createPortfolioRouter(ctx, limiters));
   app.use('/api/v1/standing-orders', createStandingOrdersRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
-  app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
+  app.use('/api/v1/conglomerates', createConglomerateRouter(ctx, limiters));
   app.use('/api/v1/backtest', createBacktestRouter(ctx, limiters));
   app.use('/api/v1/ideas', createIdeasRouter(ctx));
   app.use('/api/v1/feedback', createFeedbackRouter(ctx, limiters));

@@ -7,6 +7,7 @@ import {
   sharedSandboxPreviewRequestSchema,
   COMPARISON_MAX_SERIES,
   COMPARISON_MIN_SERIES,
+  MAX_FLATTENED_POSITIONS,
   type BacktestComparisonRequest,
   type BacktestPreviewRequest,
   type SharedSandboxPreviewRequest,
@@ -40,6 +41,30 @@ function comparisonSeriesCount(req: Request): number {
   return Math.min(Math.max(asked, COMPARISON_MIN_SERIES), COMPARISON_MAX_SERIES);
 }
 
+/**
+ * One priced unit of preview work: the §6.5 per-basket write cap. A Builder
+ * draft never exceeds it, so a Builder preview is exactly one unit and costs
+ * what it always did.
+ */
+const PREVIEW_BASKET_UNIT = 50;
+
+/**
+ * How many basket units a preview asks for — the multiplier on `backtestPreview`
+ * (§10 COST TABLE, #1877). Since the preview bound became
+ * {@link MAX_FLATTENED_POSITIONS}, one body may carry a nested blueprint's whole
+ * resolved flatten: five Builder drafts' worth of sequential history walking at
+ * a one-draft price. Read off the RAW body exactly as the comparison count is,
+ * because the meter runs before `validateBody`, and clamped to the contract's
+ * own bounds — an absent or garbage list pays the minimum a valid one would, an
+ * oversized one pays the cap it is about to be refused at.
+ */
+function previewBasketUnits(req: Request): number {
+  const positions = (req.body as { positions?: unknown } | undefined)?.positions;
+  const asked = Array.isArray(positions) ? positions.length : 0;
+  const bounded = Math.min(Math.max(asked, 1), MAX_FLATTENED_POSITIONS);
+  return Math.ceil(bounded / PREVIEW_BASKET_UNIT);
+}
+
 export function createBacktestRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
@@ -52,10 +77,12 @@ export function createBacktestRouter(ctx: AppContext, limiters: RateLimiters): R
   // Cost-metered (§10 COST TABLE, #1643): perturbing the weight vector makes
   // every request a cache MISS by construction, and a miss walks the positions'
   // history sequentially through the provider layer — so this one spends 25
-  // work units, not one request.
+  // work units, not one request. Since #1877 that price is PER 50-POSITION
+  // BASKET UNIT: the body may carry a nested blueprint's whole 250-asset
+  // flatten, and five drafts' worth of work is not one draft's price.
   router.post(
     '/preview',
-    limiters.cost('backtestPreview'),
+    limiters.cost('backtestPreview', previewBasketUnits),
     validateBody(backtestPreviewRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as BacktestPreviewRequest;
