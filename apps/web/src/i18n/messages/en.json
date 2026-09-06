@@ -243,6 +243,16 @@
     }
   },
   "common": {
+    "assetType": {
+      "stock": "Stock",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Commodity",
+      "crypto": "Crypto",
+      "custom": "Custom",
+      "other": "Other"
+    },
     "save": "Save",
     "done": "Done",
     "cancel": "Cancel",
@@ -6013,6 +6023,8 @@
         "title": "News",
         "description": "Headlines on the assets you hold",
         "empty": "No headlines for your holdings right now.",
+        "emptyPartial": "No headlines in the part of your assets we could look up.",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass.",
         "unavailable": "News is not available."
       },
       "attention": {
@@ -6078,6 +6090,8 @@
         "title": "Dividends",
         "description": "Upcoming ex- and pay dates",
         "empty": "No dividends coming up.",
+        "emptyPartial": "No dividends coming up in the part of your assets we could look up.",
+        "truncated": "Partial: you hold or watch more assets than we look up in one pass.",
         "unavailable": "Dividend data is not available.",
         "exDate": "Ex-date",
         "payDate": "Pay date"
@@ -6899,15 +6913,6 @@
     "keys": {
       "navigate": "Navigate",
       "open": "Open"
-    },
-    "assetType": {
-      "stock": "Stock",
-      "etf": "ETF",
-      "index": "Index",
-      "fx": "FX",
-      "commodity": "Commodity",
-      "crypto": "Crypto",
-      "other": "Other"
     }
   },
   "firstrun": {

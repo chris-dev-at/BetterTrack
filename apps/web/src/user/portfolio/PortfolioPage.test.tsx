@@ -106,7 +106,7 @@ vi.mock('recharts', async (importOriginal) => {
 });
 
 import { ApiError } from '../../lib/apiClient';
-import { formatDate } from '../../lib/format';
+import { formatDate, formatMoney, formatUnitPrice } from '../../lib/format';
 import {
   getPortfolioDividendCalendar,
   getPortfolioDividendProjection,
@@ -1765,6 +1765,22 @@ describe('PortfolioPage — dividend calendar dates', () => {
     expect(
       within(calendar).queryByText(new RegExp(formatDate(calendarIso(-7)))),
     ).not.toBeInTheDocument();
+  });
+
+  test('keeps a sub-cent per-share amount readable, exactly as the Home widget does', async () => {
+    // A per-SHARE distribution, not a total: monthly ETFs and some ADRs pay
+    // below a cent, and the whole-money formatter rounded that to 0,00 $ here
+    // while the Home widget printed the real figure (#1874).
+    vi.mocked(getPortfolioDividendCalendar).mockResolvedValue({
+      available: true,
+      entries: [calendarEntry({ amount: 0.0042 })],
+    });
+
+    renderPage();
+
+    const calendar = await screen.findByRole('region', { name: 'Dividend income and calendar' });
+    expect(within(calendar).getByText(formatUnitPrice(0.0042, 'USD'))).toBeInTheDocument();
+    expect(within(calendar).queryByText(formatMoney(0.0042, 'USD'))).not.toBeInTheDocument();
   });
 });
 
