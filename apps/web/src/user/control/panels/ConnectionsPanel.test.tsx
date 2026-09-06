@@ -637,6 +637,85 @@ describe('ConnectionsPanel — paranoid Google Drive storage', () => {
     expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
   });
 
+  // Configured × normal account × {pending, error, success}: Drive storage
+  // belongs to a paranoid vault, so on a deployment that HAS
+  // BT_GOOGLE_DRIVE_CLIENT_ID an ordinary account must never see the titled
+  // group — the state the title used to render in before the privacy mode was
+  // known, permanently so on a failed read (#1859).
+  test('a configured deployment shows a normal account no Drive group while the read is pending', async () => {
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () => new Promise<ParanoidMediaStateResponse>(() => undefined),
+    );
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+  });
+
+  test('a configured deployment shows a normal account no Drive group when the read fails', async () => {
+    let rejectRequest!: (reason?: unknown) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((_resolve, reject) => {
+          rejectRequest = reject;
+        }),
+    );
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      rejectRequest(new Error('offline'));
+    });
+
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+    expect(screen.queryByText(/storage status could not be loaded/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  test('a configured deployment shows a normal account no Drive group once the read resolves', async () => {
+    let resolveRequest!: (value: ParanoidMediaStateResponse) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveRequest(NORMAL_MEDIA);
+    });
+
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
+  });
+
+  test('a paranoid vault still gets the titled skeleton while its storage read is pending', async () => {
+    let resolveRequest!: (value: ParanoidMediaStateResponse) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
+    expect(await screen.findByText('Google Drive vault storage')).toBeInTheDocument();
+    await act(async () => {
+      resolveRequest(SERVER_MEDIA);
+    });
+    expect(screen.getByText('Google Drive vault storage')).toBeInTheDocument();
+  });
+
   test('suppresses Drive status errors without a runtime client id', async () => {
     let rejectRequest!: (reason?: unknown) => void;
     vi.mocked(getParanoidMediaState).mockImplementation(
