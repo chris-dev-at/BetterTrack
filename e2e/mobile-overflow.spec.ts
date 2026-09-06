@@ -1980,6 +1980,17 @@ const TAP_TARGET_ALLOWANCES: readonly TapTargetAllowance[] = [
     justification:
       'Visually-hidden assistive markup (1×1px by definition) is never a rendered touch target.',
   },
+  {
+    // The value is part of the selector on purpose: the day that row stops
+    // pinning 40px inline, this stops matching and the row is measured like
+    // every other `.bt-menu-item`. It cannot widen to cover anything else —
+    // the sibling attachable row in the same file already pins 44px and stays
+    // measured.
+    selector:
+      '.bt-dialog__panel--phone-sheet ul > li > button.bt-menu-item[style*="min-height: 40px"]',
+    justification:
+      "The new-chat friend row (chatSurface.tsx:571) pins min-height:40px inline, which beats origin.css's 44px phone floor; #1834 puts apps/web/src/user/social/** out of scope, so the owning issue removes the inline style (its sibling row at :729 already uses 44) rather than this gate editing the component.",
+  },
 ];
 
 /**
