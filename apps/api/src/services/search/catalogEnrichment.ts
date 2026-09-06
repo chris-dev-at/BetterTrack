@@ -118,6 +118,24 @@ export const enrichGuardKey = (query: string): string =>
 export const ENRICH_MAX_HITS = 20;
 
 /**
+ * How many authoritative currency lookups ONE enrichment may make (#1875).
+ *
+ * A hit whose currency is flagged `currencyGuessed` is resolved through
+ * `marketData.getMeta` before it becomes a stored denomination, which is an
+ * upstream call — capped so a query that happens to return twenty unrecognised
+ * venues cannot turn one background enrichment into twenty extra provider
+ * requests through the shared §5.2 politeness queue, nor spend its whole
+ * {@link ENRICH_RUN_TIMEOUT_MS} budget waiting on them before it writes a row.
+ *
+ * Nothing is lost past the cap: the un-resolved hit keeps the projection's
+ * placeholder for its badge, writes no currency onto an existing row, and the
+ * NEXT enrichment that admits it — the same query after the guard window, or a
+ * narrower one — resolves it. Meta is cached for a day (§5.3), so a repeat
+ * costs nothing upstream.
+ */
+export const ENRICH_MAX_CURRENCY_LOOKUPS = 4;
+
+/**
  * Guard value while the winning process is still running the provider search.
  * The shipped value carries an owner token — `running:<uuid>` — so the finisher
  * can compare-and-set (#1794); readers only ever look at this prefix, so a bare
@@ -396,9 +414,16 @@ function tierOf(
  * buy books a PERSISTED cash movement converted through it
  * (`portfolioService`), tax, snapshots and the asset page value through it, the
  * CSV import rejects rows that disagree with it, and paranoid rehydration
- * refuses on it. So `currency` and `type` are never refreshed here; they stay
- * with the curated seed list and the authoritative `getMeta`/`getQuote` +
- * `normalizeCurrency` path.
+ * refuses on it. So `type` is never refreshed here, and the projection's OWN
+ * currency never is either.
+ *
+ * `currency` is refreshable in exactly one case, and the `authoritativeCurrency`
+ * argument says so: the caller replaced the projection's value with one re-read
+ * from `getMeta` + `normalizeCurrency` (#1875 — see
+ * {@link needsAuthoritativeCurrency} and the resolution in
+ * `createCatalogEnrichment`). That is the same authority the curated seed list
+ * carries, so a row stored with a wrong guess is corrected instead of being
+ * wrong forever; without it the enrichment writes no currency at all.
  *
  * What is left is what the projection genuinely carries:
  *  - `name`, but only when the provider actually supplied one. `yahooProvider`
@@ -406,15 +431,35 @@ function tierOf(
  *    `shortname`, and writing that would replace `'DAX Performance Index'` with
  *    `'^GDAXI'` — destroying exactly the findability-by-name §6.2 ranks on;
  *  - `exchange`, when non-blank, for the same reason.
- * A curated row is refreshed by neither: {@link isCuratedCatalogRef}.
+ * A curated row is refreshed by none of them: {@link isCuratedCatalogRef}.
  */
-export function providerRefreshFields(hit: AssetSearchResult): RefreshableAssetField[] {
+export function providerRefreshFields(
+  hit: AssetSearchResult,
+  authoritativeCurrency = false,
+): RefreshableAssetField[] {
   if (isCuratedCatalogRef(hit.providerId, hit.providerRef)) return [];
   const fields: RefreshableAssetField[] = [];
   const name = hit.name.trim();
   if (name !== '' && name !== hit.symbol.trim()) fields.push('name');
   if (hit.exchange != null && hit.exchange.trim() !== '') fields.push('exchange');
+  if (authoritativeCurrency) fields.push('currency');
   return fields;
+}
+
+/**
+ * True for a hit whose currency must be re-read before it can be stored: the
+ * provider flagged it as its own default rather than something it read off the
+ * hit (`currencyGuessed`, #1875).
+ *
+ * A CURATED ref is excluded, and not just because {@link providerRefreshFields}
+ * would refuse the write anyway: the seed list carries a hand-checked native
+ * currency and `seedAssetCatalog` has already inserted the row before any
+ * search can reach it, so there is nothing an upstream call could improve —
+ * spending one on `^ATX` every time it ranks into an enrichment would be pure
+ * upstream traffic for a value we would then discard.
+ */
+function needsAuthoritativeCurrency(hit: AssetSearchResult): boolean {
+  return hit.currencyGuessed === true && !isCuratedCatalogRef(hit.providerId, hit.providerRef);
 }
 
 export interface CatalogEnrichmentDeps {
@@ -460,6 +505,34 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
   const settleTimeoutMs = deps.settleTimeoutMs ?? ENRICH_SETTLE_TIMEOUT_MS;
   const inFlight = new Map<string, InFlightEntry>();
 
+  /**
+   * The asset's real native currency, from the one path that knows it: the
+   * provider's own `getMeta`, normalised by `normalizeCurrency` (§5.4) and
+   * cached for a day (§5.3 `META_TTL_SECONDS`), so a repeat costs no upstream
+   * call at all.
+   *
+   * Best-effort by design — null means "we still do not know", never "USD".
+   * A create then falls back to the projection's placeholder so the row (and
+   * its badge) still exists, an existing row keeps whatever it has, and the
+   * next enrichment that admits this hit tries again: a provider outage delays
+   * the correction, it does not decide the denomination.
+   */
+  async function authoritativeCurrency(hit: AssetSearchResult): Promise<string | null> {
+    try {
+      const meta = await marketData.getMeta({
+        providerId: hit.providerId,
+        providerRef: hit.providerRef,
+      });
+      return meta.value.currency;
+    } catch (err) {
+      logger.debug(
+        { err, providerId: hit.providerId, providerRef: hit.providerRef },
+        'catalog enrichment could not resolve an authoritative currency',
+      );
+      return null;
+    }
+  }
+
   async function run(query: string): Promise<void> {
     try {
       const hits = await marketData.search(query);
@@ -473,7 +546,26 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
           'catalog enrichment capped provider hits',
         );
       }
+      let currencyLookups = 0;
       for (const hit of admitted) {
+        // Money first (#1875): a hit that only DEFAULTED its currency gets it
+        // re-read from the authoritative `getMeta` path before the value is
+        // stored, so `^IBEX` is written EUR instead of the projection's `USD`
+        // placeholder — and an existing row that already holds the placeholder
+        // is corrected, which is the only path that can ever fix it.
+        let resolved: string | null = null;
+        if (needsAuthoritativeCurrency(hit)) {
+          if (currencyLookups < ENRICH_MAX_CURRENCY_LOOKUPS) {
+            currencyLookups += 1;
+            resolved = await authoritativeCurrency(hit);
+          } else {
+            logger.debug(
+              { query, providerRef: hit.providerRef },
+              'catalog enrichment capped authoritative currency lookups',
+            );
+          }
+        }
+
         // A brand-new catalog row (§6.2 first touch): enqueue its history
         // backfill right away, exactly once. Rows that already existed —
         // seeded (§6.2(c)) or created by an earlier search — are warmed on
@@ -489,9 +581,9 @@ export function createCatalogEnrichment(deps: CatalogEnrichmentDeps): CatalogEnr
             symbol: hit.symbol,
             name: hit.name,
             exchange: hit.exchange ?? null,
-            currency: hit.currency,
+            currency: resolved ?? hit.currency,
           },
-          { refresh: providerRefreshFields(hit) },
+          { refresh: providerRefreshFields(hit, resolved !== null) },
         );
         if (created) await backfill.enqueue(row.id);
       }

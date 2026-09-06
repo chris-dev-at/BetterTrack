@@ -241,33 +241,58 @@ const EXCHANGE_CURRENCY: Record<string, CurrencyCode> = {
 };
 
 /**
+ * What {@link currencyForSearchResult} could work out about a hit's currency.
+ *
+ * `guessed` is the load-bearing half (#1875). A search projection's currency is
+ * either DERIVED from something the symbol actually states — an FX pair naming
+ * its quote currency, a crypto pair, a venue suffix, a known exchange code — or
+ * it is the bare US default, which is not a reading of anything. The two must
+ * be distinguishable downstream, because `assets.currency` is money: the
+ * catalog stores it, `portfolioService` converts a PERSISTED cash movement
+ * through it, and nothing in the read path can later tell a derivation from a
+ * default. A defaulted code is a placeholder for the badge; only the catalog's
+ * authoritative `getMeta` resolution may turn it into a stored denomination
+ * (`services/search/catalogEnrichment.ts`).
+ */
+export interface SearchResultCurrency {
+  /** The code to show, and — when `guessed` is false — to store. */
+  code: CurrencyCode;
+  /** True when no rule matched and `code` is the bare US default, not a reading. */
+  guessed: boolean;
+}
+
+/**
  * Best-effort currency for a search hit (§6.2 — results show a currency badge).
  * Yahoo's `search()` does not return a currency, so we derive it from the
  * symbol shape: FX pairs (`EURUSD=X`) and crypto (`BTC-EUR`) name their quote
- * currency directly; otherwise the venue suffix / exchange code fixes it. The
- * authoritative currency is re-fetched via {@link normalizeCurrency} from
- * `getMeta`/`getQuote` once the asset is actually selected, so an imperfect
- * guess here only affects the picker badge, never a stored amount.
+ * currency directly; otherwise the venue suffix / exchange code fixes it.
+ *
+ * When none of those rules matches there is nothing to derive from — Yahoo's
+ * primary market is the US, so the code answers `USD` and flags it `guessed`.
+ * `^IBEX` is the shape that matters: no `=X`, no `-`, no dot suffix, and `MCE`
+ * is not in {@link EXCHANGE_CURRENCY}, so a EUR index defaults to USD. The flag
+ * is what stops that placeholder being stored as a fact.
  */
 export function currencyForSearchResult(
   symbol: string,
   exchange: string | null | undefined,
-): CurrencyCode {
+): SearchResultCurrency {
   const sym = (symbol ?? '').trim();
+  const derived = (code: CurrencyCode): SearchResultCurrency => ({ code, guessed: false });
 
   // FX pair, e.g. `EURUSD=X` (USD per EUR) → quote currency is the trailing 3.
   if (sym.endsWith('=X')) {
     const pair = sym.slice(0, -2).toUpperCase();
-    if (pair.length === 6 && /^[A-Z]{6}$/.test(pair)) return pair.slice(3) as CurrencyCode;
+    if (pair.length === 6 && /^[A-Z]{6}$/.test(pair)) return derived(pair.slice(3) as CurrencyCode);
     // Short form like `EUR=X` is quoted against USD.
-    if (/^[A-Z]{3}$/.test(pair)) return 'USD';
+    if (/^[A-Z]{3}$/.test(pair)) return derived('USD');
   }
 
   // Crypto / pair form `BTC-USD`, `ETH-EUR`.
   const dashIdx = sym.lastIndexOf('-');
   if (dashIdx > 0) {
     const quote = sym.slice(dashIdx + 1).toUpperCase();
-    if (/^[A-Z]{3}$/.test(quote)) return quote as CurrencyCode;
+    if (/^[A-Z]{3}$/.test(quote)) return derived(quote as CurrencyCode);
   }
 
   // Venue suffix after the final dot.
@@ -275,15 +300,15 @@ export function currencyForSearchResult(
   if (dotIdx >= 0) {
     const suffix = sym.slice(dotIdx + 1).toUpperCase();
     const bySuffix = SUFFIX_CURRENCY[suffix];
-    if (bySuffix) return bySuffix;
+    if (bySuffix) return derived(bySuffix);
   }
 
   // Exchange-code fallback (US listings have no suffix).
   const byExchange = exchange ? EXCHANGE_CURRENCY[exchange.toUpperCase()] : undefined;
-  if (byExchange) return byExchange;
+  if (byExchange) return derived(byExchange);
 
-  // Default: Yahoo's primary market is the US.
-  return 'USD';
+  // Nothing to read it off: the US default, marked as the guess it is.
+  return { code: 'USD', guessed: true };
 }
 
 // ── Market-intelligence mapping (§13.5 V5-P5) ────────────────────────────────

@@ -2,6 +2,8 @@ import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { describe, expect, it } from 'vitest';
 
+import type { AssetMeta, AssetRef, CachedResult } from '@bettertrack/contracts';
+
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import * as schema from '../../../data/schema';
 import { createTestApp } from '../../../testing/createTestApp';
@@ -18,6 +20,7 @@ import {
   ENRICH_GUARD_DONE,
   ENRICH_GUARD_RUNNING,
   ENRICH_GUARD_TTL_SECONDS,
+  ENRICH_MAX_CURRENCY_LOOKUPS,
   ENRICH_MAX_HITS,
   ENRICH_RUN_TIMEOUT_MS,
   rankProviderHits,
@@ -513,5 +516,197 @@ describe('catalogEnrichment — the guard is an owned lease (#1794)', () => {
 
     release();
     await enrichment.settled();
+  });
+});
+
+/**
+ * The authoritative-currency resolution (#1875). A provider search projection
+ * may only DEFAULT a currency — `currencyForSearchResult` answers `USD` for a
+ * symbol with no `=X`, no `-`, no venue suffix and an exchange code it does not
+ * know, which is exactly `^IBEX`, a EUR index. `assets.currency` is money, so
+ * the placeholder is re-read from the provider's own `getMeta` before it can
+ * become a stored denomination — and a row that already holds a wrong one is
+ * corrected, which is the only path that ever could.
+ */
+describe('catalogEnrichment — authoritative currency (#1875)', () => {
+  const META_AT = Date.parse('2026-06-20T10:00:00.000Z');
+
+  const cachedMeta = (ref: AssetRef, currency: string): CachedResult<AssetMeta> => ({
+    value: {
+      providerId: ref.providerId,
+      providerRef: ref.providerRef,
+      symbol: ref.providerRef,
+      name: ref.providerRef,
+      exchange: null,
+      currency,
+      type: 'index',
+    },
+    stale: false,
+    asOf: META_AT,
+  });
+
+  /** The `^IBEX` shape: a EUR index whose projection could only default to USD. */
+  const ibexHit = () =>
+    providerHit({
+      providerRef: '^IBEX',
+      symbol: '^IBEX',
+      name: 'IBEX 35',
+      exchange: 'MCE',
+      type: 'index',
+      currency: 'USD',
+      currencyGuessed: true,
+    });
+
+  it('creates the row in the currency the provider actually reports, not the default', async () => {
+    const { assetRepo, marketData, enrichment } = await makeEnrichment({
+      search: () => [ibexHit()],
+      meta: (ref) => cachedMeta(ref, 'EUR'),
+    });
+
+    await enrichment.request('ibex');
+    await enrichment.settled();
+
+    // Not USD — the whole point: this row is what `portfolioService` books a
+    // persisted cash movement through.
+    expect(await assetRepo.findGlobal('yahoo', '^IBEX')).toMatchObject({ currency: 'EUR' });
+    expect(marketData.calls.meta).toBe(1);
+  });
+
+  it('corrects a row already stored with the placeholder, in place', async () => {
+    // The provider is down on the first pass, so the create falls back to the
+    // projection's placeholder — the state every pre-#1875 install is in.
+    let metaWorks = false;
+    const { assetRepo, backfill, enrichment, redis, h } = await makeEnrichment({
+      search: () => [ibexHit()],
+      meta: (ref) => {
+        if (!metaWorks) throw new Error('upstream down');
+        return cachedMeta(ref, 'EUR');
+      },
+    });
+
+    await enrichment.request('ibex');
+    await enrichment.settled();
+    const first = await assetRepo.findGlobal('yahoo', '^IBEX');
+    expect(first?.currency).toBe('USD');
+
+    // A later enrichment reaches the provider — and the guess is not forever.
+    metaWorks = true;
+    await redis.del(enrichGuardKey('ibex'));
+    await enrichment.request('ibex');
+    await enrichment.settled();
+
+    const corrected = await assetRepo.findGlobal('yahoo', '^IBEX');
+    expect(corrected?.currency).toBe('EUR');
+    // In place: same row, so every holding and transaction pointing at it
+    // survives the correction, and nothing was created a second time.
+    expect(corrected?.id).toBe(first?.id);
+    expect(await h.db.select({ id: schema.assets.id }).from(schema.assets)).toHaveLength(1);
+    expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it("still refuses the projection's own currency, flagged or not", async () => {
+    // A hit that did NOT flag its currency carries a derivation, not a reading:
+    // deterministic from the symbol, never re-read, and never written over a
+    // stored value (#1810). No lookup is spent on it either.
+    const { assetRepo, marketData, enrichment, redis } = await makeEnrichment({
+      search: () => [
+        providerHit({
+          providerRef: '^XYZ',
+          symbol: '^XYZ',
+          name: 'Some Traded Index',
+          type: 'index',
+          currency: 'USD',
+        }),
+      ],
+      meta: (ref) => cachedMeta(ref, 'JPY'),
+    });
+    await assetRepo.upsertGlobal({
+      providerId: 'yahoo',
+      providerRef: '^XYZ',
+      type: 'index',
+      symbol: '^XYZ',
+      name: 'Some Traded Index',
+      exchange: 'XETRA',
+      currency: 'EUR',
+    });
+
+    await redis.del(enrichGuardKey('xyz'));
+    await enrichment.request('xyz');
+    await enrichment.settled();
+
+    expect(await assetRepo.findGlobal('yahoo', '^XYZ')).toMatchObject({ currency: 'EUR' });
+    expect(marketData.calls.meta).toBe(0);
+  });
+
+  it('spends no lookup on a curated ref and leaves its hand-checked currency alone', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const assetRepo = createAssetRepository(h.db);
+    const redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    const curated = COMMON_SYMBOLS_SEED.find((entry) => entry.providerRef === '^GDAXI')!;
+    expect(isCuratedCatalogRef('yahoo', '^GDAXI')).toBe(true);
+    await seedAssetCatalog(assetRepo, [curated]);
+
+    const marketData = createStubMarketData({
+      search: () => [
+        providerHit({
+          providerRef: '^GDAXI',
+          symbol: '^GDAXI',
+          name: 'DAX PERFORMANCE-INDEX',
+          exchange: 'GER',
+          currency: 'USD',
+          currencyGuessed: true,
+          type: 'index',
+        }),
+      ],
+      meta: (ref) => cachedMeta(ref, 'JPY'),
+    });
+    const enrichment = createCatalogEnrichment({
+      marketData,
+      assetRepo,
+      backfill: createRecordingBackfill(),
+      redis,
+      logger: h.ctx.logger,
+    });
+
+    await enrichment.request('dax');
+    await enrichment.settled();
+
+    // The seed list already carries a hand-checked native currency and the row
+    // exists before any search can reach it, so there is nothing to resolve.
+    expect(await assetRepo.findGlobal('yahoo', '^GDAXI')).toMatchObject({
+      currency: curated.currency,
+    });
+    expect(marketData.calls.meta).toBe(0);
+  });
+
+  it('caps how many authoritative lookups one enrichment may make', async () => {
+    const overflow = ENRICH_MAX_CURRENCY_LOOKUPS + 3;
+    const { marketData, enrichment, h } = await makeEnrichment({
+      search: () =>
+        Array.from({ length: overflow }, (_, i) =>
+          providerHit({
+            providerRef: `^GUESS${i}`,
+            symbol: `^GUESS${i}`,
+            name: `Guessed Index ${i}`,
+            exchange: 'MCE',
+            type: 'index',
+            currency: 'USD',
+            currencyGuessed: true,
+          }),
+        ),
+      meta: (ref) => cachedMeta(ref, 'EUR'),
+    });
+
+    await enrichment.request('guess');
+    await enrichment.settled();
+
+    // One background enrichment cannot turn into `overflow` upstream calls…
+    expect(marketData.calls.meta).toBe(ENRICH_MAX_CURRENCY_LOOKUPS);
+    const rows = await h.db.select({ currency: schema.assets.currency }).from(schema.assets);
+    expect(rows).toHaveLength(overflow);
+    // …and exactly the resolved ones were stored resolved; the rest keep the
+    // placeholder for their badge until a later enrichment resolves them.
+    expect(rows.filter((row) => row.currency === 'EUR')).toHaveLength(ENRICH_MAX_CURRENCY_LOOKUPS);
   });
 });

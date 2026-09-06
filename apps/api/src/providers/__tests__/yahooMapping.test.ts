@@ -88,36 +88,51 @@ describe('mapMarketState (§13.5 V5-P1)', () => {
 });
 
 describe('currencyForSearchResult (§6.2)', () => {
+  const derived = (code: string) => ({ code, guessed: false });
+
   it('derives euro currencies from European venue suffixes', () => {
-    expect(currencyForSearchResult('BAYN.DE', 'GER')).toBe('EUR');
-    expect(currencyForSearchResult('AIR.PA', 'PAR')).toBe('EUR');
-    expect(currencyForSearchResult('ASML.AS', 'AMS')).toBe('EUR');
-    expect(currencyForSearchResult('ENI.MI', 'MIL')).toBe('EUR');
+    expect(currencyForSearchResult('BAYN.DE', 'GER')).toEqual(derived('EUR'));
+    expect(currencyForSearchResult('AIR.PA', 'PAR')).toEqual(derived('EUR'));
+    expect(currencyForSearchResult('ASML.AS', 'AMS')).toEqual(derived('EUR'));
+    expect(currencyForSearchResult('ENI.MI', 'MIL')).toEqual(derived('EUR'));
   });
 
   it('maps London to GBP (the major code; pence scaling is applied later)', () => {
-    expect(currencyForSearchResult('BP.L', 'LSE')).toBe('GBP');
+    expect(currencyForSearchResult('BP.L', 'LSE')).toEqual(derived('GBP'));
   });
 
   it('handles other global venues', () => {
-    expect(currencyForSearchResult('NESN.SW', 'EBS')).toBe('CHF');
-    expect(currencyForSearchResult('7203.T', 'JPX')).toBe('JPY');
-    expect(currencyForSearchResult('SHOP.TO', 'TOR')).toBe('CAD');
-    expect(currencyForSearchResult('BHP.AX', 'ASX')).toBe('AUD');
+    expect(currencyForSearchResult('NESN.SW', 'EBS')).toEqual(derived('CHF'));
+    expect(currencyForSearchResult('7203.T', 'JPX')).toEqual(derived('JPY'));
+    expect(currencyForSearchResult('SHOP.TO', 'TOR')).toEqual(derived('CAD'));
+    expect(currencyForSearchResult('BHP.AX', 'ASX')).toEqual(derived('AUD'));
   });
 
   it('reads the quote currency of FX pairs and crypto', () => {
-    expect(currencyForSearchResult('EURUSD=X', 'CCY')).toBe('USD');
-    expect(currencyForSearchResult('GBPJPY=X', 'CCY')).toBe('JPY');
-    expect(currencyForSearchResult('BTC-EUR', 'CCC')).toBe('EUR');
-    expect(currencyForSearchResult('ETH-USD', 'CCC')).toBe('USD');
+    expect(currencyForSearchResult('EURUSD=X', 'CCY')).toEqual(derived('USD'));
+    expect(currencyForSearchResult('GBPJPY=X', 'CCY')).toEqual(derived('JPY'));
+    expect(currencyForSearchResult('BTC-EUR', 'CCC')).toEqual(derived('EUR'));
+    expect(currencyForSearchResult('ETH-USD', 'CCC')).toEqual(derived('USD'));
   });
 
-  it('falls back to the exchange code, then USD, for suffix-less US symbols', () => {
-    expect(currencyForSearchResult('AAPL', 'NMS')).toBe('USD');
-    expect(currencyForSearchResult('BRK-B', 'NYQ')).toBe('USD'); // dash is a class, not a pair
-    expect(currencyForSearchResult('WEIRD', 'UNKNOWN-EXCHANGE')).toBe('USD');
-    expect(currencyForSearchResult('NOEXCH', null)).toBe('USD');
+  it('falls back to the exchange code for suffix-less US symbols, unguessed', () => {
+    expect(currencyForSearchResult('AAPL', 'NMS')).toEqual(derived('USD'));
+    // A dash that is a share class, not a pair — the exchange decides.
+    expect(currencyForSearchResult('BRK-B', 'NYQ')).toEqual(derived('USD'));
+  });
+
+  it('flags the bare USD default as a guess (#1875)', () => {
+    // `^IBEX` is the shape that costs money: no `=X`, no `-`, no dot suffix,
+    // and `MCE` is not in the exchange table — a EUR index would otherwise be
+    // stored USD forever. The code is still USD (the badge needs one), but the
+    // catalog may not treat it as a reading.
+    expect(currencyForSearchResult('^IBEX', 'MCE')).toEqual({ code: 'USD', guessed: true });
+    expect(currencyForSearchResult('^SSMI', 'EBS')).toEqual({ code: 'USD', guessed: true });
+    expect(currencyForSearchResult('WEIRD', 'UNKNOWN-EXCHANGE')).toEqual({
+      code: 'USD',
+      guessed: true,
+    });
+    expect(currencyForSearchResult('NOEXCH', null)).toEqual({ code: 'USD', guessed: true });
   });
 });
 
