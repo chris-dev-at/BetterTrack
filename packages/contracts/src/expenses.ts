@@ -129,6 +129,16 @@ export const expenseTransactionSchema = z
     description: z.string(),
     /** Provenance tag: `manual` or `import:<broker>` (2/3). */
     source: z.string(),
+    /**
+     * The bank-import idempotency key (`UNIQUE(user, dedup_hash)`), ADDITIVE and
+     * optional so every pre-existing fixture still parses; absent (like null)
+     * means the row is a manual entry no import can collide with. Served because
+     * the paranoid capture drains this very read and enable hard-deletes the
+     * server cleartext: a key the DTO cannot carry is lost for good on the round
+     * trip, and the same statement then books every row twice. It is a hash of
+     * the caller's own row, returned only to that caller.
+     */
+    dedupHash: z.string().nullable().optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -544,6 +554,14 @@ export const expenseBudgetProgressSchema = z
     /** `amount - spent` (negative once over budget). */
     remaining: z.number(),
     exceeded: z.boolean(),
+    /**
+     * The budget row's real timestamps. `listForOwner` orders by `createdAt`, and
+     * the paranoid capture builds the vault document from THIS list: without them
+     * it had to stamp the migration instant on every budget, so an enable→disable
+     * round trip collapsed the list to one age and reordered it by UUID.
+     */
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
   })
   .strict();
 export type ExpenseBudgetProgress = z.infer<typeof expenseBudgetProgressSchema>;
