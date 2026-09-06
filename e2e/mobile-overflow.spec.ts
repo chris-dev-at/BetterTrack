@@ -18,6 +18,7 @@ import { expectUserShellReady } from './support/flows';
 import {
   overlayPrimitiveExports,
   overlayPrimitiveRegistryProblems,
+  overlayRegistrationProblems,
   overlaySurfaceSources,
   rendersOverlay,
   repoOverlayDetection,
@@ -603,6 +604,34 @@ function assertCompleteRouteInventory(): void {
     classifiedOverlaySources,
     'Every source-derived user overlay component must have a measured scenario or a component-and-route exclusion; stale classifications must also be removed.',
   ).toEqual(registeredOverlaySources);
+
+  // …and per OVERLAY, not merely per file (#1834). The equality above matches
+  // file paths, so a second overlay added to an already-classified file — a
+  // moderation dialog next to a confirmation dialog — satisfied both sides
+  // without ever being opened at 390px or given an exclusion. An entry that
+  // covers a whole family of dialogs declares how many with `overlays`.
+  expect(
+    overlayRegistrationProblems(detection, [
+      ...OVERLAY_SCENARIOS.map(({ label, sources, overlays }) => ({ label, sources, overlays })),
+      ...OVERLAY_EXCLUSIONS.map(({ surface, sources, overlays }) => ({
+        label: surface,
+        sources,
+        overlays,
+      })),
+    ]),
+    'Every overlay a classified file renders must be accounted for by a scenario or an exclusion.',
+  ).toEqual([]);
+
+  // A row contract is only worth anything while the sweep actually looks at
+  // that selector; naming one the measurement ignores would assert nothing.
+  expect(
+    OVERLAY_SCENARIOS.filter(
+      ({ rows }) =>
+        rows !== undefined &&
+        (rows.minimum < 1 || !(TAP_TARGET_SELECTORS as readonly string[]).includes(rows.selector)),
+    ).map(({ label }) => label),
+    'Every overlay row contract must name a measured tap-target selector and a positive floor.',
+  ).toEqual([]);
 }
 
 /**
@@ -988,20 +1017,46 @@ type OverlayAction =
   | { kind: 'click'; selector: string; position?: 'first' | 'last' }
   | { kind: 'click-sequence'; selectors: readonly string[] };
 
+/**
+ * The contracted rows an opened overlay is MADE of.
+ *
+ * The tap-target sweep reports "no undersized controls" just as happily for a
+ * surface whose rows match none of its selectors, so an overlay whose content
+ * is a list of destinations (the palette) or menu items says how many of them
+ * had to be measured. Both fields are checked against
+ * {@link TAP_TARGET_SELECTORS} by the inventory assertion: a scenario cannot
+ * claim rows through a selector the measurement does not look at.
+ */
+interface OverlayRowContract {
+  selector: string;
+  minimum: number;
+}
+
 interface OverlayScenario {
   label: string;
   sources: readonly string[];
+  /**
+   * Overlay sites in EACH named source this entry accounts for; one when
+   * unstated. Several entries may still classify state variants of a single
+   * overlay — the count only has to REACH what the file renders — but a file
+   * that grows a genuinely new overlay must gain a classification rather than
+   * inherit this one. See {@link assertCompleteRouteInventory}.
+   */
+  overlays?: number;
   route: string;
   query?: string;
   action: OverlayAction;
   expectedSelector: string;
   sentinel?: (fixtures: RouteFixtures) => string;
+  rows?: OverlayRowContract;
   justification: string;
 }
 
 interface OverlayExclusion {
   surface: string;
   sources: readonly string[];
+  /** As {@link OverlayScenario.overlays}: sites accounted for per source. */
+  overlays?: number;
   routes: readonly string[];
   justification: string;
 }
@@ -1019,6 +1074,9 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     route: '/',
     action: { kind: 'keyboard', shortcut: 'Control+k' },
     expectedSelector: '.bt-palette',
+    // Six suggested commands render on an empty query; three is the floor that
+    // still fails loudly if the rows stop matching the measured selector.
+    rows: { selector: '.bt-palette__row', minimum: 3 },
     justification: 'Covers the custom command-palette dialog rather than the shared Dialog shell.',
   },
   {
@@ -1087,6 +1145,8 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
   {
     label: 'cash-transfer sheet',
     sources: ['apps/web/src/user/portfolio/TransferDialog.tsx'],
+    // One dialog, rendered from the loading branch as well as the loaded one.
+    overlays: 2,
     route: '/portfolio/cash/accounts',
     query: '?create=transfer',
     action: { kind: 'preopened' },
@@ -1129,6 +1189,8 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
   {
     label: 'feedback composer sheet',
     sources: ['apps/web/src/user/components/FeedbackDialog.tsx'],
+    // One composer, rendered from the submitted branch as well as the form one.
+    overlays: 2,
     route: '/control/feedback',
     action: { kind: 'click', selector: '.bt-cc__content .bt-btn--primary' },
     expectedSelector: '.bt-dialog__panel--phone-sheet',
@@ -1176,6 +1238,9 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
       position: 'first',
     },
     expectedSelector: '#main-content [role="menu"]',
+    // The seeded watchlist is one row; the contract is that the menu's rows —
+    // not only its box — were measured against the 44px floor.
+    rows: { selector: '.bt-popover [role="menuitem"]', minimum: 1 },
     justification: 'Covers a content-owned menu rather than only repeated shell chrome.',
   },
 ];
@@ -1192,6 +1257,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'AssetSearchBox result action popovers',
     sources: ['apps/web/src/user/components/AssetSearchBox.tsx'],
+    overlays: 2,
     routes: [
       '/',
       '/portfolio',
@@ -1210,6 +1276,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'AudiencePicker share, widening-confirmation and friend-group dialogs',
     sources: ['apps/web/src/user/components/AudiencePicker.tsx'],
+    overlays: 4,
     routes: [
       '/workbench',
       '/workbench/blueprints/:id',
@@ -1272,6 +1339,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'VaultSyncChip status dialog',
     sources: ['apps/web/src/user/vault/ui/VaultSyncChip.tsx'],
+    overlays: 2,
     routes: ['/'],
     justification:
       'The chip exists only after entering and unlocking paranoid mode with a configured data home; paranoid Drive round-trip e2e owns that state.',
@@ -1356,6 +1424,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'MIRRORCHAIN create, convert, invite, member, rename and succession dialogs',
     sources: ['apps/web/src/user/portfolio/MirrorchainPanel.tsx'],
+    overlays: 11,
     routes: ['/portfolio', '/portfolio/settings', '/portfolio/cash/accounts'],
     justification:
       'Every variant requires multi-user chain ownership state and can change privacy or membership; mirrorchain lifecycle e2e owns those flows.',
@@ -1363,6 +1432,7 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'portfolio archive and delete dialogs',
     sources: ['apps/web/src/user/portfolio/PortfolioSettingsPage.tsx'],
+    overlays: 2,
     routes: ['/portfolio/settings'],
     justification:
       'Both are destructive lifecycle confirmations against the populated default portfolio; portfolio lifecycle e2e owns them.',
@@ -1424,6 +1494,13 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'It requires a shared item with alert-sharing state and changes notification recipients; sharing e2e owns that mutation.',
   },
   {
+    surface: 'owner comment-moderation thread dialog',
+    sources: ['apps/web/src/user/social/MySharedItemsPage.tsx'],
+    routes: ['/people/shared'],
+    justification:
+      'Its trigger is a shared row, so opening it needs an item shared to a real audience — the privacy-widening write this matrix leaves to sharing e2e — and the thread inside it is the audience-side CommentThread the social comment e2e already drives.',
+  },
+  {
     surface: 'blueprint delete dialog',
     sources: ['apps/web/src/user/workboard/ConglomerateDetailPage.tsx'],
     routes: ['/workbench/blueprints/:id'],
@@ -1447,6 +1524,8 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
   {
     surface: 'save-as-idea dialog',
     sources: ['apps/web/src/user/workboard/SaveIdeaDialog.tsx'],
+    // One dialog, rendered from the pending branch as well as the ready one.
+    overlays: 2,
     routes: ['/workbench/blueprints/new', '/workbench/blueprints/:id/edit', '/workbench/backtests'],
     justification:
       'It requires a valid 100%-weighted draft or completed backtest result; builder and backtest e2e own those prerequisite states.',
@@ -1832,6 +1911,15 @@ const TAP_TARGET_SELECTORS = [
   '.bt-topbar .bt-portfolio-trigger',
   '.bt-topbar .bt-popover :is(a, button, input, select, textarea)',
   '.bt-bottombar a',
+  // The rows INSIDE the overlays this gate already opens (#1834). The four
+  // above stop at `.bt-topbar`, so a menu the page owns rather than the header
+  // kept `.bt-menu-item`'s 32px row, and the command palette's destinations —
+  // primary navigation on a phone — sat at 38px, both measured by nothing.
+  '.bt-menu-item',
+  '.bt-popover [role="menuitem"]',
+  '.bt-popover [role="menuitemcheckbox"]',
+  '.bt-popover [role="menuitemradio"]',
+  '.bt-palette__row',
 ] as const;
 
 /**
@@ -1891,6 +1979,17 @@ const TAP_TARGET_ALLOWANCES: readonly TapTargetAllowance[] = [
     selector: '.sr-only',
     justification:
       'Visually-hidden assistive markup (1×1px by definition) is never a rendered touch target.',
+  },
+  {
+    // The value is part of the selector on purpose: the day that row stops
+    // pinning 40px inline, this stops matching and the row is measured like
+    // every other `.bt-menu-item`. It cannot widen to cover anything else —
+    // the sibling attachable row in the same file already pins 44px and stays
+    // measured.
+    selector:
+      '.bt-dialog__panel--phone-sheet ul > li > button.bt-menu-item[style*="min-height: 40px"]',
+    justification:
+      "The new-chat friend row (chatSurface.tsx:571) pins min-height:40px inline, which beats origin.css's 44px phone floor; #1834 puts apps/web/src/user/social/** out of scope, so the owning issue removes the inline style (its sibling row at :729 already uses 44) rather than this gate editing the component.",
   },
 ];
 
@@ -2109,6 +2208,21 @@ async function exerciseOverlayScenario(
   await waitForSettledOverlay(overlay);
   await waitForSettledPaint(page);
   await expectNoPageOverflow(page, `${scenario.route} — ${scenario.label}`, viewportWidth, true);
+
+  // The rows the overlay is made of, before the sweep below reports on them: a
+  // palette or menu whose rows stopped matching the contracted selector is
+  // indistinguishable from a compliant one in the undersized-control result.
+  if (scenario.rows && viewportWidth <= TAP_TARGET_MAX_VIEWPORT_WIDTH) {
+    const { minimum, selector } = scenario.rows;
+    // Polled, not sampled once: a menu whose rows arrive with their query would
+    // otherwise be measured — and counted — while it is still empty.
+    await expect
+      .poll(() => page.locator(`${selector}:visible`).count(), {
+        message: `${scenario.label} must render at least ${minimum} rows matching ${selector} for the tap-target sweep to measure them`,
+        timeout: 20_000,
+      })
+      .toBeGreaterThanOrEqual(minimum);
+  }
   await expectTapTargets(page, `${scenario.route} — ${scenario.label}`, viewportWidth);
   await page.keyboard.press('Escape');
   await expect(overlay, `${scenario.label} did not close with Escape`).toBeHidden({
@@ -2283,6 +2397,66 @@ test('overlay primitive registry fails by name when a primitive moves or appears
 });
 
 /**
+ * Fixture proof for #1834: overlay identity is per OVERLAY, not per file.
+ *
+ * `overlaySurfaceSources` answers in file paths, so the set-equality assertion
+ * above is satisfied by one classification no matter how many overlays a file
+ * opens — which is how a moderation dialog landed next to an already-excluded
+ * confirmation dialog and was never opened at 390px. The fixture below is that
+ * exact shape: two distinct dialogs in one file, registered once.
+ */
+test('overlay registration fails by name when one entry hides a second overlay in a file', () => {
+  const surface = 'apps/web/src/user/fixtures/TwoOverlays.tsx';
+  const detection = virtualOverlayDetection({
+    'apps/web/src/user/components/Dialog.tsx': `
+      import { createPortal } from 'react-dom';
+      export function Dialog({ children }) {
+        return createPortal(<div className="bt-dialog__panel">{children}</div>, document.body);
+      }
+    `,
+    [surface]: `
+      import { Dialog } from '../components/Dialog';
+      export function TwoOverlays({ confirming, thread }) {
+        return (
+          <div>
+            {confirming ? <Dialog title="confirm">confirmation</Dialog> : null}
+            {thread ? <Dialog title="comments">moderation thread</Dialog> : null}
+          </div>
+        );
+      }
+    `,
+  });
+
+  // The file-level half stays green — one file, one classification …
+  expect(overlaySurfaceSources(detection)).toEqual([surface]);
+
+  // … while the count half names the file, both overlay sites and the entry
+  // that was silently covering them.
+  const registered = [{ label: 'confirmation dialog', sources: [surface] }];
+  const problems = overlayRegistrationProblems(detection, registered);
+  expect(problems).toHaveLength(1);
+  expect(problems[0]).toContain(`${surface} renders 2 overlays`);
+  expect(problems[0]).toContain('"confirmation dialog" accounts for 1');
+  expect(problems[0]).toMatch(/line \d+: <Dialog>; line \d+: <Dialog>/);
+
+  // Green again once the second overlay is classified in its own right …
+  expect(
+    overlayRegistrationProblems(detection, [
+      ...registered,
+      { label: 'moderation dialog', sources: [surface] },
+    ]),
+  ).toEqual([]);
+  // … or by an entry that states out loud that it covers both.
+  expect(overlayRegistrationProblems(detection, [{ ...registered[0]!, overlays: 2 }])).toEqual([]);
+  // Anti-shrinkage in the other direction: a family count that outlives its
+  // dialogs is named too, so a deleted overlay cannot leave a claim standing
+  // that would silently absorb the next one added.
+  expect(overlayRegistrationProblems(detection, [{ ...registered[0]!, overlays: 3 }])[0]).toContain(
+    '"confirmation dialog" claims to cover 3',
+  );
+});
+
+/**
  * Planted-regression proof for #1663 blind spots (2) and (3): a gate nobody has
  * seen fail is a gate nobody knows works. These run the REAL measurement
  * functions against synthetic pages, so the proof lives in CI permanently
@@ -2322,10 +2496,38 @@ test('mobile gate self-check: planted regressions turn the measurements red', as
       `a 20px-tall icon button must fail the tap-target measurement at ${width}px`,
     ).rejects.toThrow(/below 44×44 CSS px/);
 
+    // The rows inside the overlays the gate opens (#1834): main's geometry —
+    // a 38px palette row and a 32px content-owned menu row — must fail here.
+    await page.setContent(
+      fixture(
+        '<ul class="bt-palette__rows"><li class="bt-palette__row" style="width:300px;height:20px">Portfolio</li></ul>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `self-check ${width}px`, width),
+      `a 20px palette row must fail the tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
+    await page.setContent(
+      fixture(
+        '<div class="bt-popover"><div role="menu">' +
+          '<button role="menuitem" style="width:180px;height:32px">Watchlist</button>' +
+          '</div></div>',
+      ),
+    );
+    await expect(
+      expectTapTargets(page, `self-check ${width}px`, width),
+      `a 32px content-owned menu row must fail the tap-target measurement at ${width}px`,
+    ).rejects.toThrow(/below 44×44 CSS px/);
+
     await page.setContent(
       fixture(
         '<button class="bt-btn--icon" style="width:44px;height:44px">x</button>' +
-          '<button class="bt-btn--icon sr-only" style="width:1px;height:1px">hidden</button>',
+          '<button class="bt-btn--icon sr-only" style="width:1px;height:1px">hidden</button>' +
+          '<li class="bt-palette__row" style="width:300px;height:44px">Portfolio</li>' +
+          '<div class="bt-popover"><div role="menu">' +
+          '<button role="menuitem" style="width:180px;height:44px">Watchlist</button>' +
+          '</div></div>',
       ),
     );
     await expectTapTargets(page, `self-check ${width}px`, width);
