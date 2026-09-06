@@ -174,6 +174,28 @@ describe('AuthorizedAppsPanel', () => {
     ).toBeInTheDocument();
   });
 
+  test('names the destructive capabilities a granted scope really carries (#1860)', async () => {
+    // The panel is the only place a user reviews a grant AFTER approving it, so
+    // an understated line here is the last chance to notice that an app can
+    // dissolve a group portfolio, delete a vault or switch the tax regime.
+    vi.mocked(listOAuthGrants).mockResolvedValue({
+      grants: [
+        {
+          ...ONE_GRANT.grants[0]!,
+          scopes: ['mirrorchain:write', 'account:security', 'portfolio:write'],
+        },
+      ],
+    });
+    renderPanel();
+
+    const grantRow = (await screen.findByText('Charting Buddy')).closest('li')!;
+    expect(within(grantRow).getByText(/delete a group portfolio/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/transfer ownership/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/permanently deleting a vault/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/deleting a passkey/i)).toBeInTheDocument();
+    expect(within(grantRow).getByText(/tax regime/i)).toBeInTheDocument();
+  });
+
   test('marks a scope Paranoid mode refuses instead of hiding it from the grant', async () => {
     vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });

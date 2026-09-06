@@ -324,7 +324,7 @@
       "selectedOther": "{{count}} ausgewählt",
       "scopeDescription": {
         "portfolio:read": "Deine Portfolios, Bestände, Transaktionen, Cashbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds ansehen",
-        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten",
+        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten und das Steuerregime des Kontos für alle künftigen Verkäufe und Dividenden ändern",
         "workboard:read": "Deine Watchlist, Konglomerate und Backtests ansehen",
         "workboard:write": "Deine Watchlist und Konglomerate erstellen und bearbeiten",
         "market:read": "Anlagen suchen und Marktdaten lesen",
@@ -334,13 +334,13 @@
         "notifications:write": "Deine Benachrichtigungen als gelesen markieren und deine Benachrichtigungseinstellungen ändern",
         "chat:read": "Deine Nachrichten lesen",
         "chat:write": "Nachrichten in deinem Namen senden",
-        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung und App-PIN",
+        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung, App-PIN, Passkeys und verbundene Apps – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen",
         "alerts:read": "Deine Preisalarme ansehen",
         "alerts:write": "Deine Preisalarme erstellen, bearbeiten, neu aktivieren und löschen",
         "cash:read": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends ansehen",
         "cash:write": "Deine Cash-Tags, Budgets und Regeln erstellen und bearbeiten",
         "mirrorchain:read": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen ansehen",
-        "mirrorchain:write": "Einladungen zu Gruppenportfolios annehmen oder ablehnen und Gruppenportfolios verlassen",
+        "mirrorchain:write": "Gruppenportfolios beitreten oder verlassen und verwalten: Gruppen erstellen und umbenennen, Mitglieder einladen, befördern und entfernen, die Eigentümerschaft übertragen und ein Gruppenportfolio löschen",
         "vault:sync": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren",
         "feedback:write": "Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden",
         "feedback:read": "Deine Feedback-Einreichungen und deren Status ansehen"
@@ -348,7 +348,7 @@
       "module": {
         "portfolio": {
           "label": "Portfolio",
-          "description": "Deine Portfolios, Bestände, Kassenbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
+          "description": "Deine Portfolios, Bestände, Kassenbestände und die daraus abgeleiteten Dividenden-, Quartalszahlen- und Nachrichten-Feeds lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten und das Steuerregime des Kontos für alle künftigen Verkäufe und Dividenden ändern."
         },
         "workboard": {
           "label": "Workbench",
@@ -380,7 +380,7 @@
         },
         "mirrorchain": {
           "label": "Gruppenportfolios",
-          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder Einladungen annehmen und ablehnen sowie Gruppenportfolios verlassen."
+          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder ihnen beitreten und sie verlassen sowie verwalten: Gruppen erstellen und umbenennen, Mitglieder einladen, befördern und entfernen, die Eigentümerschaft übertragen und ein Gruppenportfolio löschen."
         },
         "vaultSync": {
           "label": "Tresor-Synchronisierung",
@@ -388,7 +388,7 @@
         },
         "accountSecurity": {
           "label": "Kontosicherheit",
-          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort, App-PIN, Passkeys und verbundene Apps verwalten – einschließlich einen Passkey löschen, den Zugriff einer anderen App widerrufen, Portfolios in einen Tresor verschieben und daraus zurückholen sowie einen Tresor endgültig löschen."
         },
         "feedback": {
           "label": "Feedback",
