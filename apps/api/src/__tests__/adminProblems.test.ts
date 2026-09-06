@@ -135,6 +135,84 @@ describe('admin problems', () => {
   });
 
   /**
+   * The other direction (#1847). A storm's throttled occurrences are DEFERRED
+   * and written when the window rolls — which is up to a whole window after
+   * they happened, and routinely after an admin has resolved the row in the
+   * meantime. Stamping the drain's own clock on them made the reopen rule read
+   * them as a recurrence: the resolve was silently undone, the row was flagged
+   * as a regression, and `last_seen_at` jumped a minute past the last real
+   * sighting — all with nothing having happened after the resolution.
+   */
+  it('drains a storm’s deferred occurrences at the time they happened, so a resolve stands', async () => {
+    // The occurrences happen 10 s before the resolve, on a pinned clock; the
+    // window then rolls a minute later, which is when the drain writes.
+    const base = createProblemRepository(harness.db);
+    const settling: Promise<unknown>[] = [];
+    const repo = {
+      ...base,
+      upsert: (input: Parameters<typeof base.upsert>[0]) => {
+        const write = base.upsert(input);
+        settling.push(write);
+        return write;
+      },
+    };
+    const settle = async (): Promise<void> => {
+      await Promise.allSettled(settling.splice(0));
+    };
+
+    const occurredAt = Date.now() - 10_000;
+    let clock = occurredAt;
+    const capture = createProblemService({
+      repo,
+      now: () => clock,
+      windowMs: 60_000,
+      maxRepeatWritesPerFingerprint: 1,
+    });
+    // Three identical 500s: the insert, one folded bump, one occurrence left
+    // throttled and waiting for the window to close.
+    for (let i = 0; i < 3; i += 1) capture.captureError(new Error('db pool exhausted'));
+    await settle();
+
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const open = await agent.get('/api/v1/admin/problems').query({ status: 'open' });
+    const target = problemListResponseSchema.parse(open.body).problems[0]!;
+    expect(target.occurrenceCount).toBe(2);
+    const resolved = await agent.post(`/api/v1/admin/problems/${target.id}/resolve`).set(...XRW);
+    expect(problemSchema.parse(resolved.body).status).toBe('resolved');
+
+    // The window rolls on the admin's own next read — that is what drains.
+    clock = occurredAt + 70_000;
+    await capture.list({ limit: 25 });
+    await settle();
+
+    const after = await agent.get('/api/v1/admin/problems').query({ status: 'resolved' });
+    const drained = problemListResponseSchema
+      .parse(after.body)
+      .problems.find((p) => p.id === target.id)!;
+    // The count converges on the truth …
+    expect(drained.occurrenceCount).toBe(3);
+    // … without resurrecting a problem nothing has done since the resolve.
+    expect(drained.status).toBe('resolved');
+    expect(drained.regressed).toBe(false);
+    expect(new Date(drained.lastSeenAt).getTime()).toBe(occurredAt);
+
+    // And a genuine recurrence — one that happens AFTER the resolution — still
+    // reopens the row and is still flagged as a regression. The fix is an
+    // honest timestamp, not a blanket "never reopen".
+    clock = occurredAt + 130_000;
+    capture.captureError(new Error('db pool exhausted'));
+    await settle();
+    const reopened = await agent.get('/api/v1/admin/problems').query({ status: 'open' });
+    const row = problemListResponseSchema
+      .parse(reopened.body)
+      .problems.find((p) => p.id === target.id)!;
+    expect(row.status).toBe('open');
+    expect(row.regressed).toBe(true);
+    expect(row.occurrenceCount).toBe(4);
+  });
+
+  /**
    * Paging. Nothing but a resolve ever removed a row from the default view and
    * nothing ever deleted one, so before this every problem past the newest page
    * was unreachable AND unresolvable through any UI path.
@@ -203,8 +281,10 @@ describe('admin problems', () => {
     // i.e. exactly the silent drop the capture contract rules out.
     const redis = harness.ctx.redis;
     // Start from a known tally: the shared keys outlive a single harness (and,
-    // on real Redis, a single test run).
-    await redis.del('problems:drops:worker:recent', 'problems:drops:worker:total');
+    // on real Redis, a single test run). The window counter is bucketed per
+    // window (#1847), so the whole role prefix goes.
+    const stale = await redis.keys('problems:drops:worker:*');
+    if (stale.length > 0) await redis.del(...stale);
 
     const workerTally = createProblemDropTally(redis, 'worker');
     const workerProblems = createProblemService({
