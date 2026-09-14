@@ -1024,6 +1024,93 @@ run_fixer 7 77 intermediate
 check "fixer always runs the completion slot" \
   "completion:fixer:intermediate" "$(<"$SLOT_SEL_LOG")"
 
+echo "— worker resume: an already-approved head is re-enqueued, never re-reviewed (#1900)"
+# Defect B of #1900. While the merger was silently eating the queue entry, the
+# scheduler kept handing the same issue back and the worker's resume path ran a
+# full reviewer on a head the canonical approval ALREADY covered — 186 times,
+# $434.64. Resume now reads the approval from the same source the merger
+# validates against (contracts.sh mf_latest_approval_for_head over the durable
+# comment thread) and re-emits the merge-queue entry itself. Only a changed head
+# is new work. run_cycle is driven end-to-end so the wiring is covered, not just
+# the helper: the heavy pre-cycle git/pnpm priming is stubbed to fail closed the
+# way it does on an unreachable registry, which is explicitly non-fatal.
+RESUME_LOG=$T/resume.log; RESUME_WORK=$T/resume-work.log
+RESUME_REPO_DIR=$REPO_DIR
+MF_DRY_RUN=0
+log(){ printf '%s\n' "$*" >>"$RESUME_LOG"; }
+notify(){ :; }
+git(){ return 1; }; node(){ return 1; }; pnpm(){ return 1; }; timeout(){ return 1; }
+hb_ensure(){ :; }; hb_stop(){ :; }
+wstatus(){ printf 'wstatus %s\n' "$*" >>"$RESUME_LOG"; }
+issue_difficulty(){ echo intermediate; }
+gh(){ return 0; }
+mf_cc(){ printf 'mf_cc %s\n' "$1" >>"$RESUME_WORK"; return 0; }
+review_fix_cycle(){ # the ONLY thing that may spend a reviewer here
+  printf 'review_fix_cycle %s %s\n' "$1" "$2" >>"$RESUME_WORK"
+  REVIEW_CYCLE_RESULT=approved; LAST_REVIEW_HEAD=$PR_HEAD; LAST_REVIEW_COMMENT_ID=999
+  return 0
+}
+triage(){ printf 'triage %s %s\n' "$1" "$2" >>"$RESUME_WORK"; return 0; }
+discover_issue_pr(){ DISCOVER_STATUS=unique; DISCOVER_PR=1737; DISCOVER_BRANCH=task/1729; return 0; }
+pr_snapshot(){ PR_SNAPSHOT_HEAD=$PR_HEAD; PR_SNAPSHOT_COMMENTS=$RESUME_COMMENTS; return 0; }
+mkdir -p "$TRIAGE" "$QUEUE"
+jq -nc '{issue:1729,touches:["multi-factory/**"]}' >"$AF"
+RESUME_COMMENTS='[{"id":4242,"body":"reviewed\nFACTORY-REVIEW-HEAD: 55c306aa\nFACTORY-VERDICT: APPROVE"}]'
+resume_queue_entry(){ find "$QUEUE" -maxdepth 1 -type f -name '*-pr1737.json' -print -quit; }
+resume_reset(){ rm -f "$QUEUE"/*-pr1737.json; : >"$RESUME_LOG"; : >"$RESUME_WORK"; }
+
+# (a) Approval already covers the current head: re-enqueue, spend nothing.
+resume_reset
+PR_HEAD=55c306aa
+run_cycle 1729 false; RESUME_RC=$?
+check "resume on an approved head finishes the assignment cleanly" "0" "$RESUME_RC"
+check "resume on an approved head spends no reviewer invocation" "0" "$(wc -l <"$RESUME_WORK" | tr -d ' ')"
+RESUME_Q=$(resume_queue_entry)
+[ -n "$RESUME_Q" ] && ok "resume re-emitted the missing merge-queue entry" || bad "resume wrote no merge-queue entry"
+check "the re-emitted entry names the PR's current head" "55c306aa" "$(jq -r '.approved_head' "${RESUME_Q:-/dev/null}")"
+check "the re-emitted entry carries the canonical approval id" "4242" "$(jq -r '.approval_comment_id' "${RESUME_Q:-/dev/null}")"
+check "the re-emitted entry carries the approval kind" "reviewer" "$(jq -r '.approval_kind' "${RESUME_Q:-/dev/null}")"
+check "the re-emitted entry carries the assignment's claim set" "multi-factory/**" "$(jq -r '.touches[0]' "${RESUME_Q:-/dev/null}")"
+check "the short-circuit is logged" "1" "$(grep -c 'already carries a canonical reviewer approval' "$RESUME_LOG")"
+check "the worker reports itself done on the resumed PR" "1" "$(grep -c '^wstatus done 1729 1737$' "$RESUME_LOG")"
+
+# (b) Idempotent: the same resume again converges on ONE entry, still free.
+: >"$RESUME_WORK"
+run_cycle 1729 false
+check "a repeated resume converges on one queue entry" "1" "$(find "$QUEUE" -maxdepth 1 -type f -name '*-pr1737.json' | wc -l | tr -d ' ')"
+check "a repeated resume still spends no reviewer invocation" "0" "$(wc -l <"$RESUME_WORK" | tr -d ' ')"
+
+# (c) A CHANGED head is genuinely new work and must still be reviewed.
+resume_reset
+PR_HEAD=99deadbe
+run_cycle 1729 false
+check "a changed head still runs the review cycle" "1" "$(grep -c '^review_fix_cycle 1729 1737$' "$RESUME_WORK")"
+check "a changed head never claims a standing approval" "0" "$(grep -c 'already carries a canonical' "$RESUME_LOG")"
+check "the reviewed head is what reaches the queue" "99deadbe" "$(jq -r '.approved_head' "$(resume_queue_entry)")"
+
+# (d) Durable triage state outranks the short-circuit: it replays an exact
+# checker/escalation stage that a blind re-enqueue would skip.
+resume_reset
+PR_HEAD=55c306aa
+jq -nc '{stage:"checker"}' >"$(triage_state_file 1729 1737)"
+run_cycle 1729 false
+check "durable triage state still wins over the resume short-circuit" "1" "$(grep -c '^triage 1729 1737$' "$RESUME_WORK")"
+check "the triage resume never re-enqueues behind the checker's back" "0" "$(grep -c 'already carries a canonical' "$RESUME_LOG")"
+rm -f "$(triage_state_file 1729 1737)"
+
+# (e) An unreadable PR must fall through to a review, never re-enqueue blind.
+resume_reset
+pr_snapshot(){ return 1; }
+run_cycle 1729 false
+check "an unreadable PR falls through to a review rather than a blind re-enqueue" "1" "$(grep -c '^review_fix_cycle 1729 1737$' "$RESUME_WORK")"
+check "the unreadable resume read is logged" "1" "$(grep -c 'cannot read PR #1737 head/comments' "$RESUME_LOG")"
+
+rm -f "$QUEUE"/*-pr1737.json "$AF"
+unset -f git node pnpm timeout
+REPO_DIR=$RESUME_REPO_DIR
+MF_DRY_RUN=1
+log(){ :; }
+
 echo "— single-parse GitHub reads (one parser, one contract)"
 # The fetchers parse GitHub's ORIGINAL JSON exactly once with C jq — gh --jq
 # (gojq) would add a second, gh-version-dependent transformation layer. The gh
@@ -1799,6 +1886,114 @@ merger_step
 check "cross-head refusal cap escalates to a human" "1" "$(grep -c '^606|' "$HUMAN_LOG")"
 [ -f "$QDIR/.mergefail-pr66" ] && bad "refusal counter must be cleared" || ok "refusal counter cleared"
 log(){ :; }
+
+echo "— merger: an exhausted CI-fix record is head-scoped, never silent (#1900)"
+# #1900: state/ci-fix/issue-1729-pr1737.json said `exhausted` for a head recorded
+# ten days earlier. The short-circuit was head-blind AND silent — it consumed the
+# queue entry with no log, no park and no requeue, the scheduler saw a still-
+# autopilot issue with nothing queued and re-dispatched it, and the worker
+# re-reviewed an already-approved head. 186 reviewer invocations, $434.64 of
+# review, on one PR. A record is terminal only for the head it names.
+: >"$HUMAN_LOG"; : >"$MERGER_LOG"
+log(){ printf '%s\n' "$*" >>"$MERGER_LOG"; }
+CIFIX_CALLS=$T/cifix-calls; : >"$CIFIX_CALLS"
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CIFIX_CALLS"; return 0; }
+issue_difficulty(){ echo hard; }
+queue_approval_check(){ QUEUE_APPROVAL_STATE=valid; }
+gh(){ case "$*" in
+  *"--json state"*) echo OPEN;;
+  *"--json mergeStateStatus"*) echo CLEAN;;
+  *"--json statusCheckRollup"*) echo '[{"conclusion":"FAILURE","status":"COMPLETED"}]';;
+  *) : ;;
+esac; }
+mkdir -p "$CIFIX"
+cifix_fixture(){ # $1=recorded source head — a queue entry plus an exhausted record
+  rm -f "$QDIR"/*-pr1737.json
+  jq -nc '{pr:1737,issue:1729,touches:["mf/**"],approved_head:"55c306aa",
+           approval_kind:"reviewer",approval_comment_id:"1737"}' >"$QDIR/1009-pr1737.json"
+  jq -nc --arg h "$1" '{issue:1729,pr:1737,invocations:2,valid_fix_used:false,
+           status:"exhausted",next_at:0,source_head:$h}' >"$(ci_fix_state_file 1729 1737)"
+}
+
+# (a) The exact #1900 shape: the record names an older head than the PR carries.
+cifix_fixture 9b6fc4b2
+mf_pr_head(){ echo 55c306aa; }
+merger_step
+[ -f "$QDIR/1009-pr1737.json" ] && ok "a stale exhausted record never drops the queue entry" || bad "a stale exhausted record dropped the queue entry"
+check "a stale exhausted record parks nobody" "0" "$(grep -c '^1729|' "$HUMAN_LOG")"
+check "the stale record is logged with both heads" "1" \
+  "$(grep -c 'stale exhausted CI-fix record for PR #1737 (issue #1729) — recorded head 9b6fc4b2, current head 55c306aa' "$MERGER_LOG")"
+check "the freshly approved head gets the whole budget back" "1" \
+  "$(grep -c 'CI red on PR #1737 — CI-fix invocation 1/2' "$MERGER_LOG")"
+check "the reset record is rewritten for the current head" "55c306aa" \
+  "$(jq -r '.source_head' "$(ci_fix_state_file 1729 1737)")"
+check "the reset record is no longer exhausted" "protocol-backoff" \
+  "$(jq -r '.status' "$(ci_fix_state_file 1729 1737)")"
+
+# (b) Same head: genuinely terminal — but it says so, parks the issue, and only
+# then retires the entry. Never a bare rm.
+: >"$HUMAN_LOG"; : >"$MERGER_LOG"; : >"$CIFIX_CALLS"
+cifix_fixture 55c306aa
+: >"$QDIR/.mergefail-pr1737"
+merger_step
+[ -f "$QDIR/1009-pr1737.json" ] && bad "a same-head exhausted record must retire the queue entry" || ok "a same-head exhausted record retired the queue entry"
+check "the same-head park escalates to a human" "1" "$(grep -c '^1729|' "$HUMAN_LOG")"
+check "the same-head park names the PR, the head and the reason" "1" \
+  "$(grep -c 'CI-fix budget exhausted for PR #1737 on head 55c306aa (issue #1729) — dropping the queue entry and parking with a human' "$MERGER_LOG")"
+check "the same-head park spends no fixer invocation" "0" "$(wc -l <"$CIFIX_CALLS" | tr -d ' ')"
+[ -f "$QDIR/.mergefail-pr1737" ] && bad "the same-head park must clear its refusal counter" || ok "the same-head park cleared its refusal counter"
+
+# (c) An unreadable head is neither "stale" nor "same" — fail closed, keep the entry.
+: >"$HUMAN_LOG"; : >"$MERGER_LOG"; : >"$CIFIX_CALLS"
+cifix_fixture 9b6fc4b2
+mf_pr_head(){ return 1; }
+merger_step
+[ -f "$QDIR/1009-pr1737.json" ] && ok "an unreadable head retains the queue entry" || bad "an unreadable head dropped the queue entry"
+check "an unreadable head parks nobody" "0" "$(grep -c '^1729|' "$HUMAN_LOG")"
+check "an unreadable head spends no fixer invocation" "0" "$(wc -l <"$CIFIX_CALLS" | tr -d ' ')"
+check "the unreadable head is logged" "1" "$(grep -c 'cannot read the head of PR #1737' "$MERGER_LOG")"
+rm -f "$QDIR"/*-pr1737.json "$(ci_fix_state_file 1729 1737)"
+log(){ :; }
+
+echo "— merger: no queue entry is ever dropped without a log naming the PR (#1900)"
+# The cases above cover the branch #1900 actually broke. The invariant is
+# structural, though: EVERY unlink of a merge-queue record inside the merger
+# must be preceded by a log naming the PR and the reason. Reproducing all
+# thirteen branches behaviourally would need a bespoke stub harness each; the
+# guard reads the source instead, which is precisely the property the regression
+# violated, and it reddens the moment a new silent drop lands. The site floor
+# keeps it from passing vacuously if the region scan ever stops matching.
+DROPSITES=$T/merger-drop-sites; : >"$DROPSITES"
+DROPMISS=$T/merger-drop-missing; : >"$DROPMISS"
+awk '
+  # A log belonging to a NEIGHBOURING branch must not satisfy this drop, so the
+  # backward walk stops dead at a block terminator (`;;`, fi, else, esac, }).
+  # Without that stop the `*)` PR-state arm passed on the `unknown)` arm`s log.
+  function terminator(l) {
+    sub(/[[:space:]]+$/, "", l)
+    return (l ~ /;;$/ || l ~ /^[[:space:]]*(fi|else|esac|done|\}|;;)$/)
+  }
+  /^requeue_for_review\(\)\{/ { inmerger=1 }
+  /^merger_step\(\)\{/        { inmerger=0 }
+  { if (inmerger) { lines[++nl]=$0; lno[nl]=NR } }
+  END {
+    for (i=1; i<=nl; i++) {
+      if (lines[i] !~ /rm -f "\$f"/) continue
+      print lno[i] >> sites
+      logged=0
+      for (j=i; j>=1 && j>=i-4; j--) {
+        if (lines[j] ~ /^[[:space:]]*(#|$)/) continue
+        if (j < i && terminator(lines[j])) break
+        if (lines[j] ~ /log "[^"]*\$\{?pr/) { logged=1; break }
+      }
+      if (!logged) printf "%d:%s\n", lno[i], lines[i] >> missing
+    }
+  }' sites="$DROPSITES" missing="$DROPMISS" "$TEST_SCRIPT_DIR/master.sh"
+check "every merger queue-entry drop is preceded by a log naming the PR" "" "$(cat "$DROPMISS")"
+DROPCOUNT=$(wc -l <"$DROPSITES" | tr -d ' ')
+[ "${DROPCOUNT:-0}" -ge 13 ] \
+  && ok "the drop-site guard really scanned the merger ($DROPCOUNT unlink sites)" \
+  || bad "the drop-site guard found only ${DROPCOUNT:-0} unlink sites — it is not scanning the merger"
 
 echo "— merger: BEHIND carry-forward (approval survives non-interacting updates)"
 # disjoint files → carry; any overlap, truncated compare, oversized compare or
