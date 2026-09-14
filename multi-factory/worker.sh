@@ -924,6 +924,38 @@ salvage_branch(){ # $1=issue
   return 0
 }
 
+# A resumed PR may already carry a canonical approval for the head it is sitting
+# on. That happens whenever the merger consumed or lost the queue entry without
+# retiring the issue (#1900: a stale `exhausted` CI-fix record ate the entry
+# silently), the master acked the cycle, and the scheduler handed the same
+# autopilot issue straight back. Paying a reviewer to re-approve an UNCHANGED
+# head buys nothing — #1900 spent 186 reviewer invocations and $434 doing
+# exactly that on one PR — so re-emit the merge-queue entry the queue is missing
+# and finish the assignment. Only a CHANGED head is new work and earns a review.
+# The approval is read from the same canonical source the merger validates
+# against (contracts.sh mf_latest_approval_for_head over the durable PR comment
+# thread), so worker and merger can never disagree about what is approved.
+# Idempotency key: the merge-queue record $QUEUE/<enqueued_at>-pr<pr>.json —
+# enqueue_merge is a no-op returning 0 when an entry for this PR already carries
+# this exact approved_head/kind/comment id, so repeated resumes converge on one
+# entry instead of stacking duplicates.
+resume_reenqueue_if_approved(){ # $1=issue $2=pr; 0 = re-enqueued, 1 = a review is owed
+  local n=$1 pr=$2
+  pr_snapshot "$pr" || {
+    log "resume: cannot read PR #$pr head/comments — falling through to a fresh review"
+    return 1
+  }
+  mf_latest_approval_for_head "$PR_SNAPSHOT_COMMENTS" "$PR_SNAPSHOT_HEAD" || return 1
+  log "resume: PR #$pr head ${PR_SNAPSHOT_HEAD:0:12} already carries a canonical $MF_APPROVAL_KIND approval — re-enqueueing without a review"
+  enqueue_merge "$pr" "$n" "$PR_SNAPSHOT_HEAD" "$MF_APPROVAL_KIND" "$MF_APPROVAL_ID" || {
+    # Only reachable when a queue entry for this PR already exists carrying a
+    # DIFFERENT approval; the merger's own head check will resolve that record.
+    log "resume: merge-queue re-emit refused for PR #$pr (a conflicting entry is already queued) — falling through to a fresh review"
+    return 1
+  }
+  return 0
+}
+
 # ---- one full assignment cycle — mirrors run.sh's issue cycle -1:1 where possible
 run_cycle(){ # $1=issue $2=relocated
   local n=$1 reloc=$2 pr
@@ -974,7 +1006,17 @@ run_cycle(){ # $1=issue $2=relocated
   case "$DISCOVER_STATUS" in
     unique)
       pr=$DISCOVER_PR
-      log "resuming linked PR #$pr (${DISCOVER_BRANCH:-unknown branch})";;
+      log "resuming linked PR #$pr (${DISCOVER_BRANCH:-unknown branch})"
+      # Durable triage state outranks the short-circuit: it resumes an exact
+      # checker/escalation stage, and re-enqueueing would skip the stage the
+      # state file exists to replay. Everything else: an unchanged, already
+      # approved head goes straight back to the merge queue (#1900).
+      if [ ! -f "$(triage_state_file "$n" "$pr")" ] \
+        && resume_reenqueue_if_approved "$n" "$pr"; then
+        gh issue edit "$n" --remove-label "mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
+        wstatus done "$n" "$pr"; hb_stop; return 0
+      fi
+      ;;
     ambiguous)
       mark_human "$n" "multiple open PRs linked to issue ($DISCOVER_PR)"
       gh issue edit "$n" --remove-label "mf:worker-$WORKER_ID" >/dev/null 2>&1 || true

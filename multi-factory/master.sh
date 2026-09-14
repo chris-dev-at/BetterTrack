@@ -1336,6 +1336,11 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
 # BEHIND re-gate remain blocking by design (single sequential merger).
 requeue_for_review(){ # $1=queue file $2=issue $3=reason
   local f=$1 n=$2 why=$3 rq pr
+  # The PR number is only reachable through the queue record — resolve it BEFORE
+  # any unlink, or the refusal counter, the CI-fix state and the log line that
+  # names them all outlive the record they belong to.
+  pr=$(jq -r '.pr // empty' "$f" 2>/dev/null || true)
+
   # Requeue budget (2026-08-29): the assignment payload carries no attempt
   # counter, so a first-pass-approved issue whose approval keeps invalidating
   # re-entered review forever (#1232: 140 reviewer runs). Bound it durably.
@@ -1349,10 +1354,8 @@ requeue_for_review(){ # $1=queue file $2=issue $3=reason
   rq=$((rq+1)); printf '%s' "$rq" >"$CONTROL/requeue-count/$n"
   if [ "$rq" -gt "${MF_REQUEUE_MAX:-3}" ]; then
     # This path retires the PR from the queue for good, so it owes the same
-    # cleanup every other park does. The PR number is only reachable through the
-    # queue record — resolve it BEFORE unlinking, or the refusal counter and the
-    # CI-fix state outlive the record they belong to.
-    pr=$(jq -r '.pr // empty' "$f" 2>/dev/null || true)
+    # cleanup every other park does.
+    log "merger: review requeue budget exhausted for PR #${pr:-unknown} (issue #$n) after $rq of ${MF_REQUEUE_MAX:-3} — dropping the queue entry and parking with a human; last: $why"
     rm -f "$f"
     if [ -n "$pr" ]; then
       rm -f "$(ci_fix_state_file "$n" "$pr")"
@@ -1361,7 +1364,7 @@ requeue_for_review(){ # $1=queue file $2=issue $3=reason
     mark_human "$n" "review requeued $rq times (budget ${MF_REQUEUE_MAX:-3}) — last: $why"
     return 0
   fi
-  log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review ($rq/${MF_REQUEUE_MAX:-3})"
+  log "merger: approval invalidated for PR #${pr:-unknown} (issue #$n) — $why; requeueing for fresh review ($rq/${MF_REQUEUE_MAX:-3})"
   rm -f "$f"
   gh issue edit "$n" --remove-label in-progress >/dev/null 2>&1 || true
 }
@@ -1446,7 +1449,35 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
     rm -f "$f"; mergefail_clear "$pr"
     return 0
   fi
-  [ "$status" = exhausted ] && { rm -f "$f"; mergefail_clear "$pr"; return 0; }
+  # `exhausted` retires the PR — but ONLY for the head the record was written
+  # for. #1900: state/ci-fix/issue-1729-pr1737.json still named a head from ten
+  # days earlier, so this short-circuit fired on every later, freshly-approved
+  # head: it ate the queue entry with no log, no park and no requeue, the
+  # scheduler saw an autopilot issue with nothing queued and re-dispatched it,
+  # and the worker re-reviewed an already-approved head. 186 reviewer
+  # invocations, $434 of review, from one stale file. A record whose source_head
+  # is not the PR's current head (or that names no head at all) is stale by
+  # construction: drop the RECORD, not the queue entry, and let the new head
+  # earn its own 0/2 budget on the normal path below. Only a same-head record is
+  # terminal, and a terminal record parks with a human like every other terminal
+  # merger path — a queue entry never disappears silently again.
+  if [ "$status" = exhausted ]; then
+    current=$(mf_pr_head "$pr") || {
+      log "merger: cannot read the head of PR #$pr to age its exhausted CI-fix record — retaining the queue entry, retrying next tick"
+      MERGER_SCAN_NEXT=1
+      return 0
+    }
+    if [ -z "$source_head" ] || [ "$current" != "$source_head" ]; then
+      log "merger: stale exhausted CI-fix record for PR #$pr (issue #$n) — recorded head ${source_head:0:12}, current head ${current:0:12}; resetting the record and keeping the queue entry"
+      rm -f "$sf"
+      invocations=0; used=false; status=ready; next_at=0; source_head=$approved_head
+    else
+      log "merger: CI-fix budget exhausted for PR #$pr on head ${current:0:12} (issue #$n) — dropping the queue entry and parking with a human"
+      mark_human "$n" "CI-fix budget exhausted for PR #$pr on head $current"
+      rm -f "$f"; mergefail_clear "$pr"
+      return 0
+    fi
+  fi
   if [ "$status" = protocol-backoff ] && [ "$now" -lt "$next_at" ]; then
     log "merger: CI-fix protocol retry for PR #$pr is delayed until epoch $next_at"
     MERGER_SCAN_NEXT=1
@@ -1672,7 +1703,8 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
             finalize_issue "$pr" "$n"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
     OPEN)   ;;
     unknown) log "merger: cannot read PR #$pr (transient?) — retrying next tick"; MERGER_SCAN_NEXT=1; return 0;;
-    *)      mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
+    *)      log "merger: PR #$pr is $pstate without having merged (issue #$n) — dropping the queue entry and parking with a human"
+            mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
   esac
 
   # Approval is bound to both one canonical comment and the exact code SHA.
@@ -1808,6 +1840,7 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
     MERGER_SCAN_NEXT=1
     return 0
   fi
+  log "merger: PR #$pr merged (issue #$n) — dropping the queue entry"
   rm -f "$f" "$ci_state"; mergefail_clear "$pr"
 }
 
