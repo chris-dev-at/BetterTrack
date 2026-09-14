@@ -91,6 +91,7 @@ import {
   type HoldingAssetInput,
   type Transaction as DomainTransaction,
 } from '../../domain/holdings';
+import { modifiedDietzReturn } from '../../domain/seriesStats';
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
@@ -108,6 +109,7 @@ import {
   assetDayKey,
   buildIntradayEurValuePoints,
   downsampledIndices,
+  intradayMoneyWeightedReturn,
   intradayPerformancePoints,
   isDownsampledRange,
   isIntradayRange,
@@ -498,6 +500,14 @@ export interface PortfolioService {
     /** Daily on 1M+; a dense intraday curve (each point carries `time`) on 1D/1W (#556). */
     points: PortfolioHistoryPoint[];
     performance: PortfolioPerformancePoint[];
+    /**
+     * The money-weighted (Modified Dietz) return of the served window, percent
+     * (#1669, §16 2026-09-14) — computed from the SAME points and external
+     * flows `performance` is built from, so the MAX headline can state what
+     * the money earned next to the flow-invariant TWR curve. `null` when the
+     * window has no capital (denominator ≤ 0). Served on EVERY range.
+     */
+    moneyWeightedPct: number | null;
     assets?: PortfolioHistoryOverlay[];
   }>;
   /**
@@ -1344,7 +1354,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     grid: NonNullable<ResolvedHistoryInterval['grid']>,
     fx: CurrencyService,
     asOf: { day: string; nowMs: number },
-  ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
+  ): Promise<{
+    points: PortfolioHistoryPoint[];
+    performance: PortfolioPerformancePoint[];
+    moneyWeightedPct: number | null;
+  } | null> {
     const series = await snapshots.getSeries(portfolioId);
     if (series.points.length === 0) return null;
 
@@ -1582,15 +1596,21 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       timeMs: Date.parse(p.time!),
       valueEur: p.valueEur,
     }));
-    const performance: PortfolioPerformancePoint[] = intradayPerformancePoints({
+    const performanceInput = {
       intradayPoints: baseIntraday,
       dailyBasePoints: baseDaily.points,
       flowsBase: baseDaily.flows,
       flowEvents: flowEventsBase,
       stepMs: grid.stepMs,
-    }).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
+    };
+    const performance: PortfolioPerformancePoint[] = intradayPerformancePoints(
+      performanceInput,
+    ).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
+    // The money-weighted headline of the same window, from the very same
+    // input — points, flows and flow instants (#1669).
+    const moneyWeightedPct = intradayMoneyWeightedReturn(performanceInput);
 
-    return { points, performance };
+    return { points, performance, moneyWeightedPct };
   }
 
   return {
@@ -2858,6 +2878,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
               baseCurrency: fx.baseCurrency,
               points: intraday.points,
               performance: intraday.performance,
+              moneyWeightedPct: intraday.moneyWeightedPct,
             };
           }
           // Overlays stay per-asset daily price curves (issue #122), sliced to
@@ -2871,6 +2892,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             baseCurrency: fx.baseCurrency,
             points: intraday.points,
             performance: intraday.performance,
+            moneyWeightedPct: intraday.moneyWeightedPct,
             assets: overlayAssets,
           };
         }
@@ -2892,6 +2914,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // an arbitrary offset. Compounding, not subtraction.
       const perfSlice = sliceRange(timeWeightedReturn(series.points, series.flows), range, today);
       let performance = range === 'MAX' ? perfSlice : rebasePerformance(perfSlice);
+      // The money-weighted headline of the SAME window (#1669): the sliced
+      // points and the same external flows, before downsampling thins the
+      // curve. MAX measures since inception (the index's own anchor before day
+      // one), a range slice from its first plotted point — the two anchors the
+      // TWR above already uses, so the pair always describes one window.
+      const moneyWeightedPct = modifiedDietzReturn(points, series.flows, {
+        anchor: range === 'MAX' ? 'inception' : 'first-point',
+      });
 
       // 6M/1Y/5Y thin the daily series to the shared point budget (2026-07-20):
       // every k-th day, endpoints kept, so a long chart is ~TARGET_POINTS points
@@ -2906,7 +2936,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Everything below serves the daily grid — echo `1d` regardless of what
       // was requested (the null-builder fallthrough above lands here too).
       if (!overlay) {
-        return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance };
+        return {
+          range,
+          interval: '1d',
+          baseCurrency: fx.baseCurrency,
+          points,
+          performance,
+          moneyWeightedPct,
+        };
       }
 
       // Overlays share the curve's daily grid, so the same range slice keeps
@@ -2928,7 +2965,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           };
         })
         .filter((a) => a.points.length > 0);
-      return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance, assets };
+      return {
+        range,
+        interval: '1d',
+        baseCurrency: fx.baseCurrency,
+        points,
+        performance,
+        moneyWeightedPct,
+        assets,
+      };
     },
 
     async getAssetValueSeries(userId, portfolioId) {
