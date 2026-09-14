@@ -88,6 +88,7 @@ export function paranoidV1AccountDigestQuery(userId: string): SQL {
   if (after === undefined) {
     throw new Error('PARANOID_V1_ACCOUNT_DIGEST_SQL lost its $1 placeholder');
   }
+  // eslint-disable-next-line sql/no-dynamic-identifier -- closed list of one: both halves are slices of PARANOID_V1_ACCOUNT_DIGEST_SQL, the module-level literal above, split on its single `$1`. The account id is the bound parameter between them and never reaches sql.raw.
   return sql`${sql.raw(before!)}${userId}${sql.raw(after)}`;
 }
 

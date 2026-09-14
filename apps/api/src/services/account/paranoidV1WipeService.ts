@@ -141,16 +141,22 @@ const QUARANTINE_MOVES: ReadonlyArray<
  * Deletion order is the reverse of nothing in particular — these seven tables
  * reference `users`, never each other — but it is fixed so the statement log of a
  * production wipe is stable and reviewable.
+ *
+ * Statements, not table names fed through `sql.raw` — the same shape
+ * `QUARANTINE_MOVES` above already has. Each identifier is a literal inside the
+ * statement it belongs to, so the destructive path builds no SQL text at run
+ * time at all (`sql/no-dynamic-identifier`), and a reviewer reads the seven
+ * deletes exactly as Postgres will receive them.
  */
-const LEGACY_DELETES = [
-  'paranoid_rehydration_receipts',
-  'paranoid_vault_retired',
-  'paranoid_vault_retirements',
-  'paranoid_vault_server_candidates',
-  'paranoid_enable_transitions',
-  'paranoid_vault_history',
-  'paranoid_vaults',
-] as const;
+const LEGACY_DELETES: ReadonlyArray<(userId: string) => ReturnType<typeof sql>> = [
+  (u) => sql`delete from "paranoid_rehydration_receipts" where "user_id" = ${u}`,
+  (u) => sql`delete from "paranoid_vault_retired" where "user_id" = ${u}`,
+  (u) => sql`delete from "paranoid_vault_retirements" where "user_id" = ${u}`,
+  (u) => sql`delete from "paranoid_vault_server_candidates" where "user_id" = ${u}`,
+  (u) => sql`delete from "paranoid_enable_transitions" where "user_id" = ${u}`,
+  (u) => sql`delete from "paranoid_vault_history" where "user_id" = ${u}`,
+  (u) => sql`delete from "paranoid_vaults" where "user_id" = ${u}`,
+];
 
 /**
  * Retire ONE account's v1 paranoid surface. Returns a refusal instead of throwing
@@ -256,8 +262,8 @@ export async function wipeParanoidV1Account(
     for (const move of QUARANTINE_MOVES) {
       await tx.execute(move(userId, attestation.id));
     }
-    for (const table of LEGACY_DELETES) {
-      await tx.execute(sql`delete from ${sql.raw(`"${table}"`)} where "user_id" = ${userId}`);
+    for (const del of LEGACY_DELETES) {
+      await tx.execute(del(userId));
     }
 
     // The account comes back feature-complete and empty of vaulted content. The

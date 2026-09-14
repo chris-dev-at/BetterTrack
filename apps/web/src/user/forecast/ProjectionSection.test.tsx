@@ -62,7 +62,12 @@ import {
   calendarDayInTimezone,
 } from '../vault/standingOrders/schedule';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
-import { normalizeStandingOrders, projectNetWorth, type ForecastResult } from './projection';
+import {
+  monthlyRateFromAnnualPct,
+  normalizeStandingOrders,
+  projectNetWorth,
+  type ForecastResult,
+} from './projection';
 import { ProjectionSection } from './ProjectionSection';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -237,6 +242,30 @@ function engineFinalValue(horizonYears: number, monthlyDividend = 0): number {
     whatIfPlans: [],
   });
   return result.base[result.base.length - 1]!.value;
+}
+
+/**
+ * The same run with the RETURN factor off — the one state in which projected
+ * dividend income is a flow of its own (#1892). With a return assumption in
+ * play the sampled TWR already contains the distributions, so the engine does
+ * not add them a second time and this is where the income is observable.
+ */
+function engineIncomeOnlyValue(horizonYears: number, monthlyDividend: number): number {
+  const result = projectNetWorth({
+    asOf: '2026-01-01',
+    startingNetWorth: 50000,
+    horizonYears,
+    annualReturnPct: null,
+    standingOrders: [],
+    monthlyDividend,
+    whatIfPlans: [],
+  });
+  return result.base[result.base.length - 1]!.value;
+}
+
+/** Untick the return factor, so the dividend factor becomes the live one. */
+async function switchOffReturnFactor(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('checkbox', { name: RETURN_FACTOR }));
 }
 
 beforeEach(() => {
@@ -555,8 +584,12 @@ test('a resolved dividend factor says which basis its income came from (#1790)',
     basis: 'trailing-12m',
     holdings: [],
   });
+  const user = userEvent.setup();
   renderSection();
   await screen.findByTestId('projection-series-base');
+  // The basis is what a LIVE factor's number is made of, so read it in the
+  // state where the factor contributes: with no return assumption (#1892).
+  await switchOffReturnFactor(user);
 
   const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
   expect(toggle).toBeEnabled();
@@ -597,9 +630,11 @@ test('the dividend factor toggle appears when the provider is configured', async
   const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
   expect(toggle).toBeInTheDocument();
 
-  // Turning dividends off changes the projected base line.
+  // With no return assumption the income is this factor's own contribution, so
+  // the toggle moves the line (#1892); under a return factor it is already in it.
+  await switchOffReturnFactor(user);
   const before = screen.getByTestId('projection-series-base').textContent;
-  await user.click(toggle);
+  await user.click(await screen.findByRole('checkbox', { name: 'Projected dividends' }));
   await waitFor(() =>
     expect(screen.getByTestId('projection-series-base').textContent).not.toBe(before),
   );
@@ -639,8 +674,10 @@ test('the dividend factor carries only the shown portfolio’s income', async ()
   vi.mocked(getPortfolioDividendProjectionFor).mockImplementation(async (portfolioId: string) =>
     projectionFor(portfolioId),
   );
+  const user = userEvent.setup();
   renderSection();
   await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  await switchOffReturnFactor(user);
 
   expect(getPortfolioDividendProjectionFor).toHaveBeenCalledWith(PORTFOLIO_ID, expect.anything());
   expect(getPortfolioDividendProjectionFor).not.toHaveBeenCalledWith(
@@ -649,9 +686,9 @@ test('the dividend factor carries only the shown portfolio’s income', async ()
   );
   // 100 €/mo (this portfolio) — never 1 000 €/mo (both portfolios summed).
   await waitFor(() =>
-    expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 100))),
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
   );
-  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineFinalValue(20, 1000)));
+  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 1000)));
 });
 
 test('switching portfolios refetches rather than serving the other one’s figure', async () => {
@@ -661,10 +698,13 @@ test('switching portfolios refetches rather than serving the other one’s figur
   // One cache across both renders: only a portfolio-scoped query key can tell
   // the two answers apart here.
   const client = makeClient();
+  const user = userEvent.setup();
   const view = renderSection(PORTFOLIOS, 'normal', client);
   await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  // Off, so the two portfolios' income figures are distinguishable on the curve.
+  await switchOffReturnFactor(user);
   await waitFor(() =>
-    expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 100))),
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
   );
 
   view.rerender(
@@ -682,7 +722,7 @@ test('switching portfolios refetches rather than serving the other one’s figur
     ),
   );
   await waitFor(() =>
-    expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20, 900))),
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 900))),
   );
 });
 
@@ -713,16 +753,19 @@ test('a USD-base curve spends the USD projection and renders it as USD', async (
     basis: 'forward-annualized',
     holdings: [],
   });
+  const user = userEvent.setup();
   renderSection();
   await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  // Read the income where it is the factor's own contribution (#1892).
+  await switchOffReturnFactor(user);
 
-  // $50,000 start + $100/month at 5 %/yr — one denomination end to end.
-  const projected = formatMoney(engineFinalValue(20, 100));
+  // $50,000 start + $100/month — one denomination end to end.
+  const projected = formatMoney(engineIncomeOnlyValue(20, 100));
   expect(projected).toContain('$');
   await waitFor(() => expect(projectedStat()).toHaveTextContent(projected));
   expect(screen.getByTestId('projection-series-base')).toHaveTextContent(projected);
   // And it is genuinely the dividend-bearing curve, not the bare one.
-  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineFinalValue(20)));
+  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 0)));
 });
 
 test('a projection in another denomination is not summed into the curve', async () => {
@@ -875,7 +918,8 @@ test('resolves month 0 in the schedule’s timezone, not UTC', async () => {
       expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
     );
 
-    const normalized = normalizeStandingOrders([order], 'EUR').orders;
+    // A cash order needs no price map — only a buy is priced (#1892).
+    const normalized = normalizeStandingOrders([order], 'EUR', new Map()).orders;
     const factors = {
       startingNetWorth: 50000,
       horizonYears: 20,
@@ -897,4 +941,273 @@ test('resolves month 0 in the schedule’s timezone, not UTC', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+// ─── Factor composition: return × dividends (#1892) ──────────────────────────
+//
+// The base rate is sampled from the portfolio's own TWR and a `dividend` is
+// internal to that curve by design, so the projected income was ALREADY in the
+// line the return factor drew — and was added on top of it as a second monthly
+// contribution, with both factors shipping ON.
+
+const DIVIDENDS_IN_RETURN_NOTE =
+  'Your average return already contains the dividends your holdings paid, so counting them here ' +
+  'would count the same money twice. Switch the return factor off to project the income on its own.';
+
+/** A resolved €100/month projection for this portfolio. */
+const DIVIDENDS_100: ProjectedDividendIncomeResponse = {
+  available: true,
+  currency: 'EUR',
+  monthlyTotalBase: 100,
+  yearlyTotalBase: 1200,
+  basis: 'forward-annualized',
+  holdings: [],
+};
+
+test('the default state does not add income the sampled return already carries', async () => {
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_100);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await waitFor(() =>
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe('5'),
+  );
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeDisabled();
+  expect(toggle).not.toBeChecked();
+  expect(screen.getByText(DIVIDENDS_IN_RETURN_NOTE)).toBeInTheDocument();
+
+  // The curve is the return factor's own — never that curve plus the same
+  // income compounded a second time.
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+  expect(projectedStat()).not.toHaveTextContent(formatMoney(doubleCountedValue(20, 100)));
+});
+
+/**
+ * What the additive composition produced: the sampled-return curve PLUS the
+ * same income compounded on top of it. Computed here because the engine will no
+ * longer produce it — that is the point.
+ */
+function doubleCountedValue(horizonYears: number, monthlyDividend: number): number {
+  const rate = monthlyRateFromAnnualPct(5);
+  let accumulation = 0;
+  for (let step = 0; step < horizonYears * 12; step++) {
+    accumulation = accumulation * (1 + rate) + monthlyDividend;
+  }
+  return engineFinalValue(horizonYears) + accumulation;
+}
+
+test('switching the return factor off hands the income back to its own factor', async () => {
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_100);
+  const user = userEvent.setup();
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await switchOffReturnFactor(user);
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeEnabled();
+  expect(toggle).toBeChecked();
+  expect(screen.queryByText(DIVIDENDS_IN_RETURN_NOTE)).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
+  );
+});
+
+// A rate that could not be sampled is NOT a 0 % assumption. `safeNumber('')` is
+// 0, so reading the blank field as a rate disabled the dividend factor with copy
+// naming an average return that was never sampled — and took the only factor
+// that moved a fresh portfolio's line off it.
+
+test('a return the history cannot state is not read as a 0 % assumption', async () => {
+  // `twr: null` — a portfolio with no elapsed history — prefills an EMPTY rate
+  // field while the return factor stays ON.
+  vi.mocked(getAnalyticsSeries).mockResolvedValue({ ...analytics(5), twr: null });
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_100);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  await waitFor(() =>
+    expect((screen.getByLabelText(RETURN_RATE) as HTMLInputElement).value).toBe(''),
+  );
+
+  const toggle = await screen.findByRole('checkbox', { name: 'Projected dividends' });
+  expect(toggle).toBeEnabled();
+  expect(toggle).toBeChecked();
+  expect(screen.queryByText(DIVIDENDS_IN_RETURN_NOTE)).not.toBeInTheDocument();
+  // The return factor is still ticked and still projects 0 %/yr; what the blank
+  // changes is only that the €100/month is a flow of its own again.
+  expect(screen.getByRole('checkbox', { name: RETURN_FACTOR })).toBeChecked();
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
+  );
+});
+
+test('clearing the rate with the factor on hands the income back the same way', async () => {
+  vi.mocked(getPortfolioDividendProjectionFor).mockResolvedValue(DIVIDENDS_100);
+  const user = userEvent.setup();
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+  // The sampled 5 %/yr first: the income is inside that curve and is disabled.
+  await waitFor(() => expect(screen.getByLabelText(RETURN_RATE)).toHaveValue(5));
+  expect(await screen.findByRole('checkbox', { name: 'Projected dividends' })).toBeDisabled();
+
+  await user.clear(screen.getByLabelText(RETURN_RATE));
+
+  await waitFor(() =>
+    expect(screen.getByRole('checkbox', { name: 'Projected dividends' })).toBeEnabled(),
+  );
+  expect(screen.queryByText(DIVIDENDS_IN_RETURN_NOTE)).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(projectedStat()).toHaveTextContent(formatMoney(engineIncomeOnlyValue(20, 100))),
+  );
+});
+
+// ─── A recurring buy is money the schedule books (#1892) ─────────────────────
+//
+// Both booking engines write a `buy-asset` occurrence as a BUY transaction with
+// no cash leg, so recorded net worth rises by the full purchase value. The
+// factor used to drop those orders entirely: a €500/month plan moved the curve
+// by nothing at all.
+
+const BUY_ASSET_ID = '66666666-6666-6666-6666-666666666666';
+
+/** The same portfolio, holding the asset a recurring buy names, priced. */
+function portfolioHolding(price: number | null, currency = 'EUR'): PortfolioResponse {
+  return {
+    ...PORTFOLIO,
+    holdings: [
+      {
+        asset: {
+          id: BUY_ASSET_ID,
+          symbol: 'VWCE',
+          name: 'Vanguard FTSE All-World',
+          exchange: 'XETRA',
+          currency,
+          type: 'etf',
+          isCustom: false,
+        },
+        quantity: 10,
+        avgCost: 100,
+        realizedPnl: 0,
+        price,
+        marketValueEur: price === null ? null : price * 10,
+        costBasisEur: 1000,
+        unrealizedPnlEur: null,
+        unrealizedPnlPct: null,
+        dayChangeEur: null,
+        dayChangePct: null,
+      },
+    ],
+  };
+}
+
+/** A monthly buy of 5 units of {@link BUY_ASSET_ID}. */
+function buyOrder(over: Partial<StandingOrder> = {}): StandingOrder {
+  return makeOrder({
+    kind: 'buy-asset',
+    assetId: BUY_ASSET_ID,
+    assetSymbol: 'VWCE',
+    assetName: 'Vanguard FTSE All-World',
+    amount: 5,
+    label: 'savings plan',
+    ...over,
+  });
+}
+
+test('a recurring buy is projected at the price the portfolio states', async () => {
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioHolding(120));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [buyOrder()],
+  } as StandingOrderListResponse);
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  // 5 units × €120 = €600 booked every month, on the same 50 000 € start.
+  const withBuy = last(
+    projectNetWorth({
+      asOf: '2026-03-01',
+      startingNetWorth: 50000,
+      horizonYears: 20,
+      annualReturnPct: 5,
+      standingOrders: [
+        { amount: 600, cadence: 'monthly', anchorDay: 1, startDate: '2020-01-01', endDate: null },
+      ],
+      monthlyDividend: 0,
+      whatIfPlans: [],
+    }),
+  );
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(withBuy)));
+  // Not the €0 the excluded version projected for the same plan.
+  expect(projectedStat()).not.toHaveTextContent(formatMoney(engineFinalValue(20)));
+
+  const toggle = screen.getByRole('checkbox', { name: 'Standing orders' });
+  expect(toggle).toBeEnabled();
+  expect(toggle).toBeChecked();
+});
+
+const ORDERS_UNPRICED_NOTE =
+  "We have no current price for VWCE, so we can't say what its recurring buy adds. " +
+  'This factor stays out of the projection until it can be priced.';
+
+test('a buy the portfolio cannot price refuses the factor and names the asset', async () => {
+  // All-or-nothing, like a foreign order: the salary beside it stays out too,
+  // because a quietly smaller curve is the defect this rule exists for.
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioHolding(null));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [buyOrder(), makeOrder({ kind: 'cash-add', amount: 500 })],
+  } as StandingOrderListResponse);
+  renderSection();
+  expect(await screen.findByText(ORDERS_UNPRICED_NOTE)).toBeInTheDocument();
+
+  const toggle = screen.getByRole('checkbox', { name: 'Standing orders' });
+  expect(toggle).toBeDisabled();
+  expect(toggle).not.toBeChecked();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+});
+
+test('two unpriced buys read as two, not as one', async () => {
+  // The assets are joined into one sentence, so the sentence has to agree with
+  // its own length — "its recurring buy" over two named assets is a copy bug.
+  // The second order also names an asset the portfolio does not hold at all,
+  // which is how a brand-new savings plan arrives (the dialog picks from the
+  // global search, not from holdings).
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioHolding(null));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [
+      buyOrder(),
+      buyOrder({
+        id: '77777777-7777-7777-7777-777777777777',
+        assetId: '88888888-8888-8888-8888-888888888888',
+        assetSymbol: 'IWDA',
+        assetName: 'iShares Core MSCI World',
+      }),
+    ],
+  } as StandingOrderListResponse);
+  renderSection();
+
+  expect(
+    await screen.findByText(
+      "We have no current price for IWDA, VWCE, so we can't say what their recurring buys add. " +
+        'This factor stays out of the projection until they can be priced.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(ORDERS_UNPRICED_NOTE)).not.toBeInTheDocument();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
+});
+
+test('a foreign-priced buy is refused through the currency path, not the price one', async () => {
+  setMoneyCurrency('EUR');
+  vi.mocked(getPortfolio).mockResolvedValue(portfolioHolding(180, 'USD'));
+  vi.mocked(listStandingOrders).mockResolvedValue({
+    orders: [buyOrder({ currency: 'USD' })],
+  } as StandingOrderListResponse);
+  renderSection();
+
+  expect(
+    await screen.findByText(
+      'Your standing orders are recorded in USD, but this projection is in EUR. ' +
+        "We don't convert between currencies here, so this factor stays out of the projection.",
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(ORDERS_UNPRICED_NOTE)).not.toBeInTheDocument();
+  await waitFor(() => expect(projectedStat()).toHaveTextContent(formatMoney(engineFinalValue(20))));
 });
